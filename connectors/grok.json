@@ -1,16 +1,38 @@
 {
   "name": "grok",
   "bin": "grok",
-  "configDirs": ["~/.grok"],
+  "configDirs": [
+    "~/.grok"
+  ],
   "spawn": {
-    "cmd": ["grok", "-p", "{taskFile}"],
+    "cmd": [
+      "grok",
+      "-p",
+      "{taskFile}"
+    ],
     "cwdMode": "add-dir"
   },
-  "authSignatures": ["unauthorized", "rate limit", "invalid api key"],
-  "outputExtraction": { "strategy": "stdout" },
-  "meter": { "type": "declared", "window": "5h" },
+  "authSignatures": [
+    "unauthorized",
+    "rate limit",
+    "invalid api key"
+  ],
+  "outputExtraction": {
+    "strategy": "stdout"
+  },
+  "meter": {
+    "type": "reader",
+    "window": "weekly"
+  },
   "costRank": 2,
-  "lanes": ["analyze", "build", "chore"],
-  "flags": { "stealth": false },
-  "timeoutSec": 900
+  "lanes": [
+    "analyze",
+    "build",
+    "chore"
+  ],
+  "flags": {
+    "stealth": false
+  },
+  "timeoutSec": 900,
+  "$comment-meter": "weekly shared credit pool via billing endpoint; no 5h window exists on unified-billing accounts"
 }

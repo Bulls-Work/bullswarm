@@ -23,8 +23,8 @@
     "strategy": "stdout"
   },
   "meter": {
-    "type": "declared",
-    "window": "5h"
+    "type": "reader",
+    "window": "weekly+monthly+5h"
   },
   "costRank": 1,
   "lanes": [

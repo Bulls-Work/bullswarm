@@ -9,7 +9,8 @@ import {
   loadState, saveState, quarantinePool, sweepQuarantines,
   assertDepthAllowed, childDepthEnv,
 } from './lib/state.js';
-import { buildPools } from './lib/config.js';
+import { buildPools, buildPoolsLive } from './lib/config.js';
+import { getAllMeterReadings } from './meters/registry.js';
 import { judgeContent } from './lib/verify.js';
 
 export const BULLSWARM_DIR = join(homedir(), '.bullswarm');
@@ -30,9 +31,12 @@ function parseArgs(argv) {
 
 // --- pools ----------------------------------------------------------------
 
-function cmdPools(opts) {
+async function cmdPools(opts) {
   const now = Date.now();
-  const { state, pools } = buildPools(BULLSWARM_DIR, now);
+  const { state, pools } = await buildPoolsLive(BULLSWARM_DIR, now, {
+    force: opts.force === true,
+    getReadings: getAllMeterReadings,
+  });
   const released = sweepQuarantines(state, now);
   if (released.length && !opts.json) {
     console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
@@ -43,17 +47,18 @@ function cmdPools(opts) {
     return 0;
   }
   for (const p of pools) {
-    const meter =
-      p.meter.type === 'none'
-        ? 'unmetered'
-        : `used ${p.usedPct ?? '?'}% of ${p.meter.window} (elapsed ${p.elapsedPct ?? '?'}%)`;
+    const src = p.meterSource;
+    const meter = src === 'none'
+      ? 'unmetered'
+      : `used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
+    const burst = p.burstGate ? ' BURST-GATED' : '';
     const status = !p.enabled
       ? 'disabled'
       : p.quarantine
         ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
-        : 'ready';
+        : `ready${burst}`;
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} pace=${p.pace ?? '-'} ${status}`,
+      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} ${status}`,
     );
   }
   return 0;
@@ -78,16 +83,26 @@ async function cmdRun(opts) {
 
   sweepQuarantines(state, now);
 
-  const { pools } = buildPools(BULLSWARM_DIR, now);
+  const { pools } = await buildPoolsLive(BULLSWARM_DIR, now, {
+    getReadings: getAllMeterReadings,
+  });
   for (const p of pools) {
     p.incumbent = state.incumbents?.[lane] === p.name;
   }
 
-  const route = pickPool(lane, pools, {
+  // Burst gate (M3): a pool whose 5h window is >=90% used is excluded from
+  // dispatch entirely this run — it paces nothing, it's just out of burst room.
+  const gated = pools.filter((p) => p.burstGate);
+  const eligiblePools = gated.length ? pools.filter((p) => !p.burstGate) : pools;
+
+  const route = pickPool(lane, eligiblePools, {
     callerEligible: opts['no-caller'] !== true,
     callerName: state.config.callerName ?? 'claude',
     now,
   });
+  if (gated.length && route.pick) {
+    route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
+  }
 
   if (!route.pick && route.keepOnClaude) {
     logDecision(state, { lane, picked: null, keepOnClaude: true, ok: null, why: route.why });
