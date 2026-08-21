@@ -17,7 +17,9 @@
   },
   "authSignatures": [
     "unauthorized",
-    "authentication failed"
+    "authentication failed",
+    "not authenticated",
+    "cmd login"
   ],
   "outputExtraction": {
     "strategy": "stdout"
