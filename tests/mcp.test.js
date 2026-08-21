@@ -59,6 +59,26 @@ test('MCP handshake: initialize -> tools/list', async () => {
 });
 
 test('MCP pools tool returns structured JSON', async () => {
+  // Prime the REAL meter cache (~/.bullswarm/meters) so the pools call
+  // never hits the network in tests. The registry reads from METERS_DIR.
+  const { MeterCache } = await import('../src/meters/framework.js');
+  const { homedir } = await import('node:os');
+  const cache = new MeterCache(join(homedir(), '.bullswarm', 'meters'));
+  for (const p of ['codex', 'grok', 'command-code', 'claude-code']) {
+    if (!cache.get(p)) {
+      cache.put(p, {
+        captured_at: new Date().toISOString(),
+        pool: p,
+        five_hour: { utilization: null, resets_at: null },
+        seven_day: {
+          utilization: 0,
+          resets_at: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+        monthly: null,
+      });
+    }
+  }
+
   const res = await rpc([
     { jsonrpc: '2.0', id: 10, method: 'initialize', params: {} },
     {
@@ -67,9 +87,9 @@ test('MCP pools tool returns structured JSON', async () => {
       method: 'tools/call',
       params: { name: 'bullswarm_pools', arguments: {} },
     },
-  ]);
+  ], 30000);
   const call = res.find((r) => r.id === 11);
   const payload = JSON.parse(call.result.content[0].text);
   assert.equal(payload.exitCode, 0);
   assert.ok(Array.isArray(payload.verdict.pools));
-});
+}, { timeout: 40000 });

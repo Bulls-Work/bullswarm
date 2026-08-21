@@ -1,16 +1,36 @@
 {
   "name": "bullswarm",
   "version": "0.1.0",
-  "description": "Route work across coding-agent CLI subscriptions — paced by quota meters, verified by content, never trusting exit codes.",
+  "description": "Route work across coding-agent CLI subscriptions — paced by live quota meters, verified by content, never trusting exit codes.",
   "type": "module",
   "bin": {
-    "bullswarm": "./bin/bullswarm.js"
+    "bullswarm": "./bin/bullswarm.js",
+    "bullswarm-mcp": "./mcp/server.mjs"
   },
   "engines": {
     "node": ">=18"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "connectors/",
+    "skill/",
+    "mcp/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "test": "node --test \"tests/*.test.js\""
+    "test": "node --test \"tests/*.test.js\"",
+    "prepublishOnly": "npm test",
+    "postinstall": "node -e \"console.log('bullswarm installed. Run: bullswarm')\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cowcow02/bullswarm.git"
+  },
+  "homepage": "https://github.com/cowcow02/bullswarm#readme",
+  "bugs": {
+    "url": "https://github.com/cowcow02/bullswarm/issues"
   },
   "keywords": [
     "ai",
@@ -19,8 +39,11 @@
     "claude",
     "codex",
     "grok",
+    "opencode",
     "quota",
-    "routing"
+    "routing",
+    "mcp"
   ],
+  "author": "cowcow02",
   "license": "MIT"
 }

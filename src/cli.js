@@ -12,6 +12,8 @@ import {
 import { buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { judgeContent } from './lib/verify.js';
+import { getVersion } from './lib/version.js';
+import { release } from './lib/release.js';
 
 export const BULLSWARM_DIR = join(homedir(), '.bullswarm');
 
@@ -269,8 +271,37 @@ export async function main(argv) {
       return cmdHealth(opts);
     case 'pools':
       return cmdPools(opts);
+    case 'version':
+      console.log(getVersion());
+      return 0;
+    case 'release':
+      return cmdRelease(opts);
     default:
-      console.error(`unknown verb "${verb}". try: setup | run | health | pools`);
+      console.error(
+        `unknown verb "${verb}". try: setup | run | health | pools | version | release`,
+      );
       return 2;
+  }
+}
+
+// --- release -----------------------------------------------------------------
+
+function cmdRelease(opts) {
+  const kind = opts.rest[0];
+  if (!['patch', 'minor', 'major'].includes(kind)) {
+    console.error('usage: bullswarm release patch|minor|major [--dry-run]');
+    return 2;
+  }
+  try {
+    const r = release(kind, { dryRun: opts['dry-run'] === true });
+    const label = r.dryRun ? 'would release' : 'released';
+    console.log(`${label}: ${r.from} → ${r.to} (tag ${r.tag})`);
+    if (!r.dryRun) {
+      console.log('next: npm publish (or: npm publish --access public)');
+    }
+    return 0;
+  } catch (err) {
+    console.error(err.message);
+    return 1;
   }
 }
