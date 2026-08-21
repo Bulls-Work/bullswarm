@@ -1,7 +1,7 @@
 {
   "name": "bullswarm",
   "version": "0.1.1",
-  "description": "Route work across coding-agent CLI subscriptions — paced by live quota meters, verified by content, never trusting exit codes.",
+  "description": "Route work across coding-agent CLI subscriptions \u2014 paced by live quota meters, verified by content, never trusting exit codes.",
   "type": "module",
   "bin": {
     "bullswarm": "./bin/bullswarm.js",
@@ -21,8 +21,7 @@
   ],
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
-    "prepublishOnly": "npm test",
-    "postinstall": "node -e \"console.log('bullswarm installed. Run: bullswarm')\""
+    "prepublishOnly": "npm test"
   },
   "repository": {
     "type": "git",

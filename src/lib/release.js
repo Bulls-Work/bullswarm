@@ -31,7 +31,8 @@ function git(args) {
 
 export function release(kind, { dryRun = false } = {}) {
   const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'));
-  const next = bumpVersion(pkg.version, kind);
+  const prev = pkg.version;
+  const next = bumpVersion(prev, kind);
 
   // Dirty-tree guard: a release commit must contain exactly the version change.
   const status = git('status --porcelain');
@@ -42,14 +43,13 @@ export function release(kind, { dryRun = false } = {}) {
   }
 
   if (dryRun) {
-    return { from: pkg.version, to: next, tag: `v${next}`, dryRun: true };
+    return { from: prev, to: next, tag: `v${next}`, dryRun: true };
   }
 
   pkg.version = next;
-  pkg.files ??= [];
   writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
   git('add package.json');
   git(`commit -m "release v${next}"`);
   git(`tag -a v${next} -m "v${next}"`);
-  return { from: pkg.version, to: next, tag: `v${next}`, dryRun: false };
+  return { from: prev, to: next, tag: `v${next}`, dryRun: false };
 }
