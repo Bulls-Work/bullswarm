@@ -1,0 +1,53 @@
+# Release workflow: triggered by pushing a v* tag (bullswarm release creates it).
+# Publishes to npm via OIDC trusted publishing — no npm token stored in secrets.
+# Trust is configured on npmjs.com: cowcow02/bullswarm + release.yml + npm publish.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies (none expected; guard for future)
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          fi
+
+      - name: Test
+        run: npm test
+
+      # OIDC trusted publishing needs npm >= 11.5.1; pin npm 11 explicitly.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@11
+
+      - name: Assert package version matches tag
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          echo "package ${PKG_VERSION} vs tag ${TAG_VERSION}"
+          test "${PKG_VERSION}" = "${TAG_VERSION}"
+
+      - name: Publish to npm
+        run: npm publish --access public
+
+      - name: Create GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
