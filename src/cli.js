@@ -99,7 +99,7 @@ async function cmdRun(opts) {
 
   const route = pickPool(lane, eligiblePools, {
     callerEligible: opts['no-caller'] !== true,
-    callerName: state.config.callerName ?? 'claude',
+    callerName: state.config.callerName ?? 'claude-code',
     now,
   });
   if (gated.length && route.pick) {

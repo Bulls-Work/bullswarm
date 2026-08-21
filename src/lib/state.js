@@ -20,7 +20,7 @@ export const DEFAULT_STATE = {
   decisionLog: [],  // {ts, lane, picked, keepOnClaude, ok, why, wallSec}
   config: {
     depthLimit: 2,
-    callerName: 'claude',
+    callerName: 'claude-code',
   },
 };
 

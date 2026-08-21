@@ -84,7 +84,7 @@ export function isExhausted(pool) {
 export function pickPool(lane, pools, opts = {}) {
   const {
     callerEligible = true,
-    callerName = 'claude',
+    callerName = 'claude-code',
     now = Date.now(),
   } = opts;
 

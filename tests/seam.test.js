@@ -153,3 +153,24 @@ test('paceScore never returns NaN on malformed usedPct', () => {
   assert.equal(paceScore({ meter: { type: 'weekly', windowStart: Date.now(), usedPct: 'n/a' } }), 0);
   assert.equal(paceScore({}), 0);
 });
+
+test("callerName fallback matches pool name without flags (reviewer residual)", () => {
+  // The default caller name must equal the claude-code connector's pool name,
+  // so even if flags.isCaller is lost, self-dispatch cannot happen.
+  const pools = [
+    { name: 'claude-code', costRank: 4, lanes: ['chore'], pace: 45, meterSource: 'cache' },
+    { name: 'grok', costRank: 2, lanes: ['chore'], pace: -10 },
+  ];
+  const r = pickPool('chore', pools, { callerEligible: true }); // no explicit callerName
+  assert.equal(r.pick, null);
+  assert.equal(r.keepOnClaude, true);
+});
+
+test('equal-cost challenger displaces distressed incumbent (true equal rank)', () => {
+  const pools = [
+    { name: 'a', costRank: 2, lanes: ['chore'], incumbent: true, pace: -25 },
+    { name: 'b', costRank: 2, lanes: ['chore'], pace: -10 },
+  ];
+  const r = pickPool('chore', pools, { callerEligible: false });
+  assert.equal(r.pick.pool, 'b'); // same costRank: distress valve allows displacement
+});
