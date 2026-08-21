@@ -5,8 +5,9 @@
 
 import { createInterface } from 'node:readline';
 import { main } from '../src/cli.js';
+import { getVersion } from '../src/lib/version.js';
 
-const VERSION = '0.1.0';
+const VERSION = getVersion();
 
 const TOOLS = [
   {
