@@ -185,6 +185,63 @@ export function repairConnectors(bullswarmDir) {
   return repaired;
 }
 
+// --- auto-setup ---------------------------------------------------------------
+// Zero-touch initialization: enable every discovered pool, write config,
+// never prompt. Used by `setup --yes`, by any verb on first use, and by
+// non-TTY invocations (agents). Humans who want choices run plain
+// `bullswarm setup` on a terminal.
+
+export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
+  const state = loadState(bullswarmDir);
+  const discovered = discoverConnectors();
+  const repaired = repairConnectors(bullswarmDir);
+
+  const usable = discovered.filter((d) => !d.broken && d.discovered);
+  // Always include the deterministic echo pool so offloading works even on
+  // a machine with zero other agent CLIs installed.
+  const enabled = new Set(usable.map((d) => d.name));
+  enabled.add('echo');
+
+  state.pools ??= {};
+  for (const d of discovered.filter((x) => !x.broken)) {
+    state.pools[d.name] ??= {};
+    state.pools[d.name].enabled = enabled.has(d.name);
+  }
+
+  const chosen = discovered.filter((d) => enabled.has(d.name));
+  const table = suggestRoutingTable(chosen);
+
+  mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
+  saveState(bullswarmDir, state);
+  writeFileSync(
+    join(bullswarmDir, 'routing.json'),
+    `${JSON.stringify(table, null, 2)}\n`,
+  );
+
+  return {
+    initialized: true,
+    reason,
+    enabledPools: [...enabled],
+    discoveredCount: usable.length,
+    repaired,
+    routingTable: table,
+  };
+}
+
+export function isConfigured(bullswarmDir) {
+  return existsSync(join(bullswarmDir, 'state.json'));
+}
+
+/**
+ * Idempotent first-use guarantee for every verb: if config is missing,
+ * initialize it silently. Returns null when already configured, else the
+ * autoSetup result (callers may surface it).
+ */
+export function ensureSetup(bullswarmDir) {
+  if (isConfigured(bullswarmDir)) return null;
+  return autoSetup(bullswarmDir, { reason: 'first-use' });
+}
+
 // --- wizard -------------------------------------------------------------------
 
 export async function runWizard(bullswarmDir, opts = {}) {

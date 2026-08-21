@@ -1,17 +1,43 @@
 {
   "name": "claude-code",
   "bin": "claude",
-  "configDirs": ["~/.claude"],
+  "configDirs": [
+    "~/.claude"
+  ],
   "spawn": {
-    "cmd": ["claude", "-p", "Read the file {taskFile} and follow its instructions exactly.", "--add-dir", "{cwd}", "--no-session"],
+    "cmd": [
+      "claude",
+      "-p",
+      "Read the file {taskFile} and follow its instructions exactly.",
+      "--add-dir",
+      "{cwd}",
+      "--dangerously-skip-permissions"
+    ],
     "cwdMode": "add-dir"
   },
-  "authSignatures": ["unauthorized", "authentication failed", "credit balance"],
-  "outputExtraction": { "strategy": "stdout" },
-  "$comment-meter": "the CALLER pool — competes in analyze/build, wins only when no delegate can take the lane",
-  "meter": { "type": "reader", "window": "weekly+5h" },
+  "authSignatures": [
+    "unauthorized",
+    "authentication failed",
+    "credit balance",
+    "not logged in",
+    "please run /login"
+  ],
+  "outputExtraction": {
+    "strategy": "stdout"
+  },
+  "$comment-meter": "the CALLER pool \u2014 competes in analyze/build, wins only when no delegate can take the lane",
+  "meter": {
+    "type": "reader",
+    "window": "weekly+5h"
+  },
   "costRank": 4,
-  "lanes": ["analyze", "build", "chore"],
-  "flags": { "stealth": false },
+  "lanes": [
+    "analyze",
+    "build",
+    "chore"
+  ],
+  "flags": {
+    "stealth": false
+  },
   "timeoutSec": 900
 }

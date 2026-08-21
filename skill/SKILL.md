@@ -1,53 +1,50 @@
 ---
 name: bullswarm-setup
-description: Use when the user wants to offload work to other coding-agent subscriptions, asks about bullswarm, or wants quota-aware routing across agent CLIs. Guides the user to run the bullswarm setup wizard, which discovers installed agent CLIs, shows quota state, and configures routing.
+description: Use when the user wants to offload work to other coding-agent subscriptions, asks about bullswarm, or wants quota-aware routing across agent CLIs. bullswarm is fully self-initializing — any agent can use it with no human setup.
 ---
 
-# bullswarm setup companion
+# bullswarm agent guide
 
-You are a guide, not the installer. The CLI owns the flow; you nudge.
+bullswarm routes bounded tasks to whichever coding-agent CLI subscription has
+the most quota headroom, then verifies every delegate's output by content.
+**It requires no human setup.** Every verb self-initializes on first use.
 
-## When to use
+## Quick start (zero-touch)
 
-- The user asks to route/offload work to other agent CLIs (codex, grok, opencode, etc.)
-- The user mentions quota exhaustion on one subscription while others sit idle
-- The user asks what bullswarm is or how to set it up
+```bash
+# 1. Check readiness (also self-heals a missing config):
+bullswarm doctor --json
 
-## What to do
+# 2. See pools with live quota meters:
+bullswarm pools
 
-1. Check whether bullswarm is configured:
+# 3. Offload a task:
+bullswarm run --lane <analyze|build|chore> \
+  --add-dir /abs/path/to/repo --task-file /abs/task.md --json
 
-   ```bash
-   ls ~/.bullswarm/state.json 2>/dev/null && echo configured || echo not-configured
-   ```
+# 4. After every offload round:
+bullswarm health
+```
 
-2. If **not-configured**, tell the user:
+## Reading the verdict
 
-   > bullswarm routes work across your installed coding-agent CLIs, paced by
-   > each subscription's quota window, and verifies every delegate's output
-   > by content before trusting it. Run `bullswarm` (bare) to start the
-   > setup wizard — it discovers your installed agent CLIs, shows their
-   > quota state, and lets you pick which pools to enable. No credentials
-   > are entered anywhere; it only reads what's already on your machine.
+- `ok:true` → read `outFile`; it passed content verification
+- `keepOnClaude:true` → do it in-session; no pool could take it
+- `ok:false` → `why` names the failed gate. `contentUsableDespiteExit:true`
+  means the file is complete despite a non-zero exit — read before re-running.
 
-   Then offer: "Want me to run `bullswarm setup` for you now?"
+## Rules for agents
 
-3. If **configured**, surface the current state:
+- Delegate output is INPUT you verify, never the answer you present. Final
+  synthesis, architecture decisions, and live-context work stay with you.
+- Lanes are work nature: `analyze` (root-cause, review), `build`
+  (implement, tests), `chore` (summarize, convert, smoke-check).
+- Run `bullswarm health` after every round; investigate any `gateFailures`.
+- Never edit `~/.bullswarm/state.json` directly; use the CLI.
+- No TTY needed anywhere: every verb works in scripts and CI.
 
-   ```bash
-   bullswarm pools
-   ```
+## Human customization (optional)
 
-   and remind them of the daily habit:
-
-   > After every offload round, run `bullswarm health` — it re-judges saved
-   > outputs against their verdicts and catches verify-gate failures that
-   > would otherwise be invisible.
-
-## Hard rules
-
-- NEVER edit `~/.bullswarm/` state directly; the CLI owns it.
-- NEVER bypass the wizard's approval gates by writing CLAUDE.md/AGENTS.md
-  blocks yourself — direct the user through `bullswarm setup` so the diff is
-  shown and approved.
-- Delegate output is input to verify, never the answer you present.
+Humans can rerun `bullswarm setup` interactively to pick specific pools or
+approve CLAUDE.md/AGENTS.md integration blocks. Agents should never do this
+on the user's behalf without asking — but never *require* it either.

@@ -245,8 +245,92 @@ function cmdHealth(opts) {
 // --- setup ------------------------------------------------------------------
 
 async function cmdSetup(opts) {
-  const { runWizard } = await import('./setup.js');
+  const { runWizard, autoSetup } = await import('./setup.js');
+  // Agent-friendly: --yes (or no TTY on stdin) initializes with discovered
+  // defaults and never prompts.
+  if (opts.yes || !process.stdin.isTTY) {
+    const r = autoSetup(BULLSWARM_DIR, { reason: opts.yes ? 'flag' : 'non-tty' });
+    if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r }, null, 2));
+    else {
+      console.log(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`);
+      if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
+    }
+    return 0;
+  }
   return runWizard(BULLSWARM_DIR, opts);
+}
+
+// --- doctor -------------------------------------------------------------------
+// Machine-readable readiness report for agents: what works, what's missing,
+// exactly which command fixes each gap. Never prompts.
+
+async function cmdDoctor(opts) {
+  const { discoverConnectors, isConfigured, autoSetup } = await import('./setup.js');
+  const checks = [];
+  let configured = isConfigured(BULLSWARM_DIR);
+
+  checks.push({
+    id: 'config',
+    ok: configured,
+    detail: configured ? `${BULLSWARM_DIR}/state.json present` : 'no config yet',
+    fix: 'bullswarm setup --yes   # or run any verb; it self-initializes',
+  });
+
+  // Self-heal before reporting when not configured — an agent calling
+  // doctor should end up ready-to-use in the same invocation.
+  if (!configured) {
+    autoSetup(BULLSWARM_DIR, { reason: 'doctor' });
+    configured = true;
+    checks[0] = { ...checks[0], ok: true, detail: `initialized at ${BULLSWARM_DIR} (was missing)` };
+  }
+
+  const discovered = discoverConnectors();
+  const found = discovered.filter((d) => d.discovered && !d.broken);
+  checks.push({
+    id: 'connectors',
+    ok: found.length > 0,
+    detail: `${found.length} agent CLI(s) found: ${found.map((d) => d.name).join(', ') || '(none)'}`,
+    fix: found.length ? null : 'install at least one agent CLI (codex, grok, opencode…) — echo pool still works',
+  });
+
+  try {
+    const { pools } = await buildPoolsLive(BULLSWARM_DIR, Date.now(), {
+      getReadings: getAllMeterReadings,
+    });
+    const live = pools.filter((p) => p.meterSource === 'live' || p.meterSource === 'cache');
+    const enabled = pools.filter((p) => p.enabled);
+    checks.push({
+      id: 'meters',
+      ok: enabled.length > 0,
+      detail: `${live.length}/${pools.length} pools with provider meters; ${enabled.length} enabled`,
+      fix: enabled.length ? null : 'bullswarm setup --yes',
+    });
+    checks.push({
+      id: 'offload-capable',
+      ok: enabled.some((p) => p.name !== 'echo') || enabled.length > 0,
+      detail: `enabled pools: ${enabled.map((p) => p.name).join(', ') || 'none'}`,
+      fix: null,
+    });
+  } catch (err) {
+    checks.push({ id: 'meters', ok: false, detail: err.message, fix: 'check network / re-run' });
+  }
+
+  const report = {
+    version: getVersion(),
+    configured,
+    ok: checks.every((c) => c.ok),
+    checks,
+    nextActions: checks.filter((c) => !c.ok && c.fix).map((c) => c.fix),
+  };
+  if (opts.json) console.log(JSON.stringify(report, null, 2));
+  else {
+    console.log(`bullswarm doctor (v${report.version}) — ${report.ok ? 'READY' : 'DEGRADED'}`);
+    for (const c of checks) {
+      console.log(`  ${c.ok ? '✓' : '✗'} ${c.id}: ${c.detail}`);
+      if (!c.ok && c.fix) console.log(`      fix: ${c.fix}`);
+    }
+  }
+  return report.ok ? 0 : 1;
 }
 
 // --- main ---------------------------------------------------------------------
@@ -254,15 +338,18 @@ async function cmdSetup(opts) {
 export async function main(argv) {
   const [verb, ...rest] = argv;
   const opts = parseArgs(rest);
+  const { ensureSetup } = await import('./setup.js');
 
-  if (!verb || verb === 'setup') {
-    if (!existsSync(join(BULLSWARM_DIR, 'state.json')) || verb === 'setup') {
-      return cmdSetup(opts);
-    }
-  }
+  // Agent-friendly guarantee: EVERY verb works on a fresh machine. If config
+  // is missing, self-initialize with discovered defaults (never prompts).
+  ensureSetup(BULLSWARM_DIR);
+
   switch (verb) {
     case undefined:
-      return cmdSetup(opts); // bare bullswarm with config present still guides
+      // Bare bullswarm: interactive wizard for humans on a TTY, auto-setup
+      // + status for everyone else (agents, scripts).
+      if (opts.yes || !process.stdin.isTTY) return cmdSetup({ ...opts, yes: true });
+      return cmdSetup(opts);
     case 'setup':
       return cmdSetup(opts);
     case 'run':
@@ -271,6 +358,8 @@ export async function main(argv) {
       return cmdHealth(opts);
     case 'pools':
       return cmdPools(opts);
+    case 'doctor':
+      return cmdDoctor(opts);
     case 'version':
       console.log(getVersion());
       return 0;
@@ -278,7 +367,7 @@ export async function main(argv) {
       return cmdRelease(opts);
     default:
       console.error(
-        `unknown verb "${verb}". try: setup | run | health | pools | version | release`,
+        `unknown verb "${verb}". try: setup | run | health | pools | doctor | version | release`,
       );
       return 2;
   }
