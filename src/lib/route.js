@@ -30,11 +30,28 @@ export function elapsedPct(meter, now = Date.now()) {
   return Math.min(100, ((now - start) / ms) * 100);
 }
 
-/** surplus = elapsed% − used%; higher = more quota about to expire. */
+export const DEFAULT_COST_RANK = 5;
+
+/** Coerce costRank safely: missing/NaN/non-number → DEFAULT_COST_RANK. */
+export function costOf(pool) {
+  const c = Number(pool?.costRank);
+  return Number.isFinite(c) ? c : DEFAULT_COST_RANK;
+}
+
+/**
+ * Surplus = elapsed% − used%; higher = more quota about to expire.
+ *
+ * Shape tolerance (production bug fix): buildPools produces FLAT fields
+ * (pool.pace / pool.usedPct), while tests and legacy callers build
+ * pool.meter. Accept both. Never return NaN — a non-finite score would
+ * break the sort comparator's totality and make picks order-dependent.
+ */
 export function paceScore(pool, now = Date.now()) {
-  const meter = pool.meter;
+  if (Number.isFinite(pool?.pace)) return pool.pace;
+  const meter = pool?.meter;
   if (!meter || meter.type === 'none' || meter.usedPct == null) return 0;
-  return elapsedPct(meter, now) - meter.usedPct;
+  const s = elapsedPct(meter, now) - Number(meter.usedPct);
+  return Number.isFinite(s) ? s : 0;
 }
 
 export function isQuarantined(pool, now = Date.now()) {
@@ -44,7 +61,15 @@ export function isQuarantined(pool, now = Date.now()) {
 }
 
 export function isExhausted(pool) {
-  return pool.meter?.usedPct != null && pool.meter.usedPct >= 100;
+  // Flat shape (buildPools) first, legacy meter shape second. A stale
+  // meterSource reading must not permanently exclude a pool: if the reading
+  // is stale-labeled and older than the window could explain, trust the pool
+  // may have reset — the next live poll will decide.
+  const used = pool?.usedPct ?? pool?.meter?.usedPct;
+  if (!Number.isFinite(used)) return false;
+  if (used < 100) return false;
+  if (pool.meterSource === 'stale') return false;
+  return true;
 }
 
 /**
@@ -112,16 +137,39 @@ export function pickPool(lane, pools, opts = {}) {
 
   let winnerEntry;
   if (incumbentEntry) {
-    // R3+R4: challenger needs margin AND strictly lower costRank.
+    // R3+R4: challenger needs margin. The cost guard protects the incumbent
+    // ONLY while it is a reasonable steward of its quota: a distressed
+    // incumbent (deep negative surplus) forfeits cost protection, and
+    // equal-cost challengers may displace (strict < caused permanent
+    // lock-in between same-rank pools).
+    const INCUMBENT_DISTRESS = -20;
+    const incumbentDistressed =
+      incumbentEntry.pace <= INCUMBENT_DISTRESS || isExhausted(incumbentEntry.pool);
     const challenger = scored.find(
       (e) =>
         e !== incumbentEntry &&
         e.pace >= incumbentEntry.pace + INCUMBENCY_MARGIN &&
-        (e.pool.costRank ?? 99) < (incumbentEntry.pool.costRank ?? 99),
+        (incumbentDistressed || costOf(e.pool) <= costOf(incumbentEntry.pool)),
     );
     winnerEntry = challenger ?? incumbentEntry;
   } else {
     winnerEntry = scored[0];
+  }
+
+  // R5: the caller wins its lane only when no eligible delegate remains —
+  // or when the caller's own pool entry genuinely wins on merit. Dispatching
+  // the caller to itself as a subprocess is always wrong.
+  const isCaller =
+    winnerEntry.pool.isCaller === true ||
+    winnerEntry.pool.connector?.flags?.isCaller === true ||
+    (callerName && winnerEntry.pool.name === callerName);
+  if (isCaller) {
+    return {
+      pick: null,
+      keepOnClaude: true,
+      why: 'caller pool won the lane; keep work in-session',
+      candidates,
+    };
   }
 
   return {

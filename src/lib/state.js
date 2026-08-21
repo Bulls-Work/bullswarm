@@ -54,6 +54,11 @@ export function quarantinePool(state, poolName, reason, now = Date.now()) {
   const until = now + 10 * 60_000;
   state.pools[poolName] ??= {};
   state.pools[poolName].quarantine = { until, reason };
+  // A quarantined pool cannot hold incumbency: it isn't serving work, and
+  // keeping the flag would lock the lane against its return.
+  for (const [lane, name] of Object.entries(state.incumbents ?? {})) {
+    if (name === poolName) delete state.incumbents[lane];
+  }
   return until;
 }
 

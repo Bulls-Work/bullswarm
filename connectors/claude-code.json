@@ -37,7 +37,8 @@
     "chore"
   ],
   "flags": {
-    "stealth": false
+    "stealth": false,
+    "isCaller": true
   },
   "timeoutSec": 900
 }
