@@ -111,11 +111,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
-  //   auth signature in HEAD of short-ish output -> fail + quarantine hint
-  //     (checked BEFORE generic failure patterns so the specific cause wins)
+  //   auth signature anywhere in the first 2000 chars -> fail + quarantine
+  //     hint (checked BEFORE generic failure patterns so the specific cause
+  //     wins; codex-style CLIs log auth errors after banner noise, so a
+  //     fixed 400-char head misses them).
   //   else content judge decides; exit code only modulates flags.
-  const authHit =
-    output.length < 2000 ? matchAuthSignature(connector, output.slice(0, 400)) : null;
+  const authHit = matchAuthSignature(connector, output.slice(0, 2000));
 
   let verdict;
   if (obs.timedOut) {
