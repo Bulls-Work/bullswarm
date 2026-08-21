@@ -65,18 +65,18 @@ test('MCP pools tool returns structured JSON', async () => {
   const { homedir } = await import('node:os');
   const cache = new MeterCache(join(homedir(), '.bullswarm', 'meters'));
   for (const p of ['codex', 'grok', 'command-code', 'claude-code']) {
-    if (!cache.get(p)) {
-      cache.put(p, {
-        captured_at: new Date().toISOString(),
-        pool: p,
-        five_hour: { utilization: null, resets_at: null },
-        seven_day: {
-          utilization: 0,
-          resets_at: new Date(Date.now() + 86_400_000).toISOString(),
-        },
-        monthly: null,
-      });
-    }
+    // Overwrite unconditionally: a cache older than FRESH_MS (5min) would
+    // trigger live polls inside the MCP child and flake the test.
+    cache.put(p, {
+      captured_at: new Date().toISOString(),
+      pool: p,
+      five_hour: { utilization: null, resets_at: null },
+      seven_day: {
+        utilization: 0,
+        resets_at: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+      monthly: null,
+    });
   }
 
   const res = await rpc([
