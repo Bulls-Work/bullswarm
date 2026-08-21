@@ -1,0 +1,17 @@
+{
+  "name": "codex",
+  "bin": "codex",
+  "configDirs": ["~/.codex"],
+  "spawn": {
+    "cmd": ["codex", "exec", "--skip-git-repo-check", "--add-dir", "{cwd}", "Read {taskFile} and follow the instructions."],
+    "cwdMode": "add-dir",
+    "$comment-argv": "{cwd} is substituted by the watcher with the resolved target directory"
+  },
+  "authSignatures": ["usage_credits_required", "unauthorized", "invalid api key"],
+  "outputExtraction": { "strategy": "stdout" },
+  "meter": { "type": "declared", "window": "weekly" },
+  "costRank": 3,
+  "lanes": ["analyze", "build", "chore"],
+  "flags": { "stealth": false },
+  "timeoutSec": 900
+}

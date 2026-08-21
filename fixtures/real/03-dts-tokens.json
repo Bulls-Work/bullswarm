@@ -1,0 +1,7 @@
+{
+  "name": "dts-shredding-survivor",
+  "expect": "pass",
+  "exitCode": 0,
+  "comment": "The splitter trap: periods inside .d.ts / Node.js / e.g. must not shred the text into fragments that score as work when it is only an announcement. Here: a REAL answer dense with such tokens.",
+  "output": "Summary of the type surface:\n\nThe public API lives in `index.d.ts`, re-exported from `types.d.ts` and `runtime.d.ts`. Node.js typings come from @types/node v20; e.g. `Buffer` and `process` resolve from there. The `Result` type in `result.d.ts` is the discriminated union consumers pattern-match on. Node.js 18+ is required because `fetch` is global. I verified every export in `index.d.ts` resolves, e.g. by compiling the fixture project with `tsc --noEmit`, which reported zero errors across all three declaration files."
+}

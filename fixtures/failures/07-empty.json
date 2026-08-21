@@ -1,0 +1,6 @@
+{
+  "name": "empty-output",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "   \n  "
+}

@@ -1,0 +1,31 @@
+{
+  "$comment": "Connector schema. Every per-CLI quirk lives HERE, never in core logic.",
+  "name": "connector-name (matches pool name)",
+  "bin": "binary on PATH to probe for discovery",
+  "configDirs": ["~/.example", "~/.config/example"],
+  "spawn": {
+    "$comment": "argv template; {taskFile} {cwd} {outFile} are substituted",
+    "cmd": ["example-cli", "--task", "{taskFile}"],
+    "cwdMode": "add-dir|task-file-dir",
+    "$comment-cwd": "cwdMode documents how the CLI resolves its project: 'pwd' means the CLI resolves from $PWD so the watcher MUST set PWD and spawn inside --add-dir"
+  },
+  "authSignatures": ["strings in output that mean auth/throttle failure"],
+  "outputExtraction": {
+    "$comment": "how to get the real answer out of stdout+stderr+files",
+    "strategy": "stdout|stdout-tail|json-field|file",
+    "field": "optional json field path or file glob"
+  },
+  "meter": {
+    "$comment": "none | declared (manual) | reader (programmatic)",
+    "type": "none|declared|reader",
+    "window": "5h|weekly|none (for declared/reader)",
+    "readerCmd": "optional command emitting usedPct as JSON"
+  },
+  "costRank": 2,
+  "lanes": ["analyze", "build", "chore"],
+  "flags": {
+    "stealth": false,
+    "$comment-stealth": "stealth=true: prompts/completions retained by an anonymous provider — opt-in only, never a default"
+  },
+  "timeoutSec": 900
+}

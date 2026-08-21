@@ -1,0 +1,6 @@
+{
+  "name": "unauthorized",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "Unauthorized: session expired. Run `opencode auth login` to refresh your Console credentials, then retry this task."
+}

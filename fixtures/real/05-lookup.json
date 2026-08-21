@@ -1,0 +1,6 @@
+{
+  "name": "lookup-summary",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "## Answer\n\nThe repo uses **pnpm 9** with a `pnpm-workspace.yaml` declaring three packages: `apps/web`, `apps/server`, `packages/core`. Node engines: `>=20`. TypeScript 5.5 with project references; builds go through turbo. Lockfile: pnpm-lock.yaml, 8,412 entries. Verified by reading pnpm-workspace.yaml, the root package.json engines field, and turbo.json."
+}

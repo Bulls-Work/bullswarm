@@ -1,0 +1,6 @@
+{
+  "name": "command-not-found",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "/bin/sh: grok: command not found\n"
+}

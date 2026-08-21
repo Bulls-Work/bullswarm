@@ -1,0 +1,6 @@
+{
+  "name": "intent-then-nothing",
+  "expect": "intent_only",
+  "exitCode": 0,
+  "output": "I'm going to review the diff and summarize the changes for you."
+}

@@ -1,0 +1,6 @@
+{
+  "name": "tidy-report",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Tidy pass complete.\n\n- Removed 7 unused exports (verified zero imports via ts-prune + grep).\n- Deleted 3 orphaned fixture files not referenced by any test.\n- Consolidated 4 duplicate type definitions into types/shared.ts.\n\nSuite green after: 212 passing. `git status` shows exactly the 11 files listed above; nothing else touched."
+}

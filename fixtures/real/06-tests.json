@@ -1,0 +1,6 @@
+{
+  "name": "test-coverage-work",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Added 14 tests for the pricing module.\n\nCoverage before: 61%. After: 89%. New tests cover the three documented edge cases (negative quantity, zero-price SKU, currency mismatch) plus boundary tests at the 1000-unit discount threshold. Full suite: 212 passing, 0 failing, 2 skipped (pre-existing). Command: `pnpm vitest run src/pricing`."
+}

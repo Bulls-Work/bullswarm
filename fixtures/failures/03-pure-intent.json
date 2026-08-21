@@ -1,0 +1,6 @@
+{
+  "name": "pure-intent-no-work",
+  "expect": "intent_only",
+  "exitCode": 0,
+  "output": "I'll inspect log.ts and tail.ts, then trace the rotation path through the config loader to find where the stale value comes from. I'll report back with the root cause and a suggested fix."
+}

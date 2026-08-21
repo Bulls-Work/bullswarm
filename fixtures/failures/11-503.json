@@ -1,0 +1,6 @@
+{
+  "name": "service-unavailable",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "Service unavailable (503): the model backend is temporarily overloaded. Try again shortly."
+}

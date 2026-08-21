@@ -1,0 +1,6 @@
+{
+  "name": "auth-failure-short",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "Authentication failed: no credentials found in keychain. Exiting."
+}

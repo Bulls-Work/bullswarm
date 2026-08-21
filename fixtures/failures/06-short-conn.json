@@ -1,0 +1,6 @@
+{
+  "name": "short-error",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "Error: ECONNREFUSED 127.0.0.1:3456"
+}

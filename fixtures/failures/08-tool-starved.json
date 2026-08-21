@@ -1,0 +1,6 @@
+{
+  "name": "tool-starved-intent",
+  "expect": "intent_only",
+  "exitCode": 0,
+  "output": "I'll analyze the authentication flow and identify the vulnerability in the token refresh logic. I will then write up the security audit with severity ratings for each finding."
+}

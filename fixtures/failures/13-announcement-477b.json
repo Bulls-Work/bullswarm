@@ -1,0 +1,7 @@
+{
+  "name": "pure-announcement-477b",
+  "expect": "intent_only",
+  "exitCode": 0,
+  "comment": "The exact historical failure: ~477 bytes of pure announcement that once scored as real work because the splitter shredded it. Must be intent_only.",
+  "output": "I'll analyze the repository structure and examine the key configuration files, including tsconfig.json and the package.json scripts. I'll then look at the main entry point in src/index.ts, trace the initialization sequence through the bootstrap module, and review how the dependency injection container is assembled. After that, I'll summarize the architecture, identify the three most important coupling points, and suggest where the boundary between the core runtime and the plugin host should be drawn. I'll also check the test setup to see how the fixtures are loaded, and I'll report back with a prioritized list of findings."
+}

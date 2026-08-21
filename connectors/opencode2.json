@@ -1,0 +1,18 @@
+{
+  "name": "opencode2",
+  "bin": "opencode",
+  "configDirs": ["~/.config/opencode"],
+  "spawn": {
+    "cmd": ["opencode", "run", "{taskFile}"],
+    "cwdMode": "pwd",
+    "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
+  },
+  "authSignatures": ["No cookie auth credentials found", "unauthorized"],
+  "outputExtraction": { "strategy": "stdout" },
+  "$comment-exit1": "known failure mode: writes a complete correct answer, then dies with a Console-sync auth error and exit 1. The verdict sets contentUsableDespiteExit instead of discarding the work.",
+  "meter": { "type": "none" },
+  "costRank": 1,
+  "lanes": ["analyze", "build", "chore"],
+  "flags": { "stealth": false },
+  "timeoutSec": 900
+}

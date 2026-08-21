@@ -1,0 +1,16 @@
+{
+  "name": "echo",
+  "bin": "node",
+  "configDirs": [],
+  "spawn": {
+    "cmd": ["node", "{bullswarmDir}/connectors/echo-worker.mjs", "{taskFile}"],
+    "cwdMode": "task-file-dir"
+  },
+  "authSignatures": ["Authentication failed", "unauthorized"],
+  "outputExtraction": { "strategy": "stdout" },
+  "meter": { "type": "none" },
+  "costRank": 5,
+  "lanes": ["analyze", "build", "chore"],
+  "flags": { "stealth": false },
+  "timeoutSec": 120
+}

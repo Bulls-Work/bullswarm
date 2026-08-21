@@ -1,0 +1,7 @@
+{
+  "name": "correct-answer-opening-with-intent",
+  "expect": "pass",
+  "exitCode": 0,
+  "comment": "THE trap that ate real work: fully correct answer that OPENS with an announcement. Strip announcements, judge the remainder.",
+  "output": "I'll inspect log.ts and tail.ts, then trace the rotation path. Here is what I found.\n\n## Root cause\n\n`log.ts` reads the rotation window from a module-level constant captured at import time (`const WINDOW = 5 * 3600 * 1000`). When tests stub the clock, the constant has already been frozen, so every rotation check uses the stale boundary. The fix is to read the window through a getter or recompute per call.\n\n## Fix\n\nReplace line 14 of `src/log.ts`:\n\n```ts\n- const WINDOW = 5 * 3600 * 1000;\n+ export const getWindowMs = () => 5 * 3600 * 1000;\n```\n\nand update both call sites to `getWindowMs()`. Tests: `npm test -- rotation` passes 6/6 with clock stubs."
+}

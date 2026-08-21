@@ -1,0 +1,16 @@
+{
+  "name": "grok",
+  "bin": "grok",
+  "configDirs": ["~/.grok"],
+  "spawn": {
+    "cmd": ["grok", "-p", "{taskFile}"],
+    "cwdMode": "add-dir"
+  },
+  "authSignatures": ["unauthorized", "rate limit", "invalid api key"],
+  "outputExtraction": { "strategy": "stdout" },
+  "meter": { "type": "declared", "window": "5h" },
+  "costRank": 2,
+  "lanes": ["analyze", "build", "chore"],
+  "flags": { "stealth": false },
+  "timeoutSec": 900
+}

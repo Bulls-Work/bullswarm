@@ -1,0 +1,6 @@
+{
+  "name": "smoke-check",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Smoke check result: PASS.\n\n- `docker compose up -d` healthy after 14s (postgres, redis, api).\n- GET /healthz → 200 {\"status\":\"ok\"} on three consecutive polls.\n- Login flow completed end-to-end; session cookie issued and validated.\n- Logs show no errors across all three services during the run."
+}

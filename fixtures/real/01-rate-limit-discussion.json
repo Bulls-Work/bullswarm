@@ -1,0 +1,7 @@
+{
+  "name": "real-audit-with-rate-limit-discussion",
+  "expect": "pass",
+  "exitCode": 0,
+  "comment": "THE trap: a correct audit that QUOTES e2b's RateLimitError deep in the body. Failure patterns must not scan the whole text.",
+  "output": "# E2B Sandbox Audit\n\n## Findings\n\nThe sandbox client wraps all API calls in a retry policy. The SDK defines `RateLimitError` in `e2b/sandbox/exceptions.py` and surfaces it after three retries with exponential backoff. Our usage pattern stays under the default 100 requests/min ceiling, but burst traffic during parallel test fan-out can trip it; the retry wrapper absorbs this today.\n\n## Recommendations\n\n1. Add jitter to the backoff curve.\n2. Cap concurrent sandbox spawns at the plan's documented limit.\n3. Emit a metric on retry depth so bursts are visible in dashboards.\n\n## Evidence\n\nAll claims above were verified against `e2b` v1.2.3 source in `~/Repo/e2b`, specifically `exceptions.py:44-61` and `retry.py:12-30`. The concurrency cap was reproduced locally with a 20-goroutine spawn test, which tripped exactly as described and recovered after backoff."
+}

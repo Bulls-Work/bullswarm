@@ -1,0 +1,6 @@
+{
+  "name": "convert-task",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Conversion done: 23 YAML config files → JSON.\n\n- All 23 parsed and emitted; diff-verified key-for-key against the originals.\n- Two files had duplicate keys in YAML (last-wins semantics); both flagged in CONVERT-NOTES.md with the dropped values quoted.\n- Output in config/json/, one file per source, same basename."
+}

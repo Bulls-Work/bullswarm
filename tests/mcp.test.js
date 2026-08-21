@@ -1,0 +1,75 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SERVER = join(ROOT, 'mcp/server.mjs');
+
+function rpc(messages, timeoutMs = 8000) {
+  return new Promise((resolveP, rejectP) => {
+    const child = spawn('node', [SERVER], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let buf = '';
+    const lines = [];
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (line.trim()) lines.push(JSON.parse(line));
+      }
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('error', rejectP);
+    child.stdin.write(messages.map((m) => `${JSON.stringify(m)}\n`).join(''));
+    child.stdin.end();
+    const timer = setTimeout(() => {
+      child.kill();
+      resolveP(lines.length ? lines : (() => { throw new Error(`MCP timeout. stderr: ${stderr}`); })());
+    }, timeoutMs);
+    // settle early once every non-notification has a response
+    const poll = setInterval(() => {
+      const ids = messages.filter((m) => m.id != null).map((m) => m.id);
+      if (ids.every((id) => lines.some((l) => l.id === id))) {
+        clearTimeout(timer);
+        clearInterval(poll);
+        child.kill();
+        resolveP(lines);
+      }
+    }, 50);
+  });
+}
+
+test('MCP handshake: initialize -> tools/list', async () => {
+  const res = await rpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+  ]);
+  const init = res.find((r) => r.id === 1);
+  assert.equal(init.result.serverInfo.name, 'bullswarm');
+  const tools = res.find((r) => r.id === 2);
+  assert.deepEqual(
+    tools.result.tools.map((t) => t.name),
+    ['bullswarm_run', 'bullswarm_health', 'bullswarm_pools'],
+  );
+});
+
+test('MCP pools tool returns structured JSON', async () => {
+  const res = await rpc([
+    { jsonrpc: '2.0', id: 10, method: 'initialize', params: {} },
+    {
+      jsonrpc: '2.0',
+      id: 11,
+      method: 'tools/call',
+      params: { name: 'bullswarm_pools', arguments: {} },
+    },
+  ]);
+  const call = res.find((r) => r.id === 11);
+  const payload = JSON.parse(call.result.content[0].text);
+  assert.equal(payload.exitCode, 0);
+  assert.ok(Array.isArray(payload.verdict.pools));
+});

@@ -1,0 +1,6 @@
+{
+  "name": "mechanical-refactor-report",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Refactor complete.\n\n- Renamed `getUser` to `fetchUser` across 12 files (grep-verified: zero remaining references).\n- All 47 tests pass (`pnpm test` exit 0).\n- No behavior change: pure rename, no signature edits.\n\nFiles touched: src/api/user.ts, src/api/index.ts, src/hooks/useUser.ts, and 9 test files."
+}

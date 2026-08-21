@@ -1,0 +1,6 @@
+{
+  "name": "boilerplate-generation",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "Generated the CRUD scaffold for the `Invoice` model:\n\n- `src/models/invoice.ts` — type + zod schema\n- `src/routes/invoices.ts` — GET/POST/PATCH/DELETE handlers wired to the router\n- `src/repo/invoice-repo.ts` — Drizzle queries\n- `tests/invoices.test.ts` — 8 smoke tests (all passing)\n\nFollows the existing Customer-module layout exactly; no new dependencies added."
+}

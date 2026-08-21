@@ -1,0 +1,6 @@
+{
+  "name": "code-review-findings",
+  "expect": "pass",
+  "exitCode": 0,
+  "output": "# Code review: PR #568\n\n## Blocking\n\n1. `src/stream.ts:88` — chunk boundary can split a UTF-8 codepoint; the decoder drops the partial bytes. Reproduce: send a 3-byte emoji split across two SSE frames. Fix: buffer trailing bytes until a complete codepoint arrives.\n\n## Non-blocking\n\n2. `render.ts:41` — table alignment assumes monospace; fine for now.\n3. Missing test for the empty-chunk case.\n\nVerified finding 1 with a local repro script; the other two are read-only observations."
+}
