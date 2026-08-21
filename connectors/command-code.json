@@ -1,17 +1,39 @@
 {
   "name": "command-code",
   "bin": "command-code",
-  "configDirs": ["~/.commandcode"],
+  "configDirs": [
+    "~/.commandcode"
+  ],
   "spawn": {
-    "cmd": ["command-code", "-p", "{taskFile}", "--add-dir", "{cwd}"],
+    "cmd": [
+      "command-code",
+      "-p",
+      "--no-session",
+      "--tools-all",
+      "--yolo",
+      "Read the file {taskFile} and follow its instructions exactly."
+    ],
     "cwdMode": "add-dir"
   },
-  "authSignatures": ["unauthorized", "authentication failed"],
-  "outputExtraction": { "strategy": "stdout" },
-  "meter": { "type": "declared", "window": "5h" },
+  "authSignatures": [
+    "unauthorized",
+    "authentication failed"
+  ],
+  "outputExtraction": {
+    "strategy": "stdout"
+  },
+  "meter": {
+    "type": "declared",
+    "window": "5h"
+  },
   "costRank": 1,
-  "lanes": ["build", "chore"],
+  "lanes": [
+    "build",
+    "chore"
+  ],
   "$comment-lanes": "cannot serve analyze (upstream 403 on the frontier model)",
-  "flags": { "stealth": false },
+  "flags": {
+    "stealth": false
+  },
   "timeoutSec": 900
 }
