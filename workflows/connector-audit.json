@@ -1,0 +1,59 @@
+{
+  "name": "connector-audit",
+  "description": "Audit every connector JSON file in this repo: one analyze pass per connector, then a chore-lane summary of the findings.",
+  "version": "1.0.0",
+  "inputs": {
+    "targetDir": { "default": "." }
+  },
+  "settings": {
+    "concurrency": 3,
+    "escalateOnFail": true,
+    "stopOnPhaseFailure": false
+  },
+  "phases": [
+    {
+      "name": "discover",
+      "steps": [
+        {
+          "id": "discover-connectors",
+          "type": "run",
+          "lane": "chore",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "List every .json filename in the connectors/ directory of this repository (excluding _schema.json and echo.json). Return ONLY a JSON array of the filenames, nothing else.",
+          "timeoutSec": 300
+        }
+      ]
+    },
+    {
+      "name": "review",
+      "steps": [
+        {
+          "id": "per-connector-review",
+          "type": "fanout",
+          "itemsFrom": "outputs.discover-connectors",
+          "concurrency": 2,
+          "onError": "continue",
+          "stepTemplate": {
+            "lane": "analyze",
+            "addDir": "{{inputs.targetDir}}",
+            "prompt": "Read connectors/{{item}} in this repository. In at most 120 words: (1) what pool does it define, (2) which meter window does it declare, (3) any inconsistency you can spot between its spawn command and its declared lanes or meter.",
+            "timeoutSec": 420
+          }
+        }
+      ]
+    },
+    {
+      "name": "summarize",
+      "steps": [
+        {
+          "id": "summary",
+          "type": "run",
+          "lane": "chore",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "The per-connector reviews are complete. Write a short markdown summary listing each connector with one line: its biggest risk or 'no issues found'. Do not re-read the files; rely on this completion signal.",
+          "timeoutSec": 300
+        }
+      ]
+    }
+  ]
+}

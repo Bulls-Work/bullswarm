@@ -158,7 +158,18 @@ export function pickPool(lane, pools, opts = {}) {
 
   // R5: the caller wins its lane only when no eligible delegate remains —
   // or when the caller's own pool entry genuinely wins on merit. Dispatching
-  // the caller to itself as a subprocess is always wrong.
+  // the caller to itself as a subprocess is always wrong — BUT only when a
+  // caller session actually exists. In workflow/batch contexts every pool is
+  // just a worker; opts.callerSession (default: callerEligible) controls it.
+  const hasCallerSession = opts.callerSession ?? callerEligible;
+  if (!hasCallerSession) {
+    return {
+      pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
+      keepOnClaude: false,
+      why: `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
+      candidates,
+    };
+  }
   const isCaller =
     winnerEntry.pool.isCaller === true ||
     winnerEntry.pool.connector?.flags?.isCaller === true ||

@@ -14,6 +14,7 @@ import { getAllMeterReadings } from './meters/registry.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
+import { cmdWorkflow } from './workflow/cli.js';
 
 export const BULLSWARM_DIR = join(homedir(), '.bullswarm');
 
@@ -360,6 +361,8 @@ export async function main(argv) {
       return cmdPools(opts);
     case 'doctor':
       return cmdDoctor(opts);
+    case 'workflow':
+      return cmdWorkflow(rest);
     case 'version':
       console.log(getVersion());
       return 0;
@@ -367,7 +370,7 @@ export async function main(argv) {
       return cmdRelease(opts);
     default:
       console.error(
-        `unknown verb "${verb}". try: setup | run | health | pools | doctor | version | release`,
+        `unknown verb "${verb}". try: setup | run | health | pools | doctor | workflow | version | release`,
       );
       return 2;
   }

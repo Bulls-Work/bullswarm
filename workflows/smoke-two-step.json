@@ -1,0 +1,40 @@
+{
+  "name": "smoke-two-step",
+  "description": "Minimal deterministic workflow: two echo-friendly run steps. Safe for CI.",
+  "version": "1.0.0",
+  "inputs": {
+    "targetDir": { "default": "." }
+  },
+  "settings": {
+    "concurrency": 2,
+    "escalateOnFail": false
+  },
+  "phases": [
+    {
+      "name": "first",
+      "steps": [
+        {
+          "id": "step-one",
+          "type": "run",
+          "lane": "chore",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "PWD: report",
+          "timeoutSec": 60
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "steps": [
+        {
+          "id": "step-two",
+          "type": "run",
+          "lane": "chore",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "PWD: report and confirm the previous step completed.",
+          "timeoutSec": 60
+        }
+      ]
+    }
+  ]
+}

@@ -174,3 +174,19 @@ test('equal-cost challenger displaces distressed incumbent (true equal rank)', (
   const r = pickPool('chore', pools, { callerEligible: false });
   assert.equal(r.pick.pool, 'b'); // same costRank: distress valve allows displacement
 });
+
+test('callerSession:false lets caller pool serve as worker (workflow context)', () => {
+  const pools = [
+    { name: 'claude-code', costRank: 4, lanes: ['chore'],
+      connector: { flags: { isCaller: true } }, pace: 45, meterSource: 'cache' },
+    { name: 'grok', costRank: 2, lanes: ['chore'], pace: 5 },
+  ];
+  // workflow dispatch: no caller session exists
+  const r = pickPool('chore', pools, { callerEligible: false, callerSession: false });
+  assert.equal(r.pick.pool, 'claude-code'); // highest surplus wins, dispatched as worker
+  assert.equal(r.keepOnClaude, false);
+  // interactive session: same pools, caller wins → keep in-session
+  const r2 = pickPool('chore', pools, { callerEligible: true, callerName: 'claude' });
+  assert.equal(r2.keepOnClaude, true);
+  assert.equal(r2.pick, null);
+});
