@@ -614,21 +614,32 @@ test('G9: required input with --input value → runWorkflow proceeds', async () 
 test('G10: long step output is truncated in state.json; full file on disk', async () => {
   const { dir, cleanup } = fixtureHome();
   try {
-    // NOTE: spawn's pipe buffer caps a single write at 64 KB on
-    // macOS. We write four 30 KB chunks with synchronous drains so
-    // the kernel actually flushes each one, then assert the on-disk
-    // file is > 64 KB.
-    const chunk = 'X'.repeat(30_000);
+    // The connector's `outputExtraction.strategy: "file"` reads its
+    // payload from a path the worker writes to directly. This
+    // sidesteps the 64 KB spawn-pipe limit on macOS, which is
+    // non-deterministic and can't be relied on for a CI test.
+    const hugeFile = join(dir, 'huge-payload.md');
+    writeFileSync(hugeFile, 'X'.repeat(80_000));
+
     const newWorker = join(dir, 'huge-worker.mjs');
     writeFileSync(newWorker, [
-      'import { readFileSync, writeSync } from "node:fs";',
+      'import { readFileSync } from "node:fs";',
       'readFileSync(process.argv[2], "utf8");',
-      `process.stdout.write(${JSON.stringify(chunk)});`,
-      `process.stdout.write(${JSON.stringify(chunk)});`,
-      `process.stdout.write(${JSON.stringify(chunk)});`,
-      `process.stdout.write(${JSON.stringify(chunk)});`,
+      // Worker just touches the test-prepared file path to mark the
+      // run done. Crucially, it does NOT clear or modify the file —
+      // the test pre-wrote the 80 KB payload there and we want
+      // `extractOutput`'s `file` strategy to read that exact content.
       'process.exit(0);',
     ].join('\n'));
+
+    const connector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+    connector.spawn.cmd = ['node', newWorker, '{taskFile}'];
+    connector.outputExtraction = { strategy: 'file', field: hugeFile };
+    const pools = [{
+      name: 'echo', connector, enabled: true, costRank: 5,
+      lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
+      usedPct: null, quarantine: null, pace: 0, burstGate: false,
+    }];
 
     const doc = {
       name: 'g10', description: 'g', inputs: {},
@@ -638,7 +649,7 @@ test('G10: long step output is truncated in state.json; full file on disk', asyn
     const result = await runWorkflow({
       bullswarmDir: join(dir, '.bullswarm'),
       doc,
-      pools: echoOnlyPools(dir, newWorker),
+      pools,
       inputs: {},
       onEvent: () => {},
     });
@@ -646,11 +657,12 @@ test('G10: long step output is truncated in state.json; full file on disk', asyn
     const persisted = JSON.parse(readFileSync(
       join(result.runDir, 'state.json'), 'utf8',
     ));
+    assert.equal(persisted.outputs.a.ok, true, `step failed: ${persisted.outputs.a.why}`);
     assert.equal(persisted.outputs.a.outputTruncated, true);
     assert.equal(persisted.outputs.a.outputText.length, 64 * 1024);
-    // The on-disk outFile must still hold the full > 64 KB body.
+    // The on-disk outFile must still hold the full 80 KB body.
     const onDisk = readFileSync(persisted.outputs.a.outFile, 'utf8');
-    assert.ok(onDisk.length > 64 * 1024, `expected > 64KB, got ${onDisk.length}`);
+    assert.equal(onDisk.length, 80_000);
   } finally {
     cleanup();
   }
@@ -692,4 +704,36 @@ test('validate: required input must be boolean', () => {
     }, { poolNames: ['echo'] }),
     (err) => err.issues.some((i) => i.includes('required must be a boolean')),
   );
+});
+
+test('watch: outputExtraction.file reads from a file path declared in field', async () => {
+  const { watchOnce } = await import('../src/lib/watch.js');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join((await import('node:os')).tmpdir(), 'bs-file-'));
+  const payload = 'X'.repeat(100);
+  const payloadFile = path.join(dir, 'payload.md');
+  fs.writeFileSync(payloadFile, payload);
+  const worker = path.join(dir, 'writer.mjs');
+  fs.writeFileSync(worker, 'process.argv[2]; process.exit(0);');
+  const connector = {
+    name: 'file-conn',
+    spawn: { cmd: ['node', worker, '{taskFile}'], cwdMode: 'task-file-dir' },
+    outputExtraction: { strategy: 'file', field: payloadFile },
+    authSignatures: [],
+    timeoutSec: 30,
+  };
+  try {
+    const v = await watchOnce(
+      connector,
+      'x',
+      dir,
+      { taskFile: path.join(dir, 'task.md'), outFile: path.join(dir, 'out.md') },
+      { timeoutSec: 30 },
+    );
+    assert.equal(v.ok, true);
+    assert.match(fs.readFileSync(path.join(dir, 'out.md'), 'utf8'), new RegExp(`^X{100}$`));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -89,6 +89,20 @@ function extractOutput(connector, obs) {
       return obs.stdout || obs.stderr || '';
     case 'stdout-tail':
       return (obs.stdout || '').split('\n').slice(-80).join('\n') || obs.stderr;
+    case 'file': {
+      // Connectors that write their full transcript to a file (e.g.
+      // a long-running agent that streams to a log) declare a glob/path
+      // in outputExtraction.field. We read it directly, sidestepping
+      // the spawn-pipe buffer limit (~64 KB on macOS). The field is
+      // treated as a literal path; if missing, fall back to stdout.
+      const field = connector.outputExtraction?.field;
+      if (!field) return obs.stdout || obs.stderr || '';
+      try {
+        return readFileSync(field, 'utf8');
+      } catch {
+        return obs.stdout || obs.stderr || '';
+      }
+    }
     default:
       return obs.stdout || obs.stderr || '';
   }
