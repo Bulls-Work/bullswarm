@@ -46,9 +46,11 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(argv[0], argv.slice(1), {
       cwd: resolvedDir,
-      // ALWAYS sync PWD to the spawned cwd (not only for declared pwd-mode
-      // connectors): an inherited stale PWD is the wrong-repo hazard.
-      env: { ...process.env, PWD: resolvedDir },
+      // PWD: ALWAYS sync to the spawned cwd (stale-PWD is the wrong-repo
+      // hazard). Caller-supplied opts.env takes precedence over
+      // process.env so the runtime can inject BULLSWARM_DEPTH (recursion
+      // guard) and other core-owned env contracts.
+      env: { ...process.env, ...(opts.env ?? {}), PWD: resolvedDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

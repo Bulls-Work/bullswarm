@@ -17,12 +17,22 @@ content. Published as `bullswarm` on npm.
 3. Connector quirks live in `connectors/*.json`, never in core logic.
 4. Quarantine always auto-releases; recursion depth is core-owned via env
    (`BULLSWARM_DEPTH`).
+5. Workflow dispatches must honor the same guarantees as single runs:
+   `BULLSWARM_DEPTH` is propagated, burst-gated pools are excluded, and
+   auth verdicts quarantine the pool + append to the shared decision log
+   (R6/R7/R8 in `src/workflow/runtime.js`).
+6. Adversarial verification is a first-class primitive: a `verify` step
+   reads a prior outFile and demands a JSON `{ok, concerns, summary}`
+   verdict before downstream steps can trust the work (R-skeptic).
 
 ## Development
 
 ```bash
-npm test            # 61+ tests, no network needed (meters read from cache)
+npm test            # 105 tests, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
+node bin/bullswarm.js workflow list   # discover workflows
+node bin/bullswarm.js workflow validate <file>  # dry-run
+BULLSWARM_HOME=/tmp/bs node bin/bullswarm.js workflow run <file>   # sandboxed run
 ```
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:

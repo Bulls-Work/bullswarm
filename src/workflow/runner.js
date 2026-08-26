@@ -75,9 +75,37 @@ export async function runWorkflow(opts) {
       resumed: false,
     };
   }
+  // Always keep a reference to the doc on the state so the runtime can
+  // enforce inputs.<k>.required (R-run-time-required).
+  state._doc = doc;
   if (opts.inputs && Object.keys(opts.inputs).length) {
     state.inputs = { ...state.inputs, ...opts.inputs };
   }
+
+  // Pre-flight: required inputs must be present BEFORE we start, with
+  // defaults filled in. A missing required input is a hard failure —
+  // never a "skip the step" or "use empty string" — the same semantics
+  // as a missing --input flag for a required CLI argument.
+  for (const [k, spec] of Object.entries(doc.inputs ?? {})) {
+    if (!spec || spec.required !== true) continue;
+    const v = state.inputs[k];
+    const missing = v === undefined || v === null || v === '' ||
+      (typeof v === 'string' && v.trim() === '');
+    if (missing) {
+      throw new Error(
+        `required input "${k}" missing (pass --input ${k}=… or set a default in the workflow)`,
+      );
+    }
+  }
+
+  // Spend guard: if the doc sets settings.maxAgents, the runtime aborts
+  // the run as soon as a single dispatch would push us past the cap.
+  // This mirrors Claude Code's "Large workflow" warning, but enforces a
+  // hard ceiling instead of just warning.
+  const maxAgents = doc.settings?.maxAgents ?? state.settings.maxAgents;
+  if (maxAgents != null) state.settings.maxAgents = maxAgents;
+  const warnAt = doc.settings?.warnAtAgents ?? state.settings.warnAtAgents ?? 25;
+  state.settings.warnAtAgents = warnAt;
 
   const runtime = new WorkflowRuntime({
     bullswarmDir,
@@ -85,6 +113,7 @@ export async function runWorkflow(opts) {
     state,
     runDir,
     onEvent: opts.onEvent,
+    env: opts.env,
   });
   runtime.persist();
 
@@ -99,13 +128,28 @@ export async function runWorkflow(opts) {
     let phaseFailed = false;
 
     for (const step of phase.steps ?? []) {
-      if (resuming && state.outputs[step.id]?.ok === true && step.type === 'run') {
+      // R2: skip ok:true on resume for both `run` and `verify`. (Fanout
+      // is resumed inside the runtime, per-item by fingerprint.)
+      if (resuming && state.outputs[step.id]?.ok === true
+          && (step.type === 'run' || step.type === 'verify')) {
         opts.onEvent?.({ type: 'step.skipped', stepId: step.id });
         continue;
       }
       let r;
       try {
-        r = await runtime.runStep(step);
+        // Spend guard: refuse a new step if it would cross maxAgents.
+        // We count the step (not the per-attempt dispatch) so a single
+        // run step with one escalation is 1 unit, not 2.
+        if (state.settings.maxAgents != null
+            && runtime.dispatchCount >= state.settings.maxAgents) {
+          r = {
+            ok: false,
+            why: `spend guard: maxAgents=${state.settings.maxAgents} reached`,
+          };
+          state.outputs[step.id] = { ...r, maxAgentsReached: true };
+        } else {
+          r = await runtime.runStep(step);
+        }
       } catch (err) {
         // Step-level errors (bad template refs, unparseable fanout items, …)
         // are step failures under onError semantics — never crashes.

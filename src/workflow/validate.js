@@ -9,7 +9,7 @@
 
 const LANES = ['analyze', 'build', 'chore'];
 const ON_ERROR = ['continue', 'fail', 'skip-phase'];
-const STEP_TYPES = ['run', 'fanout'];
+const STEP_TYPES = ['run', 'fanout', 'verify'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export class WorkflowValidationError extends Error {
@@ -75,6 +75,16 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
   }
   for (const [k, v] of Object.entries(inputs)) {
     collect(issues, v && typeof v === 'object', `input "${k}" must be an object`);
+    if (v && typeof v === 'object') {
+      if (v.required != null) {
+        collect(issues, typeof v.required === 'boolean',
+          `input "${k}".required must be a boolean`);
+      }
+      if (v.default != null) {
+        collect(issues, ['string', 'number', 'boolean'].includes(typeof v.default),
+          `input "${k}".default must be a string, number, or boolean`);
+      }
+    }
   }
 
   // phases
@@ -140,6 +150,19 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         collect(issues,
           typeof step.taskFile === 'string' || typeof step.prompt === 'string',
           `${sat} needs taskFile or prompt`);
+      } else if (step.type === 'verify') {
+        collect(issues, typeof step.review === 'string' && step.review.length > 0,
+          `${sat}.review is required for verify steps (path to a prior outFile, e.g. outputs.<prior>.outFile)`);
+        // review target: outputs.<priorStepId>.outFile is the only allowed
+        // shape (we want to be sure the verifier reads FILE content, not
+        // raw context). It may also reference inputs.<name>.<fileField>.
+        if (typeof step.review === 'string' && step.review.includes('.')) {
+          const [root, target] = step.review.split('.');
+          const ok = (root === 'outputs' && outputs.has(target))
+            || (root === 'inputs' && (inputs[target] != null));
+          collect(issues, ok,
+            `${sat}.review "${step.review}" cannot resolve (use outputs.<priorStepId>.outFile or inputs.<declaredInput>)`);
+        }
       }
 
       if (step.timeoutSec != null) {
@@ -150,6 +173,22 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
   });
 
   if (issues.length) throw new WorkflowValidationError(issues);
+
+  // settings: optional maxAgents / warnAtAgents.
+  const settings = wf.settings ?? {};
+  if (settings.maxAgents != null) {
+    collect(issues, Number.isInteger(settings.maxAgents) && settings.maxAgents >= 1,
+      `settings.maxAgents must be a positive integer`);
+  }
+  if (settings.warnAtAgents != null) {
+    collect(issues, Number.isInteger(settings.warnAtAgents) && settings.warnAtAgents >= 1,
+      `settings.warnAtAgents must be a positive integer`);
+  }
+  if (settings.concurrency != null) {
+    collect(issues, Number.isInteger(settings.concurrency) && settings.concurrency >= 1
+      && settings.concurrency <= 16,
+      `settings.concurrency must be a positive integer ≤ 16`);
+  }
 
   // ---- template reference resolution (W2) --------------------------------
   // Scope available at validation: inputs.*, outputs.<stepId> for PRIOR

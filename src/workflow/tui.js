@@ -173,6 +173,32 @@ export class WorkflowTui {
         this.print(`  ${this.c(YELLOW, MARK.skipped)} ${event.stepId.padEnd(34)} ${this.c(DIM, 'ok from previous run (resume)')}`);
         break;
       }
+      case 'item.skipped': {
+        if (this.json) { console.log(JSON.stringify({ ev: 'item.skipped', ...event })); return; }
+        const idx = `${(event.index ?? 0) + 1}`;
+        const label = `${event.stepId}[${idx}]`;
+        this.commitLive();
+        this.print(
+          `  ${this.c(YELLOW, MARK.skipped)} ${label.padEnd(34)} ${this.c(DIM, 'ok from previous run (resume)')}`
+        );
+        break;
+      }
+      case 'step.blocked': {
+        if (this.json) { console.log(JSON.stringify({ ev: 'step.blocked', ...event })); return; }
+        this.commitLive();
+        this.print(
+          `    ${this.c(YELLOW, MARK.blocked)} ${event.queued ?? 0} item(s) queued behind concurrency cap in ${event.stepId}`,
+        );
+        break;
+      }
+      case 'workflow.large': {
+        if (this.json) { console.log(JSON.stringify({ ev: 'workflow.large', ...event })); return; }
+        this.commitLive();
+        this.print(
+          `  ${this.c(YELLOW, '⚠')} Large workflow: ${event.dispatchCount} dispatches ≥ threshold ${event.threshold}. Open /workflows to stop if needed.`,
+        );
+        break;
+      }
       case 'phase.skipped-rest': {
         if (this.json) { console.log(JSON.stringify({ ev: 'phase.skipped-rest', ...event })); return; }
         this.commitLive();

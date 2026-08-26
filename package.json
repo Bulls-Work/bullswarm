@@ -14,11 +14,16 @@
     "bin/",
     "src/",
     "connectors/",
+    "workflows/",
     "skill/",
     "mcp/",
+    "fixtures/",
+    "docs/",
     "README.md",
     "LICENSE",
-    "AGENTS.md"
+    "AGENTS.md",
+    "GOAL.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",

@@ -9,7 +9,10 @@ import { buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { WorkflowTui } from './tui.js';
 
-export const BULLSWARM_DIR = join(homedir(), '.bullswarm');
+export const BULLSWARM_DIR = (() => {
+  const h = process.env.BULLSWARM_HOME?.trim();
+  return h && h.length ? h : join(homedir(), '.bullswarm');
+})();
 
 function workflowDirs() {
   return [
@@ -63,7 +66,18 @@ function parseFlags(argv) {
     else if (a === '--input') {
       const kv = argv[++i] ?? '';
       const eq = kv.indexOf('=');
-      if (eq > 0) out.inputs[kv.slice(0, eq)] = kv.slice(eq + 1);
+      if (eq > 0) {
+        const key = kv.slice(0, eq);
+        const raw = kv.slice(eq + 1);
+        // Accept JSON for non-string values: --input items='["a","b"]' or
+        // --input count=3. Falls back to the raw string on parse failure
+        // so a literal value with a colon doesn't silently lose data.
+        let v = raw;
+        if (raw.length && '[{"\''.includes(raw[0])) {
+          try { v = JSON.parse(raw); } catch { v = raw; }
+        }
+        out.inputs[key] = v;
+      }
     } else if (a.startsWith('--')) {
       out[a.slice(2)] = true;
     } else out.rest.push(a);

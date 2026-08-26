@@ -1,0 +1,61 @@
+{
+  "name": "verify-and-cap",
+  "description": "Demonstrates the gap-closure features added in v0.5.0: a `verify` (skeptic) step adversarially reviews a prior run, `inputs.<k>.required` for a required parameter, and a `maxAgents` spend guard so a runaway workflow is hard-capped.",
+  "version": "1.0.0",
+  "inputs": {
+    "targetDir": { "default": ".", "required": false }
+  },
+  "settings": {
+    "concurrency": 2,
+    "escalateOnFail": false,
+    "maxAgents": 6,
+    "warnAtAgents": 4,
+    "stopOnPhaseFailure": false
+  },
+  "phases": [
+    {
+      "name": "produce",
+      "steps": [
+        {
+          "id": "draft",
+          "type": "run",
+          "lane": "chore",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "PWD: report and summarize the directory listing.",
+          "timeoutSec": 60
+        }
+      ]
+    },
+    {
+      "name": "adversarial-review",
+      "steps": [
+        {
+          "id": "skeptic",
+          "type": "verify",
+          "lane": "analyze",
+          "addDir": "{{inputs.targetDir}}",
+          "review": "outputs.draft.outFile",
+          "prompt": "Be a strict skeptic. Check the work for completeness, accuracy, and unverified claims.",
+          "timeoutSec": 60,
+          "onError": "continue"
+        }
+      ]
+    },
+    {
+      "name": "fanout-with-cap",
+      "steps": [
+        {
+          "id": "fanned",
+          "type": "fanout",
+          "itemsFrom": "inputs.items",
+          "concurrency": 2,
+          "onError": "continue",
+          "stepTemplate": {
+            "lane": "chore",
+            "prompt": "Process {{item}}."
+          }
+        }
+      ]
+    }
+  ]
+}
