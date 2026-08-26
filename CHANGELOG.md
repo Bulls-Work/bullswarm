@@ -1,5 +1,68 @@
 # bullswarm changelog
 
+## 0.6.0 — incremental workflow drafts (CLI builder)
+
+The static `workflow run <file>` shape required every workflow to be
+authored as a JSON file in advance. That's not "dynamic" — it's a script
+of record. v0.6.0 introduces `bullswarm workflow draft ...`, a
+sub-verb group that lets you build a workflow interactively from the
+shell, one mutation at a time. Drafts persist under
+`~/.bullswarm/drafts/<name>/` and are promoted to first-class
+workflows (discoverable, runnable by name, validatable) the moment
+they're created.
+
+### New CLI surface
+
+```
+bullswarm workflow draft create <name> [--description ...] [--input k=v]...
+bullswarm workflow draft show <name>
+bullswarm workflow draft list
+bullswarm workflow draft phase add <name> <phase>
+bullswarm workflow draft phase remove <name> <phase>
+bullswarm workflow draft step add <name> <phase> <step-id> --type run|fanout|verify [--lane ... --prompt ... --add-dir ... --pool ... --items-from ... --review ... --concurrency N --timeout N --on-error ... --step-template <json>]
+bullswarm workflow draft step remove <name> <phase> <step-id>
+bullswarm workflow draft step set <name> <phase> <step-id> <field> --value <text>
+bullswarm workflow draft set <name> <field> --value <text>
+bullswarm workflow draft validate <name>
+bullswarm workflow draft export <name> <out-file>
+bullswarm workflow draft delete <name> --yes
+bullswarm workflow draft run <name> [--input k=v]... [--resume id] [--json] [--quiet]
+```
+
+- Every mutation re-validates immediately and persists the verdict on
+  `meta.json.lastValidation`. `bullswarm workflow list` shows drafts
+  with a `(draft)` tag.
+- `bullswarm workflow run <draft-name>` and `workflow validate
+  <draft-name>` accept a draft name the same way they accept a JSON
+  filename — the new `workflowDirs()` entry `~/.bullswarm/drafts/`
+  makes drafts first-class.
+- `bullswarm workflow draft export <name> <file>` promotes a draft
+  to a checked-in JSON for version control.
+- Partial drafts (zero phases, or a phase with zero steps) are
+  treated as BUILDING, not INVALID — the validator's
+  `phases-must-be-non-empty` rule is downgraded to a warning during
+  construction. Real schema violations (bad lane, duplicate step id,
+  etc.) still return nonzero.
+- `delete` requires `--yes` so a stray arrow-key can't nuke a draft.
+- The `BULLSWARM_HOME` env var redirects drafts to a sandbox under
+  any temp dir, so the same `autoSetup` flow agents use elsewhere
+  works here.
+
+### Tests
+
+- 25 new tests in `tests/workflow-draft.test.js`. Two layers:
+  module-level (no spawn) for every mutation, CLI-level (spawnSync)
+  for the user-facing contract.
+- Full suite is now 131 green (106 prior + 25 new).
+
+### Files
+
+- New: `src/workflow/draft.js` — storage, atomic writes, validation hook
+- New: `src/workflow/draft-cli.js` — `cmdDraft` dispatch + flag parsing
+- New: `tests/workflow-draft.test.js`
+- Modified: `src/workflow/cli.js` (added `draft` sub-verb, drafts in
+  `workflowDirs()` and `discover()`)
+
 ## 0.5.0 — gap-closure release
 
 Workflow parity with Claude Code dynamic workflows plus deep-QA hardening.

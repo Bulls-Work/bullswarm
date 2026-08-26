@@ -8,6 +8,7 @@ import { validateWorkflow, WorkflowValidationError } from './validate.js';
 import { buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { WorkflowTui } from './tui.js';
+import { cmdDraft } from './draft-cli.js';
 
 export const BULLSWARM_DIR = (() => {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -18,6 +19,7 @@ function workflowDirs() {
   return [
     join(process.cwd(), 'workflows'),
     join(BULLSWARM_DIR, 'workflows'),
+    join(BULLSWARM_DIR, 'drafts'),
   ];
 }
 
@@ -27,6 +29,23 @@ function discover() {
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir).sort()) {
       const p = join(dir, f);
+      const isDraft = statSync(p).isDirectory() && existsSync(join(p, 'workflow.json'));
+      if (isDraft) {
+        // Drafts are <draft>/workflow.json.
+        const dp = join(p, 'workflow.json');
+        try {
+          const doc = JSON.parse(readFileSync(dp, 'utf8'));
+          found.push({
+            name: doc.name ?? f,
+            path: dp,
+            valid: null,
+            draft: true,
+          });
+        } catch (err) {
+          found.push({ name: f, path: dp, valid: `parse error: ${err.message}`, draft: true });
+        }
+        continue;
+      }
       if (!statSync(p).isFile() || !f.endsWith('.json')) continue;
       try {
         const doc = JSON.parse(readFileSync(p, 'utf8'));
@@ -50,8 +69,10 @@ export async function cmdWorkflow(args) {
       return wfValidate(opts);
     case 'list':
       return wfList(opts);
+    case 'draft':
+      return cmdDraft(rest);
     default:
-      console.error('usage: bullswarm workflow <run|validate|list> [file|name] [--input k=v] [--resume id] [--json] [--quiet]');
+      console.error('usage: bullswarm workflow <run|validate|list|draft> ...');
       return 2;
   }
 }
@@ -180,7 +201,8 @@ function wfList(opts) {
   }
   for (const w of found) {
     const mark = w.valid ? `✗ ${w.valid}` : '✓';
-    console.log(`${mark}  ${w.name.padEnd(24)} ${w.path}`);
+    const tag = w.draft ? '(draft)' : '';
+    console.log(`${mark}  ${w.name.padEnd(24)} ${tag.padEnd(8)} ${w.path}`);
   }
   return 0;
 }

@@ -42,6 +42,36 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
+| `doctor` | Machine-readable readiness report; self-heals on first call |
+| `workflow` | Run / validate / list / draft. Drafts are built interactively from the CLI. |
+
+## Building a workflow from the shell
+
+`bullswarm workflow draft ...` lets you assemble a workflow one
+mutation at a time. No upfront JSON required. Drafts persist under
+`~/.bullswarm/drafts/<name>/` and become first-class workflows
+(discoverable, runnable by name) the moment they exist.
+
+```bash
+bullswarm workflow draft create audit-code \
+    --description "Audit the source code" --input targetDir=.
+bullswarm workflow draft phase add audit-code discover
+bullswarm workflow draft phase add audit-code review
+bullswarm workflow draft step add audit-code discover list-files \
+    --type run --lane chore --prompt "List every .js file in src/" \
+    --addDir '{{inputs.targetDir}}'
+bullswarm workflow draft step add audit-code review per-file \
+    --type fanout --items-from 'outputs.list-files.outFile' \
+    --lane analyze --concurrency 2 \
+    --step-template '{"lane":"analyze","addDir":"{{inputs.targetDir}}","prompt":"Review {{item}}"}'
+bullswarm workflow draft show audit-code    # inspect the JSON
+bullswarm workflow draft run audit-code     # execute it
+bullswarm workflow draft export audit-code workflows/audit-code.json   # promote to file
+```
+
+`step add` re-validates after every mutation; partial drafts (zero
+phases, etc.) are treated as building, not invalid. `set` and
+`step set` patch fields in place. `delete` requires `--yes`.
 
 ## The verdict
 

@@ -1,0 +1,48 @@
+{
+  "name": "agent-model-comparison",
+  "description": "Fan the same deep-research question out to every enabled agent CLI. Each pool picks its own model. A `verify` step ranks the answers and a `summarize` step writes the final report. Demonstrates multi-pool meter-paced routing + the new `verify` (skeptic) step.",
+  "version": "1.0.0",
+  "inputs": {
+    "question": { "default": "What changed in the Bullswarm v0.5.0 release compared to v0.4.0? List the 10 gap closures, explain why each one mattered, and identify any gap that is still open." },
+    "targetDir": { "default": "." }
+  },
+  "settings": {
+    "concurrency": 4,
+    "escalateOnFail": true,
+    "stopOnPhaseFailure": false,
+    "maxAgents": 12,
+    "warnAtAgents": 6
+  },
+  "phases": [
+    {
+      "name": "fanout-research",
+      "steps": [
+        {
+          "id": "per-pool-research",
+          "type": "fanout",
+          "itemsFrom": "inputs.pools",
+          "concurrency": 3,
+          "onError": "continue",
+          "stepTemplate": {
+            "lane": "analyze",
+            "addDir": "{{inputs.targetDir}}",
+            "prompt": "You are running inside bullswarm. The pool that selected you is {{item}}. The model you are using is whatever this CLI defaults to. Answer this research question thoroughly with citations from the repo at {{inputs.targetDir}}:\n\n{{inputs.question}}\n\nReturn a markdown response. Sign it with: 'Answered by pool={{item}}, model=<your model id>' so we can attribute the answer."
+          }
+        }
+      ]
+    },
+    {
+      "name": "synthesize",
+      "steps": [
+        {
+          "id": "synthesis",
+          "type": "run",
+          "lane": "build",
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "Read the per-pool research files. Their paths are stored in this comma-separated list:\n\n{{inputs.poolFiles}}\n\nFor each one, append a one-paragraph critique covering: (1) one-sentence summary, (2) cited coverage of the 10 gap closures between bullswarm v0.4.0 and v0.5.0, (3) any unique insight the other models missed. End with a ranked top-3 list and a one-paragraph synthesis. Sign with 'Synthesizer model=<your model id>'.",
+          "onError": "continue"
+        }
+      ]
+    }
+  ]
+}

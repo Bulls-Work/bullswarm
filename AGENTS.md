@@ -24,15 +24,25 @@ content. Published as `bullswarm` on npm.
 6. Adversarial verification is a first-class primitive: a `verify` step
    reads a prior outFile and demands a JSON `{ok, concerns, summary}`
    verdict before downstream steps can trust the work (R-skeptic).
+7. Workflows can be built incrementally from the shell
+   (`bullswarm workflow draft create/phase/step/set/...`). Drafts are
+   stored under `~/.bullswarm/drafts/<name>/` and are runnable by name
+   without an upfront JSON. JSON is still the durable artifact — drafts
+   are JSON documents, just built one mutation at a time.
 
 ## Development
 
 ```bash
-npm test            # 105 tests, no network needed (meters read from cache)
+npm test            # 131 tests, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
 node bin/bullswarm.js workflow list   # discover workflows
 node bin/bullswarm.js workflow validate <file>  # dry-run
 BULLSWARM_HOME=/tmp/bs node bin/bullswarm.js workflow run <file>   # sandboxed run
+# Build a workflow from the shell:
+bullswarm workflow draft create my-audit
+bullswarm workflow draft phase add my-audit discover
+bullswarm workflow draft step add my-audit discover list-files --type run --prompt 'List files'
+bullswarm workflow draft run my-audit
 ```
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:
