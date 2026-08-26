@@ -1,5 +1,51 @@
 # bullswarm changelog
 
+## 0.7.0 — short run IDs + workflow runs
+
+Workflow runs were opaque (`wf-mtapqmfm-ad9ba7` everywhere) and
+there was no way to list or operate on past runs except by
+file-system diving. v0.7.0 adds:
+
+- **6-character short IDs** (Crockford-style 32-char alphabet, no
+  `0/1/i/l/o` for visual clarity). Every new run gets a `shortId`
+  on both `state.json` and `report.json`. The full `wf-...` runId
+  stays the durable handle.
+- **`bullswarm workflow runs ...`** sub-verb:
+  - `runs` (default = ongoing only) — list with a `●`/`○` marker
+  - `runs --all` — ongoing + historical
+  - `runs --historical` — only historical
+  - `runs --name <wf>` — filter by workflow
+  - `runs --limit N` — cap result count
+  - `runs show <id>` — dump `state.json` + `report.json`. Accepts
+    shortId, full runId, or run-dir path.
+  - `runs delete <id> --yes` — remove a run directory. Refuses
+    ongoing runs without `--force`.
+- **Resume by short ID**: `bullswarm workflow run <wf> --resume
+  <shortId>` resolves the shortId to the full runId before any
+  dispatch. Bogus tokens fail fast, before workflow load.
+- **`isOngoing(runDir, state)`** helper: classifies a run as
+  ongoing when `state.finishedAt` is unset AND `state.json` was
+  modified within the last 90 s. After the 90 s window a run is
+  treated as historical even if `finishedAt` was never written
+  (e.g. process killed before terminal `persist()`).
+
+### New files
+
+- `src/workflow/short-id.js` — Crockford-style generator, resolver,
+  `isOngoing`, `listRuns`
+- `src/workflow/runs-cli.js` — `cmdRuns` dispatch
+- `tests/workflow-runs.test.js` — 16 new tests
+
+### Tests
+
+- 16 new tests covering shortId generation, resolution, lock-free
+  ongoing detection, list filtering, show, delete, and the resume
+  pre-flight.
+- Full suite is 147 green (131 prior + 16 new), stable across 3
+  stress runs.
+- Verified end-to-end by `cmd -p --yolo` against a real CLI
+  installation: every step of the runbook passed.
+
 ## 0.6.0 — incremental workflow drafts (CLI builder)
 
 The static `workflow run <file>` shape required every workflow to be

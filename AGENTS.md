@@ -33,9 +33,11 @@ content. Published as `bullswarm` on npm.
 ## Development
 
 ```bash
-npm test            # 131 tests, no network needed (meters read from cache)
+npm test            # 147 tests, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
 node bin/bullswarm.js workflow list   # discover workflows
+node bin/bullswarm.js workflow runs   # ongoing workflow instances
+node bin/bullswarm.js workflow runs --all   # including historical
 node bin/bullswarm.js workflow validate <file>  # dry-run
 BULLSWARM_HOME=/tmp/bs node bin/bullswarm.js workflow run <file>   # sandboxed run
 # Build a workflow from the shell:
@@ -43,6 +45,9 @@ bullswarm workflow draft create my-audit
 bullswarm workflow draft phase add my-audit discover
 bullswarm workflow draft step add my-audit discover list-files --type run --prompt 'List files'
 bullswarm workflow draft run my-audit
+# Operate on a run by shortId (6 chars) or full runId (`wf-...`):
+bullswarm workflow runs show <shortId>
+bullswarm workflow runs delete <shortId> --yes
 ```
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:

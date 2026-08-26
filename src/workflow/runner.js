@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { validateWorkflow } from './validate.js';
 import { WorkflowRuntime } from './runtime.js';
+import { generateShortId, listRuns } from './short-id.js';
 
 export function loadWorkflow(pathOrName, searchDirs) {
   let path = pathOrName;
@@ -32,6 +33,11 @@ export function loadWorkflow(pathOrName, searchDirs) {
 
 function newRunId() {
   return `wf-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
+}
+
+function newShortId(bullswarmDir) {
+  const existing = listRuns(bullswarmDir).map((r) => r.shortId).filter(Boolean);
+  return generateShortId({ existing });
 }
 
 /**
@@ -62,8 +68,10 @@ export async function runWorkflow(opts) {
     if (resuming) {
       throw new Error(`cannot resume: no state.json for run ${runId}`);
     }
+    const shortId = newShortId(bullswarmDir);
     state = {
       runId,
+      shortId,
       workflow: doc.name,
       inputs: { ...Object.fromEntries(
         Object.entries(doc.inputs ?? {}).map(([k, v]) => [k, v.default]),
@@ -218,6 +226,7 @@ export function buildReport(state, doc, runDir) {
   return {
     schemaVersion: 'bullswarm.workflow.report.v1',
     runId: state.runId,
+    shortId: state.shortId ?? null,
     workflow: state.workflow,
     status: state.status,
     startedAt: state.startedAt,

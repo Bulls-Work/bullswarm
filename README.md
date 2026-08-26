@@ -43,7 +43,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
-| `workflow` | Run / validate / list / draft. Drafts are built interactively from the CLI. |
+| `workflow` | Run / validate / list / draft / runs. Drafts are built interactively from the CLI; `runs` lists and operates on instances (ongoing + historical). |
 
 ## Building a workflow from the shell
 
@@ -72,6 +72,24 @@ bullswarm workflow draft export audit-code workflows/audit-code.json   # promote
 `step add` re-validates after every mutation; partial drafts (zero
 phases, etc.) are treated as building, not invalid. `set` and
 `step set` patch fields in place. `delete` requires `--yes`.
+
+## Operating on workflow runs
+
+Every run gets a 6-character shortId (Crockford-style alphabet,
+no `0/1/i/l/o`). The full `wf-...` runId stays the durable handle.
+
+```bash
+bullswarm workflow runs                    # ongoing only (default)
+bullswarm workflow runs --all              # ongoing + historical
+bullswarm workflow runs --historical       # only historical
+bullswarm workflow runs --name audit-code  # filter by workflow
+bullswarm workflow runs --limit 20         # cap the result count
+bullswarm workflow runs show <shortId>     # state + report + summary
+bullswarm workflow runs delete <shortId> --yes    # remove the run dir
+
+# Resume by shortId — runs the same logic as the full runId
+bullswarm workflow run audit-code --resume <shortId>
+```
 
 ## The verdict
 

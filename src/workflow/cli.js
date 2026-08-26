@@ -9,6 +9,8 @@ import { buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { WorkflowTui } from './tui.js';
 import { cmdDraft } from './draft-cli.js';
+import { cmdRuns } from './runs-cli.js';
+import { resolveRunId } from './short-id.js';
 
 export const BULLSWARM_DIR = (() => {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -71,8 +73,10 @@ export async function cmdWorkflow(args) {
       return wfList(opts);
     case 'draft':
       return cmdDraft(rest);
+    case 'runs':
+      return cmdRuns(rest);
     default:
-      console.error('usage: bullswarm workflow <run|validate|list|draft> ...');
+      console.error('usage: bullswarm workflow <run|validate|list|draft|runs> ...');
       return 2;
   }
 }
@@ -153,6 +157,23 @@ async function wfRun(opts) {
     return 2;
   }
 
+  // Pre-flight: resolve --resume token BEFORE loading the workflow.
+  // A bogus shortId should fail fast, regardless of whether the named
+  // workflow exists. Accepts a shortId (6 chars) or a full `wf-...`
+  // runId; rejects anything that looks like neither.
+  let resumeRunId = opts.resume;
+  if (resumeRunId) {
+    const resolved = resolveRunId(BULLSWARM_DIR, resumeRunId);
+    if (resolved) {
+      resumeRunId = resolved.runId;
+    } else if (resumeRunId.startsWith('wf-')) {
+      // already a runId, leave as-is (loadWorkflow will surface ENOENT)
+    } else {
+      console.error(`✗ --resume token "${resumeRunId}" did not match any run`);
+      return 1;
+    }
+  }
+
   let doc, path;
   try {
     ({ doc, path } = loadWorkflow(target, workflowDirs()));
@@ -179,7 +200,7 @@ async function wfRun(opts) {
     doc,
     pools,
     inputs: opts.inputs,
-    resumeRunId: opts.resume,
+    resumeRunId,
     onEvent: (ev) => tui.handle(ev),
   });
 
