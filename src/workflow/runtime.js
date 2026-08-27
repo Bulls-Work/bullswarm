@@ -422,7 +422,17 @@ export class WorkflowRuntime {
 
   async runFanout(step, scope) {
     this.enforceRequiredInputs(step.id);
-    const items = extractItems(this.state, renderTemplate0(step.itemsFrom, scope));
+    // itemsFrom is a dotted path into the workflow state (NOT a
+    // template). It can be either:
+    //   - a real array reference: e.g. `inputs.items` — extractItems
+    //     will resolve it via getPath and return the array.
+    //   - a file path stored in a prior step's outFile: e.g.
+    //     `outputs.discover.outFile` — extractItems will open that
+    //     file and parse the JSON array inside.
+    // The validator (validate.js) already ensures itemsFrom starts
+    // with `inputs.` or `outputs.`, so the literal-string case (no
+    // {{ }}) is exactly what we want.
+    const items = extractItems(this.state, step.itemsFrom);
     const concurrency = Math.max(1, Math.min(
       step.concurrency ?? this.state.settings.concurrency ?? 4,
       this.state.settings.concurrency ?? Infinity,

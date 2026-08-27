@@ -4,6 +4,8 @@
 // A missing reference throws (validation should have caught static cases;
 // this catches runtime-only gaps like fanout item field typos).
 
+import { readFileSync, existsSync } from 'node:fs';
+
 export function getPath(obj, path) {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
@@ -50,7 +52,11 @@ export function extractItems(state, itemsFrom) {
   }
   if (Array.isArray(v)) return v;
 
-  // outputs.<stepId> envelope: try its recorded output text
+  // outputs.<stepId> envelope (state.outputs.<id> is the full record
+  // with ok/pool/outFile/outputText): use the recorded outputText,
+  // which is a truncated copy of the on-disk file. The runtime
+  // copies the file's contents into outputText at recordOutput time
+  // so a fanout can resolve even if the run dir is later deleted.
   if (v && typeof v === 'object' && typeof v.outputText === 'string') {
     const parsed = parseJsonArray(v.outputText);
     if (parsed) return parsed;
@@ -59,6 +65,25 @@ export function extractItems(state, itemsFrom) {
       'The discover step must return ONLY a JSON array of items.',
     );
   }
+
+  // outputs.<stepId>.outFile (just the file path string): the
+  // caller wants us to read the file from disk and parse it. This
+  // is the natural shape for "fan out over the discovered list";
+  // the discover step writes the list to its outFile and the
+  // fanout step references the path.
+  if (typeof v === 'string') {
+    if (!existsSync(v)) {
+      throw new Error(`fanout itemsFrom "${itemsFrom}": file not found: ${v}`);
+    }
+    const text = readFileSync(v, 'utf8');
+    const parsed = parseJsonArray(text);
+    if (parsed) return parsed;
+    throw new Error(
+      `fanout itemsFrom "${itemsFrom}": file ${v} is not a JSON array. ` +
+      'The discover step must return ONLY a JSON array of items.',
+    );
+  }
+
   throw new Error(`fanout itemsFrom "${itemsFrom}" must resolve to an array (got ${typeof v})`);
 }
 

@@ -196,3 +196,86 @@ test('FANOUT from discover-step outputText: JSON array parsed and dispatched', a
     cleanup();
   }
 });
+
+test('FANOUT from discover-step outFile path: read file and parse JSON array', async () => {
+  // Regression: itemsFrom: "outputs.<stepId>.outFile" must read the
+  // file at that path and parse the first JSON array inside. This
+  // matches the natural "discover step writes a list to its outFile,
+  // fanout step reads it back" shape that real workflows use.
+  const { dir, cleanup } = fixtureHome();
+  try {
+    // The discover step writes a JSON array to a sidecar file, then
+    // declares it via a `file` outputExtraction strategy so watch.js
+    // copies that file's content into outFile. This sidesteps the
+    // verify-gate's MIN_SUBSTANCE_CHARS check on stdout.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const sidecar = path.join(dir, 'discovered.json');
+    fs.writeFileSync(sidecar, JSON.stringify(['alpha', 'beta', 'gamma', 'delta']));
+    // The fanout per-item dispatch must produce > MIN_SUBSTANCE_CHARS
+    // of output to clear the verify gate. The default echo worker
+    // returns a long "## Completed" body, so we use it.
+    const doc = {
+      name: 'fanout-from-outfile',
+      description: 'x',
+      inputs: {},
+      settings: { concurrency: 2, escalateOnFail: false },
+      phases: [
+        { name: 'seed', steps: [{ id: 'list', type: 'run', lane: 'chore', prompt: 'discover', timeoutSec: 60 }] },
+        { name: 'fan', steps: [{
+          id: 'per', type: 'fanout',
+          itemsFrom: 'outputs.list.outFile',
+          concurrency: 2, onError: 'continue',
+          stepTemplate: { lane: 'chore', prompt: 'Process {{item}}.' },
+        }] },
+      ],
+    };
+    // Single pool (echo), but with two distinct spawns: the
+    // discover step is pinned and uses the file-extraction
+    // connector; the fanout steps are unpinned and use the
+    // default echo connector.
+    const discoverConnector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+    discoverConnector.outputExtraction = { strategy: 'file', field: sidecar };
+    // The connector's `name` must remain `echo` for routing to
+    // pick it up, but the file strategy is per-connector. Pin
+    // the discover step to a different `pool` and configure that
+    // pool separately — except pool names must match the
+    // connector name in pickPool. So we need a second pool.
+    discoverConnector.name = 'discover';
+    const fanoutConnector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+    // Pin the discover step to the discover pool; the fanout
+    // step's lane stays unpinned so it routes to `echo` (the
+    // cheapest).
+    doc.phases[0].steps[0].pool = 'discover';
+    const pools = [
+      // discover: higher cost + zero pace; the file strategy means it
+      // produces a good outFile but the verify gate still runs over
+      // the per-item dispatch stdout, so this pool must NOT be picked
+      // for fanout items. Force it to be the most-behind by giving
+      // it pace 0; the runtime's cost guard will keep the
+      // incumbent unless a challenger's pace beats it by > 10.
+      { name: 'discover', enabled: true, costRank: 9,
+        lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
+        usedPct: null, quarantine: null, pace: -50, burstGate: false,
+        connector: discoverConnector },
+      { name: 'echo', enabled: true, costRank: 1,
+        lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
+        usedPct: null, quarantine: null, pace: 50, burstGate: false,
+        connector: fanoutConnector },
+    ];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'), doc, pools, inputs: {}, onEvent: () => {},
+    });
+    const out = result.state.outputs.per;
+    assert.ok(out, 'fanout result should exist');
+    assert.equal(out.total, 4);
+    assert.equal(out.ok, 4);
+    assert.equal(out.failed, 0);
+    assert.deepEqual(
+      out.items.map((i) => i.item).sort(),
+      ['alpha', 'beta', 'delta', 'gamma'],
+    );
+  } finally {
+    cleanup();
+  }
+});
