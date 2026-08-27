@@ -34,7 +34,7 @@ import { spawnSync } from 'node:child_process';
 import { runWorkflow } from '../src/workflow/runner.js';
 import {
   generateShortId, isShortId, resolveRunId, listRuns, isOngoing,
-  SHORT_ID_ALPHABET, SHORT_ID_LEN, ONGOING_GRACE_MS,
+  reconcileInterruptedRun, SHORT_ID_ALPHABET, SHORT_ID_LEN, ONGOING_GRACE_MS,
 } from '../src/workflow/short-id.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -266,6 +266,47 @@ test('I7: isOngoing returns false when state.json mtime is older than the grace 
     const old = new Date(Date.now() - ONGOING_GRACE_MS - 1000);
     utimesSync(join(runDir, 'state.json'), old, old);
     assert.equal(isOngoing(runDir, state), false);
+  } finally { cleanup(); }
+});
+
+test('stale active run with a dead owner is reconciled to a resumable interruption', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const runDir = join(home, 'workflows', 'wf-stale-dead01');
+    mkdirSync(runDir, { recursive: true });
+    const old = new Date(Date.now() - ONGOING_GRACE_MS - 10_000).toISOString();
+    const state = {
+      runId: 'wf-stale-dead01', shortId: 'abc234', workflow: 'stale',
+      status: 'running', startedAt: old,
+      runner: { pid: 999999, status: 'running', lastHeartbeatAt: old },
+      attempts: [{ actionId: 'work', status: 'running' }],
+      actionLedger: [{ id: 'work', status: 'running' }],
+      activeAgents: { work: { stepId: 'work', lastHeartbeatAt: old } },
+    };
+    writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+    const reconciled = reconcileInterruptedRun(runDir, state, {
+      now: Date.now(), processAlive: () => false,
+    });
+    assert.equal(reconciled.status, 'interrupted');
+    assert.equal(reconciled.recovery.resumable, true);
+    assert.equal(reconciled.attempts[0].status, 'abandoned');
+    assert.equal(reconciled.actionLedger[0].status, 'interrupted');
+    assert.equal(isOngoing(runDir, reconciled), false);
+    assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).status, 'interrupted');
+  } finally { cleanup(); }
+});
+
+test('fresh heartbeat plus live owner is not reconciled', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const runDir = join(home, 'workflows', 'wf-live-owner01');
+    mkdirSync(runDir, { recursive: true });
+    const state = {
+      runId: 'wf-live-owner01', status: 'running',
+      runner: { pid: 42, status: 'running', lastHeartbeatAt: new Date().toISOString() },
+    };
+    writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+    assert.equal(reconcileInterruptedRun(runDir, state, { processAlive: () => true }).status, 'running');
   } finally { cleanup(); }
 });
 

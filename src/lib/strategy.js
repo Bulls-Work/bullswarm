@@ -129,14 +129,41 @@ function candidateScore(candidate, tier) {
   return freeBonus * 200 - costRank * 20 + quality * 10 + pace;
 }
 
+export const TIER_CONTEXTS = {
+  high: {
+    lane: 'analyze',
+    capabilities: ['strong-analysis', 'workflow-planning'],
+    description: 'analysis and autonomous orchestration',
+  },
+  medium: {
+    lane: 'build',
+    capabilities: ['code-reading', 'file-editing'],
+    description: 'implementation and verification',
+  },
+  low: {
+    lane: 'chore',
+    capabilities: [],
+    description: 'bounded chores and low-cost work',
+  },
+};
+
+function supportsContext(pool, context) {
+  const lanes = pool.lanes ?? pool.connector?.lanes ?? [];
+  const capabilities = pool.capabilities ?? pool.connector?.capabilities ?? [];
+  return lanes.includes(context.lane)
+    && context.capabilities.every((capability) => capabilities.includes(capability));
+}
+
 export function buildStrategy({ connectors, pools, state, discoveries }) {
   const subscriptions = pools.map((pool) => subscriptionView(pool, state));
   const tiers = ['high', 'medium', 'low'];
   const suggestions = {};
   for (const tier of tiers) {
+    const context = TIER_CONTEXTS[tier];
     const candidates = [];
     for (const pool of pools) {
       if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
+      if (!supportsContext(pool, context)) continue;
       const discovery = discoveries[pool.name];
       for (const model of discovery?.models ?? []) {
         if (model.tier !== tier) continue;
@@ -149,6 +176,7 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
     suggestions[tier] = {
       assignment: configured,
       recommended: candidates[0] ? { pool: candidates[0].pool.name, model: candidates[0].model.id } : null,
+      requirements: context,
       candidates: candidates.slice(0, 8).map((candidate) => ({
         pool: candidate.pool.name,
         model: candidate.model.id,
@@ -161,10 +189,10 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
         score: Math.round(candidate.score * 10) / 10,
       })),
       basis: tier === 'high'
-        ? 'dated benchmark score when declared (quality rank fallback), then live quota surplus and cost rank'
+        ? 'analysis/workflow-planning capability, then dated benchmark score (quality rank fallback), live quota surplus, and cost rank'
         : tier === 'medium'
-          ? 'balanced dated benchmark or quality rank, live quota surplus, and cost rank'
-          : 'free/low-cost first, then dated benchmark or quality rank and live quota surplus',
+          ? 'build/editing capability, then balanced dated benchmark or quality rank, live quota surplus, and cost rank'
+          : 'chore capability and free/low-cost first, then dated benchmark or quality rank and live quota surplus',
     };
   }
   return {

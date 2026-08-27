@@ -21,6 +21,7 @@ export const DEFAULT_STATE = {
   config: {
     depthLimit: 2,
     callerName: 'claude-code',
+    worktreeIsolation: 'agent-decides',
   },
 };
 

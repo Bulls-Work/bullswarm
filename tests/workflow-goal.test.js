@@ -82,7 +82,8 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.equal(doc.phases[0].steps.length, 1);
   assert.equal(doc.phases[0].steps[0].type, 'decide');
   assert.equal(doc.phases[0].steps[0].pool, undefined);
-  assert.equal(doc.phases[0].steps[0].prompt, AUTONOMOUS_ORCHESTRATOR_PROMPT);
+  assert.equal(doc.phases[0].steps[0].prompt, `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\nWorktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.`);
+  assert.equal(doc.intent.worktreeIsolation, 'agent-decides');
   assert.deepEqual(doc.orchestration.completionPolicy, {
     requireSuccessfulWorker: true,
     requireSuccessfulVerification: true,

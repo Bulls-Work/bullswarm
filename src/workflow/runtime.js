@@ -74,6 +74,14 @@ export class WorkflowRuntime {
   }
 
   persist() {
+    this.state.runner = {
+      ...(this.state.runner ?? {}),
+      pid: process.pid,
+      status: this.state.finishedAt ? this.state.status : 'running',
+      startedAt: this.state.runner?.startedAt ?? this.state.startedAt ?? new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      ...(this.state.finishedAt ? { finishedAt: this.state.finishedAt } : {}),
+    };
     // The dashboard may write cancelRequested while a dispatch is running.
     // Preserve that marker when the runner persists its in-memory snapshot.
     try {
@@ -272,6 +280,15 @@ export class WorkflowRuntime {
           taskFile: attemptPaths.taskFile,
           outFile: attemptPaths.outFile,
           why: null,
+          routing: {
+            reason: route.why,
+            candidates: route.candidates,
+            effort: effortTier,
+            lane: step.lane ?? 'chore',
+            requiredCapabilities: step.requiresCapabilities ?? [],
+            configuredAssignment: assignment ?? null,
+            assignmentApplied: assignment?.pool === conn.name ? assignment : null,
+          },
         };
         if (step.type === 'decide' && this.state.orchestration) {
           this.state.orchestration.selections ??= [];
@@ -284,13 +301,16 @@ export class WorkflowRuntime {
           this.state.orchestration.selectedPool = conn.name;
           this.state.orchestration.selectedModel = attemptRecord.model;
           this.state.orchestration.selections.push(selection);
-          this.emit('orchestrator.selected', selection);
+          this.emit('orchestrator.selected', { ...selection, routing: attemptRecord.routing });
         }
         this.state.attempts.push(attemptRecord);
         action.attempts.push(this.state.attempts.length - 1);
         action.status = 'running';
         action.startedAt ??= startedAt;
-        this.emit('attempt.started', { actionId, attemptNumber, pool: conn.name, model: attemptRecord.model });
+        this.emit('attempt.started', {
+          actionId, attemptNumber, pool: conn.name, model: attemptRecord.model,
+          routing: attemptRecord.routing,
+        });
         this.emit('action.started', { actionId, attemptNumber });
 
         this.emit('step.started', {
@@ -413,7 +433,7 @@ export class WorkflowRuntime {
 
         // R7: record EVERY dispatch into the shared decisionLog so
         // `bullswarm health` can correlate workflow outputs.
-        this.appendDecision(step, conn.name, verdict, attemptPaths);
+        this.appendDecision(step, conn.name, verdict, attemptPaths, attemptRecord.routing);
 
         // R7: auth/throttle verdict → quarantine the pool for 10 min so
         // the next dispatch doesn't re-select it.
@@ -494,7 +514,7 @@ export class WorkflowRuntime {
     );
   }
 
-  appendDecision(step, poolName, verdict, paths) {
+  appendDecision(step, poolName, verdict, paths, routing = null) {
     try {
       const coreState = loadState(this.bullswarmDir);
       coreState.decisionLog ??= [];
@@ -508,6 +528,7 @@ export class WorkflowRuntime {
         wallSec: verdict.meta?.wallSec,
         model: verdict.pick?.model ?? null,
         usage: verdict.meta?.usage ?? null,
+        routing,
         outFile: paths?.outFile ?? null,
         source: 'workflow',
         stepId: step.id,

@@ -16,8 +16,9 @@
 // not the generator.
 
 import { randomBytes } from 'node:crypto';
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { appendEvent } from './events.js';
 
 export const SHORT_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyz';
 export const SHORT_ID_LEN = 6;
@@ -111,9 +112,8 @@ export function resolveRunId(bullswarmDir, token) {
 /**
  * Read all runs (one entry per `wf-...` subdir of `~/.bullswarm/workflows/`).
  * Each entry includes the `state.json` summary + the `report.json`
- * summary if it exists. The `ongoing` field is computed by trying to
- * take an exclusive flock on `state.json` (proves the writer process
- * is gone).
+ * summary if it exists. Active states are reconciled against the persisted
+ * owner PID and heartbeat before the `ongoing` field is computed.
  */
 export function listRuns(bullswarmDir) {
   const runsRoot = join(bullswarmDir, 'workflows');
@@ -129,6 +129,7 @@ export function listRuns(bullswarmDir) {
     if (existsSync(sf)) {
       try { state = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* corrupt */ }
     }
+    if (state) state = reconcileInterruptedRun(dir, state);
     if (existsSync(rf)) {
       try { report = JSON.parse(readFileSync(rf, 'utf8')); } catch { /* corrupt */ }
     }
@@ -164,6 +165,94 @@ export function listRuns(bullswarmDir) {
  * eager to garbage-collect it.
  */
 export const ONGOING_GRACE_MS = 90_000;
+
+const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling', 'interrupting']);
+
+export function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Convert an ownerless active state into an explicit resumable interruption.
+ * This is recovery, not garbage collection: outputs and attempts remain and
+ * `workflow goal --resume <id>` can continue from the durable workflow.
+ */
+export function reconcileInterruptedRun(runDir, state, {
+  now = Date.now(), processAlive = isProcessAlive,
+} = {}) {
+  if (!state || state.finishedAt || !ACTIVE_STATUSES.has(state.status)) return state;
+  if (state.status === 'waiting_for_approval' || state.status === 'paused') return state;
+  const statePath = join(runDir, 'state.json');
+  let modifiedAt = 0;
+  try { modifiedAt = statSync(statePath).mtimeMs; } catch { return state; }
+  const heartbeatAt = Date.parse(
+    state.runner?.lastHeartbeatAt
+      ?? Object.values(state.activeAgents ?? {}).map((agent) => agent.lastHeartbeatAt).filter(Boolean).sort().at(-1)
+      ?? '',
+  );
+  const lastLiveAt = Number.isFinite(heartbeatAt) ? heartbeatAt : modifiedAt;
+  const fresh = (now - lastLiveAt) < ONGOING_GRACE_MS;
+  const pid = state.runner?.pid ?? null;
+  const ownerAlive = pid != null && processAlive(pid);
+  // A live PID alone is insufficient because PIDs can be reused. Persisted
+  // heartbeats let us require both identity signals for modern run states.
+  if ((pid != null && ownerAlive && fresh) || (pid == null && fresh)) return state;
+
+  const reconciledAt = new Date(now).toISOString();
+  const reason = pid == null
+    ? 'runner heartbeat expired before a terminal state was persisted'
+    : `runner process ${pid} exited before a terminal state was persisted`;
+  state.status = 'interrupted';
+  state.stage = 'interrupted';
+  state.finishedAt = reconciledAt;
+  state.interruptedAt = reconciledAt;
+  state.abortReason = reason;
+  state.recovery = { resumable: true, reconciledAt, reason };
+  state.runner = { ...(state.runner ?? {}), status: 'interrupted', finishedAt: reconciledAt };
+  for (const attempt of state.attempts ?? []) {
+    if (attempt.status === 'running') {
+      attempt.status = 'abandoned';
+      attempt.finishedAt = reconciledAt;
+      attempt.why = reason;
+    }
+  }
+  for (const action of state.actionLedger ?? []) {
+    if (['running', 'retry_scheduled', 'queued'].includes(action.status)) {
+      action.status = 'interrupted';
+      action.finishedAt = reconciledAt;
+      action.why = reason;
+    }
+  }
+  delete state.activeAgents;
+  delete state.currentPhase;
+  delete state.currentStep;
+  appendEvent(runDir, state, 'run.interrupted_reconciled', { reason, resumable: true });
+  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  return state;
+}
+
+export function reconcileInterruptedRuns(bullswarmDir, opts = {}) {
+  const runsRoot = join(bullswarmDir, 'workflows');
+  if (!existsSync(runsRoot)) return [];
+  const changed = [];
+  for (const name of readdirSync(runsRoot)) {
+    const runDir = join(runsRoot, name);
+    const statePath = join(runDir, 'state.json');
+    if (!name.startsWith('wf-') || !existsSync(statePath)) continue;
+    let state;
+    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { continue; }
+    const before = state.status;
+    const next = reconcileInterruptedRun(runDir, state, opts);
+    if (before !== next.status && next.status === 'interrupted') changed.push(name);
+  }
+  return changed;
+}
 
 export function isOngoing(runDir, state) {
   if (state && state.status && state.finishedAt) return false;
