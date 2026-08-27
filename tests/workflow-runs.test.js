@@ -494,3 +494,72 @@ test('I12: workflow run --resume <shortId> resolves to the full runId', async ()
     assert.match(bogus.stdout + bogus.stderr, /did not match any run/);
   } finally { cleanup(); }
 });
+
+// --- I13: BULLSWARM_DIR must be re-read per call (regression) -------
+// `bullswarmDir` was previously captured at module-load time, which
+// silently broke any operation that changed BULLSWARM_HOME after
+// the module was first imported (e.g. set inside a subshell or a
+// per-test sandbox). The fix is to read the env var on every call.
+test('I13: BULLSWARM_DIR honors changes to BULLSWARM_HOME made after module load', async () => {
+  // First, run a workflow under a unique sandbox to produce a
+  // shortId. Then, in a fresh child process with BULLSWARM_HOME
+  // pointed at a *different* sandbox, the CLI must find the run by
+  // shortId and report not-found (proving it read the new env, not
+  // the old one).
+  const { home: home1, cleanup: cleanup1 } = sandbox();
+  try {
+    const setup = (() => {
+      const doc = {
+        name: 'demo', description: 'd', inputs: {}, settings: { concurrency: 1, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [{ id: 'go', type: 'run', lane: 'chore', prompt: 'go', timeoutSec: 60 }] }],
+      };
+      const pools = [{
+        name: 'echo', enabled: true, costRank: 5,
+        lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
+        usedPct: null, quarantine: null, pace: 0, burstGate: false,
+        connector: {
+          name: 'echo', costRank: 5, lanes: ['analyze', 'build', 'chore'],
+          spawn: { cmd: ['node', join(REPO, 'connectors/echo-worker.mjs'), '{taskFile}'], cwdMode: 'task-file-dir' },
+          authSignatures: [], outputExtraction: { strategy: 'stdout' },
+          meter: { type: 'none' }, flags: { stealth: false }, timeoutSec: 120,
+        },
+      }];
+      return { doc, pools };
+    })();
+    const r = await runWorkflow({
+      bullswarmDir: home1, doc: setup.doc, pools: setup.pools, inputs: {}, onEvent: () => {},
+    });
+    const shortId = r.state.shortId;
+    assert.ok(shortId);
+
+    // Now point BULLSWARM_HOME at a different sandbox and ask the
+    // CLI to find the run by shortId. It MUST report not-found
+    // because the run dir doesn't exist there — proving the CLI
+    // read BULLSWARM_HOME from the env at call time.
+    const { home: home2, cleanup: cleanup2 } = sandbox();
+    try {
+      const r2 = run(wf('runs', 'show', shortId, '--json'), { home: home2 });
+      assert.notEqual(r2.status, 0, 'shortId from another sandbox should not be found');
+      assert.match(r2.stdout + r2.stderr, new RegExp(`no run found for "${shortId}"`));
+    } finally { cleanup2(); }
+  } finally { cleanup1(); }
+});
+
+test('I13: same BULLSWARM_HOME across module load + call works', () => {
+  // Sanity: when BULLSWARM_HOME is set BEFORE module load (the
+  // common case), resolution still works.
+  const { home, cleanup } = sandbox();
+  try {
+    mkdirSync(join(home, 'workflows', 'wf-fake'), { recursive: true });
+    writeFileSync(join(home, 'workflows', 'wf-fake', 'state.json'), JSON.stringify({
+      runId: 'wf-fake', shortId: 'a8shqa', // valid Crockford shortId
+      workflow: 'w', inputs: {}, settings: {}, outputs: {}, steps: [],
+      startedAt: new Date().toISOString(), resumed: false,
+    }));
+    // The module may already be loaded; that's fine — the call
+    // still respects the env.
+    const r = run(wf('runs', 'show', 'a8shqa'), { home });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /wf-fake/);
+  } finally { cleanup(); }
+});

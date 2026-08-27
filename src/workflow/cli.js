@@ -12,16 +12,24 @@ import { cmdDraft } from './draft-cli.js';
 import { cmdRuns } from './runs-cli.js';
 import { resolveRunId } from './short-id.js';
 
-export const BULLSWARM_DIR = (() => {
+// BULLSWARM_DIR is read on every call so that changes to the
+// BULLSWARM_HOME env var (e.g. set per-test) are honored, not
+// captured at module load. (The previous module-level IIFE form
+// silently broke resume-by-shortId for any run whose BULLSWARM_HOME
+// differed from the one in effect when the module was first
+// imported.)
+function bullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
   return h && h.length ? h : join(homedir(), '.bullswarm');
-})();
+}
+export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external import
 
 function workflowDirs() {
+  const dir = bullswarmDir();
   return [
     join(process.cwd(), 'workflows'),
-    join(BULLSWARM_DIR, 'workflows'),
-    join(BULLSWARM_DIR, 'drafts'),
+    join(dir, 'workflows'),
+    join(dir, 'drafts'),
   ];
 }
 
@@ -75,9 +83,22 @@ export async function cmdWorkflow(args) {
       return cmdDraft(rest);
     case 'runs':
       return cmdRuns(rest);
-    default:
+    default: {
+      // Smart error: if the user typed a `runs` subcommand under
+      // `workflow run ...` (e.g. `workflow run show jd3uki`), point
+      // them at the right verb. Same for `workflow list` vs
+      // `workflow runs list` confusion.
+      const runsSubcommands = new Set(['show', 'delete']);
+      if (sub && runsSubcommands.has(sub)) {
+        console.error(
+          `✗ "workflow ${sub}" is not a subcommand. ` +
+          `Did you mean "workflow runs ${sub} <id>"?`,
+        );
+        return 2;
+      }
       console.error('usage: bullswarm workflow <run|validate|list|draft|runs> ...');
       return 2;
+    }
   }
 }
 
@@ -141,7 +162,7 @@ async function wfValidate(opts) {
 
 async function livePoolNames() {
   try {
-    const { pools } = await buildPoolsLive(BULLSWARM_DIR, Date.now(), {
+    const { pools } = await buildPoolsLive(BULLSWARM_DIR(), Date.now(), {
       getReadings: getAllMeterReadings,
     });
     return { names: pools.map((p) => p.name), pools };
@@ -157,13 +178,26 @@ async function wfRun(opts) {
     return 2;
   }
 
+  // Smart redirect: if the user typed `workflow run <subcommand> ...`
+  // (e.g. `workflow run show jd3uki`), the second positional is a
+  // subcommand of `runs`, not a workflow name. Surface a helpful
+  // pointer instead of failing with "workflow not found".
+  const runsSubcommands = new Set(['show', 'delete']);
+  if (runsSubcommands.has(target)) {
+    console.error(
+      `✗ "workflow run ${target}" is not a subcommand. ` +
+      `Did you mean "workflow runs ${target} <id>"?`,
+    );
+    return 2;
+  }
+
   // Pre-flight: resolve --resume token BEFORE loading the workflow.
   // A bogus shortId should fail fast, regardless of whether the named
   // workflow exists. Accepts a shortId (6 chars) or a full `wf-...`
   // runId; rejects anything that looks like neither.
   let resumeRunId = opts.resume;
   if (resumeRunId) {
-    const resolved = resolveRunId(BULLSWARM_DIR, resumeRunId);
+    const resolved = resolveRunId(BULLSWARM_DIR(), resumeRunId);
     if (resolved) {
       resumeRunId = resolved.runId;
     } else if (resumeRunId.startsWith('wf-')) {
@@ -196,7 +230,7 @@ async function wfRun(opts) {
 
   const tui = new WorkflowTui({ quiet: opts.quiet, json: opts.json });
   const result = await runWorkflow({
-    bullswarmDir: BULLSWARM_DIR,
+    bullswarmDir: BULLSWARM_DIR(),
     doc,
     pools,
     inputs: opts.inputs,

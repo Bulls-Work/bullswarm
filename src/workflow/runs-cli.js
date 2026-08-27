@@ -55,7 +55,7 @@ function parseRunsFlags(argv) {
 }
 
 function runsList(opts) {
-  const all = listRuns(BULLSWARM_DIR);
+  const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
   if (opts.name) filtered = filtered.filter((r) => r.state?.workflow === opts.name);
   // Default scope: ongoing only. `--all` includes historical.
@@ -109,7 +109,7 @@ function runsList(opts) {
 
 function runsShow(idToken, opts) {
   if (!idToken) return err('usage: bullswarm workflow runs show <id>');
-  const resolved = resolveRunId(BULLSWARM_DIR, idToken);
+  const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
   const { runId, runDir } = resolved;
@@ -140,7 +140,7 @@ function runsShow(idToken, opts) {
 function runsDelete(idToken, opts, rest) {
   if (!idToken) return err('usage: bullswarm workflow runs delete <id> --yes');
   if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`);
-  const resolved = resolveRunId(BULLSWARM_DIR, idToken);
+  const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
   const { runId, runDir, shortId } = resolved;
