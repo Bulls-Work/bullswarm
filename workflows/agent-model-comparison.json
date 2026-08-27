@@ -1,5 +1,6 @@
 {
   "name": "agent-model-comparison",
+  "mode": "static",
   "description": "Fan the same deep-research question out to every enabled agent CLI. Each pool picks its own model. A `verify` step ranks the answers and a `summarize` step writes the final report. Demonstrates multi-pool meter-paced routing + the new `verify` (skeptic) step.",
   "version": "1.0.0",
   "inputs": {

@@ -34,6 +34,18 @@
     "build",
     "chore"
   ],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "knownModels": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "modelProfiles": [
+    { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^gpt-5\\.(5|4)$", "tier": "high", "qualityRank": 5 },
+    { "match": "^gpt-5\\.6-terra$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 12 }, "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^gpt-5\\.3-codex$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 1.75, "cacheReadUsdPerMillion": 0.175, "outputUsdPerMillion": 14 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^gpt-5\\.6-luna$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "outputUsdPerMillion": 1.2 }, "pricingSource": "https://developers.openai.com/api/docs/models", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "mini", "tier": "low", "qualityRank": 2 }
+  ],
+  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
   "flags": {
     "stealth": false
   },

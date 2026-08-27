@@ -11,6 +11,18 @@
   "meter": { "type": "none" },
   "costRank": 5,
   "lanes": ["analyze", "build", "chore"],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "model": "echo-local",
+  "knownModels": ["echo-local"],
+  "modelProfiles": [{
+    "id": "echo-local",
+    "tier": "low",
+    "qualityRank": 1,
+    "free": true,
+    "pricing": { "inputUsdPerMillion": 0, "cacheReadUsdPerMillion": 0, "outputUsdPerMillion": 0 },
+    "pricingSource": "local deterministic fixture",
+    "pricingUpdatedAt": "2026-08-27"
+  }],
   "flags": { "stealth": false },
   "timeoutSec": 120
 }

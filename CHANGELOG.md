@@ -1,5 +1,29 @@
 # bullswarm changelog
 
+## 0.8.0 — autonomous goals, model strategy, and auditable usage
+
+- Added `workflow goal` for bounded observe-plan-execute loops without an
+  upfront graph, including planner-owned expansion, completion policy,
+  detachment, resume, cancellation, ordered events, and durable action and
+  attempt ledgers.
+- Added first-class `decide` and adversarial `verify` actions with strict JSON
+  contracts, capability-aware routing, bounded retries/escalation, and hard
+  expansion/dispatch/time limits.
+- Added `strategy refresh/show/set-subscription/assign` to discover models from
+  installed CLIs, combine connector-owned dated price/benchmark metadata with
+  live quota surplus, and persist high/medium/low effort preferences.
+- Added connector-owned model selection plus `--effort` routing for ordinary
+  runs and workflow actions. Safety eligibility always overrides preferences.
+- Added per-attempt agent/model, standard-read/cache-read/cache-write/output
+  token estimates, API-equivalent cost, subscription-normalized quota, and
+  honest partial totals when a provider omits model or usage data.
+- Added `workflow tui <runId>` as a printable historical phase/action/attempt
+  tree in both TTY and non-TTY environments, alongside JSON state/events.
+- Expanded the offline suite to 195 tests. A fresh-home real-provider trial
+  autonomously fixed and independently verified a failing Node fixture; a
+  deliberately undersized dispatch budget also stopped truthfully rather than
+  claiming completion.
+
 ## 0.7.0 — short run IDs + workflow runs
 
 Workflow runs were opaque (`wf-mtapqmfm-ad9ba7` everywhere) and

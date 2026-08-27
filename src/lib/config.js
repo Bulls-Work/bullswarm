@@ -48,6 +48,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       enabled: ps.enabled !== false,
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
+      capabilities: conn.capabilities ?? [],
       quarantine: ps.quarantine ?? null,
       incumbentLane: Object.entries(state.incumbents ?? {})
         .filter(([, v]) => v === name)
@@ -58,6 +59,12 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       elapsedPct: null,
       pace: null,
       burstGate: false,
+      meterSnapshot: null,
+      subscription: {
+        ...(conn.subscription ?? {}),
+        ...(state.strategy?.subscriptions?.[name] ?? {}),
+      },
+      strategyAssignments: state.strategy?.assignments ?? {},
     };
     pools.push(pool);
   }
@@ -75,6 +82,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       p.pace = reading.pacing.surplus; // surplus = elapsed − used
       p.paceResetsAt = reading.pacing.resetsAt;
       p.burstGate = reading.burstGate === true;
+      p.meterSnapshot = reading.snapshot ?? null;
     } else {
       // Declared / unmetered fallback
       const meter = { ...(p.connector.meter ?? {}), ...(ps.meter ?? {}) };

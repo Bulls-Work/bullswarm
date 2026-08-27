@@ -7,6 +7,7 @@ import {
   suggestRoutingTable,
   applyIntegrationBlock,
   integrationBlockPresent,
+  upgradeConnectorMetadata,
 } from '../src/setup.js';
 
 function tmp() {
@@ -23,6 +24,22 @@ test('routing table suggestion covers lanes from enabled pools', () => {
   assert.deepEqual(t.analyze.order, ['codex']); // command-code cannot serve analyze
   assert.ok(t.build.order.includes('grok'));
   assert.equal(t.chore.fallback, 'caller');
+});
+
+test('connector metadata upgrades add packaged capabilities without removing custom ones', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'grok.json'), `${JSON.stringify({
+      name: 'grok', capabilities: ['custom-local-capability'],
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['grok.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'grok.json'), 'utf8'));
+    assert.ok(installed.capabilities.includes('custom-local-capability'));
+    assert.ok(installed.capabilities.includes('workflow-planning'));
+    assert.deepEqual(upgradeConnectorMetadata(d), []);
+  } finally { cleanup(); }
 });
 
 test('integration block: approval required, idempotent markers', () => {

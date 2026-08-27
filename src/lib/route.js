@@ -86,6 +86,8 @@ export function pickPool(lane, pools, opts = {}) {
     callerEligible = true,
     callerName = 'claude-code',
     now = Date.now(),
+    requiredCapabilities = [],
+    preferredPool = null,
   } = opts;
 
   if (!LANES.includes(lane)) {
@@ -101,6 +103,8 @@ export function pickPool(lane, pools, opts = {}) {
     (p) =>
       p.enabled !== false &&
       (p.lanes ?? LANES).includes(lane) &&
+      requiredCapabilities.every((capability) =>
+        (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)) &&
       !isQuarantined(p, now) &&
       !isExhausted(p),
   );
@@ -122,21 +126,32 @@ export function pickPool(lane, pools, opts = {}) {
       ? {
           pick: null,
           keepOnClaude: true,
-          why: 'no eligible delegate pool; caller takes the lane',
+          why: requiredCapabilities.length
+            ? `no eligible delegate pool with capabilities: ${requiredCapabilities.join(', ')}; caller takes the lane`
+            : 'no eligible delegate pool; caller takes the lane',
           candidates,
         }
       : {
           pick: null,
           keepOnClaude: false,
-          why: 'no eligible pool',
+          why: requiredCapabilities.length
+            ? `no eligible pool with capabilities: ${requiredCapabilities.join(', ')}`
+            : 'no eligible pool',
           candidates,
         };
   }
 
+  const preferredEntry = preferredPool
+    ? scored.find((entry) => entry.pool.name === preferredPool)
+    : null;
   const incumbentEntry = scored.find((e) => e.pool.incumbent === true);
 
   let winnerEntry;
-  if (incumbentEntry) {
+  if (preferredEntry) {
+    // A user-applied effort-tier assignment is an explicit choice, but it
+    // never bypasses eligibility, quarantine, exhaustion, or burst gates.
+    winnerEntry = preferredEntry;
+  } else if (incumbentEntry) {
     // R3+R4: challenger needs margin. The cost guard protects the incumbent
     // ONLY while it is a reasonable steward of its quota: a distressed
     // incumbent (deep negative surplus) forfeits cost protection, and
@@ -166,7 +181,9 @@ export function pickPool(lane, pools, opts = {}) {
     return {
       pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
       keepOnClaude: false,
-      why: `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
+      why: preferredEntry
+        ? `configured ${opts.effortTier ?? 'effort'} assignment (${winnerEntry.pool.name})`
+        : `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
       candidates,
     };
   }
@@ -186,7 +203,9 @@ export function pickPool(lane, pools, opts = {}) {
   return {
     pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
     keepOnClaude: false,
-    why: `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
+    why: preferredEntry
+      ? `configured ${opts.effortTier ?? 'effort'} assignment (${winnerEntry.pool.name})`
+      : `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
     candidates,
   };
 }

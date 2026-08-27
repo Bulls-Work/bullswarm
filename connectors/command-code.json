@@ -33,6 +33,22 @@
     "build",
     "chore"
   ],
+  "capabilities": ["code-reading", "file-editing"],
+  "modelDiscovery": { "cmd": ["command-code", "--list-models"], "parse": "columns", "ignorePattern": "^(Available|Open Source|Anthropic|OpenAI|Google|Sakana|Meta|xAI|Pass|Docs)", "timeoutMs": 20000, "maxModels": 150 },
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "modelProfiles": [
+    { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^gpt-5\\.6-terra$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 12 }, "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^gpt-5\\.6-luna$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "outputUsdPerMillion": 1.2 }, "pricingSource": "https://developers.openai.com/api/docs/models", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-fable-5$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-opus-", "tier": "high", "qualityRank": 5 },
+    { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
+    { "match": "^claude-haiku-", "tier": "low", "qualityRank": 3 },
+    { "match": "(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)", "tier": "low", "qualityRank": 2 },
+    { "match": "(?:terra|sonnet|grok-4\\.5|gpt-5\\.4$)", "tier": "medium", "qualityRank": 4 },
+    { "match": "(?:fable|opus|sol|grok-4\\.6|minimax-m3)", "tier": "high", "qualityRank": 5 }
+  ],
+  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "monthly" },
   "$comment-lanes": "cannot serve analyze (upstream 403 on the frontier model)",
   "flags": {
     "stealth": false

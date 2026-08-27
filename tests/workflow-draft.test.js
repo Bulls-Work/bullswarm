@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -404,5 +404,48 @@ test('L2: draft export writes the workflow JSON to the given path', () => {
     assert.equal(r.status, 0, r.stderr);
     const exported = JSON.parse(readFileSync(out, 'utf8'));
     assert.equal(exported.description, 'exp test');
+  } finally { cleanup(); }
+});
+
+test('L2: draft step add accepts documented equals-style camelCase flags', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    run(wf('draft', 'create', 'demo', '--input=targetDir=.'), { home });
+    run(wf('draft', 'phase', 'add', 'demo', 'review'), { home });
+    const r = run(wf(
+      'draft', 'step', 'add', 'demo', 'review', 'per-file',
+      '--type=fanout',
+      '--itemsFrom=inputs.items',
+      '--lane=chore',
+      '--concurrency=2',
+      '--step-template={"lane":"chore","prompt":"Process {{item}}"}',
+    ), { home });
+    assert.equal(r.status, 0, r.stderr);
+    const { doc } = loadDraft(home, 'demo');
+    assert.equal(doc.inputs.targetDir.default, '.');
+    assert.equal(doc.phases[0].steps[0].itemsFrom, 'inputs.items');
+    assert.equal(doc.phases[0].steps[0].concurrency, 2);
+  } finally { cleanup(); }
+});
+
+test('L2: draft run accepts equals-style JSON input arrays', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    run(wf('draft', 'create', 'demo'), { home });
+    run(wf('draft', 'phase', 'add', 'demo', 'review'), { home });
+    run(wf(
+      'draft', 'step', 'add', 'demo', 'review', 'per-file',
+      '--type=fanout', '--itemsFrom=inputs.items', '--lane=chore',
+      '--concurrency=2',
+      '--step-template={"lane":"chore","prompt":"Process {{item}}"}',
+    ), { home });
+    const r = run(wf(
+      'draft', 'run', 'demo', '--input=items=["alpha","beta"]', '--json', '--quiet',
+    ), { home });
+    assert.equal(r.status, 0, `stdout=${r.stdout} stderr=${r.stderr}`);
+    const runDir = readdirSync(join(home, 'workflows')).sort().pop();
+    const report = JSON.parse(readFileSync(join(home, 'workflows', runDir, 'report.json'), 'utf8'));
+    assert.equal(report.status, 'completed');
+    assert.equal(report.summary.fanoutOk, 2);
   } finally { cleanup(); }
 });

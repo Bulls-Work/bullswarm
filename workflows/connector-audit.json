@@ -1,5 +1,6 @@
 {
   "name": "connector-audit",
+  "mode": "static",
   "description": "Audit every connector JSON file in this repo: one analyze pass per connector, then a chore-lane summary of the findings.",
   "version": "1.0.0",
   "inputs": {

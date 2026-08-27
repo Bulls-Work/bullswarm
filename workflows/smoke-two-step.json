@@ -1,5 +1,6 @@
 {
   "name": "smoke-two-step",
+  "mode": "static",
   "description": "Minimal deterministic workflow: two echo-friendly run steps. Safe for CI.",
   "version": "1.0.0",
   "inputs": {

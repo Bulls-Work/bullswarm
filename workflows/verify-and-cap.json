@@ -1,5 +1,6 @@
 {
   "name": "verify-and-cap",
+  "mode": "static",
   "description": "Demonstrates the gap-closure features added in v0.5.0: a `verify` (skeptic) step adversarially reviews a prior run, `inputs.<k>.required` for a required parameter, and a `maxAgents` spend guard so a runaway workflow is hard-capped.",
   "version": "1.0.0",
   "inputs": {

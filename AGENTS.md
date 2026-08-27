@@ -29,11 +29,15 @@ content. Published as `bullswarm` on npm.
    stored under `~/.bullswarm/drafts/<name>/` and are runnable by name
    without an upfront JSON. JSON is still the durable artifact — drafts
    are JSON documents, just built one mutation at a time.
+8. Goal-driven execution is zero-graph by default: `bullswarm workflow goal`
+   internalizes the planner contract, chooses the orchestrator and workers,
+   persists the generated workflow, and can detach so observation never
+   depends on the initiating agent or CLI process.
 
 ## Development
 
 ```bash
-npm test            # 147 tests, no network needed (meters read from cache)
+npm test            # 195 tests, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
 node bin/bullswarm.js workflow list   # discover workflows
 node bin/bullswarm.js workflow runs   # ongoing workflow instances
@@ -49,6 +53,15 @@ bullswarm workflow draft run my-audit
 bullswarm workflow runs show <shortId>
 bullswarm workflow runs delete <shortId> --yes
 ```
+
+## Using bullswarm from another agent
+
+If you are an agent that wants to offload bounded work via bullswarm,
+read `skill/SKILL.md` — that's the agent-facing user guide. It covers
+when to reach for `run` vs `workflow draft`, the verify-step pattern,
+how to write prompts that pass the content gate, and the failure modes
+you'll hit. The skill is published alongside the package and is the
+canonical reference for the CLI surface.
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:
   prime `~/.bullswarm/meters/*.json` caches with fresh timestamps if needed.

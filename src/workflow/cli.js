@@ -1,9 +1,13 @@
 // bullswarm workflow CLI — run | validate | list.
 
-import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs';
+import {
+  existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync,
+  openSync, closeSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { loadWorkflow, runWorkflow } from './runner.js';
+import { spawn } from 'node:child_process';
+import { loadWorkflow, runWorkflow, newRunId } from './runner.js';
 import { validateWorkflow, WorkflowValidationError } from './validate.js';
 import { buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
@@ -11,6 +15,9 @@ import { WorkflowTui } from './tui.js';
 import { cmdDraft } from './draft-cli.js';
 import { cmdRuns } from './runs-cli.js';
 import { resolveRunId } from './short-id.js';
+import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
+import { readEvents } from './events.js';
+import { buildGoalWorkflow } from './goal.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -73,6 +80,8 @@ export async function cmdWorkflow(args) {
   const opts = parseFlags(rest);
 
   switch (sub) {
+    case 'goal':
+      return wfGoal(opts);
     case 'run':
       return wfRun(opts);
     case 'validate':
@@ -83,6 +92,31 @@ export async function cmdWorkflow(args) {
       return cmdDraft(rest);
     case 'runs':
       return cmdRuns(rest);
+    case 'capabilities':
+      return wfCapabilities(opts);
+    case 'inspect':
+      return wfInspect(opts);
+    case 'tui':
+      try {
+        if (opts.json || opts.cancel || opts.show || opts.all) {
+          const token = opts.rest[0] ?? opts.show;
+          const result = dashboardJson(BULLSWARM_DIR(), {
+            all: opts.all,
+            token,
+            cancel: opts.cancel,
+          });
+          console.log(JSON.stringify(result, null, 2));
+          return 0;
+        }
+        return await runDashboard(BULLSWARM_DIR(), { token: opts.rest[0] ?? null });
+      }
+      catch (err) { console.error(`✗ ${err.message}`); return 1; }
+    case 'events':
+      return wfEvents(opts);
+    case 'action':
+      return wfAction(opts);
+    case 'approval':
+      return wfApproval(opts);
     default: {
       // Smart error: if the user typed a `runs` subcommand under
       // `workflow run ...` (e.g. `workflow run show jd3uki`), point
@@ -96,19 +130,345 @@ export async function cmdWorkflow(args) {
         );
         return 2;
       }
-      console.error('usage: bullswarm workflow <run|validate|list|draft|runs> ...');
+       console.error('usage: bullswarm workflow <goal|run|validate|list|draft|runs|capabilities|inspect|tui|events|action|approval> ...');
       return 2;
     }
   }
 }
 
+function goalSettings(opts) {
+  const mappings = {
+    'max-agents': 'maxAgents',
+    'max-expansion-rounds': 'maxExpansionRounds',
+    'max-actions': 'maxActions',
+    'max-items-per-expansion': 'maxItemsPerExpansion',
+    'max-workflow-seconds': 'maxWorkflowSeconds',
+    concurrency: 'concurrency',
+    'retry-attempts': 'retryAttempts',
+  };
+  return Object.fromEntries(Object.entries(mappings)
+    .filter(([flag]) => opts[flag] != null)
+    .map(([flag, setting]) => [setting, opts[flag]]));
+}
+
+async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId }) {
+  const tui = new WorkflowTui({ quiet: opts.quiet, json: opts.json });
+  const result = await runWorkflow({
+    bullswarmDir: BULLSWARM_DIR(),
+    doc,
+    pools,
+    runId,
+    resumeRunId,
+    onEvent: opts.json ? undefined : (event) => tui.handle(event),
+  });
+  if (opts.json) console.log(JSON.stringify(result.report, null, 2));
+  return result.report.status === 'completed' ? 0 : 1;
+}
+
+async function launchDetachedGoal(doc, opts) {
+  const runId = newRunId();
+  const goalDir = join(BULLSWARM_DIR(), 'goals', runId);
+  mkdirSync(goalDir, { recursive: true });
+  const requestPath = join(goalDir, 'request.json');
+  const stdoutPath = join(goalDir, 'stdout.log');
+  const stderrPath = join(goalDir, 'stderr.log');
+  writeFileSync(requestPath, `${JSON.stringify({
+    schemaVersion: 'bullswarm.goal.request.v1',
+    runId,
+    document: doc,
+  }, null, 2)}\n`);
+
+  const stdoutFd = openSync(stdoutPath, 'a');
+  const stderrFd = openSync(stderrPath, 'a');
+  let child;
+  try {
+    child = spawn(process.execPath, [
+      resolve(process.argv[1]), 'workflow', 'goal',
+      '--request', requestPath,
+      '--run-id', runId,
+      '--json', '--quiet',
+    ], {
+      cwd: doc.intent.cwd,
+      env: { ...process.env },
+      detached: true,
+      stdio: ['ignore', stdoutFd, stderrFd],
+    });
+    child.unref();
+  } finally {
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+  }
+  writeFileSync(join(goalDir, 'launcher.json'), `${JSON.stringify({
+    schemaVersion: 'bullswarm.goal.launcher.v1',
+    runId,
+    pid: child.pid,
+    launchedAt: new Date().toISOString(),
+    requestPath,
+    stdoutPath,
+    stderrPath,
+  }, null, 2)}\n`);
+
+  let state = null;
+  const statePath = join(BULLSWARM_DIR(), 'workflows', runId, 'state.json');
+  for (let i = 0; i < 100 && !state; i++) {
+    if (existsSync(statePath)) {
+      try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* atomic state write in progress */ }
+    }
+    if (!state) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  const launch = {
+    action: 'goal-launched',
+    runId,
+    shortId: state?.shortId ?? null,
+    status: state?.status ?? 'starting',
+    pid: child.pid,
+    goal: doc.intent.goal,
+    cwd: doc.intent.cwd,
+    requestedOrchestrator: doc.intent.requestedOrchestrator,
+    observe: {
+      summary: `bullswarm workflow runs show ${state?.shortId ?? runId}`,
+      dashboard: `bullswarm workflow tui --json ${state?.shortId ?? runId}`,
+      events: `bullswarm workflow events --json ${state?.shortId ?? runId} --after 0`,
+    },
+    logs: { stdout: stdoutPath, stderr: stderrPath },
+  };
+  if (opts.json) console.log(JSON.stringify(launch, null, 2));
+  else {
+    console.log(`launched autonomous workflow ${launch.shortId ?? runId} (pid ${child.pid})`);
+    console.log(`  observe: ${launch.observe.summary}`);
+    console.log(`  events:  ${launch.observe.events}`);
+  }
+  return 0;
+}
+
+async function wfGoal(opts) {
+  const { names, pools } = await livePoolNames();
+  let doc;
+  let resumeRunId = null;
+
+  if (opts.resume) {
+    const resolvedRun = resolveRunId(BULLSWARM_DIR(), opts.resume);
+    if (!resolvedRun) {
+      console.error(`✗ --resume token "${opts.resume}" did not match any run`);
+      return 1;
+    }
+    resumeRunId = resolvedRun.runId;
+    const workflowPath = join(resolvedRun.runDir, 'workflow.json');
+    const statePath = join(resolvedRun.runDir, 'state.json');
+    try {
+      doc = existsSync(workflowPath)
+        ? JSON.parse(readFileSync(workflowPath, 'utf8'))
+        : JSON.parse(readFileSync(statePath, 'utf8'))._doc;
+    } catch (err) {
+      console.error(`✗ cannot load durable workflow for ${resumeRunId}: ${err.message}`);
+      return 1;
+    }
+  } else if (opts.request) {
+    try {
+      const request = JSON.parse(readFileSync(resolve(opts.request), 'utf8'));
+      if (request.schemaVersion !== 'bullswarm.goal.request.v1' || !request.document) {
+        throw new Error('invalid goal request schema');
+      }
+      if (request.runId !== opts['run-id']) throw new Error('goal request runId mismatch');
+      doc = request.document;
+    } catch (err) {
+      console.error(`✗ cannot load goal request: ${err.message}`);
+      return 1;
+    }
+  } else {
+    const goal = opts.rest.join(' ').trim();
+    if (!goal) {
+      console.error('usage: bullswarm workflow goal "<goal>" [--cwd <dir>] [--detach] [--json]');
+      return 2;
+    }
+    const orchestrator = opts.orchestrator && opts.orchestrator !== 'auto'
+      ? opts.orchestrator : null;
+    try {
+      doc = buildGoalWorkflow({
+        goal,
+        cwd: opts.cwd ?? process.cwd(),
+        orchestrator,
+        settings: goalSettings(opts),
+      });
+    } catch (err) {
+      console.error(`✗ invalid goal options: ${err.message}`);
+      return 2;
+    }
+  }
+
+  const targetDir = doc?.intent?.cwd;
+  if (typeof targetDir !== 'string' || !existsSync(targetDir) || !statSync(targetDir).isDirectory()) {
+    console.error(`✗ goal cwd is not an existing directory: ${targetDir ?? '(missing)'}`);
+    return 1;
+  }
+
+  try {
+    validateWorkflow(doc, { poolNames: names });
+  } catch (err) {
+    if (err instanceof WorkflowValidationError) {
+      console.error('✗ autonomous workflow invalid (nothing ran):');
+      for (const issue of err.issues) console.error(`  - ${issue}`);
+      return 1;
+    }
+    throw err;
+  }
+
+  if (opts.detach && !resumeRunId && !opts.request) return launchDetachedGoal(doc, opts);
+  return executeGoalDocument({
+    doc,
+    pools,
+    opts,
+    runId: opts['run-id'] ?? undefined,
+    resumeRunId,
+  });
+}
+
+async function wfCapabilities(opts) {
+  const { pools } = await livePoolNames();
+  const result = {
+    lanes: ['analyze', 'build', 'chore'],
+    stepTypes: ['run', 'fanout', 'verify', 'decide'],
+    workflowFeatures: {
+      sequentialPhases: true,
+      dynamicFanout: true,
+      dynamicGraphExpansion: true,
+      autonomousGoalBootstrap: true,
+      detachedGoalRunner: true,
+      boundedObservePlanExecute: true,
+      durableOrderedEvents: true,
+      firstClassAttempts: true,
+      capabilityAwareRouting: true,
+      boundedRetries: true,
+      maxRetryAttempts: 3,
+      resume: true,
+      cooperativeCancellation: true,
+      adversarialVerification: true,
+    },
+    routing: {
+      automatic: true,
+      selection: 'highest time-adjusted quota surplus among lane-capable, enabled, non-quarantined, non-burst-gated pools',
+      modelSelection: 'connector-defined; bullswarm does not infer intelligence or change model unless connector command pins one',
+    },
+    pools: pools.map((p) => ({
+      name: p.name,
+      enabled: p.enabled !== false,
+      lanes: p.lanes ?? p.connector?.lanes ?? [],
+      capabilities: p.capabilities ?? p.connector?.capabilities ?? [],
+      model: (() => {
+        const cmd = p.connector?.spawn?.cmd ?? [];
+        const i = cmd.indexOf('--model');
+        return i >= 0 ? cmd[i + 1] ?? null : null;
+      })(),
+      meter: p.meter ?? { type: p.connector?.meter?.type ?? 'none' },
+      usedPct: p.usedPct ?? null,
+      pace: p.pace ?? null,
+      burstGate: p.burstGate === true,
+      quarantined: Boolean(p.quarantine),
+    })),
+  };
+  console.log(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+function wfEvents(opts) {
+  const token = opts.rest[0];
+  if (!token) {
+    console.error('usage: bullswarm workflow events --json <runId> [--after <sequence>]');
+    return 2;
+  }
+  const resolved = resolveRunId(BULLSWARM_DIR(), token);
+  if (!resolved) {
+    console.error(`✗ no run found for "${token}"`);
+    return 1;
+  }
+  const after = Number(opts.after ?? 0);
+  if (!Number.isInteger(after) || after < 0) {
+    console.error('✗ --after must be a non-negative integer');
+    return 2;
+  }
+  const events = readEvents(resolved.runDir, { after });
+  console.log(JSON.stringify({ action: 'events', runId: resolved.runId, shortId: resolved.shortId, after, count: events.length, events }, null, 2));
+  return 0;
+}
+
+function wfAction(opts) {
+  const [sub, token, actionId] = opts.rest;
+  if (sub !== 'show' || !token || !actionId) {
+    console.error('usage: bullswarm workflow action show --json <runId> <actionId>');
+    return 2;
+  }
+  try {
+    console.log(JSON.stringify(actionJson(BULLSWARM_DIR(), token, actionId), null, 2));
+    return 0;
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
+function wfApproval(opts) {
+  const [decision, token] = opts.rest;
+  if (!['approve', 'reject'].includes(decision) || !token) {
+    console.error('usage: bullswarm workflow approval <approve|reject> --json <runId>');
+    return 2;
+  }
+  try {
+    console.log(JSON.stringify({ action: 'approval', ...decideApproval(BULLSWARM_DIR(), token, decision) }, null, 2));
+    return 0;
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
+async function wfInspect(opts) {
+  const target = opts.rest[0];
+  if (!target) {
+    console.error('usage: bullswarm workflow inspect <file-or-name>');
+    return 2;
+  }
+  try {
+    const { doc, path } = loadWorkflow(target, workflowDirs());
+    const { names } = await livePoolNames();
+    const validation = validateWorkflow(doc, { poolNames: names });
+    console.log(JSON.stringify({
+      action: 'inspect-workflow', path, document: doc, validation,
+      availablePools: names,
+      semantics: {
+        phases: 'ordered and sequential',
+        run: 'one dispatch',
+        fanout: 'one dispatch per runtime item, bounded by concurrency',
+        verify: 'review artifact and require JSON ok:true',
+        retries: 'settings.retryAttempts adds same-pool retries; escalateOnFail may try alternate pools',
+        decide: 'planner proposal is validated, bounded, appended, executed, observed, and replanned',
+        dynamicGraphExpansion: doc.phases.some((phase) => phase.steps?.some((step) => step.type === 'decide')),
+      },
+    }, null, 2));
+    return 0;
+  } catch (err) {
+    if (err instanceof WorkflowValidationError) {
+      console.error(JSON.stringify({ action: 'inspect-workflow', ok: false, issues: err.issues }, null, 2));
+      return 1;
+    }
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
 function parseFlags(argv) {
   const out = { inputs: {}, rest: [] };
+  const valueFlags = new Set([
+    'resume', 'after', 'cwd', 'orchestrator', 'request', 'run-id',
+    'max-agents', 'max-expansion-rounds', 'max-actions',
+    'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
+    'retry-attempts',
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--resume') out.resume = argv[++i];
+    else if (a === '--after') out.after = argv[++i];
     else if (a === '--input') {
       const kv = argv[++i] ?? '';
       const eq = kv.indexOf('=');
@@ -125,7 +485,11 @@ function parseFlags(argv) {
         out.inputs[key] = v;
       }
     } else if (a.startsWith('--')) {
-      out[a.slice(2)] = true;
+      const eq = a.indexOf('=');
+      const key = a.slice(2, eq > 0 ? eq : undefined);
+      if (eq > 0) out[key] = a.slice(eq + 1);
+      else if (valueFlags.has(key)) out[key] = argv[++i];
+      else out[key] = true;
     } else out.rest.push(a);
   }
   return out;
@@ -235,7 +599,9 @@ async function wfRun(opts) {
     pools,
     inputs: opts.inputs,
     resumeRunId,
-    onEvent: (ev) => tui.handle(ev),
+    // --json is a report protocol, not JSONL event streaming. Events are
+    // still rendered for the human TUI, but agents get exactly one document.
+    onEvent: opts.json ? undefined : (ev) => tui.handle(ev),
   });
 
   if (opts.json) {

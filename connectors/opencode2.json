@@ -3,16 +3,26 @@
   "bin": "opencode",
   "configDirs": ["~/.config/opencode"],
   "spawn": {
-    "cmd": ["opencode", "run", "{taskFile}"],
+    "cmd": ["opencode", "run", "--auto", "--model", "relay/gpt-5.6-luna", "{taskFile}"],
     "cwdMode": "pwd",
     "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
   },
   "authSignatures": ["No cookie auth credentials found", "unauthorized"],
   "outputExtraction": { "strategy": "stdout" },
+  "$comment-auto": "--auto is required for headless workflow dispatch: task files live under ~/.bullswarm, outside the target repo, and OpenCode otherwise pauses for an interactive permission approval. --model pins the QA/runtime pool to Luna instead of the CLI default.",
   "$comment-exit1": "known failure mode: writes a complete correct answer, then dies with a Console-sync auth error and exit 1. The verdict sets contentUsableDespiteExit instead of discarding the work.",
   "meter": { "type": "none" },
   "costRank": 1,
   "lanes": ["analyze", "build", "chore"],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "modelDiscovery": { "cmd": ["opencode", "models"], "parse": "lines", "includePattern": "^[^\\s]+/[^\\s]+$", "timeoutMs": 20000, "maxModels": 250 },
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "modelProfiles": [
+    { "match": "(?:fable|opus|gpt-5\\.6-sol|gpt-5\\.5$)", "tier": "high", "qualityRank": 5 },
+    { "match": "(?:sonnet|terra|gpt-5\\.4$|deepseek-v4)", "tier": "medium", "qualityRank": 4 },
+    { "match": "(?:haiku|luna|(?:^|[/.-])mini(?:$|[/.-])|flash|free)", "tier": "low", "qualityRank": 2 }
+  ],
+  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": null },
   "flags": { "stealth": false },
   "timeoutSec": 900
 }

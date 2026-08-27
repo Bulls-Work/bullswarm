@@ -1,0 +1,45 @@
+{
+  "name": "adaptive-code-review",
+  "mode": "adaptive",
+  "description": "Inspect a repository, let a capability-qualified planner judge sufficiency, append bounded follow-up actions when needed, and replan until complete.",
+  "version": "1.0.0",
+  "intent": {
+    "goal": "Produce a verified code review whose evidence covers all important discovered risk areas."
+  },
+  "inputs": {
+    "targetDir": { "default": "." }
+  },
+  "settings": {
+    "concurrency": 3,
+    "escalateOnFail": true,
+    "retryAttempts": 1,
+    "maxAgents": 12,
+    "maxExpansionRounds": 3,
+    "maxActions": 20,
+    "maxItemsPerExpansion": 8,
+    "maxWorkflowSeconds": 1800
+  },
+  "phases": [
+    {
+      "name": "initial-review",
+      "steps": [
+        {
+          "id": "discover-risks",
+          "type": "run",
+          "lane": "analyze",
+          "requiresCapabilities": ["strong-analysis", "code-reading"],
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "Inspect this repository for correctness, security, recovery, and testing risks. Return concrete file-backed evidence and explicitly identify any areas you could not inspect. Do not modify files."
+        },
+        {
+          "id": "sufficiency-planner",
+          "type": "decide",
+          "lane": "analyze",
+          "requiresCapabilities": ["workflow-planning", "strong-analysis"],
+          "addDir": "{{inputs.targetDir}}",
+          "prompt": "Judge whether the completed review evidence is sufficient for the stated intent. If something material is missing, propose only bounded run, fanout, or verify actions with explicit dependencies. Complete only when the evidence is genuinely sufficient."
+        }
+      ]
+    }
+  ]
+}

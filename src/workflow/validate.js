@@ -9,7 +9,7 @@
 
 const LANES = ['analyze', 'build', 'chore'];
 const ON_ERROR = ['continue', 'fail', 'skip-phase'];
-const STEP_TYPES = ['run', 'fanout', 'verify'];
+const STEP_TYPES = ['run', 'fanout', 'verify', 'decide'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export class WorkflowValidationError extends Error {
@@ -91,6 +91,7 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
   const phaseNames = new Set();
   const stepIds = new Set();
   const outputs = new Set(); // step ids that produce outputs
+  let hasDecide = false;
 
   (wf.phases ?? []).forEach((phase, pi) => {
     const at = `phases[${pi}]`;
@@ -123,14 +124,25 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         collect(issues, validLanes.has(step.lane),
           `${sat}.lane "${step.lane}" is not a lane (${[...validLanes].join(', ')})`);
       }
+      if (step.effort != null) {
+        collect(issues, ['high', 'medium', 'low'].includes(step.effort),
+          `${sat}.effort must be high, medium, or low`);
+      }
       if (step.pool != null) {
         collect(issues, validPools.has(step.pool),
           `${sat}.pool "${step.pool}" is not a known pool (${[...validPools].join(', ') || 'none discovered'})`);
       }
+      if (step.requiresCapabilities != null) {
+        collect(issues, Array.isArray(step.requiresCapabilities) &&
+          step.requiresCapabilities.length > 0 &&
+          step.requiresCapabilities.every((capability) =>
+            typeof capability === 'string' && NAME_RE.test(capability)),
+        `${sat}.requiresCapabilities must be a non-empty array of kebab-case capability names`);
+      }
 
       if (step.type === 'fanout') {
-        collect(issues, typeof step.itemsFrom === 'string' && step.itemsFrom.length > 0,
-          `${sat}.itemsFrom is required for fanout steps`);
+        collect(issues, (typeof step.itemsFrom === 'string' && step.itemsFrom.length > 0) || Array.isArray(step.items),
+          `${sat} needs itemsFrom or an inline items array`);
         // itemsFrom must reference declared inputs or a prior step's output
         if (typeof step.itemsFrom === 'string' && step.itemsFrom.includes('.')) {
           const [root, target] = step.itemsFrom.split('.');
@@ -145,6 +157,9 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         if (step.concurrency != null) {
           collect(issues, Number.isInteger(step.concurrency) && step.concurrency >= 1,
             `${sat}.concurrency must be a positive integer`);
+        }
+        if (step.items != null) {
+          collect(issues, Array.isArray(step.items), `${sat}.items must be an array`);
         }
       } else if (step.type === 'run') {
         collect(issues,
@@ -162,6 +177,45 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
             || (root === 'inputs' && (inputs[target] != null));
           collect(issues, ok,
             `${sat}.review "${step.review}" cannot resolve (use outputs.<priorStepId>.outFile or inputs.<declaredInput>)`);
+        }
+      } else if (step.type === 'decide') {
+        hasDecide = true;
+        collect(issues, step.prompt == null || typeof step.prompt === 'string',
+          `${sat}.prompt must be a string when provided`);
+        if (step.actionDefaults != null) {
+          collect(issues, step.actionDefaults && typeof step.actionDefaults === 'object' && !Array.isArray(step.actionDefaults),
+            `${sat}.actionDefaults must be an object`);
+          const allowedDefaults = new Set(['pool', 'lane', 'effort', 'requiresCapabilities', 'addDir', 'timeoutSec']);
+          for (const key of Object.keys(step.actionDefaults ?? {})) {
+            collect(issues, allowedDefaults.has(key), `${sat}.actionDefaults.${key} is not runtime-controlled metadata`);
+          }
+          if (step.actionDefaults?.pool != null) {
+            collect(issues, validPools.has(step.actionDefaults.pool),
+              `${sat}.actionDefaults.pool "${step.actionDefaults.pool}" is not a known pool`);
+          }
+          if (step.actionDefaults?.lane != null) {
+            collect(issues, validLanes.has(step.actionDefaults.lane),
+              `${sat}.actionDefaults.lane "${step.actionDefaults.lane}" is not a lane`);
+          }
+          if (step.actionDefaults?.effort != null) {
+            collect(issues, ['high', 'medium', 'low'].includes(step.actionDefaults.effort),
+              `${sat}.actionDefaults.effort must be high, medium, or low`);
+          }
+          if (step.actionDefaults?.requiresCapabilities != null) {
+            collect(issues, Array.isArray(step.actionDefaults.requiresCapabilities) &&
+              step.actionDefaults.requiresCapabilities.length > 0 &&
+              step.actionDefaults.requiresCapabilities.every((capability) =>
+                typeof capability === 'string' && NAME_RE.test(capability)),
+            `${sat}.actionDefaults.requiresCapabilities must contain kebab-case names`);
+          }
+          if (step.actionDefaults?.addDir != null) {
+            collect(issues, typeof step.actionDefaults.addDir === 'string',
+              `${sat}.actionDefaults.addDir must be a string`);
+          }
+          if (step.actionDefaults?.timeoutSec != null) {
+            collect(issues, Number.isFinite(step.actionDefaults.timeoutSec) && step.actionDefaults.timeoutSec > 0,
+              `${sat}.actionDefaults.timeoutSec must be a positive number`);
+          }
         }
       }
 
@@ -188,6 +242,30 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
     collect(issues, Number.isInteger(settings.concurrency) && settings.concurrency >= 1
       && settings.concurrency <= 16,
       `settings.concurrency must be a positive integer ≤ 16`);
+  }
+  if (settings.retryAttempts != null) {
+    collect(issues, Number.isInteger(settings.retryAttempts) && settings.retryAttempts >= 0
+      && settings.retryAttempts <= 3,
+      `settings.retryAttempts must be an integer from 0 to 3`);
+  }
+  if (settings.maxActions != null) {
+    collect(issues, settings.maxActions >= stepIds.size,
+      `settings.maxActions=${settings.maxActions} is below the ${stepIds.size} initial actions`);
+  }
+  for (const [key, min] of [
+    ['maxExpansionRounds', 0],
+    ['maxActions', 1],
+    ['maxItemsPerExpansion', 1],
+    ['maxWorkflowSeconds', 1],
+  ]) {
+    if (settings[key] != null) {
+      collect(issues, Number.isInteger(settings[key]) && settings[key] >= min,
+        `settings.${key} must be an integer >= ${min}`);
+    }
+  }
+  if (hasDecide) {
+    collect(issues, Number.isInteger(settings.maxExpansionRounds) && settings.maxExpansionRounds >= 1,
+      'adaptive workflows with a decide step require settings.maxExpansionRounds >= 1');
   }
 
   // ---- template reference resolution (W2) --------------------------------

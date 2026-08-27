@@ -23,6 +23,29 @@
   },
   "costRank": 2,
   "lanes": ["analyze", "build", "chore"],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "modelDiscovery": {
+    "$comment": "Optional local CLI model listing. Parsing quirks stay connector-owned.",
+    "cmd": ["example-cli", "--list-models"],
+    "parse": "lines|columns|bullets",
+    "includePattern": "optional regex",
+    "ignorePattern": "optional regex",
+    "timeoutMs": 20000,
+    "maxModels": 250
+  },
+  "knownModels": ["fallback-model-id"],
+  "modelProfiles": [{
+    "match": "connector-owned regex",
+    "tier": "high|medium|low",
+    "qualityRank": 1,
+    "benchmark": {"name": "optional", "score": null, "source": null, "updatedAt": null},
+    "pricing": {"inputUsdPerMillion": null, "cacheReadUsdPerMillion": null, "outputUsdPerMillion": null},
+    "pricingSource": "optional dated primary source",
+    "pricingUpdatedAt": "YYYY-MM-DD",
+    "free": false
+  }],
+  "modelSelection": {"flag": "--model", "mode": "replace-or-append"},
+  "subscription": {"plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly"},
   "flags": {
     "stealth": false,
     "$comment-stealth": "stealth=true: prompts/completions retained by an anonymous provider — opt-in only, never a default"
