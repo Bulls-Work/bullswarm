@@ -51,3 +51,67 @@ test('child depth env increments exactly once', () => {
   assert.equal(child[DEPTH_ENV], '2');
   assert.equal(parent[DEPTH_ENV], '1'); // untouched
 });
+
+test('top-level CLI uses BULLSWARM_HOME at invocation time', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-home-'));
+  const previous = process.env.BULLSWARM_HOME;
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      version: 1, pools: {}, incumbents: {}, decisionLog: [],
+      config: { depthLimit: 2, callerName: 'claude-code' },
+    }));
+    const { getBullswarmDir } = await import('../src/cli.js');
+    process.env.BULLSWARM_HOME = home;
+    assert.equal(getBullswarmDir(), home);
+    // Change it after module import; the resolver must follow it.
+    const second = `${home}-second`;
+    mkdirSync(join(second, 'connectors'), { recursive: true });
+    process.env.BULLSWARM_HOME = second;
+    assert.equal(getBullswarmDir(), second);
+    rmSync(second, { recursive: true, force: true });
+  } finally {
+    if (previous === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const repo = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-cli-home-'));
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    for (const file of ['echo.json', 'echo-worker.mjs']) {
+      writeFileSync(join(home, 'connectors', file), readFileSync(join(repo, 'connectors', file)));
+    }
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      version: 1, pools: { echo: { enabled: true } }, incumbents: {},
+      decisionLog: [], config: { depthLimit: 2, callerName: 'claude-code' },
+    }));
+    const env = { ...process.env, BULLSWARM_HOME: home };
+    const doctor = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'doctor', '--json'], {
+      env, encoding: 'utf8',
+    });
+    assert.equal(doctor.status, 0, doctor.stderr);
+    const doctorJson = JSON.parse(doctor.stdout);
+    assert.equal(doctorJson.configured, true);
+    assert.match(doctorJson.checks[0].detail, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const pools = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'pools', '--json'], {
+      env, encoding: 'utf8',
+    });
+    assert.equal(pools.status, 0, pools.stderr);
+    const poolsJson = JSON.parse(pools.stdout);
+    assert.deepEqual(poolsJson.pools.map((p) => p.name), ['echo']);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -16,6 +16,7 @@ import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
+import { estimateInvocationUsage } from './usage.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -28,16 +29,30 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
   );
 }
 
+export function argvWithModel(connector, paths, model = null) {
+  const argv = substituteArgv(connector.spawn.cmd, paths);
+  if (!model || !connector.modelSelection?.flag) return argv;
+  const flag = connector.modelSelection.flag;
+  const index = argv.indexOf(flag);
+  if (index >= 0) {
+    if (index + 1 < argv.length) argv[index + 1] = model;
+    else argv.push(model);
+  } else {
+    argv.push(flag, model);
+  }
+  return argv;
+}
+
 /**
  * Run one delegate and return the raw observation.
- * @returns Promise<{exitCode, signal, stdout, stderr, timedOut}>
+ * @returns Promise<{exitCode, signal, stdout, stderr, timedOut, cancelled}>
  */
 export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   const timeoutMs = (opts.timeoutSec ?? connector.timeoutSec ?? 900) * 1000;
-  const argv = substituteArgv(connector.spawn.cmd, {
+  const argv = argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
-  });
+  }, opts.model);
   const usePwdMode = connector.spawn.cwdMode === 'pwd';
   // realpath: getcwd() resolves symlinks (macOS /var -> /private/var), so an
   // unresolved PWD would disagree with cwd and defeat wrong-repo detection.
@@ -53,32 +68,43 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       env: { ...process.env, ...(opts.env ?? {}), PWD: resolvedDir },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    opts.onSpawn?.(child.pid);
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let cancelled = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 2000);
     }, timeoutMs);
+    const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
+      if (cancelled || !opts.shouldCancel()) return;
+      cancelled = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 2000);
+    }, 250) : null;
 
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
     child.on('error', (err) => {
       clearTimeout(timer);
+      if (cancelPoll) clearInterval(cancelPoll);
       resolvePromise({
         exitCode: null,
         signal: null,
         stdout,
         stderr: `${stderr}\n${err.message}`,
         timedOut,
+        cancelled,
         spawnError: true,
       });
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      resolvePromise({ exitCode: code, signal, stdout, stderr, timedOut });
+      if (cancelPoll) clearInterval(cancelPoll);
+      resolvePromise({ exitCode: code, signal, stdout, stderr, timedOut, cancelled });
     });
   });
 }
@@ -124,6 +150,17 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   const output = extractOutput(connector, obs);
   writeFileSync(paths.outFile, output);
+  const selectedModel = opts.model ?? connector.model ?? (() => {
+    const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
+    return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
+  })();
+  const usage = estimateInvocationUsage({
+    taskText,
+    outputText: output,
+    connector,
+    model: selectedModel,
+    subscription: connector.subscription ?? null,
+  });
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
@@ -135,7 +172,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const authHit = matchAuthSignature(connector, output.slice(0, 2000));
 
   let verdict;
-  if (obs.timedOut) {
+  if (obs.cancelled) {
+    verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
+  } else if (obs.timedOut) {
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec ?? connector.timeoutSec}s` };
   } else if (obs.spawnError) {
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
@@ -167,15 +206,17 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     ...verdict,
     ok: verdict.ok,
     keepOnClaude: false,
-    pick: { pool: connector.name, command: connector.spawn.cmd },
+    pick: { pool: connector.name, model: selectedModel, command: connector.spawn.cmd },
     contentUsableDespiteExit: usableDespite,
     meta: {
       pool: connector.name,
       exitCode: obs.exitCode,
       signal: obs.signal,
       timedOut: obs.timedOut,
+      cancelled: obs.cancelled,
       wallSec,
       outBytes: output.length,
+      usage,
     },
     outFile: paths.outFile,
     taskFile: paths.taskFile,

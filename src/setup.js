@@ -172,17 +172,63 @@ export function repairConnectors(bullswarmDir) {
     if (!f.endsWith('.json') || f.startsWith('_')) continue;
     const dst = join(target, f);
     let broken = false;
+    let differs = false;
     try {
       JSON.parse(readFileSync(dst, 'utf8'));
     } catch {
       broken = true;
     }
-    if (!existsSync(dst) || broken) {
+    if (!broken && existsSync(dst)) {
+      differs = readFileSync(dst, 'utf8') !== readFileSync(join(REPO_ROOT, 'connectors', f), 'utf8');
+    }
+    if (!existsSync(dst) || broken || differs) {
       copyFileSync(join(REPO_ROOT, 'connectors', f), dst);
       repaired.push(f);
     }
   }
   return repaired;
+}
+
+// Forward-compatible metadata migration for existing installations. Preserve
+// user-edited spawn commands and other connector quirks; only fill fields that
+// did not exist in older published connector documents.
+export function upgradeConnectorMetadata(bullswarmDir) {
+  const target = join(bullswarmDir, 'connectors');
+  if (!existsSync(target)) return [];
+  const upgraded = [];
+  for (const f of readdirSync(join(REPO_ROOT, 'connectors'))) {
+    if (!f.endsWith('.json') || f.startsWith('_')) continue;
+    const dst = join(target, f);
+    if (!existsSync(dst)) continue;
+    try {
+      const installed = JSON.parse(readFileSync(dst, 'utf8'));
+      const packaged = JSON.parse(readFileSync(join(REPO_ROOT, 'connectors', f), 'utf8'));
+      let changed = false;
+      if (Array.isArray(packaged.capabilities)) {
+        const existing = Array.isArray(installed.capabilities) ? installed.capabilities : [];
+        const merged = [...new Set([...existing, ...packaged.capabilities])];
+        if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+          installed.capabilities = merged;
+          changed = true;
+        }
+      }
+      if (installed.model == null && packaged.model != null) {
+        installed.model = packaged.model;
+        changed = true;
+      }
+      for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'subscription']) {
+        if (installed[field] == null && packaged[field] != null) {
+          installed[field] = packaged[field];
+          changed = true;
+        }
+      }
+      if (changed) {
+        writeFileSync(dst, `${JSON.stringify(installed, null, 2)}\n`);
+        upgraded.push(f);
+      }
+    } catch { /* normal repair/setup will handle malformed files */ }
+  }
+  return upgraded;
 }
 
 // --- auto-setup ---------------------------------------------------------------
@@ -225,6 +271,8 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
     discoveredCount: usable.length,
     repaired,
     routingTable: table,
+    strategyRefreshRecommended: true,
+    strategyCommand: 'bullswarm strategy refresh',
   };
 }
 
@@ -238,7 +286,10 @@ export function isConfigured(bullswarmDir) {
  * autoSetup result (callers may surface it).
  */
 export function ensureSetup(bullswarmDir) {
-  if (isConfigured(bullswarmDir)) return null;
+  if (isConfigured(bullswarmDir)) {
+    upgradeConnectorMetadata(bullswarmDir);
+    return null;
+  }
   return autoSetup(bullswarmDir, { reason: 'first-use' });
 }
 

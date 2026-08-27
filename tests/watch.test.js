@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { watchOnce } from '../src/lib/watch.js';
+import { watchOnce, argvWithModel } from '../src/lib/watch.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,10 +39,24 @@ test('happy path: echo worker completes and passes verification', async () => {
     assert.equal(v.ok, true);
     assert.equal(v.why, 'verified');
     assert.equal(v.meta.exitCode, 0);
+    assert.equal(v.meta.usage.model, 'echo-local');
+    assert.equal(v.meta.usage.cost.estimatedUsd, 0);
+    assert.equal(v.meta.usage.tokenSource, 'estimated:utf8-bytes/4');
     assert.match(readFileSync(ctx.paths.outFile, 'utf8'), /Completed/);
   } finally {
     ctx.cleanup();
   }
+});
+
+test('connector-owned model selection replaces or appends the declared flag', () => {
+  const base = {
+    spawn: { cmd: ['agent', '--model', 'old', '{taskFile}'] },
+    modelSelection: { flag: '--model', mode: 'replace-or-append' },
+  };
+  assert.deepEqual(argvWithModel(base, { taskFile: '/t', cwd: '/c' }, 'new'),
+    ['agent', '--model', 'new', '/t']);
+  assert.deepEqual(argvWithModel({ ...base, spawn: { cmd: ['agent', '{taskFile}'] } },
+    { taskFile: '/t', cwd: '/c' }, 'new'), ['agent', '/t', '--model', 'new']);
 });
 
 test('lying exit 0 with auth failure is caught by signature gate', async () => {

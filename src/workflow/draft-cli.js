@@ -53,11 +53,30 @@ function parseDraftFlags(argv) {
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--resume') out.resume = argv[++i];
+    else if (a.startsWith('--resume=')) out.resume = a.slice('--resume='.length);
     else if (a === '--input') out._pairs.push(argv[++i] ?? '');
+    else if (a.startsWith('--input=')) out._pairs.push(a.slice('--input='.length));
     else if (a.startsWith('--')) {
-      const key = a.slice(2);
+      // --key=value form: split on the first = and treat the
+      // value as a single token. This is the form agents and
+      // shell scripts can use without quoting concerns.
+      const eq = a.indexOf('=');
+      if (eq > 0) {
+        // Normalize camelCase to kebab-case so callers can use
+        // either `--itemsFrom=x` or `--items-from=x`. The
+        // dispatcher in draftStep reads kebab-case keys
+        // (`f['items-from']`), so the form must be uniform.
+        const key = a.slice(2, eq).replace(/[A-Z]/g, (m) => '-' + m.toLowerCase());
+        out._flags[key] = a.slice(eq + 1);
+        continue;
+      }
+      // --key value form: only consume the next token if it
+      // doesn't look like another flag. To accept values that
+      // BEGIN with `--` (rare but legal — e.g. an itemsFrom path
+      // that happens to start with `--`), use the = form above.
+      const key = a.slice(2).replace(/[A-Z]/g, (m) => '-' + m.toLowerCase());
       const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) {
+      if (next === undefined || (next.startsWith('--') && !next.includes('='))) {
         out._flags[key] = true;
       } else {
         out._flags[key] = next;
@@ -412,7 +431,7 @@ async function draftRun(opts) {
     pools,
     inputs: opts.inputs,
     resumeRunId,
-    onEvent: (ev) => tui.handle(ev),
+    onEvent: opts.json ? undefined : (ev) => tui.handle(ev),
   });
   if (opts.json) console.log(JSON.stringify(result.report, null, 2));
   return result.report.status === 'completed' ? 0 : 1;

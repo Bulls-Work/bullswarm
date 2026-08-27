@@ -36,6 +36,17 @@
     "build",
     "chore"
   ],
+  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
+  "knownModels": ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "modelProfiles": [
+    { "match": "^claude-fable-5$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-opus-(5|4-[5-8])$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-sonnet-5$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 10 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
+    { "match": "^claude-haiku-4-5$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 1, "cacheReadUsdPerMillion": 0.1, "outputUsdPerMillion": 5 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" }
+  ],
+  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
   "flags": {
     "stealth": false,
     "isCaller": true

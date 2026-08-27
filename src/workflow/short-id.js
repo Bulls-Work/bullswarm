@@ -147,7 +147,8 @@ export function listRuns(bullswarmDir) {
 /**
  * An ongoing run is one whose owning process is still alive OR very
  * recently alive. We probe via `state.json`'s mtime: the runtime
- * writes state.json on every step. A run is "ongoing" when:
+ * writes state.json on every step and sends a heartbeat during dispatch.
+ * A run is "ongoing" when:
  *   - `state.finishedAt` is unset, AND
  *   - `state.json` was modified within the last `ONGOING_GRACE_MS`
  *     (default 90 s).

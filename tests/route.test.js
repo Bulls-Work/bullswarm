@@ -90,3 +90,30 @@ test('unknown lane is refused, never guessed', () => {
   assert.equal(r.pick, null);
   assert.match(r.why, /unknown lane/);
 });
+
+test('explicit effort-tier assignment wins only while its pool remains eligible', () => {
+  const pools = [
+    pool('fast-quota', { pace: 80, capabilities: ['code-reading'] }),
+    pool('assigned', { pace: 1, capabilities: ['code-reading'] }),
+  ];
+  const picked = pickPool('build', pools, {
+    callerEligible: false,
+    callerSession: false,
+    preferredPool: 'assigned',
+    effortTier: 'high',
+    requiredCapabilities: ['code-reading'],
+  });
+  assert.equal(picked.pick.pool, 'assigned');
+  assert.match(picked.why, /configured high assignment/);
+
+  pools[1].quarantine = { until: NOW + 10_000 };
+  const fallback = pickPool('build', pools, {
+    callerEligible: false,
+    callerSession: false,
+    preferredPool: 'assigned',
+    effortTier: 'high',
+    requiredCapabilities: ['code-reading'],
+    now: NOW,
+  });
+  assert.equal(fallback.pick.pool, 'fast-quota');
+});

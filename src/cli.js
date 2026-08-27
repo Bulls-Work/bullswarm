@@ -15,8 +15,16 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
+import { cmdStrategy } from './strategy-cli.js';
 
-export const BULLSWARM_DIR = join(homedir(), '.bullswarm');
+export function getBullswarmDir() {
+  const h = process.env.BULLSWARM_HOME?.trim();
+  return h && h.length ? h : join(homedir(), '.bullswarm');
+}
+
+// Backwards-compatible snapshot for external imports. Internal CLI paths
+// call getBullswarmDir() so BULLSWARM_HOME is honored at invocation time.
+export const BULLSWARM_DIR = getBullswarmDir();
 
 function parseArgs(argv) {
   const args = {};
@@ -36,7 +44,7 @@ function parseArgs(argv) {
 
 async function cmdPools(opts) {
   const now = Date.now();
-  const { state, pools } = await buildPoolsLive(BULLSWARM_DIR, now, {
+  const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
     force: opts.force === true,
     getReadings: getAllMeterReadings,
   });
@@ -44,7 +52,7 @@ async function cmdPools(opts) {
   if (released.length && !opts.json) {
     console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
   }
-  saveState(BULLSWARM_DIR, state);
+  saveState(getBullswarmDir(), state);
   if (opts.json) {
     console.log(JSON.stringify({ pools }, null, 2));
     return 0;
@@ -72,10 +80,15 @@ async function cmdPools(opts) {
 async function cmdRun(opts) {
   const now = Date.now();
   const lane = opts.lane;
+  const effortTier = opts.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[lane] ?? null);
+  if (effortTier && !['high', 'medium', 'low'].includes(effortTier)) {
+    console.error('--effort must be high, medium, or low');
+    return 2;
+  }
   const targetDir = resolve(opts['add-dir'] ?? process.cwd());
 
   // Recursion guard FIRST — core-owned, env handshake.
-  let state = loadState(BULLSWARM_DIR);
+  let state = loadState(getBullswarmDir());
   try {
     assertDepthAllowed(state);
   } catch (err) {
@@ -86,7 +99,7 @@ async function cmdRun(opts) {
 
   sweepQuarantines(state, now);
 
-  const { pools } = await buildPoolsLive(BULLSWARM_DIR, now, {
+  const { pools } = await buildPoolsLive(getBullswarmDir(), now, {
     getReadings: getAllMeterReadings,
   });
   for (const p of pools) {
@@ -102,6 +115,8 @@ async function cmdRun(opts) {
     callerEligible: opts['no-caller'] !== true,
     callerName: state.config.callerName ?? 'claude-code',
     now,
+    preferredPool: state.strategy?.assignments?.[effortTier]?.pool ?? null,
+    effortTier,
   });
   if (gated.length && route.pick) {
     route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
@@ -109,7 +124,7 @@ async function cmdRun(opts) {
 
   if (!route.pick && route.keepOnClaude) {
     logDecision(state, { lane, picked: null, keepOnClaude: true, ok: null, why: route.why });
-    saveState(BULLSWARM_DIR, state);
+    saveState(getBullswarmDir(), state);
     emit({ ok: true, keepOnClaude: true, why: route.why, pick: { pool: null, command: null } }, opts);
     return 0;
   }
@@ -122,6 +137,12 @@ async function cmdRun(opts) {
   // connector spec lives one level down.
   const poolView = route.pick.connector ?? { name: route.pick.pool };
   const connector = poolView.connector ?? poolView;
+  const assignment = state.strategy?.assignments?.[effortTier] ?? null;
+  const selectedModel = assignment?.pool === connector.name ? assignment.model : null;
+  const runtimeConnector = {
+    ...connector,
+    subscription: poolView.subscription ?? connector.subscription ?? null,
+  };
 
   // Task text: --task-file content or stdin string.
   const taskText = opts['task-file']
@@ -133,16 +154,17 @@ async function cmdRun(opts) {
   }
 
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const runDir = join(BULLSWARM_DIR, 'runs');
+  const runDir = join(getBullswarmDir(), 'runs');
   mkdirSync(runDir, { recursive: true });
   const paths = {
     taskFile: join(runDir, `task-${stamp}.md`),
     outFile: join(runDir, `out-${stamp}.md`),
   };
 
-  const verdict = await watchOnce(connector, taskText, targetDir, paths, {
+  const verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
     timeoutSec: Number(opts.timeout ?? connector.timeoutSec ?? 900),
     env: childDepthEnv(process.env),
+    model: selectedModel,
   });
 
   // Persist incumbency on success; quarantine hint on auth failure.
@@ -161,9 +183,11 @@ async function cmdRun(opts) {
     ok: verdict.ok,
     why: verdict.why,
     wallSec: verdict.meta?.wallSec,
+    model: verdict.pick?.model ?? null,
+    usage: verdict.meta?.usage ?? null,
     outFile: paths.outFile,
   });
-  saveState(BULLSWARM_DIR, state);
+  saveState(getBullswarmDir(), state);
 
   emit(verdict, opts);
   return verdict.ok ? 0 : 1;
@@ -188,14 +212,20 @@ function emit(verdict, opts) {
     ].filter(Boolean).join(' ');
     console.log(line);
     if (verdict.outFile) console.log(`output: ${verdict.outFile}`);
+    const usage = verdict.meta?.usage;
+    if (usage) {
+      const t = usage.tokens ?? {};
+      console.log(`usage: read=${t.standardRead ?? '?'} cache-read=${t.cacheRead ?? '?'} cache-write=${t.cacheWrite ?? '?'} output=${t.output ?? '?'} tokens (${usage.tokenSource})`);
+      console.log(`cost: ${usage.cost?.estimatedUsd == null ? 'unknown' : `~$${usage.cost.estimatedUsd}`} · quota: ${usage.normalizedQuota?.estimatedPercent == null ? 'unknown' : `~${usage.normalizedQuota.estimatedPercent}%`}`);
+    }
   }
 }
 
 // --- health -----------------------------------------------------------------
 
 function cmdHealth(opts) {
-  const state = loadState(BULLSWARM_DIR);
-  const runsDir = join(BULLSWARM_DIR, 'runs');
+  const state = loadState(getBullswarmDir());
+  const runsDir = join(getBullswarmDir(), 'runs');
   const findings = [];
 
   // Correlate each logged decision with its saved output: the doctrine
@@ -250,15 +280,16 @@ async function cmdSetup(opts) {
   // Agent-friendly: --yes (or no TTY on stdin) initializes with discovered
   // defaults and never prompts.
   if (opts.yes || !process.stdin.isTTY) {
-    const r = autoSetup(BULLSWARM_DIR, { reason: opts.yes ? 'flag' : 'non-tty' });
+    const r = autoSetup(getBullswarmDir(), { reason: opts.yes ? 'flag' : 'non-tty' });
     if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r }, null, 2));
     else {
       console.log(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`);
       if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
+      console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
     }
     return 0;
   }
-  return runWizard(BULLSWARM_DIR, opts);
+  return runWizard(getBullswarmDir(), opts);
 }
 
 // --- doctor -------------------------------------------------------------------
@@ -268,21 +299,21 @@ async function cmdSetup(opts) {
 async function cmdDoctor(opts) {
   const { discoverConnectors, isConfigured, autoSetup } = await import('./setup.js');
   const checks = [];
-  let configured = isConfigured(BULLSWARM_DIR);
+  let configured = isConfigured(getBullswarmDir());
 
   checks.push({
     id: 'config',
     ok: configured,
-    detail: configured ? `${BULLSWARM_DIR}/state.json present` : 'no config yet',
+    detail: configured ? `${getBullswarmDir()}/state.json present` : 'no config yet',
     fix: 'bullswarm setup --yes   # or run any verb; it self-initializes',
   });
 
   // Self-heal before reporting when not configured — an agent calling
   // doctor should end up ready-to-use in the same invocation.
   if (!configured) {
-    autoSetup(BULLSWARM_DIR, { reason: 'doctor' });
+    autoSetup(getBullswarmDir(), { reason: 'doctor' });
     configured = true;
-    checks[0] = { ...checks[0], ok: true, detail: `initialized at ${BULLSWARM_DIR} (was missing)` };
+    checks[0] = { ...checks[0], ok: true, detail: `initialized at ${getBullswarmDir()} (was missing)` };
   }
 
   const discovered = discoverConnectors();
@@ -295,7 +326,7 @@ async function cmdDoctor(opts) {
   });
 
   try {
-    const { pools } = await buildPoolsLive(BULLSWARM_DIR, Date.now(), {
+    const { pools } = await buildPoolsLive(getBullswarmDir(), Date.now(), {
       getReadings: getAllMeterReadings,
     });
     const live = pools.filter((p) => p.meterSource === 'live' || p.meterSource === 'cache');
@@ -343,7 +374,7 @@ export async function main(argv) {
 
   // Agent-friendly guarantee: EVERY verb works on a fresh machine. If config
   // is missing, self-initialize with discovered defaults (never prompts).
-  ensureSetup(BULLSWARM_DIR);
+  ensureSetup(getBullswarmDir());
 
   switch (verb) {
     case undefined:
@@ -363,6 +394,8 @@ export async function main(argv) {
       return cmdDoctor(opts);
     case 'workflow':
       return cmdWorkflow(rest);
+    case 'strategy':
+      return cmdStrategy(rest, { bullswarmDir: getBullswarmDir() });
     case 'version':
       console.log(getVersion());
       return 0;
@@ -370,7 +403,7 @@ export async function main(argv) {
       return cmdRelease(opts);
     default:
       console.error(
-        `unknown verb "${verb}". try: setup | run | health | pools | doctor | workflow | version | release`,
+        `unknown verb "${verb}". try: setup | run | health | pools | strategy | doctor | workflow | version | release`,
       );
       return 2;
   }

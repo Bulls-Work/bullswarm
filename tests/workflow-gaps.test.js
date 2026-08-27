@@ -338,6 +338,33 @@ test('G5: warnAtAgents emits a workflow.large event once', async () => {
   }
 });
 
+test('retryAttempts repeats a pinned pool invocation up to the configured bound', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const worker = join(dir, 'retry-worker.mjs');
+    writeFileSync(worker, [
+      'import { existsSync, writeFileSync } from "node:fs";',
+      'const marker = process.argv[2] + ".attempt";',
+      'const first = !existsSync(marker);',
+      'writeFileSync(marker, "seen");',
+      'process.stdout.write(first ? "I will try again" : "The retry succeeded with a concrete report containing enough detail to pass verification.");',
+    ].join('\n'));
+    const connector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+    connector.spawn.cmd = ['node', worker, '{taskFile}'];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc: {
+        name: 'retry-bound', description: 'retry', inputs: {},
+        settings: { concurrency: 1, escalateOnFail: true, retryAttempts: 1 },
+        phases: [{ name: 'p', steps: [{ id: 'r', type: 'run', pool: 'echo', lane: 'chore', prompt: 'retry', timeoutSec: 60 }] }],
+      },
+      pools: [{ name: 'echo', connector, enabled: true, costRank: 1, lanes: ['chore'], meter: { type: 'none' }, pace: 0 }],
+      inputs: {}, onEvent: () => {},
+    });
+    assert.equal(result.state.outputs.r.ok, true);
+  } finally { cleanup(); }
+});
+
 // -------------------------------------------------------------------------
 // G6: verify (skeptic) step type — validation + runtime.
 // -------------------------------------------------------------------------
@@ -462,6 +489,34 @@ test('G6: verify step fails the run when the JSON response says ok:false', async
   } finally {
     cleanup();
   }
+});
+
+test('G6: custom verify prompt still includes the reviewed artifact', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const newWorker = join(dir, 'verify-target-worker.mjs');
+    writeFileSync(newWorker, [
+      'import { readFileSync } from "node:fs";',
+      'const task = readFileSync(process.argv[2], "utf8");',
+      'const ok = task.includes("BEGIN REVIEW TARGET") && task.includes("END REVIEW TARGET") && task.includes("RETURN ONLY a single JSON object");',
+      'const out = "x".repeat(120) + JSON.stringify({ ok, concerns: [], summary: ok ? "target supplied" : "target missing" });',
+      'process.stdout.write(out);',
+      'process.exit(0);',
+    ].join('\n'));
+    const doc = {
+      name: 'g6-custom-prompt', description: 'g', inputs: {},
+      settings: { concurrency: 1, escalateOnFail: false },
+      phases: [{ name: 'p', steps: [
+        { id: 'a', type: 'run', lane: 'chore', prompt: 'thing to review', timeoutSec: 60 },
+        { id: 'v', type: 'verify', lane: 'analyze', review: 'outputs.a.outFile', prompt: 'Use the supplied artifact and return JSON.', timeoutSec: 60 },
+      ] }],
+    };
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'), doc, pools: echoOnlyPools(dir, newWorker), inputs: {}, onEvent: () => {},
+    });
+    assert.equal(result.state.outputs.v.ok, true);
+    assert.equal(result.state.outputs.v.verify.summary, 'target supplied');
+  } finally { cleanup(); }
 });
 
 // -------------------------------------------------------------------------
