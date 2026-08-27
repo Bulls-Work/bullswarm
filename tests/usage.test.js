@@ -81,3 +81,18 @@ test('aggregate usage exposes a known subtotal without misreporting it as a comp
   assert.match(total.cost.basis, /partial/);
   assert.equal(unknown.normalizedQuota.basis, 'unknown: invocation cost is unavailable');
 });
+
+test('aggregate usage counts attempts missing evidence and marks totals partial', () => {
+  const known = estimateInvocationUsage({ taskText: '1234', outputText: '1234', connector, model: 'fixture-pro' });
+  const total = aggregateUsage([
+    { status: 'succeeded', usage: known },
+    { status: 'abandoned', usage: null },
+  ]);
+  assert.equal(total.attempts, 2);
+  assert.equal(total.attemptsWithUsage, 1);
+  assert.equal(total.attemptsMissingUsage, 1);
+  assert.equal(total.cost.complete, false);
+  assert.equal(total.cost.estimatedUsd, null);
+  assert.equal(total.cost.knownSubtotalUsd, known.cost.estimatedUsd);
+  assert.match(total.cost.basis, /without usage evidence/);
+});

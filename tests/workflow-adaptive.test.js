@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runWorkflow } from '../src/workflow/runner.js';
+import { completionEvidenceGaps, runWorkflow } from '../src/workflow/runner.js';
 import { readEvents } from '../src/workflow/events.js';
 import {
   validateDecisionProposal, normalizeDecisionProposal, DecisionValidationError,
@@ -69,6 +69,7 @@ function fixture() {
 test('adaptive planner appends a bounded action, executes it, then replans to complete', async () => {
   const f = fixture();
   try {
+    let activeDynamicStep = null;
     const doc = {
       name: 'adaptive-loop', description: 'observe plan execute loop', inputs: {},
       settings: { concurrency: 1, retryAttempts: 0, maxAgents: 6, maxExpansionRounds: 2, maxActions: 8, maxItemsPerExpansion: 4 },
@@ -77,7 +78,15 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
         { id: 'planner', type: 'decide', lane: 'analyze', prompt: 'Judge sufficiency and propose only necessary bounded work.' },
       ] }],
     };
-    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        if (event.type !== 'action.started' || event.actionId !== 'expanded-task') return;
+        const runId = readdirSync(join(f.bullswarmDir, 'workflows'))[0];
+        const live = JSON.parse(readFileSync(join(f.bullswarmDir, 'workflows', runId, 'state.json'), 'utf8'));
+        activeDynamicStep = live.currentStep;
+      },
+    });
     assert.equal(result.state.status, 'completed');
     assert.equal(result.state.outputs['expanded-task'].ok, true);
     assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
@@ -85,6 +94,9 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.equal(result.state.budget.expansionRound, 1);
     assert.ok(result.state.attempts.length >= 4);
     assert.ok(result.state.attempts.every((attempt) => attempt.taskFile && attempt.outFile && attempt.status === 'succeeded'));
+    assert.deepEqual(activeDynamicStep, {
+      id: 'expanded-task', type: 'run', phase: 'work:adaptive',
+    });
 
     const events = readEvents(result.runDir);
     assert.deepEqual(events.map((event) => event.sequence), events.map((_, index) => index + 1));
@@ -92,6 +104,14 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.equal(events.filter((event) => event.type === 'decision.created').length, 2);
     assert.equal(events.at(-1).type, 'run.completed');
     assert.equal(result.report.lastEventSequence, events.at(-1).sequence);
+
+    const plannerTasks = readdirSync(result.runDir)
+      .filter((name) => name.startsWith('task-planner-'))
+      .map((name) => readFileSync(join(result.runDir, name), 'utf8'));
+    assert.ok(plannerTasks.length >= 2);
+    assert.ok(plannerTasks.every((task) => task.includes('"actionTimeoutSec": null')));
+    assert.ok(plannerTasks.every((task) => task.includes('"verificationDispatchReserve": 0')));
+    assert.ok(plannerTasks.every((task) => task.includes('The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.')));
   } finally { f.cleanup(); }
 });
 
@@ -225,13 +245,22 @@ test('resume executes only unfinished accepted expansion actions, then replans',
     assert.equal(before.outputs['resume-one'].ok, true);
     assert.equal(before.outputs['resume-two'], undefined);
 
+    const resumedPools = f.pools.map((pool) => ({
+      ...pool,
+      strategyAssignments: { high: { pool: 'adaptive-echo', model: 'adaptive-v2' } },
+    }));
     const resumed = await runWorkflow({
-      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: crashedRunId,
+      bullswarmDir: f.bullswarmDir, doc, pools: resumedPools, inputs: {}, resumeRunId: crashedRunId,
     });
     assert.equal(resumed.state.status, 'completed');
     assert.equal(resumed.state.outputs['resume-two'].ok, true);
     assert.equal(resumed.state.attempts.filter((attempt) => attempt.actionId === 'resume-one').length, 1);
     assert.equal(resumed.state.decisions.at(-1).decision, 'complete');
+    assert.deepEqual(resumed.state.routingStrategy.assignments, {
+      high: { pool: 'adaptive-echo', model: 'adaptive-v2' },
+    });
+    assert.deepEqual(resumed.state.routingStrategy.history.map((entry) => entry.reason), ['run-start', 'resume']);
+    assert.deepEqual(resumed.report.routingStrategy, resumed.state.routingStrategy);
   } finally { f.cleanup(); }
 });
 
@@ -276,6 +305,9 @@ test('retryAttempts zero still permits exactly one capable alternate-pool escala
     const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools, inputs: {} });
     assert.equal(result.state.outputs.inspect.ok, true);
     assert.deepEqual(result.state.attempts.map((attempt) => attempt.pool), ['bad', 'adaptive-echo']);
+    const action = result.state.actionLedger.find((entry) => entry.id === 'inspect');
+    assert.equal(action.status, 'succeeded');
+    assert.equal(action.why, undefined);
   } finally { f.cleanup(); }
 });
 
@@ -294,6 +326,20 @@ test('maxActions cannot be lower than the initial durable plan', () => {
       { id: 'two', type: 'run', prompt: 'two' },
     ] }],
   }), (err) => err.issues?.some((issue) => issue.includes('below the 2 initial actions')));
+});
+
+test('completion requires verification of the latest successful worker', () => {
+  const actions = [
+    { id: 'audit', kind: 'run', status: 'succeeded', dependsOn: [] },
+    { id: 'audit-verify', kind: 'verify', status: 'succeeded', dependsOn: ['audit'] },
+    { id: 'implementation', kind: 'run', status: 'succeeded', dependsOn: ['audit-verify'] },
+  ];
+  const policy = { requireSuccessfulWorker: true, requireSuccessfulVerification: true };
+  assert.deepEqual(completionEvidenceGaps(actions, policy), [
+    'a successful verification of latest worker implementation',
+  ]);
+  actions.push({ id: 'implementation-verify', kind: 'verify', status: 'succeeded', dependsOn: ['implementation'] });
+  assert.deepEqual(completionEvidenceGaps(actions, policy), []);
 });
 
 test('events reader returns only records after a sequence cursor', async () => {

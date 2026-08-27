@@ -19,10 +19,21 @@ import { join } from 'node:path';
 import { validateWorkflow, WorkflowValidationError } from '../src/workflow/validate.js';
 import { runWorkflow } from '../src/workflow/runner.js';
 import { Semaphore } from '../src/workflow/semaphore.js';
+import { plannerBudgetContext } from '../src/workflow/runtime.js';
 import { WorkflowTui } from '../src/workflow/tui.js';
 import { loadState, saveState, quarantinePool, DEPTH_ENV } from '../src/lib/state.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+
+test('planner budget includes its in-flight dispatch and exposes true remaining slots', () => {
+  const context = plannerBudgetContext({
+    dispatchesUsed: 9, dispatchLimit: 12, expansionRound: 2, expansionLimit: 4,
+  });
+  assert.equal(context.dispatchesUsedBeforePlanner, 9);
+  assert.equal(context.dispatchesUsed, 10);
+  assert.equal(context.remainingDispatches, 2);
+  assert.equal(context.includesCurrentPlannerDispatch, true);
+});
 
 function fixtureHome() {
   const dir = mkdtempSync(join(tmpdir(), 'bs-wf-gap-'));
@@ -300,6 +311,7 @@ test('G5: maxAgents=2 stops the third step from dispatching', async () => {
     assert.equal(result.state.outputs.b.ok, true);
     assert.equal(result.state.outputs.c.ok, false);
     assert.match(result.state.outputs.c.why, /spend guard/);
+    assert.equal(result.state.status, 'budget_exhausted');
   } finally {
     cleanup();
   }
@@ -410,16 +422,15 @@ test('G6: verify step accepts an inputs.<declaredInput> reference', () => {
 test('G6: verify step parses a JSON {ok:bool, concerns, summary} response', async () => {
   const { dir, cleanup } = fixtureHome();
   try {
-    // The verify gate judges content by substance. A bare JSON object
-    // is under MIN_SUBSTANCE_CHARS (80) and trips the "announcement
-    // without substance" branch. So the worker writes a long body that
-    // includes the JSON verdict at the end.
+    // A schema-valid verifier JSON object is substantive even when it is
+    // shorter than the generic prose gate's minimum length.
     const newWorker = join(dir, 'verify-worker.mjs');
     writeFileSync(newWorker, [
       'import { readFileSync } from "node:fs";',
-      'readFileSync(process.argv[2], "utf8");',
-      'const filler = "x".repeat(120);',
-      'const out = filler + " VERDICT: " + JSON.stringify({ ok: true, concerns: [], summary: "echo verifier" });',
+      'const task = readFileSync(process.argv[2], "utf8");',
+      'const out = task.includes("RETURN ONLY a single JSON object")',
+      '  ? JSON.stringify({ ok: true, concerns: [], summary: "echo verifier" })',
+      '  : "Completed the bounded source task with concrete inspection evidence and a durable artifact for independent downstream verification.";',
       'process.stdout.write(out);',
       'process.exit(0);',
     ].join('\n'));

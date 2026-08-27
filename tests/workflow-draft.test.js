@@ -308,6 +308,21 @@ test('L2: draft phase add appends and re-validates', () => {
   } finally { cleanup(); }
 });
 
+test('L2: draft step add accepts a configured pinned pool during incremental validation', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    run(wf('draft', 'create', 'demo'), { home });
+    run(wf('draft', 'phase', 'add', 'demo', 'p1'), { home });
+    const r = run(wf(
+      'draft', 'step', 'add', 'demo', 'p1', 'pinned',
+      '--type', 'run', '--prompt', 'do bounded work', '--pool', 'echo',
+    ), { home });
+    assert.equal(r.status, 0, `stdout=${r.stdout} stderr=${r.stderr}`);
+    const { meta } = loadDraft(home, 'demo');
+    assert.equal(meta.lastValidation.ok, true);
+  } finally { cleanup(); }
+});
+
 test('L2: draft step add with --step-template JSON parses and embeds', () => {
   const { home, cleanup } = sandbox();
   try {

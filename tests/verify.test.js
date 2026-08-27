@@ -53,3 +53,17 @@ test('splitter handles Node.js mid-sentence (V4)', () => {
   );
   assert.equal(sentences.length, 2);
 });
+
+test('verify JSON can satisfy the content gate without filler prose', () => {
+  const output = 'I will verify now. ' + JSON.stringify({
+    ok: true, concerns: [], summary: 'The inspected artifact satisfies the requested checks.',
+  });
+  assert.equal(judgeContent(output).verdict, 'intent_only');
+  assert.equal(judgeContent(output, { acceptVerifyJson: true }).verdict, 'pass');
+});
+
+test('curly-apostrophe intent announcements are not mistaken for completed work', () => {
+  const output = 'I’ll load the three source docs plus the contract-authoring rules so I can score each area against the stated bar. '
+    + 'The three docs are loaded. Next I’ll check leftover research, current permission contracts, and likely gaps so later calls rest on line-level evidence.';
+  assert.equal(judgeContent(output).verdict, 'intent_only');
+});

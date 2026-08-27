@@ -134,6 +134,7 @@ export function estimateInvocationUsage({
 
 export function aggregateUsage(attempts = []) {
   const usages = attempts.map((attempt) => attempt?.usage).filter(Boolean);
+  const attemptsMissingUsage = attempts.length - usages.length;
   const sumNullable = (path) => {
     const values = usages.map((usage) => path(usage)).filter(Number.isFinite);
     return values.length ? values.reduce((a, b) => a + b, 0) : null;
@@ -146,18 +147,27 @@ export function aggregateUsage(attempts = []) {
     totalKnown: sumNullable((u) => u.tokens?.totalKnown),
   };
   const knownCostSubtotal = sumNullable((u) => u.cost?.estimatedUsd);
-  const costComplete = usages.length > 0 && usages.every((u) => Number.isFinite(u.cost?.estimatedUsd));
+  const costComplete = attempts.length > 0
+    && attemptsMissingUsage === 0
+    && usages.every((u) => Number.isFinite(u.cost?.estimatedUsd));
   const knownNormalizedSubtotal = sumNullable((u) => u.normalizedQuota?.estimatedPercent);
-  const quotaComplete = usages.length > 0
+  const quotaComplete = attempts.length > 0
+    && attemptsMissingUsage === 0
     && usages.every((u) => Number.isFinite(u.normalizedQuota?.estimatedPercent));
   return {
-    attempts: usages.length,
+    attempts: attempts.length,
+    attemptsWithUsage: usages.length,
+    attemptsMissingUsage,
     tokens,
     cost: {
       estimatedUsd: costComplete ? roundMoney(knownCostSubtotal) : null,
       knownSubtotalUsd: knownCostSubtotal == null ? null : roundMoney(knownCostSubtotal),
       complete: costComplete,
-      basis: costComplete ? 'sum of all attempt estimates' : 'partial: one or more attempts lack model rate metadata',
+      basis: costComplete
+        ? 'sum of all attempt estimates'
+        : attemptsMissingUsage > 0
+          ? 'partial: one or more attempts ended without usage evidence'
+          : 'partial: one or more attempts lack model rate metadata',
     },
     normalizedQuota: {
       estimatedPercent: quotaComplete ? roundPct(knownNormalizedSubtotal) : null,
@@ -165,7 +175,9 @@ export function aggregateUsage(attempts = []) {
       complete: quotaComplete,
       basis: quotaComplete
         ? 'sum of all per-attempt normalized estimates'
-        : 'partial: one or more attempts lack cost or declared subscription value',
+        : attemptsMissingUsage > 0
+          ? 'partial: one or more attempts ended without usage evidence'
+          : 'partial: one or more attempts lack cost or declared subscription value',
     },
   };
 }

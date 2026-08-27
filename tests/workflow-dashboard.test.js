@@ -86,11 +86,12 @@ test('dashboard rows expose current step and active agent state', () => {
     const statePath = join(home, 'workflows', 'wf-test', 'state.json');
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     state.currentPhase = { index: 0, name: 'review', total: 1 };
-    state.currentStep = { id: 'fan', type: 'fanout', phase: 'review' };
+    state.currentStep = { id: 'fan', type: 'fanout', phase: 'review:adaptive' };
     state.activeAgents = { 'fan[0]': { stepId: 'fan[0]', pool: 'opencode2', model: 'relay/gpt-5.6-luna', attempt: 0 } };
     writeFileSync(statePath, JSON.stringify(state));
     const row = dashboardRows(home)[0];
     assert.equal(row.currentStep.id, 'fan');
+    assert.equal(row.phase, 'review:adaptive');
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
     assert.match(renderDetails(row), /relay\/gpt-5\.6-luna/);
   } finally { cleanup(); }
