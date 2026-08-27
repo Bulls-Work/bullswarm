@@ -41,7 +41,7 @@ export const FAILURE_PATTERNS = [
 
 // First-person future = intent, not work.
 const INTENT_RE =
-  /\b(?:i'?ll|i will|i'?m going to|i am going to|i plan to|i intend to|let me)\b/i;
+  /\b(?:i['’]?ll|i will|i['’]?m going to|i am going to|i plan to|i intend to|let me)\b/i;
 
 // After terminal punctuation, a new sentence starts only at a capital,
 // digit, quote, bracket, or markdown starter — nothing else.
@@ -105,13 +105,28 @@ export function looksLikeWork(text) {
   return substance.trim().length >= MIN_SUBSTANCE_CHARS;
 }
 
+function hasVerifyJson(text) {
+  try {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) return false;
+    const value = JSON.parse(text.slice(start, end + 1));
+    return typeof value?.ok === 'boolean'
+      && Array.isArray(value.concerns)
+      && typeof value.summary === 'string'
+      && value.summary.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Judge delegate output content.
  * @param {string} text   full delegate output
- * @param {object} opts   { exitCode, expectWork=true }
+ * @param {object} opts   { exitCode, expectWork=true, acceptVerifyJson=false }
  * @returns {{verdict:'pass'|'fail'|'intent_only', why:string}}
  */
-export function judgeContent(text, { exitCode, expectWork = true } = {}) {
+export function judgeContent(text, { exitCode, expectWork = true, acceptVerifyJson = false } = {}) {
   void exitCode; // content-only judgment; exit handled by the caller
   if (typeof text !== 'string' || text.trim().length === 0) {
     return { verdict: 'fail', why: 'empty output' };
@@ -119,7 +134,7 @@ export function judgeContent(text, { exitCode, expectWork = true } = {}) {
   if (scanForFailure(text)) {
     return { verdict: 'fail', why: 'failure pattern at output head' };
   }
-  if (expectWork && !looksLikeWork(text)) {
+  if (expectWork && !looksLikeWork(text) && !(acceptVerifyJson && hasVerifyJson(text))) {
     return { verdict: 'intent_only', why: 'announcement without substance' };
   }
   return { verdict: 'pass', why: 'content passed all gates' };

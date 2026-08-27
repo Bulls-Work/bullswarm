@@ -290,6 +290,11 @@ test('stale active run with a dead owner is reconciled to a resumable interrupti
     assert.equal(reconciled.status, 'interrupted');
     assert.equal(reconciled.recovery.resumable, true);
     assert.equal(reconciled.attempts[0].status, 'abandoned');
+    assert.equal(reconciled.usage.attempts, 1);
+    assert.equal(reconciled.usage.attemptsWithUsage, 0);
+    assert.equal(reconciled.usage.attemptsMissingUsage, 1);
+    assert.equal(reconciled.usage.cost.complete, false);
+    assert.match(reconciled.usage.cost.basis, /without usage evidence/);
     assert.equal(reconciled.actionLedger[0].status, 'interrupted');
     assert.equal(isOngoing(runDir, reconciled), false);
     assert.equal(JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).status, 'interrupted');

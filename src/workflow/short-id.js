@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendEvent } from './events.js';
+import { aggregateUsage } from '../lib/usage.js';
 
 export const SHORT_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyz';
 export const SHORT_ID_LEN = 6;
@@ -229,6 +230,7 @@ export function reconcileInterruptedRun(runDir, state, {
       action.why = reason;
     }
   }
+  state.usage = aggregateUsage(state.attempts ?? []);
   delete state.activeAgents;
   delete state.currentPhase;
   delete state.currentStep;

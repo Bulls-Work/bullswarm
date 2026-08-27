@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { validateWorkflow, WorkflowValidationError } from './validate.js';
 import { loadState, saveState, quarantinePool } from '../lib/state.js';
+import { loadConnectors } from '../lib/config.js';
 
 export const DRAFTS_DIR_NAME = 'drafts';
 
@@ -102,11 +103,12 @@ export function saveDraft(bullswarmDir, name, doc, metaPatch = {}) {
 // rule still bites when you try to RUN a phaseless draft, but during
 // construction we want incremental edits to keep returning 0. We
 // downgrade those specific issues to warnings.
-export function revalidateDraft(bullswarmDir, name, { poolNames = [] } = {}) {
+export function revalidateDraft(bullswarmDir, name, { poolNames = null } = {}) {
   const { doc, meta, paths } = loadDraft(bullswarmDir, name);
+  const knownPoolNames = poolNames ?? Object.keys(loadConnectors(bullswarmDir));
   let result = { ok: true, issues: [], warnings: [] };
   try {
-    const r = validateWorkflow(doc, { poolNames });
+    const r = validateWorkflow(doc, { poolNames: knownPoolNames });
     result = { ok: true, issues: [], warnings: r.warnings ?? [] };
   } catch (err) {
     if (err instanceof WorkflowValidationError) {

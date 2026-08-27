@@ -78,13 +78,30 @@ export async function runWorkflow(opts) {
   let state;
   if (resuming && existsSync(join(runDir, 'state.json'))) {
     state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const resumedAt = new Date().toISOString();
     state.resumeHistory ??= [];
     state.resumeHistory.push({
       status: state.status ?? null,
       finishedAt: state.finishedAt ?? null,
       abortReason: state.abortReason ?? null,
-      resumedAt: new Date().toISOString(),
+      resumedAt,
     });
+    const previousAssignments = state.routingStrategy?.assignments ?? {};
+    const currentAssignments = pools[0]?.strategyAssignments ?? {};
+    if (JSON.stringify(previousAssignments) !== JSON.stringify(currentAssignments)) {
+      state.routingStrategy ??= {};
+      state.routingStrategy.history ??= [{
+        effectiveAt: state.startedAt ?? null,
+        assignments: previousAssignments,
+        reason: 'run-start',
+      }];
+      state.routingStrategy.history.push({
+        effectiveAt: resumedAt,
+        assignments: currentAssignments,
+        reason: 'resume',
+      });
+      state.routingStrategy.assignments = currentAssignments;
+    }
     delete state.finishedAt;
     delete state.cancelledAt;
     delete state.cancellingAt;
@@ -292,6 +309,7 @@ export async function runWorkflow(opts) {
           r = {
             ok: false,
             why: `spend guard: maxAgents=${state.settings.maxAgents} reached`,
+            budgetExhausted: true,
           };
           state.outputs[step.id] = { ...r, maxAgentsReached: true };
         } else {
@@ -398,6 +416,28 @@ export async function runWorkflow(opts) {
   }
 }
 
+export function completionEvidenceGaps(dynamicActions, policy) {
+  const missing = [];
+  const successfulWorkers = dynamicActions.filter(
+    (action) => action.kind !== 'verify' && action.status === 'succeeded',
+  );
+  const latestSuccessfulWorker = successfulWorkers.at(-1) ?? null;
+  if (policy?.requireSuccessfulWorker && !latestSuccessfulWorker) {
+    missing.push('a successful worker action');
+  }
+  if (policy?.requireSuccessfulVerification && !dynamicActions.some(
+    (action) => action.kind === 'verify'
+      && action.status === 'succeeded'
+      && latestSuccessfulWorker
+      && (action.dependsOn ?? []).includes(latestSuccessfulWorker.id),
+  )) {
+    missing.push(latestSuccessfulWorker
+      ? `a successful verification of latest worker ${latestSuccessfulWorker.id}`
+      : 'a successful verification action');
+  }
+  return missing;
+}
+
 async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   const settings = state.settings;
 
@@ -434,6 +474,12 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         }
         let result;
         try {
+          state.currentStep = {
+            id: action.id,
+            type: action.type,
+            phase: `${phase}:adaptive`,
+          };
+          runtime.persist();
           result = await runtime.runStep(
             { ...action, parentId: gate.id, _dynamic: true },
             { phase: `${phase}:adaptive`, retryAttempts },
@@ -481,6 +527,8 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     runtime.emit('kernel.checkpointed', { stage: 'observing', gateId: gate.id });
     state.stage = 'planning';
     runtime.emit('kernel.checkpointed', { stage: 'planning', gateId: gate.id });
+    state.currentStep = { id: gate.id, type: gate.type, phase };
+    runtime.persist();
     const planner = await runtime.runStep(gate, { phase, retryAttempts });
     if (!planner.ok) return planner;
 
@@ -527,15 +575,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     if (proposal.decision === 'complete') {
       const policy = state.orchestration?.completionPolicy;
       const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
-      const missing = [];
-      if (policy?.requireSuccessfulWorker &&
-          !dynamicActions.some((action) => action.kind !== 'verify' && action.status === 'succeeded')) {
-        missing.push('a successful worker action');
-      }
-      if (policy?.requireSuccessfulVerification &&
-          !dynamicActions.some((action) => action.kind === 'verify' && action.status === 'succeeded')) {
-        missing.push('a successful verification action');
-      }
+      const missing = completionEvidenceGaps(dynamicActions, policy);
       if (missing.length) {
         const why = `autonomous completion rejected: missing ${missing.join(' and ')}`;
         decision.accepted = false;

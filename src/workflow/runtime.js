@@ -38,6 +38,21 @@ import { aggregateUsage } from '../lib/usage.js';
 // full text is always on disk in the per-step outFile.
 export const OUTPUT_TEXT_CAP_BYTES = 64 * 1024;
 
+export function plannerBudgetContext(budget = {}) {
+  const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
+  const dispatchLimit = Number(budget.dispatchLimit ?? 0);
+  const dispatchesUsed = dispatchesUsedBeforePlanner + 1;
+  return {
+    ...budget,
+    dispatchesUsed,
+    dispatchesUsedBeforePlanner,
+    remainingDispatches: Number.isFinite(dispatchLimit)
+      ? Math.max(0, dispatchLimit - dispatchesUsed)
+      : null,
+    includesCurrentPlannerDispatch: true,
+  };
+}
+
 export class WorkflowRuntime {
   /**
    * @param {object} opts
@@ -307,6 +322,8 @@ export class WorkflowRuntime {
         action.attempts.push(this.state.attempts.length - 1);
         action.status = 'running';
         action.startedAt ??= startedAt;
+        delete action.finishedAt;
+        delete action.why;
         this.emit('attempt.started', {
           actionId, attemptNumber, pool: conn.name, model: attemptRecord.model,
           routing: attemptRecord.routing,
@@ -387,6 +404,7 @@ export class WorkflowRuntime {
             env: childEnv,
             shouldCancel: () => this.refreshCancellation(),
             model: selectedModel,
+            acceptVerifyJson: step.type === 'verify',
             onSpawn: (pid) => {
               attemptRecord.childPid = pid;
               action.childPid = pid;
@@ -770,6 +788,9 @@ export class WorkflowRuntime {
       finishedAt: action.finishedAt ?? null,
       why: action.why ?? null,
     });
+    const budget = plannerBudgetContext(this.state.budget);
+    const completionPolicy = this.state.orchestration?.completionPolicy ?? {};
+    const verificationReserve = completionPolicy.requireSuccessfulVerification === true ? 1 : 0;
     const plannerContext = {
       intent: this.state.intent,
       completedActions: (this.state.actionLedger ?? []).filter((action) =>
@@ -777,7 +798,16 @@ export class WorkflowRuntime {
       outputs,
       failures: (this.state.actionLedger ?? []).filter((action) =>
         ['failed_terminal', 'abandoned'].includes(action.status)).map(actionForPlanner),
-      budget: this.state.budget,
+      budget,
+      executionConstraints: {
+        actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
+        retryAttempts: Number(this.state.settings?.retryAttempts ?? 0),
+        verificationDispatchReserve: verificationReserve,
+        dispatchesAvailableBeforeReserve: budget.remainingDispatches == null
+          ? null
+          : Math.max(0, budget.remainingDispatches - verificationReserve),
+        completionPolicy,
+      },
       approval: this.state.approval ?? null,
       availablePools: this.pools.filter((pool) =>
         pool.enabled !== false && !pool.quarantine && pool.burstGate !== true).map((pool) => ({
@@ -800,6 +830,8 @@ export class WorkflowRuntime {
       'Action skeleton: {"id":"bounded-action","type":"run","prompt":"Do bounded work.","dependsOn":["prior-action"]}.',
       'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
       'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal.',
+      'Size every run/fanout action to finish within executionConstraints.actionTimeoutSec; split independent subsystems into separate actions instead of assigning the whole remaining goal to one worker.',
+      'The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt. Do not consume executionConstraints.verificationDispatchReserve with implementation work.',
       '',
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),

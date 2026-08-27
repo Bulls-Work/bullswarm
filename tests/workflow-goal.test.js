@@ -111,6 +111,10 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.equal(report.attempts.every((attempt) => attempt.usage?.tokenSource), true);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
     assert.equal(existsSync(join(report.artifactsDir, 'workflow.json')), true);
+    const firstPlannerTask = readFileSync(report.attempts[0].taskFile, 'utf8');
+    assert.match(firstPlannerTask, /"actionTimeoutSec": 900/);
+    assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
+    assert.match(firstPlannerTask, /Do not consume executionConstraints\.verificationDispatchReserve with implementation work/);
 
     const shown = cli(f, ['workflow', 'tui', '--json', report.shortId]);
     assert.equal(shown.status, 0, shown.stderr);

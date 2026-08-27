@@ -54,7 +54,7 @@ export function dashboardRows(bullswarmDir) {
       return {
         ...r,
         status: state.cancelRequested ? 'stopping' : (state.status ?? 'running'),
-        phase: steps.at(-1)?.phase ?? 'starting',
+        phase: state.currentStep?.phase ?? state.currentPhase?.name ?? steps.at(-1)?.phase ?? 'starting',
         stepsOk: steps.filter((s) => s.ok).length,
         stepsTotal: steps.length,
         fanout,

@@ -181,7 +181,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   } else if (authHit) {
     verdict = { ok: false, why: `auth/throttle signature: "${authHit}"`, quarantineHint: true };
   } else {
-    const j = judgeContent(output, { exitCode: obs.exitCode });
+    const j = judgeContent(output, {
+      exitCode: obs.exitCode,
+      acceptVerifyJson: opts.acceptVerifyJson === true,
+    });
     if (j.verdict === 'pass') {
       verdict = {
         ok: obs.exitCode === 0,
@@ -200,7 +203,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     !obs.timedOut &&
     !authHit &&
     obs.exitCode !== 0 &&
-    judgeContent(output, { expectWork: true }).verdict === 'pass';
+    judgeContent(output, {
+      expectWork: true,
+      acceptVerifyJson: opts.acceptVerifyJson === true,
+    }).verdict === 'pass';
 
   return {
     ...verdict,
