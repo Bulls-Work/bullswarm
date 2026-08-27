@@ -95,7 +95,9 @@ The detached runner does not depend on the initiating CLI remaining alive.
 Resume a process-interrupted run from its persisted definition with
 `bullswarm workflow goal --resume <shortId> --json`. Leave orchestrator
 selection automatic in normal use; `--orchestrator=<pool>` is for controlled
-provider QA.
+provider QA. `SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
+persist `interrupted`; later workflow commands also reconcile dead or stale
+owners into that explicit resumable state.
 
 ## Multi-step shape (`bullswarm workflow draft ...`)
 
@@ -187,11 +189,15 @@ among capable pools. For strategic model selection, first run:
 ```bash
 bullswarm strategy refresh
 bullswarm strategy show --json
+bullswarm strategy apply --yes --refresh-hours 24
+bullswarm strategy auto status
 bullswarm strategy assign high --pool <pool> --model <model>
 ```
 
-Connector-declared discovery, dated benchmark/pricing evidence, and live quota
-produce high/medium/low suggestions; unknown evidence remains null. A step's
+Connector-declared discovery, dated benchmark/pricing evidence, live quota,
+and tier-specific capability requirements produce high/medium/low suggestions;
+unknown evidence remains null. `apply --yes` is the explicit approval gate: it
+persists assignments and enables TTL-based discovery/re-application. A step's
 `effort` or a lane default (`analyze=high`, `build=medium`, `chore=low`) can use
 an assignment, but it never bypasses capability, quarantine, exhaustion, or
 burst-gate safety. Each attempt records the chosen agent/model and labeled
@@ -200,7 +206,8 @@ token, cost, and normalized-quota estimates in the workflow tree.
 Run state also exposes the versioned plan, action ledger, aggregate usage, every attempt,
 planner decisions and reasons, budgets, `currentPhase`, `currentStep`, and
 `activeAgents` in `workflow tui --json <shortId>`. Each attempt includes its
-pool, selected model, effort tier, usage/cost estimate, status, task/output artifacts, timings, failure
+pool, selected model, effort tier, routing reason and eligible candidates,
+usage/cost estimate, status, task/output artifacts, timings, failure
 reason, and child-process termination evidence. `workflow tui` displays the
 same information interactively. `workflow events` supports replay after a
 monotonic sequence cursor.

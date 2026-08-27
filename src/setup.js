@@ -357,7 +357,32 @@ export async function runWizard(bullswarmDir, opts = {}) {
   console.log(`\nWrote ${bullswarmDir}/state.json and routing.json`);
   if (repaired.length) console.log(`Repaired connector files: ${repaired.join(', ')}`);
 
-  // 5. Integration blocks — diff + approval
+  // 5. Optional execution style. Agent-decides is the neutral default: it
+  // communicates preference without forcing a repository/worktree topology.
+  const worktreeAnswer = (
+    await rl.question('worktree isolation [agent/off/required] (default agent): ')
+  ).trim().toLowerCase();
+  state.config ??= {};
+  state.config.worktreeIsolation = worktreeAnswer === 'required'
+    ? 'required' : worktreeAnswer === 'off' ? 'off' : 'agent-decides';
+  saveState(bullswarmDir, state);
+  console.log(`  worktree isolation: ${state.config.worktreeIsolation}`);
+
+  // Strategy changes actual provider/model routing, so discovery plus daily
+  // auto-application always requires an explicit setup answer.
+  const strategyAnswer = (
+    await rl.question('discover models and enable capability-aware daily strategy autopilot? [y/N] ')
+  ).trim().toLowerCase();
+  if (strategyAnswer === 'y' || strategyAnswer === 'yes') {
+    const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
+    const report = await refreshStrategy(bullswarmDir);
+    const applied = applyStrategyRecommendations(bullswarmDir, report);
+    console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}`).join(', ')}`);
+  } else {
+    console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');
+  }
+
+  // 6. Integration blocks — diff + approval
   for (const [label, path] of [
     ['CLAUDE.md', join(process.env.HOME ?? '', '.claude', 'CLAUDE.md')],
     ['AGENTS.md', join(process.cwd(), 'AGENTS.md')],

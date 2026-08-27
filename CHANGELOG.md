@@ -1,5 +1,17 @@
 # bullswarm changelog
 
+## 0.9.0 — resilient dynamic workflow routing
+
+- Added cooperative `SIGTERM`/`SIGINT` handling, durable `interrupted` states,
+  dead/stale owner reconciliation, and clean resume after interruption.
+- Added capability-context filtering for model recommendations plus an explicit
+  `strategy apply --yes` approval gate and TTL-based automatic refresh.
+- Added setup-time worktree policy and strategy-autopilot choices.
+- Added per-attempt routing reasons/candidate surplus to durable events, state,
+  decision logs, and the printable workflow tree.
+- Added top-level `runs` and `--version` aliases, complete `workflow goal`
+  budget help, and correct phase/terminal display for completed runs.
+
 ## 0.8.0 — autonomous goals, model strategy, and auditable usage
 
 - Added `workflow goal` for bounded observe-plan-execute loops without an

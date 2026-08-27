@@ -9,15 +9,17 @@ import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { loadWorkflow, runWorkflow, newRunId } from './runner.js';
 import { validateWorkflow, WorkflowValidationError } from './validate.js';
-import { buildPoolsLive } from '../lib/config.js';
+import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { WorkflowTui } from './tui.js';
 import { cmdDraft } from './draft-cli.js';
 import { cmdRuns } from './runs-cli.js';
-import { resolveRunId } from './short-id.js';
+import { resolveRunId, reconcileInterruptedRuns } from './short-id.js';
 import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
 import { readEvents } from './events.js';
 import { buildGoalWorkflow } from './goal.js';
+import { maybeRefreshStrategy } from '../strategy-cli.js';
+import { loadState } from '../lib/state.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -76,6 +78,7 @@ function discover() {
 }
 
 export async function cmdWorkflow(args) {
+  reconcileInterruptedRuns(BULLSWARM_DIR());
   const [sub, ...rest] = args;
   const opts = parseFlags(rest);
 
@@ -149,6 +152,24 @@ function goalSettings(opts) {
   return Object.fromEntries(Object.entries(mappings)
     .filter(([flag]) => opts[flag] != null)
     .map(([flag, setting]) => [setting, opts[flag]]));
+}
+
+function goalUsage() {
+  return `usage: bullswarm workflow goal "<goal>" [options]
+
+options:
+  --cwd <dir>                    target working directory
+  --detach                       launch independently and return observation commands
+  --json                         emit one machine-readable launch/report document
+  --orchestrator <pool|auto>     pin only for controlled use; default capability routing
+  --max-agents <n>               hard dispatch ceiling (default 30)
+  --max-expansion-rounds <n>     planner expansion ceiling (default 8)
+  --max-actions <n>              durable action ceiling (default 40)
+  --max-items-per-expansion <n>  fanout item ceiling (default 8)
+  --max-workflow-seconds <n>     wall-clock ceiling (default 3600)
+  --concurrency <n>              concurrent dispatch ceiling, max 16 (default 3)
+  --retry-attempts <0..3>        same-pool retry bound (default 1)
+  --resume <shortId|runId>       resume durable unfinished work`;
 }
 
 async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId }) {
@@ -242,6 +263,10 @@ async function launchDetachedGoal(doc, opts) {
 }
 
 async function wfGoal(opts) {
+  if (opts.help) {
+    console.log(goalUsage());
+    return 0;
+  }
   const { names, pools } = await livePoolNames();
   let doc;
   let resumeRunId = null;
@@ -278,7 +303,7 @@ async function wfGoal(opts) {
   } else {
     const goal = opts.rest.join(' ').trim();
     if (!goal) {
-      console.error('usage: bullswarm workflow goal "<goal>" [--cwd <dir>] [--detach] [--json]');
+      console.error(goalUsage());
       return 2;
     }
     const orchestrator = opts.orchestrator && opts.orchestrator !== 'auto'
@@ -289,6 +314,7 @@ async function wfGoal(opts) {
         cwd: opts.cwd ?? process.cwd(),
         orchestrator,
         settings: goalSettings(opts),
+        worktreeIsolation: loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides',
       });
     } catch (err) {
       console.error(`✗ invalid goal options: ${err.message}`);
@@ -325,6 +351,7 @@ async function wfGoal(opts) {
 
 async function wfCapabilities(opts) {
   const { pools } = await livePoolNames();
+  const coreState = loadState(BULLSWARM_DIR());
   const result = {
     lanes: ['analyze', 'build', 'chore'],
     stepTypes: ['run', 'fanout', 'verify', 'decide'],
@@ -342,12 +369,20 @@ async function wfCapabilities(opts) {
       maxRetryAttempts: 3,
       resume: true,
       cooperativeCancellation: true,
+      cooperativeSignalInterruption: true,
+      staleOwnerReconciliation: true,
       adversarialVerification: true,
     },
     routing: {
       automatic: true,
-      selection: 'highest time-adjusted quota surplus among lane-capable, enabled, non-quarantined, non-burst-gated pools',
-      modelSelection: 'connector-defined; bullswarm does not infer intelligence or change model unless connector command pins one',
+      selection: 'approved effort-tier assignment when eligible; otherwise highest time-adjusted quota surplus among lane/capability-eligible, enabled, non-quarantined, non-burst-gated pools',
+      modelSelection: 'connector-declared discovery and model flag; approved capability-aware strategy assignments may select a model',
+      strategyPolicy: coreState.strategy?.policy ?? null,
+      assignments: coreState.strategy?.assignments ?? {},
+    },
+    worktreeIsolation: {
+      policy: coreState.config?.worktreeIsolation ?? 'agent-decides',
+      enforcement: 'optional agent execution-style preference; Bullswarm does not impose repository topology',
     },
     pools: pools.map((p) => ({
       name: p.name,
@@ -526,12 +561,14 @@ async function wfValidate(opts) {
 
 async function livePoolNames() {
   try {
+    await maybeRefreshStrategy(BULLSWARM_DIR());
     const { pools } = await buildPoolsLive(BULLSWARM_DIR(), Date.now(), {
       getReadings: getAllMeterReadings,
     });
     return { names: pools.map((p) => p.name), pools };
-  } catch {
-    return { names: [], pools: [] };
+  } catch (err) {
+    const { pools } = buildPools(BULLSWARM_DIR(), Date.now());
+    return { names: pools.map((p) => p.name), pools, meterWarning: err.message };
   }
 }
 

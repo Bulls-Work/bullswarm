@@ -96,6 +96,35 @@ test('dashboard rows expose current step and active agent state', () => {
   } finally { cleanup(); }
 });
 
+test('completed detail shows the last phase, terminal status, and routing rationale', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.status = 'completed';
+    state.stage = 'delivered';
+    state.finishedAt = new Date().toISOString();
+    state.actionLedger = [{ id: 'fan', kind: 'run', status: 'succeeded', attempts: [0] }];
+    state.attempts = [{
+      actionId: 'fan', attemptNumber: 1, pool: 'planner-agent', model: 'planner-v1',
+      effort: 'high', status: 'succeeded',
+      routing: {
+        reason: 'approved high assignment planner-agent; eligible by capability and quota',
+        candidates: [{ pool: 'planner-agent', pace: 21 }, { pool: 'backup', pace: 8 }],
+        configuredAssignment: { pool: 'planner-agent', model: 'planner-v1' },
+        assignmentApplied: { pool: 'planner-agent', model: 'planner-v1' },
+      },
+    }];
+    writeFileSync(statePath, JSON.stringify(state));
+    const shown = dashboardJson(home, { token: 'abc234' });
+    const text = renderDetails(shown, { interactive: false });
+    assert.match(text, /phase:\s+review/);
+    assert.match(text, /current: terminal:completed/);
+    assert.match(text, /route: approved high assignment planner-agent/);
+    assert.match(text, /candidates \[planner-agent:21, backup:8\]/);
+  } finally { cleanup(); }
+});
+
 test('JSON inspection and action inspection expose the same durable state and events', () => {
   const { home, cleanup } = fixture();
   try {

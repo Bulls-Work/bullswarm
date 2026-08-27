@@ -91,8 +91,16 @@ export async function runWorkflow(opts) {
     delete state.cancellationLatencyMs;
     delete state.cancelRequested;
     delete state.cancelRequestedAt;
+    delete state.interruptionSignal;
+    delete state.interruptionRequestedAt;
+    delete state.interruptedAt;
+    delete state.recovery;
     delete state.abortReason;
     state.resumed = true;
+    // Commit cleared terminal/control markers before WorkflowRuntime begins
+    // merging dashboard-side state. Otherwise the first resume event can
+    // re-import the stale cancelRequested marker from the interrupted run.
+    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
   } else {
     if (resuming) {
       throw new Error(`cannot resume: no state.json for run ${runId}`);
@@ -189,6 +197,29 @@ export async function runWorkflow(opts) {
     onEvent: opts.onEvent,
     env: opts.env,
   });
+  state.runner = {
+    pid: process.pid,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+  };
+  let interruptionSignal = state.interruptionSignal ?? null;
+  const requestInterruption = (signal) => {
+    if (state.finishedAt || interruptionSignal) return;
+    interruptionSignal = signal;
+    state.interruptionSignal = signal;
+    state.interruptionRequestedAt = new Date().toISOString();
+    state.cancelRequested = true;
+    state.cancelRequestedAt ??= state.interruptionRequestedAt;
+    state.status = 'interrupting';
+    state.stage = 'interrupting';
+    runtime.emit('run.interruption_requested', { signal, requestedAt: state.interruptionRequestedAt });
+  };
+  const onSigterm = () => requestInterruption('SIGTERM');
+  const onSigint = () => requestInterruption('SIGINT');
+  process.on('SIGTERM', onSigterm);
+  process.on('SIGINT', onSigint);
+  try {
   state.availableCapabilities = {
     pools: pools.map((pool) => ({
       name: pool.name,
@@ -230,6 +261,7 @@ export async function runWorkflow(opts) {
   let completedByPlanner = false;
   let waitingForApproval = false;
   let budgetExhausted = false;
+  let interrupted = false;
   const retryAttempts = state.settings.retryAttempts ?? 1;
 
   for (let pi = 0; pi < doc.phases.length && !aborted && !cancelled && !completedByPlanner && !waitingForApproval && !budgetExhausted; pi++) {
@@ -327,32 +359,43 @@ export async function runWorkflow(opts) {
   try {
     const diskState = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     cancelled ||= diskState.cancelRequested === true;
+    interruptionSignal ??= diskState.interruptionSignal ?? null;
   } catch { /* use the in-memory cancellation state */ }
-  if (cancelled) {
+  interrupted = Boolean(interruptionSignal);
+  if (cancelled && !interrupted) {
     state.status = 'cancelling';
     state.cancellingAt = new Date().toISOString();
     runtime.emit('run.cancelling', { requestedAt: state.cancelRequestedAt ?? null });
   }
-  state.status = cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'completed');
-  state.stage = cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'delivered');
+  state.status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'completed');
+  state.stage = interrupted ? 'interrupted' : cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'delivered');
   delete state.currentPhase;
   delete state.currentStep;
   delete state.activeAgents;
-  if (cancelled) {
+  if (cancelled && !interrupted) {
     state.cancelledAt = finishedAt;
     const requested = Date.parse(state.cancelRequestedAt ?? '');
     state.cancellationLatencyMs = Number.isFinite(requested) ? Math.max(0, Date.parse(finishedAt) - requested) : null;
   }
-  if (abortReason) state.abortReason = abortReason;
+  if (interrupted) {
+    state.interruptedAt = finishedAt;
+    state.abortReason = `runner interrupted by ${interruptionSignal}`;
+    state.recovery = { resumable: true, signal: interruptionSignal, interruptedAt: finishedAt };
+  }
+  if (abortReason && !interrupted) state.abortReason = abortReason;
   runtime.persist();
 
   const preliminaryReport = buildReport(state, doc, runDir);
-  runtime.emit(cancelled ? 'run.cancelled' : waitingForApproval ? 'run.waiting_for_approval' : budgetExhausted ? 'run.budget_exhausted' : 'run.completed', { runId, status: state.status, report: preliminaryReport.summary });
+  runtime.emit(interrupted ? 'run.interrupted' : cancelled ? 'run.cancelled' : waitingForApproval ? 'run.waiting_for_approval' : budgetExhausted ? 'run.budget_exhausted' : 'run.completed', { runId, status: state.status, report: preliminaryReport.summary });
   const report = buildReport(state, doc, runDir);
   writeFileSync(join(runDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   opts.onEvent?.({ type: 'workflow.completed', runId, status: state.status, report: report.summary });
 
   return { runId, runDir, state, report };
+  } finally {
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGINT', onSigint);
+  }
 }
 
 async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
@@ -573,6 +616,13 @@ export function buildReport(state, doc, runDir) {
     finishedAt: state.finishedAt,
     resumed: state.resumed === true,
     abortReason: state.abortReason ?? null,
+    interruption: state.interruptionSignal ? {
+      signal: state.interruptionSignal,
+      requestedAt: state.interruptionRequestedAt ?? null,
+      interruptedAt: state.interruptedAt ?? null,
+    } : null,
+    recovery: state.recovery ?? null,
+    resumeHistory: state.resumeHistory ?? [],
     summary: {
       stepsTotal: stepResults.length,
       stepsOk: simpleOk,

@@ -43,6 +43,7 @@ export function buildGoalWorkflow({
   orchestrator = null,
   name = null,
   settings = {},
+  worktreeIsolation = 'agent-decides',
 } = {}) {
   if (typeof goal !== 'string' || !goal.trim()) {
     throw new Error('goal text is required');
@@ -62,6 +63,14 @@ export function buildGoalWorkflow({
   const maxWorkflowSeconds = positiveInt(settings.maxWorkflowSeconds, 3600, { max: 86_400 });
   const concurrency = positiveInt(settings.concurrency, 3, { max: 16 });
   const retryAttempts = positiveInt(settings.retryAttempts, 1, { min: 0, max: 3 });
+  if (!['agent-decides', 'off', 'required'].includes(worktreeIsolation)) {
+    throw new Error(`invalid worktree isolation policy "${worktreeIsolation}"`);
+  }
+  const worktreeInstruction = worktreeIsolation === 'required'
+    ? 'Worktree isolation policy: required when the selected agent supports it.'
+    : worktreeIsolation === 'off'
+      ? 'Worktree isolation policy: disabled; work in the supplied directory.'
+      : 'Worktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.';
 
   return {
     schemaVersion: 'bullswarm.workflow.v1',
@@ -73,11 +82,12 @@ export function buildGoalWorkflow({
       cwd: targetDir,
       autonomous: true,
       requestedOrchestrator: orchestrator ?? 'auto',
+      worktreeIsolation,
     },
     orchestration: {
       mode: 'autonomous',
       requestedPool: orchestrator ?? null,
-      selection: orchestrator ? 'user-pinned-for-testing' : 'capability-and-quota',
+      selection: orchestrator ? 'user-pinned-for-testing' : 'capability-strategy-and-quota',
       completionPolicy: {
         requireSuccessfulWorker: true,
         requireSuccessfulVerification: true,
@@ -110,7 +120,7 @@ export function buildGoalWorkflow({
           addDir: targetDir,
           timeoutSec: Math.min(900, maxWorkflowSeconds),
         },
-        prompt: AUTONOMOUS_ORCHESTRATOR_PROMPT,
+        prompt: `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\n${worktreeInstruction}`,
         timeoutSec: Math.min(900, maxWorkflowSeconds),
         onError: 'fail',
       }],

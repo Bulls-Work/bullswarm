@@ -26,7 +26,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildPoolsLive } from '../lib/config.js';
+import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { WorkflowTui } from './tui.js';
 import { runWorkflow, loadWorkflow } from './runner.js';
@@ -164,8 +164,9 @@ async function livePoolNames() {
       getReadings: getAllMeterReadings,
     });
     return { names: pools.map((p) => p.name), pools };
-  } catch {
-    return { names: [], pools: [] };
+  } catch (err) {
+    const { pools } = buildPools(BULLSWARM_DIR(), Date.now());
+    return { names: pools.map((p) => p.name), pools, meterWarning: err.message };
   }
 }
 

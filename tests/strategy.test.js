@@ -31,7 +31,11 @@ test('model discovery merges live, fallback, and configured models with profiles
 });
 
 test('strategy keeps unknown subscription values null and ranks each tier deterministically', () => {
-  const connector = { name: 'a', meter: { window: 'weekly' } };
+  const connector = {
+    name: 'a', meter: { window: 'weekly' },
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+  };
   const pools = [{ name: 'a', connector, enabled: true, pace: 20, costRank: 2, meterSource: 'cache' }];
   const discoveries = { a: { models: [
     { id: 'pro', tier: 'high', qualityRank: 5, free: false },
@@ -45,7 +49,10 @@ test('strategy keeps unknown subscription values null and ranks each tier determ
 });
 
 test('dated connector benchmark scores outrank coarse quality ranks when supplied', () => {
-  const connectors = { a: { name: 'a' }, b: { name: 'b' } };
+  const capable = {
+    lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
+  };
+  const connectors = { a: { name: 'a', ...capable }, b: { name: 'b', ...capable } };
   const pools = [
     { name: 'a', connector: connectors.a, enabled: true, costRank: 1, pace: 0 },
     { name: 'b', connector: connectors.b, enabled: true, costRank: 1, pace: 0 },
@@ -56,4 +63,21 @@ test('dated connector benchmark scores outrank coarse quality ranks when supplie
   };
   const report = buildStrategy({ connectors, pools, state: {}, discoveries });
   assert.deepEqual(report.suggestions.high.recommended, { pool: 'b', model: 'b1' });
+});
+
+test('high-tier strategy excludes a higher-scoring model without planning capability', () => {
+  const connectors = {
+    planner: { name: 'planner', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'] },
+    coder: { name: 'coder', lanes: ['analyze'], capabilities: ['strong-analysis', 'code-reading'] },
+  };
+  const pools = Object.values(connectors).map((connector) => ({
+    name: connector.name, connector, enabled: true, costRank: 1, pace: 0,
+  }));
+  const discoveries = {
+    planner: { models: [{ id: 'planner-model', tier: 'high', qualityRank: 5, free: false }] },
+    coder: { models: [{ id: 'coder-model', tier: 'high', qualityRank: 100, free: false }] },
+  };
+  const report = buildStrategy({ connectors, pools, state: {}, discoveries });
+  assert.deepEqual(report.suggestions.high.recommended, { pool: 'planner', model: 'planner-model' });
+  assert.deepEqual(report.suggestions.high.requirements.capabilities, ['strong-analysis', 'workflow-planning']);
 });

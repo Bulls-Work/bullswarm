@@ -31,7 +31,7 @@ npm install -g bullswarm   # or: node bin/bullswarm.js directly from a checkout
 bullswarm          # first run: interactive setup wizard
 bullswarm setup    # re-run or repair
 bullswarm pools    # meter state, pace position, quarantine status
-bullswarm strategy refresh  # discover local models and refresh tier suggestions
+bullswarm strategy refresh --apply --yes  # approve capability-aware tier autopilot
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo
 bullswarm health   # re-judge saved outputs; catch gate failures
@@ -57,18 +57,25 @@ connector-declared, dated pricing/benchmark metadata with live quota surplus:
 ```bash
 bullswarm strategy refresh
 bullswarm strategy show --json
+bullswarm strategy apply --yes --refresh-hours 24
+bullswarm strategy auto status
 bullswarm strategy set-subscription command-code \
   --plan GOAT --monthly-usd 10 --included-usd 70 --quota-window monthly
 bullswarm strategy assign high --pool claude-code --model claude-opus-4-6
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
 ```
 
-Setup recommends an initial refresh; run `strategy refresh` whenever a CLI's
-catalog or subscription changes. Discovery commands, model argument syntax,
-pricing, and benchmark declarations remain connector-owned. Unknown license
-value, prices, and benchmarks stay `null` rather than being guessed. An
-assignment is only a preference: quarantine, exhaustion, burst gates, and
-capability checks still win.
+Interactive setup asks whether to enable strategy autopilot; non-interactive
+setup requires the explicit `setup --yes --strategy` flag. Recommendations are
+context-filtered before ranking: high requires analysis plus workflow-planning,
+medium requires build/edit capabilities, and low targets bounded chores. An
+approved policy refreshes stale discovery before later runs and re-applies the
+best eligible models on its configured interval. Disable it with
+`strategy auto off --yes`. Discovery commands, model argument syntax, pricing,
+and benchmark declarations remain connector-owned. Unknown license value,
+prices, and benchmarks stay `null` rather than being guessed. An assignment is
+only a preference: quarantine, exhaustion, burst gates, and capability checks
+still win.
 
 Every run and workflow attempt reports its selected agent/model and estimated
 usage. When a delegate does not expose counters, Bullswarm labels its UTF-8
@@ -94,8 +101,9 @@ bullswarm workflow goal \
   --cwd ~/some-repo --detach --json
 ```
 
-Bullswarm selects an eligible `workflow-planning` orchestrator by live quota
-surplus. The orchestrator observes durable evidence, proposes bounded actions,
+Bullswarm first honors an approved high-tier provider/model assignment when it
+remains eligible, otherwise it selects an eligible `workflow-planning`
+orchestrator by live quota surplus. The orchestrator observes durable evidence, proposes bounded actions,
 and decides when another expansion or verification is necessary. Bullswarm
 validates the proposal, owns agent/process selection, routes workers, and calls
 the orchestrator again until completion, cancellation, failure, approval, or a
@@ -121,7 +129,9 @@ bullswarm workflow goal --resume <shortId> --json
 `--orchestrator <pool>` exists for controlled testing; ordinary use should
 leave selection on `auto`. Hard limits can be adjusted with `--max-agents`,
 `--max-expansion-rounds`, `--max-actions`, `--max-items-per-expansion`, and
-`--max-workflow-seconds`.
+`--max-workflow-seconds`. Interactive setup also records a worktree-isolation
+preference (`agent-decides`, `off`, or `required`); Bullswarm communicates that
+policy to the orchestrator without imposing repository topology itself.
 
 ## Building a workflow from the shell
 
@@ -164,6 +174,7 @@ bullswarm workflow runs --historical       # only historical
 bullswarm workflow runs --name audit-code  # filter by workflow
 bullswarm workflow runs --limit 20         # cap the result count
 bullswarm workflow runs show <shortId>     # state + report + summary
+bullswarm runs show <shortId>              # top-level shorthand
 bullswarm workflow runs delete <shortId> --yes    # remove the run dir
 
 # Resume by shortId — runs the same logic as the full runId
@@ -197,6 +208,16 @@ bullswarm workflow approval approve --json <id>  # then resume the run
 
 Cancellation is persisted as `cancelling`, terminates an active child process,
 records its termination signal and latency evidence, then commits `cancelled`.
+`SIGTERM` and `SIGINT` use the same cooperative child termination path but
+commit a distinct resumable `interrupted` state. On every workflow command,
+active states with a dead/stale owner are automatically reconciled to
+`interrupted` instead of remaining falsely `running`.
+
+Each attempt records the phase/action, selected pool and model, effort tier,
+routing reason, all eligible candidates with quota surplus, timestamps,
+artifact paths, outcome, and reported-or-estimated token/cost/quota usage.
+`workflow tui <id>` renders this breakdown for completed runs as well as live
+ones; `workflow tui --json <id>` exposes the durable audit document.
 
 ### Adaptive workflows
 

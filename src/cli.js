@@ -15,7 +15,7 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
-import { cmdStrategy } from './strategy-cli.js';
+import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -33,7 +33,7 @@ function parseArgs(argv) {
     if (argv[i].startsWith('--')) {
       const key = argv[i].slice(2);
       if (key === 'json') args.json = true;
-      else if (i + 1 < argv.length) args[key] = argv[++i];
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args[key] = argv[++i];
       else args[key] = true;
     } else rest.push(argv[i]);
   }
@@ -96,6 +96,11 @@ async function cmdRun(opts) {
     console.log(JSON.stringify(verdict, null, 2));
     return 1;
   }
+
+  // Only an explicitly approved strategy policy may change assignments.
+  // Once approved, refresh capability-aware recommendations on its TTL.
+  await maybeRefreshStrategy(getBullswarmDir());
+  state = loadState(getBullswarmDir());
 
   sweepQuarantines(state, now);
 
@@ -281,11 +286,18 @@ async function cmdSetup(opts) {
   // defaults and never prompts.
   if (opts.yes || !process.stdin.isTTY) {
     const r = autoSetup(getBullswarmDir(), { reason: opts.yes ? 'flag' : 'non-tty' });
-    if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r }, null, 2));
+    let strategy = null;
+    if (opts.yes && opts.strategy) {
+      const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
+      const report = await refreshStrategy(getBullswarmDir());
+      strategy = applyStrategyRecommendations(getBullswarmDir(), report);
+    }
+    if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r, strategy }, null, 2));
     else {
       console.log(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`);
       if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
       console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
+      if (strategy) console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
     }
     return 0;
   }
@@ -394,16 +406,19 @@ export async function main(argv) {
       return cmdDoctor(opts);
     case 'workflow':
       return cmdWorkflow(rest);
+    case 'runs':
+      return cmdWorkflow(['runs', ...rest]);
     case 'strategy':
       return cmdStrategy(rest, { bullswarmDir: getBullswarmDir() });
     case 'version':
+    case '--version':
       console.log(getVersion());
       return 0;
     case 'release':
       return cmdRelease(opts);
     default:
       console.error(
-        `unknown verb "${verb}". try: setup | run | health | pools | strategy | doctor | workflow | version | release`,
+        `unknown verb "${verb}". try: setup | run | health | pools | strategy | doctor | workflow | runs | version | release`,
       );
       return 2;
   }

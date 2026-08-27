@@ -29,7 +29,7 @@ export function requestCancel(bullswarmDir, token) {
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
-  if (state.finishedAt || ['completed', 'failed', 'cancelled'].includes(state.status)) {
+  if (state.finishedAt || ['completed', 'failed', 'cancelled', 'interrupted', 'budget_exhausted'].includes(state.status)) {
     return { ...resolved, state, alreadyFinished: true };
   }
   state.cancelRequested = true;
@@ -88,13 +88,19 @@ export function renderDashboard({ rows, selected = 0, message = null } = {}) {
 export function renderDetails(row, { interactive = true } = {}) {
   const state = row?.state ?? {};
   const phases = state._doc?.phases ?? [];
+  const displayedPhase = state.currentPhase?.name
+    ?? state.steps?.at(-1)?.phase
+    ?? state.stage
+    ?? 'starting';
+  const displayedCurrent = state.currentStep?.id
+    ?? (state.finishedAt ? `terminal:${state.status ?? state.stage ?? 'finished'}` : '—');
   const lines = [
     `${ESC}2J${ESC}H`,
     ` bullswarm · ${state.workflow ?? '?'} · ${row?.shortId ?? row?.runId ?? '?'}`,
     '',
     ` status: ${row?.status ?? state.status ?? 'running'}`,
-    ` phase:  ${row?.phase ?? 'starting'}`,
-    ` current: ${state.currentStep?.id ?? '—'}`,
+    ` phase:  ${row?.phase ?? displayedPhase}`,
+    ` current: ${displayedCurrent}`,
     ` goal:   ${state.intent?.goal ?? state.intent?.description ?? '—'}`,
     ` orchestrator: ${state.orchestration?.selectedPool ?? state.orchestration?.requestedPool ?? 'auto/pending'} · ${state.orchestration?.selectedModel ?? 'connector model'} · ${state.orchestration?.selection ?? 'workflow-defined'}`,
     ` dir:    ${row?.runDir ?? '—'}`,
@@ -129,6 +135,10 @@ export function renderDetails(row, { interactive = true } = {}) {
       const attempt = state.attempts?.[attemptIndex];
       if (attempt) {
         lines.push(`${indent}  ↳ attempt ${attempt.attemptNumber} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'} · effort=${attempt.effort ?? 'auto'} · ${attempt.status} · ${attempt.startedAt ?? '—'}${attempt.finishedAt ? ` → ${attempt.finishedAt}` : ''}`);
+        if (attempt.routing) {
+          const candidates = (attempt.routing.candidates ?? []).map((candidate) => `${candidate.pool}:${candidate.pace}`).join(', ');
+          lines.push(`${indent}     route: ${attempt.routing.reason}${candidates ? ` · candidates [${candidates}]` : ''}`);
+        }
         lines.push(`${indent}     ${compactUsage(attempt.usage)}`);
       }
     }
