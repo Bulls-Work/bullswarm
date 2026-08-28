@@ -229,6 +229,8 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
 | Per-agent prompt | Self-contained, plus JSON schema enforced at tool layer | Planner-authored prompt; free-text answer, content-verified by heuristics; `verify` returns JSON verdict | Partial. Schema-enforced worker output is a candidate, not adopted yet |
 | Failure handling | Loops in code; `null` on agent death | Planner replans (costly); 0.10.9 added corrective turns for invalid decisions and 0.11.0 recovers mis-shaped `verify.review` before dispatch | Improved; retry-in-code per action still absent |
 | Determinism / resume | Journal of return values; prefix cache | Durable `state.json` + `events.jsonl` + action ledger; resume skips durable outputs | Equivalent |
+| Data-driven fan-out | `pipeline(discovered.items, …)` — count unknown when the script is written | Decision schema forced inline `items`; the planner spent a turn waiting for discovery | **Fixed in 0.12.0** — `itemsFrom` on proposed fan-outs + one bounded extraction retry |
+| Repair loops | `while`/retry in code | Planner replanned after every failed verify | **Fixed in 0.12.0** — `verify.repair` policy runs fix → re-verify inside the executor |
 | Budget | Hard ceiling | Advisory targets (user decision) | Intentional difference |
 | Observability | Progress tree, narrator, `/workflows` | `watch` heartbeat (semantic quiet + agent-output quiet since 0.10.9), `tui`, events | Comparable |
 | Isolation | `isolation: 'worktree'` per agent | Shared `addDir`; planner-declared file ownership | Candidate |
@@ -259,24 +261,49 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
    validation (so the 0.10.9 corrective turn fixes it) instead of failing a
    dispatch after a planning round trip.
 
-### 4.2 Planned for 0.12.0 — make a *program* expressible in one decision
+### 4.2 Adopted in 0.12.0 — a *program* expressible in one decision
 
-1. **Data-driven fan-out in proposals**: a proposed `fanout` may take
-   `itemsFrom: "outputs.<proposedActionId>.json.<path>"`, resolved when the
-   producing action finishes (the static-workflow `itemsFrom` already exists;
-   the decision schema currently forces inline `items`, which is exactly why a
-   planner has to spend a turn waiting to see discovery results). This is
-   Claude's `pipeline(discovery.failures, …)`.
-2. **Structured worker output**: optional `outputSchema` / `expectJson` on run
-   actions; the worker ends with a JSON block, the runtime parses it into
-   `outputs.<id>.json`, and a mismatch costs one bounded corrective re-ask —
-   Claude's schema-enforced `StructuredOutput` retry.
-3. **Pre-authored repair**: `repair: { prompt, maxRounds }` on verify actions
-   so verify-fail → fix → re-verify runs inside the executor without a planner
-   turn — Claude's fix-loop as code.
-4. With 1–3 the loop becomes: decision 1 = the program; execute to completion;
-   decision 2 = complete or next program — one planning turn per boundary,
-   full width in between.
+The user's framing for this release: position the orchestrator as the
+**compiler** of the goal into a workflow program; the program drives every
+phase and turn; the model is consulted again only at a boundary that needs
+judgement — the same division of labour Claude Code uses between the script
+author and the `Workflow` runtime.
+
+1. **Data-driven fan-out in proposals** — shipped. A proposed `fanout` takes
+   `itemsFrom: "outputs.<actionId>.outFile"` (producer may be co-proposed; it
+   becomes an implicit `dependsOn`). The runtime resolves the list when the
+   producer finishes. This is Claude's `pipeline(discovery.failures, …)`: the
+   planner no longer spends a turn waiting to see how many items there are.
+2. **Structured worker output** — shipped in its cheap form. Discovery workers
+   are told to end with a JSON array; `parseJsonArray` prefers the trailing
+   array; the content gate accepts a bare JSON array/object as substance; and
+   if the output still has no array the runtime runs ONE bounded, read-only
+   extraction action over it (never re-running the producer, which may have
+   mutated files). That is the "schema retry" of Claude's `StructuredOutput`,
+   done as a second cheap agent instead of a tool-layer retry. A general
+   `outputSchema` on run actions is still open (§5).
+3. **Pre-authored repair** — shipped. `repair: { prompt, maxRounds }` on a
+   verify: verify-fail → `<verifyId>-repair-<n>` (concerns verbatim) →
+   re-verify, inside the executor. Claude's fix-loop as code.
+4. **Boundary-only consultation** — the loop is now: decision 1 = the program;
+   the ready-set executor runs it to completion (fan-outs resolve, repairs run);
+   decision 2 = `complete` or the next program. The planner prompt says so
+   explicitly (`plannerConsultedOnlyAtProgramBoundary`), and the goal
+   orchestrator prompt is reframed as "compile the goal into a complete
+   workflow program".
+5. Two bugs found on the way that had silently blocked this shape in ≤ 0.11.1:
+   fan-out outputs recorded the success *count* in `ok`, so nothing could ever
+   depend on a fan-out (the ready-set test is `ok === true`); and the content
+   gate rejected a worker whose whole answer was a JSON array as an
+   "announcement without substance".
+
+**Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
+*barrier*: a verify depending on a data-driven fan-out waits for all items,
+whereas Claude's `pipeline()` overlaps verify-B with fix-C for discovered items
+too. Per-item overlap on unknown items would need a fan-out whose
+`stepTemplate` is itself a chain — not in 0.12.0. For known items the planner
+proposes N fix + N verify inline and the ready-set scheduler already overlaps
+them.
 
 ## 5. Not adopted (yet), and why
 

@@ -89,13 +89,27 @@ export function extractItems(state, itemsFrom) {
 
 /** Parse the first JSON array found in a text blob, tolerating prose around it. */
 export function parseJsonArray(text) {
-  const start = text.indexOf('[');
+  if (typeof text !== 'string') return null;
+  const tryParse = (slice) => {
+    try {
+      const arr = JSON.parse(slice);
+      return Array.isArray(arr) ? arr : null;
+    } catch {
+      return null;
+    }
+  };
+  // Workers are told to END their output with the array, so prefer the
+  // trailing array: from the last "]" walk "[" candidates right-to-left until
+  // one parses. Prose that itself contains brackets ("[see below]") then no
+  // longer poisons the parse.
   const end = text.lastIndexOf(']');
-  if (start === -1 || end <= start) return null;
-  try {
-    const arr = JSON.parse(text.slice(start, end + 1));
-    return Array.isArray(arr) ? arr : null;
-  } catch {
-    return null;
+  if (end === -1) return null;
+  for (let start = text.lastIndexOf('[', end); start !== -1; start = text.lastIndexOf('[', start - 1)) {
+    const parsed = tryParse(text.slice(start, end + 1));
+    if (parsed) return parsed;
+    if (start === 0) break;
   }
+  // Fallback: the widest span (first "[" to last "]").
+  const first = text.indexOf('[');
+  return first !== -1 && first < end ? tryParse(text.slice(first, end + 1)) : null;
 }

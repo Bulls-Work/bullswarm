@@ -152,7 +152,8 @@ test('FANOUT: N items produce N verdicts; template sees item', async () => {
     });
     const out = result.state.outputs['per'];
     assert.equal(out.total, 5);
-    assert.equal(out.ok, 5);
+    assert.equal(out.ok, true);
+    assert.equal(out.succeeded, 5);
     assert.equal(out.failed, 0);
     assert.equal(result.report.summary.fanoutOk, 5);
   } finally {
@@ -269,7 +270,8 @@ test('FANOUT from discover-step outFile path: read file and parse JSON array', a
     const out = result.state.outputs.per;
     assert.ok(out, 'fanout result should exist');
     assert.equal(out.total, 4);
-    assert.equal(out.ok, 4);
+    assert.equal(out.ok, true);
+    assert.equal(out.succeeded, 4);
     assert.equal(out.failed, 0);
     assert.deepEqual(
       out.items.map((i) => i.item).sort(),

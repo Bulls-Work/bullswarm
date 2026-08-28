@@ -2,6 +2,7 @@
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { fanoutSucceededCount } from './runner.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
@@ -64,7 +65,7 @@ export function dashboardRows(bullswarmDir) {
       const state = r.state ?? {};
       const steps = state.steps ?? [];
       const fanout = Object.values(state.outputs ?? {}).filter((v) => v?.items).reduce((acc, v) => ({
-        total: acc.total + (v.total ?? 0), ok: acc.ok + (v.ok ?? 0), failed: acc.failed + (v.failed ?? 0),
+        total: acc.total + (v.total ?? 0), ok: acc.ok + fanoutSucceededCount(v), failed: acc.failed + (v.failed ?? 0),
       }), { total: 0, ok: 0, failed: 0 });
       return {
         ...r,

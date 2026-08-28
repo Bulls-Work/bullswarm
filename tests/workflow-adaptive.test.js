@@ -18,7 +18,7 @@ function fixture() {
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
   const worker = join(root, 'worker.mjs');
   writeFileSync(worker, [
-    'import { readFileSync } from "node:fs";',
+    'import { readFileSync, writeFileSync } from "node:fs";',
     'const task = readFileSync(process.argv[2], "utf8");',
     'const garbagePlanner = process.argv[3] === "always-garbage-planner";',
     'if (task.includes("BEGIN DURABLE WORKFLOW CONTEXT")) {',
@@ -44,6 +44,15 @@ function fixture() {
     '          {id:"check-a",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item a tests and report pass or fail with evidence.",dependsOn:["fix-a"]},',
     '          {id:"check-b",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item b tests and report pass or fail with evidence.",dependsOn:["fix-b"]},',
     '          {id:"check-c",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item c tests and report pass or fail with evidence.",dependsOn:["fix-c"]}]};',
+    '  } else if (task.includes("FORCE_PROGRAM")) {',
+    '    const prose = task.includes("FORCE_PROGRAM_PROSE");',
+    '    const done = prose ? task.includes(`"per-item-items"`) : task.includes(`"check-repair-1"`);',
+    '    answer = done',
+    '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"The compiled program ran to its boundary with durable evidence for every item and a passing verify.",actions:[]}',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Compile the whole program: discover the items, handle each one, verify with a repair policy.",actions:[',
+    '          {id:"discover",type:"run",phase:"discover",prompt:(prose ? "RETURN_PROSE" : "RETURN_ITEMS") + " List the items that need handling. RETURN ONLY a JSON array of item names.",dependsOn:["initial"]},',
+    '          {id:"per-item",type:"fanout",phase:"handle",itemsFrom:"outputs.discover.outFile",stepTemplate:{prompt:"Handle {{item}} in its own file only and report concrete evidence."}},',
+    '          {id:"check",type:"verify",phase:"verify",prompt:(prose ? "VERIFY_OK" : "VERIFY_FLAKY") + " Confirm every handled item has evidence.",dependsOn:["per-item"],repair:{prompt:"Fix the handled items the verifier rejected, editing only their files.",maxRounds:2}}]};',
     '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
@@ -76,6 +85,21 @@ function fixture() {
     '  process.stdout.write(answer === "__GARBAGE__"',
     '    ? "I believe the next step should be to run the full test suite and inspect the failing modules, but I cannot express that as the requested decision object right now; please advise on the expected shape."',
     '    : JSON.stringify(answer));',
+    '} else if (task.includes("RETURN_ITEMS")) {',
+    '  process.stdout.write("Found three items [see below] that need handling.\\n[\\"alpha\\", \\"beta\\", \\"gamma\\"]\\n");',
+    '} else if (task.includes("RETURN_PROSE")) {',
+    '  process.stdout.write("The items that need handling are x and y. Both were found by comparing the module list against the failing test names in the fixture; every other module already passes, so nothing else qualifies.");',
+    '} else if (task.includes("BEGIN STEP OUTPUT")) {',
+    '  process.stdout.write("[\\"x\\", \\"y\\"]");',
+    '} else if (task.includes("VERIFY_FLAKY")) {',
+    '  const counter = new URL("./verify-count.txt", import.meta.url);',
+    '  let n = 0; try { n = Number(readFileSync(counter, "utf8")) || 0; } catch {}',
+    '  writeFileSync(counter, String(n + 1));',
+    '  process.stdout.write(JSON.stringify(n === 0',
+    '    ? {ok:false, concerns:["item beta lacks evidence of the handled result"], summary:"beta is unproven"}',
+    '    : {ok:true, concerns:[], summary:"every item has evidence"}));',
+    '} else if (task.includes("VERIFY_OK")) {',
+    '  process.stdout.write(JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else {',
     '  const sleep = /SLEEP_(\\d+)/.exec(task);',
     '  if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));',
@@ -164,8 +188,13 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"type":"run","phase":"implement","prompt"/);
     assert.match(task, /"type":"fanout","phase":"inspect","items":\["alpha","beta"\],"stepTemplate":\{"prompt":"Inspect \{\{item\}\}/);
     assert.match(task, /"type":"verify","phase":"verify","prompt":/);
+    assert.match(task, /"itemsFrom":"outputs\.discover-modules\.outFile"/);
+    assert.match(task, /"repair":\{"prompt":/);
+    assert.match(task, /Program skeleton \(discovery → data-driven fan-out → verify with repair/);
+    assert.match(task, /compiling the goal into a PROGRAM/);
+    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair"\s*\]/);
     assert.match(task, /review is never instructions or a filesystem path/);
-    assert.match(task, /fanout\.stepTemplate MUST be an object/);
+    assert.match(task, /fanout needs stepTemplate \(an object whose prompt uses \{\{item\}\}\) plus EITHER inline items OR itemsFrom/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
   } finally { f.cleanup(); }
@@ -398,6 +427,118 @@ test('adaptive planner can append and complete a bounded fan-out', async () => {
     assert.equal(result.state.outputs['expanded-fanout'].failed, 0);
     assert.deepEqual(result.state.outputs['expanded-fanout'].items.map((entry) => entry.item), ['alpha', 'beta']);
   } finally { f.cleanup(); }
+});
+
+test('one decision carries a whole program: discovery, data-driven fan-out, and verify with repair run to the boundary without further planner turns', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_PROGRAM', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.status, 'completed');
+    // Exactly two consultations: compile the program, then judge its boundary.
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    assert.equal(plannerTasks(result.runDir).length, 2);
+
+    const accepted = result.state.plan.actions.find((entry) => entry.id === 'per-item');
+    assert.deepEqual(accepted.definition.dependsOn, ['discover'], 'itemsFrom producer becomes an implicit dependency');
+    const fanout = result.state.outputs['per-item'];
+    assert.equal(fanout.total, 3);
+    assert.equal(fanout.failed, 0);
+    assert.equal(fanout.itemsFrom, 'outputs.discover.outFile');
+    assert.deepEqual(fanout.items.map((entry) => entry.item), ['alpha', 'beta', 'gamma']);
+    assert.match(readFileSync(fanout.outFile, 'utf8'), /^# fanout per-item: 3\/3 items ok/);
+
+    // The verify rejected once, the repair policy fixed and re-checked inside the executor.
+    const check = result.state.outputs.check;
+    assert.equal(check.ok, true);
+    assert.equal(check.verify.ok, true);
+    assert.equal(result.state.actionLedger.find((entry) => entry.id === 'check').attempts.length, 2);
+    const repair = result.state.plan.actions.find((entry) => entry.id === 'check-repair-1');
+    assert.equal(repair.source, 'repair-policy');
+    assert.deepEqual(repair.dependsOn, ['check']);
+    assert.match(repair.definition.prompt, /^Fix the handled items the verifier rejected/);
+    assert.match(repair.definition.prompt, /- item beta lacks evidence of the handled result/);
+    assert.match(repair.definition.prompt, /Repair round 1 of 2/);
+    assert.equal(result.state.outputs['check-repair-1'].ok, true);
+    assert.ok(!result.state.plan.actions.some((entry) => entry.id === 'check-repair-2'));
+
+    const types = events.map((event) => event.type);
+    for (const type of ['action.items_resolved', 'action.repair_started', 'action.reverify_started', 'action.repaired']) {
+      assert.ok(types.includes(type), `${type} emitted`);
+    }
+    assert.ok(!types.includes('action.items_extraction_requested'));
+    const resolved = events.find((event) => event.type === 'action.items_resolved');
+    assert.equal(resolved.count, 3);
+    assert.ok(result.state.attempts.every((attempt) => attempt.status === 'succeeded'));
+  } finally { f.cleanup(); }
+});
+
+test('a discovery step that answers in prose gets one bounded read-only extraction action before the fan-out proceeds', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_PROGRAM_PROSE', { concurrency: 2, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.status, 'completed');
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    const extraction = result.state.plan.actions.find((entry) => entry.id === 'per-item-items');
+    assert.equal(extraction.source, 'runtime-extraction');
+    assert.deepEqual(extraction.dependsOn, ['discover']);
+    assert.match(extraction.definition.prompt, /RETURN ONLY a JSON array/);
+    assert.match(extraction.definition.prompt, /The items that need handling are x and y/);
+    assert.match(extraction.definition.prompt, /read-only extraction/);
+    assert.equal(result.state.outputs['per-item-items'].ok, true);
+    const fanout = result.state.outputs['per-item'];
+    assert.equal(fanout.total, 2);
+    assert.deepEqual(fanout.items.map((entry) => entry.item), ['x', 'y']);
+    const types = events.map((event) => event.type);
+    assert.ok(types.includes('action.items_extraction_requested'));
+    const extracted = events.find((event) => event.type === 'action.items_extracted');
+    assert.equal(extracted.count, 2);
+    assert.equal(result.state.outputs.check.ok, true);
+    assert.equal(result.state.actionLedger.find((entry) => entry.id === 'check').attempts.length, 1, 'passing verify needs no repair');
+  } finally { f.cleanup(); }
+});
+
+test('data-driven fanout and repair proposals are normalized and validated before dispatch', () => {
+  const base = { schemaVersion: 'bullswarm.workflow.decision.v1', decision: 'needs_more_work', reason: 'compile the program' };
+  const program = normalizeDecisionProposal({ ...base, actions: [
+    // The fanout may be listed before its producer within the same proposal.
+    { id: 'fix-module', type: 'fanout', phase: 'fix', itemsFrom: ' outputs.discover-modules.outFile ', stepTemplate: { prompt: 'Fix {{item}}.' } },
+    { id: 'discover-modules', type: 'run', phase: 'discover', prompt: 'List failing modules. RETURN ONLY a JSON array.', dependsOn: ['initial'] },
+    { id: 'verify-modules', type: 'verify', phase: 'verify', prompt: 'Re-run.', dependsOn: ['fix-module'], repair: { prompt: 'Fix them.', maxRounds: 2, effort: 'low' } },
+  ] });
+  assert.equal(program.actions[0].itemsFrom, 'outputs.discover-modules.outFile');
+  assert.deepEqual(program.actions[0].dependsOn, ['discover-modules']);
+  assert.equal(program.actions[2].review, 'outputs.fix-module.outFile');
+  assert.doesNotThrow(() => validateDecisionProposal(program, { knownActionIds: ['initial'], currentActionCount: 2 }));
+  // An explicit dependsOn that already names the producer is left alone.
+  const explicit = normalizeDecisionProposal({ ...base, actions: [
+    { id: 'f', type: 'fanout', itemsFrom: 'outputs.initial', dependsOn: ['initial'], stepTemplate: { prompt: '{{item}}' } },
+  ] });
+  assert.deepEqual(explicit.actions[0].dependsOn, ['initial']);
+  assert.doesNotThrow(() => validateDecisionProposal(explicit, { knownActionIds: ['initial'], currentActionCount: 1 }));
+
+  const rejects = (actions, pattern) => assert.throws(
+    () => validateDecisionProposal(normalizeDecisionProposal({ ...base, actions }), { knownActionIds: ['initial'], currentActionCount: 1 }),
+    (err) => err instanceof DecisionValidationError && err.issues.some((issue) => pattern.test(issue)),
+    `expected an issue matching ${pattern}`,
+  );
+  rejects([{ id: 'f', type: 'fanout', stepTemplate: { prompt: '{{item}}' } }], /items must be an inline array, or actions\[0\]\.itemsFrom must be/);
+  rejects([{ id: 'f', type: 'fanout', itemsFrom: '/abs/list.json', stepTemplate: { prompt: '{{item}}' } }], /itemsFrom must be a dotted artifact path/);
+  rejects([{ id: 'f', type: 'fanout', itemsFrom: 'outputs.ghost.outFile', stepTemplate: { prompt: '{{item}}' } }], /itemsFrom references unknown action "ghost"/);
+  rejects([{ id: 'f', type: 'fanout', itemsFrom: 'outputs.f.outFile', stepTemplate: { prompt: '{{item}}' } }], /itemsFrom cannot reference the fanout itself/);
+  rejects([{ id: 'f', type: 'fanout', items: ['a'], itemsFrom: 'outputs.initial.outFile', stepTemplate: { prompt: '{{item}}' } }], /either items or itemsFrom, not both/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { maxRounds: 1 } }], /repair\.prompt must be a non-empty string/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', maxRounds: 9 } }], /repair\.maxRounds must be an integer from 1 to 3/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', addDir: '/x' } }], /repair\.addDir is runtime-owned/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: 'just fix it' }], /repair must be an object/);
+  rejects([{ id: 'r', type: 'run', prompt: 'x', repair: { prompt: 'fix' } }], /repair is only valid on verify actions/);
 });
 
 test('malformed or over-budget planner proposals are rejected before dispatch', () => {

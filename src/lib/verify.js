@@ -121,6 +121,28 @@ function hasVerifyJson(text) {
 }
 
 /**
+ * A structured answer: the output is, or ends with, a JSON array (a discovery
+ * step's item list, possibly empty) or is a single JSON object. Such output is
+ * substance by construction; the prose heuristics must not reject it as an
+ * announcement.
+ */
+export function hasStructuredAnswer(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try { return typeof JSON.parse(trimmed) === 'object'; } catch { /* not a single object */ }
+  }
+  const end = trimmed.lastIndexOf(']');
+  if (end === -1 || trimmed.slice(end + 1).trim().length > 0) return false;
+  for (let start = trimmed.lastIndexOf('[', end); start !== -1; start = trimmed.lastIndexOf('[', start - 1)) {
+    try {
+      if (Array.isArray(JSON.parse(trimmed.slice(start, end + 1)))) return true;
+    } catch { /* keep widening */ }
+    if (start === 0) break;
+  }
+  return false;
+}
+
+/**
  * Judge delegate output content.
  * @param {string} text   full delegate output
  * @param {object} opts   { exitCode, expectWork=true, acceptVerifyJson=false }
@@ -134,7 +156,7 @@ export function judgeContent(text, { exitCode, expectWork = true, acceptVerifyJs
   if (scanForFailure(text)) {
     return { verdict: 'fail', why: 'failure pattern at output head' };
   }
-  if (expectWork && !looksLikeWork(text) && !(acceptVerifyJson && hasVerifyJson(text))) {
+  if (expectWork && !looksLikeWork(text) && !(acceptVerifyJson && hasVerifyJson(text)) && !hasStructuredAnswer(text)) {
     return { verdict: 'intent_only', why: 'announcement without substance' };
   }
   return { verdict: 'pass', why: 'content passed all gates' };

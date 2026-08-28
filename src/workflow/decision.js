@@ -38,6 +38,14 @@ export function parseDecisionText(text) {
 // dispatch: instructions move to prompt, and a single-dependency verify reviews
 // its dependency's artifact.
 export const REVIEW_PATH_RE = /^outputs\.([A-Za-z0-9_-]+(?:\[\d+\])?)\.outFile$/;
+// Data-driven fan-out source: the artifact of an earlier (or co-proposed)
+// action whose output ends with a JSON array of items.
+export const ITEMS_FROM_RE = /^outputs\.([A-Za-z0-9_-]+)(?:\.outFile)?$/;
+export const REPAIR_MAX_ROUNDS = 3;
+
+export function looksLikeItemsFromPath(value) {
+  return typeof value === 'string' && ITEMS_FROM_RE.test(value.trim());
+}
 
 export function looksLikeReviewPath(value) {
   return typeof value === 'string' && REVIEW_PATH_RE.test(value.trim());
@@ -48,6 +56,17 @@ export function normalizeDecisionProposal(proposal) {
   return {
     ...proposal,
     actions: proposal.actions.map((action) => {
+      if (action?.type === 'fanout' && !Array.isArray(action.items) && looksLikeItemsFromPath(action.itemsFrom)) {
+        // A fanout fed by an artifact implicitly depends on the producer.
+        const itemsFrom = action.itemsFrom.trim();
+        const producer = ITEMS_FROM_RE.exec(itemsFrom)[1];
+        const dependsOn = Array.isArray(action.dependsOn) ? action.dependsOn : [];
+        return {
+          ...action,
+          itemsFrom,
+          ...(dependsOn.includes(producer) || producer === action.id ? {} : { dependsOn: [...dependsOn, producer] }),
+        };
+      }
       if (action?.type !== 'verify') return action;
       const singleDependency = Array.isArray(action.dependsOn) && action.dependsOn.length === 1
         ? action.dependsOn[0] : null;
@@ -137,12 +156,49 @@ export function validateDecisionProposal(proposal, {
       issues.push(`${at} needs a prompt`);
     }
     if (action.type === 'fanout') {
-      if (!Array.isArray(action.items)) issues.push(`${at}.items must be an inline array`);
-      else proposedItems += action.items.length;
+      const hasItems = Array.isArray(action.items);
+      const hasItemsFrom = action.itemsFrom != null;
+      if (!hasItems && !hasItemsFrom) {
+        issues.push(`${at}.items must be an inline array, or ${at}.itemsFrom must be "outputs.<actionId>.outFile" naming the action whose output ends with the JSON array of items`);
+      } else if (hasItems) {
+        proposedItems += action.items.length;
+        if (hasItemsFrom) issues.push(`${at} must use either items or itemsFrom, not both`);
+      }
+      if (hasItemsFrom && !hasItems) {
+        if (!looksLikeItemsFromPath(action.itemsFrom)) {
+          issues.push(`${at}.itemsFrom must be a dotted artifact path like "outputs.<actionId>.outFile" (the action whose output ends with a JSON array), not inline items, instructions, or a filesystem path`);
+        } else {
+          const producer = ITEMS_FROM_RE.exec(action.itemsFrom.trim())[1];
+          if (producer === action.id) issues.push(`${at}.itemsFrom cannot reference the fanout itself`);
+          else if (!known.has(producer) && !proposedIds.has(producer)) issues.push(`${at}.itemsFrom references unknown action "${producer}"`);
+        }
+      }
       if (!action.stepTemplate || typeof action.stepTemplate !== 'object') issues.push(`${at}.stepTemplate is required`);
       for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
         if (action.stepTemplate?.[runtimeOwned] != null) {
           issues.push(`${at}.stepTemplate.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
+        }
+      }
+    }
+    if (action.repair != null && action.type !== 'verify') {
+      issues.push(`${at}.repair is only valid on verify actions`);
+    }
+    if (action.type === 'verify' && action.repair != null) {
+      const repair = action.repair;
+      if (!repair || typeof repair !== 'object' || Array.isArray(repair)) {
+        issues.push(`${at}.repair must be an object like {"prompt":"<how to fix what the verifier rejects>","maxRounds":1}`);
+      } else {
+        if (typeof repair.prompt !== 'string' || !repair.prompt.trim()) {
+          issues.push(`${at}.repair.prompt must be a non-empty string telling a worker how to fix what the verifier rejected`);
+        }
+        if (repair.maxRounds != null && !(Number.isInteger(repair.maxRounds) && repair.maxRounds >= 1 && repair.maxRounds <= REPAIR_MAX_ROUNDS)) {
+          issues.push(`${at}.repair.maxRounds must be an integer from 1 to ${REPAIR_MAX_ROUNDS}`);
+        }
+        if (repair.effort != null && !['high', 'medium', 'low'].includes(repair.effort)) {
+          issues.push(`${at}.repair.effort must be high|medium|low`);
+        }
+        for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
+          if (repair[runtimeOwned] != null) issues.push(`${at}.repair.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
         }
       }
     }

@@ -11,8 +11,10 @@ import { randomBytes } from 'node:crypto';
 import { validateWorkflow } from './validate.js';
 import { WorkflowRuntime } from './runtime.js';
 import { generateShortId, listRuns } from './short-id.js';
+import { extractItems } from './template.js';
 import {
   validateDecisionProposal, normalizeDecisionProposal, DecisionValidationError,
+  ITEMS_FROM_RE,
 } from './decision.js';
 
 export function loadWorkflow(pathOrName, searchDirs) {
@@ -551,6 +553,163 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   // dependencies finish, not when the whole wave finishes. Real concurrency is
   // capped by the runtime's global dispatch limiter (settings.concurrency), so
   // this mirrors a pipeline: item B's verify overlaps item C's fix.
+  const latestDecisionSequence = () => state.decisions?.at?.(-1)?.sequence ?? null;
+  const runProgramAction = async (definition, source) => {
+    state.plan.actions.push({
+      id: definition.id,
+      kind: definition.type,
+      phase: executionPhase(definition),
+      dependsOn: definition.dependsOn ?? [],
+      source,
+      decisionSequence: latestDecisionSequence(),
+      definition,
+    });
+    state.currentStep = { id: definition.id, type: definition.type, phase: executionPhase(definition) };
+    runtime.persist();
+    let result;
+    try {
+      result = await runtime.runStep(
+        { ...definition, parentId: gate.id, _dynamic: true },
+        { phase: executionPhase(definition), retryAttempts },
+      );
+    } catch (err) {
+      result = { ok: false, why: err.message };
+      state.outputs[definition.id] = result;
+      runtime.setActionStatus(definition, { phase: executionPhase(definition) }, 'failed_terminal', {
+        finishedAt: new Date().toISOString(), why: err.message,
+      });
+      runtime.emit('action.failed', { actionId: definition.id, status: 'failed_terminal', why: err.message });
+    }
+    state.steps.push({
+      phase: executionPhase(definition), stepId: definition.id, type: definition.type,
+      ok: result.ok, why: result.why ?? null, dynamic: true, source,
+    });
+    runtime.persist();
+    return result;
+  };
+
+  // Resolve a proposed fanout's items from the producer artifact named by
+  // itemsFrom. If the producer did not end with a parseable JSON array, run
+  // ONE bounded, read-only extraction action over its output before giving up;
+  // never re-run the producer (it may have mutated files).
+  const resolveProposedItems = async (action) => {
+    const itemsFrom = action.itemsFrom.trim();
+    const producerId = ITEMS_FROM_RE.exec(itemsFrom)?.[1] ?? null;
+    const limit = Number(settings.maxItemsPerExpansion ?? 50) || 50;
+    const attempt = (path) => {
+      try { return { ok: true, items: extractItems(state, path) }; } catch (err) { return { ok: false, why: err.message }; }
+    };
+    const finish = (outcome) => {
+      if (outcome.items.length > limit) {
+        return { ok: false, why: `fanout "${action.id}" resolved ${outcome.items.length} items from ${itemsFrom}, exceeding maxItemsPerExpansion=${limit}; propose a narrower discovery or split the fan-out` };
+      }
+      runtime.emit('action.items_resolved', { actionId: action.id, itemsFrom, count: outcome.items.length });
+      return outcome;
+    };
+    let resolved = attempt(itemsFrom);
+    if (!resolved.ok) {
+      const producer = producerId ? state.outputs[producerId] : null;
+      let sourceText = typeof producer?.outputText === 'string' ? producer.outputText : '';
+      try {
+        if (producer?.outFile && existsSync(producer.outFile)) sourceText = readFileSync(producer.outFile, 'utf8');
+      } catch { /* fall back to the recorded excerpt */ }
+      const excerpt = sourceText.length > 20_000 ? `${sourceText.slice(0, 20_000)}\n[truncated]` : sourceText;
+      const extractionId = `${action.id}-items`;
+      if (state.outputs[extractionId]?.ok === true) {
+        // Resume: the extraction already ran durably; reuse its artifact.
+        resolved = attempt(`outputs.${extractionId}.outFile`);
+        if (resolved.ok) return finish(resolved);
+      }
+      runtime.emit('action.items_extraction_requested', {
+        actionId: action.id, producerId, extractionActionId: extractionId, why: resolved.why,
+      });
+      const extraction = {
+        id: extractionId,
+        type: 'run',
+        phase: action.phase,
+        ...(action.lane != null ? { lane: action.lane } : {}),
+        ...(action.addDir != null ? { addDir: action.addDir } : {}),
+        ...(action.timeoutSec != null ? { timeoutSec: action.timeoutSec } : {}),
+        dependsOn: producerId ? [producerId] : [],
+        prompt: [
+          `A previous step ("${producerId ?? itemsFrom}") was supposed to end its output with a JSON array of items, but no JSON array could be parsed (${resolved.why}).`,
+          'Below is that step\'s complete output. Extract the list of items it describes and RETURN ONLY a JSON array: no prose, no markdown fences, nothing before "[" or after "]".',
+          'Each element must be a short string or a small flat object, exactly as the text describes it. If the text describes no list at all, return [].',
+          'Do not run commands and do not modify any file; this is a read-only extraction.',
+          '',
+          '---- BEGIN STEP OUTPUT ----',
+          excerpt,
+          '---- END STEP OUTPUT ----',
+        ].join('\n'),
+      };
+      const extracted = await runProgramAction(extraction, 'runtime-extraction');
+      if (!extracted.ok) {
+        return { ok: false, why: `fanout "${action.id}" items could not be resolved from ${itemsFrom} (${resolved.why}); extraction action "${extractionId}" failed: ${extracted.why}` };
+      }
+      resolved = attempt(`outputs.${extractionId}.outFile`);
+      if (!resolved.ok) {
+        return { ok: false, why: `fanout "${action.id}" items could not be resolved from ${itemsFrom}; extraction action "${extractionId}" returned no JSON array either (${resolved.why})` };
+      }
+      runtime.emit('action.items_extracted', { actionId: action.id, extractionActionId: extractionId, count: resolved.items.length });
+    }
+    return finish(resolved);
+  };
+
+  // Bounded repair loop for a verify that returned a real ok:false verdict:
+  // run a fix action carrying the verifier's concerns verbatim, then re-run the
+  // same verify. Dispatch or parse failures are not repairable and return as-is.
+  const repairAndReverify = async (action, firstResult) => {
+    const maxRounds = Math.min(3, Math.max(1, Number(action.repair.maxRounds) || 1));
+    // Rounds already spent (a resumed run re-verifies first) count against the bound.
+    const priorRounds = (state.plan?.actions ?? [])
+      .filter((entry) => entry.source === 'repair-policy' && entry.dependsOn?.[0] === action.id).length;
+    let result = firstResult;
+    for (let round = priorRounds + 1; round <= maxRounds && result.ok === false; round++) {
+      const verdict = state.outputs[action.id]?.verify;
+      if (!verdict || typeof verdict !== 'object') break;
+      const concerns = Array.isArray(verdict.concerns)
+        ? verdict.concerns.filter((entry) => typeof entry === 'string' && entry.trim()) : [];
+      const repairId = `${action.id}-repair-${round}`;
+      const repair = {
+        id: repairId,
+        type: 'run',
+        phase: action.phase,
+        ...(action.lane != null ? { lane: action.lane } : {}),
+        ...(action.addDir != null ? { addDir: action.addDir } : {}),
+        ...(action.timeoutSec != null ? { timeoutSec: action.timeoutSec } : {}),
+        ...(action.repair.effort != null ? { effort: action.repair.effort } : {}),
+        ...(action.requiresCapabilities != null ? { requiresCapabilities: action.requiresCapabilities } : {}),
+        dependsOn: [action.id],
+        prompt: [
+          action.repair.prompt.trim(),
+          '',
+          `An independent verifier ("${action.id}") rejected the previous result${
+            typeof verdict.summary === 'string' && verdict.summary.trim() ? `: ${verdict.summary.trim()}` : '.'}`,
+          ...(concerns.length ? ['Concerns to resolve (verbatim from the verifier):', ...concerns.map((entry) => `- ${entry}`)] : []),
+          '',
+          `Repair round ${round} of ${maxRounds}. Resolve every concern above, re-run the acceptance command yourself, and report exactly what changed with evidence.`,
+        ].join('\n'),
+      };
+      runtime.emit('action.repair_started', { verifyId: action.id, repairId, round, maxRounds, concerns });
+      const repaired = await runProgramAction(repair, 'repair-policy');
+      if (!repaired.ok) {
+        runtime.emit('action.repair_failed', { verifyId: action.id, repairId, round, why: repaired.why });
+        break;
+      }
+      runtime.emit('action.reverify_started', { verifyId: action.id, repairId, round });
+      state.currentStep = { id: action.id, type: action.type, phase: executionPhase(action) };
+      runtime.persist();
+      result = await runtime.runStep(
+        { ...action, parentId: gate.id, _dynamic: true },
+        { phase: executionPhase(action), retryAttempts },
+      );
+      runtime.emit(result.ok ? 'action.repaired' : 'action.reverify_rejected', {
+        verifyId: action.id, repairId, round, ok: result.ok, why: result.why ?? null,
+      });
+    }
+    return result;
+  };
+
   const executeActions = async (actions) => {
     const pending = new Map(actions.map((action) => [action.id, action]));
     const running = new Map();
@@ -561,16 +720,40 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
       }
       let result;
       try {
-        state.currentStep = {
-          id: action.id,
-          type: action.type,
-          phase: executionPhase(action),
-        };
-        runtime.persist();
-        result = await runtime.runStep(
-          { ...action, parentId: gate.id, _dynamic: true },
-          { phase: executionPhase(action), retryAttempts },
-        );
+        let executable = action;
+        // Data-driven fan-out: the item list comes from an earlier action's
+        // artifact, resolved now that the producer has finished. No planner
+        // turn is needed to turn "discovered N things" into N workers.
+        if (action.type === 'fanout' && !Array.isArray(action.items) && typeof action.itemsFrom === 'string') {
+          const resolved = await resolveProposedItems(action);
+          if (!resolved.ok) {
+            result = { ok: false, why: resolved.why, itemsUnresolved: true };
+            state.outputs[action.id] = result;
+            runtime.setActionStatus(action, { phase: executionPhase(action) }, 'failed_terminal', {
+              finishedAt: new Date().toISOString(), why: resolved.why,
+            });
+            runtime.emit('action.failed', { actionId: action.id, status: 'failed_terminal', why: resolved.why });
+          } else {
+            executable = { ...action, items: resolved.items, itemsResolvedFrom: action.itemsFrom.trim() };
+          }
+        }
+        if (!result) {
+          state.currentStep = {
+            id: action.id,
+            type: action.type,
+            phase: executionPhase(action),
+          };
+          runtime.persist();
+          result = await runtime.runStep(
+            { ...executable, parentId: gate.id, _dynamic: true },
+            { phase: executionPhase(action), retryAttempts },
+          );
+          // Repair policy: a verify that carries `repair` fixes and re-checks
+          // inside the executor instead of returning to the planner.
+          if (action.type === 'verify' && result.ok === false && action.repair && typeof action.repair === 'object') {
+            result = await repairAndReverify(action, result);
+          }
+        }
       } catch (err) {
         // A post-artifact observer failure must not rewrite a durably
         // successful action as failed. Propagate it to the gate boundary;
@@ -852,6 +1035,13 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   }
 }
 
+/** Item success count of a fan-out output; tolerates pre-0.12 state where `ok` held the count. */
+export function fanoutSucceededCount(output) {
+  if (typeof output?.succeeded === 'number') return output.succeeded;
+  if (typeof output?.ok === 'number') return output.ok;
+  return output?.ok === true ? (output.total ?? 0) : 0;
+}
+
 export function buildReport(state, doc, runDir) {
   const stepResults = state.steps ?? [];
   const fanoutSteps = Object.entries(state.outputs ?? {}).filter(
@@ -860,7 +1050,7 @@ export function buildReport(state, doc, runDir) {
   let fanoutOk = 0;
   let fanoutFailed = 0;
   for (const [, v] of fanoutSteps) {
-    fanoutOk += v.ok ?? 0;
+    fanoutOk += fanoutSucceededCount(v);
     fanoutFailed += v.failed ?? 0;
   }
   const simpleOk = stepResults.filter((s) => s.ok).length;
