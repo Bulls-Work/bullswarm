@@ -372,6 +372,7 @@ async function wfGoal(opts) {
         cwd: opts.cwd ?? process.cwd(),
         orchestrator,
         settings: goalSettings(opts),
+        scout: !opts.noScout,
         worktreeIsolation: loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides',
       });
     } catch (err) {
@@ -622,6 +623,7 @@ function parseFlags(argv) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
+    else if (a === '--no-scout') out.noScout = true;
     else if (a === '--resume') out.resume = argv[++i];
     else if (a === '--after') out.after = argv[++i];
     else if (a === '--input') {

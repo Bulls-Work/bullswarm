@@ -42,6 +42,9 @@ import { resolveDispatchModel } from '../lib/strategy.js';
 export const OUTPUT_TEXT_CAP_BYTES = 64 * 1024;
 // Per-item excerpt kept in a fan-out's durable summary artifact.
 const FANOUT_ITEM_EXCERPT_BYTES = 6_000;
+// What the planner sees of each action's output (per output / all outputs).
+const PLANNER_EXCERPT_CHARS = 3_000;
+const PLANNER_EXCERPT_TOTAL_CHARS = 36_000;
 
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
@@ -935,7 +938,22 @@ export class WorkflowRuntime {
         decisionSequence: steering.decisionSequence,
       });
     }
-    const outputs = Object.fromEntries(Object.entries(this.state.outputs ?? {}).map(([id, output]) => [id, {
+    // The planner sees what each action actually said, not just ok/why: an
+    // excerpt of every output, newest first, under a total character budget so
+    // long runs stay within the planner's context.
+    let excerptBudget = PLANNER_EXCERPT_TOTAL_CHARS;
+    const excerptFor = (output) => {
+      const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
+      if (!text) return { outputExcerpt: null };
+      if (excerptBudget <= 0) return { outputExcerpt: null, outputExcerptOmitted: true, outputChars: text.length };
+      const limit = Math.min(PLANNER_EXCERPT_CHARS, excerptBudget);
+      const excerpt = text.length > limit ? `${text.slice(0, limit)}\n…[${text.length - limit} more chars in outFile]` : text;
+      excerptBudget -= excerpt.length;
+      return { outputExcerpt: excerpt, outputChars: text.length };
+    };
+    const outputEntries = Object.entries(this.state.outputs ?? {});
+    const excerpts = new Map(outputEntries.slice().reverse().map(([id, output]) => [id, excerptFor(output)]));
+    const outputs = Object.fromEntries(outputEntries.map(([id, output]) => [id, {
       ok: output?.ok,
       why: output?.why ?? null,
       pool: output?.pool ?? null,
@@ -945,6 +963,7 @@ export class WorkflowRuntime {
       succeeded: output?.succeeded,
       failed: output?.failed,
       itemsFrom: output?.itemsFrom,
+      ...excerpts.get(id),
     }]));
     const actionForPlanner = (action) => ({
       id: action.id,
@@ -1052,6 +1071,7 @@ export class WorkflowRuntime {
       '- Per-item chains: for N known items propose N focused run actions plus N verify actions, each verify depending only on its own run, so verifying one item overlaps with fixing another; add one final verify depending on all of them. For items discovered at run time use the discovery → fanout → verify shape above.',
       '- File ownership: every action prompt must name exactly which files it may edit and state that it must not touch any other file. Two actions that must edit the same file MUST be ordered with dependsOn; never let concurrent actions write the same file.',
       '- Self-contained prompts: a worker sees only its own prompt, never this context. Each prompt must state the absolute working directory, what to read, what to change, the exact command that proves success, and what to report back. Prefer many small parallel actions over one large serial one.',
+      '- Read before you compile: outputs.<id>.outputExcerpt is what each finished action actually reported (outputs.scout, when present, is a read-only survey of the repository: tree, manifest, test status, units of work, shared files, risks). Name real files, modules, and commands from it in your program instead of guessing.',
       '',
       'Action skeletons (copy the shape exactly; every field shown is required unless marked optional):',
       '  run:    {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}',

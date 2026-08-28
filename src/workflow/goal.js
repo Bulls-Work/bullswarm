@@ -34,6 +34,28 @@ export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   'Return stop when unresolved concerns make verified completion disproportionate or when a concrete safety, authority, capability, dependency, or external blocker remains. Stop returns a qualified final outcome; it is not a blanket workflow failure when useful work exists.',
 ].join('\n');
 
+// Read-only survey that runs before the orchestrator's first decision, so the
+// program it compiles names real files, modules, and commands instead of
+// guessing — the equivalent of the inline scouting a Claude Code session does
+// before authoring a Workflow script.
+export function scoutPrompt(goal, cwd) {
+  return [
+    'You are the read-only SCOUT for an autonomous workflow. Another agent will turn the goal below into a program of parallel worker actions using ONLY your report, so be concrete and complete.',
+    `Working directory (absolute): ${cwd}`,
+    `Goal: ${goal}`,
+    '',
+    'Survey what the goal touches. Do NOT modify, create, or delete any file; do not install dependencies; do not commit.',
+    'Report under exactly these headings, at most ~80 lines total:',
+    'TREE: the directory tree to depth 3 (skip node_modules, .git, build output), one entry per line.',
+    'MANIFEST: package/build manifest facts that matter (name, language/runtime, test command, lint/format command, module system).',
+    'TEST STATUS: run the test command once and report the exact pass/fail counts and any failing test names.',
+    'UNITS OF WORK: one bullet per independent item the goal implies (module, file, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, and anything already present.',
+    'SHARED FILES: files that more than one unit would touch (indexes, barrels, README tables, config) and therefore must be edited by one action after the others.',
+    'RISKS: anything that constrains the plan (files that must not change, flaky tests, missing tools, ambiguous requirements).',
+    'Finally, END your output with a JSON array of the unit-of-work names in UNITS OF WORK, e.g. ["csv","duration"]. Nothing after the array.',
+  ].join('\n');
+}
+
 function positiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   if (value == null) return fallback;
   const parsed = Number(value);
@@ -49,6 +71,7 @@ export function buildGoalWorkflow({
   orchestrator = null,
   name = null,
   settings = {},
+  scout = true,
   worktreeIsolation = 'agent-decides',
 } = {}) {
   if (typeof goal !== 'string' || !goal.trim()) {
@@ -65,7 +88,7 @@ export function buildGoalWorkflow({
   const maxAgents = positiveInt(settings.maxAgents, 30, { max: 500 });
   const maxExpansionRounds = positiveInt(settings.maxExpansionRounds, 8, { max: 50 });
   const maxActions = positiveInt(settings.maxActions, 40, { max: 1000 });
-  const maxItemsPerExpansion = positiveInt(settings.maxItemsPerExpansion, 8, { max: 100 });
+  const maxItemsPerExpansion = positiveInt(settings.maxItemsPerExpansion, 24, { max: 100 });
   const maxWorkflowSeconds = positiveInt(settings.maxWorkflowSeconds, 3600, { max: 86_400 });
   const concurrency = positiveInt(settings.concurrency, 8, { max: 16 });
   const retryAttempts = positiveInt(settings.retryAttempts, 1, { min: 0, max: 3 });
@@ -113,7 +136,13 @@ export function buildGoalWorkflow({
     },
     phases: [{
       name: 'autonomous-delivery',
-      steps: [{
+      steps: [...(scout === true ? [{
+        id: 'scout',
+        type: 'run',
+        lane: 'analyze',
+        addDir: targetDir,
+        prompt: scoutPrompt(goal.trim(), targetDir),
+      }] : []), {
         id: 'orchestrator',
         type: 'decide',
         ...(orchestrator ? { pool: orchestrator } : {}),
