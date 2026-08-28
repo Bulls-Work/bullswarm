@@ -218,7 +218,9 @@ test('G2: workflow excludes burst-gated pools from dispatch', async () => {
   const { dir, cleanup } = fixtureHome();
   try {
     const pools = echoOnlyPools(dir);
-    // Mark echo as burst-gated; no other pool exists → no eligible pool.
+    // Mark echo as burst-gated; no other pool exists → the runtime waits for
+    // the gate (reset time unknown here, so a short bounded wait) and only
+    // then refuses, naming the gate.
     pools[0].burstGate = true;
     const doc = twoStepDoc();
     const result = await runWorkflow({
@@ -226,10 +228,12 @@ test('G2: workflow excludes burst-gated pools from dispatch', async () => {
       doc,
       pools,
       inputs: {},
+      quotaPollMs: 20,
+      quotaWaitUnknownResetMs: 50,
       onEvent: () => {},
     });
     assert.equal(result.state.outputs.one.ok, false);
-    assert.match(result.state.outputs.one.why, /no eligible pool/);
+    assert.match(result.state.outputs.one.why, /no eligible pool: every candidate is burst-gated \(echo 5h window usage unknown, reset time unknown\)/);
   } finally {
     cleanup();
   }
@@ -568,6 +572,71 @@ test('G6: the artifact a verify reviews is appended verbatim, never template-ren
     assert.equal(result.state.outputs.v.verify.summary, 'braces intact');
     const verifyAttempt = result.state.attempts.find((attempt) => attempt.actionId === 'v');
     assert.match(readFileSync(verifyAttempt.taskFile, 'utf8'), /---- BEGIN REVIEW TARGET ----[\s\S]*\{\{maxLength\?: number\}\}[\s\S]*\{\{item\}\}/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a burst-gated provider is waited for, not failed: the run resumes when the window frees up', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const pools = echoOnlyPools(dir);
+    const resetsAt = new Date(Date.now() + 60_000).toISOString();
+    pools[0].burstGate = true;
+    pools[0].meterSnapshot = { five_hour: { utilization: 95, resets_at: resetsAt } };
+    let reads = 0;
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc: twoStepDoc(),
+      pools,
+      inputs: {},
+      quotaPollMs: 20,
+      readMeter: async () => {
+        reads += 1;
+        const gated = reads < 2;
+        return { burstGate: gated, snapshot: { five_hour: { utilization: gated ? 95 : 3, resets_at: resetsAt } }, pacing: null };
+      },
+      onEvent: (e) => events.push(e),
+    });
+    assert.equal(result.report.status, 'completed');
+    assert.equal(result.state.outputs.one.ok, true);
+    const waiting = events.find((e) => e.type === 'dispatch.waiting_for_quota');
+    assert.ok(waiting, 'runtime must announce the quota wait');
+    assert.equal(waiting.actionId, 'one');
+    assert.equal(waiting.pools[0].name, 'echo');
+    assert.equal(waiting.pools[0].fiveHourUsedPct, 95);
+    assert.match(waiting.detail, /echo 5h window 95% used, resets /);
+    assert.ok(events.some((e) => e.type === 'dispatch.quota_available'));
+    assert.equal(result.state.quotaWait, undefined);
+    assert.notEqual(result.state.stage, 'waiting_for_quota');
+    assert.ok(reads >= 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a burst gate that never lifts fails the action with the pool, usage and reset time named', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const pools = echoOnlyPools(dir);
+    const resetsAt = new Date(Date.now() - 1_000).toISOString();
+    pools[0].burstGate = true;
+    pools[0].meterSnapshot = { five_hour: { utilization: 95, resets_at: resetsAt } };
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc: twoStepDoc({ settings: { concurrency: 1, escalateOnFail: false, stopOnPhaseFailure: true } }),
+      pools,
+      inputs: {},
+      quotaPollMs: 20,
+      quotaWaitGraceMs: 60,
+      readMeter: async () => ({ burstGate: true, snapshot: { five_hour: { utilization: 95, resets_at: resetsAt } }, pacing: null }),
+      onEvent: (e) => events.push(e),
+    });
+    assert.equal(result.report.status, 'failed');
+    assert.match(result.state.outputs.one.why, /every candidate is burst-gated \(echo 5h window 95% used, resets \d{4}-\d{2}-\d{2}T[^)]+\) and the wait for the window expired/);
+    assert.ok(events.some((e) => e.type === 'dispatch.quota_wait_expired'));
   } finally {
     cleanup();
   }

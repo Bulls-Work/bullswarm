@@ -1,5 +1,22 @@
 # bullswarm changelog
 
+## 0.12.1 — a burst-gated provider is waited for, never failed on the spot
+
+- `workflow` runs no longer die with `no eligible pool` when every candidate
+  pool is burst-gated (provider 5-hour window ≥ 90 % used). The runtime parks
+  the dispatch in a new `waiting_for_quota` stage (`state.quotaWait` names the
+  pool, its 5h usage and reset time; events `dispatch.waiting_for_quota`,
+  `dispatch.quota_available`, `dispatch.quota_wait_expired`), re-reads the
+  provider meter every 60 s, and continues the moment the gate lifts. It gives
+  up — with the pool, usage and reset time in the failure reason — only after
+  the known reset time plus 10 min of grace (5 h when no reset time is known).
+  The planner's context is composed after the wait, so it never sees an empty
+  pool list. Observed 2026-08-28 19:09 Z: the first 0.12.0 comparison run
+  failed in 4 s because the account's Claude 5h window read 91 % (reset
+  22:30 Z); Claude Code in the same situation waits on the rate limit.
+  Options for embedding callers/tests: `quotaPollMs`, `quotaWaitGraceMs`,
+  `quotaWaitUnknownResetMs` on `runWorkflow`; `readMeter` injection.
+
 ## 0.12.0 — one decision is a whole program
 
 Completes the convergence on Claude Code's dynamic-workflow mechanics

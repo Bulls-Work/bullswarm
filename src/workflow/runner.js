@@ -258,6 +258,10 @@ export async function runWorkflow(opts) {
     runDir,
     onEvent: opts.onEvent,
     env: opts.env,
+    readMeter: opts.readMeter,
+    quotaPollMs: opts.quotaPollMs,
+    quotaWaitGraceMs: opts.quotaWaitGraceMs,
+    quotaWaitUnknownResetMs: opts.quotaWaitUnknownResetMs,
   });
   state.runner = {
     pid: process.pid,
