@@ -150,6 +150,8 @@ test('dependency-ready sibling actions run concurrently and dependents start as 
     assert.match(firstPlannerTask, /PLANNING DOCTRINE/);
     assert.match(firstPlannerTask, /"concurrency": 3/);
     assert.match(firstPlannerTask, /"readySiblingsRunConcurrently": true/);
+    assert.match(firstPlannerTask, /concurrent workers editing DISJOINT files in the same tree is the normal, expected mode/);
+    assert.doesNotMatch(firstPlannerTask, /must not modify or stash the shared target/);
   } finally { f.cleanup(); }
 });
 
