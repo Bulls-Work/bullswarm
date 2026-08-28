@@ -196,18 +196,33 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
   return lines.join('\n');
 }
 
+// A freshly launched detached run may not have written state.json yet when a
+// watcher attaches (goal --watch hands off immediately). waitForRunMs bounds
+// how long the watcher polls for the run to appear before giving up.
+async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs) {
+  const deadline = Date.now() + Math.max(0, waitForRunMs);
+  while (true) {
+    const resolved = resolveRunId(bullswarmDir, token);
+    if (resolved && existsSync(join(resolved.runDir, 'state.json'))) return resolved;
+    if (Date.now() >= deadline) {
+      if (!resolved) throw new Error(`no run found for "${token}"`);
+      throw new Error(`run "${token}" has no state.json`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(50, intervalMs))));
+  }
+}
+
 export async function runWorkflowWatch(bullswarmDir, token, {
   intervalMs = 2000,
   heartbeatMs = 60000,
   once = false,
   jsonl = false,
   verbose = false,
+  waitForRunMs = 0,
   output = process.stdout,
 } = {}) {
-  const resolved = resolveRunId(bullswarmDir, token);
-  if (!resolved) throw new Error(`no run found for "${token}"`);
+  const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs);
   const statePath = join(resolved.runDir, 'state.json');
-  if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   let priorFingerprint = null;
   let priorHumanFingerprint = null;
   let lastPrintedAt = 0;
