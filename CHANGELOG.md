@@ -1,5 +1,29 @@
 # bullswarm changelog
 
+## 0.10.0 — battle-tested advisory orchestration and agent activity
+
+- Made `maxAgents` and `maxWorkflowSeconds` advisory planning targets instead
+  of hard stops. Workflows can exceed them to finish required implementation
+  and verification; structural graph-growth limits remain enforced.
+- Removed implicit connector and generated-goal wall-clock timeouts. Delegates
+  wait for natural completion unless an operator explicitly supplies a timeout,
+  requests cancellation, or a definitive auth/quota failure is observed.
+- Added compatibility migration for generated 0.9.0 goals carrying Bullswarm's
+  former 900-second planner/action timeout defaults.
+- Fixed adaptive completion policy, current-action metadata, provider routing
+  history, usage aggregation, latest-worker verification, and truthful partial
+  token/cost accounting found during the Kipwise battle test.
+- Added connector-owned native JSONL event adapters for Codex, Claude, Grok,
+  Command Code, and OpenCode. Workflows now retain and display the latest three
+  semantic shell/read/edit/write/response actions for every active agent.
+- Added conservative stall evidence: ten minutes without transport, parsed
+  event, or semantic action activity is labeled `suspected_stalled` but never
+  causes an automatic kill.
+- Expanded the offline suite to 218 tests. Real bounded CLI probes confirmed
+  all five provider event formats, and an exact packaged OpenCode watch smoke
+  passed argument injection, action normalization, final-output extraction,
+  and the content gate together.
+
 ## 0.9.0 — resilient dynamic workflow routing
 
 - Added cooperative `SIGTERM`/`SIGINT` handling, durable `interrupted` states,
