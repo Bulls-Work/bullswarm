@@ -51,7 +51,9 @@ finished, or the graph blocked).
   owns, shared files, risks; ends with a JSON array of unit names) so the
   orchestrator's first program names real files and commands — the counterpart
   of the inline scouting a Claude Code session does before authoring a
-  Workflow script. `--no-scout` skips it.
+  Workflow script. `--no-scout` skips it. A failed scout is non-fatal: the
+  planner still runs and sees `outputs.scout.ok=false` with the reason, and
+  the scout never counts as a delivery worker.
 - The planner finally sees what workers said: every `outputs.<id>` in the
   durable planner context carries `outputExcerpt` (up to 3 000 chars each,
   36 000 total, newest first) instead of only `ok`/`why`/`outFile`.

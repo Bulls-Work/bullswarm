@@ -24,7 +24,10 @@ function fixture() {
   writeFileSync(worker, [
     'import { readFileSync, writeFileSync } from "node:fs";',
     'const task = readFileSync(process.argv[2], "utf8");',
-    'if (task.includes("BEGIN DURABLE WORKFLOW CONTEXT")) {',
+    'if (task.includes("read-only SCOUT") && task.includes("SCOUT_FAIL")) {',
+    '  process.stderr.write("scout could not read the repository\\n");',
+    '  process.exit(3);',
+    '} else if (task.includes("BEGIN DURABLE WORKFLOW CONTEXT")) {',
     '  const done = task.includes("goal-verify") && task.includes("succeeded");',
     '  const premature = task.includes("PREMATURE_COMPLETION") && !task.includes("goal-work") && !task.includes("autonomous completion rejected");',
     '  const answer = premature',
@@ -167,6 +170,31 @@ test('--watch prints the operating handoff and follows the independent run to te
     assert.match(result.stdout, /result\s+bullswarm workflow runs result/);
     assert.match(result.stdout, /completed/);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
+  } finally { f.cleanup(); }
+});
+
+test('a failed scout is non-fatal: the planner still runs and sees outputs.scout.ok=false', () => {
+  const f = fixture();
+  try {
+    const result = cli(f, [
+      'workflow', 'goal', 'SCOUT_FAIL: create and verify done.txt even though the survey fails.',
+      '--cwd', f.target, '--foreground', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.status, 'completed');
+    const scout = report.actionLedger.find((action) => action.id === 'scout');
+    assert.equal(scout.status, 'failed_terminal');
+    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
+    // The planner was consulted after the (retried) scout failure and told about it.
+    const plannerTasks = report.attempts
+      .map((attempt) => readFileSync(attempt.taskFile, 'utf8'))
+      .filter((task) => task.includes('BEGIN DURABLE WORKFLOW CONTEXT'));
+    assert.ok(plannerTasks.length >= 1, 'planner must still be consulted after a failed scout');
+    assert.match(plannerTasks[0], /"scout": \{[^}]*"ok": false/);
+    // The real worker and its independent verification still ran and succeeded.
+    assert.equal(report.actionLedger.find((action) => action.id === 'goal-work').status, 'succeeded');
+    assert.equal(report.actionLedger.find((action) => action.id === 'goal-verify').status, 'succeeded');
   } finally { f.cleanup(); }
 });
 
