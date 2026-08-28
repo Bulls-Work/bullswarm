@@ -4,6 +4,8 @@
 //   bullswarm workflow runs --all                 # list ongoing + historical
 //   bullswarm workflow runs --historical          # only historical
 //   bullswarm workflow runs --name <workflow>     # filter by workflow name
+//   bullswarm workflow runs --all --since 7d      # initiated in the last 7 days
+//   bullswarm workflow runs --all --since yesterday --until today
 //   bullswarm workflow runs --limit N             # cap result count
 //   bullswarm workflow runs show <id>             # dump state + report
 //   bullswarm workflow runs delete <id> --yes     # remove the run directory
@@ -32,29 +34,60 @@ export function cmdRuns(args) {
 export function runsUsage() {
   return `usage:
   bullswarm workflow runs                       # list ongoing runs
-  bullswarm workflow runs [--all | --historical] [--name <workflow>] [--limit N] [--json]
+  bullswarm workflow runs [--all | --historical] [--name <workflow>]
+    [--since <time>] [--until <time>] [--limit N] [--json]
   bullswarm workflow runs show <id>             # <id> = shortId (6 chars) or full runId
-  bullswarm workflow runs delete <id> --yes     # remove the run directory`;
+  bullswarm workflow runs delete <id> --yes     # remove the run directory
+
+Time filters compare the workflow initiation timestamp (startedAt):
+  --since / --started-after / --from   inclusive lower bound
+  --until / --started-before / --to    exclusive upper bound
+Values accept ISO timestamps, local dates, today/yesterday/tomorrow/now,
+or relative durations such as 30m, 24h, 7d, and 2w.`;
 }
 
 function parseRunsFlags(argv) {
   const out = { _positional: [] };
+  const valueFlags = new Map([
+    ['name', 'name'],
+    ['limit', 'limit'],
+    ['since', 'since'],
+    ['started-after', 'since'],
+    ['from', 'since'],
+    ['until', 'until'],
+    ['started-before', 'until'],
+    ['to', 'until'],
+  ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--all') out.all = true;
     else if (a === '--historical') out.historical = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
-    else if (a === '--name') out.name = argv[++i];
-    else if (a === '--limit') out.limit = Number(argv[++i]);
     else if (a === '--force') out.force = true;
-    else if (a.startsWith('--')) out[a.slice(2)] = true;
+    else if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const key = a.slice(2, eq > 0 ? eq : undefined);
+      const target = valueFlags.get(key);
+      if (target) {
+        const value = eq > 0 ? a.slice(eq + 1) : argv[++i];
+        out[target] = target === 'limit' ? Number(value) : value;
+      } else {
+        out[key] = eq > 0 ? a.slice(eq + 1) : true;
+      }
+    }
     else out._positional.push(a);
   }
   return out;
 }
 
 function runsList(opts) {
+  let initiatedRange;
+  try {
+    initiatedRange = resolveInitiatedRange(opts);
+  } catch (error) {
+    return err(error.message);
+  }
   const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
   if (opts.name) filtered = filtered.filter((r) => r.state?.workflow === opts.name);
@@ -64,10 +97,22 @@ function runsList(opts) {
   } else if (opts.historical) {
     filtered = filtered.filter((r) => !r.ongoing);
   }
+  if (initiatedRange.sinceMs != null) {
+    filtered = filtered.filter((r) => {
+      const startedMs = Date.parse(runStartedAt(r) ?? '');
+      return Number.isFinite(startedMs) && startedMs >= initiatedRange.sinceMs;
+    });
+  }
+  if (initiatedRange.untilMs != null) {
+    filtered = filtered.filter((r) => {
+      const startedMs = Date.parse(runStartedAt(r) ?? '');
+      return Number.isFinite(startedMs) && startedMs < initiatedRange.untilMs;
+    });
+  }
   // Newest first.
   filtered.sort((a, b) => {
-    const ta = a.state?.startedAt ?? '';
-    const tb = b.state?.startedAt ?? '';
+    const ta = runStartedAt(a) ?? '';
+    const tb = runStartedAt(b) ?? '';
     return tb.localeCompare(ta);
   });
   if (opts.limit && opts.limit > 0) filtered = filtered.slice(0, opts.limit);
@@ -77,6 +122,15 @@ function runsList(opts) {
       ongoing: opts.all || !opts.historical,
       historical: opts.all || opts.historical,
       name: opts.name ?? null,
+      initiatedRange: {
+        field: 'startedAt',
+        sinceInclusive: initiatedRange.sinceMs == null
+          ? null
+          : new Date(initiatedRange.sinceMs).toISOString(),
+        untilExclusive: initiatedRange.untilMs == null
+          ? null
+          : new Date(initiatedRange.untilMs).toISOString(),
+      },
       count: filtered.length,
       runs: filtered.map(summarize),
     }, opts);
@@ -96,7 +150,7 @@ function runsList(opts) {
   for (const r of filtered) {
     const wf = r.state?.workflow ?? '?';
     const status = r.state?.status ?? (r.ongoing ? 'running' : 'unknown');
-    const age = humanAge(r.state?.startedAt);
+    const age = humanAge(runStartedAt(r));
     const phases = `${r.state?.steps?.filter((s) => s.ok).length ?? 0}/${r.state?.steps?.length ?? 0}`;
     console.log(
       `${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ` +
@@ -167,14 +221,66 @@ function summarize(r) {
     shortId: r.shortId,
     workflow: r.state?.workflow ?? null,
     status: r.state?.status ?? null,
-    startedAt: r.state?.startedAt ?? null,
-    finishedAt: r.state?.finishedAt ?? null,
+    startedAt: runStartedAt(r),
+    finishedAt: r.state?.finishedAt ?? r.report?.finishedAt ?? null,
     ongoing: r.ongoing,
     stepsOk: r.state?.steps?.filter((s) => s.ok).length ?? 0,
     stepsFailed: r.state?.steps?.filter((s) => s.ok === false).length ?? 0,
     stepsTotal: r.state?.steps?.length ?? 0,
     abortReason: r.state?.abortReason ?? null,
   };
+}
+
+function runStartedAt(run) {
+  return run.state?.startedAt ?? run.report?.startedAt ?? null;
+}
+
+function resolveInitiatedRange(opts, nowMs = Date.now()) {
+  const sinceMs = opts.since == null ? null : parseTimeBound(opts.since, nowMs, '--since');
+  const untilMs = opts.until == null ? null : parseTimeBound(opts.until, nowMs, '--until');
+  if (sinceMs != null && untilMs != null && sinceMs >= untilMs) {
+    throw new Error('initiated-time range is empty: --since must be earlier than --until');
+  }
+  return { sinceMs, untilMs };
+}
+
+function parseTimeBound(value, nowMs, flag) {
+  const raw = String(value ?? '').trim();
+  if (!raw) throw new Error(`${flag} requires a time value`);
+  const normalized = raw.toLowerCase();
+
+  if (normalized === 'now') return nowMs;
+  if (['yesterday', 'today', 'tomorrow'].includes(normalized)) {
+    const date = new Date(nowMs);
+    date.setHours(0, 0, 0, 0);
+    if (normalized === 'yesterday') date.setDate(date.getDate() - 1);
+    if (normalized === 'tomorrow') date.setDate(date.getDate() + 1);
+    return date.getTime();
+  }
+
+  const duration = normalized.match(/^(\d+(?:\.\d+)?)(m|h|d|w)$/);
+  if (duration) {
+    const unitMs = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[duration[2]];
+    return nowMs - Number(duration[1]) * unitMs;
+  }
+
+  const localDate = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (localDate) {
+    const [, year, month, day] = localDate;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    if (date.getFullYear() !== Number(year)
+      || date.getMonth() !== Number(month) - 1
+      || date.getDate() !== Number(day)) {
+      throw new Error(`${flag} has an invalid calendar date: "${raw}"`);
+    }
+    return date.getTime();
+  }
+
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${flag} has an invalid time: "${raw}"`);
+  }
+  return parsed;
 }
 
 function humanAge(iso) {

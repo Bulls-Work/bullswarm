@@ -19,7 +19,8 @@
 //       shapes attached.
 //   I9. `bullswarm workflow runs` lists ongoing by default; `--all`
 //       includes historical; `--historical` shows only historical;
-//       `--name <wf>` filters by workflow.
+//       `--name <wf>` filters by workflow; initiated-time bounds compare
+//       `startedAt` with an inclusive lower and exclusive upper bound.
 //   I10. `runs show <id>` accepts a shortId or a full runId.
 //   I11. `runs delete <id>` refuses without --yes; refuses for an
 //        ongoing run without --force; deletes with both flags.
@@ -67,6 +68,19 @@ function run(args, env = {}) {
 }
 
 const wf = (...args) => ['workflow', ...args];
+
+function historicalFixture(home, { runId, shortId, workflow = 'dated', startedAt, stateStartedAt = startedAt }) {
+  const runDir = join(home, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  const finishedAt = new Date(Date.parse(startedAt) + 60_000).toISOString();
+  writeFileSync(join(runDir, 'state.json'), JSON.stringify({
+    runId, shortId, workflow, status: 'completed', startedAt: stateStartedAt,
+    finishedAt, steps: [],
+  }));
+  writeFileSync(join(runDir, 'report.json'), JSON.stringify({
+    runId, shortId, workflow, status: 'completed', startedAt, finishedAt,
+  }));
+}
 
 // --- I1: shortId is set on every new run -------------------------------
 test('I1: new run gets a 6-char shortId in state.json and report.json', async () => {
@@ -435,6 +449,72 @@ test('I9: workflow runs --name <wf> filters by workflow', async () => {
     const j = JSON.parse(r.stdout);
     assert.equal(j.count, 1);
     assert.equal(j.runs[0].workflow, 'a');
+  } finally { cleanup(); }
+});
+
+test('I9: workflow runs filters by initiated time with inclusive since and exclusive until', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    historicalFixture(home, {
+      runId: 'wf-before', shortId: 'abc234', startedAt: '2026-08-26T23:59:59.999Z',
+    });
+    historicalFixture(home, {
+      runId: 'wf-lower-bound', shortId: 'def567', startedAt: '2026-08-27T00:00:00.000Z',
+    });
+    historicalFixture(home, {
+      runId: 'wf-middle', shortId: 'ghj678', startedAt: '2026-08-27T12:00:00.000Z',
+    });
+    historicalFixture(home, {
+      runId: 'wf-upper-bound', shortId: 'kmn789', startedAt: '2026-08-28T00:00:00.000Z',
+    });
+
+    const result = run(wf(
+      'runs', '--all', '--started-after=2026-08-27T00:00:00Z',
+      '--started-before', '2026-08-28T00:00:00Z', '--json',
+    ), { home });
+    assert.equal(result.status, 0, result.stderr);
+    const json = JSON.parse(result.stdout);
+    assert.equal(json.initiatedRange.field, 'startedAt');
+    assert.equal(json.initiatedRange.sinceInclusive, '2026-08-27T00:00:00.000Z');
+    assert.equal(json.initiatedRange.untilExclusive, '2026-08-28T00:00:00.000Z');
+    assert.deepEqual(json.runs.map((item) => item.runId), ['wf-middle', 'wf-lower-bound']);
+  } finally { cleanup(); }
+});
+
+test('I9: workflow runs accepts relative since and falls back to report startedAt', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    historicalFixture(home, {
+      runId: 'wf-recent', shortId: 'pqr789',
+      startedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+      stateStartedAt: null,
+    });
+    historicalFixture(home, {
+      runId: 'wf-old', shortId: 'stv789',
+      startedAt: new Date(Date.now() - 8 * 86_400_000).toISOString(),
+    });
+
+    const result = run(wf('runs', '--all', '--since=7d', '--json'), { home });
+    assert.equal(result.status, 0, result.stderr);
+    const json = JSON.parse(result.stdout);
+    assert.deepEqual(json.runs.map((item) => item.runId), ['wf-recent']);
+    assert.ok(json.runs[0].startedAt);
+  } finally { cleanup(); }
+});
+
+test('I9: workflow runs rejects invalid or reversed initiated-time ranges', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const invalid = run(wf('runs', '--all', '--since', 'not-a-time'), { home });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /--since has an invalid time/);
+
+    const reversed = run(wf(
+      'runs', '--all', '--from', '2026-08-28T00:00:00Z',
+      '--to', '2026-08-27T00:00:00Z',
+    ), { home });
+    assert.equal(reversed.status, 1);
+    assert.match(reversed.stderr, /--since must be earlier than --until/);
   } finally { cleanup(); }
 });
 

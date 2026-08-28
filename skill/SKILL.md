@@ -166,9 +166,18 @@ Every run gets a 6-character shortId (Crockford-style alphabet, no
 bullswarm workflow runs                       # ongoing only (default)
 bullswarm workflow runs --all                 # ongoing + historical
 bullswarm workflow runs --name <workflow>     # filter by workflow name
+bullswarm workflow runs --all --since 7d      # initiated in the last 7 days
+bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs show <shortId>        # state + report + summary
 bullswarm workflow runs delete <shortId> --yes
 ```
+
+Historical time ranges filter the workflow's initiation time (`startedAt`),
+not completion time. `--since` is inclusive and `--until` is exclusive, with
+`--from`/`--to` and `--started-after`/`--started-before` aliases. Bounds accept
+ISO timestamps, local dates, today/yesterday/tomorrow/now, or durations such as
+`7d`. Add `--all` or `--historical`; time filters do not silently change the
+normal ongoing-only scope.
 
 Before authoring or choosing a workflow, agents can inspect the live execution
 fabric and the workflow document itself:

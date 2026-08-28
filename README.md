@@ -173,6 +173,9 @@ bullswarm workflow runs                    # ongoing only (default)
 bullswarm workflow runs --all              # ongoing + historical
 bullswarm workflow runs --historical       # only historical
 bullswarm workflow runs --name audit-code  # filter by workflow
+bullswarm workflow runs --all --since 7d   # initiated in the last 7 days
+bullswarm workflow runs --historical --since yesterday --until today
+bullswarm workflow runs --all --from 2026-08-20 --to 2026-08-27
 bullswarm workflow runs --limit 20         # cap the result count
 bullswarm workflow runs show <shortId>     # state + report + summary
 bullswarm runs show <shortId>              # top-level shorthand
@@ -181,6 +184,14 @@ bullswarm workflow runs delete <shortId> --yes    # remove the run dir
 # Resume by shortId — runs the same logic as the full runId
 bullswarm workflow run audit-code --resume <shortId>
 ```
+
+Run-history time filters always compare when the workflow was initiated
+(`startedAt`), never when it finished. `--since` is inclusive and `--until` is
+exclusive; `--started-after`/`--from` and `--started-before`/`--to` are aliases.
+Values accept ISO timestamps, local `YYYY-MM-DD` dates, `today`, `yesterday`,
+`tomorrow`, `now`, or relative durations such as `30m`, `24h`, `7d`, and `2w`.
+Time filters preserve the existing scope, so use `--all` or `--historical` when
+auditing completed runs.
 
 ### Live workflow dashboard
 

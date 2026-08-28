@@ -1,5 +1,17 @@
 # bullswarm changelog
 
+## 0.10.1 — initiated-time workflow history search
+
+- Added `workflow runs --since <time> --until <time>` filtering against the
+  workflow's initiation timestamp (`startedAt`), with an inclusive lower bound
+  and exclusive upper bound.
+- Added `--from`/`--to` and `--started-after`/`--started-before` aliases plus
+  ISO timestamps, local dates, calendar keywords, and relative durations such
+  as `7d`.
+- Historical listing now falls back to `report.startedAt` when an older state
+  record lacks its initiation timestamp, and JSON output reports the normalized
+  range used for the audit.
+
 ## 0.10.0 — battle-tested advisory orchestration and agent activity
 
 - Made `maxAgents` and `maxWorkflowSeconds` advisory planning targets instead
