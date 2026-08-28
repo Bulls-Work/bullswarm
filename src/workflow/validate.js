@@ -7,6 +7,8 @@
 //   W3. Lanes and pinned pools are checked against the live registry so a
 //       typo never burns quota discovering itself mid-run.
 
+import { TEMPLATE_TOKEN_RE, isTemplateRef } from './template.js';
+
 const LANES = ['analyze', 'build', 'chore'];
 const ON_ERROR = ['continue', 'fail', 'skip-phase'];
 const STEP_TYPES = ['run', 'fanout', 'verify', 'decide'];
@@ -24,12 +26,17 @@ function collect(issues, ok, msg) {
   return ok;
 }
 
-/** Extract {{ref}} tokens from a string. */
+/**
+ * Extract {{ref}} tokens from a string. Only grammar-conforming refs count
+ * (known root + dotted identifiers); other double-brace text is prompt content.
+ */
 export function templateRefs(str) {
   const out = [];
-  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
+  const re = new RegExp(TEMPLATE_TOKEN_RE.source, 'g');
   let m;
-  while ((m = re.exec(str)) !== null) out.push(m[1].trim());
+  while ((m = re.exec(str)) !== null) {
+    if (isTemplateRef(m[1])) out.push(m[1].trim());
+  }
   return out;
 }
 

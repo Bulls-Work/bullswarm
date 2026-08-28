@@ -46,6 +46,14 @@ finished, or the graph blocked).
   → verify-suite); `executionConstraints.programFeatures` and
   `plannerConsultedOnlyAtProgramBoundary`. The goal orchestrator prompt is
   reframed the same way.
+- Literal double braces in prompts no longer kill actions. Only a known root
+  followed by dotted identifiers (`{{item}}`, `{{outputs.<id>.outFile}}`,
+  `{{inputs.x}}`, `{{runId}}`, `{{wfDir}}`) is a template ref; any other
+  `{{…}}` text (a JSDoc type such as `{{maxLength?: number}}`, Mustache, a JS
+  object in a template literal) is left exactly as written by the renderer
+  and ignored by the validator. Observed in the 0.11.1 comparison run: a
+  planner-authored verify prompt containing `{{maxLength?: number}}` failed
+  at render time with zero attempts.
 - Scout before compiling: `workflow goal` now starts with a read-only `scout`
   run action (tree, manifest, test status, units of work with the files each
   owns, shared files, risks; ends with a JSON array of unit names) so the

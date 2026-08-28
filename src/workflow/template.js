@@ -11,13 +11,31 @@ export function getPath(obj, path) {
 }
 
 /**
+ * The only things bullswarm treats as template refs: a known root followed by
+ * dotted identifier segments. Anything else between double braces — a JSDoc
+ * type like `{{maxLength?: number}}`, a Mustache/Jinja snippet, a JS object in
+ * a template literal — is ordinary prompt text and is left exactly as written.
+ * (Observed 2026-08-28: a planner-authored verify prompt containing the literal
+ * `{{maxLength?: number}}` killed the action at render time with zero attempts.)
+ */
+export const TEMPLATE_REF_ROOTS = ['item', 'inputs', 'outputs', 'runId', 'wfDir', 'steps'];
+const TEMPLATE_REF_GRAMMAR = new RegExp(`^(?:${TEMPLATE_REF_ROOTS.join('|')})(?:\\.[A-Za-z0-9_-]+)*$`);
+export const TEMPLATE_TOKEN_RE = /\{\{\s*([^}]+?)\s*\}\}/g;
+
+export function isTemplateRef(ref) {
+  return typeof ref === 'string' && TEMPLATE_REF_GRAMMAR.test(ref.trim());
+}
+
+/**
  * Expand {{ref}} tokens in a string against a scope object.
  * Supports {{item}}, {{item.path.to.field}}, {{inputs.x}}, {{outputs.stepId}},
- * {{runId}}, {{wfDir}}. Non-string values are JSON-stringified.
+ * {{runId}}, {{wfDir}}. Non-string values are JSON-stringified. Double-brace
+ * text that is not a ref (see isTemplateRef) is returned untouched.
  */
 export function renderTemplate(str, scope) {
   if (typeof str !== 'string') return str;
-  return str.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, ref) => {
+  return str.replace(TEMPLATE_TOKEN_RE, (match, ref) => {
+    if (!isTemplateRef(ref)) return match;
     const v = getPath(scope, ref.trim());
     if (v === undefined) {
       throw new Error(`template ref "{{${ref.trim()}}}" unresolved at render time`);
