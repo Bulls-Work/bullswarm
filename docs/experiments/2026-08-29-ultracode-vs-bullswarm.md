@@ -327,7 +327,19 @@ three fixes on "non-blocking" nits from verifiers that had returned
 
 ### bullswarm 0.12.0 (installed binary) — same goal, fresh copy `g2-bs-v3`
 
-(pending — after the 0.12.0 release)
+**First launch, 19:09:48 Z, installed 0.12.0 — failed in 4 s.** Both the
+scout and the orchestrator were `failed_terminal` with `no eligible pool`
+before any process was spawned. Cause: the account's Claude 5-hour window read
+**91 %** (live meter at 19:09:49 Z, reset 22:30 Z) after the two long Opus
+runs, so the pace gate excluded the only pool. Not a 0.12.0 regression (the
+gate pre-dates it) but exactly the class of difference this comparison is
+for: Claude Code, rate-limited mid-workflow, waits and retries; bullswarm
+failed the run with no reset time in the reason. Fixed as **0.12.1** (`beeed94`):
+the runtime parks the dispatch in `waiting_for_quota`, re-reads the meter
+every 60 s, continues when the window resets, and only fails — naming pool,
+usage and reset time — after reset + 10 min grace.
+
+(re-run on 0.12.1 pending — it starts as soon as the 5h window resets at 22:30 Z)
 
 The originally planned 0.10.9 goal-2 run was dropped at the user's request
 (2026-08-29): the installed latest is the only baseline that matters.
