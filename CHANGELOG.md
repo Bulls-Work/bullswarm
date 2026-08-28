@@ -53,7 +53,9 @@ finished, or the graph blocked).
   object in a template literal) is left exactly as written by the renderer
   and ignored by the validator. Observed in the 0.11.1 comparison run: a
   planner-authored verify prompt containing `{{maxLength?: number}}` failed
-  at render time with zero attempts.
+  at render time with zero attempts. Relatedly, `verify` no longer
+  template-renders the artifact it reviews: only the reviewer instructions
+  are a template; the worker's report is appended verbatim.
 - Doctrine: an `ok:true` verify is accepted; its concerns are informational.
   The 0.11.1 comparison run spent a whole extra program round (7 actions,
   ~10 min) polishing "non-blocking" nits reported by verifiers that had
