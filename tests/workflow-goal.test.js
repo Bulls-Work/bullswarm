@@ -7,7 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildGoalWorkflow, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
-import { shouldAutoWatchGoal } from '../src/workflow/cli.js';
+import { applyResumeOrchestratorOverride, shouldAutoWatchGoal } from '../src/workflow/cli.js';
 import { normalizeLegacyGeneratedGoalTimeouts } from '../src/workflow/runner.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 
@@ -85,12 +85,28 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.equal(doc.phases[0].steps[0].type, 'decide');
   assert.equal(doc.phases[0].steps[0].pool, undefined);
   assert.equal(doc.phases[0].steps[0].prompt, `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\nWorktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.`);
+  assert.match(doc.phases[0].steps[0].prompt, /control-plane decision thread/);
+  assert.match(doc.phases[0].steps[0].prompt, /Do not invoke Bullswarm, run shell commands, call tools, or modify repository files/);
   assert.equal(doc.intent.worktreeIsolation, 'agent-decides');
   assert.deepEqual(doc.orchestration.completionPolicy, {
     requireSuccessfulWorker: true,
     requireSuccessfulVerification: true,
   });
   assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: ['goal-agent'] }));
+});
+
+test('resume can explicitly replace the durable orchestrator route', () => {
+  const doc = buildGoalWorkflow({ goal: 'Verify the change.', cwd: REPO, name: 'resume-route' });
+  assert.equal(doc.orchestration.requestedPool, null);
+  applyResumeOrchestratorOverride(doc, 'grok');
+  assert.equal(doc.intent.requestedOrchestrator, 'grok');
+  assert.equal(doc.orchestration.requestedPool, 'grok');
+  assert.equal(doc.orchestration.selection, 'user-pinned-for-testing');
+  assert.equal(doc.phases[0].steps[0].pool, 'grok');
+  applyResumeOrchestratorOverride(doc, 'auto');
+  assert.equal(doc.intent.requestedOrchestrator, 'auto');
+  assert.equal(doc.orchestration.requestedPool, null);
+  assert.equal(doc.phases[0].steps[0].pool, undefined);
 });
 
 test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching authored workflows', () => {

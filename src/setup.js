@@ -184,6 +184,14 @@ export function upgradeConnectorMetadata(bullswarmDir) {
           changed = true;
         }
       }
+      if (Array.isArray(packaged.authSignatures)) {
+        const existing = Array.isArray(installed.authSignatures) ? installed.authSignatures : [];
+        const merged = [...new Set([...existing, ...packaged.authSignatures])];
+        if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+          installed.authSignatures = merged;
+          changed = true;
+        }
+      }
       if (installed.model == null && packaged.model != null) {
         installed.model = packaged.model;
         changed = true;

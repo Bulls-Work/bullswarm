@@ -223,7 +223,7 @@ function matchLikelyAuthFailure(connector, text) {
   const line = lower.slice(lineStart, lineEnd < 0 ? lower.length : lineEnd).trim();
   // A semantic result may legitimately discuss auth handling. Require the
   // matched line to look like a provider failure instead of source/report text.
-  const errorShaped = /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|403|429)|status\s*(?:401|403|429)|login required|please login|access denied|quota exceeded)\b/i.test(line);
+  const errorShaped = /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|403|429)|status\s*(?:401|403|429)|login required|please login|access denied|quota exceeded)\b/i.test(line);
   return errorShaped ? hit : null;
 }
 

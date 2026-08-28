@@ -310,6 +310,26 @@ export function shouldAutoWatchGoal(opts) {
     opts.json !== true && opts.resume == null && opts.request == null;
 }
 
+export function applyResumeOrchestratorOverride(doc, requested) {
+  if (!requested) return doc;
+  const pool = requested === 'auto' ? null : requested;
+  doc.intent ??= {};
+  doc.orchestration ??= {};
+  doc.intent.requestedOrchestrator = pool ?? 'auto';
+  doc.orchestration.requestedPool = pool;
+  doc.orchestration.selection = pool
+    ? 'user-pinned-for-testing'
+    : 'capability-strategy-and-quota';
+  for (const phase of doc.phases ?? []) {
+    for (const step of phase.steps ?? []) {
+      if (step.type !== 'decide') continue;
+      if (pool) step.pool = pool;
+      else delete step.pool;
+    }
+  }
+  return doc;
+}
+
 async function wfGoal(opts) {
   if (opts.help) {
     console.log(goalUsage());
@@ -340,6 +360,7 @@ async function wfGoal(opts) {
       console.error(`✗ cannot load durable workflow for ${resumeRunId}: ${err.message}`);
       return 1;
     }
+    applyResumeOrchestratorOverride(doc, opts.orchestrator);
   } else if (opts.request) {
     try {
       const request = JSON.parse(readFileSync(resolve(opts.request), 'utf8'));
@@ -488,7 +509,7 @@ function wfEvents(opts) {
 async function wfWatch(opts) {
   const token = opts.rest[0];
   if (!token) {
-    console.error('usage: bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once]');
+    console.error('usage: bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once] [--verbose]');
     return 2;
   }
   const intervalSec = Number(opts.interval ?? 2);
@@ -504,6 +525,7 @@ async function wfWatch(opts) {
       heartbeatMs: heartbeatSec * 1000,
       once: opts.once === true,
       jsonl: opts.jsonl === true,
+      verbose: opts.verbose === true,
     });
   } catch (err) {
     console.error(`✗ ${err.message}`);

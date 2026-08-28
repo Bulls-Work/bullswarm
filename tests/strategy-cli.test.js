@@ -117,3 +117,17 @@ test('strategy auto-refresh skips fresh reports and refreshes stale approved rep
     assert.equal(loadState(f.dir).strategy.policy.autoApplyRecommendations, true);
   } finally { f.cleanup(); }
 });
+
+test('strategy argument errors use usage exit code 2', async () => {
+  const f = fixture();
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    assert.equal(await cmdStrategy(['set-subscription', 'missing-pool'], { bullswarmDir: f.dir }), 2);
+    assert.equal(await cmdStrategy(['assign', 'low', '--pool', 'missing-pool', '--model', 'x'], { bullswarmDir: f.dir }), 2);
+    assert.equal(await cmdStrategy(['auto', 'off'], { bullswarmDir: f.dir }), 2);
+  } finally {
+    console.error = originalError;
+    f.cleanup();
+  }
+});

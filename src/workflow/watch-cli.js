@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId } from './short-id.js';
 import { readSteering } from './steering.js';
+import { readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 
 function readJson(path) {
@@ -81,6 +82,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     tokens: state.usage?.tokens?.totalKnown ?? null,
     pendingSteering: queuedSteering.length,
     deliveredSteering: state.steering?.length ?? 0,
+    quietForSec: 0,
     agents: Object.values(state.activeAgents ?? {}).map((agent) => ({
       stepId: agent.stepId,
       pool: agent.pool ?? null,
@@ -119,9 +121,37 @@ export function snapshotFingerprint(snapshot) {
   });
 }
 
-export function renderWatchSnapshot(snapshot, { heartbeat = false } = {}) {
+function humanTransitionFingerprint(snapshot) {
+  return JSON.stringify({
+    status: snapshot.status,
+    stage: snapshot.stage,
+    phase: snapshot.phase,
+    step: snapshot.step,
+    dispatchesUsed: snapshot.dispatchesUsed,
+    pendingSteering: snapshot.pendingSteering,
+    agents: snapshot.agents.map((agent) => ({
+      stepId: agent.stepId,
+      pool: agent.pool,
+      model: agent.model,
+      status: agent.status,
+      stall: agent.stall,
+    })),
+  });
+}
+
+export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = false, events = [] } = {}) {
   const target = snapshot.dispatchTarget == null ? '∞' : snapshot.dispatchTarget;
   const location = [snapshot.phase, snapshot.step].filter(Boolean).join('/') || 'starting';
+  if (!verbose) {
+    const actions = events.filter((event) => event.type === 'attempt.agent_action').length;
+    const line = `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ` +
+      `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${events.length} events, ${actions} actions · ` +
+      `quiet ${formatDuration(snapshot.quietForSec)}`;
+    if (snapshot.terminal && snapshot.timing) {
+      return `${line}\n  timing: ${snapshot.timing.attempts.length} attempts in ${formatDuration(snapshot.timing.workflowElapsedSec)}`;
+    }
+    return line;
+  }
   const marker = snapshot.terminal ? '■' : heartbeat ? '♡' : '●';
   const lines = [
     `${marker} +${formatDuration(snapshot.elapsedSec)} ${snapshot.status}/${snapshot.stage ?? '?'} ` +
@@ -152,6 +182,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   heartbeatMs = 60000,
   once = false,
   jsonl = false,
+  verbose = false,
   output = process.stdout,
 } = {}) {
   const resolved = resolveRunId(bullswarmDir, token);
@@ -159,21 +190,71 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   let priorFingerprint = null;
+  let priorHumanFingerprint = null;
   let lastPrintedAt = 0;
+  let priorSequence = null;
+  let pendingEvents = [];
+  let lastActivityAt = null;
   while (true) {
     const state = readJson(statePath);
     if (state) {
       const snapshot = watchSnapshot(resolved.runDir, state);
+      if (priorSequence == null) {
+        // A newly attached watcher has no preceding interval. Start at the
+        // durable high-water mark instead of replaying the run lifetime.
+        priorSequence = state.eventSequence ?? 0;
+        lastActivityAt = Math.max(
+          Date.parse(state.lastEvent?.committedAt ?? '') || 0,
+          Date.parse(state.finishedAt ?? '') || 0,
+          ...Object.values(state.attempts ?? []).map((attempt) => Math.max(
+            Date.parse(attempt.lastActivityAt ?? '') || 0,
+            Date.parse(attempt.lastHeartbeatAt ?? '') || 0,
+            Date.parse(attempt.finishedAt ?? '') || 0,
+          )),
+          ...Object.values(state.activeAgents ?? {}).map((agent) => Math.max(
+            Date.parse(agent.lastActivityAt ?? '') || 0,
+            Date.parse(agent.lastActionAt ?? '') || 0,
+            Date.parse(agent.startedAt ?? '') || 0,
+          )),
+          Date.parse(state.startedAt ?? '') || Date.now(),
+        );
+      }
+      const newEvents = readEvents(resolved.runDir, { after: priorSequence });
+      if (newEvents.length) {
+        pendingEvents.push(...newEvents);
+        lastActivityAt = Math.max(
+          lastActivityAt,
+          ...newEvents.map((event) => Date.parse(event.committedAt ?? '') || Date.now()),
+        );
+        priorSequence = newEvents.at(-1)?.sequence ?? state.eventSequence ?? priorSequence;
+      }
+      snapshot.quietForSec = Math.max(0, Math.floor((Date.now() - lastActivityAt) / 1000));
       const fingerprint = snapshotFingerprint(snapshot);
+      const humanFingerprint = humanTransitionFingerprint(snapshot);
       const heartbeat = Date.now() - lastPrintedAt >= heartbeatMs;
-      if (fingerprint !== priorFingerprint || heartbeat || once) {
+      const changed = jsonl || verbose
+        ? fingerprint !== priorFingerprint
+        : humanFingerprint !== priorHumanFingerprint;
+      if (changed || heartbeat || once) {
         output.write(jsonl
           ? `${JSON.stringify({ type: heartbeat && fingerprint === priorFingerprint ? 'heartbeat' : 'progress', ...snapshot })}\n`
-          : `${renderWatchSnapshot(snapshot, { heartbeat: heartbeat && fingerprint === priorFingerprint })}\n`);
+          : `${renderWatchSnapshot(snapshot, {
+            heartbeat: heartbeat && !changed,
+            verbose,
+            events: pendingEvents,
+          })}\n`);
         priorFingerprint = fingerprint;
+        priorHumanFingerprint = humanFingerprint;
         lastPrintedAt = Date.now();
+        pendingEvents = [];
       }
-      if (snapshot.terminal || once) return isDeliveredWorkflowStatus(snapshot.status) || once ? 0 : 1;
+      if (snapshot.terminal || once) {
+        if (!jsonl && snapshot.terminal) {
+          output.write(`outcome: ${snapshot.status}\n`);
+          output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json\n`);
+        }
+        return isDeliveredWorkflowStatus(snapshot.status) || once ? 0 : 1;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, Math.max(100, intervalMs)));
   }

@@ -59,6 +59,10 @@ bullswarm run --lane <analyze|build|chore> \
   --add-dir <abs/path/to/repo> \
   --task-file <abs/path/to/task.md> \
   --json
+
+# Equivalent explicit prompt form (also accepts trailing task text)
+bullswarm run --lane analyze --add-dir <abs/path/to/repo> \
+  --prompt "Inspect and verify the parser" --json
 ```
 
 The verdict shape:
@@ -202,7 +206,14 @@ bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs show <shortId>        # state + report + summary
 bullswarm workflow runs result <shortId> --json # stable delivery for the caller
 bullswarm workflow runs delete <shortId> --yes
+
+bullswarm workflow list
+bullswarm workflow validate workflows/demo.json
 ```
+
+`workflow goal --request <path>` and `--run-id <id>` are internal detached-runner
+plumbing. Ordinary callers should provide a goal or resume with
+`--resume <shortId|runId>`.
 
 Historical time ranges filter the workflow's initiation time (`startedAt`),
 not completion time. `--since` is inclusive and `--until` is exclusive, with
@@ -279,9 +290,13 @@ reason, and child-process termination evidence. `workflow tui` displays the
 same information interactively. `workflow events` supports replay after a
 monotonic sequence cursor.
 
-Prefer `workflow watch` for ordinary monitoring; it prints semantic changes and
-a periodic heartbeat, then a per-attempt timing/token breakdown at terminal
-status. `workflow steer` is an optional durable queue for autonomous workflows:
+Prefer `workflow watch` for ordinary monitoring; default human text is a compact
+aggregate heartbeat with status/location, interval event and agent-action counts,
+and quiet duration. It does not repeat command or response excerpts. Add
+`--verbose` for the detailed agent and last-action view. `--jsonl` keeps the
+machine-readable snapshot stream. Compact terminal text includes overall timing
+and the exact `workflow runs result <shortId> --json` next command; `--verbose`
+adds per-attempt timing and token details. `workflow steer` is an optional durable queue for autonomous workflows:
 it never changes the active worker and is delivered only to the next
 not-yet-started decision gate. Steering cannot expand the original authority,
 weaken verification, or bypass proposal validation.

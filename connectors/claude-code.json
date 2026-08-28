@@ -18,6 +18,7 @@
   "authSignatures": [
     "unauthorized",
     "authentication failed",
+    "failed to authenticate",
     "credit balance",
     "not logged in",
     "please run /login"

@@ -213,6 +213,13 @@ export async function runWorkflow(opts) {
   // Always keep a reference to the doc on the state so the runtime can
   // enforce inputs.<k>.required (R-run-time-required).
   state._doc = doc;
+  if (resuming) {
+    state.intent = doc.intent ?? state.intent;
+    state.orchestration = doc.orchestration
+      ? { ...(state.orchestration ?? {}), ...doc.orchestration }
+      : state.orchestration;
+    writeFileSync(join(runDir, 'workflow.json'), `${JSON.stringify(doc, null, 2)}\n`);
+  }
   if (opts.inputs && Object.keys(opts.inputs).length) {
     state.inputs = { ...state.inputs, ...opts.inputs };
   }

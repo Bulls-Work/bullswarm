@@ -1,5 +1,20 @@
 # bullswarm changelog
 
+## 0.10.8 — quieter monitoring and resilient orchestration
+
+- Made `workflow watch` aggregate low-level activity into compact interval
+  heartbeats by default, with event/action deltas, quiet duration, prompt
+  semantic transitions, terminal result handoff, and `--verbose` drill-down.
+- Implemented the documented top-level `run --prompt` form and standardized
+  usage errors as exit 2 across run, workflow drafts/runs, and strategy paths.
+- Added explicit goal-resume orchestrator pin/unpin behavior and strengthened
+  the orchestrator as a control-plane-only decision thread.
+- Recognize Claude's exact `Failed to authenticate` response as an auth failure
+  and migrate the connector signature additively without replacing local
+  connector customization.
+- Expanded non-network CLI, health, release, watch, resume, auth, help, and
+  documentation coverage. The full suite now contains 271 tests.
+
 ## 0.10.7 — clearer orchestration overview
 
 - Replaced the orchestrator trace dump with a summary-first view showing what

@@ -96,6 +96,34 @@ async function cmdRun(opts) {
   }
   const targetDir = resolve(opts['add-dir'] ?? process.cwd());
 
+  // Validate task input before routing so malformed invocations never fall
+  // through to the caller-session path.
+  if (opts['task-file'] === true || opts.prompt === true ||
+      (opts['task-file'] != null && typeof opts['task-file'] !== 'string') ||
+      (opts.prompt != null && typeof opts.prompt !== 'string')) {
+    console.error('usage: --prompt and --task-file require a value');
+    return 2;
+  }
+  if (opts['task-file'] && opts.prompt != null) {
+    console.error('usage: choose one of --prompt, --task-file, or trailing task text');
+    return 2;
+  }
+  if (opts['task-file'] && opts.rest.length) {
+    console.error('usage: choose one of --task-file or trailing task text');
+    return 2;
+  }
+  if (opts.prompt != null && opts.rest.length) {
+    console.error('usage: choose one of --prompt or trailing task text');
+    return 2;
+  }
+  const taskText = opts['task-file']
+    ? readFileSync(opts['task-file'], 'utf8')
+    : opts.prompt ?? opts.rest.join(' ');
+  if (!taskText.trim()) {
+    console.error('empty task: pass --task-file, --prompt, or the task as arguments');
+    return 2;
+  }
+
   // Recursion guard FIRST — core-owned, env handshake.
   let state = loadState(getBullswarmDir());
   try {
@@ -165,15 +193,6 @@ async function cmdRun(opts) {
     ...connector,
     subscription: poolView.subscription ?? connector.subscription ?? null,
   };
-
-  // Task text: --task-file content or stdin string.
-  const taskText = opts['task-file']
-    ? readFileSync(opts['task-file'], 'utf8')
-    : opts.rest.join(' ');
-  if (!taskText.trim()) {
-    console.error('empty task: pass --task-file or the task as arguments');
-    return 2;
-  }
 
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const runDir = join(getBullswarmDir(), 'runs');

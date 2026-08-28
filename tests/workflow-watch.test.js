@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   formatDuration, timingBreakdown, watchSnapshot, snapshotFingerprint,
   renderWatchSnapshot, runWorkflowWatch,
 } from '../src/workflow/watch-cli.js';
+import { appendEvent } from '../src/workflow/events.js';
 
 function fixture(state = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bs-watch-'));
@@ -34,7 +35,7 @@ function fixture(state = {}) {
   return { home, runDir, state: document, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
-test('watch snapshot is concise, stable between heartbeats, and shows last actions', () => {
+test('watch snapshot is concise and stable between heartbeats', () => {
   const f = fixture();
   try {
     const now = new Date('2026-08-28T01:05:00.000Z');
@@ -42,11 +43,55 @@ test('watch snapshot is concise, stable between heartbeats, and shows last actio
     assert.equal(snapshot.elapsedSec, 300);
     assert.equal(snapshot.agents[0].elapsedSec, 240);
     assert.equal(snapshot.agents[0].lastActions[0].summary, 'npm test');
-    assert.match(renderWatchSnapshot(snapshot), /command-code\/gpt-5\.6-sol/);
-    assert.match(renderWatchSnapshot(snapshot), /shell_command:running · npm test/);
+    const compact = renderWatchSnapshot(snapshot);
+    assert.match(compact, /0 events, 0 actions/);
+    assert.doesNotMatch(compact, /npm test/);
+    assert.match(renderWatchSnapshot(snapshot, { verbose: true }), /shell_command:running · npm test/);
     const later = watchSnapshot(f.runDir, f.state, new Date('2026-08-28T01:05:30.000Z'));
     assert.equal(snapshotFingerprint(snapshot), snapshotFingerprint(later));
     assert.equal(formatDuration(3661), '1h01m');
+  } finally { f.cleanup(); }
+});
+
+test('human watch reports interval activity without repeating excerpts', () => {
+  const f = fixture({ eventSequence: 6 });
+  try {
+    const rendered = renderWatchSnapshot(watchSnapshot(f.runDir, f.state), {
+      events: [
+        { type: 'phase.started' },
+        { type: 'attempt.agent_action', payload: { actionId: 'implement' } },
+      ],
+    });
+    assert.match(rendered, /2 events, 1 actions/);
+    assert.doesNotMatch(rendered, /npm test/);
+  } finally { f.cleanup(); }
+});
+
+test('default watch aggregates low-level actions until the heartbeat interval', async () => {
+  const f = fixture();
+  try {
+    let output = '';
+    const watching = runWorkflowWatch(f.home, 'abc234', {
+      intervalMs: 10,
+      heartbeatMs: 120,
+      output: { write: (text) => { output += text; } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const state = JSON.parse(readFileSync(join(f.runDir, 'state.json'), 'utf8'));
+    appendEvent(f.runDir, state, 'attempt.agent_action', { actionId: 'implement' });
+    appendEvent(f.runDir, state, 'attempt.agent_action', { actionId: 'implement' });
+    writeFileSync(join(f.runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 55));
+    assert.equal(output.trim().split('\n').length, 1, 'actions alone must not wake compact watch');
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    state.status = 'completed';
+    state.stage = 'delivered';
+    state.finishedAt = new Date().toISOString();
+    state.activeAgents = {};
+    writeFileSync(join(f.runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    assert.equal(await watching, 0);
+    assert.match(output, /2 events, 2 actions/);
+    assert.doesNotMatch(output, /implement#|npm test/);
   } finally { f.cleanup(); }
 });
 
@@ -63,10 +108,33 @@ test('terminal watch emits attempt timing breakdown and exits', async () => {
   try {
     assert.equal(timingBreakdown(f.state).attempts[0].elapsedSec, 90);
     let output = '';
-    const code = await runWorkflowWatch(f.home, 'abc234', { output: { write: (text) => { output += text; } } });
+    const code = await runWorkflowWatch(f.home, 'abc234', { verbose: true, output: { write: (text) => { output += text; } } });
     assert.equal(code, 0);
     assert.match(output, /timing: 1 attempts in 3m00s/);
     assert.match(output, /implement#1/);
+    assert.match(output, /next: bullswarm workflow runs result abc234 --json/);
+  } finally { f.cleanup(); }
+});
+
+test('compact terminal uses finished activity for quiet time and omits attempt detail', async () => {
+  const finishedAt = new Date(Date.now() - 5_000).toISOString();
+  const f = fixture({
+    status: 'completed', stage: 'delivered', finishedAt,
+    currentStep: undefined, activeAgents: {},
+    attempts: [{
+      actionId: 'implement', attemptNumber: 1, pool: 'command-code', status: 'succeeded',
+      startedAt: new Date(Date.now() - 10_000).toISOString(), finishedAt,
+    }],
+    lastEvent: undefined,
+  });
+  try {
+    let output = '';
+    assert.equal(await runWorkflowWatch(f.home, 'abc234', {
+      once: true, output: { write: (text) => { output += text; } },
+    }), 0);
+    assert.match(output, /quiet [45]s/);
+    assert.match(output, /timing: 1 attempts/);
+    assert.doesNotMatch(output, /implement#1/);
   } finally { f.cleanup(); }
 });
 

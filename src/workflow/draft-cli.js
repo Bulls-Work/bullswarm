@@ -107,7 +107,9 @@ function jsonOut(obj, opts) {
   if (opts.json) console.log(JSON.stringify(obj, null, 2));
 }
 
-function err(msg) { console.error(msg); return 1; }
+function err(msg, code = 1) { console.error(msg); return code; }
+
+function usageErr(msg) { return err(msg, 2); }
 
 // --- subcommand dispatch ---------------------------------------------------
 
@@ -173,7 +175,7 @@ async function livePoolNames() {
 
 function draftCreate(opts) {
   const [name] = opts._positional;
-  if (!name) return err('usage: bullswarm workflow draft create <name>');
+  if (!name) return usageErr('usage: bullswarm workflow draft create <name>');
   if (draftExists(BULLSWARM_DIR(), name)) {
     return err(`draft "${name}" already exists (delete it first or use 'show')`);
   }
@@ -206,7 +208,7 @@ function draftCreate(opts) {
 
 function draftShow(opts) {
   const [name] = opts._positional;
-  if (!name) return err('usage: bullswarm workflow draft show <name>');
+  if (!name) return usageErr('usage: bullswarm workflow draft show <name>');
   const { doc, meta } = loadDraft(BULLSWARM_DIR(), name);
   if (opts.json) {
     jsonOut({ doc, meta }, opts);
@@ -247,7 +249,7 @@ function draftList(opts) {
 function draftPhase(opts) {
   const [action, name, phaseName] = opts._positional;
   if (!action || !name || !phaseName) {
-    return err('usage: bullswarm workflow draft phase <add|remove> <draft> <phase>');
+    return usageErr('usage: bullswarm workflow draft phase <add|remove> <draft> <phase>');
   }
   if (action === 'add') {
     if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
@@ -266,13 +268,13 @@ function draftPhase(opts) {
     else { console.log(`✓ removed phase "${phaseName}" from draft "${name}"`); reportValidation(r.validation); }
     return r.validation?.ok === false ? 1 : 0;
   }
-  return err(`unknown phase action "${action}"`);
+  return usageErr(`unknown phase action "${action}"`);
 }
 
 function draftStep(opts) {
   const [action, name, phaseName, stepId] = opts._positional;
   if (!action || !name || !phaseName || !stepId) {
-    return err('usage: bullswarm workflow draft step <add|remove|set> <draft> <phase> <step-id> [options]');
+    return usageErr('usage: bullswarm workflow draft step <add|remove|set> <draft> <phase> <step-id> [options]');
   }
   if (action === 'add') {
     const f = opts._flags;
@@ -314,8 +316,8 @@ function draftStep(opts) {
   }
   if (action === 'set') {
     const field = opts._positional[4];
-    if (!field) return err('usage: bullswarm workflow draft step set <draft> <phase> <step> <field> --value <text>');
-    if (!f_has(opts._flags, 'value')) return err('missing --value');
+    if (!field) return usageErr('usage: bullswarm workflow draft step set <draft> <phase> <step> <field> --value <text>');
+    if (!f_has(opts._flags, 'value')) return usageErr('missing --value');
     const r = setStepField(BULLSWARM_DIR(), name, {
       phaseName, stepId, field, value: opts._flags.value,
     });
@@ -323,7 +325,7 @@ function draftStep(opts) {
     else { console.log(`✓ set ${field} on step "${stepId}" in draft "${name}"`); reportValidation(r.validation); }
     return r.validation?.ok === false ? 1 : 0;
   }
-  return err(`unknown step action "${action}"`);
+  return usageErr(`unknown step action "${action}"`);
 }
 
 function f_has(flags, name) {
@@ -332,8 +334,8 @@ function f_has(flags, name) {
 
 function draftSet(opts) {
   const [name, field] = opts._positional;
-  if (!name || !field) return err('usage: bullswarm workflow draft set <draft> <field> --value <text>');
-  if (!f_has(opts._flags, 'value')) return err('missing --value');
+  if (!name || !field) return usageErr('usage: bullswarm workflow draft set <draft> <field> --value <text>');
+  if (!f_has(opts._flags, 'value')) return usageErr('missing --value');
   const r = setField(BULLSWARM_DIR(), name, { field, value: opts._flags.value });
   if (opts.json) jsonOut({ ok: true, action: 'set', name, field, validation: r.validation }, opts);
   else { console.log(`✓ set ${field} on draft "${name}"`); reportValidation(r.validation); }
@@ -342,7 +344,7 @@ function draftSet(opts) {
 
 async function draftValidate(opts) {
   const [name] = opts._positional;
-  if (!name) return err('usage: bullswarm workflow draft validate <name>');
+  if (!name) return usageErr('usage: bullswarm workflow draft validate <name>');
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   const { doc } = loadDraft(BULLSWARM_DIR(), name);
   const { names } = await livePoolNames();
@@ -371,7 +373,7 @@ async function draftValidate(opts) {
 
 function draftExport(opts) {
   const [name, outFile] = opts._positional;
-  if (!name || !outFile) return err('usage: bullswarm workflow draft export <name> <out-file>');
+  if (!name || !outFile) return usageErr('usage: bullswarm workflow draft export <name> <out-file>');
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   const { outPath } = exportDraft(BULLSWARM_DIR(), name, outFile);
   if (opts.json) jsonOut({ ok: true, name, outPath }, opts);
@@ -381,10 +383,10 @@ function draftExport(opts) {
 
 function draftDelete(opts) {
   const [name] = opts._positional;
-  if (!name) return err('usage: bullswarm workflow draft delete <name>');
+  if (!name) return usageErr('usage: bullswarm workflow draft delete <name>');
   if (!f_has(opts._flags, 'yes') && !opts._flags.y) {
     // Refuse without --yes for safety.
-    return err(`refusing to delete draft "${name}" without --yes`);
+    return usageErr(`refusing to delete draft "${name}" without --yes`);
   }
   const ok = deleteDraft(BULLSWARM_DIR(), name);
   if (opts.json) jsonOut({ ok, name }, opts);
@@ -394,7 +396,7 @@ function draftDelete(opts) {
 
 async function draftRun(opts) {
   const [name] = opts._positional;
-  if (!name) return err('usage: bullswarm workflow draft run <name> [--input k=v]...');
+  if (!name) return usageErr('usage: bullswarm workflow draft run <name> [--input k=v]...');
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   // Build a synthetic path inside the drafts dir so the existing
   // loadWorkflow + runWorkflow paths work without modification.

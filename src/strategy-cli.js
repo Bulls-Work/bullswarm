@@ -262,6 +262,7 @@ export async function cmdStrategy(args, { bullswarmDir }) {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    return 1;
+    const usage = /^(usage:|missing |assignment needs |--apply changes|strategy (?:apply|auto off) changes|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool)/i.test(err.message);
+    return usage ? 2 : 1;
   }
 }
