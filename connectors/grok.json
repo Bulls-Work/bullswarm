@@ -43,6 +43,6 @@
   "flags": {
     "stealth": false
   },
-  "timeoutSec": 900,
+  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec",
   "$comment-meter": "weekly shared credit pool via billing endpoint; no 5h window exists on unified-billing accounts"
 }

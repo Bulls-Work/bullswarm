@@ -49,5 +49,5 @@
   "flags": {
     "stealth": false
   },
-  "timeoutSec": 900
+  "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec"
 }

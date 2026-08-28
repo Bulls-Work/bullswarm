@@ -6,7 +6,8 @@
 //   W2. PWD quirk: connectors declaring cwdMode "pwd" get env.PWD set to
 //       the target dir AND are spawned with cwd = target dir. Otherwise
 //       they silently analyse the WRONG repository and exit 0.
-//   W3. Timeout kills the process tree; partial output is still judged.
+//   W3. Delegates have no implicit wall-clock timeout. A caller may opt into
+//       an explicit timeout; cancellation always terminates the process tree.
 //   W4. A non-zero exit is never a success — but when content verification
 //       passes anyway, report contentUsableDespiteExit instead of
 //       discarding completed work.
@@ -48,7 +49,10 @@ export function argvWithModel(connector, paths, model = null) {
  * @returns Promise<{exitCode, signal, stdout, stderr, timedOut, cancelled}>
  */
 export function runDelegate(connector, taskFile, targetDir, opts = {}) {
-  const timeoutMs = (opts.timeoutSec ?? connector.timeoutSec ?? 900) * 1000;
+  const configuredTimeout = opts.timeoutSec == null ? null : Number(opts.timeoutSec);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout * 1000
+    : null;
   const argv = argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
@@ -74,22 +78,49 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let stderr = '';
     let timedOut = false;
     let cancelled = false;
-    const timer = setTimeout(() => {
+    let fatalSignature = null;
+    let fatalKillTimer = null;
+    let fatalForceKillTimer = null;
+    let forceKillTimer = null;
+    const stopOnFatalSignature = () => {
+      if (fatalSignature) return;
+      fatalSignature = matchAuthSignature(connector, `${stdout}\n${stderr}`.slice(-4000));
+      if (!fatalSignature) return;
+      // Give a well-behaved CLI a brief chance to exit with its own truthful
+      // status, but do not wait indefinitely after a definitive auth/quota
+      // signature has already made the attempt unusable.
+      fatalKillTimer = setTimeout(() => {
+        child.kill('SIGTERM');
+        fatalForceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      }, 100);
+    };
+    const timer = timeoutMs == null ? null : setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2000);
+      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
     }, timeoutMs);
     const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
       if (cancelled || !opts.shouldCancel()) return;
       cancelled = true;
       child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 2000);
+      forceKillTimer ??= setTimeout(() => child.kill('SIGKILL'), 2000);
     }, 250) : null;
 
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      opts.onActivity?.({ stream: 'stdout', bytes: d.length, at: new Date().toISOString() });
+      stopOnFatalSignature();
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+      opts.onActivity?.({ stream: 'stderr', bytes: d.length, at: new Date().toISOString() });
+      stopOnFatalSignature();
+    });
     child.on('error', (err) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (fatalKillTimer) clearTimeout(fatalKillTimer);
+      if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
       resolvePromise({
         exitCode: null,
@@ -98,13 +129,17 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         stderr: `${stderr}\n${err.message}`,
         timedOut,
         cancelled,
+        fatalSignature,
         spawnError: true,
       });
     });
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (fatalKillTimer) clearTimeout(fatalKillTimer);
+      if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
-      resolvePromise({ exitCode: code, signal, stdout, stderr, timedOut, cancelled });
+      resolvePromise({ exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature });
     });
   });
 }
@@ -169,13 +204,13 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   //     wins; codex-style CLIs log auth errors after banner noise, so a
   //     fixed 400-char head misses them).
   //   else content judge decides; exit code only modulates flags.
-  const authHit = matchAuthSignature(connector, output.slice(0, 2000));
+  const authHit = obs.fatalSignature ?? matchAuthSignature(connector, output.slice(0, 2000));
 
   let verdict;
   if (obs.cancelled) {
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
   } else if (obs.timedOut) {
-    verdict = { ok: false, why: `timeout after ${opts.timeoutSec ?? connector.timeoutSec}s` };
+    verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
   } else if (authHit) {

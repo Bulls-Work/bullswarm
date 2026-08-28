@@ -4,9 +4,9 @@
 //   G2 burstGate exclusion
 //   G3 quarantine + decisionLog on auth verdicts
 //   G4 global concurrency limiter
-//   G5 spend guard (maxAgents + warnAtAgents)
+//   G5 advisory targets (maxAgents + maxWorkflowSeconds + warnAtAgents)
 //   G6 verify (skeptic) step type
-//   G7 TUI item.skipped + step.blocked + workflow.large events
+//   G7 TUI item.skipped + step.blocked + advisory target events
 //   G8 fanout resume by content fingerprint
 //   G9 inputs.<k>.required enforcement
 //  G10 outputText truncation in state.json
@@ -25,14 +25,25 @@ import { loadState, saveState, quarantinePool, DEPTH_ENV } from '../src/lib/stat
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
-test('planner budget includes its in-flight dispatch and exposes true remaining slots', () => {
+test('planner budget includes its in-flight dispatch and exposes advisory headroom', () => {
   const context = plannerBudgetContext({
     dispatchesUsed: 9, dispatchLimit: 12, expansionRound: 2, expansionLimit: 4,
   });
   assert.equal(context.dispatchesUsedBeforePlanner, 9);
   assert.equal(context.dispatchesUsed, 10);
   assert.equal(context.remainingDispatches, 2);
+  assert.equal(context.dispatchTarget, 12);
+  assert.equal(context.overTargetBy, 0);
+  assert.equal(context.targetExceeded, false);
+  assert.equal(context.advisoryOnly, true);
   assert.equal(context.includesCurrentPlannerDispatch, true);
+
+  const over = plannerBudgetContext({ dispatchesUsed: 12, dispatchTarget: 12 });
+  assert.equal(over.dispatchesUsed, 13);
+  assert.equal(over.remainingDispatches, 0);
+  assert.equal(over.overTargetBy, 1);
+  assert.equal(over.targetExceeded, true);
+  assert.equal(over.advisoryOnly, true);
 });
 
 function fixtureHome() {
@@ -280,12 +291,13 @@ test('G3: workflow auth verdicts quarantine the pool and log to decisionLog', as
 });
 
 // -------------------------------------------------------------------------
-// G5: spend guard — maxAgents hard cap and warnAtAgents event.
+// G5: advisory agent target and warnAtAgents event.
 // -------------------------------------------------------------------------
 
-test('G5: maxAgents=2 stops the third step from dispatching', async () => {
+test('G5: maxAgents=2 informs planning but never stops the third step', async () => {
   const { dir, cleanup } = fixtureHome();
   try {
+    const events = [];
     const doc = {
       name: 'g5-cap',
       description: 'g',
@@ -304,14 +316,57 @@ test('G5: maxAgents=2 stops the third step from dispatching', async () => {
       doc,
       pools: echoOnlyPools(dir),
       inputs: {},
-      onEvent: () => {},
+      onEvent: (event) => events.push(event),
     });
-    // a and b succeed; c is blocked by the cap.
+    // All required work completes; crossing the target remains observable.
     assert.equal(result.state.outputs.a.ok, true);
     assert.equal(result.state.outputs.b.ok, true);
-    assert.equal(result.state.outputs.c.ok, false);
-    assert.match(result.state.outputs.c.why, /spend guard/);
-    assert.equal(result.state.status, 'budget_exhausted');
+    assert.equal(result.state.outputs.c.ok, true);
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.budget.dispatchesUsed, 3);
+    assert.equal(result.state.budget.dispatchTarget, 2);
+    assert.equal(result.state.budget.remainingDispatches, 0);
+    assert.equal(result.state.budget.overTargetBy, 1);
+    assert.equal(result.state.budget.targetExceeded, true);
+    assert.equal(result.state.budget.advisoryOnly, true);
+    assert.equal(events.filter((event) => event.type === 'workflow.agent_target_exceeded').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('G5: maxWorkflowSeconds is an advisory target and does not kill live work', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const events = [];
+    const doc = {
+      name: 'g5-time-target',
+      description: 'g',
+      inputs: {},
+      settings: {
+        concurrency: 1,
+        escalateOnFail: false,
+        maxAgents: 2,
+        maxWorkflowSeconds: 1,
+      },
+      phases: [{
+        name: 'p',
+        steps: [{ id: 'slow', type: 'run', lane: 'chore', prompt: 'SLEEP_MS:1100 finish slow work.' }],
+      }],
+    };
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc,
+      pools: echoOnlyPools(dir),
+      inputs: {},
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.outputs.slow.ok, true);
+    assert.equal(result.state.status, 'completed');
+    assert.ok(result.state.budget.workflowElapsedSec >= 1);
+    assert.ok(result.state.budget.workflowOverTargetBySec > 0);
+    assert.equal(result.state.budget.advisoryOnly, true);
+    assert.equal(events.some((event) => event.type === 'run.budget_exhausted'), false);
   } finally {
     cleanup();
   }
@@ -531,10 +586,10 @@ test('G6: custom verify prompt still includes the reviewed artifact', async () =
 });
 
 // -------------------------------------------------------------------------
-// G7: TUI handles item.skipped, step.blocked, workflow.large
+// G7: TUI handles item.skipped, step.blocked, and advisory target events
 // -------------------------------------------------------------------------
 
-test('G7: TUI renders item.skipped, step.blocked, workflow.large (json mode)', () => {
+test('G7: TUI renders item.skipped, step.blocked, and target events (json mode)', () => {
   const lines = [];
   const oldLog = console.log;
   console.log = (...a) => lines.push(a.join(' '));
@@ -543,6 +598,7 @@ test('G7: TUI renders item.skipped, step.blocked, workflow.large (json mode)', (
     tui.handle({ type: 'item.skipped', stepId: 'fan', index: 2, item: 'foo' });
     tui.handle({ type: 'step.blocked', stepId: 'fan', queued: 7 });
     tui.handle({ type: 'workflow.large', threshold: 25, dispatchCount: 26 });
+    tui.handle({ type: 'workflow.agent_target_exceeded', target: 30, dispatchCount: 31, overTargetBy: 1 });
   } finally {
     console.log = oldLog;
   }
@@ -550,6 +606,7 @@ test('G7: TUI renders item.skipped, step.blocked, workflow.large (json mode)', (
   assert.ok(evTypes.includes('item.skipped'));
   assert.ok(evTypes.includes('step.blocked'));
   assert.ok(evTypes.includes('workflow.large'));
+  assert.ok(evTypes.includes('workflow.agent_target_exceeded'));
 });
 
 // -------------------------------------------------------------------------

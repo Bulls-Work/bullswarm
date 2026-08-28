@@ -87,13 +87,17 @@ test('dashboard rows expose current step and active agent state', () => {
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     state.currentPhase = { index: 0, name: 'review', total: 1 };
     state.currentStep = { id: 'fan', type: 'fanout', phase: 'review:adaptive' };
-    state.activeAgents = { 'fan[0]': { stepId: 'fan[0]', pool: 'opencode2', model: 'relay/gpt-5.6-luna', attempt: 0 } };
+    state.activeAgents = { 'fan[0]': {
+      stepId: 'fan[0]', pool: 'opencode2', model: 'relay/gpt-5.6-luna', attempt: 0,
+      lastActivityAt: '2026-08-28T01:00:00.000Z', outputBytesObserved: 321,
+    } };
     writeFileSync(statePath, JSON.stringify(state));
     const row = dashboardRows(home)[0];
     assert.equal(row.currentStep.id, 'fan');
     assert.equal(row.phase, 'review:adaptive');
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
     assert.match(renderDetails(row), /relay\/gpt-5\.6-luna/);
+    assert.match(renderDetails(row), /output activity 2026-08-28T01:00:00\.000Z \(321 bytes observed\)/);
   } finally { cleanup(); }
 });
 

@@ -212,6 +212,9 @@ records its termination signal and latency evidence, then commits `cancelled`.
 commit a distinct resumable `interrupted` state. On every workflow command,
 active states with a dead/stale owner are automatically reconciled to
 `interrupted` instead of remaining falsely `running`.
+Live attempts record the last stdout/stderr activity time and observed byte
+count separately from the runner heartbeat. This makes a silent process
+visible without treating elapsed wall time alone as proof that it is hung.
 
 Each attempt records the phase/action, selected pool and model, effort tier,
 routing reason, all eligible candidates with quota surplus, timestamps,
@@ -222,7 +225,8 @@ ones; `workflow tui --json <id>` exposes the durable audit document.
 ### Adaptive workflows
 
 Static workflows remain zero-extra-LLM orchestration. An adaptive workflow adds
-an explicit `decide` step and hard limits:
+an explicit `decide` step, advisory resource targets, and structural expansion
+limits:
 
 ```json
 {
@@ -248,6 +252,13 @@ an explicit `decide` step and hard limits:
   }]
 }
 ```
+
+`maxAgents` and `maxWorkflowSeconds` are advisory inputs to the orchestrator.
+Crossing either target is recorded in durable state but never stops a worker,
+skips verification, or fails a run. `maxExpansionRounds`, `maxActions`, and
+`maxItemsPerExpansion` remain hard graph-growth safeguards. Delegates have no
+implicit wall-clock timeout; set a step's `timeoutSec` (or direct-run
+`--timeout`) only when an operator explicitly wants a hard termination timer.
 
 The planner returns versioned JSON. It may propose `needs_more_work` with
 bounded `run`, inline-`fanout`, or `verify` actions. The deterministic runtime

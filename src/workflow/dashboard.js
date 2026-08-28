@@ -118,12 +118,21 @@ export function renderDetails(row, { interactive = true } = {}) {
   }
   lines.push('', ' active agents:');
   for (const agent of Object.values(state.activeAgents ?? {})) {
-    lines.push(`   ⟡ ${agent.stepId} · ${agent.pool ?? '—'} · ${agent.model ?? 'model from connector'} · attempt ${agent.attempt ?? 0}`);
+    const activity = agent.lastActivityAt
+      ? ` · output activity ${agent.lastActivityAt} (${agent.outputBytesObserved ?? 0} bytes observed)`
+      : ' · no streamed output observed yet';
+    lines.push(`   ⟡ ${agent.stepId} · ${agent.pool ?? '—'} · ${agent.model ?? 'model from connector'} · attempt ${agent.attempt ?? 0}${activity}`);
   }
   if (!Object.keys(state.activeAgents ?? {}).length) lines.push('   none');
   lines.push('', ' completed log:');
   for (const step of state.steps ?? []) lines.push(`   ${step.ok ? '✓' : '✗'} ${step.phase}/${step.stepId}${step.why ? ` · ${step.why}` : ''}`);
-  lines.push('', ` budget: ${state.budget?.dispatchesUsed ?? 0}/${state.budget?.dispatchLimit ?? '∞'} dispatches · expansion ${state.budget?.expansionRound ?? 0}/${state.budget?.expansionLimit ?? 0}`);
+  const dispatchTarget = state.budget?.dispatchTarget ?? state.budget?.dispatchLimit ?? '∞';
+  const dispatchOverage = state.budget?.overTargetBy > 0 ? ` · ${state.budget.overTargetBy} over target` : '';
+  const workflowTarget = state.budget?.workflowTargetSec ?? state.settings?.maxWorkflowSeconds ?? '∞';
+  const workflowOverage = state.budget?.workflowOverTargetBySec > 0
+    ? ` · ${Math.round(state.budget.workflowOverTargetBySec)}s over target`
+    : '';
+  lines.push('', ` budget: ${state.budget?.dispatchesUsed ?? 0}/${dispatchTarget} dispatch target (advisory${dispatchOverage}) · ${Math.round(state.budget?.workflowElapsedSec ?? 0)}/${workflowTarget}s duration target (advisory${workflowOverage}) · expansion ${state.budget?.expansionRound ?? 0}/${state.budget?.expansionLimit ?? 0}`);
   lines.push(` usage:  ${compactUsage(state.usage)}`);
   lines.push('', ' action tree:');
   for (const action of state.actionLedger ?? []) {

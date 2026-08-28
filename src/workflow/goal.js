@@ -25,7 +25,8 @@ export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   'Do not return proceed: this autonomous workflow has no hidden static work after this gate.',
   'Do not ask the initiating user to construct JSON or choose agents.',
   'Do not propose pool, addDir, taskFile, shell authority, or unbounded work; Bullswarm owns routing and process authority.',
-  'If the goal cannot be completed safely within the remaining budget, return stop with the concrete blocker.',
+  'Treat maxAgents and maxWorkflowSeconds as planning targets, not hard stop conditions. Prefer an efficient plan near those targets, but exceed them rather than abandon already-started work or skip required verification.',
+  'Return stop only for a concrete safety, authority, capability, dependency, or external blocker—not merely because an advisory target was reached.',
 ].join('\n');
 
 function positiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
@@ -118,10 +119,8 @@ export function buildGoalWorkflow({
           lane: 'build',
           requiresCapabilities: ['code-reading', 'file-editing'],
           addDir: targetDir,
-          timeoutSec: Math.min(900, maxWorkflowSeconds),
         },
         prompt: `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\n${worktreeInstruction}`,
-        timeoutSec: Math.min(900, maxWorkflowSeconds),
         onError: 'fail',
       }],
     }],
