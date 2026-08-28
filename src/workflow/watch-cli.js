@@ -61,6 +61,23 @@ export function timingBreakdown(state) {
   };
 }
 
+// Seconds since any live agent last produced output bytes or provider stream
+// events. This is transport liveness (is the child process still talking?),
+// distinct from quietForSec, which counts durable workflow events (has
+// anything semantically happened?). null when no agent is running.
+export function transportQuietSeconds(state, now = new Date()) {
+  const running = Object.values(state.activeAgents ?? {}).filter((agent) =>
+    !agent.finishedAt && (agent.status ?? 'running') === 'running');
+  if (!running.length) return null;
+  const latest = Math.max(...running.map((agent) => Math.max(
+    Date.parse(agent.lastActivityAt ?? '') || 0,
+    Date.parse(agent.lastEventAt ?? '') || 0,
+    Date.parse(agent.startedAt ?? '') || 0,
+  )));
+  if (!latest) return null;
+  return Math.max(0, Math.floor((now.getTime() - latest) / 1000));
+}
+
 export function watchSnapshot(runDir, state, now = new Date()) {
   const delivered = new Set((state.steering ?? []).map((entry) => entry.id));
   const queuedSteering = readSteering(runDir).filter((entry) => !delivered.has(entry.id));
@@ -83,6 +100,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     pendingSteering: queuedSteering.length,
     deliveredSteering: state.steering?.length ?? 0,
     quietForSec: 0,
+    transportQuietForSec: transportQuietSeconds(state, now),
     agents: Object.values(state.activeAgents ?? {}).map((agent) => ({
       stepId: agent.stepId,
       pool: agent.pool ?? null,
@@ -146,7 +164,8 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
     const actions = events.filter((event) => event.type === 'attempt.agent_action').length;
     const line = `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ` +
       `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${events.length} events, ${actions} actions · ` +
-      `quiet ${formatDuration(snapshot.quietForSec)}`;
+      `quiet ${formatDuration(snapshot.quietForSec)}` +
+      (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
     if (snapshot.terminal && snapshot.timing) {
       return `${line}\n  timing: ${snapshot.timing.attempts.length} attempts in ${formatDuration(snapshot.timing.workflowElapsedSec)}`;
     }
@@ -203,16 +222,17 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime.
         priorSequence = state.eventSequence ?? 0;
+        // Semantic quiet counts durable marks only (events, action starts and
+        // finishes). Raw child output is surfaced separately as transport
+        // liveness so a thinking agent and a dead one look different.
         lastActivityAt = Math.max(
           Date.parse(state.lastEvent?.committedAt ?? '') || 0,
           Date.parse(state.finishedAt ?? '') || 0,
           ...Object.values(state.attempts ?? []).map((attempt) => Math.max(
-            Date.parse(attempt.lastActivityAt ?? '') || 0,
-            Date.parse(attempt.lastHeartbeatAt ?? '') || 0,
+            Date.parse(attempt.startedAt ?? '') || 0,
             Date.parse(attempt.finishedAt ?? '') || 0,
           )),
           ...Object.values(state.activeAgents ?? {}).map((agent) => Math.max(
-            Date.parse(agent.lastActivityAt ?? '') || 0,
             Date.parse(agent.lastActionAt ?? '') || 0,
             Date.parse(agent.startedAt ?? '') || 0,
           )),

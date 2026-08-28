@@ -150,3 +150,31 @@ test('qualified completion is terminal and exits successfully for result consump
     assert.match(output, /completed_with_concerns\/delivered_with_concerns/);
   } finally { f.cleanup(); }
 });
+
+test('compact heartbeat separates semantic quiet from live agent output', async () => {
+  const now = Date.now();
+  const f = fixture({
+    startedAt: new Date(now - 120_000).toISOString(),
+    lastEvent: { committedAt: new Date(now - 40_000).toISOString() },
+    activeAgents: {
+      implement: {
+        stepId: 'implement', pool: 'command-code', status: 'running',
+        startedAt: new Date(now - 100_000).toISOString(),
+        lastActivityAt: new Date(now - 3_000).toISOString(), outputBytesObserved: 4096,
+      },
+    },
+  });
+  try {
+    const snapshot = watchSnapshot(f.runDir, f.state, new Date(now));
+    assert.equal(snapshot.transportQuietForSec, 3);
+    assert.equal(watchSnapshot(f.runDir, { ...f.state, activeAgents: {} }, new Date(now)).transportQuietForSec, null);
+    let output = '';
+    assert.equal(await runWorkflowWatch(f.home, 'abc234', {
+      once: true, output: { write: (text) => { output += text; } },
+    }), 0);
+    assert.match(output, /quiet (39|40|41)s · agent output [2-4]s ago/);
+    let json = '';
+    await runWorkflowWatch(f.home, 'abc234', { once: true, jsonl: true, output: { write: (text) => { json += text; } } });
+    assert.ok([2, 3, 4].includes(JSON.parse(json).transportQuietForSec));
+  } finally { f.cleanup(); }
+});
