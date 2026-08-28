@@ -263,12 +263,27 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     const thread = renderWorkflowTui(row, {
       width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
     });
-    assert.match(thread, /Orchestrator thread · control plane/);
-    assert.match(thread, /Session · grok · thread-123 · resumable/);
-    assert.match(thread, /Logical thread · 2 checkpoint turns/);
-    assert.match(thread, /decision: needs_more_work · Inspect then verify/);
-    assert.match(thread, /#4 ✓ read_file · completed/);
-    assert.match(thread, /#5 ✓ response · completed/);
+    assert.match(thread, /Orchestrator · overview/);
+    assert.match(thread, /Now · Choosing the next smallest useful action/);
+    assert.match(thread, /Latest decision · Continue with bounded work/);
+    assert.match(thread, /Why · Inspect then verify\./);
+    assert.match(thread, /Press v for checkpoint prompts, sessions, usage, and artifact paths/);
+    assert.doesNotMatch(thread, /Session · grok · thread-123 · resumable/);
+    assert.doesNotMatch(thread, /Current checkpoint prompt/);
+    assert.match(thread, /#4 ✓ Read file · state\.json/);
+    assert.match(thread, /#5 ✓ Response · Planner decision recorded/);
+
+    const technicalThread = renderWorkflowTui(row, {
+      width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
+      orchestratorVerbose: true,
+    });
+    assert.match(technicalThread, /Orchestrator · technical details/);
+    assert.match(technicalThread, /Technical thread/);
+    assert.match(technicalThread, /Session · grok · thread-123 · resumable/);
+    assert.match(technicalThread, /Logical thread · 2 checkpoint turns/);
+    assert.match(technicalThread, /decision: needs_more_work · Inspect then verify/);
+    assert.match(technicalThread, /#4 ✓ read_file · completed/);
+    assert.match(technicalThread, /#5 ✓ response · completed/);
 
     state.outputs.inspect = { ok: false, why: 'verify json returned ok:false' };
     writeFileSync(statePath, JSON.stringify(state));

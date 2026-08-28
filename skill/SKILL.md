@@ -263,8 +263,10 @@ cannot be guaranteed. Restore eligibility with `strategy include-model`.
 
 In the human TUI, the autonomous orchestrator has a compact selectable panel
 stacked above the phase tree. Select it and press Enter, or press
-`o`, to inspect its durable provider session, checkpoint turns and decisions,
-recent semantic actions, usage, prompt, and artifacts. Esc returns to phases.
+`o`, to see a summary-first overview of its current role, latest decision,
+reason, next action, progress, and recent semantic activity. Press `v` for the
+durable provider session, checkpoint prompts and turns, usage, and artifact
+paths; `v` returns to the overview and Esc returns to phases.
 The shared state marks are `○` not started, animated Braille spinner active,
 `⧖` waiting, `✓` finished, and `✗` failed or interrupted.
 
