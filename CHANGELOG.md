@@ -46,6 +46,17 @@ finished, or the graph blocked).
   → verify-suite); `executionConstraints.programFeatures` and
   `plannerConsultedOnlyAtProgramBoundary`. The goal orchestrator prompt is
   reframed the same way.
+- Scout before compiling: `workflow goal` now starts with a read-only `scout`
+  run action (tree, manifest, test status, units of work with the files each
+  owns, shared files, risks; ends with a JSON array of unit names) so the
+  orchestrator's first program names real files and commands — the counterpart
+  of the inline scouting a Claude Code session does before authoring a
+  Workflow script. `--no-scout` skips it.
+- The planner finally sees what workers said: every `outputs.<id>` in the
+  durable planner context carries `outputExcerpt` (up to 3 000 chars each,
+  36 000 total, newest first) instead of only `ok`/`why`/`outFile`.
+- `workflow goal` default `maxItemsPerExpansion` raised 8 → 24 so a
+  data-driven fan-out over a medium repository does not fail on the bound.
 - Known limitation: `itemsFrom` removes the planner turn, not the stage
   barrier. A verify that depends on a data-driven fan-out waits for all items;
   per-item verify overlap on discovered items would need chained

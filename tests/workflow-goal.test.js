@@ -81,12 +81,26 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.equal(doc.intent.autonomous, true);
   assert.equal(doc.intent.requestedOrchestrator, 'auto');
   assert.equal(doc.phases.length, 1);
-  assert.equal(doc.phases[0].steps.length, 1);
-  assert.equal(doc.phases[0].steps[0].type, 'decide');
-  assert.equal(doc.phases[0].steps[0].pool, undefined);
-  assert.equal(doc.phases[0].steps[0].prompt, `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\nWorktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.`);
-  assert.match(doc.phases[0].steps[0].prompt, /control-plane decision thread/);
-  assert.match(doc.phases[0].steps[0].prompt, /Do not invoke Bullswarm, run shell commands, call tools, or modify repository files/);
+  // A read-only scout surveys the repository before the orchestrator compiles its first program.
+  assert.equal(doc.phases[0].steps.length, 2);
+  assert.equal(doc.phases[0].steps[0].id, 'scout');
+  assert.equal(doc.phases[0].steps[0].type, 'run');
+  assert.equal(doc.phases[0].steps[0].addDir, REPO);
+  assert.match(doc.phases[0].steps[0].prompt, /Do NOT modify, create, or delete any file/);
+  assert.match(doc.phases[0].steps[0].prompt, /UNITS OF WORK/);
+  assert.match(doc.phases[0].steps[0].prompt, /END your output with a JSON array/);
+  assert.equal(doc.phases[0].steps[1].type, 'decide');
+  assert.equal(doc.phases[0].steps[1].id, 'orchestrator');
+  assert.equal(doc.phases[0].steps[1].pool, undefined);
+  assert.equal(doc.phases[0].steps[1].prompt, `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\nWorktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.`);
+  assert.match(doc.phases[0].steps[1].prompt, /control-plane decision thread/);
+  assert.match(doc.phases[0].steps[1].prompt, /Do not invoke Bullswarm, run shell commands, call tools, or modify repository files/);
+  assert.match(doc.phases[0].steps[1].prompt, /compile the goal into a complete workflow program/);
+  assert.equal(doc.settings.maxItemsPerExpansion, 24);
+  const noScout = buildGoalWorkflow({ goal: 'Implement it.', cwd: REPO, name: 'no-scout', scout: false });
+  assert.equal(noScout.phases[0].steps.length, 1);
+  assert.equal(noScout.phases[0].steps[0].id, 'orchestrator');
+  assert.doesNotThrow(() => validateWorkflow(noScout, { poolNames: ['goal-agent'] }));
   assert.equal(doc.intent.worktreeIsolation, 'agent-decides');
   assert.deepEqual(doc.orchestration.completionPolicy, {
     requireSuccessfulWorker: true,
@@ -102,30 +116,32 @@ test('resume can explicitly replace the durable orchestrator route', () => {
   assert.equal(doc.intent.requestedOrchestrator, 'grok');
   assert.equal(doc.orchestration.requestedPool, 'grok');
   assert.equal(doc.orchestration.selection, 'user-pinned-for-testing');
-  assert.equal(doc.phases[0].steps[0].pool, 'grok');
+  assert.equal(doc.phases[0].steps[1].pool, 'grok');
   applyResumeOrchestratorOverride(doc, 'auto');
   assert.equal(doc.intent.requestedOrchestrator, 'auto');
   assert.equal(doc.orchestration.requestedPool, null);
-  assert.equal(doc.phases[0].steps[0].pool, undefined);
+  assert.equal(doc.phases[0].steps[1].pool, undefined);
 });
 
 test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching authored workflows', () => {
   const legacy = buildGoalWorkflow({
     goal: 'Finish the durable goal.', cwd: REPO, name: 'legacy-goal',
   });
-  const gate = legacy.phases[0].steps[0];
+  const gate = legacy.phases[0].steps.find((step) => step.type === 'decide');
   gate.timeoutSec = 900;
   gate.actionDefaults.timeoutSec = 900;
   const migrated = normalizeLegacyGeneratedGoalTimeouts(legacy);
-  assert.equal(migrated.phases[0].steps[0].timeoutSec, undefined);
-  assert.equal(migrated.phases[0].steps[0].actionDefaults.timeoutSec, undefined);
+  const migratedGate = migrated.phases[0].steps.find((step) => step.type === 'decide');
+  assert.equal(migratedGate.timeoutSec, undefined);
+  assert.equal(migratedGate.actionDefaults.timeoutSec, undefined);
   assert.equal(gate.timeoutSec, 900, 'migration must not mutate the durable source document');
 
   const authored = structuredClone(legacy);
   authored.description = 'User-authored workflow with an explicit timeout.';
   const preserved = normalizeLegacyGeneratedGoalTimeouts(authored);
-  assert.equal(preserved.phases[0].steps[0].timeoutSec, 900);
-  assert.equal(preserved.phases[0].steps[0].actionDefaults.timeoutSec, 900);
+  const preservedGate = preserved.phases[0].steps.find((step) => step.type === 'decide');
+  assert.equal(preservedGate.timeoutSec, 900);
+  assert.equal(preservedGate.actionDefaults.timeoutSec, 900);
 });
 
 test('goal watching is explicit and incompatible launch modes do not auto-watch', () => {
@@ -174,11 +190,18 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.equal(report.attempts.every((attempt) => attempt.usage?.tokenSource), true);
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
     assert.equal(existsSync(join(report.artifactsDir, 'workflow.json')), true);
-    const firstPlannerTask = readFileSync(report.attempts[0].taskFile, 'utf8');
+    // The scout runs first (attempt 0); the planner is the first decide attempt.
+    assert.equal(report.actionLedger.find((action) => action.id === 'scout').status, 'succeeded');
+    const scoutTask = readFileSync(report.attempts[0].taskFile, 'utf8');
+    assert.match(scoutTask, /read-only SCOUT/);
+    const firstPlannerTask = readFileSync(report.attempts[1].taskFile, 'utf8');
+    assert.match(firstPlannerTask, /BEGIN DURABLE WORKFLOW CONTEXT/);
+    assert.match(firstPlannerTask, /"scout": \{[^}]*"ok": true/);
+    assert.match(firstPlannerTask, /"outputExcerpt": "/);
     assert.match(firstPlannerTask, /"actionTimeoutSec": null/);
     assert.match(firstPlannerTask, /"actionTimeoutIsExplicitOptIn": false/);
     assert.match(firstPlannerTask, /"dispatchTarget": 6/);
-    assert.match(firstPlannerTask, /"remainingDispatches": 5/);
+    assert.match(firstPlannerTask, /"remainingDispatches": 4/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
     assert.match(firstPlannerTask, /expansion-round budgets are advisory planning targets/);

@@ -358,7 +358,10 @@ that expressible without extra turns:
 
 Every fan-out records a summary artifact as `outputs.<id>.outFile` and a
 boolean `ok` (item count in `succeeded`), so a verify may depend on a fan-out
-directly.
+directly. The planner context carries `outputs.<id>.outputExcerpt` (what each
+finished action reported), and `workflow goal` runs a read-only `scout` action
+first (`--no-scout` to skip) so the first program is compiled from a real
+survey of the repository rather than from the goal text alone.
 
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must

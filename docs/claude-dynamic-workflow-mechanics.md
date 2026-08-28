@@ -291,7 +291,14 @@ author and the `Workflow` runtime.
    explicitly (`plannerConsultedOnlyAtProgramBoundary`), and the goal
    orchestrator prompt is reframed as "compile the goal into a complete
    workflow program".
-5. Two bugs found on the way that had silently blocked this shape in ≤ 0.11.1:
+5. **Scout, then compile** — shipped. Claude's author reads the repo inline
+   for ~4 min before writing the script; bullswarm's orchestrator was compiling
+   blind (goal text + cwd, forbidden to run commands, and the planner context
+   exposed no worker output text at all — only `ok`/`why`/`outFile`). `workflow
+   goal` now runs a read-only `scout` action first, and every output in the
+   planner context carries an `outputExcerpt`, so the first program is written
+   against a real survey and boundary decisions read what workers reported.
+6. Two bugs found on the way that had silently blocked this shape in ≤ 0.11.1:
    fan-out outputs recorded the success *count* in `ok`, so nothing could ever
    depend on a fan-out (the ready-set test is `ok === true`); and the content
    gate rejected a worker whose whole answer was a JSON array as an
