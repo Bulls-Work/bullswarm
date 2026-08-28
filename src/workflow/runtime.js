@@ -35,6 +35,7 @@ import { aggregateUsage } from '../lib/usage.js';
 import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
 import { deliverSteering } from './steering.js';
 import { resolveDispatchModel } from '../lib/strategy.js';
+import { getMeterReading } from '../meters/registry.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -45,6 +46,12 @@ const FANOUT_ITEM_EXCERPT_BYTES = 6_000;
 // What the planner sees of each action's output (per output / all outputs).
 const PLANNER_EXCERPT_CHARS = 3_000;
 const PLANNER_EXCERPT_TOTAL_CHARS = 36_000;
+// A burst gate (provider 5h window >= 90 % used) is a WAIT, never a hard stop:
+// the runtime parks the dispatch until the window resets (+ grace), re-reading
+// the meter every QUOTA_POLL_MS, and only then fails with the reset time named.
+export const BURST_WAIT_GRACE_MS = 10 * 60_000;
+export const BURST_WAIT_UNKNOWN_RESET_MS = 5 * 3600_000;
+export const QUOTA_POLL_MS = 60_000;
 
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
@@ -110,6 +117,11 @@ export class WorkflowRuntime {
       );
     this.limiter = concap;
     this.parentEnv = opts.env ?? process.env;
+    // Meter refresh used while waiting on a burst gate; tests inject a fake.
+    this.readMeter = opts.readMeter ?? ((name) => getMeterReading(name, { force: true }));
+    this.quotaPollMs = Math.max(10, Number(opts.quotaPollMs ?? this.state?.settings?.quotaPollMs ?? QUOTA_POLL_MS));
+    this.quotaWaitGraceMs = Math.max(0, Number(opts.quotaWaitGraceMs ?? BURST_WAIT_GRACE_MS));
+    this.quotaWaitUnknownResetMs = Math.max(0, Number(opts.quotaWaitUnknownResetMs ?? BURST_WAIT_UNKNOWN_RESET_MS));
     // Counters used for planner-visible advisory budgeting.
     this.state.attempts ??= [];
     this.state.actionLedger ??= [];
@@ -245,8 +257,12 @@ export class WorkflowRuntime {
    */
   async dispatch(step, taskText, targetDir, paths, opts = {}) {
     if (this.state.cancelRequested) return { ok: false, keepOnClaude: false, why: 'workflow cancellation requested', pick: { pool: null }, meta: {} };
+    const effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']);
+    // A burst-gated provider is waited for (outside the concurrency permit),
+    // never failed on the spot.
+    await this.awaitBurstRoom(step, effortTier, this.actionId(step, opts));
+    if (this.state.cancelRequested) return { ok: false, keepOnClaude: false, why: 'workflow cancellation requested', pick: { pool: null }, meta: {} };
     return this.limiter.runWith(async () => {
-      const effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']);
       const attemptPools = this.preparePools(step, effortTier);
       let lastVerdict = null;
       const retryAllowance = Math.max(0, Math.min(Number(opts.retryAttempts ?? 1), 3));
@@ -269,10 +285,13 @@ export class WorkflowRuntime {
         });
         if (!route.pick) {
           if (lastVerdict) return lastVerdict;
+          const stillGated = attemptPools.length ? [] : this.burstGatedPoolsFor(step, effortTier);
           const refused = {
             ok: false,
             keepOnClaude: false,
-            why: `no eligible pool (${route.why})`,
+            why: stillGated.length
+              ? `no eligible pool: every candidate is burst-gated (${WorkflowRuntime.describeBurstGate(stillGated)}) and the wait for the window expired`
+              : `no eligible pool (${route.why})`,
             pick: { pool: null },
             meta: { exitCode: null },
           };
@@ -656,7 +675,7 @@ export class WorkflowRuntime {
     });
   }
 
-  preparePools(step, effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore'])) {
+  preparePools(step, effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']), { ignoreBurstGate = false } = {}) {
     // Fresh eligible list per dispatch: enabled, not quarantined, and
     // not currently burst-gated (R8). Quarantine has been applied to
     // pool.quarantine by the live buildPools pass; if a previous
@@ -667,7 +686,7 @@ export class WorkflowRuntime {
       if (pool.quarantine && !isQuarantined(pool, now)) pool.quarantine = null;
     }
     return this.pools.filter(
-      (p) => p.enabled !== false && !isQuarantined(p, now) && p.burstGate !== true &&
+      (p) => p.enabled !== false && !isQuarantined(p, now) && (ignoreBurstGate || p.burstGate !== true) &&
         (step.pool == null || p.name === step.pool) &&
         !(step.avoidPools ?? []).includes(p.name) &&
         (step.requiresCapabilities ?? []).every((capability) =>
@@ -680,6 +699,92 @@ export class WorkflowRuntime {
       });
       return { ...pool, modelPolicy };
     }).filter((pool) => pool.modelPolicy.eligible);
+  }
+
+  /** Pools that would serve this step if they were not burst-gated. */
+  burstGatedPoolsFor(step, effortTier) {
+    return this.preparePools(step, effortTier, { ignoreBurstGate: true }).filter((p) => p.burstGate === true);
+  }
+
+  static describeBurstGate(pools) {
+    return pools.map((p) => {
+      const w = p.meterSnapshot?.five_hour ?? {};
+      const used = Number.isFinite(w.utilization) ? `${Math.round(w.utilization)}% used` : 'usage unknown';
+      const resets = w.resets_at ? `resets ${new Date(w.resets_at).toISOString().replace(/\.\d{3}Z$/, 'Z')}` : 'reset time unknown';
+      return `${p.name} 5h window ${used}, ${resets}`;
+    }).join('; ');
+  }
+
+  /**
+   * If every pool that could serve `step` is burst-gated, wait for the gate
+   * to lift instead of failing the action: the provider window resets at a
+   * known time, the run is durable, and a failed run costs more than a late
+   * one. Re-reads the meters every quotaPollMs; gives up (so the caller fails
+   * with a clear reason) only after the latest known reset + grace, or after
+   * BURST_WAIT_UNKNOWN_RESET_MS when no reset time is known.
+   */
+  async awaitBurstRoom(step, effortTier, actionId = step.id) {
+    const gatedOnly = () => {
+      if (this.preparePools(step, effortTier).length) return null;
+      const gated = this.burstGatedPoolsFor(step, effortTier);
+      return gated.length ? gated : null;
+    };
+    let gated = gatedOnly();
+    if (!gated) return { waited: false };
+    const resetTimes = gated.map((p) => Date.parse(p.meterSnapshot?.five_hour?.resets_at ?? '')).filter(Number.isFinite);
+    const startedAt = Date.now();
+    const deadline = resetTimes.length
+      ? Math.max(...resetTimes) + this.quotaWaitGraceMs
+      : startedAt + this.quotaWaitUnknownResetMs;
+    const previousStage = this.state.stage;
+    this.state.stage = 'waiting_for_quota';
+    this.state.quotaWait = {
+      actionId,
+      since: new Date(startedAt).toISOString(),
+      until: new Date(deadline).toISOString(),
+      pools: gated.map((p) => ({
+        name: p.name,
+        fiveHourUsedPct: p.meterSnapshot?.five_hour?.utilization ?? null,
+        resetsAt: p.meterSnapshot?.five_hour?.resets_at ?? null,
+      })),
+    };
+    this.emit('dispatch.waiting_for_quota', { actionId, ...this.state.quotaWait, detail: WorkflowRuntime.describeBurstGate(gated) });
+    const cancelled = () => {
+      if (this.state.cancelRequested) return true;
+      try { return JSON.parse(readFileSync(join(this.runDir, 'state.json'), 'utf8')).cancelRequested === true; } catch { return false; }
+    };
+    let lifted = false;
+    while (Date.now() < deadline && !cancelled()) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(this.quotaPollMs, Math.max(1, deadline - Date.now()))));
+      for (const gatedView of gated) {
+        // preparePools hands out copies; the gate lives on the pool itself.
+        const pool = this.pools.find((p) => p.name === gatedView.name) ?? gatedView;
+        let reading = null;
+        try { reading = await this.readMeter(pool.name); } catch { reading = null; }
+        // Only a real provider snapshot may open or keep the gate; a pool
+        // without a meter reader ('none') leaves the gate as it was.
+        if (!reading?.snapshot) continue;
+        pool.burstGate = reading.burstGate === true;
+        pool.meterSnapshot = reading.snapshot;
+        if (reading.pacing) {
+          pool.usedPct = reading.pacing.usedPct ?? pool.usedPct;
+          pool.elapsedPct = reading.pacing.elapsedPct ?? pool.elapsedPct;
+          pool.pace = reading.pacing.surplus ?? pool.pace;
+        }
+      }
+      gated = gatedOnly();
+      if (!gated) { lifted = true; break; }
+    }
+    const waitedMs = Date.now() - startedAt;
+    delete this.state.quotaWait;
+    this.state.stage = previousStage;
+    if (lifted) {
+      this.emit('dispatch.quota_available', { actionId, waitedMs });
+    } else {
+      this.emit('dispatch.quota_wait_expired', { actionId, waitedMs, detail: gated ? WorkflowRuntime.describeBurstGate(gated) : null, cancelled: cancelled() });
+    }
+    this.persist();
+    return { waited: true, lifted, waitedMs, gated };
   }
 
   appendDecision(step, poolName, verdict, paths, routing = null) {
@@ -934,6 +1039,7 @@ export class WorkflowRuntime {
 
   async runDecision(step, scope, opts = {}) {
     this.enforceRequiredInputs(step.id);
+    await this.awaitBurstRoom(step, step.effort ?? 'high', step.id);
     const deliveredSteering = deliverSteering(this.state, this.runDir);
     for (const steering of deliveredSteering) {
       this.emit('steering.delivered', {

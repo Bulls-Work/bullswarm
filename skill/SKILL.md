@@ -363,6 +363,12 @@ finished action reported), and `workflow goal` runs a read-only `scout` action
 first (`--no-scout` to skip) so the first program is compiled from a real
 survey of the repository rather than from the goal text alone.
 
+A burst-gated provider (5-hour window ≥ 90 % used) is a *wait*, not a
+failure: the run parks in stage `waiting_for_quota` (`state.quotaWait` shows
+the pool, usage and reset time), re-reads the meter every 60 s, and continues
+when the window resets. Only after the reset time plus 10 min of grace does the
+action fail, with the gate named in `why`.
+
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
 contain bounded actions; malformed or over-budget output executes nothing.
