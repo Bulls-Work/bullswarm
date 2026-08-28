@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateWorkflow, WorkflowValidationError, templateRefs } from '../src/workflow/validate.js';
+import { renderTemplate, isTemplateRef } from '../src/workflow/template.js';
 
 const POOLS = ['codex', 'grok', 'command-code', 'opencode2', 'claude-code', 'echo'];
 
@@ -111,4 +112,25 @@ test('declared input with default resolves without warning', () => {
 
 test('templateRefs extracts tokens', () => {
   assert.deepEqual(templateRefs('a {{inputs.x}} b {{ outputs.y.z }}'), ['inputs.x', 'outputs.y.z']);
+});
+
+test('double-brace prompt text that is not a ref is left literal, real refs still resolve or throw', () => {
+  const scope = { outputs: { 'module-slugify': { outFile: '/tmp/out.md' } }, runId: 'r1' };
+  const prompt = 'Options are `{{maxLength?: number}}`; see {{outputs.module-slugify.outFile}} (run {{runId}}). '
+    + 'Mustache stays: {{#each items}}{{name}}{{/each}}; JS stays: `${{ a: 1 }}`.';
+  assert.equal(
+    renderTemplate(prompt, scope),
+    'Options are `{{maxLength?: number}}`; see /tmp/out.md (run r1). '
+    + 'Mustache stays: {{#each items}}{{name}}{{/each}}; JS stays: `${{ a: 1 }}`.',
+  );
+  assert.throws(() => renderTemplate('{{outputs.missing.outFile}}', scope), /unresolved at render time/);
+  assert.equal(isTemplateRef('outputs.step-1.outFile'), true);
+  assert.equal(isTemplateRef('item.path.to.field'), true);
+  assert.equal(isTemplateRef('maxLength?: number'), false);
+  assert.equal(isTemplateRef('name'), false);
+  assert.deepEqual(templateRefs('{{outputs.a.outFile}} {{maxLength?: number}} {{name}}'), ['outputs.a.outFile']);
+  // A static document whose prompt carries literal braces validates cleanly.
+  const doc = baseDoc();
+  doc.phases[0].steps[0].prompt = 'Type the options as {{maxLength?: number}} and stop.';
+  assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: POOLS }));
 });

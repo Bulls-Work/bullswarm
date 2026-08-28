@@ -1353,11 +1353,3 @@ export class WorkflowRuntime {
     this.persist();
   }
 }
-
-function renderTemplate0(str, scope) {
-  return str.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, ref) => {
-    const v = ref.trim().split('.').reduce((acc, k) => (acc == null ? undefined : acc[k]), scope);
-    if (v === undefined) throw new Error(`unresolved ref {{${ref.trim()}}}`);
-    return typeof v === 'string' ? v : JSON.stringify(v);
-  });
-}
