@@ -221,15 +221,60 @@ session #1; goal submitted 17:24:4x Z. Observed driving sequence:
   bullswarm 0.10.9 now has for planner decisions, except here the correction is
   an inline retry inside one turn rather than a fresh planning process.
 
-(execution numbers pending)
+Execution numbers (from the workflow journal `wf_b235c760…/journal.jsonl` and
+the session transcript; read-only, no interference):
 
-### bullswarm 0.11.0 code (`node bin/bullswarm.js` from the repo checkout)
+| Measure | Value |
+| --- | --- |
+| Goal submitted → session idle | 17:24:46 → 18:22:45 Z = **58 min 0 s** |
+| Inline scouting + advisor before the Workflow call | 4 min (17:24:46 → 17:28:42) |
+| Workflow call rejected (parse error) → corrected resend | 94 s (17:28:42 → 17:30:16) |
+| Workflow execution | 17:30:16 → 18:19:07 = **48 min 51 s**, 24 agents, 0 errors |
+| Agents by stage | 6 probe, 6 author, 9 adversarial verify, 3 fix (slugify ×2, intervals ×1) |
+| Max concurrent agents / mean parallelism | **6** (= the six items; cap was 8) / 3.1 |
+| Orchestrator (session) model turns during execution | **0** — the session sat in "Waiting for 1 dynamic workflow to finish" |
+| Session tool calls overall | 16 Bash, 2 Workflow, 1 ToolSearch, 0 Agent |
+| Post-workflow inline verification | 18:19:15 → 18:22:44 (3.5 min): own `npm test`, comment-stripped code identity diff, executing every `@example`, link check, advisor |
+| Session output tokens (orchestrator only) | 91 k; workers 534 k output, 52.9 M cache-read |
 
-(pending)
+How the program actually ran (agent start → end):
 
-### bullswarm 0.10.9 (installed binary), if time allows
+```text
+probe     ×6  17:30:16 → 17:34:36 … 17:36:53   all six in flight at once
+author    ×6  17:34:36 → 17:41:20 … 17:46:59   each starts the second ITS probe ends (pipeline, no barrier)
+verify    ×6  17:41:20 → 17:45:48 … 17:52:08   each starts the second ITS author ends
+fix       slugify 17:46:45→17:55:10 · intervals 17:48:41→17:53:06 · slugify 18:01:34→18:11:52
+re-verify intervals 17:53:07→17:58:36 · slugify 17:55:10→18:01:34 · slugify 18:11:52→18:19:07
+```
 
-(pending)
+Four of the six modules were completely done by 17:49; the remaining 30 min of
+wall time was one module's (slugify) two-round fix loop, pre-authored in the
+script as `while (!verdict.ok && rounds < N)`. No planner turn was spent on
+"how many items", "did the verify pass", or "repair or not" — all three were
+data-driven inside the program. This is the concrete shape 0.12.0 reproduces
+(`itemsFrom`, `repair`).
+
+Correctness audit of `g2-claude` (mine, read-only): `npm test` 168/168 (52 → 116
+new); every existing `tests/<module>.test.js` SHA unchanged; every `src/*.js`
+byte-identical to the base after stripping comment/blank lines (JSDoc only);
+6 edge test files (16–24 tests each), 6 docs pages + `docs/README.md` index,
+`@example` on every export. No deliverable missing.
+
+### bullswarm 0.11.1 (installed binary) — same goal, `g2-bs-v2`
+
+Launched 18:23:39 Z via `run-bs-g2-v2.sh` (`--concurrency 8 --max-agents 40
+--max-expansion-rounds 8`, orchestrator `claude-code`, single pool, Fable
+excluded). Started only after the Claude session went idle so the two never
+competed for the machine.
+
+(numbers pending — run in progress)
+
+### bullswarm 0.12.0 (installed binary) — same goal, fresh copy `g2-bs-v3`
+
+(pending — after the 0.12.0 release)
+
+The originally planned 0.10.9 goal-2 run was dropped at the user's request
+(2026-08-29): the installed latest is the only baseline that matters.
 
 ## Behaviour differences observed
 
