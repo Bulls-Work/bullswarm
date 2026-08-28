@@ -32,16 +32,39 @@ export function parseDecisionText(text) {
 // a verifier depending on exactly one action plainly intends to review that
 // action's durable output artifact. Ambiguous or missing dependencies remain
 // untouched and are rejected by normal validation.
+// verify.review is a dotted scope path to the artifact under review
+// (outputs.<actionId>.outFile), never instructions. Planners routinely put the
+// reviewer's instructions there; recover that shape instead of failing a
+// dispatch: instructions move to prompt, and a single-dependency verify reviews
+// its dependency's artifact.
+export const REVIEW_PATH_RE = /^outputs\.([A-Za-z0-9_-]+(?:\[\d+\])?)\.outFile$/;
+
+export function looksLikeReviewPath(value) {
+  return typeof value === 'string' && REVIEW_PATH_RE.test(value.trim());
+}
+
 export function normalizeDecisionProposal(proposal) {
   if (!proposal || typeof proposal !== 'object' || !Array.isArray(proposal.actions)) return proposal;
   return {
     ...proposal,
     actions: proposal.actions.map((action) => {
-      if (action?.type !== 'verify' || action.review != null ||
-          !Array.isArray(action.dependsOn) || action.dependsOn.length !== 1) {
-        return action;
+      if (action?.type !== 'verify') return action;
+      const singleDependency = Array.isArray(action.dependsOn) && action.dependsOn.length === 1
+        ? action.dependsOn[0] : null;
+      if (action.review == null) {
+        return singleDependency ? { ...action, review: `outputs.${singleDependency}.outFile` } : action;
       }
-      return { ...action, review: `outputs.${action.dependsOn[0]}.outFile` };
+      if (looksLikeReviewPath(action.review)) return { ...action, review: action.review.trim() };
+      if (typeof action.review === 'string' && singleDependency) {
+        const { review, ...rest } = action;
+        return {
+          ...rest,
+          ...(rest.prompt == null && /\s/.test(review.trim()) ? { prompt: review } : {}),
+          review: `outputs.${singleDependency}.outFile`,
+          reviewNormalizedFrom: review,
+        };
+      }
+      return action;
     }),
   };
 }
@@ -77,6 +100,7 @@ export function validateDecisionProposal(proposal, {
   }
 
   const known = new Set(knownActionIds);
+  const proposedIds = new Set(safeActions.map((action) => action?.id).filter((id) => typeof id === 'string'));
   const closed = new Set(closedPhases);
   const proposed = new Set();
   let proposedItems = 0;
@@ -122,7 +146,18 @@ export function validateDecisionProposal(proposal, {
         }
       }
     }
-    if (action.type === 'verify' && typeof action.review !== 'string') issues.push(`${at}.review is required`);
+    if (action.type === 'verify') {
+      if (typeof action.review !== 'string') {
+        issues.push(`${at}.review is required: a verify with one dependsOn reviews that artifact automatically; with several, set review to "outputs.<actionId>.outFile" and put reviewer instructions in prompt`);
+      } else if (!looksLikeReviewPath(action.review)) {
+        issues.push(`${at}.review must be a dotted artifact path like "outputs.<actionId>.outFile" (the artifact to review), not instructions or a filesystem path; put reviewer instructions in ${at}.prompt`);
+      } else {
+        const reviewed = REVIEW_PATH_RE.exec(action.review.trim())[1].replace(/\[\d+\]$/, '');
+        if (!known.has(reviewed) && !proposedIds.has(reviewed)) {
+          issues.push(`${at}.review references unknown action "${reviewed}"`);
+        }
+      }
+    }
   }
   if (proposedItems > maxItemsPerExpansion) {
     issues.push(`proposal has ${proposedItems} fanout items, exceeding maxItemsPerExpansion=${maxItemsPerExpansion}`);

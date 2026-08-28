@@ -332,6 +332,14 @@ optional work. The loop is durable:
 execute -> observe -> decide -> validate proposal -> append -> execute -> observe
 ```
 
+Execution of an accepted proposal is a ready-set scheduler: every action whose
+`dependsOn` have succeeded starts at once (up to `settings.concurrency`, default
+8 for `workflow goal`), and a dependent action starts the moment its own inputs
+finish. The planner is instructed to propose the complete graph per decision —
+per-item fix→verify chains plus one whole-system verify — because each planning
+turn is a full orchestrator round trip. See
+`docs/claude-dynamic-workflow-mechanics.md` for the model this follows.
+
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
 contain bounded actions; malformed or over-budget output executes nothing.

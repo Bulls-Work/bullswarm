@@ -587,7 +587,7 @@ const workflowGoalText = rich({
     { flag: '--max-actions <n>', desc: 'planning target for total dispatched actions', default: '40 (max 1000)' },
     { flag: '--max-items-per-expansion <n>', desc: 'cap on fanout items added per planner round', default: '8 (max 100)' },
     { flag: '--max-workflow-seconds <n>', desc: 'planning target for total wall-clock seconds', default: '3600 (max 86400)' },
-    { flag: '--concurrency <n>', desc: 'max parallel dispatches', default: '3 (max 16)' },
+    { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready actions from one decision run concurrently up to this cap', default: '8 (max 16)' },
     { flag: '--retry-attempts <0..3>', desc: 'same-pool retries per failed action', default: '1' },
     { flag: '--resume <shortId|runId>', desc: 'resume a previously started run instead of starting a new goal; mutually exclusive with typing new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
