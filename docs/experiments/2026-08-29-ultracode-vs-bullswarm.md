@@ -97,17 +97,139 @@ shown exactly that wrong shape. Fixed in the 0.11.0 work (see below).
 
 ## Results
 
-### bullswarm `workflow goal`
+### bullswarm 0.10.9 `workflow goal` (baseline, installed binary)
+
+Run `wf-mtd6lxfn-3912fd`, started 2026-08-28T16:44:18Z, `--orchestrator
+claude-code --concurrency 8 --max-agents 30 --max-expansion-rounds 8`.
+
+First planning turn: 152 s. It proposed one strictly serial chain —
+`discover-failures` → `implement-fixes` → `verify-suite` — and explained why
+(verbatim from `state.json` `decisions[0].reason`):
+
+> Implementation is deliberately NOT fanned out: all fixes land in one shared
+> working tree and converge on src/index.js, so concurrent workers would violate
+> the shared-target mutation policy and race on the barrel file.
+
+The "shared-target mutation policy" it cites is a caution line in the 0.10.9
+planner prompt. `discover-failures` (read-only diagnosis of 7 test files) then
+ran alone for 458 s before the single `implement-fixes` worker started.
+
+Final numbers (run `xnujua`, 16:44:18Z → 17:19:26Z):
+
+| metric | value |
+| --- | --- |
+| outcome | `completed`, verified; **52/52 tests pass**; `tests/` byte-identical (SHA-256 unchanged); 7 `src/` files changed, +20/−14 lines |
+| wall | **2108 s (35m08s)** |
+| dispatches | 7 = 3 orchestrator turns + 4 workers |
+| orchestrator time | 431 s (20 %) — turns of 152 s, 189 s, 90 s |
+| worker time | 1677 s: discover 458 s → implement 356 s → (verify-suite: runtime failure, 0 s) → independent-audit 618 s → final-verification 245 s |
+| max concurrent attempts | **1** (parallelism 1.00 — every second of the run had exactly one process working) |
+| planning rounds | 2 expansion rounds + 1 completion |
+| tokens | ≈35.8 k by bullswarm's utf8-bytes/4 estimate of outputs only — **not comparable** to real provider usage (the Claude session's own status line showed ~49 k input tokens after its first four tool calls) |
+
+Timeline of attempts (UTC):
+
+```text
+16:44:18 → 16:46:50  orchestrator turn 1 (152 s)   → serial chain of 3
+16:46:50 → 16:54:28  discover-failures (458 s)     read-only diagnosis
+16:54:28 → 17:00:24  implement-fixes (356 s)       one worker fixes all 7 files; 52/52
+                     verify-suite                  failed inside runtime (review = instructions), never dispatched
+17:00:24 → 17:03:33  orchestrator turn 2 (189 s)   → independent-audit + final-verification
+17:03:33 → 17:13:51  independent-audit (618 s)     re-tests, fuzzes (3 000 interval sets, 2 000 LRU trials, …)
+17:13:51 → 17:17:57  final-verification (245 s)    verify verdict ok
+17:17:57 → 17:19:26  orchestrator turn 3 (90 s)    complete
+```
+
+What the orchestrator did well: it delivered a correct result with an honest,
+detailed completion report, refused to fan out for a stated reason, and
+recovered from its own `verify.review` mistake ("it was my control-plane
+error") in one extra turn. What cost time: a strictly serial plan under a
+concurrency cap of 8 that was never used; a 458 s read-only discovery step
+before any fix; a 618 s audit that fuzzed every module; and one wasted
+planning round on the `verify.review` shape.
+
+### Claude Code, fresh interactive session (Opus, ultracode)
+
+Set-up: a brand-new Claude Code 2.1.250 session started by `herdr` in its own
+tab (`claude-compare`), `--model claude-opus-5 --dangerously-skip-permissions`
+(the same permission posture bullswarm's connector uses), `/effort ultracode`
+confirmed on screen, cwd = the twin fixture copy, no prior context. The goal
+text above was submitted as the first and only prompt at 17:19:16 Z. The
+bullswarm baseline's final single-process planning turn was still running
+until 17:19:26 Z — a 10-second overlap, noted for honesty.
+
+Result (session `309931b0…`, goal turn 17:19:16 Z → 17:22:45 Z):
+
+| metric | value |
+| --- | --- |
+| outcome | **52/52 tests pass**; `tests/` byte-identical (SHA-256 unchanged); 7 `src/` files changed, +21/−14 lines; per-file bug explanation printed |
+| wall | **209 s (3m29s)** — the session's own footer: "Baked for 3m 29s" |
+| agents spawned | **0** — no `Workflow`, no `Agent` call; 11 `Bash` calls in total |
+| planning round trips | 0 |
+| how it decided | 17:19:19–17:20:34 read every `src/` and `tests/` file and ran `npm test` inline; 17:20:34 "I have a complete picture: 15 failures across 7 modules. Let me get a review before I start editing." → advisor: apply directly, "the ultracode carve-out for trivial mechanical edits applies now that diagnosis is done"; 17:22:09 one Python patch script over all 7 files; 17:22:14–17:22:29 `npm test`, `git diff -- tests/` (empty), `git diff -- src/` |
+| tokens (real provider usage from the transcript) | output 41 042; cache-read 1 939 219; cache-write 119 052; uncached input 62 — 24 assistant messages |
+
+**The finding that matters for this experiment:** a fresh Opus session with
+ultracode on judged this goal *too small to orchestrate* and did it solo. The
+"smoothness" here is a fast inline scout (75 s to a complete diagnosis) and
+zero planning round trips — not parallel agents. bullswarm's orchestrator, by
+contrast, cannot do anything inline: every observation costs a worker
+dispatch and every decision a full planning turn, so the same 15 bugs took
+7 dispatches and 35 minutes.
+
+Goal #1 therefore cannot show the fan-out mechanic the user asked about. Goal
+#2 below is sized to require it.
+
+### Correctness audit — goal #1
+
+Independent `npm test` after each run: bullswarm copy 52/52, Claude copy
+52/52. All seven `tests/*.test.js` SHA-256 values identical to the pre-run
+fingerprints on both copies. Diff stat: bullswarm +20/−14 across the same 7
+`src/` files; Claude +21/−14. Both fixed the same bugs the same way.
+
+## Goal #2 — sized to require fan-out
+
+Base: the fixed fixture (52/52) committed clean, copied three times
+(`g2-claude`, `g2-bs-v2`, `g2-bs-base`). Goal text (verbatim, both sides):
+
+```text
+This repository (swarmbench) has six modules under src/ — csv, duration, intervals, lru, semver, slugify — and a passing test suite. For EACH of the six modules deliver three things: (1) a new test file tests/<module>.edge.test.js using node:test and node:assert/strict with at least 6 additional edge-case tests that are not already covered by tests/<module>.test.js, all passing against the current implementation; (2) complete JSDoc on every exported function or class in src/<module>.js (parameter types, return type, thrown errors, one @example) without changing any behaviour; (3) a documentation page docs/<module>.md describing the public API, edge-case behaviour, and examples. Then write docs/README.md as an index table linking all six pages with a one-line summary each. Do not modify the existing tests/<module>.test.js files. Finish with the full `npm test` passing (existing plus new tests) and report what you created.
+```
+
+Six independent items, three deliverables each, one cross-cutting index — the
+shape `pipeline()` exists for.
+
+### Claude Code, fresh interactive session #2 (Opus, ultracode)
+
+New session (`0754e69f…`) in herdr tab `claude-compare-2`, same set-up as
+session #1; goal submitted 17:24:4x Z. Observed driving sequence:
+
+- 17:24:50–17:25:20 inline scouting (ls, `cat -n` every source and test file,
+  `npm test` → 52 passing). First words: "I'll start by orienting myself in the
+  repo before authoring the workflow."
+- 17:25:20–17:26:44 advisor consultation ("Advisor sharpened the plan"); then
+  `mkdir docs` and a baseline snapshot of `src/` for behaviour-preservation
+  checks.
+- 17:28:42 `Workflow` call: script `swarmbench-docs-and-edge-tests`, phases
+  Probe → Author → Verify, five `agent()` call sites in a per-module
+  `pipeline()` ("probe → author → adversarially verify → fix-loop, pipelined
+  per module"), ≈23 k characters, workers inherit the session model (Opus).
+- The first call was **rejected by the harness**: "Invalid workflow script:
+  Script parse error: Unexpected token (48:15) … Workflow scripts must be plain
+  JavaScript". The session replied "Backtick inside a template literal in the
+  lru hints. Fixing and resending." — the same validate-and-correct loop
+  bullswarm 0.10.9 now has for planner decisions, except here the correction is
+  an inline retry inside one turn rather than a fresh planning process.
+
+(execution numbers pending)
+
+### bullswarm 0.11.0 code (`node bin/bullswarm.js` from the repo checkout)
 
 (pending)
 
-### Claude `Workflow` (ultracode)
+### bullswarm 0.10.9 (installed binary), if time allows
 
 (pending)
-
-### Correctness audit
-
-(pending: independent `npm test` on each copy, test-file SHA comparison, diff stat)
 
 ## Behaviour differences observed
 

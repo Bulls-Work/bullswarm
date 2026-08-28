@@ -17,6 +17,12 @@ Adopts the driving mechanics of Claude Code's dynamic workflow (documented in
   trip costs. The goal orchestrator prompt no longer asks for "the smallest
   useful set" of actions. `executionConstraints.concurrency` is exposed.
 - `workflow goal` default `--concurrency` is 8 (was 3; max 16).
+- The planner prompt's shared-working-tree caution now says what is actually
+  unsafe (whole-tree mutation, running the full suite while others edit) and
+  states that concurrent workers editing disjoint files is the expected mode;
+  the 0.10.9 orchestrator had cited the old wording as its reason not to fan
+  out ("Implementation is deliberately NOT fanned out … shared-target mutation
+  policy").
 - `verify.review` is recovered when a planner puts instructions or a filesystem
   path there: instructions move to `prompt`, the single dependency's artifact is
   inferred, and any `review` that is not `outputs.<actionId>.outFile` is

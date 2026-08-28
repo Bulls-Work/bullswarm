@@ -161,7 +161,15 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
   were spent recovering from a `verify` proposal whose `review` field carried
   instructions instead of an artifact path — a shape the 0.10.9 planner
   skeleton itself had suggested.
-- (comparison fixture results: pending)
+- bullswarm 0.10.9 on the 7-module fixture (baseline, `--concurrency 8`): the
+  orchestrator's first decision (152 s) proposed one serial chain
+  discover → implement → verify and wrote: "Implementation is deliberately NOT
+  fanned out: all fixes land in one shared working tree and converge on
+  src/index.js, so concurrent workers would violate the shared-target mutation
+  policy and race on the barrel file." The policy it cites was a caution line
+  in the planner prompt; a concurrency cap of 8 was available and unused.
+  Discovery alone then ran 458 s. (Final numbers: experiment report.)
+- (comparison fixture final results: pending)
 
 ## 3. bullswarm today, mechanic by mechanic
 
