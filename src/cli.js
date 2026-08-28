@@ -17,7 +17,7 @@ import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
 import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
-import { helpForArgs } from './help.js';
+import { helpForArgs, usageLine } from './help.js';
 import { resolveDispatchModel } from './lib/strategy.js';
 
 export function getBullswarmDir() {
@@ -474,9 +474,7 @@ export async function main(argv) {
     case 'release':
       return cmdRelease(opts);
     default:
-      console.error(
-        `unknown verb "${verb}". try: setup | integrate | run | health | pools | strategy | doctor | workflow | runs | version | release`,
-      );
+      console.error(`unknown verb "${verb}". Run "bullswarm --help" for the list of commands.`);
       return 2;
   }
 }
@@ -486,7 +484,7 @@ export async function main(argv) {
 function cmdRelease(opts) {
   const kind = opts.rest[0];
   if (!['patch', 'minor', 'major'].includes(kind)) {
-    console.error('usage: bullswarm release patch|minor|major [--dry-run]');
+    console.error(`usage: ${usageLine(['release'])}`);
     return 2;
   }
   try {

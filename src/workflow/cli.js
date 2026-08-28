@@ -23,6 +23,7 @@ import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
 import { isDeliveredWorkflowStatus } from './status.js';
+import { helpText, usageLine } from '../help.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -140,7 +141,7 @@ export async function cmdWorkflow(args) {
         );
         return 2;
       }
-       console.error('usage: bullswarm workflow <goal|run|validate|list|draft|runs|capabilities|inspect|tui|watch|events|steer|action|approval> ...');
+      console.error(helpText(['workflow']));
       return 2;
     }
   }
@@ -162,23 +163,7 @@ function goalSettings(opts) {
 }
 
 function goalUsage() {
-  return `usage: bullswarm workflow goal "<goal>" [options]
-
-options:
-  --cwd <dir>                    target working directory
-  --detach                       explicitly request the default independent launch
-  --watch                        launch independently, then watch until terminal
-  --foreground                   keep execution owned by this terminal
-  --json                         emit one machine-readable launch/report document
-  --orchestrator <pool|auto>     pin only for controlled use; default capability routing
-  --max-agents <n>               advisory dispatch target (default 30)
-  --max-expansion-rounds <n>     advisory convergence target (default 8)
-  --max-actions <n>              durable action ceiling (default 40)
-  --max-items-per-expansion <n>  fanout item ceiling (default 8)
-  --max-workflow-seconds <n>     advisory duration target (default 3600)
-  --concurrency <n>              concurrent dispatch ceiling, max 16 (default 3)
-  --retry-attempts <0..3>        same-pool retry bound (default 1)
-  --resume <shortId|runId>       resume durable unfinished work`;
+  return helpText(['workflow', 'goal']);
 }
 
 async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId }) {
@@ -488,7 +473,7 @@ async function wfCapabilities(opts) {
 function wfEvents(opts) {
   const token = opts.rest[0];
   if (!token) {
-    console.error('usage: bullswarm workflow events --json <runId> [--after <sequence>]');
+    console.error(`usage: ${usageLine(['workflow', 'events'])}`);
     return 2;
   }
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
@@ -509,7 +494,7 @@ function wfEvents(opts) {
 async function wfWatch(opts) {
   const token = opts.rest[0];
   if (!token) {
-    console.error('usage: bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once] [--verbose]');
+    console.error(`usage: ${usageLine(['workflow', 'watch'])}`);
     return 2;
   }
   const intervalSec = Number(opts.interval ?? 2);
@@ -537,7 +522,7 @@ function wfSteer(opts) {
   const token = opts.rest[0];
   const message = opts.message ?? opts.rest.slice(1).join(' ');
   if (!token || !message) {
-    console.error('usage: bullswarm workflow steer <runId> --message "guidance for the next planning checkpoint" [--json]');
+    console.error(`usage: ${usageLine(['workflow', 'steer'])}`);
     return 2;
   }
   try {
@@ -562,7 +547,7 @@ function wfSteer(opts) {
 function wfAction(opts) {
   const [sub, token, actionId] = opts.rest;
   if (sub !== 'show' || !token || !actionId) {
-    console.error('usage: bullswarm workflow action show --json <runId> <actionId>');
+    console.error(`usage: ${usageLine(['workflow', 'action', 'show'])}`);
     return 2;
   }
   try {
@@ -577,7 +562,7 @@ function wfAction(opts) {
 function wfApproval(opts) {
   const [decision, token] = opts.rest;
   if (!['approve', 'reject'].includes(decision) || !token) {
-    console.error('usage: bullswarm workflow approval <approve|reject> --json <runId>');
+    console.error(`usage: ${usageLine(['workflow', 'approval'])}`);
     return 2;
   }
   try {
@@ -592,7 +577,7 @@ function wfApproval(opts) {
 async function wfInspect(opts) {
   const target = opts.rest[0];
   if (!target) {
-    console.error('usage: bullswarm workflow inspect <file-or-name>');
+    console.error(`usage: ${usageLine(['workflow', 'inspect'])}`);
     return 2;
   }
   try {
@@ -666,7 +651,7 @@ function parseFlags(argv) {
 async function wfValidate(opts) {
   const target = opts.rest[0];
   if (!target) {
-    console.error('usage: bullswarm workflow validate <file-or-name>');
+    console.error(`usage: ${usageLine(['workflow', 'validate'])}`);
     return 2;
   }
   let doc, path;
@@ -708,7 +693,7 @@ async function livePoolNames() {
 async function wfRun(opts) {
   const target = opts.rest[0];
   if (!target) {
-    console.error('usage: bullswarm workflow run <file-or-name> [--input k=v] [--resume runId]');
+    console.error(`usage: ${usageLine(['workflow', 'run'])}`);
     return 2;
   }
 
