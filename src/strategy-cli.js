@@ -3,6 +3,7 @@ import { loadConnectors, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { discoverAllModels, buildStrategy } from './lib/strategy.js';
 import { normalizeExcludedModels } from './lib/strategy.js';
+import { helpText, usageLine } from './help.js';
 
 function parseFlags(argv) {
   const flags = { rest: [] };
@@ -51,20 +52,7 @@ function render(report) {
 }
 
 function strategyUsage() {
-  return `usage: bullswarm strategy <command> [options]
-
-commands:
-  refresh [--json]                         discover models and recommend tiers
-  refresh --apply --yes [--refresh-hours] discover, approve, and enable refresh
-  apply --yes [--refresh-hours <n>]        approve the last recommendations
-  auto status                              inspect the approved refresh policy
-  auto off --yes                           disable automatic re-application
-  show [--json]                            show the last strategy report
-  assign <high|medium|low> --pool --model  set one explicit preference
-  clear-assignment <tier>                  remove one preference
-  exclude-model <model>                    prevent this model from any dispatch
-  include-model <model>                    remove a model exclusion
-  set-subscription <pool> [value flags]    record user-known plan economics`;
+  return helpText(['strategy']);
 }
 
 export async function refreshStrategy(bullswarmDir, { executor, getReadings = getAllMeterReadings } = {}) {
@@ -168,7 +156,7 @@ export async function cmdStrategy(args, { bullswarmDir }) {
     }
     if (sub === 'set-subscription') {
       const pool = opts.rest[0];
-      if (!pool) throw new Error('usage: bullswarm strategy set-subscription <pool> [--plan name] [--monthly-usd n] [--included-usd n] [--quota-window name]');
+      if (!pool) throw new Error(`usage: ${usageLine(['strategy', 'set-subscription'])}`);
       const connectors = loadConnectors(bullswarmDir);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       const state = loadState(bullswarmDir);
@@ -191,7 +179,7 @@ export async function cmdStrategy(args, { bullswarmDir }) {
     }
     if (sub === 'assign') {
       const tier = opts.rest[0];
-      if (!['high', 'medium', 'low'].includes(tier)) throw new Error('usage: bullswarm strategy assign <high|medium|low> --pool <pool> --model <model>');
+      if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'assign'])}`);
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
       const connectors = loadConnectors(bullswarmDir);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
@@ -206,7 +194,7 @@ export async function cmdStrategy(args, { bullswarmDir }) {
     }
     if (sub === 'exclude-model' || sub === 'include-model') {
       const model = opts.rest[0];
-      if (!model) throw new Error(`usage: bullswarm strategy ${sub} <model>`);
+      if (!model) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
       const state = loadState(bullswarmDir);
       state.strategy ??= {};
       const current = normalizeExcludedModels(state.strategy.excludedModels);
@@ -244,14 +232,14 @@ export async function cmdStrategy(args, { bullswarmDir }) {
         state.strategy.policy.disabledAt = new Date().toISOString();
         saveState(bullswarmDir, state);
       } else if (mode !== 'status') {
-        throw new Error('usage: bullswarm strategy auto <status|off> [--yes]');
+        throw new Error(`usage: ${usageLine(['strategy', 'auto'])}`);
       }
       console.log(JSON.stringify({ action: 'strategy-auto', policy: state.strategy.policy }, null, 2));
       return 0;
     }
     if (sub === 'clear-assignment') {
       const tier = opts.rest[0];
-      if (!['high', 'medium', 'low'].includes(tier)) throw new Error('usage: bullswarm strategy clear-assignment <high|medium|low>');
+      if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'clear-assignment'])}`);
       const state = loadState(bullswarmDir);
       if (state.strategy?.assignments) delete state.strategy.assignments[tier];
       delete state.strategy?.lastReport;

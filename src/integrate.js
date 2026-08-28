@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { helpText } from './help.js';
 
 const SKILL_SOURCE = fileURLToPath(new URL('../skill', import.meta.url));
 const MARKER_BEGIN = '<!-- bullswarm:begin v2 -->';
@@ -161,14 +162,7 @@ export function retireLegacyOffload({ homeDir = process.env.HOME ?? '', approved
 }
 
 export function integrateUsage() {
-  return `usage: bullswarm integrate [status] [--agents codex,claude,grok] [--json]
-       bullswarm integrate install --agents codex,claude,grok --yes [--json]
-       bullswarm integrate remove --agents codex,claude,grok --yes [--json]
-       bullswarm integrate retire-legacy --yes [--json]
-
-Install registers the packaged Bullswarm skill and a concise recursion-safe
-awareness rule. Removal only deletes Bullswarm-managed symlinks and marker
-blocks. retire-legacy moves ~/.claude/skills/offload into skills-archive.`;
+  return helpText(['integrate']);
 }
 
 export function cmdIntegrate(opts) {

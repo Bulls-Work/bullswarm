@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
 import { buildWorkflowResult } from './result.js';
+import { helpText, usageLine } from '../help.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
 function err(msg, code = 1) { console.error(msg); return code; }
@@ -34,19 +35,7 @@ export function cmdRuns(args) {
 }
 
 export function runsUsage() {
-  return `usage:
-  bullswarm workflow runs                       # list ongoing runs
-  bullswarm workflow runs [--all | --historical] [--name <workflow>]
-    [--since <time>] [--until <time>] [--limit N] [--json]
-  bullswarm workflow runs show <id>             # <id> = shortId (6 chars) or full runId
-  bullswarm workflow runs result <id> [--json]  # stable caller-facing result
-  bullswarm workflow runs delete <id> --yes     # remove the run directory
-
-Time filters compare the workflow initiation timestamp (startedAt):
-  --since / --started-after / --from   inclusive lower bound
-  --until / --started-before / --to    exclusive upper bound
-Values accept ISO timestamps, local dates, today/yesterday/tomorrow/now,
-or relative durations such as 30m, 24h, 7d, and 2w.`;
+  return helpText(['workflow', 'runs']);
 }
 
 function parseRunsFlags(argv) {
@@ -165,7 +154,7 @@ function runsList(opts) {
 }
 
 function runsShow(idToken, opts) {
-  if (!idToken) return err('usage: bullswarm workflow runs show <id>', 2);
+  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -195,7 +184,7 @@ function runsShow(idToken, opts) {
 }
 
 function runsResult(idToken, opts) {
-  if (!idToken) return err('usage: bullswarm workflow runs result <id> [--json]', 2);
+  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'result'])}`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -248,7 +237,7 @@ function runsResult(idToken, opts) {
 const MAX_HUMAN_RESULT_CHARS = 64 * 1024;
 
 function runsDelete(idToken, opts, rest) {
-  if (!idToken) return err('usage: bullswarm workflow runs delete <id> --yes', 2);
+  if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
   if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);

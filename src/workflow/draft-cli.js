@@ -39,6 +39,7 @@ import {
 import { BULLSWARM_DIR } from './cli.js';
 import { resolveRunId } from './short-id.js';
 import { isDeliveredWorkflowStatus } from './status.js';
+import { helpText, usageLine } from '../help.js';
 
 // --- flag parsing ----------------------------------------------------------
 // Draft commands have a richer flag set than `workflow run`, so we parse
@@ -135,28 +136,7 @@ export async function cmdDraft(args) {
 }
 
 export function draftUsage() {
-  return `usage:
-  bullswarm workflow draft create <name> [--description <text>] [--input k=v]...
-  bullswarm workflow draft show <name>
-  bullswarm workflow draft list
-  bullswarm workflow draft phase add <name> <phase>
-  bullswarm workflow draft phase remove <name> <phase>
-  bullswarm workflow draft step add <name> <phase> <step-id>
-                              [--type run|fanout|verify]
-                              [--lane <lane>] [--pool <pool>]
-                              [--prompt <text>] [--task-file <path>] [--add-dir <dir>]
-                              [--items-from <path>] [--review <path>]
-                              [--concurrency N] [--timeout N]
-                              [--on-error continue|fail|skip-phase]
-                              [--step-template <json>]
-                              [--input k=v]...   (declarations, for the prompt template)
-  bullswarm workflow draft step remove <name> <phase> <step-id>
-  bullswarm workflow draft step set <name> <phase> <step-id> <field> --value <text>
-  bullswarm workflow draft set <name> <field> --value <text>
-  bullswarm workflow draft validate <name>
-  bullswarm workflow draft export <name> <out-file>
-  bullswarm workflow draft delete <name>
-  bullswarm workflow draft run <name> [--input k=v]... [--resume <runId>] [--json] [--quiet]`;
+  return helpText(['workflow', 'draft']);
 }
 
 // --- implementations -------------------------------------------------------
@@ -175,7 +155,7 @@ async function livePoolNames() {
 
 function draftCreate(opts) {
   const [name] = opts._positional;
-  if (!name) return usageErr('usage: bullswarm workflow draft create <name>');
+  if (!name) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'create'])}`);
   if (draftExists(BULLSWARM_DIR(), name)) {
     return err(`draft "${name}" already exists (delete it first or use 'show')`);
   }
@@ -208,7 +188,7 @@ function draftCreate(opts) {
 
 function draftShow(opts) {
   const [name] = opts._positional;
-  if (!name) return usageErr('usage: bullswarm workflow draft show <name>');
+  if (!name) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'show'])}`);
   const { doc, meta } = loadDraft(BULLSWARM_DIR(), name);
   if (opts.json) {
     jsonOut({ doc, meta }, opts);
@@ -249,7 +229,7 @@ function draftList(opts) {
 function draftPhase(opts) {
   const [action, name, phaseName] = opts._positional;
   if (!action || !name || !phaseName) {
-    return usageErr('usage: bullswarm workflow draft phase <add|remove> <draft> <phase>');
+    return usageErr(`usage: ${usageLine(['workflow', 'draft', 'phase'])}`);
   }
   if (action === 'add') {
     if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
@@ -274,7 +254,7 @@ function draftPhase(opts) {
 function draftStep(opts) {
   const [action, name, phaseName, stepId] = opts._positional;
   if (!action || !name || !phaseName || !stepId) {
-    return usageErr('usage: bullswarm workflow draft step <add|remove|set> <draft> <phase> <step-id> [options]');
+    return usageErr(`usage: ${usageLine(['workflow', 'draft', 'step'])}`);
   }
   if (action === 'add') {
     const f = opts._flags;
@@ -316,7 +296,7 @@ function draftStep(opts) {
   }
   if (action === 'set') {
     const field = opts._positional[4];
-    if (!field) return usageErr('usage: bullswarm workflow draft step set <draft> <phase> <step> <field> --value <text>');
+    if (!field) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'step', 'set'])}`);
     if (!f_has(opts._flags, 'value')) return usageErr('missing --value');
     const r = setStepField(BULLSWARM_DIR(), name, {
       phaseName, stepId, field, value: opts._flags.value,
@@ -334,7 +314,7 @@ function f_has(flags, name) {
 
 function draftSet(opts) {
   const [name, field] = opts._positional;
-  if (!name || !field) return usageErr('usage: bullswarm workflow draft set <draft> <field> --value <text>');
+  if (!name || !field) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'set'])}`);
   if (!f_has(opts._flags, 'value')) return usageErr('missing --value');
   const r = setField(BULLSWARM_DIR(), name, { field, value: opts._flags.value });
   if (opts.json) jsonOut({ ok: true, action: 'set', name, field, validation: r.validation }, opts);
@@ -344,7 +324,7 @@ function draftSet(opts) {
 
 async function draftValidate(opts) {
   const [name] = opts._positional;
-  if (!name) return usageErr('usage: bullswarm workflow draft validate <name>');
+  if (!name) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'validate'])}`);
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   const { doc } = loadDraft(BULLSWARM_DIR(), name);
   const { names } = await livePoolNames();
@@ -373,7 +353,7 @@ async function draftValidate(opts) {
 
 function draftExport(opts) {
   const [name, outFile] = opts._positional;
-  if (!name || !outFile) return usageErr('usage: bullswarm workflow draft export <name> <out-file>');
+  if (!name || !outFile) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'export'])}`);
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   const { outPath } = exportDraft(BULLSWARM_DIR(), name, outFile);
   if (opts.json) jsonOut({ ok: true, name, outPath }, opts);
@@ -383,7 +363,7 @@ function draftExport(opts) {
 
 function draftDelete(opts) {
   const [name] = opts._positional;
-  if (!name) return usageErr('usage: bullswarm workflow draft delete <name>');
+  if (!name) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'delete'])}`);
   if (!f_has(opts._flags, 'yes') && !opts._flags.y) {
     // Refuse without --yes for safety.
     return usageErr(`refusing to delete draft "${name}" without --yes`);
@@ -396,7 +376,7 @@ function draftDelete(opts) {
 
 async function draftRun(opts) {
   const [name] = opts._positional;
-  if (!name) return usageErr('usage: bullswarm workflow draft run <name> [--input k=v]...');
+  if (!name) return usageErr(`usage: ${usageLine(['workflow', 'draft', 'run'])}`);
   if (!draftExists(BULLSWARM_DIR(), name)) return err(`draft "${name}" does not exist`);
   // Build a synthetic path inside the drafts dir so the existing
   // loadWorkflow + runWorkflow paths work without modification.
