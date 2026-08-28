@@ -353,8 +353,8 @@ work*: "In 200 words: (1) the top 3 risks, (2) cited file paths,
 You do NOT need to set up bullswarm. Every verb self-initializes:
 
 - Missing `~/.bullswarm/`? Created on first call.
-- No enabled pools? `autoSetup` enables every installed agent CLI plus
-  the deterministic `echo` pool (so offload works on a fresh machine).
+- No enabled pools? `autoSetup` enables every installed real agent CLI. The
+  deterministic `echo` connector is a test fixture and is never auto-enabled.
 - `bullswarm doctor --json` returns a readiness report; non-zero exit
   only on a real problem. The first call to `doctor` self-heals.
 
@@ -376,7 +376,7 @@ of exact commands to fix anything missing.
 ### "Audit every file in this directory"
 
 A discover-based fanout requires the discover delegate to return a bare
-JSON array in its output file. The built-in `echo` pool is a verifier
+JSON array in its output file. The built-in `echo` pool is a disabled test
 fixture and deliberately returns prose, so use a real provider for this
 variant:
 

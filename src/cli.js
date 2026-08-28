@@ -29,14 +29,18 @@ export function getBullswarmDir() {
 // call getBullswarmDir() so BULLSWARM_HOME is honored at invocation time.
 export const BULLSWARM_DIR = getBullswarmDir();
 
-function parseArgs(argv) {
+const BOOLEAN_FLAGS = new Set([
+  'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
+]);
+
+export function parseArgs(argv) {
   const args = {};
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--')) {
       const eq = argv[i].indexOf('=');
       const key = argv[i].slice(2, eq > 0 ? eq : undefined);
-      if (key === 'json') args.json = true;
+      if (BOOLEAN_FLAGS.has(key)) args[key] = true;
       else if (eq > 0) args[key] = argv[i].slice(eq + 1);
       else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args[key] = argv[++i];
       else args[key] = true;
@@ -355,12 +359,12 @@ async function cmdDoctor(opts) {
   }
 
   const discovered = discoverConnectors();
-  const found = discovered.filter((d) => d.discovered && !d.broken);
+  const found = discovered.filter((d) => d.discovered && !d.broken && !d.testFixture);
   checks.push({
     id: 'connectors',
     ok: found.length > 0,
     detail: `${found.length} agent CLI(s) found: ${found.map((d) => d.name).join(', ') || '(none)'}`,
-    fix: found.length ? null : 'install at least one agent CLI (codex, grok, opencode…) — echo pool still works',
+    fix: found.length ? null : 'install at least one agent CLI (codex, grok, opencode…)',
   });
 
   try {
@@ -369,6 +373,7 @@ async function cmdDoctor(opts) {
     });
     const live = pools.filter((p) => p.meterSource === 'live' || p.meterSource === 'cache');
     const enabled = pools.filter((p) => p.enabled);
+    const delegates = enabled.filter((p) => !p.testFixture);
     checks.push({
       id: 'meters',
       ok: enabled.length > 0,
@@ -377,9 +382,9 @@ async function cmdDoctor(opts) {
     });
     checks.push({
       id: 'offload-capable',
-      ok: enabled.some((p) => p.name !== 'echo') || enabled.length > 0,
-      detail: `enabled pools: ${enabled.map((p) => p.name).join(', ') || 'none'}`,
-      fix: null,
+      ok: delegates.length > 0,
+      detail: `enabled delegate pools: ${delegates.map((p) => p.name).join(', ') || 'none'}`,
+      fix: delegates.length ? null : 'install an agent CLI and run bullswarm setup --yes',
     });
   } catch (err) {
     checks.push({ id: 'meters', ok: false, detail: err.message, fix: 'check network / re-run' });

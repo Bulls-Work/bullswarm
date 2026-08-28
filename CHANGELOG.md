@@ -1,5 +1,19 @@
 # bullswarm changelog
 
+## 0.10.5 — safe setup and boolean flags
+
+- Marked the deterministic `echo` connector as a test fixture and excluded it
+  from automatic setup, routing suggestions, connector readiness, and delegate
+  readiness. Existing installations receive a one-time migration that disables
+  an accidentally enabled fixture while preserving later explicit choices.
+- Interactive setup labels test fixtures and defaults them to disabled;
+  `doctor` now requires at least one real enabled delegate instead of treating
+  canned fixture output as offload capability.
+- Made top-level boolean flags explicit so options such as `--no-caller`,
+  `--force`, and `--dry-run` cannot swallow a following positional task.
+- Thanks to @kwunlokng for reporting both defect classes and supplying focused
+  reproductions in #1, #2, and #3.
+
 ## 0.10.4 — durable interactive workflow viewer
 
 - Added `workflow runs result <id> [--json]`, a stable

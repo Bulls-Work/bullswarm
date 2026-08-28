@@ -8,6 +8,8 @@ import {
   applyIntegrationBlock,
   integrationBlockPresent,
   upgradeConnectorMetadata,
+  autoSetup,
+  ensureSetup,
 } from '../src/setup.js';
 
 function tmp() {
@@ -24,6 +26,41 @@ test('routing table suggestion covers lanes from enabled pools', () => {
   assert.deepEqual(t.analyze.order, ['codex']); // command-code cannot serve analyze
   assert.ok(t.build.order.includes('grok'));
   assert.equal(t.chore.fallback, 'caller');
+});
+
+test('auto setup never enables the packaged echo test fixture', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const result = autoSetup(d, { reason: 'test' });
+    const state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
+    assert.equal(result.enabledPools.includes('echo'), false);
+    assert.equal(state.pools.echo.enabled, false);
+    assert.equal(state.config.testFixturesMigrated, true);
+  } finally { cleanup(); }
+});
+
+test('existing installs migrate an accidentally enabled echo fixture once', () => {
+  const { d, cleanup } = tmp();
+  try {
+    mkdirSync(join(d, 'connectors'), { recursive: true });
+    writeFileSync(join(d, 'connectors', 'echo.json'), `${JSON.stringify({
+      name: 'echo', flags: { stealth: false }, lanes: ['analyze', 'build', 'chore'],
+    }, null, 2)}\n`);
+    writeFileSync(join(d, 'state.json'), `${JSON.stringify({
+      version: 1, pools: { echo: { enabled: true } }, config: {},
+    }, null, 2)}\n`);
+
+    ensureSetup(d);
+    let state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
+    assert.equal(state.pools.echo.enabled, false);
+    assert.equal(state.config.testFixturesMigrated, true);
+
+    state.pools.echo.enabled = true;
+    writeFileSync(join(d, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
+    ensureSetup(d);
+    state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
+    assert.equal(state.pools.echo.enabled, true, 'later explicit choice is preserved');
+  } finally { cleanup(); }
 });
 
 test('connector metadata upgrades add packaged capabilities without removing custom ones', () => {

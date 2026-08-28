@@ -97,6 +97,7 @@ export function discoverConnectors() {
       meter: conn.meter?.type ?? 'none',
       costRank: conn.costRank,
       lanes: conn.lanes,
+      testFixture: conn.flags?.testFixture === true,
     });
   }
   return found;
@@ -187,6 +188,10 @@ export function upgradeConnectorMetadata(bullswarmDir) {
         installed.model = packaged.model;
         changed = true;
       }
+      if (packaged.flags?.testFixture === true && installed.flags?.testFixture !== true) {
+        installed.flags = { ...(installed.flags ?? {}), testFixture: true };
+        changed = true;
+      }
       if (installed.eventStream == null && packaged.eventStream != null) {
         installed.eventStream = packaged.eventStream;
         // Older packaged connectors used stdout extraction. Once JSONL flags
@@ -218,6 +223,34 @@ export function upgradeConnectorMetadata(bullswarmDir) {
   return upgraded;
 }
 
+// One-time safety migration for installations created before connectors could
+// identify deterministic test fixtures. Explicit choices made after this
+// migration remain respected.
+export function migrateTestFixturePools(bullswarmDir) {
+  const state = loadState(bullswarmDir);
+  state.config ??= {};
+  if (state.config.testFixturesMigrated === true) return [];
+
+  const connectorsDir = join(bullswarmDir, 'connectors');
+  const disabled = [];
+  if (existsSync(connectorsDir)) {
+    for (const file of readdirSync(connectorsDir)) {
+      if (!file.endsWith('.json') || file.startsWith('_')) continue;
+      try {
+        const connector = JSON.parse(readFileSync(join(connectorsDir, file), 'utf8'));
+        if (connector.flags?.testFixture !== true) continue;
+        state.pools ??= {};
+        state.pools[connector.name] ??= {};
+        if (state.pools[connector.name].enabled !== false) disabled.push(connector.name);
+        state.pools[connector.name].enabled = false;
+      } catch { /* connector repair owns malformed files */ }
+    }
+  }
+  state.config.testFixturesMigrated = true;
+  saveState(bullswarmDir, state);
+  return disabled;
+}
+
 // --- auto-setup ---------------------------------------------------------------
 // Zero-touch initialization: enable every discovered pool, write config,
 // never prompt. Used by `setup --yes`, by any verb on first use, and by
@@ -229,13 +262,12 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
   const discovered = discoverConnectors();
   const repaired = repairConnectors(bullswarmDir);
 
-  const usable = discovered.filter((d) => !d.broken && d.discovered);
-  // Always include the deterministic echo pool so offloading works even on
-  // a machine with zero other agent CLIs installed.
+  const usable = discovered.filter((d) => !d.broken && d.discovered && !d.testFixture);
   const enabled = new Set(usable.map((d) => d.name));
-  enabled.add('echo');
 
   state.pools ??= {};
+  state.config ??= {};
+  state.config.testFixturesMigrated = true;
   for (const d of discovered.filter((x) => !x.broken)) {
     state.pools[d.name] ??= {};
     state.pools[d.name].enabled = enabled.has(d.name);
@@ -275,6 +307,7 @@ export function isConfigured(bullswarmDir) {
 export function ensureSetup(bullswarmDir) {
   if (isConfigured(bullswarmDir)) {
     upgradeConnectorMetadata(bullswarmDir);
+    migrateTestFixturePools(bullswarmDir);
     return null;
   }
   return autoSetup(bullswarmDir, { reason: 'first-use' });
@@ -306,7 +339,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
         ? 'quota: unmetered'
         : `quota: ${d.meter} window (burn rate: learning)`;
     console.log(
-      `  ${d.name.padEnd(14)} ${d.discovered ? 'found' : 'not found'}  ${meter}`,
+      `  ${d.name.padEnd(14)} ${d.discovered ? 'found' : 'not found'}  ${meter}${d.testFixture ? '  TEST FIXTURE' : ''}`,
     );
   }
   console.log('');
@@ -314,8 +347,11 @@ export async function runWizard(bullswarmDir, opts = {}) {
   // 2. Toggle pools
   const enabled = [];
   for (const d of discovered.filter((x) => !x.broken && x.discovered)) {
-    const ans = (await rl.question(`enable ${d.name}? [Y/n] `)).trim().toLowerCase();
-    if (ans !== 'n') enabled.push(d.name);
+    const prompt = d.testFixture
+      ? `enable ${d.name} test fixture? [y/N] `
+      : `enable ${d.name}? [Y/n] `;
+    const ans = (await rl.question(prompt)).trim().toLowerCase();
+    if (d.testFixture ? (ans === 'y' || ans === 'yes') : ans !== 'n') enabled.push(d.name);
   }
 
   if (enabled.length === 0) {
@@ -332,6 +368,8 @@ export async function runWizard(bullswarmDir, opts = {}) {
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
   const repaired = repairConnectors(bullswarmDir);
   state.pools ??= {};
+  state.config ??= {};
+  state.config.testFixturesMigrated = true;
   for (const d of discovered.filter((x) => !x.broken)) {
     state.pools[d.name] ??= {};
     state.pools[d.name].enabled = enabled.includes(d.name);

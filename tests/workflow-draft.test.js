@@ -29,7 +29,9 @@ function sandbox() {
   }
   writeFileSync(join(home, 'state.json'), JSON.stringify({
     version: 1, pools: { echo: { enabled: true } }, incumbents: {},
-    decisionLog: [], config: { depthLimit: 2, callerName: 'claude-code' },
+    decisionLog: [], config: {
+      depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true,
+    },
   }));
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
