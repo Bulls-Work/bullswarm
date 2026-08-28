@@ -44,13 +44,15 @@ const HELP = {
   release: { _text: leaf('bullswarm release <patch|minor|major> [--dry-run]') },
   strategy: {
     _text: leaf('bullswarm strategy <command> [options]',
-      'Commands: refresh, apply, show, assign, clear-assignment, set-subscription, auto.'),
+      'Commands: refresh, apply, show, assign, clear-assignment, exclude-model, include-model, set-subscription, auto.'),
     refresh: { _text: leaf('bullswarm strategy refresh [--json] [--apply --yes] [--refresh-hours <n>]') },
     recommend: { _text: leaf('bullswarm strategy recommend [--json] [--apply --yes]', 'Alias for strategy refresh.') },
     apply: { _text: leaf('bullswarm strategy apply --yes [--refresh-hours <n>]') },
     show: { _text: leaf('bullswarm strategy show [--json]') },
     assign: { _text: leaf('bullswarm strategy assign <high|medium|low> --pool <pool> --model <model>') },
     'clear-assignment': { _text: leaf('bullswarm strategy clear-assignment <high|medium|low>') },
+    'exclude-model': { _text: leaf('bullswarm strategy exclude-model <model>', 'Persistently prevent this exact model from orchestration and worker dispatches.') },
+    'include-model': { _text: leaf('bullswarm strategy include-model <model>', 'Remove a persisted model exclusion.') },
     'set-subscription': { _text: leaf('bullswarm strategy set-subscription <pool> [--plan <name>] [--monthly-usd <n|unknown>] [--included-usd <n|unknown>] [--quota-window <name>]') },
     auto: {
       _text: leaf('bullswarm strategy auto <status|off> [--yes]'),
@@ -60,15 +62,44 @@ const HELP = {
   },
   workflow: {
     _text: leaf('bullswarm workflow <command> [options]',
-      'Commands: goal, run, validate, list, draft, runs, capabilities, inspect, tui, watch, events, steer, action, approval.'),
-    goal: { _text: leaf('bullswarm workflow goal "<goal>" [--cwd <dir>] [--detach] [--json] [planning options]',
-      'Use --resume <shortId|runId> to resume. Planning options include --orchestrator, --max-agents, --max-expansion-rounds, --max-actions, --max-items-per-expansion, --max-workflow-seconds, --concurrency, and --retry-attempts.') },
+      `Create, execute, observe, and audit durable multi-agent workflows.
+
+Build and execute:
+  goal <goal>        autonomously plan, execute, verify, and replan a goal
+  run <workflow>     run an existing workflow file or saved draft
+  draft ...          incrementally build a fixed workflow graph
+  validate <target>  validate without executing
+  inspect <target>   show the document, semantics, and validation details
+  list               list available workflow definitions
+
+Observe and control:
+  runs               search ongoing and historical workflow instances
+  tui [runId]        full-screen phase → agent → step/detail browser
+  watch <runId>      follow low-noise progress until terminal
+  events <runId>     replay durable events after a sequence cursor
+  action show ...    inspect one action and all of its attempts
+  steer <runId>      queue guidance for the next planner checkpoint
+  approval ...       approve or reject a waiting decision gate
+
+Execution fabric:
+  capabilities       show pools, lanes, models, meters, and routing constraints
+
+Common examples:
+  bullswarm workflow goal "Audit this repository" --cwd=.
+  bullswarm workflow runs --all --since=7d
+  bullswarm workflow tui <shortId>
+  bullswarm workflow draft --help
+
+Run bullswarm workflow <command> --help for complete command options.`),
+    goal: { _text: leaf('bullswarm workflow goal "<goal>" [--cwd <dir>] [--watch|--foreground] [--json] [planning options]',
+      'Default: launch independently, print operating instructions, and return. --watch immediately follows low-noise progress until terminal. --foreground keeps execution terminal-owned. Use --resume <shortId|runId> to resume. Planning options include --orchestrator, --max-agents, --max-expansion-rounds, --max-actions, --max-items-per-expansion, --max-workflow-seconds, --concurrency, and --retry-attempts.') },
     run: { _text: leaf('bullswarm workflow run <file-or-name> [--input k=v]... [--resume <shortId|runId>] [--json] [--quiet]') },
     validate: { _text: leaf('bullswarm workflow validate <file-or-name>') },
     list: { _text: leaf('bullswarm workflow list [--json]') },
     capabilities: { _text: leaf('bullswarm workflow capabilities [--json]') },
     inspect: { _text: leaf('bullswarm workflow inspect <file-or-name>') },
-    tui: { _text: leaf('bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]') },
+    tui: { _text: leaf('bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]',
+      'Interactive mode opens a full-screen phase → agent → step/detail browser. Up/down selects, Enter drills in, Esc goes back, q detaches without stopping work, and c requests explicit cancellation confirmation.') },
     watch: { _text: leaf('bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once]') },
     events: { _text: leaf('bullswarm workflow events <runId> [--after <sequence>] [--json]') },
     steer: { _text: leaf('bullswarm workflow steer <runId> --message <guidance> [--json]') },
@@ -107,9 +138,11 @@ export function helpForArgs(argv) {
 function runsHelp() {
   return {
     _text: leaf('bullswarm workflow runs [list] [--all|--historical] [--name <workflow>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
-      'Commands: show <id>, delete <id> --yes. Time filters use the workflow initiation timestamp.'),
+      'Commands: show <id>, result <id>, delete <id> --yes. Time filters use the workflow initiation timestamp.'),
     list: { _text: leaf('bullswarm workflow runs list [--all|--historical] [--name <workflow>] [--since <time>] [--until <time>] [--limit <n>] [--json]') },
     show: { _text: leaf('bullswarm workflow runs show <shortId|runId> [--json]') },
+    result: { _text: leaf('bullswarm workflow runs result <shortId|runId> [--json]',
+      'Return the stable caller-facing delivery, verification verdict, progress, and usage envelope.') },
     delete: { _text: leaf('bullswarm workflow runs delete <shortId|runId> --yes [--force] [--json]') },
   };
 }

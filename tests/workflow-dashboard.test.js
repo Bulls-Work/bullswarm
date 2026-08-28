@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { dashboardRows, renderDashboard, renderDetails, requestCancel, dashboardJson, actionJson, decideApproval, runDashboard } from '../src/workflow/dashboard.js';
+import { EventEmitter } from 'node:events';
+import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, actionJson, decideApproval, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 
 function fixture() {
@@ -107,6 +108,220 @@ test('dashboard rows expose current step and active agent state', () => {
     assert.match(renderDetails(row), /suspected stalled \(601s without evidence; no auto-kill\)/);
     assert.match(renderDetails(row), /read_file · completed · src\/app\.js/);
     assert.match(renderDetails(row), /shell_command · running · npm test/);
+  } finally { cleanup(); }
+});
+
+test('full-screen workflow view models phase, agent, and selected-agent steps', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state._doc = { phases: [
+      { name: 'discover', steps: [{ id: 'scan', type: 'run' }] },
+      { name: 'review', steps: [{ id: 'fan', type: 'fanout' }] },
+    ] };
+    state.currentPhase = { index: 1, name: 'review', total: 2 };
+    state.actionLedger = [{ id: 'fan', phase: 'review', kind: 'fanout', status: 'running', attempts: [0] }];
+    state.attempts = [{
+      actionId: 'fan', attemptNumber: 1, pool: 'grok', model: 'grok-4.6',
+      effort: 'high', status: 'running', startedAt: new Date().toISOString(),
+      usage: { tokens: { standardRead: 40, output: 12 } },
+      actionCount: 7,
+    }];
+    state.activeAgents = { fan: {
+      stepId: 'fan', pool: 'grok', model: 'grok-4.6', attempt: 1, status: 'running',
+      lastActivityAt: new Date().toISOString(), outputBytesObserved: 900,
+      actionCount: 7,
+      lastActions: [
+        { kind: 'read_file', status: 'completed', summary: 'src/app.js' },
+        { kind: 'shell_command', status: 'running', summary: 'npm test' },
+      ],
+    } };
+    writeFileSync(statePath, JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const model = workflowPanelModel(row);
+    assert.equal(model.selectedPhase.name, 'review');
+    assert.equal(model.selectedAgent.pool, 'grok');
+    assert.equal(model.selectedAgent.action.id, 'fan');
+    const overview = renderWorkflowTui(row, { width: 120, height: 30 });
+    assert.match(overview, /Phases · 2/);
+    assert.match(overview, /1 ○ discover/);
+    assert.match(overview, /2 ⠋ review 0\/1/);
+    assert.match(overview, /review · 0\/1 complete/);
+    assert.match(overview, /fan · grok · grok-4\.6 · #1 · 52 tok/);
+    assert.doesNotMatch(overview, /Activity/);
+
+    const detail = renderWorkflowTui(row, { width: 120, height: 30, focus: 2 });
+    assert.match(detail, /fan · grok/);
+    assert.match(detail, /⠋ running · grok-4\.6/);
+    assert.match(detail, /Activity/);
+    assert.match(detail, /Activity · last 2 of 7/);
+    assert.match(detail, /#6 ✓ read_file · completed/);
+    assert.match(detail, /#7 ⠋ shell_command · running/);
+    assert.match(detail, /Enter drill in · Esc back/);
+
+    state.status = 'completed';
+    state.finishedAt = new Date().toISOString();
+    state.actionLedger[0].status = 'succeeded';
+    state.attempts[0].status = 'succeeded';
+    state.activeAgents = {};
+    state.outputs.fan = { ok: true, outputText: '{\n  "result": "verified"\n}' };
+    writeFileSync(statePath, JSON.stringify(state));
+    const completed = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, {
+      width: 120, height: 30, focus: 2,
+    });
+    assert.match(completed, /1\/1 workers · .* · done/);
+    assert.match(completed, /Outcome/);
+    assert.match(completed, /"result": "verified"/);
+  } finally { cleanup(); }
+});
+
+test('narrow workflow view uses one full-width phase, agent, or activity pane', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.currentPhase = { index: 0, name: 'review', total: 1 };
+    state.actionLedger = [{ id: 'fan', phase: 'review', kind: 'run', status: 'running', attempts: [0] }];
+    state.attempts = [{
+      actionId: 'fan', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'running',
+      usage: { tokens: { standardRead: 40, output: 12 } },
+      lastActions: [{ kind: 'read_file', status: 'completed', summary: 'src/app.js' }],
+    }];
+    writeFileSync(statePath, JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const phases = renderWorkflowTui(row, { width: 80, height: 22, focus: 0 });
+    const agents = renderWorkflowTui(row, { width: 80, height: 22, focus: 1 });
+    const detail = renderWorkflowTui(row, { width: 80, height: 22, focus: 2 });
+    assert.match(phases, /Phases · 1/);
+    assert.doesNotMatch(phases, /52 tok/);
+    assert.match(agents, /review · 0\/1 complete/);
+    assert.match(agents, /52 tok/);
+    assert.doesNotMatch(agents, /Activity/);
+    assert.match(detail, /fan · grok/);
+    assert.match(detail, /Activity/);
+    assert.doesNotMatch(detail, /Phases · 1/);
+    for (const screen of [phases, agents, detail]) {
+      const plain = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+      const overflow = plain.split('\n').filter((line) => line.length > 80);
+      assert.deepEqual(overflow, []);
+    }
+  } finally { cleanup(); }
+});
+
+test('autonomous TUI presents one orchestrator thread outside execution phases', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.intent.autonomous = true;
+    state.orchestration.mode = 'autonomous';
+    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
+    state.currentStep = { id: 'inspect', type: 'run', phase: 'autonomous-delivery:adaptive' };
+    state.steps = [];
+    state.actionLedger = [
+      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'running', attempts: [0, 2] },
+      { id: 'inspect', phase: 'autonomous-delivery:adaptive', kind: 'run', status: 'succeeded', attempts: [1] },
+    ];
+    state.attempts = [
+      { actionId: 'orchestrator', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'succeeded' },
+      { actionId: 'inspect', attemptNumber: 1, pool: 'command-code', model: 'minimax/minimax-m3-free', status: 'succeeded' },
+      { actionId: 'orchestrator', attemptNumber: 2, pool: 'grok', model: 'grok-4.6', status: 'running' },
+    ];
+    state.decisions = [{ sequence: 1, gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Inspect then verify.' }];
+    state.orchestration.conversations = { grok: { sessionId: 'thread-123', started: true } };
+    state.activeAgents = { orchestrator: {
+      stepId: 'orchestrator', pool: 'grok', model: 'grok-4.6', status: 'running',
+      actionCount: 5,
+      lastActions: [
+        { kind: 'read_file', status: 'completed', summary: 'state.json' },
+        { kind: 'response', status: 'completed', summary: 'needs_more_work' },
+      ],
+    } };
+    writeFileSync(statePath, JSON.stringify(state));
+
+    const row = dashboardRows(home)[0];
+    const model = workflowPanelModel(row);
+    assert.equal(model.orchestrator.status, 'planning');
+    assert.equal(model.orchestrator.attempts.length, 2);
+    assert.deepEqual(model.phases.map((phase) => phase.label), ['Execution']);
+    assert.deepEqual(model.agents.map((agent) => agent.action.id), ['inspect']);
+
+    const tui = renderWorkflowTui(row, { width: 120, height: 30 });
+    assert.match(tui, /⠋ Orchestration · planning/);
+    assert.match(tui, /1\/1 workers/);
+    assert.match(tui, /Execution · 1\/1 complete/);
+    assert.doesNotMatch(tui, /orchestrator · grok · grok-4\.6 · #/);
+    assert.match(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 1 }), /⠙ Orchestration · planning/);
+
+    const control = renderWorkflowTui(row, {
+      width: 120, height: 30, controlSelected: true,
+    });
+    assert.match(control, /⠋ Orchestration · planning/);
+    assert.match(control, /⠋ planning · grok · grok-4\.6/);
+
+    const thread = renderWorkflowTui(row, {
+      width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
+    });
+    assert.match(thread, /Orchestrator thread · control plane/);
+    assert.match(thread, /Session · grok · thread-123 · resumable/);
+    assert.match(thread, /Logical thread · 2 checkpoint turns/);
+    assert.match(thread, /decision: needs_more_work · Inspect then verify/);
+    assert.match(thread, /#4 ✓ read_file · completed/);
+    assert.match(thread, /#5 ✓ response · completed/);
+
+    state.outputs.inspect = { ok: false, why: 'verify json returned ok:false' };
+    writeFileSync(statePath, JSON.stringify(state));
+    const semanticFailure = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
+    assert.match(semanticFailure, /1 ✗ Execution 1\/1/);
+    assert.match(semanticFailure, /✗ inspect · command-code/);
+
+    state.attempts[2].status = 'succeeded';
+    state.outputs.inspect = { ok: true, why: 'verified' };
+    state.activeAgents = { repair: {
+      stepId: 'repair', pool: 'command-code', model: 'minimax/minimax-m3-free', status: 'running',
+    } };
+    writeFileSync(statePath, JSON.stringify(state));
+    const waiting = renderWorkflowTui(dashboardRows(home)[0], {
+      width: 120, height: 30, controlSelected: true,
+    });
+    assert.match(waiting, /⧖ Orchestration · directing/);
+    assert.match(waiting, /1 ✓ Execution 1\/1/);
+  } finally { cleanup(); }
+});
+
+test('interactive TUI uses alternate screen and q only detaches the viewer', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      rawModes = [];
+      setRawMode(value) { this.rawModes.push(value); }
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 110;
+      rows = 26;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
+    input.emit('data', Buffer.from('\r')); // phase -> agent
+    input.emit('data', Buffer.from('\r')); // agent -> detail
+    input.emit('data', Buffer.from('\u001b')); // detail -> agent
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+    assert.deepEqual(input.rawModes, [true, false]);
+    assert.match(output.text, /\x1b\[\?1049h/);
+    assert.match(output.text, /\x1b\[\?1049l/);
+    assert.match(output.text, /Agents · r refresh/);
+    assert.match(output.text, /No agent has started in this phase yet/);
+    const state = JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'state.json')));
+    assert.equal(state.cancelRequested, undefined);
   } finally { cleanup(); }
 });
 

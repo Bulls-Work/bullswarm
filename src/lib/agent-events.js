@@ -178,9 +178,19 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
 
 export function recordAgentAction(agent, event, maxActions = 3) {
   agent.lastActions ??= [];
+  const priorVisibleCount = agent.lastActions.length;
+  if (!agent._actionHistory) {
+    Object.defineProperty(agent, '_actionHistory', {
+      value: new Map(agent.lastActions.map((action) => [action.id, action])),
+      writable: true,
+      enumerable: false,
+    });
+  }
   const existingIndex = agent.lastActions.findIndex((action) => action.id === event.id);
-  const existing = existingIndex >= 0 ? agent.lastActions.splice(existingIndex, 1)[0] : {};
-  const isNew = existingIndex < 0;
+  const visibleExisting = existingIndex >= 0 ? agent.lastActions.splice(existingIndex, 1)[0] : null;
+  const rememberedExisting = agent._actionHistory.get(event.id);
+  const existing = visibleExisting ?? rememberedExisting ?? {};
+  const isNew = !rememberedExisting;
   const statusChanged = existing.status != null && existing.status !== event.status;
   let summary = event.summary ?? existing.summary ?? null;
   let summaryRaw = event.summary ?? existing._summaryRaw ?? existing.summary ?? null;
@@ -193,8 +203,15 @@ export function recordAgentAction(agent, event, maxActions = 3) {
   const eventKind = event.kind === 'agent' && existing.kind ? existing.kind : event.kind;
   const action = { ...existing, ...event, kind: eventKind, summary, summaryMode: undefined };
   Object.defineProperty(action, '_summaryRaw', { value: summaryRaw, writable: true, enumerable: false });
+  agent._actionHistory.delete(event.id);
+  agent._actionHistory.set(event.id, action);
+  while (agent._actionHistory.size > 256) {
+    agent._actionHistory.delete(agent._actionHistory.keys().next().value);
+  }
   agent.lastActions.push(action);
   agent.lastActions = agent.lastActions.slice(-maxActions);
+  if (agent.actionCount == null) agent.actionCount = priorVisibleCount;
+  if (isNew) agent.actionCount += 1;
   agent.lastActionAt = event.at;
   agent.lastProgressAt = event.at;
   return { action: agent.lastActions.at(-1), isNew, statusChanged };

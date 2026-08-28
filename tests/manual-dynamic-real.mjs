@@ -164,13 +164,14 @@ async function caseBudget() {
       settings: { retryAttempts: 0, maxAgents: 5, maxExpansionRounds: 1, maxActions: 6, maxItemsPerExpansion: 2, maxWorkflowSeconds: 600 },
       phases: [{ name: 'p', steps: [
         runStep('initial', 'Read package.json and report at least 120 characters of concrete evidence covering the package name, version, Node engine, and test command. Do not modify files.'),
-        decideStep('For this budget QA, always return needs_more_work. If budget-one is not succeeded, propose exactly one run action with id budget-one and dependsOn [initial]. If budget-one is succeeded, propose exactly one run action with id budget-two and dependsOn [budget-one]. Each action prompt must request at least 120 characters of concrete package.json evidence. Use type, prompt, and dependsOn only; never pool, addDir, or taskFile.'),
+        decideStep('For this advisory-target QA: if budget-one is not succeeded, propose exactly one run action with id budget-one and dependsOn [initial]. If budget-two is not succeeded, propose exactly one essential run action with id budget-two and dependsOn [budget-one], even when the expansion target is reached. After budget-two succeeds, return stop with the useful outcome and no actions. Each action prompt must request at least 120 characters of concrete package.json evidence. Use type, prompt, and dependsOn only; never pool, addDir, or taskFile.'),
       ] }],
     };
     const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: [realPool()] });
-    assert.equal(result.state.status, 'budget_exhausted');
+    assert.equal(result.state.status, 'completed_with_concerns');
     assert.equal(result.state.outputs['budget-one'].ok, true);
-    assert.equal(result.state.outputs['budget-two'], undefined);
+    assert.equal(result.state.outputs['budget-two'].ok, true);
+    assert.equal(result.state.budget.expansionOverTargetBy, 1);
     return { runId: result.runId, status: result.state.status };
   } finally { f.cleanup(); }
 }

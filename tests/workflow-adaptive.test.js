@@ -33,10 +33,13 @@ function fixture() {
     '    answer = done',
     '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"The bounded fan-out completed successfully with both item artifacts.",actions:[]}',
     '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Two bounded item checks are required before completion.",actions:[{id:"expanded-fanout",type:"fanout",items:["alpha","beta"],stepTemplate:{prompt:"Inspect {{item}} and return concrete evidence for this bounded item."},dependsOn:["initial"]}]};',
-    '  } else if (task.includes("FORCE_BUDGET")) {',
+  '  } else if (task.includes("FORCE_BUDGET")) {',
     '    const firstDone = task.includes("budget-one") && task.includes("succeeded");',
+    '    const secondDone = task.includes("budget-two") && task.includes("succeeded");',
     '    const id = firstDone ? "budget-two" : "budget-one";',
-    '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Another bounded budget test action is required to prove the expansion ceiling.",actions:[{id,type:"run",prompt:"Perform a concrete bounded budget action with durable evidence.",dependsOn:[firstDone?"budget-one":"initial"]}]};',
+    '    answer = secondDone',
+    '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"The advisory expansion target was exceeded; return the useful bounded outcome now without optional work.",actions:[]}',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Another bounded budget test action is essential to avoid discarding useful work.",actions:[{id,type:"run",prompt:"Perform a concrete bounded budget action with durable evidence.",dependsOn:[firstDone?"budget-one":"initial"]}]};',
     '  } else if (task.includes("CRASH_RESUME")) {',
     '    const done = task.includes("resume-two") && task.includes("succeeded");',
     '    answer = done',
@@ -112,7 +115,37 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.ok(plannerTasks.length >= 2);
     assert.ok(plannerTasks.every((task) => task.includes('"actionTimeoutSec": null')));
     assert.ok(plannerTasks.every((task) => task.includes('"verificationDispatchReserve": 0')));
+    assert.ok(plannerTasks.every((task) => task.includes('Every action MUST include a forward-only kebab-case "phase"')));
+    assert.ok(plannerTasks.every((task) => task.includes('"closedPhases"')));
     assert.ok(plannerTasks.every((task) => task.includes('The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.')));
+  } finally { f.cleanup(); }
+});
+
+test('autonomous planner checkpoints reuse one durable connector conversation', async () => {
+  const f = fixture();
+  try {
+    f.pools[0].connector.conversation = {
+      newArgs: ['--session-id', '{sessionId}'],
+      resumeArgs: ['--resume', '{sessionId}'],
+    };
+    const doc = {
+      name: 'autonomous-conversation', description: 'one planner thread', inputs: {},
+      intent: { goal: 'Inspect, follow up, and complete.', autonomous: true },
+      orchestration: { mode: 'autonomous' },
+      settings: { concurrency: 1, retryAttempts: 0, maxAgents: 6, maxExpansionRounds: 2, maxActions: 8, maxItemsPerExpansion: 4 },
+      phases: [{ name: 'autonomous-delivery', steps: [
+        { id: 'initial', type: 'run', lane: 'analyze', prompt: 'Perform the initial bounded investigation.' },
+        { id: 'orchestrator', type: 'decide', lane: 'analyze', prompt: 'Judge sufficiency and propose only necessary bounded work.' },
+      ] }],
+    };
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
+    const turns = result.state.attempts.filter((attempt) => attempt.actionId === 'orchestrator');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0].conversation.continued, false);
+    assert.equal(turns[1].conversation.continued, true);
+    assert.equal(turns[0].conversation.sessionId, turns[1].conversation.sessionId);
+    assert.equal(result.state.orchestration.conversations['adaptive-echo'].started, true);
   } finally { f.cleanup(); }
 });
 
@@ -197,6 +230,21 @@ test('single-dependency verify proposals infer the durable review artifact', () 
   }));
 });
 
+test('planner phases are named and forward-only once their actions have executed', () => {
+  const proposal = {
+    schemaVersion: 'bullswarm.workflow.decision.v1',
+    decision: 'needs_more_work',
+    reason: 'Implement the bounded correction.',
+    actions: [{ id: 'fix', type: 'run', phase: 'implement', prompt: 'Apply and test the correction.' }],
+  };
+  assert.equal(validateDecisionProposal(proposal).actions[0].phase, 'implement');
+  assert.throws(() => validateDecisionProposal(proposal, { closedPhases: ['implement'] }), /forward-only/);
+  assert.throws(() => validateDecisionProposal({
+    ...proposal,
+    actions: [{ ...proposal.actions[0], phase: 'Phase 2' }],
+  }), /phase must be kebab-case/);
+});
+
 test('planner proceed continues to later static work without graph expansion', async () => {
   const f = fixture();
   try {
@@ -216,8 +264,8 @@ test('planner proceed continues to later static work without graph expansion', a
   } finally { f.cleanup(); }
 });
 
-test('planner stop and wait_for_approval produce distinct truthful terminal states', async () => {
-  for (const [marker, expected] of [['FORCE_STOP', 'failed'], ['FORCE_WAIT', 'waiting_for_approval']]) {
+test('planner stop returns a qualified useful outcome while wait_for_approval remains resumable', async () => {
+  for (const [marker, expected] of [['FORCE_STOP', 'completed_with_concerns'], ['FORCE_WAIT', 'waiting_for_approval']]) {
     const f = fixture();
     try {
       const doc = {
@@ -230,6 +278,10 @@ test('planner stop and wait_for_approval produce distinct truthful terminal stat
       };
       const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
       assert.equal(result.state.status, expected);
+      if (expected === 'completed_with_concerns') {
+        assert.equal(result.state.outcome.bestEffort, true);
+        assert.equal(result.state.outcome.deliveryActionId, 'initial');
+      }
       if (expected === 'waiting_for_approval') {
         assert.equal(result.state.finishedAt, undefined);
         assert.equal(result.state.actionLedger.find((action) => action.id === 'planner').status, 'waiting_for_approval');
@@ -238,7 +290,7 @@ test('planner stop and wait_for_approval produce distinct truthful terminal stat
   }
 });
 
-test('expansion-round budget stops a valid second expansion before dispatch', async () => {
+test('expansion-round target advises convergence but permits essential completion work', async () => {
   const f = fixture();
   try {
     const doc = {
@@ -250,10 +302,13 @@ test('expansion-round budget stops a valid second expansion before dispatch', as
       ] }],
     };
     const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
-    assert.equal(result.state.status, 'budget_exhausted');
+    assert.equal(result.state.status, 'completed_with_concerns');
     assert.equal(result.state.outputs['budget-one'].ok, true);
-    assert.equal(result.state.outputs['budget-two'], undefined);
-    assert.match(result.state.outputs.planner.why, /maxExpansionRounds=1/);
+    assert.equal(result.state.outputs['budget-two'].ok, true);
+    assert.equal(result.state.budget.expansionRound, 2);
+    assert.equal(result.state.budget.expansionOverTargetBy, 1);
+    assert.equal(result.state.budget.expansionAdvisoryOnly, true);
+    assert.ok(readEvents(result.runDir).some((event) => event.type === 'workflow.expansion_target_exceeded'));
   } finally { f.cleanup(); }
 });
 
@@ -376,6 +431,12 @@ test('completion requires verification of the latest successful worker', () => {
   ]);
   actions.push({ id: 'implementation-verify', kind: 'verify', status: 'succeeded', dependsOn: ['implementation'] });
   assert.deepEqual(completionEvidenceGaps(actions, policy), []);
+  assert.deepEqual(completionEvidenceGaps(actions, policy, {
+    audit: { ok: true },
+    'audit-verify': { ok: true },
+    implementation: { ok: true },
+    'implementation-verify': { ok: false },
+  }), ['a successful verification of latest worker implementation']);
 });
 
 test('events reader returns only records after a sequence cursor', async () => {

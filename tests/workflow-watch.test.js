@@ -69,3 +69,16 @@ test('terminal watch emits attempt timing breakdown and exits', async () => {
     assert.match(output, /implement#1/);
   } finally { f.cleanup(); }
 });
+
+test('qualified completion is terminal and exits successfully for result consumption', async () => {
+  const f = fixture({
+    status: 'completed_with_concerns', stage: 'delivered_with_concerns',
+    finishedAt: '2026-08-28T01:03:00.000Z', currentStep: undefined, activeAgents: {}, attempts: [],
+  });
+  try {
+    let output = '';
+    const code = await runWorkflowWatch(f.home, 'abc234', { output: { write: (text) => { output += text; } } });
+    assert.equal(code, 0);
+    assert.match(output, /completed_with_concerns\/delivered_with_concerns/);
+  } finally { f.cleanup(); }
+});

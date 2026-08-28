@@ -7,6 +7,7 @@ import {
   loadState, saveState, quarantinePool, sweepQuarantines,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
 } from '../src/lib/state.js';
+import { buildPools } from '../src/lib/config.js';
 
 function tmpDir() {
   const d = mkdtempSync(join(tmpdir(), 'bullswarm-state-'));
@@ -34,6 +35,24 @@ test('quarantine auto-releases after the probe window (S1)', () => {
   const released = sweepQuarantines(s, now + 11 * 60_000);
   assert.deepEqual(released, ['grok']); // automatic return to service
   assert.equal(s.pools.grok.quarantine, undefined);
+});
+
+test('expired quarantine is absent from runtime pool views before persistence catches up', async () => {
+  const { dir, cleanup } = tmpDir();
+  try {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    writeFileSync(join(dir, 'connectors', 'grok.json'), JSON.stringify({
+      name: 'grok', spawn: { cmd: ['grok'] }, lanes: ['analyze'], costRank: 1,
+    }));
+    const state = loadState(dir);
+    state.pools.grok = { enabled: true, quarantine: { until: 1000, reason: 'old failure' } };
+    saveState(dir, state);
+    const built = buildPools(dir, 1001);
+    assert.equal(built.pools[0].quarantine, null);
+  } finally {
+    cleanup();
+  }
 });
 
 test('recursion guard: core-owned depth limit refuses deep chains', () => {

@@ -1,5 +1,55 @@
 # bullswarm changelog
 
+## 0.10.4 — durable interactive workflow viewer
+
+- Added `workflow runs result <id> [--json]`, a stable
+  `bullswarm.workflow.result.v1` handoff for parent agents. It selects the final
+  successful delivery rather than the last orchestrator response, pairs it with
+  its dependent verification verdict, and reports progress, step logs, token
+  usage, and honest complete-or-partial tool-call counts.
+- Goal launches now return and print a four-part operating handoff for agentic
+  inspection, low-noise watching, the human TUI, and terminal result retrieval.
+- Plain `workflow goal` now launches independently, prints that handoff, and
+  returns. The new explicit `--watch` flag follows low-noise progress until the
+  terminal state; the human TUI is opened from the printed command.
+- `--foreground` retains terminal-owned execution and `--detach` remains an
+  explicit backward-compatible spelling of the new default.
+- Rebuilt interactive workflow inspection as a responsive Phase → Agent →
+  Agent-activity browser: desktop uses two contextual panes while mobile and
+  narrow SSH terminals use one full-width level. It includes arrow/Enter/Esc
+  navigation, numbered semantic actions, active-agent following, scrolling,
+  completed-agent outcomes, total semantic-action counts, terminal agent
+  progress, resize handling, safe detach, and confirmed stopping.
+- Made the autonomous orchestrator a compact selectable control-plane panel
+  stacked above the phase tree. Arrow/Enter or `o` opens its
+  durable session, checkpoint decisions, semantic
+  activity, usage, prompt, outcomes, and artifacts without counting planner
+  turns as phase workers.
+- Standardized workflow TUI state marks across orchestrator, phases, agents,
+  and semantic activity: `○` pending, animated Braille spinner active, `⧖`
+  waiting, `✓` complete, and `✗` failed or interrupted.
+- Made `maxExpansionRounds` an advisory convergence target instead of a hard
+  failure boundary. Near the target the orchestrator is told to consolidate
+  existing evidence and avoid marginal expansion; essential bounded work may
+  exceed it and the overage is recorded.
+- Added truthful qualified terminal outcomes: planner `stop` now yields
+  `completed_with_concerns` with a ready best-effort delivery when useful work
+  exists, or `blocked` when it does not. Result envelopes expose `verified`,
+  the stopping reason, and unresolved concerns without relabeling failed
+  verification as success.
+- Made phase and agent status derive from semantic output verdicts, so a
+  verifier process that successfully returns `ok:false` is displayed as a
+  failed verification rather than a completed check.
+- Added persisted `strategy exclude-model` / `include-model` policy. Excluded
+  models are removed from strategy recommendations and dispatch assignments;
+  connectors pin an allowed same-tier fallback or become ineligible when they
+  cannot guarantee the exclusion.
+- Let the CLI process drain stdout before exiting, preventing large
+  `workflow tui --json` snapshots from being truncated around the platform
+  pipe-buffer boundary.
+- Expanded `workflow --help` into an operational map for building, observing,
+  controlling, and auditing workflows.
+
 ## 0.10.3 — contextual help everywhere
 
 - Added side-effect-free `-h` / `--help` handling for the top-level CLI and

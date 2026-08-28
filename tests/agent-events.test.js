@@ -83,6 +83,25 @@ test('last-three action ledger updates one logical tool and aggregates streamed 
   assert.equal(agent.lastActions[0].kind, 'read_file');
   assert.equal(agent.lastActions[1].summary, 'npm test');
   assert.equal(agent.lastActions[2].summary, 'Tests passed.');
+  assert.equal(agent.actionCount, 3);
+});
+
+test('completion updates preserve evicted Grok tool identities and do not inflate action count', () => {
+  const { actions } = decode('grok', [
+    { type: 'tool_call', toolCallId: 'a', toolName: 'list_dir', status: 'pending', rawInput: { path: 'a' } },
+    { type: 'tool_call', toolCallId: 'b', toolName: 'list_dir', status: 'pending', rawInput: { path: 'b' } },
+    { type: 'tool_call', toolCallId: 'c', toolName: 'grep', status: 'pending', rawInput: { path: 'c' } },
+    { type: 'tool_call', toolCallId: 'd', toolName: 'read_file', status: 'pending', rawInput: { path: 'd' } },
+    { type: 'tool_call_update', toolCallId: 'a', status: 'completed' },
+    { type: 'tool_call_update', toolCallId: 'b', status: 'completed' },
+    { type: 'tool_call_update', toolCallId: 'c', status: 'completed' },
+  ]);
+  const agent = {};
+  for (const event of actions) recordAgentAction(agent, event, 3);
+  assert.deepEqual(agent.lastActions.map((action) => action.kind), ['list_dir', 'list_dir', 'grep']);
+  assert.deepEqual(agent.lastActions.map((action) => action.status), ['completed', 'completed', 'completed']);
+  assert.equal(agent.actionCount, 4);
+  assert.equal(Object.keys(agent).includes('_actionHistory'), false);
 });
 
 test('silence is suspected-stalled evidence and never an automatic kill', () => {

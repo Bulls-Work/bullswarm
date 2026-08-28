@@ -53,6 +53,10 @@
   "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
   "knownModels": ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "conversation": {
+    "newArgs": ["--session-id", "{sessionId}"],
+    "resumeArgs": ["--resume", "{sessionId}"]
+  },
   "modelProfiles": [
     { "match": "^claude-fable-5$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
     { "match": "^claude-opus-(5|4-[5-8])$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 5, "cacheReadUsdPerMillion": 0.5, "outputUsdPerMillion": 25 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },

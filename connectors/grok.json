@@ -48,6 +48,10 @@
   "knownModels": ["grok-4.6", "grok-4.5"],
   "model": "grok-4.6",
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "conversation": {
+    "newArgs": ["--session-id", "{sessionId}"],
+    "resumeArgs": ["--resume", "{sessionId}"]
+  },
   "modelProfiles": [
     { "match": "^grok-4\\.6$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.5, "outputUsdPerMillion": 6 }, "pricingSource": "https://docs.x.ai/developers/models/grok-4.6", "pricingUpdatedAt": "2026-08-27" },
     { "match": "^grok-4\\.5$", "tier": "medium", "qualityRank": 4 }

@@ -17,6 +17,7 @@ import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
+import { buildWorkflowResult } from './result.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
 function err(msg) { console.error(msg); return 1; }
@@ -26,6 +27,7 @@ export function cmdRuns(args) {
   const [sub, idToken, ...rest] = opts._positional;
   if (!sub || sub === 'list') return runsList(opts);
   if (sub === 'show') return runsShow(idToken, opts);
+  if (sub === 'result') return runsResult(idToken, opts);
   if (sub === 'delete') return runsDelete(idToken, opts, rest);
   console.error(runsUsage());
   return 2;
@@ -37,6 +39,7 @@ export function runsUsage() {
   bullswarm workflow runs [--all | --historical] [--name <workflow>]
     [--since <time>] [--until <time>] [--limit N] [--json]
   bullswarm workflow runs show <id>             # <id> = shortId (6 chars) or full runId
+  bullswarm workflow runs result <id> [--json]  # stable caller-facing result
   bullswarm workflow runs delete <id> --yes     # remove the run directory
 
 Time filters compare the workflow initiation timestamp (startedAt):
@@ -190,6 +193,59 @@ function runsShow(idToken, opts) {
   }
   return 0;
 }
+
+function runsResult(idToken, opts) {
+  if (!idToken) return err('usage: bullswarm workflow runs result <id> [--json]');
+  const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
+  if (!resolved) return err(`no run found for "${idToken}"`);
+
+  const { runId, runDir } = resolved;
+  const statePath = join(runDir, 'state.json');
+  const reportPath = join(runDir, 'report.json');
+  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
+  const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
+  const ongoing = isOngoing(runDir, state);
+  const result = buildWorkflowResult({
+    state, report, runId, shortId: resolved.shortId, ongoing,
+  });
+
+  if (opts.json) {
+    jsonOut(result, opts);
+    return 0;
+  }
+  console.log(`# workflow result  ${result.runId}  (${result.shortId ?? 'no shortId'})`);
+  console.log(`# status  ${result.status}${result.ready ? '  ready' : ''}`);
+  console.log(`# verified  ${result.verified === true ? 'yes' : 'no'}`);
+  if (result.outcome?.reason) console.log(`# outcome  ${result.outcome.reason}`);
+  if (Array.isArray(result.outcome?.concerns) && result.outcome.concerns.length > 0) {
+    console.log('# concerns');
+    for (const concern of result.outcome.concerns) console.log(`- ${concern}`);
+  }
+  if (result.goal) console.log(`# goal  ${result.goal}`);
+  console.log(`# agents  ${result.agentProgress.completed}/${result.agentProgress.total}`);
+  if (result.delivery) {
+    console.log(`# delivery  ${result.delivery.actionId}`);
+    console.log(`# artifact  ${result.delivery.outFile ?? 'unavailable'}`);
+    if (result.delivery.content != null) {
+      const rendered = result.delivery.format === 'json'
+        ? JSON.stringify(result.delivery.content, null, 2)
+        : String(result.delivery.content);
+      if (result.delivery.truncated || rendered.length > MAX_HUMAN_RESULT_CHARS) {
+        console.log(`# preview  first ${MAX_HUMAN_RESULT_CHARS} characters; use --json and outFile for the durable artifact`);
+      }
+      console.log(rendered.slice(0, MAX_HUMAN_RESULT_CHARS));
+    }
+  } else {
+    console.log('# delivery  not available yet');
+  }
+  if (result.verification?.verdict) {
+    console.log(`# verification  ${result.verification.actionId}  ${result.verification.verdict.ok ? 'passed' : 'failed'}`);
+    if (result.verification.verdict.summary) console.log(result.verification.verdict.summary);
+  }
+  return 0;
+}
+
+const MAX_HUMAN_RESULT_CHARS = 64 * 1024;
 
 function runsDelete(idToken, opts, rest) {
   if (!idToken) return err('usage: bullswarm workflow runs delete <id> --yes');

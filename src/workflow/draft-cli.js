@@ -38,6 +38,7 @@ import {
 } from './draft.js';
 import { BULLSWARM_DIR } from './cli.js';
 import { resolveRunId } from './short-id.js';
+import { isDeliveredWorkflowStatus } from './status.js';
 
 // --- flag parsing ----------------------------------------------------------
 // Draft commands have a richer flag set than `workflow run`, so we parse
@@ -435,7 +436,7 @@ async function draftRun(opts) {
     onEvent: opts.json ? undefined : (ev) => tui.handle(ev),
   });
   if (opts.json) console.log(JSON.stringify(result.report, null, 2));
-  return result.report.status === 'completed' ? 0 : 1;
+  return isDeliveredWorkflowStatus(result.report.status) ? 0 : 1;
 }
 
 function reportValidation(v) {

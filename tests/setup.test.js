@@ -40,6 +40,7 @@ test('connector metadata upgrades add packaged capabilities without removing cus
     assert.ok(installed.capabilities.includes('workflow-planning'));
     assert.equal(installed.eventStream.format, 'jsonl');
     assert.equal(installed.outputExtraction.strategy, 'event-stream');
+    assert.deepEqual(installed.conversation.resumeArgs, ['--resume', '{sessionId}']);
     assert.deepEqual(upgradeConnectorMetadata(d), []);
   } finally { cleanup(); }
 });

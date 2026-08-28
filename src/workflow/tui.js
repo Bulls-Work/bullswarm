@@ -234,7 +234,11 @@ export class WorkflowTui {
         this.print(this.c(DIM, '─'.repeat(58)));
         const status = event.status === 'completed'
           ? this.c(GREEN, '✓ completed')
-          : this.c(RED, '✗ failed');
+          : event.status === 'completed_with_concerns'
+            ? this.c(YELLOW, '! completed with concerns')
+            : event.status === 'blocked'
+              ? this.c(YELLOW, '⧖ blocked with final outcome')
+              : this.c(RED, `✗ ${event.status ?? 'failed'}`);
         this.print(
           `${status}  steps ✓${s.stepsOk ?? 0}/✗${s.stepsFailed ?? 0} · fanout ✓${s.fanoutOk ?? 0}/✗${s.fanoutFailed ?? 0} · elapsed ${elapsed}`
         );

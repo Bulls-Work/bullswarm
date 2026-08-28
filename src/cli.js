@@ -18,6 +18,7 @@ import { cmdWorkflow } from './workflow/cli.js';
 import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs } from './help.js';
+import { resolveDispatchModel } from './lib/strategy.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -118,7 +119,15 @@ async function cmdRun(opts) {
   // Burst gate (M3): a pool whose 5h window is >=90% used is excluded from
   // dispatch entirely this run — it paces nothing, it's just out of burst room.
   const gated = pools.filter((p) => p.burstGate);
-  const eligiblePools = gated.length ? pools.filter((p) => !p.burstGate) : pools;
+  const ungatedPools = gated.length ? pools.filter((p) => !p.burstGate) : pools;
+  const assignment = state.strategy?.assignments?.[effortTier] ?? null;
+  const eligiblePools = ungatedPools.map((pool) => ({
+    ...pool,
+    modelPolicy: resolveDispatchModel(pool.connector ?? pool, effortTier, {
+      assignment,
+      excludedModels: state.strategy?.excludedModels ?? [],
+    }),
+  })).filter((pool) => pool.modelPolicy.eligible);
 
   const route = pickPool(lane, eligiblePools, {
     callerEligible: opts['no-caller'] !== true,
@@ -146,8 +155,8 @@ async function cmdRun(opts) {
   // connector spec lives one level down.
   const poolView = route.pick.connector ?? { name: route.pick.pool };
   const connector = poolView.connector ?? poolView;
-  const assignment = state.strategy?.assignments?.[effortTier] ?? null;
-  const selectedModel = assignment?.pool === connector.name ? assignment.model : null;
+  const selectedModel = poolView.modelPolicy?.model
+    ?? (assignment?.pool === connector.name ? assignment.model : null);
   const runtimeConnector = {
     ...connector,
     subscription: poolView.subscription ?? connector.subscription ?? null,
@@ -237,6 +246,8 @@ function emit(verdict, opts) {
 
 function cmdHealth(opts) {
   const state = loadState(getBullswarmDir());
+  const released = sweepQuarantines(state, Date.now());
+  if (released.length) saveState(getBullswarmDir(), state);
   const runsDir = join(getBullswarmDir(), 'runs');
   const findings = [];
 

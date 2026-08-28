@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDiscoveredModels, discoverConnectorModels, buildStrategy,
+  parseDiscoveredModels, discoverConnectorModels, buildStrategy, resolveDispatchModel,
 } from '../src/lib/strategy.js';
 
 test('connector-declared parsing handles columns, bullets, and plain lines', () => {
@@ -80,4 +80,47 @@ test('high-tier strategy excludes a higher-scoring model without planning capabi
   const report = buildStrategy({ connectors, pools, state: {}, discoveries });
   assert.deepEqual(report.suggestions.high.recommended, { pool: 'planner', model: 'planner-model' });
   assert.deepEqual(report.suggestions.high.requirements.capabilities, ['strong-analysis', 'workflow-planning']);
+});
+
+test('model exclusions pin an allowed same-tier model or block an unsafe implicit default', () => {
+  const claude = {
+    name: 'claude-code',
+    spawn: { cmd: ['claude', '-p', 'task'] },
+    modelSelection: { flag: '--model', mode: 'replace-or-append' },
+    knownModels: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5'],
+    modelProfiles: [
+      { match: '^claude-fable-5$', tier: 'high', qualityRank: 6 },
+      { match: '^claude-opus-5$', tier: 'high', qualityRank: 5 },
+      { match: '^claude-sonnet-5$', tier: 'medium', qualityRank: 4 },
+    ],
+  };
+  assert.deepEqual(resolveDispatchModel(claude, 'high', {
+    excludedModels: ['claude-fable-5'],
+  }), {
+    eligible: true, model: 'claude-opus-5', source: 'exclusion-safe-tier-fallback',
+  });
+  assert.equal(resolveDispatchModel(claude, 'medium', {
+    excludedModels: ['claude-fable-5'],
+  }).model, 'claude-sonnet-5');
+  assert.equal(resolveDispatchModel({
+    name: 'implicit-only', spawn: { cmd: ['agent'] }, knownModels: ['blocked-model'],
+    modelProfiles: [{ match: 'blocked-model', tier: 'high' }],
+  }, 'high', { excludedModels: ['blocked-model'] }).eligible, false);
+});
+
+test('strategy recommendations omit persistently excluded models', () => {
+  const connector = {
+    name: 'planner', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
+  };
+  const report = buildStrategy({
+    connectors: { planner: connector },
+    pools: [{ name: 'planner', connector, enabled: true, pace: 0, costRank: 1 }],
+    state: { strategy: { excludedModels: ['premium'] } },
+    discoveries: { planner: { models: [
+      { id: 'premium', tier: 'high', qualityRank: 6 },
+      { id: 'standard', tier: 'high', qualityRank: 5 },
+    ] } },
+  });
+  assert.deepEqual(report.excludedModels, ['premium']);
+  assert.deepEqual(report.suggestions.high.recommended, { pool: 'planner', model: 'standard' });
 });
