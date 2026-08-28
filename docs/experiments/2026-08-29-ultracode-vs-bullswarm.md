@@ -267,7 +267,33 @@ Launched 18:23:39 Z via `run-bs-g2-v2.sh` (`--concurrency 8 --max-agents 40
 excluded). Started only after the Claude session went idle so the two never
 competed for the machine.
 
-(numbers pending — run in progress)
+Run `wf-mtda5qq5-c6166f`, isolated `BULLSWARM_HOME`, single pool
+`claude-code` / `claude-opus-5`, `--concurrency 8 --max-agents 40
+--max-expansion-rounds 8 --foreground`, launched 18:23:42 Z on a pristine copy
+of the fixture. Observed read-only from `state.json` / `events.jsonl`.
+
+**Timeline**
+
+| When (Z) | What happened |
+| --- | --- |
+| 18:23:42 → 18:27:55 | Planner turn 1 (253 s). ONE decision carrying the whole graph: **14 actions** — `module-{csv,duration,intervals,lru,semver,slugify}` (run, no deps), `verify-<module>` ×6 (each depending only on its own module), `docs-index` (depends on all six modules), `verify-suite` (depends on `docs-index` + all six verifies, `review: outputs.docs-index.outFile`). |
+| 18:27:55 | All six module writers start together — **6 concurrent workers** (cap 8, six items). |
+| 18:33:17 → 18:36:39 | Writers finish one by one; each `verify-<module>` starts the moment its own writer finishes (ready-set scheduler); `docs-index` starts at 18:36:40 when the last writer lands. |
+| 18:35:26 | **`verify-slugify` dies with zero attempts**: `template ref "{{maxLength?: number}}" unresolved at render time`. The planner had quoted a JSDoc record type literally in the prompt; the renderer treated the double braces as a template ref. `verify-suite` is then blocked by a failed dependency. |
+| 18:41 → 18:46:01 | Planner turn 2 (~5 min). It diagnosed the render-time death correctly ("two consecutive opening curly braces … treated as an unresolved reference") and proposed **7 actions**: `slugify-recheck` + `verify-slugify-2`, `polish-semver` + `verify-semver-2`, `polish-lru` + `verify-lru-2`, `final-suite`. The two `polish-*` actions react to *non-blocking* nits reported by verifiers that had **passed** (`verify-semver` and `verify-lru` were `ok:true`). |
+| (final rows below) | |
+
+What this run settles, before the numbers: 0.11.x's planning doctrine already
+produces the Claude shape — one decision = the whole graph, six writers in
+parallel, per-item verify overlapping other items' writes, a final
+whole-suite verify at the end. The remaining differences are (a) a runtime
+robustness bug (literal braces), (b) repair happening as a *planner turn*
+rather than inside the program, (c) the planner treating informational
+concerns as work, and (d) no scout before the first program (the planner
+compiled from the goal text alone — correctly here, because the goal names the
+six modules).
+
+(final numbers pending — run in progress)
 
 ### bullswarm 0.12.0 (installed binary) — same goal, fresh copy `g2-bs-v3`
 
