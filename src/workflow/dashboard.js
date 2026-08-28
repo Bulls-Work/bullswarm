@@ -345,7 +345,8 @@ export function workflowPanelModel(row, {
 export function renderWorkflowTui(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
-  controlSelected = false, orchestratorDetail = false, spinnerFrame = 0,
+  controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
+  spinnerFrame = 0,
 } = {}) {
   width = Math.max(38, Number(width) || 120);
   height = Math.max(18, Number(height) || 36);
@@ -367,10 +368,12 @@ export function renderWorkflowTui(row, {
   ];
   const footer = confirmCancel
     ? ' Stop this workflow? y confirm · n/Esc keep running'
-    : ` ↑/↓ select · Enter drill in · Esc back · o orchestrator · c stop · q detach`;
+    : orchestratorDetail
+      ? ` ↑/↓ scroll · v ${orchestratorVerbose ? 'overview' : 'technical details'} · Esc back · c stop · q detach`
+      : ` ↑/↓ select · Enter drill in · Esc back · o orchestrator · c stop · q detach`;
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
-    : ` ${orchestratorDetail ? 'Orchestrator thread' : focus === 0 ? 'Phases' : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
+    : ` ${orchestratorDetail ? `Orchestrator ${orchestratorVerbose ? 'technical details' : 'overview'}` : focus === 0 ? 'Phases' : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
   const messageLine = truncate(rawMessageLine, width);
   const bodyHeight = Math.max(10, height - header.length - 3);
 
@@ -409,6 +412,7 @@ export function renderWorkflowTui(row, {
     model,
     Math.max(20, (orchestratorDetail ? width : rightWidth) - 4),
     spinnerFrame,
+    { verbose: orchestratorVerbose },
   );
   const detail = orchestratorDetail
     ? orchestrationLines
@@ -444,7 +448,7 @@ export function renderWorkflowTui(row, {
 
   let body;
   if (orchestratorDetail) {
-    body = renderPanel('Orchestrator thread · control plane', visibleDetail, width, bodyHeight);
+    body = renderPanel(`Orchestrator · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, width, bodyHeight);
   } else if (narrow) {
     const mobile = focus === 0
       ? {
@@ -495,7 +499,7 @@ function joinPanels(left, right) {
   return left.map((line, index) => `${line}${right[index] ?? ''}`);
 }
 
-function orchestratorDetailLines(model, width, spinnerFrame) {
+function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
   const { orchestrator, state } = model;
   if (!orchestrator.autonomous) {
     return wrapLines(['This workflow has no autonomous orchestrator thread.'], width);
@@ -505,10 +509,57 @@ function orchestratorDetailLines(model, width, spinnerFrame) {
   const liveActions = active?.lastActions ?? latest?.lastActions ?? [];
   const totalActions = active?.actionCount ?? latest?.actionCount ?? liveActions.length;
   const conversations = Object.entries(state.orchestration?.conversations ?? {});
+  const decisions = state.decisions ?? [];
+  const latestDecision = decisions.at(-1);
+  const workerAttempts = (state.attempts ?? []).filter((attempt) => attempt.actionId !== orchestrator.actionId);
+  const completedWorkers = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
+  const activeWorkers = Object.values(state.activeAgents ?? {})
+    .filter((agent) => agent.stepId !== orchestrator.actionId);
+  const nextActions = latestDecision?.actions?.map((action) => action.id).filter(Boolean) ?? [];
+  const stateLabel = active
+    ? 'Choosing the next smallest useful action'
+    : activeWorkers.length
+      ? `Waiting for ${activeWorkers.length} worker${activeWorkers.length === 1 ? '' : 's'} to finish`
+      : state.finishedAt
+        ? 'Workflow finished'
+        : 'Reviewing completed evidence';
   const lines = [
     `${statusIcon(active ? 'running' : latest?.status ?? orchestrator.status, spinnerFrame)} ${orchestrator.status} · ${orchestrator.pool} · ${orchestrator.model}`,
-    `Logical thread · ${orchestrator.attempts.length} checkpoint turn${orchestrator.attempts.length === 1 ? '' : 's'}`,
+    '',
+    `Now · ${stateLabel}`,
+    `Progress · ${completedWorkers}/${workerAttempts.length} worker attempts finished · ${orchestrator.attempts.length} planning checkpoint${orchestrator.attempts.length === 1 ? '' : 's'}`,
   ];
+  if (latestDecision) {
+    lines.push(`Latest decision · ${decisionLabel(latestDecision.decision)}`);
+    if (latestDecision.reason) lines.push(`Why · ${sentencePreview(latestDecision.reason)}`);
+    lines.push(`Next · ${nextActions.length ? nextActions.join(', ') : latestDecision.decision === 'complete' ? 'Return the verified result' : 'Wait for current work, then reassess'}`);
+  } else {
+    lines.push('Latest decision · Planning has not completed its first checkpoint yet');
+  }
+  if (active?.stall?.status === 'suspected_stalled') {
+    lines.push(`Attention · No new evidence for ${active.stall.silentForSec}s; the agent has not been auto-killed`);
+  }
+
+  if (!verbose) {
+    if (state.finishedAt) {
+      const verified = state.outcome?.verified === true;
+      lines.push('', `Result · ${verified ? 'Verified delivery is ready' : state.status === 'completed_with_concerns' ? 'Best useful delivery is ready with concerns' : state.status === 'blocked' ? 'No useful delivery could be completed' : 'Workflow is terminal'}`);
+      const concernCount = state.outcome?.concerns?.length ?? 0;
+      if (concernCount) lines.push(`Concerns · ${concernCount} recorded in the result envelope`);
+    }
+    lines.push('', 'Recent activity');
+    if (!liveActions.length) lines.push('· waiting for semantic action events');
+    const firstVisibleActionNumber = Math.max(1, totalActions - liveActions.length + 1);
+    liveActions.slice(-3).forEach((action, index, visible) => {
+      const number = Math.max(firstVisibleActionNumber, totalActions - visible.length + 1) + index;
+      lines.push(`#${number} ${statusIcon(action.status, spinnerFrame)} ${friendlyActionKind(action.kind)}${action.summary ? ` · ${friendlyActionSummary(action)}` : ''}`);
+    });
+    lines.push('', 'Press v for checkpoint prompts, sessions, usage, and artifact paths.');
+    return wrapLines(lines, width);
+  }
+
+  lines.push('', 'Technical thread');
+  lines.push(`Logical thread · ${orchestrator.attempts.length} checkpoint turn${orchestrator.attempts.length === 1 ? '' : 's'}`);
   for (const [pool, thread] of conversations) {
     lines.push(`Session · ${pool} · ${thread.sessionId ?? '—'}${thread.started ? ' · resumable' : ' · pending first turn'}`);
   }
@@ -549,6 +600,38 @@ function orchestratorDetailLines(model, width, spinnerFrame) {
   lines.push(`task: ${active?.taskFile ?? latest?.taskFile ?? '—'}`);
   lines.push(`output: ${active?.outFile ?? latest?.outFile ?? '—'}`);
   return wrapLines(lines, width);
+}
+
+function decisionLabel(decision) {
+  return ({
+    needs_more_work: 'Continue with bounded work',
+    complete: 'Finish and deliver',
+    stop: 'Stop with the best useful outcome',
+  })[decision] ?? String(decision ?? 'Pending');
+}
+
+function sentencePreview(value, maxChars = 420) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  const sentences = text.match(/.*?[.!?](?:\s|$)/g)?.slice(0, 2).map((part) => part.trim()).join(' ') ?? text;
+  return truncate(sentences || text, maxChars);
+}
+
+function friendlyActionKind(kind) {
+  return ({
+    read_file: 'Read file',
+    write_file: 'Write file',
+    response: 'Response',
+    tool: 'Tool',
+    bash: 'Command',
+  })[kind] ?? String(kind ?? 'Action').replaceAll('_', ' ');
+}
+
+function friendlyActionSummary(action) {
+  const summary = String(action.summary ?? '').replace(/\s+/g, ' ').trim();
+  if (action.kind === 'response' && /workflow\.decision|"decision"|needs_more_work/.test(summary)) {
+    return 'Planner decision recorded';
+  }
+  return truncate(summary, 180);
 }
 
 function agentDetailLines(model, width, spinnerFrame) {
@@ -751,6 +834,7 @@ export async function runDashboard(bullswarmDir, {
     confirmCancel: false,
     controlSelected: false,
     orchestratorDetail: false,
+    orchestratorVerbose: false,
     spinnerFrame: 0,
   };
   const paint = () => {
@@ -866,6 +950,7 @@ export async function runDashboard(bullswarmDir, {
       if (key === '\u001b' || key === 'b') {
         if (ui.orchestratorDetail) {
           ui.orchestratorDetail = false;
+          ui.orchestratorVerbose = false;
           ui.focus = 0;
           ui.controlSelected = true;
           ui.detailScroll = 0;
@@ -891,6 +976,7 @@ export async function runDashboard(bullswarmDir, {
         const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
         if (model.orchestrator.autonomous) {
           ui.orchestratorDetail = true;
+          ui.orchestratorVerbose = false;
           ui.controlSelected = true;
           ui.detailScroll = 0;
           message = null;
@@ -900,6 +986,12 @@ export async function runDashboard(bullswarmDir, {
       if (key === '1' && detail) { ui.focus = 0; return paint(); }
       if (key === '2' && detail) { ui.focus = 1; return paint(); }
       if (key === '3' && detail) { ui.focus = 2; return paint(); }
+      if (key === 'v' && ui.orchestratorDetail) {
+        ui.orchestratorVerbose = !ui.orchestratorVerbose;
+        ui.detailScroll = 0;
+        message = null;
+        return paint();
+      }
       if (key === '\r' || key === '\n') {
         if (!detail) {
           selectedRunId = rows[selected]?.runId ?? selectedRunId;
@@ -909,6 +1001,7 @@ export async function runDashboard(bullswarmDir, {
         } else if (ui.focus === 0) {
           if (ui.controlSelected) {
             ui.orchestratorDetail = true;
+            ui.orchestratorVerbose = false;
             ui.detailScroll = 0;
           } else ui.focus = 1;
         } else if (ui.focus === 1) {

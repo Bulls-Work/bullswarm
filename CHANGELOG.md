@@ -1,5 +1,14 @@
 # bullswarm changelog
 
+## 0.10.7 — clearer orchestration overview
+
+- Replaced the orchestrator trace dump with a summary-first view showing what
+  it is doing now, the latest decision and reason, the next action, worker
+  progress, and the last three semantic events.
+- Added `v` progressive disclosure for provider sessions, checkpoint prompts,
+  per-turn usage, full decisions, and artifact paths, keeping audit detail
+  available without making it the default human experience.
+
 ## 0.10.6 — safe setup and boolean flags
 
 - Marked the deterministic `echo` connector as a test fixture and excluded it
