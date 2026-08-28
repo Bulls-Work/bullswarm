@@ -27,6 +27,7 @@
   "eventStream": {
     "format": "jsonl",
     "args": ["--output-format", "json"],
+    "modelPaths": ["event.model", "model"],
     "silenceThresholdSec": 600,
     "rules": [
       { "rootMatch": { "path": "event.type", "equals": "tool_queued" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "summaryPaths": ["event.input.command", "event.input.file_path", "event.input.path"], "status": "queued" },

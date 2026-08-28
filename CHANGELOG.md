@@ -19,7 +19,16 @@
 - Added conservative stall evidence: ten minutes without transport, parsed
   event, or semantic action activity is labeled `suspected_stalled` but never
   causes an automatic kill.
-- Expanded the offline suite to 218 tests. Real bounded CLI probes confirmed
+- Added a low-noise `workflow watch <id>` progress stream with semantic-change
+  updates, heartbeats, last-three agent actions, and terminal per-attempt timing.
+- Added optional durable `workflow steer <id> --message ...` guidance delivered
+  only at the next planning checkpoint, never injected into an active worker.
+- Captured runtime model IDs declared in provider event streams for more complete
+  model/cost attribution, preserved Grok tool kinds across name-less updates,
+  and enabled Claude's supported forwarded-subagent text stream.
+- Taught planners to reuse clean full-suite evidence and isolate mutation/pre-fix
+  experiments instead of redundantly or concurrently testing a changing tree.
+- Expanded the offline suite to 224 tests. Real bounded CLI probes confirmed
   all five provider event formats, and an exact packaged OpenCode watch smoke
   passed argument injection, action normalization, final-output extraction,
   and the content gate together.

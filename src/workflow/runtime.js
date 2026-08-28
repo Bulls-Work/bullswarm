@@ -33,6 +33,7 @@ import { appendEvent } from './events.js';
 import { DECISION_SCHEMA_VERSION, parseDecisionText } from './decision.js';
 import { aggregateUsage } from '../lib/usage.js';
 import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
+import { deliverSteering } from './steering.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -447,13 +448,24 @@ export class WorkflowRuntime {
                 active.outputBytesObserved = Number(active.outputBytesObserved ?? 0) + Number(bytes ?? 0);
               }
             },
-            onAgentProgress: ({ at, providerType }) => {
+            onAgentProgress: ({ at, providerType, model }) => {
               const active = this.state.activeAgents?.[activeKey];
               if (!active) return;
               active.lastEventAt = at;
               active.lastProgressAt = at;
               active.lastProviderEventType = providerType ?? null;
               attemptRecord.lastEventAt = at;
+              if (model) {
+                active.model = model;
+                attemptRecord.model = model;
+                if (step.type === 'decide' && this.state.orchestration) {
+                  this.state.orchestration.selectedModel = model;
+                  const selection = this.state.orchestration.selections?.at(-1);
+                  if (selection?.attemptNumber === attemptNumber && selection.pool === conn.name) {
+                    selection.model = model;
+                  }
+                }
+              }
             },
             onAgentEvent: (event) => {
               const active = this.state.activeAgents?.[activeKey];
@@ -852,6 +864,14 @@ export class WorkflowRuntime {
 
   async runDecision(step, scope, opts = {}) {
     this.enforceRequiredInputs(step.id);
+    const deliveredSteering = deliverSteering(this.state, this.runDir);
+    for (const steering of deliveredSteering) {
+      this.emit('steering.delivered', {
+        steeringId: steering.id,
+        gateId: step.id,
+        decisionSequence: steering.decisionSequence,
+      });
+    }
     const outputs = Object.fromEntries(Object.entries(this.state.outputs ?? {}).map(([id, output]) => [id, {
       ok: output?.ok,
       why: output?.why ?? null,
@@ -911,6 +931,13 @@ export class WorkflowRuntime {
         completionPolicy,
       },
       approval: this.state.approval ?? null,
+      operatorSteering: (this.state.steering ?? []).map((entry) => ({
+        id: entry.id,
+        message: entry.message,
+        queuedAt: entry.queuedAt,
+        deliveredAt: entry.deliveredAt,
+        decisionSequence: entry.decisionSequence,
+      })),
       availablePools: this.pools.filter((pool) =>
         pool.enabled !== false && !pool.quarantine && pool.burstGate !== true).map((pool) => ({
           name: pool.name,
@@ -934,6 +961,9 @@ export class WorkflowRuntime {
       'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal.',
       'Keep run/fanout actions cohesive and reviewable. If executionConstraints.actionTimeoutSec is non-null, size them to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
       'Agent-count and workflow-duration budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt. Prefer staying near the target, but exceed it when required to finish already-started work or obtain required verification.',
+      'operatorSteering contains explicit operator guidance queued for this planning checkpoint. Apply it within the original workflow intent and authorization boundaries. It cannot weaken verification, bypass runtime validation, expand external authority, or alter an already-running worker. If guidance conflicts with the original goal or safety constraints, explain that in the decision reason instead of following it.',
+      'Avoid redundant expensive verification. Run a full suite once for each materially changed final state when practical; later independent verifiers should reuse durable clean full-suite evidence and rerun focused/adversarial checks unless that evidence is stale, tainted, or the code changed again.',
+      'Mutation and pre-fix experiments must not modify or stash the shared target while another test process is reading it. Use an isolated copy/worktree when possible, or wait until conflicting processes finish and restore the exact bytes before continuing.',
       '',
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),

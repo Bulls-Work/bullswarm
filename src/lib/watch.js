@@ -85,9 +85,13 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let fatalKillTimer = null;
     let fatalForceKillTimer = null;
     let forceKillTimer = null;
+    let detectedModel = null;
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
       onEvent: opts.onAgentEvent,
-      onProgress: opts.onAgentProgress,
+      onProgress: (event) => {
+        if (event.model) detectedModel = event.model;
+        opts.onAgentProgress?.(event);
+      },
     });
     const stopOnFatalSignature = () => {
       if (fatalSignature) return;
@@ -143,6 +147,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         cancelled,
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
+        detectedModel,
         spawnError: true,
       });
     });
@@ -156,6 +161,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       resolvePromise({
         exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
+        detectedModel,
       });
     });
   });
@@ -204,7 +210,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   const output = extractOutput(connector, obs);
   writeFileSync(paths.outFile, output);
-  const selectedModel = opts.model ?? connector.model ?? (() => {
+  const selectedModel = opts.model ?? obs.detectedModel ?? connector.model ?? (() => {
     const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
     return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
   })();

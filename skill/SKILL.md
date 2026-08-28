@@ -86,6 +86,7 @@ Observe from any other shell or agent:
 
 ```bash
 bullswarm workflow runs show <shortId>
+bullswarm workflow watch <shortId>
 bullswarm workflow tui --json <shortId>
 bullswarm workflow events --json <shortId> --after 0
 bullswarm workflow action show --json <shortId> <actionId>
@@ -175,10 +176,13 @@ fabric and the workflow document itself:
 ```bash
 bullswarm workflow capabilities --json
 bullswarm workflow inspect <file-or-name>
+bullswarm workflow watch <shortId>              # low-noise progress until terminal
+bullswarm workflow watch <shortId> --jsonl      # machine-readable progress stream
 bullswarm workflow tui <shortId>              # text phase/action/attempt tree
 bullswarm workflow events --json <shortId> --after 20
 bullswarm workflow action show --json <shortId> <actionId>
 bullswarm workflow approval approve --json <shortId>
+bullswarm workflow steer <shortId> --message "guidance for the next planner checkpoint"
 ```
 
 `capabilities` reports available pools, supported lanes, configured models,
@@ -211,6 +215,13 @@ usage/cost estimate, status, task/output artifacts, timings, failure
 reason, and child-process termination evidence. `workflow tui` displays the
 same information interactively. `workflow events` supports replay after a
 monotonic sequence cursor.
+
+Prefer `workflow watch` for ordinary monitoring; it prints semantic changes and
+a periodic heartbeat, then a per-attempt timing/token breakdown at terminal
+status. `workflow steer` is an optional durable queue for autonomous workflows:
+it never changes the active worker and is delivered only to the next
+not-yet-started decision gate. Steering cannot expand the original authority,
+weaken verification, or bypass proposal validation.
 
 Retries are bounded. `settings.retryAttempts` is an integer from 0 to 3 and
 adds same-pool retries; `escalateOnFail` permits a failed invocation to move to

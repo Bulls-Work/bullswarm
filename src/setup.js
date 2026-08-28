@@ -225,6 +225,12 @@ export function upgradeConnectorMetadata(bullswarmDir) {
           installed.outputExtraction = packaged.outputExtraction;
         }
         changed = true;
+      } else if (installed.eventStream != null && packaged.eventStream?.modelPaths != null &&
+          installed.eventStream.modelPaths == null) {
+        // Additive decoder metadata is safe to backfill without replacing
+        // user-edited rules, args, or output mappings.
+        installed.eventStream.modelPaths = packaged.eventStream.modelPaths;
+        changed = true;
       }
       for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'subscription']) {
         if (installed[field] == null && packaged[field] != null) {

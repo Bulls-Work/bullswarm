@@ -34,7 +34,7 @@ test('connector adapters normalize semantic tool and response actions', () => {
       { type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'DONE' } },
     ],
     'claude-code': [
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'pwd' } }] } },
+      { type: 'assistant', message: { model: 'claude-sonnet-5', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'pwd' } }] } },
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'DONE' }] } },
       { type: 'result', result: 'DONE' },
@@ -46,6 +46,7 @@ test('connector adapters normalize semantic tool and response actions', () => {
       { type: 'text', data: 'DO' }, { type: 'text', data: 'NE' },
     ],
     'command-code': [
+      { type: 'event', event: { type: 'model_request_start', model: 'gpt-5.6-sol' } },
       { type: 'event', event: { type: 'tool_queued', toolCallId: 't1', toolName: 'shell_command', input: { command: 'pwd' } } },
       { type: 'event', event: { type: 'tool_completed', toolCallId: 't1', toolName: 'shell_command' } },
       { type: 'event', event: { type: 'message_end', content: [{ type: 'text', text: 'DONE' }] } },
@@ -63,6 +64,8 @@ test('connector adapters normalize semantic tool and response actions', () => {
     assert.ok(decoded.actions.some((event) => event.summary === 'pwd'), `${name} command`);
     assert.ok(decoded.actions.some((event) => event.kind === 'response'), `${name} response`);
     assert.match(decoded.output, /DONE/, `${name} final output`);
+    if (name === 'claude-code') assert.ok(decoded.progress.some((event) => event.model === 'claude-sonnet-5'));
+    if (name === 'command-code') assert.ok(decoded.progress.some((event) => event.model === 'gpt-5.6-sol'));
   }
 });
 
@@ -77,6 +80,7 @@ test('last-three action ledger updates one logical tool and aggregates streamed 
   for (const event of actions) recordAgentAction(agent, event, 3);
   assert.equal(agent.lastActions.length, 3);
   assert.equal(agent.lastActions[0].status, 'completed');
+  assert.equal(agent.lastActions[0].kind, 'read_file');
   assert.equal(agent.lastActions[1].summary, 'npm test');
   assert.equal(agent.lastActions[2].summary, 'Tests passed.');
 });

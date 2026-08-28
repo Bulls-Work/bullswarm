@@ -114,6 +114,7 @@ The detached response includes a short ID and exact observation commands:
 
 ```bash
 bullswarm workflow runs show <shortId>
+bullswarm workflow watch <shortId>        # low-noise live progress + terminal timing
 bullswarm workflow tui <shortId>          # printable phase/action/attempt tree
 bullswarm workflow tui --json <shortId>
 bullswarm workflow events --json <shortId> --after 0
@@ -183,6 +184,18 @@ bullswarm workflow run audit-code --resume <shortId>
 
 ### Live workflow dashboard
 
+For ordinary observation, use the non-interactive watcher. It prints only when
+the phase, step, agent action, routing, or status changes, plus a 60-second
+heartbeat while otherwise quiet. Terminal output includes every attempt's
+agent/model, elapsed time, outcome, and tokens, so a slow test is distinguishable
+from a stalled process without writing a polling script.
+
+```bash
+bullswarm workflow watch <shortId>
+bullswarm workflow watch <shortId> --jsonl       # automation-friendly stream
+bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
+```
+
 `workflow tui` is the interactive, Claude-style `/workflows` view. It watches
 ongoing runs from disk and supports `j`/`k` or arrow-key selection, Enter for
 details, `c` to request a cooperative stop, `r` to refresh, and `q` to quit.
@@ -202,6 +215,7 @@ bullswarm workflow tui --json --cancel <id>   # request cooperative stop
 bullswarm workflow capabilities --json       # pools, lanes, models, meters, limits
 bullswarm workflow inspect <file-or-name>     # workflow shape and semantics
 bullswarm workflow events --json <id> --after 20
+bullswarm workflow steer <id> --message "Prefer focused tests before another full suite"
 bullswarm workflow action show --json <id> <actionId>
 bullswarm workflow approval approve --json <id>  # then resume the run
 ```
@@ -212,6 +226,13 @@ records its termination signal and latency evidence, then commits `cancelled`.
 commit a distinct resumable `interrupted` state. On every workflow command,
 active states with a dead/stale owner are automatically reconciled to
 `interrupted` instead of remaining falsely `running`.
+
+`workflow steer` is optional operator guidance, not hot-patching. It appends a
+durable instruction that is delivered only to the next not-yet-started
+`decide` checkpoint; the active worker continues unchanged. Steering remains
+inside the original goal and authorization boundary and cannot bypass runtime
+validation or required verification. Static workflows and terminal runs reject
+steering because they have no future orchestration checkpoint.
 Live attempts record the last stdout/stderr activity time and observed byte
 count separately from the runner heartbeat. This makes a silent process
 visible without treating elapsed wall time alone as proof that it is hung.
@@ -240,6 +261,10 @@ routing reason, all eligible candidates with quota surplus, timestamps,
 artifact paths, outcome, and reported-or-estimated token/cost/quota usage.
 `workflow tui <id>` renders this breakdown for completed runs as well as live
 ones; `workflow tui --json <id>` exposes the durable audit document.
+When a provider event stream reports the actual model, Bullswarm records that
+runtime value and uses its matching connector rate metadata for the attempt's
+cost estimate. Unknown or provider-hidden model identity remains explicitly
+unknown.
 
 ### Adaptive workflows
 

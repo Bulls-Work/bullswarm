@@ -27,7 +27,8 @@
   },
   "eventStream": {
     "format": "jsonl",
-    "args": ["--output-format", "stream-json", "--verbose"],
+    "args": ["--output-format", "stream-json", "--verbose", "--forward-subagent-text"],
+    "modelPaths": ["model", "message.model"],
     "silenceThresholdSec": 600,
     "rules": [
       { "rootMatch": { "path": "type", "equals": "assistant" }, "forEach": "message.content", "match": { "path": "type", "equals": "tool_use" }, "idPaths": ["id"], "kindPaths": ["name"], "summaryPaths": ["input.command", "input.file_path", "input.path", "input.pattern"], "status": "running" },

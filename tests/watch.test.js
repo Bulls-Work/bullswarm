@@ -52,7 +52,7 @@ test('event-stream connector extracts final content and emits normalized actions
   const ctx = makeCtx();
   try {
     const rows = [
-      { type: 'tool', id: 't1', name: 'shell', command: 'npm test', status: 'running' },
+      { type: 'tool', model: 'fixture-model', id: 't1', name: 'shell', command: 'npm test', status: 'running' },
       { type: 'tool', id: 't1', name: 'shell', command: 'npm test', status: 'completed' },
       { type: 'response', id: 'r1', text: 'Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures.' },
     ];
@@ -63,12 +63,14 @@ test('event-stream connector extracts final content and emits normalized actions
       outputExtraction: { strategy: 'event-stream' },
       eventStream: {
         format: 'jsonl',
+        modelPaths: ['model'],
         rules: [
           { rootMatch: { path: 'type', equals: 'tool' }, idPaths: ['id'], kindPaths: ['name'], summaryPaths: ['command'], statusPath: 'status' },
           { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
         ],
         output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
       },
+      modelProfiles: [{ match: '^fixture-model$', pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } }],
       subscription: {},
     };
     const actions = [];
@@ -82,6 +84,8 @@ test('event-stream connector extracts final content and emits normalized actions
     assert.equal(actions[1].status, 'completed');
     assert.equal(actions[2].kind, 'response');
     assert.equal(progress.length, 3);
+    assert.equal(verdict.meta.usage.model, 'fixture-model');
+    assert.ok(verdict.meta.usage.cost.estimatedUsd > 0);
     assert.match(readFileSync(ctx.paths.outFile, 'utf8'), /^Completed the requested/);
   } finally {
     ctx.cleanup();
