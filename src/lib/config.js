@@ -49,7 +49,9 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
       capabilities: conn.capabilities ?? [],
-      quarantine: ps.quarantine ?? null,
+      quarantine: isQuarantined({ quarantine: ps.quarantine ?? null }, now)
+        ? ps.quarantine
+        : null,
       incumbentLane: Object.entries(state.incumbents ?? {})
         .filter(([, v]) => v === name)
         .map(([k]) => k),
@@ -65,6 +67,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
         ...(state.strategy?.subscriptions?.[name] ?? {}),
       },
       strategyAssignments: state.strategy?.assignments ?? {},
+      strategyExcludedModels: state.strategy?.excludedModels ?? [],
     };
     pools.push(pool);
   }

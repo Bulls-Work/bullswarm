@@ -7,6 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildGoalWorkflow, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
+import { shouldAutoWatchGoal } from '../src/workflow/cli.js';
 import { normalizeLegacyGeneratedGoalTimeouts } from '../src/workflow/runner.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 
@@ -111,12 +112,38 @@ test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching
   assert.equal(preserved.phases[0].steps[0].actionDefaults.timeoutSec, 900);
 });
 
+test('goal watching is explicit and incompatible launch modes do not auto-watch', () => {
+  assert.equal(shouldAutoWatchGoal({}), false);
+  assert.equal(shouldAutoWatchGoal({ watch: true }), true);
+  assert.equal(shouldAutoWatchGoal({ watch: true, detach: true }), false);
+  assert.equal(shouldAutoWatchGoal({ watch: true, foreground: true }), false);
+  assert.equal(shouldAutoWatchGoal({ watch: true, json: true }), false);
+  assert.equal(shouldAutoWatchGoal({ watch: true, resume: 'abc234' }), false);
+});
+
+test('--watch prints the operating handoff and follows the independent run to terminal', () => {
+  const f = fixture();
+  try {
+    const result = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt while the caller watches.',
+      '--cwd', f.target, '--watch', '--max-agents', '6', '--max-expansion-rounds', '2',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /workflow [a-z2-9]{6} continues independently; next commands:/);
+    assert.match(result.stdout, /agentInspect\s+bullswarm workflow tui --json/);
+    assert.match(result.stdout, /humanTui\s+bullswarm workflow tui/);
+    assert.match(result.stdout, /result\s+bullswarm workflow runs result/);
+    assert.match(result.stdout, /completed/);
+    assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
+  } finally { f.cleanup(); }
+});
+
 test('one foreground CLI goal autonomously plans, routes, executes, verifies, and completes', () => {
   const f = fixture();
   try {
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt without asking for a workflow document.',
-      '--cwd', f.target, '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--foreground', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -138,7 +165,8 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.match(firstPlannerTask, /"remainingDispatches": 5/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
-    assert.match(firstPlannerTask, /exceed it when required to finish already-started work or obtain required verification/);
+    assert.match(firstPlannerTask, /expansion-round budgets are advisory planning targets/);
+    assert.match(firstPlannerTask, /strongly prefer convergence/);
 
     const shown = cli(f, ['workflow', 'tui', '--json', report.shortId]);
     assert.equal(shown.status, 0, shown.stderr);
@@ -154,7 +182,7 @@ test('autonomous completion is rejected until worker and verification evidence e
   try {
     const result = cli(f, [
       'workflow', 'goal', 'PREMATURE_COMPLETION then create and verify done.txt.',
-      '--cwd', f.target, '--json', '--max-agents', '8', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--foreground', '--json', '--max-agents', '8', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -171,12 +199,16 @@ test('detached CLI goal survives the initiating CLI and remains observable', asy
   try {
     const launchResult = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt in a detached autonomous run.',
-      '--cwd', f.target, '--detach', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(launchResult.status, 0, launchResult.stderr || launchResult.stdout);
     const launch = JSON.parse(launchResult.stdout);
     assert.equal(launch.action, 'goal-launched');
     assert.match(launch.runId, /^wf-/);
+    assert.match(launch.instructions.agentInspect.command, /workflow tui --json/);
+    assert.match(launch.instructions.watch.command, /workflow watch/);
+    assert.match(launch.instructions.humanTui.command, /workflow tui [^\n]+$/);
+    assert.match(launch.instructions.result.command, /workflow runs result .* --json/);
 
     const statePath = join(f.home, 'workflows', launch.runId, 'state.json');
     let state;

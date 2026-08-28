@@ -48,6 +48,7 @@ export function normalizeDecisionProposal(proposal) {
 
 export function validateDecisionProposal(proposal, {
   knownActionIds = [],
+  closedPhases = [],
   currentActionCount = 0,
   maxActions = 100,
   maxItemsPerExpansion = 50,
@@ -76,6 +77,7 @@ export function validateDecisionProposal(proposal, {
   }
 
   const known = new Set(knownActionIds);
+  const closed = new Set(closedPhases);
   const proposed = new Set();
   let proposedItems = 0;
   for (const [index, action] of safeActions.entries()) {
@@ -88,6 +90,11 @@ export function validateDecisionProposal(proposal, {
     else if (known.has(action.id) || proposed.has(action.id)) issues.push(`${at}.id "${action.id}" is not unique`);
     else proposed.add(action.id);
     if (!ACTION_TYPES.has(action.type)) issues.push(`${at}.type must be run|fanout|verify`);
+    if (action.phase != null && (typeof action.phase !== 'string' || !ID_RE.test(action.phase))) {
+      issues.push(`${at}.phase must be kebab-case`);
+    } else if (action.phase != null && closed.has(action.phase)) {
+      issues.push(`${at}.phase "${action.phase}" is already finished; phases are forward-only`);
+    }
     if (action.dependsOn != null && (!Array.isArray(action.dependsOn) ||
       action.dependsOn.some((id) => typeof id !== 'string'))) {
       issues.push(`${at}.dependsOn must be an array of action IDs`);

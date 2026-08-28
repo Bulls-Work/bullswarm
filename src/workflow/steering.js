@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { resolveRunId } from './short-id.js';
+import { isTerminalWorkflowStatus } from './status.js';
 
 export function steeringPath(runDir) {
   return join(runDir, 'steering.jsonl');
@@ -30,7 +31,7 @@ export function queueSteering(bullswarmDir, token, message) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
-  if (state.finishedAt || ['completed', 'failed', 'cancelled', 'interrupted', 'budget_exhausted'].includes(state.status)) {
+  if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
     throw new Error(`run "${token}" is already terminal (${state.status})`);
   }
   const hasDecisionGate = state._doc?.phases?.some((phase) =>

@@ -105,19 +105,25 @@ export async function runWorkflow(opts) {
     });
     const previousAssignments = state.routingStrategy?.assignments ?? {};
     const currentAssignments = pools[0]?.strategyAssignments ?? {};
-    if (JSON.stringify(previousAssignments) !== JSON.stringify(currentAssignments)) {
+    const previousExcludedModels = state.routingStrategy?.excludedModels ?? [];
+    const currentExcludedModels = pools[0]?.strategyExcludedModels ?? [];
+    if (JSON.stringify(previousAssignments) !== JSON.stringify(currentAssignments)
+        || JSON.stringify(previousExcludedModels) !== JSON.stringify(currentExcludedModels)) {
       state.routingStrategy ??= {};
       state.routingStrategy.history ??= [{
         effectiveAt: state.startedAt ?? null,
         assignments: previousAssignments,
+        excludedModels: previousExcludedModels,
         reason: 'run-start',
       }];
       state.routingStrategy.history.push({
         effectiveAt: resumedAt,
         assignments: currentAssignments,
+        excludedModels: currentExcludedModels,
         reason: 'resume',
       });
       state.routingStrategy.assignments = currentAssignments;
+      state.routingStrategy.excludedModels = currentExcludedModels;
     }
     delete state.finishedAt;
     delete state.cancelledAt;
@@ -173,6 +179,7 @@ export async function runWorkflow(opts) {
       decisions: [],
       routingStrategy: {
         assignments: pools[0]?.strategyAssignments ?? {},
+        excludedModels: pools[0]?.strategyExcludedModels ?? [],
       },
       usage: {
         attempts: 0,
@@ -194,7 +201,10 @@ export async function runWorkflow(opts) {
         workflowRemainingSec: doc.settings?.maxWorkflowSeconds ?? null,
         workflowOverTargetBySec: 0,
         expansionRound: 0,
+        expansionTarget: doc.settings?.maxExpansionRounds ?? 0,
         expansionLimit: doc.settings?.maxExpansionRounds ?? 0,
+        expansionAdvisoryOnly: true,
+        expansionOverTargetBy: 0,
       },
       startedAt: new Date().toISOString(),
       resumed: false,
@@ -301,12 +311,12 @@ export async function runWorkflow(opts) {
   let abortReason = null;
   let cancelled = false;
   let completedByPlanner = false;
+  let plannerTerminalStatus = null;
   let waitingForApproval = false;
-  let budgetExhausted = false;
   let interrupted = false;
   const retryAttempts = state.settings.retryAttempts ?? 1;
 
-  for (let pi = 0; pi < doc.phases.length && !aborted && !cancelled && !completedByPlanner && !waitingForApproval && !budgetExhausted; pi++) {
+  for (let pi = 0; pi < doc.phases.length && !aborted && !cancelled && !completedByPlanner && !waitingForApproval; pi++) {
     const phase = doc.phases[pi];
     state.currentPhase = { index: pi, name: phase.name, total: doc.phases.length };
     runtime.persist();
@@ -348,9 +358,12 @@ export async function runWorkflow(opts) {
       });
       runtime.persist();
 
-      if (r.complete === true) { completedByPlanner = true; break; }
+      if (r.complete === true) {
+        completedByPlanner = true;
+        plannerTerminalStatus = r.terminalStatus ?? 'completed';
+        break;
+      }
       if (r.waitingForApproval === true) { waitingForApproval = true; break; }
-      if (r.budgetExhausted === true) { budgetExhausted = true; abortReason = r.why; break; }
 
       if (state.cancelRequested) { cancelled = true; break; }
 
@@ -397,8 +410,14 @@ export async function runWorkflow(opts) {
     state.cancellingAt = new Date().toISOString();
     runtime.emit('run.cancelling', { requestedAt: state.cancelRequestedAt ?? null });
   }
-  state.status = interrupted ? 'interrupted' : cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'completed');
-  state.stage = interrupted ? 'interrupted' : cancelled ? 'cancelled' : waitingForApproval ? 'waiting_for_approval' : budgetExhausted ? 'budget_exhausted' : (aborted ? 'failed' : 'delivered');
+  state.status = interrupted ? 'interrupted' : cancelled ? 'cancelled'
+    : waitingForApproval ? 'waiting_for_approval'
+      : aborted ? 'failed' : plannerTerminalStatus ?? 'completed';
+  state.stage = interrupted ? 'interrupted' : cancelled ? 'cancelled'
+    : waitingForApproval ? 'waiting_for_approval'
+      : aborted ? 'failed'
+        : state.status === 'completed_with_concerns' ? 'delivered_with_concerns'
+          : state.status === 'blocked' ? 'blocked' : 'delivered';
   delete state.currentPhase;
   delete state.currentStep;
   delete state.activeAgents;
@@ -416,7 +435,11 @@ export async function runWorkflow(opts) {
   runtime.persist();
 
   const preliminaryReport = buildReport(state, doc, runDir);
-  runtime.emit(interrupted ? 'run.interrupted' : cancelled ? 'run.cancelled' : waitingForApproval ? 'run.waiting_for_approval' : budgetExhausted ? 'run.budget_exhausted' : 'run.completed', { runId, status: state.status, report: preliminaryReport.summary });
+  const terminalEvent = interrupted ? 'run.interrupted' : cancelled ? 'run.cancelled'
+    : waitingForApproval ? 'run.waiting_for_approval'
+      : state.status === 'completed_with_concerns' ? 'run.completed_with_concerns'
+        : state.status === 'blocked' ? 'run.blocked' : 'run.completed';
+  runtime.emit(terminalEvent, { runId, status: state.status, report: preliminaryReport.summary, outcome: state.outcome ?? null });
   const report = buildReport(state, doc, runDir);
   writeFileSync(join(runDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   opts.onEvent?.({ type: 'workflow.completed', runId, status: state.status, report: report.summary });
@@ -428,10 +451,17 @@ export async function runWorkflow(opts) {
   }
 }
 
-export function completionEvidenceGaps(dynamicActions, policy) {
+function actionOutputOk(action, outputs) {
+  return Object.hasOwn(outputs ?? {}, action.id)
+    ? outputs[action.id]?.ok === true
+    : action.status === 'succeeded';
+}
+
+export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
   const missing = [];
   const successfulWorkers = dynamicActions.filter(
-    (action) => action.kind !== 'verify' && action.status === 'succeeded',
+    (action) => action.kind !== 'verify' && action.status === 'succeeded'
+      && actionOutputOk(action, outputs),
   );
   const latestSuccessfulWorker = successfulWorkers.at(-1) ?? null;
   if (policy?.requireSuccessfulWorker && !latestSuccessfulWorker) {
@@ -440,6 +470,7 @@ export function completionEvidenceGaps(dynamicActions, policy) {
   if (policy?.requireSuccessfulVerification && !dynamicActions.some(
     (action) => action.kind === 'verify'
       && action.status === 'succeeded'
+      && actionOutputOk(action, outputs)
       && latestSuccessfulWorker
       && (action.dependsOn ?? []).includes(latestSuccessfulWorker.id),
   )) {
@@ -450,8 +481,51 @@ export function completionEvidenceGaps(dynamicActions, policy) {
   return missing;
 }
 
+function terminalPlannerOutcome(state, gate, reason) {
+  const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
+  const observedActions = (state.actionLedger ?? []).filter((action) => action.kind !== 'decide');
+  const usefulWorkers = observedActions.filter((action) =>
+    action.kind !== 'verify' && action.status === 'succeeded' && actionOutputOk(action, state.outputs));
+  const latestWorker = usefulWorkers.at(-1) ?? null;
+  const concerns = completionEvidenceGaps(
+    dynamicActions,
+    state.orchestration?.completionPolicy,
+    state.outputs,
+  );
+  for (const action of observedActions.filter((entry) => entry.kind === 'verify')) {
+    const output = state.outputs?.[action.id];
+    if (output?.ok !== false) continue;
+    for (const concern of output.verify?.concerns ?? []) concerns.push(String(concern));
+    if (!(output.verify?.concerns ?? []).length && output.why) concerns.push(String(output.why));
+  }
+  const uniqueConcerns = [...new Set(concerns.filter(Boolean))];
+  const status = latestWorker ? 'completed_with_concerns' : 'blocked';
+  state.outcome = {
+    status,
+    verified: false,
+    bestEffort: true,
+    reason,
+    concerns: uniqueConcerns,
+    deliveryActionId: latestWorker?.id ?? null,
+  };
+  state.outputs[gate.id] = {
+    ...state.outputs[gate.id],
+    ok: true,
+    why: reason,
+    terminalOutcome: state.outcome,
+  };
+  return {
+    ok: true,
+    why: reason,
+    complete: true,
+    terminalStatus: status,
+    outcome: state.outcome,
+  };
+}
+
 async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   const settings = state.settings;
+  const executionPhase = (action) => `${phase}:${action.phase ?? 'adaptive'}`;
 
   const executeActions = async (actions) => {
     const pending = new Map(actions.map((action) => [action.id, action]));
@@ -464,7 +538,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         const why = `dynamic actions blocked by failed or unresolved dependencies: ${JSON.stringify(blocked)}`;
         for (const action of pending.values()) {
           state.outputs[action.id] = { ok: false, why, dependencyBlocked: true };
-          runtime.setActionStatus(action, { phase: `${phase}:adaptive` }, 'failed_terminal', {
+          runtime.setActionStatus(action, { phase: executionPhase(action) }, 'failed_terminal', {
             finishedAt: new Date().toISOString(), why,
           });
           runtime.emit('action.failed', { actionId: action.id, status: 'failed_terminal', why });
@@ -485,12 +559,12 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
           state.currentStep = {
             id: action.id,
             type: action.type,
-            phase: `${phase}:adaptive`,
+            phase: executionPhase(action),
           };
           runtime.persist();
           result = await runtime.runStep(
             { ...action, parentId: gate.id, _dynamic: true },
-            { phase: `${phase}:adaptive`, retryAttempts },
+            { phase: executionPhase(action), retryAttempts },
           );
         } catch (err) {
           // A post-artifact observer failure must not rewrite a durably
@@ -499,13 +573,13 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
           if (state.outputs[action.id]?.ok === true) throw err;
           result = { ok: false, why: err.message };
           state.outputs[action.id] = result;
-          runtime.setActionStatus(action, { phase: `${phase}:adaptive` }, 'failed_terminal', {
+          runtime.setActionStatus(action, { phase: executionPhase(action) }, 'failed_terminal', {
             finishedAt: new Date().toISOString(), why: err.message,
           });
           runtime.emit('action.failed', { actionId: action.id, status: 'failed_terminal', why: err.message });
         }
         state.steps.push({
-          phase: `${phase}:adaptive`, stepId: action.id, type: action.type,
+          phase: executionPhase(action), stepId: action.id, type: action.type,
           ok: result.ok, why: result.why ?? null, dynamic: true,
         });
         runtime.persist();
@@ -540,6 +614,10 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     try {
       proposal = validateDecisionProposal(normalizeDecisionProposal(planner.proposal), {
         knownActionIds: (state.plan?.actions ?? []).map((action) => action.id),
+        closedPhases: (state.plan?.actions ?? [])
+          .filter((action) => action.source === 'planner')
+          .map((action) => action.definition?.phase)
+          .filter(Boolean),
         currentActionCount: state.plan?.actions?.length ?? 0,
         maxActions: settings.maxActions,
         maxItemsPerExpansion: settings.maxItemsPerExpansion,
@@ -548,7 +626,10 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
       const why = err instanceof DecisionValidationError ? err.message : `planner decision rejected: ${err.message}`;
       state.outputs[gate.id] = { ...state.outputs[gate.id], ok: false, why };
       runtime.emit('decision.rejected', { gateId: gate.id, why, issues: err.issues ?? [] });
-      return { ok: false, why, budgetExhausted: /maxActions|maxItemsPerExpansion/.test(why) };
+      if (/maxActions|maxItemsPerExpansion/.test(why)) {
+        return terminalPlannerOutcome(state, gate, `Planner expansion safety bound reached: ${why}`);
+      }
+      return { ok: false, why };
     }
 
     const actionDefaults = { ...(gate.addDir != null ? { addDir: gate.addDir } : {}), ...(gate.actionDefaults ?? {}) };
@@ -579,7 +660,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     if (proposal.decision === 'complete') {
       const policy = state.orchestration?.completionPolicy;
       const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
-      const missing = completionEvidenceGaps(dynamicActions, policy);
+      const missing = completionEvidenceGaps(dynamicActions, policy, state.outputs);
       if (missing.length) {
         const why = `autonomous completion rejected: missing ${missing.join(' and ')}`;
         decision.accepted = false;
@@ -589,33 +670,50 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         runtime.persist();
         continue;
       }
+      state.outcome = {
+        status: 'completed',
+        verified: true,
+        bestEffort: false,
+        reason: proposal.reason,
+        concerns: [],
+        deliveryActionId: dynamicActions.filter((action) =>
+          action.kind !== 'verify' && actionOutputOk(action, state.outputs)).at(-1)?.id ?? null,
+      };
       return { ok: true, why: proposal.reason, complete: true, decision: proposal };
     }
     if (proposal.decision === 'proceed') return { ok: true, why: proposal.reason, decision: proposal };
-    if (proposal.decision === 'stop') return { ok: false, why: `planner stopped workflow: ${proposal.reason}`, decision: proposal };
+    if (proposal.decision === 'stop') {
+      return { ...terminalPlannerOutcome(state, gate, proposal.reason), decision: proposal };
+    }
     if (proposal.decision === 'wait_for_approval') {
       state.approval = { gateId: gate.id, reason: proposal.reason, requestedAt: new Date().toISOString() };
       runtime.setActionStatus(gate, { phase }, 'waiting_for_approval');
       return { ok: true, why: proposal.reason, waitingForApproval: true, decision: proposal };
     }
 
-    if (state.budget.expansionRound >= settings.maxExpansionRounds) {
-      const why = `budget exhausted: maxExpansionRounds=${settings.maxExpansionRounds}`;
-      state.outputs[gate.id] = { ...state.outputs[gate.id], ok: false, why, budgetExhausted: true };
-      return {
-        ok: false,
-        why,
-        budgetExhausted: true,
-      };
-    }
     state.budget.expansionRound += 1;
+    state.budget.expansionTarget = settings.maxExpansionRounds;
     state.budget.expansionLimit = settings.maxExpansionRounds;
+    state.budget.expansionAdvisoryOnly = true;
+    state.budget.expansionOverTargetBy = Math.max(
+      0,
+      state.budget.expansionRound - settings.maxExpansionRounds,
+    );
+    if (state.budget.expansionOverTargetBy > 0 && !state.budget.expansionTargetExceededAt) {
+      state.budget.expansionTargetExceededAt = new Date().toISOString();
+      runtime.emit('workflow.expansion_target_exceeded', {
+        target: settings.maxExpansionRounds,
+        round: state.budget.expansionRound,
+        overTargetBy: state.budget.expansionOverTargetBy,
+        advisoryOnly: true,
+      });
+    }
     state.stage = 'planning';
     state.plan.version += 1;
     const accepted = proposal.actions.map((action) => ({
       id: action.id,
       kind: action.type,
-      phase: `${phase}:adaptive`,
+      phase: executionPhase(action),
       dependsOn: action.dependsOn,
       source: 'planner',
       decisionSequence: decision.sequence,
@@ -666,6 +764,7 @@ export function buildReport(state, doc, runDir) {
       interruptedAt: state.interruptedAt ?? null,
     } : null,
     recovery: state.recovery ?? null,
+    outcome: state.outcome ?? null,
     resumeHistory: state.resumeHistory ?? [],
     summary: {
       stepsTotal: stepResults.length,

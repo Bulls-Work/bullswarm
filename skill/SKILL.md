@@ -86,15 +86,25 @@ Prefer this for ordinary goal-driven work. The caller supplies intent only:
 ```bash
 bullswarm workflow goal \
   "Fix the failing parser tests with the smallest correct change and verify them" \
-  --cwd=<abs/path/to/repo> --detach --json
+  --cwd=<abs/path/to/repo> --json
 ```
 
 The returned JSON contains `runId`, `shortId`, logs, and exact observation
-commands. Bullswarm chooses a capable orchestrator by quota surplus, supplies
+commands. Its `instructions` object separates `agentInspect`, low-noise `watch`,
+interactive `humanTui`, and terminal `result` retrieval. Bullswarm chooses a capable orchestrator by quota surplus, supplies
 the internal planning contract, validates every proposed graph expansion,
 routes workers independently, requires verification evidence, and replans until
 a truthful terminal state. The initiating agent does not create phases, action
 IDs, dependency JSON, planner prompts, or pool assignments.
+
+The autonomous orchestrator is one durable control-plane conversation, separate
+from execution phases. Connectors that declare conversation continuation (Grok
+and Claude Code) resume the provider session at later evidence checkpoints;
+individual turns remain visible in JSON audit state for spend and recovery, but
+the human TUI displays one orchestrator thread rather than several agents.
+Planner-created actions also have forward-only named phases. Once a phase has
+executed, a later turn must use a new phase name; Bullswarm rejects attempts to
+append new work beneath a completed phase.
 
 Observe from any other shell or agent:
 
@@ -105,6 +115,13 @@ bullswarm workflow tui --json <shortId>
 bullswarm workflow events --json <shortId> --after 0
 bullswarm workflow action show --json <shortId> <actionId>
 ```
+
+`workflow goal` starts the durable runner in the background, prints operating
+instructions, and returns by default. Add `--watch` to immediately follow
+low-noise progress until terminal. Open the full-screen Phase → Agent →
+Agent-steps viewer with the printed `humanTui` command; Up/Down, Enter, Esc, and
+`q` navigate or detach while work continues. `--foreground` explicitly restores
+terminal-owned execution.
 
 The detached runner does not depend on the initiating CLI remaining alive.
 Resume a process-interrupted run from its persisted definition with
@@ -183,6 +200,7 @@ bullswarm workflow runs --name <workflow>     # filter by workflow name
 bullswarm workflow runs --all --since 7d      # initiated in the last 7 days
 bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs show <shortId>        # state + report + summary
+bullswarm workflow runs result <shortId> --json # stable delivery for the caller
 bullswarm workflow runs delete <shortId> --yes
 ```
 
@@ -192,6 +210,12 @@ not completion time. `--since` is inclusive and `--until` is exclusive, with
 ISO timestamps, local dates, today/yesterday/tomorrow/now, or durations such as
 `7d`. Add `--all` or `--historical`; time filters do not silently change the
 normal ongoing-only scope.
+
+When the run is terminal, use `workflow runs result <id> --json` as the
+handoff contract. Its versioned result envelope points to the selected delivery
+artifact, the dependent verification verdict, progress, and usage. Do not guess
+the output schema by scraping task files or assume the last provider response is
+the deliverable; `runs show` is for low-level debugging.
 
 Before authoring or choosing a workflow, agents can inspect the live execution
 fabric and the workflow document itself:
@@ -219,6 +243,7 @@ bullswarm strategy show --json
 bullswarm strategy apply --yes --refresh-hours 24
 bullswarm strategy auto status
 bullswarm strategy assign high --pool <pool> --model <model>
+bullswarm strategy exclude-model <model>
 ```
 
 Connector-declared discovery, dated benchmark/pricing evidence, live quota,
@@ -229,6 +254,19 @@ persists assignments and enables TTL-based discovery/re-application. A step's
 an assignment, but it never bypasses capability, quarantine, exhaustion, or
 burst-gate safety. Each attempt records the chosen agent/model and labeled
 token, cost, and normalized-quota estimates in the workflow tree.
+
+`exclude-model` is a persisted hard policy, not a prompt hint. Excluded models
+are removed from recommendations and ignored in assignments. When a connector
+supports explicit model selection, Bullswarm pins an allowed model in the same
+effort tier; otherwise that pool is excluded because its implicit default
+cannot be guaranteed. Restore eligibility with `strategy include-model`.
+
+In the human TUI, the autonomous orchestrator has a compact selectable panel
+stacked above the phase tree. Select it and press Enter, or press
+`o`, to inspect its durable provider session, checkpoint turns and decisions,
+recent semantic actions, usage, prompt, and artifacts. Esc returns to phases.
+The shared state marks are `○` not started, animated Braille spinner active,
+`⧖` waiting, `✓` finished, and `✗` failed or interrupted.
 
 Run state also exposes the versioned plan, action ledger, aggregate usage, every attempt,
 planner decisions and reasons, budgets, `currentPhase`, `currentStep`, and
@@ -265,11 +303,13 @@ blocks into the same action shape and retains the latest three. Ten minutes
 without any transport/event/action evidence becomes `suspected_stalled` with
 `autoTerminate:false`; it is deliberately not treated as proof of death.
 
-For adaptive work, declare a `decide` step plus `maxExpansionRounds` and the
-other graph-growth safeguards (`maxActions` and `maxItemsPerExpansion`).
-`maxAgents` and `maxWorkflowSeconds` are advisory planning targets: they expose
-remaining headroom and overage to the orchestrator but never stop a worker or
-skip required verification. The loop is durable:
+For adaptive work, declare a `decide` step plus advisory
+`maxExpansionRounds` and the hard structural safeguards (`maxActions` and
+`maxItemsPerExpansion`). `maxAgents`, `maxWorkflowSeconds`, and
+`maxExpansionRounds` expose remaining headroom and overage to the orchestrator
+but never stop a worker or skip required verification. Near the targets the
+planner is instructed to converge, consolidate existing artifacts, and avoid
+optional work. The loop is durable:
 
 ```text
 execute -> observe -> decide -> validate proposal -> append -> execute -> observe
@@ -278,6 +318,9 @@ execute -> observe -> decide -> validate proposal -> append -> execute -> observ
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
 contain bounded actions; malformed or over-budget output executes nothing.
+`complete` still requires successful delivery and verification. `stop` returns
+`completed_with_concerns` with a ready best-effort artifact when useful work
+exists, or `blocked` when it does not; neither hides failed verification.
 Use `workflows/adaptive-code-review.json` as the starting template.
 Planner proposals cannot choose `pool`, `addDir`, or `taskFile`. Those fields
 are runtime-owned. An initiator may constrain them with a decide step's

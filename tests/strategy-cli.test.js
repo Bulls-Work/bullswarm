@@ -54,6 +54,21 @@ test('strategy subscription metadata and assignments are explicit persisted user
   }
 });
 
+test('strategy model exclusions are persisted and reversible', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    assert.equal(await cmdStrategy(['exclude-model', 'Claude-Fable-5'], { bullswarmDir: f.dir }), 0);
+    assert.deepEqual(loadState(f.dir).strategy.excludedModels, ['claude-fable-5']);
+    assert.equal(await cmdStrategy(['include-model', 'claude-fable-5'], { bullswarmDir: f.dir }), 0);
+    assert.deepEqual(loadState(f.dir).strategy.excludedModels, []);
+  } finally {
+    console.log = originalLog;
+    f.cleanup();
+  }
+});
+
 test('recommended assignments require an explicit apply and persist an auto-refresh policy', async () => {
   const f = fixture();
   try {

@@ -9,6 +9,61 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+export function normalizeExcludedModels(values = []) {
+  return unique((Array.isArray(values) ? values : [values])
+    .map((value) => String(value ?? '').trim().toLowerCase())
+    .filter(Boolean));
+}
+
+export function isModelExcluded(model, excludedModels = []) {
+  if (!model) return false;
+  const excluded = new Set(normalizeExcludedModels(excludedModels));
+  return excluded.has(String(model).trim().toLowerCase());
+}
+
+function configuredModel(connector) {
+  if (connector.model) return connector.model;
+  const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
+  return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
+}
+
+/**
+ * Resolve a model under the persisted routing policy. Once any model is
+ * excluded, an implicit provider default is not trustworthy: Bullswarm pins
+ * an allowed model through the connector-owned modelSelection flag, or marks
+ * that pool ineligible when it cannot guarantee the policy.
+ */
+export function resolveDispatchModel(connector, tier, {
+  assignment = null,
+  excludedModels = [],
+} = {}) {
+  const excluded = normalizeExcludedModels(excludedModels);
+  if (assignment?.pool === connector.name && !isModelExcluded(assignment.model, excluded)) {
+    return { eligible: true, model: assignment.model, source: 'assignment' };
+  }
+  if (!excluded.length) return { eligible: true, model: null, source: 'connector-default' };
+
+  const configured = configuredModel(connector);
+  const candidates = unique([...(connector.knownModels ?? []), configured])
+    .filter((model) => !isModelExcluded(model, excluded))
+    .map((model) => ({ model, profile: modelProfile(connector, model) }))
+    .filter((candidate) => candidate.profile?.tier === tier)
+    .sort((a, b) => Number(b.profile?.qualityRank ?? 0) - Number(a.profile?.qualityRank ?? 0));
+
+  if (connector.modelSelection?.flag && candidates[0]) {
+    return { eligible: true, model: candidates[0].model, source: 'exclusion-safe-tier-fallback' };
+  }
+  if (configured && !isModelExcluded(configured, excluded)) {
+    return { eligible: true, model: configured, source: 'configured-model' };
+  }
+  return {
+    eligible: false,
+    model: null,
+    source: 'model-policy-blocked',
+    reason: `cannot guarantee an allowed ${tier} model while exclusions are active`,
+  };
+}
+
 export function parseDiscoveredModels(output, discovery = {}) {
   const parse = discovery.parse ?? 'lines';
   const include = discovery.includePattern ? new RegExp(discovery.includePattern, 'i') : null;
@@ -53,11 +108,7 @@ export function discoverConnectorModels(connector, { executor = defaultExecutor 
       error = err.message;
     }
   }
-  const configured = (() => {
-    if (connector.model) return connector.model;
-    const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
-    return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
-  })();
+  const configured = configuredModel(connector);
   const models = unique([
     ...discovered,
     ...(connector.knownModels ?? []),
@@ -167,6 +218,7 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
       const discovery = discoveries[pool.name];
       for (const model of discovery?.models ?? []) {
         if (model.tier !== tier) continue;
+        if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
         candidates.push({ pool, model, score: 0 });
       }
     }
@@ -201,6 +253,7 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
     subscriptions,
     discoveries,
     suggestions,
+    excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
       'Benchmark and pricing fields are used only when connector metadata provides a dated source.',

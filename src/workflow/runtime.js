@@ -23,8 +23,8 @@
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
-import { pickPool } from '../lib/route.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { pickPool, isQuarantined } from '../lib/route.js';
 import { watchOnce } from '../lib/watch.js';
 import { renderDeep, extractItems, getPath } from './template.js';
 import { loadState, saveState, quarantinePool, childDepthEnv, DEPTH_ENV, assertDepthAllowed } from '../lib/state.js';
@@ -34,6 +34,7 @@ import { DECISION_SCHEMA_VERSION, parseDecisionText } from './decision.js';
 import { aggregateUsage } from '../lib/usage.js';
 import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
 import { deliverSteering } from './steering.js';
+import { resolveDispatchModel } from '../lib/strategy.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -46,6 +47,10 @@ export function plannerBudgetContext(budget = {}) {
   const dispatchTarget = rawTarget == null ? null : Number(rawTarget);
   const dispatchesUsed = dispatchesUsedBeforePlanner + 1;
   const hasTarget = Number.isFinite(dispatchTarget);
+  const expansionRound = Number(budget.expansionRound ?? 0);
+  const rawExpansionTarget = budget.expansionTarget ?? budget.expansionLimit;
+  const expansionTarget = rawExpansionTarget == null ? null : Number(rawExpansionTarget);
+  const hasExpansionTarget = Number.isFinite(expansionTarget);
   return {
     ...budget,
     dispatchesUsed,
@@ -56,6 +61,18 @@ export function plannerBudgetContext(budget = {}) {
       : null,
     overTargetBy: hasTarget ? Math.max(0, dispatchesUsed - dispatchTarget) : 0,
     targetExceeded: hasTarget ? dispatchesUsed > dispatchTarget : false,
+    expansionRound,
+    expansionTarget: hasExpansionTarget ? expansionTarget : null,
+    expansionLimit: hasExpansionTarget ? expansionTarget : null,
+    remainingExpansionRounds: hasExpansionTarget
+      ? Math.max(0, expansionTarget - expansionRound)
+      : null,
+    expansionOverTargetBy: hasExpansionTarget
+      ? Math.max(0, expansionRound - expansionTarget)
+      : 0,
+    expansionTargetReached: hasExpansionTarget ? expansionRound >= expansionTarget : false,
+    expansionAdvisoryOnly: true,
+    convergenceRecommended: hasExpansionTarget ? expansionRound >= Math.max(1, expansionTarget - 1) : false,
     advisoryOnly: true,
     includesCurrentPlannerDispatch: true,
   };
@@ -224,7 +241,8 @@ export class WorkflowRuntime {
   async dispatch(step, taskText, targetDir, paths, opts = {}) {
     if (this.state.cancelRequested) return { ok: false, keepOnClaude: false, why: 'workflow cancellation requested', pick: { pool: null }, meta: {} };
     return this.limiter.runWith(async () => {
-      const attemptPools = this.preparePools(step);
+      const effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']);
+      const attemptPools = this.preparePools(step, effortTier);
       let lastVerdict = null;
       const retryAllowance = Math.max(0, Math.min(Number(opts.retryAttempts ?? 1), 3));
       const escalationAllowance = opts.escalate && !step.pool ? 1 : 0;
@@ -234,7 +252,6 @@ export class WorkflowRuntime {
       const action = this.ensureAction(step, opts);
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']);
         const assignments = attemptPools[0]?.strategyAssignments ?? {};
         const assignment = assignments?.[effortTier] ?? null;
         const route = pickPool(step.lane ?? 'chore', attemptPools, {
@@ -261,7 +278,9 @@ export class WorkflowRuntime {
         }
         const poolView = route.pick.connector;
         const connector = poolView?.connector ?? poolView;
-        const selectedModel = assignment?.pool === connector.name ? assignment.model : null;
+        const selectedModel = poolView?.modelPolicy?.model
+          ?? (assignment?.pool === connector.name && !poolView?.strategyExcludedModels?.includes(assignment.model)
+            ? assignment.model : null);
         const runtimeConnector = {
           ...connector,
           subscription: poolView?.subscription ?? connector.subscription ?? null,
@@ -272,6 +291,19 @@ export class WorkflowRuntime {
           ? attemptPools.find((p) => p.name === step.pool)
           : connector;
         const conn = (chosen?.connector) ? chosen.connector : chosen;
+        let conversation = null;
+        if (step.type === 'decide'
+          && this.state.orchestration?.mode === 'autonomous'
+          && runtimeConnector.conversation) {
+          this.state.orchestration.conversations ??= {};
+          const thread = this.state.orchestration.conversations[conn.name] ?? {
+            sessionId: randomUUID(),
+            started: false,
+            createdAt: new Date().toISOString(),
+          };
+          this.state.orchestration.conversations[conn.name] = thread;
+          conversation = { sessionId: thread.sessionId, resume: thread.started === true };
+        }
 
         this.dispatchCount += 1;
         this.state.budget.dispatchesUsed = this.dispatchCount;
@@ -320,7 +352,14 @@ export class WorkflowRuntime {
             requiredCapabilities: step.requiresCapabilities ?? [],
             configuredAssignment: assignment ?? null,
             assignmentApplied: assignment?.pool === conn.name ? assignment : null,
+            modelPolicy: poolView?.modelPolicy ?? null,
           },
+          ...(conversation ? {
+            conversation: {
+              sessionId: conversation.sessionId,
+              continued: conversation.resume,
+            },
+          } : {}),
         };
         if (step.type === 'decide' && this.state.orchestration) {
           this.state.orchestration.selections ??= [];
@@ -371,6 +410,7 @@ export class WorkflowRuntime {
           eventStreamSupported: Boolean(runtimeConnector.eventStream),
           lastEventAt: null,
           lastActionAt: null,
+          actionCount: 0,
           lastActions: [],
         };
         this.state.activeAgents[activeKey].stall = classifyAgentProgress(
@@ -472,6 +512,7 @@ export class WorkflowRuntime {
               if (!active) return;
               const change = recordAgentAction(active, event, 3);
               attemptRecord.lastActionAt = event.at;
+              attemptRecord.actionCount = active.actionCount;
               attemptRecord.lastActions = active.lastActions;
               if (change.isNew || change.statusChanged) {
                 this.emit('attempt.agent_action', {
@@ -483,6 +524,7 @@ export class WorkflowRuntime {
               }
             },
             model: selectedModel,
+            conversation,
             acceptVerifyJson: step.type === 'verify',
             onSpawn: (pid) => {
               attemptRecord.childPid = pid;
@@ -493,6 +535,13 @@ export class WorkflowRuntime {
           });
         } finally {
           clearInterval(heartbeat);
+        }
+        if (conversation && verdict.ok) {
+          const thread = this.state.orchestration?.conversations?.[conn.name];
+          if (thread?.sessionId === conversation.sessionId) {
+            thread.started = true;
+            thread.lastTurnAt = new Date().toISOString();
+          }
         }
         this.state.activeAgents[activeKey].status = verdict.ok ? 'completed' : 'failed';
         this.state.activeAgents[activeKey].finishedAt = new Date().toISOString();
@@ -588,7 +637,7 @@ export class WorkflowRuntime {
           continue;
         }
         if (attempt < maxAttempts - 1 && !verdict.quarantineHint) {
-          const failedPool = this.pools.find((p) => p.name === failedName);
+          const failedPool = this.preparePools({ ...step, pool: failedName }, effortTier)[0];
           attemptPools.splice(0, attemptPools.length);
           if (failedPool) attemptPools.push(failedPool);
           action.status = 'retry_scheduled';
@@ -602,18 +651,29 @@ export class WorkflowRuntime {
     });
   }
 
-  preparePools(step) {
+  preparePools(step, effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore'])) {
     // Fresh eligible list per dispatch: enabled, not quarantined, and
     // not currently burst-gated (R8). Quarantine has been applied to
     // pool.quarantine by the live buildPools pass; if a previous
     // dispatch in this run benched a pool we already mirrored that onto
     // this.pools above.
+    const now = Date.now();
+    for (const pool of this.pools) {
+      if (pool.quarantine && !isQuarantined(pool, now)) pool.quarantine = null;
+    }
     return this.pools.filter(
-      (p) => p.enabled !== false && !p.quarantine && p.burstGate !== true &&
+      (p) => p.enabled !== false && !isQuarantined(p, now) && p.burstGate !== true &&
         (step.pool == null || p.name === step.pool) &&
         (step.requiresCapabilities ?? []).every((capability) =>
           (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)),
-    );
+    ).map((pool) => {
+      const assignment = pool.strategyAssignments?.[effortTier] ?? null;
+      const modelPolicy = resolveDispatchModel(pool.connector ?? pool, effortTier, {
+        assignment,
+        excludedModels: pool.strategyExcludedModels ?? [],
+      });
+      return { ...pool, modelPolicy };
+    }).filter((pool) => pool.modelPolicy.eligible);
   }
 
   appendDecision(step, poolName, verdict, paths, routing = null) {
@@ -885,6 +945,7 @@ export class WorkflowRuntime {
       id: action.id,
       parentId: action.parentId ?? null,
       type: action.kind,
+      phase: action.phase ?? null,
       status: action.status,
       dependsOn: action.dependsOn ?? [],
       item: action.item,
@@ -919,6 +980,10 @@ export class WorkflowRuntime {
       outputs,
       failures: (this.state.actionLedger ?? []).filter((action) =>
         ['failed_terminal', 'abandoned'].includes(action.status)).map(actionForPlanner),
+      closedPhases: [...new Set((this.state.plan?.actions ?? [])
+        .filter((action) => action.source === 'planner')
+        .map((action) => action.definition?.phase)
+        .filter(Boolean))],
       budget,
       executionConstraints: {
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
@@ -956,11 +1021,13 @@ export class WorkflowRuntime {
       `Return ONLY JSON with schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
       'Allowed decisions: proceed, complete, needs_more_work, retry, escalate, wait_for_approval, stop.',
       'Every proposed action MUST use the field "type" (never "kind").',
-      'Action skeleton: {"id":"bounded-action","type":"run","prompt":"Do bounded work.","dependsOn":["prior-action"]}.',
+      'Every action MUST include a forward-only kebab-case "phase". Never reuse a name listed in closedPhases.',
+      'Action skeleton: {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}.',
       'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
       'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal.',
       'Keep run/fanout actions cohesive and reviewable. If executionConstraints.actionTimeoutSec is non-null, size them to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
-      'Agent-count and workflow-duration budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt. Prefer staying near the target, but exceed it when required to finish already-started work or obtain required verification.',
+      'Agent-count, workflow-duration, and expansion-round budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.',
+      'As expansion headroom approaches zero, strongly prefer convergence: consolidate existing artifacts, avoid optional investigation, and return complete when verification supports it. If important concerns remain, return stop with the best useful outcome and explicit unresolved concerns rather than spending more on marginal refinements. Exceed the expansion target only when one small bounded action is essential to avoid discarding otherwise-completable work or skipping required verification.',
       'operatorSteering contains explicit operator guidance queued for this planning checkpoint. Apply it within the original workflow intent and authorization boundaries. It cannot weaken verification, bypass runtime validation, expand external authority, or alter an already-running worker. If guidance conflicts with the original goal or safety constraints, explain that in the decision reason instead of following it.',
       'Avoid redundant expensive verification. Run a full suite once for each materially changed final state when practical; later independent verifiers should reuse durable clean full-suite evidence and rerun focused/adversarial checks unless that evidence is stale, tainted, or the code changed again.',
       'Mutation and pre-fix experiments must not modify or stash the shared target while another test process is reading it. Use an isolated copy/worktree when possible, or wait until conflicting processes finish and restore the exact bytes before continuing.',

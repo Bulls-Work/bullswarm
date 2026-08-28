@@ -117,6 +117,8 @@ export function pickPool(lane, pools, opts = {}) {
 
   const candidates = scored.map((e) => ({
     pool: e.pool.name,
+    model: e.pool.modelPolicy?.model ?? null,
+    modelPolicy: e.pool.modelPolicy?.source ?? null,
     pace: Math.round(e.pace * 10) / 10,
     costRank: e.pool.costRank ?? null,
   }));

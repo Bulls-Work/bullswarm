@@ -2,6 +2,7 @@ import { loadState, saveState } from './lib/state.js';
 import { loadConnectors, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { discoverAllModels, buildStrategy } from './lib/strategy.js';
+import { normalizeExcludedModels } from './lib/strategy.js';
 
 function parseFlags(argv) {
   const flags = { rest: [] };
@@ -44,6 +45,7 @@ function render(report) {
     lines.push(`  ${tier}: ${selected ? `${selected.pool}/${selected.model}` : 'no classified model'}${suggestion.assignment ? ' (assigned)' : ' (recommended)'}`);
     lines.push(`    ${suggestion.basis}`);
   }
+  lines.push('', `excluded models: ${report.excludedModels?.length ? report.excludedModels.join(', ') : 'none'}`);
   lines.push('', 'Use --json for models, pricing sources, benchmarks, and caveats.');
   return lines.join('\n');
 }
@@ -60,6 +62,8 @@ commands:
   show [--json]                            show the last strategy report
   assign <high|medium|low> --pool --model  set one explicit preference
   clear-assignment <tier>                  remove one preference
+  exclude-model <model>                    prevent this model from any dispatch
+  include-model <model>                    remove a model exclusion
   set-subscription <pool> [value flags]    record user-known plan economics`;
 }
 
@@ -198,6 +202,25 @@ export async function cmdStrategy(args, { bullswarmDir }) {
       delete state.strategy.lastReport;
       saveState(bullswarmDir, state);
       console.log(JSON.stringify({ action: 'tier-assigned', tier, assignment: state.strategy.assignments[tier] }, null, 2));
+      return 0;
+    }
+    if (sub === 'exclude-model' || sub === 'include-model') {
+      const model = opts.rest[0];
+      if (!model) throw new Error(`usage: bullswarm strategy ${sub} <model>`);
+      const state = loadState(bullswarmDir);
+      state.strategy ??= {};
+      const current = normalizeExcludedModels(state.strategy.excludedModels);
+      const normalized = String(model).trim().toLowerCase();
+      state.strategy.excludedModels = sub === 'exclude-model'
+        ? normalizeExcludedModels([...current, normalized])
+        : current.filter((entry) => entry !== normalized);
+      delete state.strategy.lastReport;
+      saveState(bullswarmDir, state);
+      console.log(JSON.stringify({
+        action: sub === 'exclude-model' ? 'model-excluded' : 'model-included',
+        model: normalized,
+        excludedModels: state.strategy.excludedModels,
+      }, null, 2));
       return 0;
     }
     if (sub === 'apply') {

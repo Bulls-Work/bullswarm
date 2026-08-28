@@ -14,6 +14,15 @@ bullswarm workflow run --help
 bullswarm workflow draft step add --help
 ```
 
+`workflow goal` launches a durable background runner, prints operating commands,
+and returns by default. Add `--watch` to immediately follow low-noise progress
+until terminal, or `--foreground` to keep execution owned by the initiating
+terminal. Open the full-screen Phase → Agent → Activity viewer at any time with
+`bullswarm workflow tui <shortId>`; use Up/Down, Enter, Esc, and `q` to detach.
+Wide terminals use two
+contextual panes (phases + agents, then agents + activity); narrow and mobile
+terminals give each level the full screen automatically.
+
 ## The doctrine (non-negotiable)
 
 1. **Judge by CONTENT, not exit code.** Every delegate CLI can exit 0 while
@@ -88,6 +97,7 @@ bullswarm strategy auto status
 bullswarm strategy set-subscription command-code \
   --plan GOAT --monthly-usd 10 --included-usd 70 --quota-window monthly
 bullswarm strategy assign high --pool claude-code --model claude-opus-4-6
+bullswarm strategy exclude-model claude-fable-5
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
 ```
 
@@ -103,6 +113,12 @@ prices, and benchmarks stay `null` rather than being guessed. An assignment is
 only a preference: quarantine, exhaustion, burst gates, and capability checks
 still win.
 
+Model exclusions are hard routing policy. An excluded model is removed from
+recommendations and assignments, and Bullswarm pins a same-tier allowed model
+through the connector-owned model flag whenever the provider default could be
+excluded. A pool that cannot guarantee the exclusion is ineligible for that
+dispatch. Reverse the policy with `bullswarm strategy include-model <model>`.
+
 Every run and workflow attempt reports its selected agent/model and estimated
 usage. When a delegate does not expose counters, Bullswarm labels its UTF-8
 byte/4 token estimate. The breakdown separates standard read, cache read,
@@ -116,25 +132,32 @@ phase/step/attempt tree.
 For normal multi-step work, give Bullswarm the goal—not a JSON graph:
 
 ```bash
-# Foreground: streams progress and returns when terminal.
+# Default: starts independently, prints observation/result commands, and returns.
 bullswarm workflow goal \
   "Fix the failing tests with the smallest correct change and verify them" \
   --cwd ~/some-repo
 
-# Detached: the initiating CLI exits; the workflow continues independently.
+# Follow low-noise semantic progress immediately after launch.
 bullswarm workflow goal \
   "Audit and repair the parser, then run its acceptance tests" \
-  --cwd ~/some-repo --detach --json
+  --cwd ~/some-repo --watch
 ```
 
 Bullswarm first honors an approved high-tier provider/model assignment when it
 remains eligible, otherwise it selects an eligible `workflow-planning`
-orchestrator by live quota surplus. The orchestrator observes durable evidence, proposes bounded actions,
+orchestrator by live quota surplus. The orchestrator is one durable control-plane
+conversation: Grok and Claude resume the same provider session at later
+checkpoints, while Bullswarm keeps each turn separately auditable for routing,
+usage, and recovery. It observes durable evidence, proposes bounded actions,
 and decides when another expansion or verification is necessary. Bullswarm
 validates the proposal, owns agent/process selection, routes workers, and calls
 the orchestrator again until completion, cancellation, failure, approval, or a
 hard graph-growth safeguard. No initial phases, prompts, JSON schema, or agent choice are
 required from the user.
+
+Planner actions carry forward-only kebab-case phase names. A finished phase is
+sealed: later planner turns must create a new phase for repair or verification,
+so the TUI cannot jump backward or append work beneath a completed phase.
 
 The detached response includes a short ID and exact observation commands:
 
@@ -155,8 +178,9 @@ bullswarm workflow goal --resume <shortId> --json
 
 `--orchestrator <pool>` exists for controlled testing; ordinary use should
 leave selection on `auto`. `--max-agents` and `--max-workflow-seconds` are
-advisory planning targets; hard graph-growth safeguards are adjusted with
-`--max-expansion-rounds`, `--max-actions`, and `--max-items-per-expansion`.
+advisory planning targets; `--max-expansion-rounds` is also an advisory
+convergence target. Hard structural safeguards are adjusted with
+`--max-actions` and `--max-items-per-expansion`.
 Interactive setup also records a worktree-isolation
 preference (`agent-decides`, `off`, or `required`); Bullswarm communicates that
 policy to the orchestrator without imposing repository topology itself.
@@ -205,6 +229,7 @@ bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs --all --from 2026-08-20 --to 2026-08-27
 bullswarm workflow runs --limit 20         # cap the result count
 bullswarm workflow runs show <shortId>     # state + report + summary
+bullswarm workflow runs result <shortId> --json  # stable result for the calling agent
 bullswarm runs show <shortId>              # top-level shorthand
 bullswarm workflow runs delete <shortId> --yes    # remove the run dir
 
@@ -217,6 +242,19 @@ Run-history time filters always compare when the workflow was initiated
 exclusive; `--started-after`/`--from` and `--started-before`/`--to` are aliases.
 Values accept ISO timestamps, local `YYYY-MM-DD` dates, `today`, `yesterday`,
 `tomorrow`, `now`, or relative durations such as `30m`, `24h`, `7d`, and `2w`.
+
+After a workflow reaches a terminal state, agents should consume
+`workflow runs result <id> --json` instead of probing `state.json`, task files,
+or provider-specific output. The versioned `bullswarm.workflow.result.v1`
+envelope identifies the final delivery artifact and its matching verification
+verdict, and includes progress, step logs, tokens, and an explicitly
+complete-or-partial tool-call total. `runs show` remains the low-level debugging
+surface.
+Goal launch output includes an `instructions` handoff with four named paths:
+`agentInspect` for a machine-readable snapshot, `watch` for low-noise progress,
+`humanTui` for the interactive browser, and `result` for the terminal delivery.
+Use `--watch` when the initiating terminal should immediately follow progress;
+otherwise the command returns after printing this handoff.
 Time filters preserve the existing scope, so use `--all` or `--historical` when
 auditing completed runs.
 
@@ -234,9 +272,20 @@ bullswarm workflow watch <shortId> --jsonl       # automation-friendly stream
 bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
 ```
 
-`workflow tui` is the interactive, Claude-style `/workflows` view. It watches
-ongoing runs from disk and supports `j`/`k` or arrow-key selection, Enter for
-details, `c` to request a cooperative stop, `r` to refresh, and `q` to quit.
+`workflow tui` is the interactive, Claude-style `/workflows` view. For an
+autonomous goal its left navigation stacks a compact Orchestrator panel above
+the Phases panel; internal planner turns never appear as workers or phases.
+Select Orchestration and press Enter, or press `o`
+anywhere, to inspect the logical orchestration conversation: provider session,
+checkpoint turns and decisions, recent semantic actions, usage, prompt, and
+artifacts. Status marks are consistent throughout the tree: `○` not started,
+an animated Braille spinner for active work, `⧖` waiting, `✓` finished, and
+`✗` failed or interrupted. The non-emoji `⧖` avoids the inconsistent cell
+width of `⌛` across terminal fonts. It watches ongoing runs from disk and supports `j`/`k` or arrow-key selection, Enter for
+details, Esc to go back, `c` to request a confirmed cooperative stop, `r` to
+refresh, and `q` to detach. Its responsive drill-down fits both desktop and
+mobile SSH terminals without squeezing phase, agent, and activity into three
+narrow columns.
 
 ```bash
 bullswarm workflow tui
@@ -281,12 +330,18 @@ declaratively map provider events into a common semantic action record:
 {"id":"provider-action-id","at":"...","kind":"shell_command|read_file|edit|response","status":"running|completed|failed","summary":"safe scalar preview"}
 ```
 
-The live workflow pane retains the latest three logical actions per agent.
+The live workflow pane retains and numbers the latest three logical actions per agent.
 Repeated updates for the same tool call replace its status, and streaming text
 chunks coalesce into one response action. Heartbeats, token/thought deltas,
 usage messages, hooks, and unparsed output remain liveness evidence but do not
-occupy the action pane. Connector-specific flags, paths, and mappings live in
+occupy the action pane. The viewer tracks the total logical-action count so it
+can display `last 3 of N`, and completed-agent detail includes a scrollable
+Outcome read from the durable output artifact. Connector-specific flags, paths, and mappings live in
 `connectors/*.json` under `eventStream`; core contains no provider event names.
+Raw structured stdout is treated as an agent transcript, not a provider error
+channel, so reading source text such as an auth-signature matcher cannot falsely
+quarantine Grok or Command Code. Error-shaped semantic results and stderr
+diagnostics still trigger the auth/quota guard.
 
 After ten minutes without transport, parsed-event, or semantic-action evidence,
 an active child is labeled `suspected_stalled`. This is an inspection signal,
@@ -335,12 +390,21 @@ limits:
 }
 ```
 
-`maxAgents` and `maxWorkflowSeconds` are advisory inputs to the orchestrator.
-Crossing either target is recorded in durable state but never stops a worker,
-skips verification, or fails a run. `maxExpansionRounds`, `maxActions`, and
-`maxItemsPerExpansion` remain hard graph-growth safeguards. Delegates have no
+`maxAgents`, `maxWorkflowSeconds`, and `maxExpansionRounds` are advisory inputs
+to the orchestrator. Approaching them strongly biases the planner toward
+consolidating existing artifacts and returning the best useful outcome;
+crossing them is recorded but never stops a worker, skips verification, or
+fails a run. `maxActions` and `maxItemsPerExpansion` remain hard structural
+safeguards. Reaching one returns a qualified outcome when useful work exists,
+rather than discarding the run as a blanket failure. Delegates have no
 implicit wall-clock timeout; set a step's `timeoutSec` (or direct-run
 `--timeout`) only when an operator explicitly wants a hard termination timer.
+
+An autonomous `complete` remains strictly verified. A planner `stop` produces
+`completed_with_concerns` when a useful delivery exists, including unresolved
+verification concerns and the stopping reason; it produces `blocked` only
+when no useful delivery exists. `workflow runs result` treats the qualified
+delivery as ready while reporting `verified:false`.
 
 The planner returns versioned JSON. It may propose `needs_more_work` with
 bounded `run`, inline-`fanout`, or `verify` actions. The deterministic runtime

@@ -31,7 +31,7 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
   );
 }
 
-export function argvWithModel(connector, paths, model = null) {
+export function argvWithModel(connector, paths, model = null, conversation = null) {
   const argv = substituteArgv(connector.spawn.cmd, paths);
   if (model && connector.modelSelection?.flag) {
     const flag = connector.modelSelection.flag;
@@ -42,6 +42,12 @@ export function argvWithModel(connector, paths, model = null) {
     } else {
       argv.push(flag, model);
     }
+  }
+  if (conversation?.sessionId && connector.conversation) {
+    const template = conversation.resume
+      ? connector.conversation.resumeArgs
+      : connector.conversation.newArgs;
+    argv.push(...(template ?? []).map((arg) => String(arg).replaceAll('{sessionId}', conversation.sessionId)));
   }
   argv.push(...(connector.eventStream?.args ?? []));
   return argv;
@@ -59,7 +65,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   const argv = argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
-  }, opts.model);
+  }, opts.model, opts.conversation);
   const usePwdMode = connector.spawn.cwdMode === 'pwd';
   // realpath: getcwd() resolves symlinks (macOS /var -> /private/var), so an
   // unresolved PWD would disagree with cwd and defeat wrong-repo detection.
@@ -95,7 +101,15 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     });
     const stopOnFatalSignature = () => {
       if (fatalSignature) return;
-      fatalSignature = matchAuthSignature(connector, `${stdout}\n${stderr}`.slice(-4000));
+      // Structured stdout is an agent transcript. It routinely contains file
+      // contents, grep matches, and shell output, so matching fatal words in
+      // that transport can kill a healthy agent merely for reading auth code.
+      // Provider diagnostics on stderr remain safe to terminate on. Plain-text
+      // connectors retain the legacy combined-stream fast-fail behavior.
+      const transport = connector.outputExtraction?.strategy === 'event-stream'
+        ? stderr
+        : `${stdout}\n${stderr}`;
+      fatalSignature = matchAuthSignature(connector, transport.slice(-4000));
       if (!fatalSignature) return;
       // Give a well-behaved CLI a brief chance to exit with its own truthful
       // status, but do not wait indefinitely after a definitive auth/quota
@@ -199,6 +213,20 @@ function matchAuthSignature(connector, text) {
   return sigs.find((s) => text.toLowerCase().includes(s.toLowerCase())) ?? null;
 }
 
+function matchLikelyAuthFailure(connector, text) {
+  const hit = matchAuthSignature(connector, text);
+  if (!hit) return null;
+  const lower = String(text).toLowerCase();
+  const index = lower.indexOf(hit.toLowerCase());
+  const lineStart = lower.lastIndexOf('\n', index) + 1;
+  const lineEnd = lower.indexOf('\n', index);
+  const line = lower.slice(lineStart, lineEnd < 0 ? lower.length : lineEnd).trim();
+  // A semantic result may legitimately discuss auth handling. Require the
+  // matched line to look like a provider failure instead of source/report text.
+  const errorShaped = /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|403|429)|status\s*(?:401|403|429)|login required|please login|access denied|quota exceeded)\b/i.test(line);
+  return errorShaped ? hit : null;
+}
+
 /**
  * Watch one delegation end-to-end. Returns the standard verdict.
  */
@@ -224,12 +252,11 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
-  //   auth signature anywhere in the first 2000 chars -> fail + quarantine
-  //     hint (checked BEFORE generic failure patterns so the specific cause
-  //     wins; codex-style CLIs log auth errors after banner noise, so a
-  //     fixed 400-char head misses them).
+  //   an error-shaped auth signature in the extracted semantic response ->
+  //     fail + quarantine hint (raw structured tool output is not evidence of
+  //     provider auth health).
   //   else content judge decides; exit code only modulates flags.
-  const authHit = obs.fatalSignature ?? matchAuthSignature(connector, output.slice(0, 2000));
+  const authHit = obs.fatalSignature ?? matchLikelyAuthFailure(connector, output.slice(0, 2000));
 
   let verdict;
   if (obs.cancelled) {

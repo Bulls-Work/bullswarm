@@ -21,7 +21,8 @@
 //       includes historical; `--historical` shows only historical;
 //       `--name <wf>` filters by workflow; initiated-time bounds compare
 //       `startedAt` with an inclusive lower and exclusive upper bound.
-//   I10. `runs show <id>` accepts a shortId or a full runId.
+//   I10. `runs show <id>` accepts a shortId or a full runId; `runs result`
+//        returns the stable caller-facing delivery envelope.
 //   I11. `runs delete <id>` refuses without --yes; refuses for an
 //        ongoing run without --force; deletes with both flags.
 //   I12. `workflow run --resume <shortId>` resolves to the full runId.
@@ -33,6 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { runWorkflow } from '../src/workflow/runner.js';
+import { buildWorkflowResult } from '../src/workflow/result.js';
 import {
   generateShortId, isShortId, resolveRunId, listRuns, isOngoing,
   reconcileInterruptedRun, SHORT_ID_ALPHABET, SHORT_ID_LEN, ONGOING_GRACE_MS,
@@ -549,6 +551,91 @@ test('I10: workflow runs show <id> accepts both shortId and full runId', async (
     const byFull = run(wf('runs', 'show', r.runId), { home });
     assert.equal(byFull.status, 0, byFull.stderr);
     assert.match(byFull.stdout, new RegExp(r.runId));
+
+    const resultRun = run(wf('runs', 'result', r.state.shortId, '--json'), { home });
+    assert.equal(resultRun.status, 0, resultRun.stderr);
+    const result = JSON.parse(resultRun.stdout);
+    assert.equal(result.schemaVersion, 'bullswarm.workflow.result.v1');
+    assert.equal(result.runId, r.runId);
+    assert.equal(result.shortId, r.state.shortId);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.ready, true);
+    assert.equal(result.delivery.actionId, 'go');
+    assert.equal(result.delivery.format, 'text');
+    assert.match(result.delivery.content, /processed the task file successfully/i);
+    assert.equal(result.delivery.truncated, false);
+    assert.equal(result.agentProgress.completed, 1);
+    assert.equal(result.agentProgress.total, 1);
+    assert.deepEqual(result.logs.map((entry) => entry.actionId), ['go']);
+    assert.equal(typeof result.totalTokens, 'number');
+    assert.ok(result.tokenUsage);
+    assert.equal(typeof result.totalToolCalls.complete, 'boolean');
+  } finally { cleanup(); }
+});
+
+test('I10: caller result selects the latest run delivery and its dependent verifier', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const artifact = join(home, 'delivery.json');
+    writeFileSync(artifact, JSON.stringify({ confirmed: 3, refuted: 6 }));
+    const state = {
+      shortId: 'abc234', workflow: 'audit', status: 'completed',
+      intent: { goal: 'Audit candidates' },
+      startedAt: '2026-08-28T01:00:00.000Z', finishedAt: '2026-08-28T01:02:00.000Z',
+      actionLedger: [
+        { id: 'draft', kind: 'run', status: 'succeeded', phase: 'audit' },
+        { id: 'delivery', kind: 'run', status: 'succeeded', phase: 'verify' },
+        { id: 'skeptic', kind: 'verify', status: 'succeeded', dependsOn: ['delivery'], phase: 'verify' },
+        { id: 'orchestrator', kind: 'decide', status: 'succeeded', phase: 'verify' },
+      ],
+      outputs: {
+        delivery: { outFile: artifact },
+        skeptic: { outFile: join(home, 'verify.md'), verify: { ok: true, concerns: [], summary: 'checked' } },
+      },
+      attempts: [
+        { actionId: 'delivery', status: 'succeeded', finishedAt: '2026-08-28T01:01:00.000Z', actionCount: 4 },
+        { actionId: 'skeptic', status: 'succeeded', finishedAt: '2026-08-28T01:01:30.000Z', actionCount: 3 },
+        { actionId: 'orchestrator', status: 'succeeded', finishedAt: '2026-08-28T01:02:00.000Z', actionCount: 2 },
+      ],
+      steps: [], usage: { tokens: { totalKnown: 4200, output: 800 } },
+    };
+    const result = buildWorkflowResult({
+      state, report: { summary: { stepsOk: 3, stepsFailed: 0 } },
+      runId: 'wf-example', shortId: 'abc234', ongoing: false,
+    });
+    assert.equal(result.delivery.actionId, 'delivery');
+    assert.equal(result.delivery.format, 'json');
+    assert.deepEqual(result.delivery.content, { confirmed: 3, refuted: 6 });
+    assert.equal(result.verification.actionId, 'skeptic');
+    assert.equal(result.verification.verdict.ok, true);
+    assert.equal(result.totalTokens, 4200);
+    assert.deepEqual(result.totalToolCalls, { known: 9, complete: true, attemptsMissingCount: 0 });
+  } finally { cleanup(); }
+});
+
+test('I10: qualified terminal result remains ready and exposes unresolved concerns', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const artifact = join(home, 'best-effort.md');
+    writeFileSync(artifact, 'Useful completed analysis with one unresolved verification concern.');
+    const outcome = {
+      status: 'completed_with_concerns', verified: false, bestEffort: true,
+      reason: 'Further refinement is disproportionate.', concerns: ['Independent verification was not satisfied.'],
+      deliveryActionId: 'analysis',
+    };
+    const result = buildWorkflowResult({
+      state: {
+        shortId: 'abc234', workflow: 'qualified', status: 'completed_with_concerns', outcome,
+        actionLedger: [{ id: 'analysis', kind: 'run', status: 'succeeded', phase: 'analyze' }],
+        outputs: { analysis: { ok: true, outFile: artifact } }, attempts: [], steps: [],
+      },
+      report: { summary: { stepsOk: 1, stepsFailed: 0 } },
+      runId: 'wf-qualified', shortId: 'abc234', ongoing: false,
+    });
+    assert.equal(result.ready, true);
+    assert.equal(result.verified, false);
+    assert.deepEqual(result.outcome, outcome);
+    assert.equal(result.delivery.actionId, 'analysis');
   } finally { cleanup(); }
 });
 

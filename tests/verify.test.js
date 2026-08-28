@@ -67,3 +67,8 @@ test('curly-apostrophe intent announcements are not mistaken for completed work'
     + 'The three docs are loaded. Next I’ll check leftover research, current permission contracts, and likely gaps so later calls rest on line-level evidence.';
   assert.equal(judgeContent(output).verdict, 'intent_only');
 });
+
+test('substantive report may explain unauthorized matching near its head', () => {
+  const output = "I'll inspect the requested files. Source text that contains `unauthorized` is not treated as a provider auth failure. The watch layer distinguishes structured transcript content from error-shaped provider diagnostics, and the content gate only rejects a standalone auth failure at the output start. Both behaviors were verified against the named source files.";
+  assert.equal(judgeContent(output).verdict, 'pass');
+});

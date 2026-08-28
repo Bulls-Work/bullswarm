@@ -37,6 +37,10 @@ test('planner budget includes its in-flight dispatch and exposes advisory headro
   assert.equal(context.targetExceeded, false);
   assert.equal(context.advisoryOnly, true);
   assert.equal(context.includesCurrentPlannerDispatch, true);
+  assert.equal(context.expansionTarget, 4);
+  assert.equal(context.remainingExpansionRounds, 2);
+  assert.equal(context.expansionTargetReached, false);
+  assert.equal(context.expansionAdvisoryOnly, true);
 
   const over = plannerBudgetContext({ dispatchesUsed: 12, dispatchTarget: 12 });
   assert.equal(over.dispatchesUsed, 13);
@@ -44,6 +48,11 @@ test('planner budget includes its in-flight dispatch and exposes advisory headro
   assert.equal(over.overTargetBy, 1);
   assert.equal(over.targetExceeded, true);
   assert.equal(over.advisoryOnly, true);
+
+  const converge = plannerBudgetContext({ expansionRound: 4, expansionTarget: 4 });
+  assert.equal(converge.remainingExpansionRounds, 0);
+  assert.equal(converge.expansionTargetReached, true);
+  assert.equal(converge.convergenceRecommended, true);
 });
 
 function fixtureHome() {

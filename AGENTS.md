@@ -37,7 +37,7 @@ content. Published as `bullswarm` on npm.
 ## Development
 
 ```bash
-npm test            # 235 tests, no network needed (meters read from cache)
+npm test            # 256 tests, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
 node bin/bullswarm.js workflow list   # discover workflows
 node bin/bullswarm.js workflow runs   # ongoing workflow instances

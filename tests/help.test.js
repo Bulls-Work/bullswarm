@@ -33,6 +33,7 @@ test('every documented command and nested subcommand accepts --help', () => {
 test('help remains contextual when operands precede the flag', () => {
   assert.match(helpForArgs(['workflow', 'run', 'demo', '--help']), /workflow run <file-or-name>/);
   assert.match(helpForArgs(['workflow', 'runs', 'show', 'abc234', '-h']), /runs show <shortId\|runId>/);
+  assert.match(helpForArgs(['workflow', 'runs', 'result', 'abc234', '-h']), /runs result <shortId\|runId>/);
   assert.match(helpForArgs(['workflow', 'draft', 'step', 'add', 'd', 'p', 's', '--help']), /draft step add/);
 });
 

@@ -22,6 +22,7 @@ import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
+import { isDeliveredWorkflowStatus } from './status.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -165,11 +166,13 @@ function goalUsage() {
 
 options:
   --cwd <dir>                    target working directory
-  --detach                       launch independently and return observation commands
+  --detach                       explicitly request the default independent launch
+  --watch                        launch independently, then watch until terminal
+  --foreground                   keep execution owned by this terminal
   --json                         emit one machine-readable launch/report document
   --orchestrator <pool|auto>     pin only for controlled use; default capability routing
   --max-agents <n>               advisory dispatch target (default 30)
-  --max-expansion-rounds <n>     planner expansion ceiling (default 8)
+  --max-expansion-rounds <n>     advisory convergence target (default 8)
   --max-actions <n>              durable action ceiling (default 40)
   --max-items-per-expansion <n>  fanout item ceiling (default 8)
   --max-workflow-seconds <n>     advisory duration target (default 3600)
@@ -189,7 +192,7 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId }) {
     onEvent: opts.json ? undefined : (event) => tui.handle(event),
   });
   if (opts.json) console.log(JSON.stringify(result.report, null, 2));
-  return result.report.status === 'completed' ? 0 : 1;
+  return isDeliveredWorkflowStatus(result.report.status) ? 0 : 1;
 }
 
 async function launchDetachedGoal(doc, opts) {
@@ -237,7 +240,10 @@ async function launchDetachedGoal(doc, opts) {
 
   let state = null;
   const statePath = join(BULLSWARM_DIR(), 'workflows', runId, 'state.json');
-  for (let i = 0; i < 100 && !state; i++) {
+  // A detached child can take a few seconds to publish state when the host is
+  // busy (for example while several provider/test processes are starting).
+  // Keep the launch handoff deterministic before --watch resolves the run.
+  for (let i = 0; i < 400 && !state; i++) {
     if (existsSync(statePath)) {
       try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* atomic state write in progress */ }
     }
@@ -255,24 +261,63 @@ async function launchDetachedGoal(doc, opts) {
     observe: {
       watch: `bullswarm workflow watch ${state?.shortId ?? runId}`,
       summary: `bullswarm workflow runs show ${state?.shortId ?? runId}`,
-      dashboard: `bullswarm workflow tui --json ${state?.shortId ?? runId}`,
+      result: `bullswarm workflow runs result ${state?.shortId ?? runId} --json`,
+      dashboard: `bullswarm workflow tui ${state?.shortId ?? runId}`,
+      inspect: `bullswarm workflow tui --json ${state?.shortId ?? runId}`,
       events: `bullswarm workflow events --json ${state?.shortId ?? runId} --after 0`,
     },
     logs: { stdout: stdoutPath, stderr: stderrPath },
   };
-  if (opts.json) console.log(JSON.stringify(launch, null, 2));
-  else {
-    console.log(`launched autonomous workflow ${launch.shortId ?? runId} (pid ${child.pid})`);
-    console.log(`  observe: ${launch.observe.watch}`);
-    console.log(`  events:  ${launch.observe.events}`);
+  launch.instructions = goalLaunchInstructions(launch.observe);
+  if (!opts.silentLaunch && opts.json) console.log(JSON.stringify(launch, null, 2));
+  else if (!opts.silentLaunch) {
+    printGoalLaunchInstructions(launch);
   }
-  return 0;
+  return launch;
+}
+
+function goalLaunchInstructions(observe) {
+  return {
+    agentInspect: {
+      purpose: 'Obtain a machine-readable snapshot for an agentic caller.',
+      command: observe.inspect,
+    },
+    watch: {
+      purpose: 'Follow low-noise semantic progress until the workflow is terminal.',
+      command: observe.watch,
+    },
+    humanTui: {
+      purpose: 'Open the interactive Phase → Agent → Activity browser; q detaches safely.',
+      command: observe.dashboard,
+    },
+    result: {
+      purpose: 'After completion, obtain the stable delivery and verification envelope.',
+      command: observe.result,
+    },
+  };
+}
+
+function printGoalLaunchInstructions(launch) {
+  console.log(`workflow ${launch.shortId ?? launch.runId} continues independently; next commands:`);
+  for (const [name, instruction] of Object.entries(launch.instructions)) {
+    console.log(`  ${name.padEnd(13)} ${instruction.command}`);
+    console.log(`                 ${instruction.purpose}`);
+  }
+}
+
+export function shouldAutoWatchGoal(opts) {
+  return opts.watch === true && opts.detach !== true && opts.foreground !== true &&
+    opts.json !== true && opts.resume == null && opts.request == null;
 }
 
 async function wfGoal(opts) {
   if (opts.help) {
     console.log(goalUsage());
     return 0;
+  }
+  if (opts.watch && (opts.detach || opts.foreground || opts.json || opts.resume || opts.request)) {
+    console.error('✗ --watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request');
+    return 2;
   }
   const { names, pools } = await livePoolNames();
   let doc;
@@ -346,7 +391,13 @@ async function wfGoal(opts) {
     throw err;
   }
 
-  if (opts.detach && !resumeRunId && !opts.request) return launchDetachedGoal(doc, opts);
+  if (!opts.foreground && !resumeRunId && !opts.request) {
+    const launch = await launchDetachedGoal(doc, opts);
+    if (shouldAutoWatchGoal(opts)) {
+      return runWorkflowWatch(BULLSWARM_DIR(), launch.shortId ?? launch.runId);
+    }
+    return 0;
+  }
   return executeGoalDocument({
     doc,
     pools,
@@ -382,10 +433,11 @@ async function wfCapabilities(opts) {
     },
     routing: {
       automatic: true,
-      selection: 'approved effort-tier assignment when eligible; otherwise highest time-adjusted quota surplus among lane/capability-eligible, enabled, non-quarantined, non-burst-gated pools',
-      modelSelection: 'connector-declared discovery and model flag; approved capability-aware strategy assignments may select a model',
+      selection: 'approved effort-tier assignment when eligible; otherwise highest time-adjusted quota surplus among lane/capability/model-policy-eligible, enabled, non-quarantined, non-burst-gated pools',
+      modelSelection: 'connector-declared discovery and model flag; approved assignments may select a model; excluded models are never dispatched and force an allowed tier fallback when supported',
       strategyPolicy: coreState.strategy?.policy ?? null,
       assignments: coreState.strategy?.assignments ?? {},
+      excludedModels: coreState.strategy?.excludedModels ?? [],
     },
     worktreeIsolation: {
       policy: coreState.config?.worktreeIsolation ?? 'agent-decides',
@@ -703,7 +755,7 @@ async function wfRun(opts) {
   if (opts.json) {
     console.log(JSON.stringify(result.report, null, 2));
   }
-  return result.report.status === 'completed' ? 0 : 1;
+  return isDeliveredWorkflowStatus(result.report.status) ? 0 : 1;
 }
 
 function wfList(opts) {

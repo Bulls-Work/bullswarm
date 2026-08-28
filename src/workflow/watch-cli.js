@@ -7,10 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId } from './short-id.js';
 import { readSteering } from './steering.js';
-
-const TERMINAL = new Set([
-  'completed', 'failed', 'cancelled', 'interrupted', 'budget_exhausted',
-]);
+import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -97,8 +94,8 @@ export function watchSnapshot(runDir, state, now = new Date()) {
         kind: action.kind ?? 'agent', status: action.status, summary: action.summary ?? null,
       })),
     })),
-    terminal: TERMINAL.has(state.status) || Boolean(state.finishedAt),
-    timing: TERMINAL.has(state.status) || state.finishedAt ? timingBreakdown(state) : null,
+    terminal: isTerminalWorkflowStatus(state.status) || Boolean(state.finishedAt),
+    timing: isTerminalWorkflowStatus(state.status) || state.finishedAt ? timingBreakdown(state) : null,
   };
 }
 
@@ -176,7 +173,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         priorFingerprint = fingerprint;
         lastPrintedAt = Date.now();
       }
-      if (snapshot.terminal || once) return snapshot.status === 'completed' || once ? 0 : 1;
+      if (snapshot.terminal || once) return isDeliveredWorkflowStatus(snapshot.status) || once ? 0 : 1;
     }
     await new Promise((resolve) => setTimeout(resolve, Math.max(100, intervalMs)));
   }

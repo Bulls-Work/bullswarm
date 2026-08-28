@@ -92,6 +92,81 @@ test('event-stream connector extracts final content and emits normalized actions
   }
 });
 
+test('event-stream tool output mentioning auth signatures does not kill a healthy agent', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'tool', id: 't1', name: 'read_file', status: 'completed', rawOutput: '27: /unauthorized/i' },
+      { type: 'response', id: 'r1', text: 'Completed the requested verification. The source auth matcher was inspected and all acceptance checks passed with no concerns.' },
+    ];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: ['unauthorized', 'authentication failed'],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        rules: [
+          { rootMatch: { path: 'type', equals: 'tool' }, idPaths: ['id'], kindPaths: ['name'], statusPath: 'status' },
+          { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        ],
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Verify auth-related source code.', ctx.dir, ctx.paths);
+    assert.equal(verdict.quarantineHint, undefined);
+    assert.doesNotMatch(verdict.why, /auth\/throttle signature/);
+    assert.equal(verdict.meta.signal, null);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('event-stream semantic provider auth error still fails and quarantines', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [{ type: 'response', id: 'r1', text: 'Error: unauthorized. Please login again.' }];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: ['unauthorized'],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Do the task.', ctx.dir, ctx.paths);
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.quarantineHint, true);
+    assert.match(verdict.why, /auth\/throttle signature/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('event-stream final report may discuss authentication failure without quarantine', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = 'Completed the source audit. The unauthorized matcher is a content scanner; source text containing that term is not itself an authentication failure, and the regression checks passed.';
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `console.log(JSON.stringify({type:'response', text:${JSON.stringify(report)}}))`] },
+      authSignatures: ['unauthorized', 'authentication failed'],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Audit auth handling.', ctx.dir, ctx.paths);
+    assert.equal(verdict.quarantineHint, undefined);
+    assert.doesNotMatch(verdict.why, /auth\/throttle signature/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('connector timeout metadata is advisory unless the caller explicitly opts in', async () => {
   const ctx = makeCtx();
   try {
@@ -139,6 +214,23 @@ test('connector-owned model selection replaces or appends the declared flag', ()
     ['agent', '--model', 'new', '/t']);
   assert.deepEqual(argvWithModel({ ...base, spawn: { cmd: ['agent', '{taskFile}'] } },
     { taskFile: '/t', cwd: '/c' }, 'new'), ['agent', '/t', '--model', 'new']);
+});
+
+test('connector-owned conversation arguments create then resume one session', () => {
+  const conversational = {
+    spawn: { cmd: ['agent', '-p', '{taskFile}'] },
+    eventStream: { args: ['--json'] },
+    conversation: {
+      newArgs: ['--session-id', '{sessionId}'],
+      resumeArgs: ['--resume', '{sessionId}'],
+    },
+  };
+  assert.deepEqual(argvWithModel(conversational, { taskFile: '/t', cwd: '/c' }, null, {
+    sessionId: 'thread-1', resume: false,
+  }), ['agent', '-p', '/t', '--session-id', 'thread-1', '--json']);
+  assert.deepEqual(argvWithModel(conversational, { taskFile: '/t', cwd: '/c' }, null, {
+    sessionId: 'thread-1', resume: true,
+  }), ['agent', '-p', '/t', '--resume', 'thread-1', '--json']);
 });
 
 test('lying exit 0 with auth failure is caught by signature gate', async () => {
