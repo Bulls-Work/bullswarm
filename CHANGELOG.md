@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## 0.10.5 — safe setup and boolean flags
+## 0.10.6 — safe setup and boolean flags
 
 - Marked the deterministic `echo` connector as a test fixture and excluded it
   from automatic setup, routing suggestions, connector readiness, and delegate
