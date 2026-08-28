@@ -75,7 +75,9 @@ test('integration block: approval required, idempotent markers', () => {
 
     applyIntegrationBlock(file, { approved: true });
     let text = readFileSync(file, 'utf8');
-    assert.match(text, /bullswarm:begin v1/);
+    assert.match(text, /bullswarm:begin v2/);
+    assert.match(text, /bullswarm workflow goal/);
+    assert.match(text, /BULLSWARM_DEPTH/);
     assert.match(text, /existing content/); // preserved
 
     // idempotent re-run: no duplicate blocks
@@ -88,7 +90,7 @@ test('integration block: approval required, idempotent markers', () => {
     // manual double-apply must not duplicate either
     applyIntegrationBlock(file, { approved: true });
     text = readFileSync(file, 'utf8');
-    const count = (text.match(/bullswarm:begin v1/g) ?? []).length;
+    const count = (text.match(/bullswarm:begin v2/g) ?? []).length;
     // second approved apply strips the old block first — exactly one remains
     assert.equal(count, 1);
     assert.match(text, /existing content/);
@@ -103,7 +105,7 @@ test('integration block creates parent dirs for new AGENTS.md', () => {
     const file = join(d, 'sub', 'AGENTS.md');
     applyIntegrationBlock(file, { approved: true });
     assert.equal(existsSync(file), true);
-    assert.match(readFileSync(file, 'utf8'), /bullswarm:begin v1/);
+    assert.match(readFileSync(file, 'utf8'), /bullswarm:begin v2/);
   } finally {
     cleanup();
   }

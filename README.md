@@ -23,7 +23,23 @@ Every delegate output is judged by content before it counts.
 
 ```bash
 npm install -g bullswarm   # or: node bin/bullswarm.js directly from a checkout
+bullswarm integrate install --agents codex,claude,grok --yes
 ```
+
+The integration command registers Bullswarm's packaged `bullswarm` skill with
+Codex, Claude, and Grok and appends a concise, marker-delimited awareness rule
+to each agent's global instructions. It is explicit, idempotent, and reversible:
+
+```bash
+bullswarm integrate status --json
+bullswarm integrate remove --agents codex,claude,grok --yes
+```
+
+If the retired pre-Bullswarm Claude `offload` skill is detected, status reports
+it without changing it. Archive it recoverably with
+`bullswarm integrate retire-legacy --yes`. The awareness rule prevents workers
+already launched by Bullswarm (`BULLSWARM_DEPTH` is set) from casually
+re-delegating and creating recursive swarms.
 
 ## Quick start
 
@@ -42,6 +58,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | Verb | Purpose |
 |---|---|
 | `setup` | Discover installed agent CLIs, show quota state, toggle pools, suggest a routing table, write config. Approval-gated, idempotent. |
+| `integrate` | Register or remove the canonical Bullswarm skill and global awareness rules for Codex, Claude, and Grok. |
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
@@ -107,7 +124,7 @@ orchestrator by live quota surplus. The orchestrator observes durable evidence, 
 and decides when another expansion or verification is necessary. Bullswarm
 validates the proposal, owns agent/process selection, routes workers, and calls
 the orchestrator again until completion, cancellation, failure, approval, or a
-budget limit. No initial phases, prompts, JSON schema, or agent choice are
+hard graph-growth safeguard. No initial phases, prompts, JSON schema, or agent choice are
 required from the user.
 
 The detached response includes a short ID and exact observation commands:
@@ -128,9 +145,10 @@ bullswarm workflow goal --resume <shortId> --json
 ```
 
 `--orchestrator <pool>` exists for controlled testing; ordinary use should
-leave selection on `auto`. Hard limits can be adjusted with `--max-agents`,
-`--max-expansion-rounds`, `--max-actions`, `--max-items-per-expansion`, and
-`--max-workflow-seconds`. Interactive setup also records a worktree-isolation
+leave selection on `auto`. `--max-agents` and `--max-workflow-seconds` are
+advisory planning targets; hard graph-growth safeguards are adjusted with
+`--max-expansion-rounds`, `--max-actions`, and `--max-items-per-expansion`.
+Interactive setup also records a worktree-isolation
 preference (`agent-decides`, `off`, or `required`); Bullswarm communicates that
 policy to the orchestrator without imposing repository topology itself.
 
