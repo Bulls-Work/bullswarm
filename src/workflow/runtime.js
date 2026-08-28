@@ -1122,7 +1122,7 @@ export class WorkflowRuntime {
       executionConstraints: {
         concurrency: Number(this.state.settings?.concurrency ?? 1) || 1,
         readySiblingsRunConcurrently: true,
-        programFeatures: ['itemsFrom', 'repair'],
+        programFeatures: ['itemsFrom', 'repair', 'completion'],
         plannerConsultedOnlyAtProgramBoundary: true,
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
         actionTimeoutIsExplicitOptIn: step.actionDefaults?.timeoutSec != null || step.timeoutSec != null,
@@ -1179,6 +1179,7 @@ export class WorkflowRuntime {
       '- Unknown item count: never spend a decision to learn how many items there are. Propose a discovery run action whose prompt ends with "RETURN ONLY a JSON array of <items>", plus a fanout with "itemsFrom":"outputs.<discovery-id>.outFile" whose stepTemplate.prompt uses {{item}}. The runtime resolves the list when discovery finishes (with one bounded read-only extraction retry if the output is not a clean array) and fans out immediately.',
       '- Verification failures: give each verify a "repair" policy {"prompt":"<how to fix what the verifier rejects>","maxRounds":1-3}. When the verifier returns ok:false, the runtime runs a fix action carrying the verifier concerns verbatim and re-runs the same verify, inside the program. Only verifies still failing after their rounds come back to you.',
       '- A verify that returned ok:true is accepted. Its concerns are informational (overlaps, wording nits, "non-blocking" notes): do not spend a program round polishing them unless the goal text itself demands it. Only ok:false verifies are work.',
+      '- Self-completing programs: when the program you propose ends with verification that would satisfy the goal, add a top-level "completion": {"when":"all-actions-ok","reason":"<what a clean run proves>"}. If every action of the program (repairs included) finishes ok and the completion policy is met, the runtime records the completion itself and does not consult you again; anything failing brings the boundary back to you. Use it on every program whose clean run would be the finished goal.',
       '- Per-item chains: for N known items propose N focused run actions plus N verify actions, each verify depending only on its own run, so verifying one item overlaps with fixing another; add one final verify depending on all of them. For items discovered at run time use the discovery → fanout → verify shape above.',
       '- File ownership: every action prompt must name exactly which files it may edit and state that it must not touch any other file. Two actions that must edit the same file MUST be ordered with dependsOn; never let concurrent actions write the same file.',
       '- Self-contained prompts: a worker sees only its own prompt, never this context. Each prompt must state the absolute working directory, what to read, what to change, the exact command that proves success, and what to report back. Prefer many small parallel actions over one large serial one.',

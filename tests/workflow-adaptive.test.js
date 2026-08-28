@@ -53,6 +53,15 @@ function fixture() {
     '          {id:"discover",type:"run",phase:"discover",prompt:(prose ? "RETURN_PROSE" : "RETURN_ITEMS") + " List the items that need handling. RETURN ONLY a JSON array of item names.",dependsOn:["initial"]},',
     '          {id:"per-item",type:"fanout",phase:"handle",itemsFrom:"outputs.discover.outFile",stepTemplate:{prompt:"Handle {{item}} in its own file only and report concrete evidence."}},',
     '          {id:"check",type:"verify",phase:"verify",prompt:(prose ? "VERIFY_OK" : "VERIFY_FLAKY") + " Confirm every handled item has evidence.",dependsOn:["per-item"],repair:{prompt:"Fix the handled items the verifier rejected, editing only their files.",maxRounds:2}}]};',
+    '  } else if (task.includes("FORCE_SELF_COMPLETE")) {',
+    '    const failing = task.includes("FORCE_SELF_COMPLETE_FAIL");',
+    '    const boundary = task.includes(`"final-check"`);',
+    '    answer = boundary',
+    '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"The self-completing program did not pass its final check; stopping with the qualified outcome.",actions:[]}',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Compile a self-completing program: two items, one final check.",completion:{when:"all-actions-ok",reason:"Both items were handled and the final check passed, which is exactly what the goal asked for."},actions:[',
+    '          {id:"work-a",type:"run",phase:"work",prompt:"Handle item a in its own file only and report concrete evidence.",dependsOn:["initial"]},',
+    '          {id:"work-b",type:"run",phase:"work",prompt:"Handle item b in its own file only and report concrete evidence.",dependsOn:["initial"]},',
+    '          {id:"final-check",type:"verify",phase:"verify",prompt:(failing ? "VERIFY_FAIL" : "VERIFY_OK") + " Confirm both items have evidence.",dependsOn:["work-a","work-b"],review:"outputs.work-b.outFile"}]};',
     '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
@@ -98,6 +107,8 @@ function fixture() {
     '  process.stdout.write(JSON.stringify(n === 0',
     '    ? {ok:false, concerns:["item beta lacks evidence of the handled result"], summary:"beta is unproven"}',
     '    : {ok:true, concerns:[], summary:"every item has evidence"}));',
+    '} else if (task.includes("VERIFY_FAIL")) {',
+    '  process.stdout.write(JSON.stringify({ok:false, concerns:["item b has no evidence of the handled result"], summary:"b is unproven"}));',
     '} else if (task.includes("VERIFY_OK")) {',
     '  process.stdout.write(JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else {',
@@ -192,7 +203,8 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"repair":\{"prompt":/);
     assert.match(task, /Program skeleton \(discovery → data-driven fan-out → verify with repair/);
     assert.match(task, /compiling the goal into a PROGRAM/);
-    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair"\s*\]/);
+    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair",\s*"completion"\s*\]/);
+    assert.match(task, /Self-completing programs: .*"completion": \{"when":"all-actions-ok"/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /Read before you compile: outputs\.<id>\.outputExcerpt/);
     assert.match(task, /A verify that returned ok:true is accepted\. Its concerns are informational/);
@@ -430,6 +442,70 @@ test('adaptive planner can append and complete a bounded fan-out', async () => {
     assert.equal(result.state.outputs['expanded-fanout'].failed, 0);
     assert.deepEqual(result.state.outputs['expanded-fanout'].items.map((entry) => entry.item), ['alpha', 'beta']);
   } finally { f.cleanup(); }
+});
+
+test('a self-completing program ends without a second planner turn when every action is ok', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_SELF_COMPLETE', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.status, 'completed');
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    assert.equal(result.state.decisions[1].source, 'program-completion');
+    assert.equal(result.state.decisions[1].programSequence, 1);
+    // ONE planner consultation: the program compiled itself to completion.
+    assert.equal(plannerTasks(result.runDir).length, 1);
+    assert.equal(result.state.outcome.verified, true);
+    assert.equal(result.state.outcome.source, 'program-completion');
+    assert.match(result.state.outcome.reason, /^Both items were handled and the final check passed/);
+    assert.equal(result.state.outputs[result.state.decisions[1].gateId].autoCompleted, true);
+    const auto = events.find((event) => event.type === 'decision.auto_completed');
+    assert.ok(auto, 'decision.auto_completed emitted');
+    assert.deepEqual(auto.actions, ['work-a', 'work-b', 'final-check']);
+    assert.ok(!events.some((event) => event.type === 'decision.completion_predicate_unmet'));
+  } finally { f.cleanup(); }
+});
+
+test('a self-completing program whose check fails comes back to the planner with the failing actions named', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_SELF_COMPLETE_FAIL', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'stop']);
+    assert.equal(plannerTasks(result.runDir).length, 2);
+    const unmet = events.find((event) => event.type === 'decision.completion_predicate_unmet');
+    assert.ok(unmet, 'decision.completion_predicate_unmet emitted');
+    assert.deepEqual(unmet.failing, ['final-check']);
+    assert.ok(!events.some((event) => event.type === 'decision.auto_completed'));
+    assert.notEqual(result.state.status, 'completed');
+  } finally { f.cleanup(); }
+});
+
+test('completion predicates are validated: needs_more_work only, with a verify, known predicate', () => {
+  const base = { schemaVersion: 'bullswarm.workflow.decision.v1', decision: 'needs_more_work', reason: 'program' };
+  const run = { id: 'w', type: 'run', phase: 'work', prompt: 'do it', dependsOn: [] };
+  const verify = { id: 'v', type: 'verify', phase: 'verify', prompt: 'check it', dependsOn: ['w'] };
+  assert.doesNotThrow(() => validateDecisionProposal(normalizeDecisionProposal({
+    ...base, completion: { when: 'all-actions-ok', reason: 'clean run is the goal' }, actions: [run, verify],
+  })));
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({
+    ...base, completion: { when: 'all-actions-ok' }, actions: [run],
+  })), /self-completing program must include at least one verify action/);
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({
+    ...base, completion: { when: 'whenever' }, actions: [run, verify],
+  })), /completion\.when must be one of: all-actions-ok/);
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({
+    ...base, decision: 'complete', completion: { when: 'all-actions-ok' }, actions: [],
+  })), /only meaningful on a needs_more_work decision/);
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({
+    ...base, completion: { when: 'all-actions-ok', reason: 'x', mode: 'strict' }, actions: [run, verify],
+  })), /completion\.mode is not a planner field/);
 });
 
 test('one decision carries a whole program: discovery, data-driven fan-out, and verify with repair run to the boundary without further planner turns', async () => {

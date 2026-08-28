@@ -1042,6 +1042,59 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     runtime.emit('kernel.checkpointed', { stage: 'executing', gateId: gate.id });
     const executed = await executeActions(proposal.actions);
     if (!executed.ok) return executed;
+
+    // Program-level completion: the planner said "if every action of this
+    // program (repairs included) finishes ok, that IS completion". Judge it
+    // by data — no planner turn — but never below the completion policy.
+    if (proposal.completion?.when === 'all-actions-ok') {
+      const programActions = (state.plan.actions ?? []).filter((entry) => entry.decisionSequence === decision.sequence);
+      const ledgerById = new Map((state.actionLedger ?? []).map((entry) => [entry.id, entry]));
+      const failing = programActions
+        .filter((entry) => !ledgerById.has(entry.id) || !actionOutputOk(ledgerById.get(entry.id), state.outputs))
+        .map((entry) => entry.id);
+      const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
+      const gaps = failing.length ? [] : completionEvidenceGaps(dynamicActions, state.orchestration?.completionPolicy, state.outputs);
+      if (!failing.length && !gaps.length) {
+        const verifyIds = programActions.filter((entry) => entry.kind === 'verify').map((entry) => entry.id);
+        const reason = proposal.completion.reason?.trim()
+          || `Program completed: all ${programActions.length} actions finished ok, verified by ${verifyIds.join(', ')}.`;
+        const auto = {
+          sequence: (state.decisions?.length ?? 0) + 1,
+          gateId: gate.id,
+          decision: 'complete',
+          reason,
+          actions: [],
+          artifact: null,
+          createdAt: new Date().toISOString(),
+          accepted: true,
+          source: 'program-completion',
+          predicate: 'all-actions-ok',
+          programSequence: decision.sequence,
+        };
+        state.decisions.push(auto);
+        runtime.emit('decision.created', auto);
+        runtime.emit('decision.auto_completed', {
+          gateId: gate.id, sequence: auto.sequence, programSequence: decision.sequence,
+          actions: programActions.map((entry) => entry.id), reason,
+        });
+        state.outcome = {
+          status: 'completed',
+          verified: true,
+          bestEffort: false,
+          reason,
+          concerns: [],
+          deliveryActionId: dynamicActions.filter((action) =>
+            action.kind !== 'verify' && actionOutputOk(action, state.outputs)).at(-1)?.id ?? null,
+          source: 'program-completion',
+        };
+        state.outputs[gate.id] = { ...state.outputs[gate.id], ok: true, why: reason, autoCompleted: true };
+        runtime.persist();
+        return { ok: true, why: reason, complete: true, decision: { decision: 'complete', reason, actions: [], completion: proposal.completion } };
+      }
+      runtime.emit('decision.completion_predicate_unmet', {
+        gateId: gate.id, programSequence: decision.sequence, failing, gaps,
+      });
+    }
     // Loop intentionally returns to observation and invokes the planner again.
   }
 }

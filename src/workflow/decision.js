@@ -42,6 +42,9 @@ export const REVIEW_PATH_RE = /^outputs\.([A-Za-z0-9_-]+(?:\[\d+\])?)\.outFile$/
 // action whose output ends with a JSON array of items.
 export const ITEMS_FROM_RE = /^outputs\.([A-Za-z0-9_-]+)(?:\.outFile)?$/;
 export const REPAIR_MAX_ROUNDS = 3;
+// Program-level completion predicates a planner may attach to a program so the
+// runtime can record completion itself when every action finishes ok.
+export const COMPLETION_PREDICATES = new Set(['all-actions-ok']);
 
 export function looksLikeItemsFromPath(value) {
   return typeof value === 'string' && ITEMS_FROM_RE.test(value.trim());
@@ -116,6 +119,27 @@ export function validateDecisionProposal(proposal, {
   }
   if (currentActionCount + safeActions.length > maxActions) {
     issues.push(`proposal would exceed maxActions=${maxActions}`);
+  }
+  if (proposal.completion !== undefined) {
+    const completion = proposal.completion;
+    if (!completion || typeof completion !== 'object' || Array.isArray(completion)) {
+      issues.push('completion must be an object {"when":"all-actions-ok","reason":"…"}');
+    } else {
+      if (!COMPLETION_PREDICATES.has(completion.when)) {
+        issues.push(`completion.when must be one of: ${[...COMPLETION_PREDICATES].join(', ')}`);
+      }
+      if (completion.reason !== undefined && (typeof completion.reason !== 'string' || !completion.reason.trim())) {
+        issues.push('completion.reason must be a non-empty string when present');
+      }
+      for (const key of Object.keys(completion)) {
+        if (!['when', 'reason'].includes(key)) issues.push(`completion.${key} is not a planner field`);
+      }
+      if (proposal.decision !== 'needs_more_work') {
+        issues.push('completion is only meaningful on a needs_more_work decision (a program)');
+      } else if (!safeActions.some((action) => action?.type === 'verify')) {
+        issues.push('a self-completing program must include at least one verify action');
+      }
+    }
   }
 
   const known = new Set(knownActionIds);
@@ -246,5 +270,8 @@ export function validateDecisionProposal(proposal, {
     decision: proposal.decision,
     reason: proposal.reason.trim(),
     actions: safeActions.map((action) => ({ ...action, dependsOn: [...(action.dependsOn ?? [])] })),
+    ...(proposal.completion
+      ? { completion: { when: proposal.completion.when, ...(proposal.completion.reason ? { reason: proposal.completion.reason.trim() } : {}) } }
+      : {}),
   };
 }
