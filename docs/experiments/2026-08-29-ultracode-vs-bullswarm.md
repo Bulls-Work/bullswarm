@@ -325,7 +325,7 @@ together with its instructions. (2) The remediation round spent two of its
 three fixes on "non-blocking" nits from verifiers that had returned
 `ok:true`; 0.12.0's doctrine tells the planner those are informational.
 
-### bullswarm 0.12.0 (installed binary) — same goal, fresh copy `g2-bs-v3`
+### bullswarm 0.12.0 → 0.12.1 (installed binary) — same goal, fresh copy `g2-bs-v3`
 
 **First launch, 19:09:48 Z, installed 0.12.0 — failed in 4 s.** Both the
 scout and the orchestrator were `failed_terminal` with `no eligible pool`
