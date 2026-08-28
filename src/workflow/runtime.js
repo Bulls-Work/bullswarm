@@ -40,6 +40,8 @@ import { resolveDispatchModel } from '../lib/strategy.js';
 // Persisting full transcripts bloat state.json on long workflows. The
 // full text is always on disk in the per-step outFile.
 export const OUTPUT_TEXT_CAP_BYTES = 64 * 1024;
+// Per-item excerpt kept in a fan-out's durable summary artifact.
+const FANOUT_ITEM_EXCERPT_BYTES = 6_000;
 
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
@@ -940,7 +942,9 @@ export class WorkflowRuntime {
       outFile: output?.outFile ?? null,
       verify: output?.verify ?? null,
       total: output?.total,
+      succeeded: output?.succeeded,
       failed: output?.failed,
+      itemsFrom: output?.itemsFrom,
     }]));
     const actionForPlanner = (action) => ({
       id: action.id,
@@ -989,6 +993,8 @@ export class WorkflowRuntime {
       executionConstraints: {
         concurrency: Number(this.state.settings?.concurrency ?? 1) || 1,
         readySiblingsRunConcurrently: true,
+        programFeatures: ['itemsFrom', 'repair'],
+        plannerConsultedOnlyAtProgramBoundary: true,
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
         actionTimeoutIsExplicitOptIn: step.actionDefaults?.timeoutSec != null || step.timeoutSec != null,
         retryAttempts: Number(this.state.settings?.retryAttempts ?? 0),
@@ -1038,27 +1044,35 @@ export class WorkflowRuntime {
       'Every proposed action MUST use the field "type" (never "kind").',
       'Every action MUST include a forward-only kebab-case "phase". Never reuse a name listed in closedPhases.',
       '',
-      'PLANNING DOCTRINE — propose the whole graph, not one step:',
-      '- Each planning turn is a full round trip through a separate process (typically 1-2 minutes). Propose the COMPLETE dependency graph you can see now as one decision. A decision carrying a single action when several independent actions are already obvious wastes a round trip.',
-      '- Execution is a ready-set scheduler: every action whose dependsOn have all succeeded starts immediately and concurrently, up to executionConstraints.concurrency at once; a dependent action starts the moment its own dependencies finish, not when the whole round finishes. Independent actions therefore run in parallel automatically. Only add dependsOn where a real data or file-ordering dependency exists.',
-      '- Per-item chains: for N independent items (modules, files, findings), propose N focused run actions plus N verify actions, each verify depending only on its own run, so verifying one item overlaps with fixing another. Add one final verify depending on all of them for the whole-system check.',
+      'PLANNING DOCTRINE — you are compiling the goal into a PROGRAM, not choosing the next step:',
+      '- The runtime executes your whole decision to completion without consulting you: a ready-set scheduler starts every action whose dependsOn have all succeeded, concurrently up to executionConstraints.concurrency, and starts each dependent the moment its own dependencies finish. You are consulted again only at the program boundary, when every action has finished or the graph is blocked. Each consultation is a separate process round trip (typically 1-2 minutes), so anything decidable by data must be encoded in the program, never deferred to a later decision.',
+      '- Propose the COMPLETE dependency graph you can see now: discovery, per-item work, per-item verification, and the final whole-system verification, all in ONE decision. A decision carrying a single action when several are obvious wastes a round trip.',
+      '- Unknown item count: never spend a decision to learn how many items there are. Propose a discovery run action whose prompt ends with "RETURN ONLY a JSON array of <items>", plus a fanout with "itemsFrom":"outputs.<discovery-id>.outFile" whose stepTemplate.prompt uses {{item}}. The runtime resolves the list when discovery finishes (with one bounded read-only extraction retry if the output is not a clean array) and fans out immediately.',
+      '- Verification failures: give each verify a "repair" policy {"prompt":"<how to fix what the verifier rejects>","maxRounds":1-3}. When the verifier returns ok:false, the runtime runs a fix action carrying the verifier concerns verbatim and re-runs the same verify, inside the program. Only verifies still failing after their rounds come back to you.',
+      '- Per-item chains: for N known items propose N focused run actions plus N verify actions, each verify depending only on its own run, so verifying one item overlaps with fixing another; add one final verify depending on all of them. For items discovered at run time use the discovery → fanout → verify shape above.',
       '- File ownership: every action prompt must name exactly which files it may edit and state that it must not touch any other file. Two actions that must edit the same file MUST be ordered with dependsOn; never let concurrent actions write the same file.',
       '- Self-contained prompts: a worker sees only its own prompt, never this context. Each prompt must state the absolute working directory, what to read, what to change, the exact command that proves success, and what to report back. Prefer many small parallel actions over one large serial one.',
       '',
       'Action skeletons (copy the shape exactly; every field shown is required unless marked optional):',
       '  run:    {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}',
       '  fanout: {"id":"per-item-check","type":"fanout","phase":"inspect","items":["alpha","beta"],"stepTemplate":{"prompt":"Inspect {{item}} and report concrete evidence."},"dependsOn":["prior-action"]}',
-      '  verify: {"id":"independent-check","type":"verify","phase":"verify","prompt":"Independently re-run the tests and report pass/fail with evidence.","dependsOn":["bounded-action"]}',
+      '  fanout (data-driven): {"id":"per-module-fix","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo fix only the module {{item}}; run its focused test; report the diff summary."}}',
+      '  verify: {"id":"independent-check","type":"verify","phase":"verify","prompt":"Independently re-run the tests and report pass/fail with evidence.","dependsOn":["bounded-action"],"repair":{"prompt":"In /abs/repo fix the failing behaviour the verifier reports, editing only the files named in the concerns, then re-run the tests.","maxRounds":1}}',
       'verify semantics: the reviewer receives the artifact of the action named in review, which the runtime infers as outputs.<the single dependsOn>.outFile; put the reviewer INSTRUCTIONS in prompt. A verify with several dependsOn must set review explicitly to "outputs.<actionId>.outFile". review is never instructions or a filesystem path.',
+      'Program skeleton (discovery → data-driven fan-out → verify with repair → final whole-suite check, all in ONE decision; the runtime runs it to the end without you):',
+      '  [{"id":"discover-modules","type":"run","phase":"discover","prompt":"In /abs/repo list every module under src/ whose test in tests/ fails. Do not edit anything. RETURN ONLY a JSON array of module names, e.g. [\\"alpha\\",\\"beta\\"]."},',
+      '   {"id":"fix-module","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo edit only src/{{item}}.js so tests/{{item}}.test.js passes; run node --test tests/{{item}}.test.js; report the diff summary."}},',
+      '   {"id":"verify-modules","type":"verify","phase":"verify-items","prompt":"For every module in the reviewed fan-out summary re-run node --test tests/<module>.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-module"],"repair":{"prompt":"In /abs/repo fix the modules the verifier lists, editing only their src files, and re-run their tests.","maxRounds":2}},',
+      '   {"id":"verify-suite","type":"verify","phase":"verify-suite","prompt":"Run the full npm test in /abs/repo and report pass/fail counts.","dependsOn":["verify-modules"]}]',
       'Graph skeleton (two parallel fix→verify chains plus a final whole-suite check, all in ONE decision):',
       '  [{"id":"fix-alpha","type":"run","phase":"fix","prompt":"In /abs/repo edit only src/alpha.js so tests/alpha.test.js passes; run node --test tests/alpha.test.js; report the diff summary."},',
       '   {"id":"fix-beta","type":"run","phase":"fix","prompt":"In /abs/repo edit only src/beta.js so tests/beta.test.js passes; run node --test tests/beta.test.js; report the diff summary."},',
       '   {"id":"verify-alpha","type":"verify","phase":"verify-items","prompt":"Re-run node --test tests/alpha.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-alpha"]},',
       '   {"id":"verify-beta","type":"verify","phase":"verify-items","prompt":"Re-run node --test tests/beta.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-beta"]},',
       '   {"id":"verify-suite","type":"verify","phase":"verify-suite","prompt":"Run the full npm test in /abs/repo and report pass/fail counts.","review":"outputs.fix-beta.outFile","dependsOn":["verify-alpha","verify-beta"]}]',
-      'fanout.items MUST be an inline array and fanout.stepTemplate MUST be an object whose prompt uses {{item}}. verify.review MUST be a string. dependsOn is optional and may only name existing or newly proposed action IDs.',
+      'fanout needs stepTemplate (an object whose prompt uses {{item}}) plus EITHER inline items OR itemsFrom ("outputs.<actionId>.outFile", an action whose output ends with a JSON array; the producer becomes an implicit dependency). A fan-out artifact (outputs.<fanoutId>.outFile) is a summary of every item result, so a verify may depend on a fanout directly. verify.review MUST be a string. dependsOn is optional and may only name existing or newly proposed action IDs.',
       'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
-      'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal and returns rejected proposals to you with the exact issues for a bounded correction turn.',
+      'New actions may only be type run, fanout, or verify. The runtime validates every proposal and returns rejected proposals to you with the exact issues for a bounded correction turn.',
       'If executionConstraints.actionTimeoutSec is non-null, size actions to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
       'Agent-count, workflow-duration, and expansion-round budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.',
       'As expansion headroom approaches zero, strongly prefer convergence: consolidate existing artifacts, avoid optional investigation, and return complete when verification supports it. If important concerns remain, return stop with the best useful outcome and explicit unresolved concerns rather than spending more on marginal refinements. Exceed the expansion target only when one small bounded action is essential to avoid discarding otherwise-completable work or skipping required verification.',
@@ -1239,11 +1253,23 @@ export class WorkflowRuntime {
 
     const oks = results.filter((r) => r?.verdict?.ok === true).length;
     if (this.state.cancelRequested) failures += items.length - results.filter(Boolean).length;
+    // A fan-out is itself an artifact: write a durable summary of every item
+    // result so a verify (or a later fan-out) can depend on the fan-out
+    // directly via outputs.<fanoutId>.outFile, the same way it depends on a run.
+    const summary = this.writeFanoutSummary(step, items, results, oks);
+    // `ok` is a boolean like every other output (so dependents and the
+    // ready-set scheduler can test outputs.<id>.ok === true); the item count
+    // lives in `succeeded`.
     this.state.outputs[step.id] = {
       total: items.length,
-      ok: oks,
+      ok: failures === 0,
+      succeeded: oks,
       failed: items.length - oks,
       items: results,
+      ...(step.itemsResolvedFrom ? { itemsFrom: step.itemsResolvedFrom } : {}),
+      outFile: summary.outFile,
+      outputText: summary.outputText,
+      outputTruncated: summary.truncated || undefined,
     };
     parentAction.status = failures === 0 ? 'succeeded' : 'failed_terminal';
     parentAction.itemsCompleted = oks;
@@ -1254,6 +1280,31 @@ export class WorkflowRuntime {
     });
     this.persist();
     return { ok: failures === 0, results };
+  }
+
+  writeFanoutSummary(step, items, results, oks) {
+    const lines = [`# fanout ${step.id}: ${oks}/${items.length} items ok`, ''];
+    for (const [index, entry] of results.entries()) {
+      const item = entry?.item ?? items[index];
+      const label = typeof item === 'string' ? item : JSON.stringify(item);
+      const verdict = entry?.verdict;
+      lines.push(`## [${index}] ${label} — ${verdict?.ok === true ? 'ok' : `failed: ${verdict?.why ?? 'no result'}`}`);
+      if (entry?.outFile) lines.push(`artifact: ${entry.outFile}`);
+      let text = '';
+      try {
+        if (entry?.outFile && existsSync(entry.outFile)) text = readFileSync(entry.outFile, 'utf8');
+      } catch { /* the per-item artifact is optional in the summary */ }
+      if (text.trim()) {
+        lines.push('', text.length > FANOUT_ITEM_EXCERPT_BYTES
+          ? `${text.slice(0, FANOUT_ITEM_EXCERPT_BYTES)}\n[truncated]` : text.trimEnd());
+      }
+      lines.push('');
+    }
+    const outFile = join(this.runDir, `out-${step.id}-summary-${Date.now().toString(36)}.md`);
+    const full = lines.join('\n');
+    try { writeFileSync(outFile, full); } catch { /* summary is best-effort; items remain in state */ }
+    const truncated = full.length > OUTPUT_TEXT_CAP_BYTES;
+    return { outFile, outputText: truncated ? full.slice(0, OUTPUT_TEXT_CAP_BYTES) : full, truncated };
   }
 
   recordOutput(stepId, verdict, paths) {

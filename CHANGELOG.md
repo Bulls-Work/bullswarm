@@ -1,5 +1,58 @@
 # bullswarm changelog
 
+## 0.12.0 — one decision is a whole program
+
+Completes the convergence on Claude Code's dynamic-workflow mechanics
+(`docs/claude-dynamic-workflow-mechanics.md` §1.11 and §4.2): the orchestrator
+is positioned as the compiler of the goal into a program the runtime runs to
+the end, and it is consulted again only at the program boundary (every action
+finished, or the graph blocked).
+
+- Data-driven fan-out in proposals: a planner `fanout` may carry
+  `itemsFrom: "outputs.<actionId>.outFile"` instead of inline `items`. The
+  producer becomes an implicit `dependsOn` and the runtime resolves the item
+  list when the producer finishes, so the planner no longer spends a round trip
+  waiting to see how many items discovery found. If the producer's output has
+  no parseable JSON array, the runtime runs ONE bounded, read-only extraction
+  action (`<fanoutId>-items`, `source: "runtime-extraction"`) over that output
+  before failing the fan-out truthfully. Resolved lists above
+  `maxItemsPerExpansion` fail the fan-out with the count. Events:
+  `action.items_resolved`, `action.items_extraction_requested`,
+  `action.items_extracted`.
+- Repair policy on verify: `repair: { prompt, maxRounds (1–3), effort? }` on a
+  planner `verify`. When the verifier returns `ok:false`, the executor runs a
+  fix action (`<verifyId>-repair-<n>`, `source: "repair-policy"`) carrying the
+  verifier's concerns verbatim and re-runs the same verify, without a planner
+  turn. Dispatch or JSON-parse failures are not repaired. Events:
+  `action.repair_started`, `action.reverify_started`, `action.repaired`,
+  `action.reverify_rejected`, `action.repair_failed`.
+- Fan-out artifact: a fan-out now writes `out-<id>-summary-*.md` (every item's
+  verdict plus an output excerpt) and records it as `outputs.<id>.outFile`, so a
+  verify can depend on a fan-out directly and `review` is inferred as usual.
+- Fix: fan-out outputs stored the success COUNT in `ok`, so a dynamic action
+  depending on a fan-out could never become ready ("blocked by failed or
+  unresolved dependencies") and a fan-out never counted as a successful worker
+  for completion evidence. `ok` is now a boolean and the count moved to
+  `succeeded`; `fanoutSucceededCount()` reads pre-0.12 state files.
+- Fix: the content gate rejected a worker whose whole answer is a JSON array
+  or object as an "announcement without substance", which is exactly what a
+  discovery step is told to return. Structured answers now pass
+  (`hasStructuredAnswer`).
+- `parseJsonArray` prefers the trailing array, so prose containing brackets
+  before the list no longer poisons `itemsFrom`.
+- Planner prompt: PLANNING DOCTRINE rewritten around "you are compiling the
+  goal into a program"; new data-driven fanout and repair skeletons; a
+  four-action program skeleton (discover → fanout(itemsFrom) → verify(repair)
+  → verify-suite); `executionConstraints.programFeatures` and
+  `plannerConsultedOnlyAtProgramBoundary`. The goal orchestrator prompt is
+  reframed the same way.
+- Known limitation: `itemsFrom` removes the planner turn, not the stage
+  barrier. A verify that depends on a data-driven fan-out waits for all items;
+  per-item verify overlap on discovered items would need chained
+  `stepTemplate`s (not in this release). For known items keep proposing N fix
+  + N verify chains inline, which already overlap under the ready-set
+  scheduler.
+
 ## 0.11.1 — reliable `--watch` handoff
 
 - `workflow goal --watch` no longer races the detached child: the watcher now

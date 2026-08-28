@@ -646,7 +646,8 @@ test('G8: fanout resume skips by item fingerprint even when order changes', asyn
       ...common, doc: doc1, inputs: { items: ['a', 'b', 'c'] }, onEvent: () => {},
     });
     assert.equal(first.state.outputs.fan.total, 3);
-    assert.equal(first.state.outputs.fan.ok, 3);
+    assert.equal(first.state.outputs.fan.ok, true);
+    assert.equal(first.state.outputs.fan.succeeded, 3);
 
     // Second run: same doc, items in a different order with one extra.
     const events = [];
@@ -660,7 +661,8 @@ test('G8: fanout resume skips by item fingerprint even when order changes', asyn
     // The new item 'd' must be in the final outputs.
     const items = second.state.outputs.fan.items.map((r) => r.item);
     assert.ok(items.includes('d'));
-    assert.equal(second.state.outputs.fan.ok, 4);
+    assert.equal(second.state.outputs.fan.succeeded, 4);
+    assert.equal(second.state.outputs.fan.ok, true);
     assert.equal(second.state.outputs.fan.failed, 0);
   } finally {
     cleanup();

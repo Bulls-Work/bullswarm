@@ -340,6 +340,26 @@ per-item fix→verify chains plus one whole-system verify — because each plann
 turn is a full orchestrator round trip. See
 `docs/claude-dynamic-workflow-mechanics.md` for the model this follows.
 
+Since 0.12.0 a decision is meant to be a whole *program*: the runtime executes
+it to the end and consults the planner again only at the program boundary
+(every action finished, or the graph blocked). Two planner-level features make
+that expressible without extra turns:
+
+- `fanout.itemsFrom: "outputs.<actionId>.outFile"` — fan out over the JSON
+  array an earlier (or co-proposed) action ends its output with. The producer
+  becomes an implicit dependency and the list is resolved at execution time. A
+  producer that answered in prose gets one bounded read-only extraction action
+  (`<fanoutId>-items`, `source: "runtime-extraction"`) before the fan-out fails
+  truthfully.
+- `verify.repair: { prompt, maxRounds }` — when the verifier returns
+  `ok:false`, the executor runs `<verifyId>-repair-<n>` (`source:
+  "repair-policy"`) with the verifier's concerns verbatim and re-runs the same
+  verify, up to `maxRounds` (1–3), without a planner turn.
+
+Every fan-out records a summary artifact as `outputs.<id>.outFile` and a
+boolean `ok` (item count in `succeeded`), so a verify may depend on a fan-out
+directly.
+
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
 contain bounded actions; malformed or over-budget output executes nothing.
