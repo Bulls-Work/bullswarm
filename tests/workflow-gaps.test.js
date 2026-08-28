@@ -527,6 +527,52 @@ test('G6: verify step parses a JSON {ok:bool, concerns, summary} response', asyn
   }
 });
 
+test('G6: the artifact a verify reviews is appended verbatim, never template-rendered', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    // The worker report quotes code with double braces — a JSDoc record type,
+    // a Mustache tag and even a real-looking ref. None of it is ours to render.
+    const newWorker = join(dir, 'braces-worker.mjs');
+    writeFileSync(newWorker, [
+      'import { readFileSync } from "node:fs";',
+      'const task = readFileSync(process.argv[2], "utf8");',
+      'if (task.includes("RETURN ONLY a single JSON object")) {',
+      '  const intact = ["{{maxLength?: number}}", "{{item}}", "{{outputs.nothing.outFile}}", "{{#each rows}}"].every((s) => task.includes(s));',
+      '  process.stdout.write(JSON.stringify({ ok: intact, concerns: intact ? [] : ["artifact was altered"], summary: intact ? "braces intact" : "braces missing" }));',
+      '} else {',
+      '  process.stdout.write("## Completed\\n\\nDocumented slugify(input, options) in src/slugify.js: the options parameter is typed `@param {{maxLength?: number}} [options]`, the template uses {{item}} and {{outputs.nothing.outFile}} as literal examples, and the README shows a Mustache loop {{#each rows}}. Ran node --test tests/slugify.test.js: 7 pass, 0 fail.");',
+      '}',
+      'process.exit(0);',
+    ].join('\n'));
+    const doc = {
+      name: 'g6-braces',
+      description: 'g',
+      inputs: {},
+      settings: { concurrency: 1, escalateOnFail: false },
+      phases: [
+        { name: 'p', steps: [
+          { id: 'a', type: 'run', lane: 'chore', prompt: 'document slugify', timeoutSec: 60 },
+          { id: 'v', type: 'verify', lane: 'analyze', review: 'outputs.a.outFile', prompt: 'judge the report', timeoutSec: 60 },
+        ] },
+      ],
+    };
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc,
+      pools: echoOnlyPools(dir, newWorker),
+      inputs: {},
+      onEvent: () => {},
+    });
+    assert.equal(result.state.outputs.a.ok, true);
+    assert.equal(result.state.outputs.v.ok, true, result.state.outputs.v.why);
+    assert.equal(result.state.outputs.v.verify.summary, 'braces intact');
+    const verifyAttempt = result.state.attempts.find((attempt) => attempt.actionId === 'v');
+    assert.match(readFileSync(verifyAttempt.taskFile, 'utf8'), /---- BEGIN REVIEW TARGET ----[\s\S]*\{\{maxLength\?: number\}\}[\s\S]*\{\{item\}\}/);
+  } finally {
+    cleanup();
+  }
+});
+
 test('G6: verify step fails the run when the JSON response says ok:false', async () => {
   const { dir, cleanup } = fixtureHome();
   try {

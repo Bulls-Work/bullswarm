@@ -851,22 +851,26 @@ export class WorkflowRuntime {
       '{"ok": <true|false>, "concerns": [<string>...], "summary": <string>}.',
       'No prose and no markdown fences. Set ok:true only when the requested checks actually pass.',
     ].join('\n');
-    const stepTemplate = {
+    // Only the reviewer INSTRUCTIONS are a template. The review target is a
+    // worker's artifact — arbitrary text that routinely contains code, JSDoc
+    // types and other double-brace sequences — and is appended verbatim,
+    // never rendered. (Observed 2026-08-28: a worker report quoting
+    // `{{maxLength?: number}}` killed its verify at render time.)
+    const rendered = renderDeep({
       lane: step.lane ?? 'analyze',
       addDir: step.addDir,
-      // A custom prompt changes the review instructions, never the review
-      // input. Always append the resolved artifact so the skeptic receives
-      // the thing it is meant to judge.
-      prompt: [
-        reviewInstructions,
-        '',
-        '---- BEGIN REVIEW TARGET ----',
-        reviewedText,
-        '---- END REVIEW TARGET ----',
-      ].join('\n'),
-    };
-    const rendered = renderDeep(stepTemplate, scope);
-    const taskText = rendered.prompt;
+      prompt: reviewInstructions,
+    }, scope);
+    // A custom prompt changes the review instructions, never the review
+    // input. Always append the resolved artifact so the skeptic receives
+    // the thing it is meant to judge.
+    const taskText = [
+      rendered.prompt,
+      '',
+      '---- BEGIN REVIEW TARGET ----',
+      reviewedText,
+      '---- END REVIEW TARGET ----',
+    ].join('\n');
     const targetDir = rendered.addDir ? String(rendered.addDir).replace(/^~/, process.env.HOME ?? '') : process.cwd();
 
     const stamp = `${step.id}-${Date.now().toString(36)}`;
