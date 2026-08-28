@@ -23,6 +23,6 @@
     "pricingSource": "local deterministic fixture",
     "pricingUpdatedAt": "2026-08-27"
   }],
-  "flags": { "stealth": false },
+  "flags": { "stealth": false, "testFixture": true },
   "$comment-timeout": "No implicit wall-clock timeout; callers may opt in with --timeout or workflow step.timeoutSec"
 }

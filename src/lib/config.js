@@ -45,7 +45,8 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
     const pool = {
       name,
       connector: conn,
-      enabled: ps.enabled !== false,
+      testFixture: conn.flags?.testFixture === true,
+      enabled: conn.flags?.testFixture === true ? ps.enabled === true : ps.enabled !== false,
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
       capabilities: conn.capabilities ?? [],

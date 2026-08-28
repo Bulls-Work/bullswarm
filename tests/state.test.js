@@ -119,9 +119,11 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
     const doctor = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'doctor', '--json'], {
       env, encoding: 'utf8',
     });
-    assert.equal(doctor.status, 0, doctor.stderr);
+    assert.equal(doctor.status, 1, doctor.stderr);
     const doctorJson = JSON.parse(doctor.stdout);
     assert.equal(doctorJson.configured, true);
+    assert.equal(doctorJson.ok, false);
+    assert.equal(doctorJson.checks.find((check) => check.id === 'offload-capable').ok, false);
     assert.match(doctorJson.checks[0].detail, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
     const pools = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'pools', '--json'], {
@@ -130,6 +132,7 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
     assert.equal(pools.status, 0, pools.stderr);
     const poolsJson = JSON.parse(pools.stdout);
     assert.deepEqual(poolsJson.pools.map((p) => p.name), ['echo']);
+    assert.equal(poolsJson.pools[0].enabled, false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
