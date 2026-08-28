@@ -25,17 +25,18 @@ export function bumpVersion(version, kind) {
   return `${maj}.${min}.${pat}`;
 }
 
-function git(args) {
-  return execSync(`git ${args}`, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+function git(args, repoRoot = REPO_ROOT) {
+  return execSync(`git ${args}`, { cwd: repoRoot, encoding: 'utf8' }).trim();
 }
 
-export function release(kind, { dryRun = false } = {}) {
-  const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'));
+export function release(kind, { dryRun = false, repoRoot = REPO_ROOT } = {}) {
+  const pkgPath = repoRoot === REPO_ROOT ? PKG_PATH : join(repoRoot, 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   const prev = pkg.version;
   const next = bumpVersion(prev, kind);
 
   // Dirty-tree guard: a release commit must contain exactly the version change.
-  const status = git('status --porcelain');
+  const status = git('status --porcelain', repoRoot);
   if (status.trim()) {
     throw new Error(
       `working tree is dirty — commit first before releasing:\n${status}`,
@@ -47,9 +48,9 @@ export function release(kind, { dryRun = false } = {}) {
   }
 
   pkg.version = next;
-  writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`);
-  git('add package.json');
-  git(`commit -m "release v${next}"`);
-  git(`tag -a v${next} -m "v${next}"`);
+  writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  git('add package.json', repoRoot);
+  git(`commit -m "release v${next}"`, repoRoot);
+  git(`tag -a v${next} -m "v${next}"`, repoRoot);
   return { from: prev, to: next, tag: `v${next}`, dryRun: false };
 }

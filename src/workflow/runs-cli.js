@@ -20,7 +20,7 @@ import { BULLSWARM_DIR } from './cli.js';
 import { buildWorkflowResult } from './result.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
-function err(msg) { console.error(msg); return 1; }
+function err(msg, code = 1) { console.error(msg); return code; }
 
 export function cmdRuns(args) {
   const opts = parseRunsFlags(args);
@@ -89,7 +89,7 @@ function runsList(opts) {
   try {
     initiatedRange = resolveInitiatedRange(opts);
   } catch (error) {
-    return err(error.message);
+    return err(error.message, 2);
   }
   const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
@@ -165,7 +165,7 @@ function runsList(opts) {
 }
 
 function runsShow(idToken, opts) {
-  if (!idToken) return err('usage: bullswarm workflow runs show <id>');
+  if (!idToken) return err('usage: bullswarm workflow runs show <id>', 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -195,7 +195,7 @@ function runsShow(idToken, opts) {
 }
 
 function runsResult(idToken, opts) {
-  if (!idToken) return err('usage: bullswarm workflow runs result <id> [--json]');
+  if (!idToken) return err('usage: bullswarm workflow runs result <id> [--json]', 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 
@@ -248,8 +248,8 @@ function runsResult(idToken, opts) {
 const MAX_HUMAN_RESULT_CHARS = 64 * 1024;
 
 function runsDelete(idToken, opts, rest) {
-  if (!idToken) return err('usage: bullswarm workflow runs delete <id> --yes');
-  if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`);
+  if (!idToken) return err('usage: bullswarm workflow runs delete <id> --yes', 2);
+  if (!opts.yes) return err(`refusing to delete run "${idToken}" without --yes`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
   if (!resolved) return err(`no run found for "${idToken}"`);
 

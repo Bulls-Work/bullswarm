@@ -145,6 +145,29 @@ test('event-stream semantic provider auth error still fails and quarantines', as
   }
 });
 
+test('exact failed-to-authenticate provider response is error-shaped and quarantines', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [{ type: 'response', id: 'r1', text: 'Failed to authenticate: OAuth session expired and could not be refreshed' }];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: ['failed to authenticate'],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Do the task.', ctx.dir, ctx.paths);
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.quarantineHint, true);
+    assert.match(verdict.why, /auth\/throttle signature/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('event-stream final report may discuss authentication failure without quarantine', async () => {
   const ctx = makeCtx();
   try {

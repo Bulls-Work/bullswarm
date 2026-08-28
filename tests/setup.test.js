@@ -91,6 +91,7 @@ test('connector metadata upgrades model paths without replacing custom event rul
     writeFileSync(join(dir, 'claude-code.json'), `${JSON.stringify({
       name: 'claude-code',
       capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      authSignatures: ['custom-auth-marker'],
       eventStream: { format: 'jsonl', args: ['--custom-stream'], rules: customRules },
       modelDiscovery: {}, knownModels: [], modelProfiles: [], modelSelection: {}, subscription: {},
     }, null, 2)}\n`);
@@ -99,6 +100,8 @@ test('connector metadata upgrades model paths without replacing custom event rul
     assert.deepEqual(installed.eventStream.modelPaths, ['model', 'message.model']);
     assert.deepEqual(installed.eventStream.args, ['--custom-stream']);
     assert.deepEqual(installed.eventStream.rules, customRules);
+    assert.ok(installed.authSignatures.includes('custom-auth-marker'));
+    assert.ok(installed.authSignatures.includes('failed to authenticate'));
   } finally { cleanup(); }
 });
 

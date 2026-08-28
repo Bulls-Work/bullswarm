@@ -67,6 +67,7 @@ bullswarm setup    # re-run or repair
 bullswarm pools    # meter state, pace position, quarantine status
 bullswarm strategy refresh --apply --yes  # approve capability-aware tier autopilot
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
+bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser" --json
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo
 bullswarm health   # re-judge saved outputs; catch gate failures
 ```
@@ -83,6 +84,17 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `strategy` | Discover models, record subscription value, recommend or assign high/medium/low effort routes |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
+
+Discover and validate workflow definitions without executing them:
+
+```bash
+bullswarm workflow list
+bullswarm workflow list --json
+bullswarm workflow validate workflows/my-workflow.json
+```
+
+`workflow goal --request <path>` and `--run-id <id>` are internal detached-runner
+resume plumbing. Normal callers should provide a goal or use `--resume <shortId|runId>`.
 
 ## Model strategy and invocation telemetry
 
@@ -260,16 +272,20 @@ auditing completed runs.
 
 ### Live workflow dashboard
 
-For ordinary observation, use the non-interactive watcher. It prints only when
-the phase, step, agent action, routing, or status changes, plus a 60-second
-heartbeat while otherwise quiet. Terminal output includes every attempt's
-agent/model, elapsed time, outcome, and tokens, so a slow test is distinguishable
-from a stalled process without writing a polling script.
+For ordinary observation, use the non-interactive watcher. Human output is one
+compact aggregate line per semantic change and a 60-second heartbeat while
+otherwise quiet. Each line reports status/location, events and agent actions
+captured since the preceding sample, and quiet duration. It does not repeat
+command or response excerpts. Use `--verbose` for the detailed per-agent and
+last-action view. Compact terminal output reports the overall attempt count and
+elapsed time; `--verbose` includes every attempt's agent/model, outcome, and
+tokens. This keeps agent monitoring cheap while retaining a drill-down path.
 
 ```bash
 bullswarm workflow watch <shortId>
 bullswarm workflow watch <shortId> --jsonl       # automation-friendly stream
 bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
+bullswarm workflow watch <shortId> --verbose     # detailed agent/action view
 ```
 
 `workflow tui` is the interactive, Claude-style `/workflows` view. For an

@@ -508,14 +508,14 @@ test('I9: workflow runs rejects invalid or reversed initiated-time ranges', () =
   const { home, cleanup } = sandbox();
   try {
     const invalid = run(wf('runs', '--all', '--since', 'not-a-time'), { home });
-    assert.equal(invalid.status, 1);
+    assert.equal(invalid.status, 2);
     assert.match(invalid.stderr, /--since has an invalid time/);
 
     const reversed = run(wf(
       'runs', '--all', '--from', '2026-08-28T00:00:00Z',
       '--to', '2026-08-27T00:00:00Z',
     ), { home });
-    assert.equal(reversed.status, 1);
+    assert.equal(reversed.status, 2);
     assert.match(reversed.stderr, /--since must be earlier than --until/);
   } finally { cleanup(); }
 });
