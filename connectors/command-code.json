@@ -22,7 +22,22 @@
     "cmd login"
   ],
   "outputExtraction": {
-    "strategy": "stdout"
+    "strategy": "event-stream"
+  },
+  "eventStream": {
+    "format": "jsonl",
+    "args": ["--output-format", "json"],
+    "silenceThresholdSec": 600,
+    "rules": [
+      { "rootMatch": { "path": "event.type", "equals": "tool_queued" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "summaryPaths": ["event.input.command", "event.input.file_path", "event.input.path"], "status": "queued" },
+      { "rootMatch": { "path": "event.type", "equals": "tool_running" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "summaryPaths": ["event.description"], "status": "running" },
+      { "rootMatch": { "path": "event.type", "equals": "tool_completed" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "status": "completed" },
+      { "rootMatch": { "path": "event.type", "equals": "message_end" }, "forEach": "event.content", "match": { "path": "type", "equals": "text" }, "kind": "response", "summaryPaths": ["text"], "status": "completed" }
+    ],
+    "output": [
+      { "match": { "path": "type", "equals": "result" }, "path": "finalText", "mode": "last" },
+      { "match": { "path": "event.type", "equals": "run_end" }, "path": "event.result.finalText", "mode": "last" }
+    ]
   },
   "meter": {
     "type": "reader",

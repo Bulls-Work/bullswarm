@@ -48,6 +48,46 @@ test('happy path: echo worker completes and passes verification', async () => {
   }
 });
 
+test('event-stream connector extracts final content and emits normalized actions', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'tool', id: 't1', name: 'shell', command: 'npm test', status: 'running' },
+      { type: 'tool', id: 't1', name: 'shell', command: 'npm test', status: 'completed' },
+      { type: 'response', id: 'r1', text: 'Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures.' },
+    ];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        rules: [
+          { rootMatch: { path: 'type', equals: 'tool' }, idPaths: ['id'], kindPaths: ['name'], summaryPaths: ['command'], statusPath: 'status' },
+          { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        ],
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+      subscription: {},
+    };
+    const actions = [];
+    const progress = [];
+    const verdict = await watchOnce(streamed, 'Implement and verify the requested change.', ctx.dir, ctx.paths, {
+      onAgentEvent: (event) => actions.push(event),
+      onAgentProgress: (event) => progress.push(event),
+    });
+    assert.equal(verdict.ok, true);
+    assert.equal(actions.length, 3);
+    assert.equal(actions[1].status, 'completed');
+    assert.equal(actions[2].kind, 'response');
+    assert.equal(progress.length, 3);
+    assert.match(readFileSync(ctx.paths.outFile, 'utf8'), /^Completed the requested/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('connector timeout metadata is advisory unless the caller explicitly opts in', async () => {
   const ctx = makeCtx();
   try {

@@ -22,7 +22,19 @@
     "invalid api key"
   ],
   "outputExtraction": {
-    "strategy": "stdout"
+    "strategy": "event-stream"
+  },
+  "eventStream": {
+    "format": "jsonl",
+    "args": ["--json"],
+    "silenceThresholdSec": 600,
+    "rules": [
+      { "rootMatch": { "path": "type", "equals": "item.started" }, "idPaths": ["item.id"], "kindPaths": ["item.type"], "kindMap": { "agent_message": "response" }, "summaryPaths": ["item.command", "item.text"], "status": "running" },
+      { "rootMatch": { "path": "type", "equals": "item.completed" }, "idPaths": ["item.id"], "kindPaths": ["item.type"], "kindMap": { "agent_message": "response" }, "summaryPaths": ["item.command", "item.text"], "status": "completed" }
+    ],
+    "output": [
+      { "match": { "path": "type", "equals": "item.completed" }, "path": "item.text", "mode": "last" }
+    ]
   },
   "meter": {
     "type": "reader",

@@ -38,6 +38,8 @@ test('connector metadata upgrades add packaged capabilities without removing cus
     const installed = JSON.parse(readFileSync(join(dir, 'grok.json'), 'utf8'));
     assert.ok(installed.capabilities.includes('custom-local-capability'));
     assert.ok(installed.capabilities.includes('workflow-planning'));
+    assert.equal(installed.eventStream.format, 'jsonl');
+    assert.equal(installed.outputExtraction.strategy, 'event-stream');
     assert.deepEqual(upgradeConnectorMetadata(d), []);
   } finally { cleanup(); }
 });

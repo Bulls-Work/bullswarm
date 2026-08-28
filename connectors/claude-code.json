@@ -23,7 +23,20 @@
     "please run /login"
   ],
   "outputExtraction": {
-    "strategy": "stdout"
+    "strategy": "event-stream"
+  },
+  "eventStream": {
+    "format": "jsonl",
+    "args": ["--output-format", "stream-json", "--verbose"],
+    "silenceThresholdSec": 600,
+    "rules": [
+      { "rootMatch": { "path": "type", "equals": "assistant" }, "forEach": "message.content", "match": { "path": "type", "equals": "tool_use" }, "idPaths": ["id"], "kindPaths": ["name"], "summaryPaths": ["input.command", "input.file_path", "input.path", "input.pattern"], "status": "running" },
+      { "rootMatch": { "path": "type", "equals": "user" }, "forEach": "message.content", "match": { "path": "type", "equals": "tool_result" }, "idPaths": ["tool_use_id"], "kind": "tool", "statusPath": "is_error", "statusMap": { "true": "failed", "false": "completed" }, "defaultStatus": "completed" },
+      { "rootMatch": { "path": "type", "equals": "assistant" }, "forEach": "message.content", "match": { "path": "type", "equals": "text" }, "kind": "response", "summaryPaths": ["text"], "status": "completed" }
+    ],
+    "output": [
+      { "match": { "path": "type", "equals": "result" }, "path": "result", "mode": "last" }
+    ]
   },
   "$comment-meter": "the CALLER pool \u2014 competes in analyze/build, wins only when no delegate can take the lane",
   "meter": {

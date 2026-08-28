@@ -18,6 +18,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
 import { estimateInvocationUsage } from './usage.js';
+import { createAgentEventDecoder } from './agent-events.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -32,15 +33,17 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
 
 export function argvWithModel(connector, paths, model = null) {
   const argv = substituteArgv(connector.spawn.cmd, paths);
-  if (!model || !connector.modelSelection?.flag) return argv;
-  const flag = connector.modelSelection.flag;
-  const index = argv.indexOf(flag);
-  if (index >= 0) {
-    if (index + 1 < argv.length) argv[index + 1] = model;
-    else argv.push(model);
-  } else {
-    argv.push(flag, model);
+  if (model && connector.modelSelection?.flag) {
+    const flag = connector.modelSelection.flag;
+    const index = argv.indexOf(flag);
+    if (index >= 0) {
+      if (index + 1 < argv.length) argv[index + 1] = model;
+      else argv.push(model);
+    } else {
+      argv.push(flag, model);
+    }
   }
+  argv.push(...(connector.eventStream?.args ?? []));
   return argv;
 }
 
@@ -82,6 +85,10 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let fatalKillTimer = null;
     let fatalForceKillTimer = null;
     let forceKillTimer = null;
+    const eventDecoder = createAgentEventDecoder(connector.eventStream, {
+      onEvent: opts.onAgentEvent,
+      onProgress: opts.onAgentProgress,
+    });
     const stopOnFatalSignature = () => {
       if (fatalSignature) return;
       fatalSignature = matchAuthSignature(connector, `${stdout}\n${stderr}`.slice(-4000));
@@ -108,15 +115,20 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
 
     child.stdout.on('data', (d) => {
       stdout += d;
-      opts.onActivity?.({ stream: 'stdout', bytes: d.length, at: new Date().toISOString() });
+      const at = new Date().toISOString();
+      opts.onActivity?.({ stream: 'stdout', bytes: d.length, at });
+      eventDecoder?.push(d, 'stdout', at);
       stopOnFatalSignature();
     });
     child.stderr.on('data', (d) => {
       stderr += d;
-      opts.onActivity?.({ stream: 'stderr', bytes: d.length, at: new Date().toISOString() });
+      const at = new Date().toISOString();
+      opts.onActivity?.({ stream: 'stderr', bytes: d.length, at });
+      eventDecoder?.push(d, 'stderr', at);
       stopOnFatalSignature();
     });
     child.on('error', (err) => {
+      eventDecoder?.finish();
       if (timer) clearTimeout(timer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
@@ -130,22 +142,29 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         timedOut,
         cancelled,
         fatalSignature,
+        eventOutput: eventDecoder?.output() ?? '',
         spawnError: true,
       });
     });
     child.on('close', (code, signal) => {
+      eventDecoder?.finish();
       if (timer) clearTimeout(timer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
-      resolvePromise({ exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature });
+      resolvePromise({
+        exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature,
+        eventOutput: eventDecoder?.output() ?? '',
+      });
     });
   });
 }
 
 function extractOutput(connector, obs) {
   switch (connector.outputExtraction?.strategy ?? 'stdout') {
+    case 'event-stream':
+      return obs.eventOutput || obs.stdout || obs.stderr || '';
     case 'stdout':
       return obs.stdout || obs.stderr || '';
     case 'stdout-tail':

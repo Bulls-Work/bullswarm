@@ -215,6 +215,25 @@ active states with a dead/stale owner are automatically reconciled to
 Live attempts record the last stdout/stderr activity time and observed byte
 count separately from the runner heartbeat. This makes a silent process
 visible without treating elapsed wall time alone as proof that it is hung.
+Supported coding-agent connectors also enable their native JSONL event mode and
+declaratively map provider events into a common semantic action record:
+
+```json
+{"id":"provider-action-id","at":"...","kind":"shell_command|read_file|edit|response","status":"running|completed|failed","summary":"safe scalar preview"}
+```
+
+The live workflow pane retains the latest three logical actions per agent.
+Repeated updates for the same tool call replace its status, and streaming text
+chunks coalesce into one response action. Heartbeats, token/thought deltas,
+usage messages, hooks, and unparsed output remain liveness evidence but do not
+occupy the action pane. Connector-specific flags, paths, and mappings live in
+`connectors/*.json` under `eventStream`; core contains no provider event names.
+
+After ten minutes without transport, parsed-event, or semantic-action evidence,
+an active child is labeled `suspected_stalled`. This is an inspection signal,
+not a death verdict and never an automatic kill: buffered CLIs can be silent
+while working. Process exit, a fatal auth/quota signature, explicit operator
+cancellation, or an opt-in timeout remain the terminal signals.
 
 Each attempt records the phase/action, selected pool and model, effort tier,
 routing reason, all eligible candidates with quota surplus, timestamps,

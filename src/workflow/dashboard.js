@@ -121,7 +121,20 @@ export function renderDetails(row, { interactive = true } = {}) {
     const activity = agent.lastActivityAt
       ? ` · output activity ${agent.lastActivityAt} (${agent.outputBytesObserved ?? 0} bytes observed)`
       : ' · no streamed output observed yet';
-    lines.push(`   ⟡ ${agent.stepId} · ${agent.pool ?? '—'} · ${agent.model ?? 'model from connector'} · attempt ${agent.attempt ?? 0}${activity}`);
+    const stall = agent.stall?.status === 'suspected_stalled'
+      ? ` · ⚠ suspected stalled (${agent.stall.silentForSec}s without evidence; no auto-kill)`
+      : agent.stall ? ` · active (${agent.stall.silentForSec}s since evidence)` : '';
+    lines.push(`   ⟡ ${agent.stepId} · ${agent.pool ?? '—'} · ${agent.model ?? 'model from connector'} · attempt ${agent.attempt ?? 0}${activity}${stall}`);
+    if (agent.eventStreamSupported) {
+      lines.push('     last actions:');
+      for (const action of agent.lastActions ?? []) {
+        const summary = action.summary ? ` · ${action.summary}` : '';
+        lines.push(`       ${action.status === 'completed' ? '✓' : action.status === 'failed' ? '✗' : '·'} ${action.kind} · ${action.status}${summary}`);
+      }
+      if (!(agent.lastActions ?? []).length) lines.push('       waiting for a semantic action event');
+    } else {
+      lines.push('     last actions: unavailable (connector has no event stream)');
+    }
   }
   if (!Object.keys(state.activeAgents ?? {}).length) lines.push('   none');
   lines.push('', ' completed log:');
@@ -149,6 +162,9 @@ export function renderDetails(row, { interactive = true } = {}) {
           lines.push(`${indent}     route: ${attempt.routing.reason}${candidates ? ` · candidates [${candidates}]` : ''}`);
         }
         lines.push(`${indent}     ${compactUsage(attempt.usage)}`);
+        for (const agentAction of attempt.lastActions ?? []) {
+          lines.push(`${indent}     action: ${agentAction.kind} · ${agentAction.status}${agentAction.summary ? ` · ${agentAction.summary}` : ''}`);
+        }
       }
     }
   }

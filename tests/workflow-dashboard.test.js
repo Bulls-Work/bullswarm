@@ -90,6 +90,12 @@ test('dashboard rows expose current step and active agent state', () => {
     state.activeAgents = { 'fan[0]': {
       stepId: 'fan[0]', pool: 'opencode2', model: 'relay/gpt-5.6-luna', attempt: 0,
       lastActivityAt: '2026-08-28T01:00:00.000Z', outputBytesObserved: 321,
+      eventStreamSupported: true,
+      stall: { status: 'suspected_stalled', silentForSec: 601, autoTerminate: false },
+      lastActions: [
+        { id: 'a', kind: 'read_file', status: 'completed', summary: 'src/app.js' },
+        { id: 'b', kind: 'shell_command', status: 'running', summary: 'npm test' },
+      ],
     } };
     writeFileSync(statePath, JSON.stringify(state));
     const row = dashboardRows(home)[0];
@@ -98,6 +104,9 @@ test('dashboard rows expose current step and active agent state', () => {
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
     assert.match(renderDetails(row), /relay\/gpt-5\.6-luna/);
     assert.match(renderDetails(row), /output activity 2026-08-28T01:00:00\.000Z \(321 bytes observed\)/);
+    assert.match(renderDetails(row), /suspected stalled \(601s without evidence; no auto-kill\)/);
+    assert.match(renderDetails(row), /read_file · completed · src\/app\.js/);
+    assert.match(renderDetails(row), /shell_command · running · npm test/);
   } finally { cleanup(); }
 });
 

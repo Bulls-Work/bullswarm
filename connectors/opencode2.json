@@ -8,7 +8,19 @@
     "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
   },
   "authSignatures": ["No cookie auth credentials found", "unauthorized"],
-  "outputExtraction": { "strategy": "stdout" },
+  "outputExtraction": { "strategy": "event-stream" },
+  "eventStream": {
+    "format": "jsonl",
+    "args": ["--format", "json"],
+    "silenceThresholdSec": 600,
+    "rules": [
+      { "rootMatch": { "path": "type", "equals": "tool_use" }, "idPaths": ["part.callID", "part.id"], "kindPaths": ["part.tool"], "summaryPaths": ["part.state.input.command", "part.state.input.file_path", "part.state.input.path", "part.state.title"], "statusPath": "part.state.status" },
+      { "rootMatch": { "path": "type", "equals": "text" }, "idPaths": ["part.id"], "kind": "response", "summaryPaths": ["part.text"], "status": "completed" }
+    ],
+    "output": [
+      { "match": { "path": "type", "equals": "text" }, "path": "part.text", "mode": "concat", "separator": "\n" }
+    ]
+  },
   "$comment-auto": "--auto is required for headless workflow dispatch: task files live under ~/.bullswarm, outside the target repo, and OpenCode otherwise pauses for an interactive permission approval. --model pins the QA/runtime pool to Luna instead of the CLI default.",
   "$comment-exit1": "known failure mode: writes a complete correct answer, then dies with a Console-sync auth error and exit 1. The verdict sets contentUsableDespiteExit instead of discarding the work.",
   "meter": { "type": "none" },
