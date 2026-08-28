@@ -546,13 +546,68 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   const settings = state.settings;
   const executionPhase = (action) => `${phase}:${action.phase ?? 'adaptive'}`;
 
+  // Ready-set scheduler. Every action whose dependencies have succeeded is
+  // launched immediately; a dependent action starts the moment its own
+  // dependencies finish, not when the whole wave finishes. Real concurrency is
+  // capped by the runtime's global dispatch limiter (settings.concurrency), so
+  // this mirrors a pipeline: item B's verify overlaps item C's fix.
   const executeActions = async (actions) => {
     const pending = new Map(actions.map((action) => [action.id, action]));
-    while (pending.size) {
-      if (state.cancelRequested) return { ok: false, why: 'workflow cancellation requested' };
-      const ready = [...pending.values()].filter((action) =>
+    const running = new Map();
+    const runOne = async (action) => {
+      if (state.outputs[action.id]?.ok === true) {
+        runtime.emit('action.resumed', { actionId: action.id, status: 'succeeded' });
+        return;
+      }
+      let result;
+      try {
+        state.currentStep = {
+          id: action.id,
+          type: action.type,
+          phase: executionPhase(action),
+        };
+        runtime.persist();
+        result = await runtime.runStep(
+          { ...action, parentId: gate.id, _dynamic: true },
+          { phase: executionPhase(action), retryAttempts },
+        );
+      } catch (err) {
+        // A post-artifact observer failure must not rewrite a durably
+        // successful action as failed. Propagate it to the gate boundary;
+        // resume will use the persisted output and continue pending work.
+        if (state.outputs[action.id]?.ok === true) throw err;
+        result = { ok: false, why: err.message };
+        state.outputs[action.id] = result;
+        runtime.setActionStatus(action, { phase: executionPhase(action) }, 'failed_terminal', {
+          finishedAt: new Date().toISOString(), why: err.message,
+        });
+        runtime.emit('action.failed', { actionId: action.id, status: 'failed_terminal', why: err.message });
+      }
+      state.steps.push({
+        phase: executionPhase(action), stepId: action.id, type: action.type,
+        ok: result.ok, why: result.why ?? null, dynamic: true,
+      });
+      runtime.persist();
+    };
+    let observerError = null;
+    while (pending.size || running.size) {
+      if (state.cancelRequested && !running.size) return { ok: false, why: 'workflow cancellation requested' };
+      const ready = state.cancelRequested ? [] : [...pending.values()].filter((action) =>
         (action.dependsOn ?? []).every((id) => state.outputs[id]?.ok === true));
-      if (!ready.length) {
+      for (const action of ready) {
+        pending.delete(action.id);
+        const task = runOne(action)
+          .catch((err) => { observerError ??= err; })
+          .finally(() => running.delete(action.id));
+        running.set(action.id, task);
+      }
+      if (running.size) {
+        await Promise.race([...running.values()]);
+        if (observerError) throw observerError;
+        continue;
+      }
+      if (state.cancelRequested) return { ok: false, why: 'workflow cancellation requested' };
+      if (pending.size) {
         const blocked = [...pending.values()].map((action) => ({ id: action.id, dependsOn: action.dependsOn ?? [] }));
         const why = `dynamic actions blocked by failed or unresolved dependencies: ${JSON.stringify(blocked)}`;
         for (const action of pending.values()) {
@@ -566,42 +621,6 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         // This is an observation, not a runtime crash. Return to the planner so
         // it can propose a bounded retry/escalation or stop truthfully.
         return { ok: true, blocked, why };
-      }
-      for (const action of ready) {
-        pending.delete(action.id);
-        if (state.outputs[action.id]?.ok === true) {
-          runtime.emit('action.resumed', { actionId: action.id, status: 'succeeded' });
-          continue;
-        }
-        let result;
-        try {
-          state.currentStep = {
-            id: action.id,
-            type: action.type,
-            phase: executionPhase(action),
-          };
-          runtime.persist();
-          result = await runtime.runStep(
-            { ...action, parentId: gate.id, _dynamic: true },
-            { phase: executionPhase(action), retryAttempts },
-          );
-        } catch (err) {
-          // A post-artifact observer failure must not rewrite a durably
-          // successful action as failed. Propagate it to the gate boundary;
-          // resume will use the persisted output and continue pending work.
-          if (state.outputs[action.id]?.ok === true) throw err;
-          result = { ok: false, why: err.message };
-          state.outputs[action.id] = result;
-          runtime.setActionStatus(action, { phase: executionPhase(action) }, 'failed_terminal', {
-            finishedAt: new Date().toISOString(), why: err.message,
-          });
-          runtime.emit('action.failed', { actionId: action.id, status: 'failed_terminal', why: err.message });
-        }
-        state.steps.push({
-          phase: executionPhase(action), stepId: action.id, type: action.type,
-          ok: result.ok, why: result.why ?? null, dynamic: true,
-        });
-        runtime.persist();
       }
     }
     return { ok: true };

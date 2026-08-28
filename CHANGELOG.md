@@ -1,5 +1,28 @@
 # bullswarm changelog
 
+## 0.11.0 — plan the whole graph, run it wide
+
+Adopts the driving mechanics of Claude Code's dynamic workflow (documented in
+`docs/claude-dynamic-workflow-mechanics.md`) into the autonomous loop.
+
+- Ready-set scheduler: every planner action whose dependencies have succeeded
+  starts immediately, and a dependent action starts the moment its own inputs
+  finish rather than when the whole round finishes. The global
+  `settings.concurrency` limiter caps real parallelism. Verify-B now overlaps
+  fix-C exactly like a Claude `pipeline()` stage.
+- Planning doctrine: the planner is told to propose the complete dependency
+  graph in one decision (per-item fix→verify chains plus one whole-system
+  verify), to declare file ownership per action and order same-file edits with
+  `dependsOn`, to write self-contained worker prompts, and what a planning round
+  trip costs. The goal orchestrator prompt no longer asks for "the smallest
+  useful set" of actions. `executionConstraints.concurrency` is exposed.
+- `workflow goal` default `--concurrency` is 8 (was 3; max 16).
+- `verify.review` is recovered when a planner puts instructions or a filesystem
+  path there: instructions move to `prompt`, the single dependency's artifact is
+  inferred, and any `review` that is not `outputs.<actionId>.outFile` is
+  rejected at validation (feeding the corrective turn) instead of failing a
+  dispatch after a full planning round trip.
+
 ## 0.10.9 — planner self-correction and honest silence
 
 - An invalid or non-JSON orchestrator decision no longer fails the run. The

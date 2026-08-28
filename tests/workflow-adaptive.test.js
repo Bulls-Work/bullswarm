@@ -33,6 +33,17 @@ function fixture() {
     '      : corrected',
     '        ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Corrected proposal: one bounded run action with every required field.",actions:[{id:"corrected-task",type:"run",phase:"correct",prompt:"Perform the corrected bounded action and report concrete evidence.",dependsOn:["initial"]}]}',
     '        : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"A per-item check is required before completion.",actions:[{id:"bad-fanout",type:"fanout",phase:"inspect",items:["alpha"],dependsOn:["initial"]}]};',
+    '  } else if (task.includes("FORCE_PARALLEL")) {',
+    '    const done = ["fix-a","fix-b","fix-c","check-a","check-b","check-c"].every((id) => task.includes(`"${id}"`) && task.includes("succeeded"));',
+    '    answer = done',
+    '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"All three fix/check chains completed with durable evidence.",actions:[]}',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Three independent items each need a fix and its own check; the graph is proposed in one decision.",actions:[',
+    '          {id:"fix-a",type:"run",phase:"fix",prompt:"SLEEP_300 Fix item a in its own file only and report the concrete evidence and diff summary.",dependsOn:["initial"]},',
+    '          {id:"fix-b",type:"run",phase:"fix",prompt:"SLEEP_1200 Fix item b in its own file only and report the concrete evidence and diff summary.",dependsOn:["initial"]},',
+    '          {id:"fix-c",type:"run",phase:"fix",prompt:"SLEEP_1200 Fix item c in its own file only and report the concrete evidence and diff summary.",dependsOn:["initial"]},',
+    '          {id:"check-a",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item a tests and report pass or fail with evidence.",dependsOn:["fix-a"]},',
+    '          {id:"check-b",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item b tests and report pass or fail with evidence.",dependsOn:["fix-b"]},',
+    '          {id:"check-c",type:"run",phase:"check",prompt:"SLEEP_100 Re-run the item c tests and report pass or fail with evidence.",dependsOn:["fix-c"]}]};',
     '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
@@ -66,6 +77,8 @@ function fixture() {
     '    ? "I believe the next step should be to run the full test suite and inspect the failing modules, but I cannot express that as the requested decision object right now; please advise on the expected shape."',
     '    : JSON.stringify(answer));',
     '} else {',
+    '  const sleep = /SLEEP_(\\d+)/.exec(task);',
+    '  if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));',
     '  process.stdout.write("Completed the bounded action with concrete evidence, file inspection details, and a sufficiently thorough result for downstream verification.");',
     '}',
   ].join('\n'));
@@ -107,6 +120,39 @@ function plannerTasks(runDir) {
     .map((name) => readFileSync(join(runDir, name), 'utf8'));
 }
 
+test('dependency-ready sibling actions run concurrently and dependents start as soon as their own inputs finish', async () => {
+  const f = fixture();
+  try {
+    const started = {};
+    const finished = {};
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_PARALLEL', { concurrency: 3 }), pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        if (event.type === 'action.started') started[event.actionId] = Date.now();
+        if (event.type === 'action.completed') finished[event.actionId] = Date.now();
+      },
+    });
+    assert.equal(result.state.status, 'completed');
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    for (const id of ['fix-a', 'fix-b', 'fix-c', 'check-a', 'check-b', 'check-c']) {
+      assert.equal(result.state.outputs[id].ok, true, id);
+      assert.ok(started[id] && finished[id], `${id} observed`);
+    }
+    // All three fixes were in flight together (the limiter allows 3).
+    const fixesInFlightAt = (t) => ['fix-a', 'fix-b', 'fix-c'].filter((id) => started[id] <= t && finished[id] >= t).length;
+    assert.equal(fixesInFlightAt(Math.max(started['fix-a'], started['fix-b'], started['fix-c'])), 3);
+    // check-a (depends only on fix-a, 300 ms) started before the slow fixes (1200 ms) finished:
+    // no wave barrier between dependency levels.
+    assert.ok(started['check-a'] < Math.min(finished['fix-b'], finished['fix-c']),
+      `check-a started at +${started['check-a'] - started['fix-a']}ms; fix-b finished at +${finished['fix-b'] - started['fix-a']}ms`);
+    assert.ok(result.state.attempts.every((attempt) => attempt.status === 'succeeded'));
+    const [firstPlannerTask] = plannerTasks(result.runDir);
+    assert.match(firstPlannerTask, /PLANNING DOCTRINE/);
+    assert.match(firstPlannerTask, /"concurrency": 3/);
+    assert.match(firstPlannerTask, /"readySiblingsRunConcurrently": true/);
+  } finally { f.cleanup(); }
+});
+
 test('planner prompt shows full run, fanout, and verify skeletons', async () => {
   const f = fixture();
   try {
@@ -115,7 +161,8 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     const [task] = plannerTasks(result.runDir);
     assert.match(task, /"type":"run","phase":"implement","prompt"/);
     assert.match(task, /"type":"fanout","phase":"inspect","items":\["alpha","beta"\],"stepTemplate":\{"prompt":"Inspect \{\{item\}\}/);
-    assert.match(task, /"type":"verify","phase":"verify","review":/);
+    assert.match(task, /"type":"verify","phase":"verify","prompt":/);
+    assert.match(task, /review is never instructions or a filesystem path/);
     assert.match(task, /fanout\.stepTemplate MUST be an object/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
@@ -375,6 +422,45 @@ test('single-dependency verify proposals infer the durable review artifact', () 
   assert.doesNotThrow(() => validateDecisionProposal(normalized, {
     knownActionIds: ['fix'], currentActionCount: 1,
   }));
+});
+
+test('verify review instructions are recovered into prompt and bad review paths are rejected before dispatch', () => {
+  const base = { schemaVersion: 'bullswarm.workflow.decision.v1', decision: 'needs_more_work', reason: 'independent verification is required' };
+  const prose = normalizeDecisionProposal({ ...base, actions: [{
+    id: 'verify-fix', type: 'verify', dependsOn: ['fix'],
+    review: 'Independently confirm hello.txt contains exactly one line and report pass or fail.',
+  }] });
+  assert.equal(prose.actions[0].review, 'outputs.fix.outFile');
+  assert.match(prose.actions[0].prompt, /^Independently confirm hello\.txt/);
+  assert.doesNotThrow(() => validateDecisionProposal(prose, { knownActionIds: ['fix'], currentActionCount: 1 }));
+
+  const path = normalizeDecisionProposal({ ...base, actions: [{
+    id: 'verify-fix', type: 'verify', dependsOn: ['fix'], prompt: 'Check it.', review: '/abs/repo/hello.txt',
+  }] });
+  assert.equal(path.actions[0].review, 'outputs.fix.outFile');
+  assert.equal(path.actions[0].prompt, 'Check it.');
+  assert.equal(path.actions[0].reviewNormalizedFrom, '/abs/repo/hello.txt');
+
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({ ...base, actions: [{
+    id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'], review: 'Run the whole suite and report.',
+  }] }), { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }),
+  (err) => err instanceof DecisionValidationError && err.issues.some((issue) => /review must be a dotted artifact path/.test(issue)));
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({ ...base, actions: [{
+    id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'],
+  }] }), { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }),
+  (err) => err instanceof DecisionValidationError && err.issues.some((issue) => /review is required: a verify with one dependsOn/.test(issue)));
+  assert.throws(() => validateDecisionProposal({ ...base, actions: [{
+    id: 'verify-all', type: 'verify', dependsOn: ['fix-a'], review: 'outputs.ghost.outFile',
+  }] }, { knownActionIds: ['fix-a'], currentActionCount: 1 }),
+  (err) => err instanceof DecisionValidationError && err.issues.some((issue) => /review references unknown action "ghost"/.test(issue)));
+  assert.doesNotThrow(() => validateDecisionProposal({ ...base, actions: [{
+    id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'], prompt: 'Run npm test.', review: 'outputs.fix-b.outFile',
+  }] }, { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }));
+  // A verify may be listed before the action it reviews within the same proposal.
+  assert.doesNotThrow(() => validateDecisionProposal({ ...base, actions: [
+    { id: 'verify-later', type: 'verify', dependsOn: ['fix-later'], review: 'outputs.fix-later.outFile', prompt: 'Check.' },
+    { id: 'fix-later', type: 'run', prompt: 'Fix it.' },
+  ] }, { knownActionIds: [], currentActionCount: 0 }));
 });
 
 test('planner phases are named and forward-only once their actions have executed', () => {

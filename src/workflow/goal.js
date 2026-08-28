@@ -15,10 +15,10 @@ export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   '',
   'At every checkpoint:',
   '1. Observe the intent, completed actions, artifacts, failures, verification results, available capabilities, and remaining budget.',
-  '2. If evidence is insufficient, return needs_more_work with the smallest useful set of bounded run, fanout, or verify actions.',
-  '3. Give workers self-contained prompts with the exact goal, scope, expected artifact, and acceptance checks they need.',
-  '4. Assign every action a short kebab-case phase name such as discover, implement, or verify. Phases are forward-only: never append new work to a phase that already finished.',
-  '5. Use dependencies to order work. Use fanout only for genuinely independent items.',
+  '2. If evidence is insufficient, return needs_more_work with the COMPLETE dependency graph of bounded run, fanout, and verify actions you can see now — not the smallest step. Independent actions run concurrently; dependent actions start as soon as their dependencies succeed. One planning round trip costs minutes, so a decision with one action when several are obvious is the expensive choice.',
+  '3. Give workers self-contained prompts with the exact goal, absolute working directory, the files they may edit (and that they must not touch others), the expected artifact, and the exact acceptance command. A worker sees only its own prompt.',
+  '4. Assign every action a short kebab-case phase name such as discover, fix, verify-items, or verify-suite. Phases are forward-only: never append new work to a phase that already finished.',
+  '5. Use dependsOn only for real data or same-file ordering dependencies. For N independent items propose N fix actions and N verify actions (each verify depending only on its own fix) plus one final verify depending on all of them; use fanout when every item needs the identical prompt.',
   '   A verify action with exactly one dependency automatically reviews that dependency artifact; you do not need to supply a review path.',
   '6. Recover from a failed action with a new bounded action in a new phase when useful; do not repeat an identical failed plan.',
   '7. Require concrete verification of changed behavior. For code changes, obtain relevant test or inspection evidence before completion.',
@@ -66,7 +66,7 @@ export function buildGoalWorkflow({
   const maxActions = positiveInt(settings.maxActions, 40, { max: 1000 });
   const maxItemsPerExpansion = positiveInt(settings.maxItemsPerExpansion, 8, { max: 100 });
   const maxWorkflowSeconds = positiveInt(settings.maxWorkflowSeconds, 3600, { max: 86_400 });
-  const concurrency = positiveInt(settings.concurrency, 3, { max: 16 });
+  const concurrency = positiveInt(settings.concurrency, 8, { max: 16 });
   const retryAttempts = positiveInt(settings.retryAttempts, 1, { min: 0, max: 3 });
   if (!['agent-decides', 'off', 'required'].includes(worktreeIsolation)) {
     throw new Error(`invalid worktree isolation policy "${worktreeIsolation}"`);
