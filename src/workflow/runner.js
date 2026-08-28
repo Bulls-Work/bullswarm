@@ -160,6 +160,7 @@ export async function runWorkflow(opts) {
          maxExpansionRounds: 0,
          maxActions: 100,
          maxItemsPerExpansion: 50,
+         maxPlannerCorrections: 2,
          maxWorkflowSeconds: 3600,
          ...(doc.settings ?? {}),
        },
@@ -488,6 +489,17 @@ export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
   return missing;
 }
 
+function plannerCorrectionAllowance(settings) {
+  const value = Number(settings?.maxPlannerCorrections);
+  if (!Number.isFinite(value)) return 2;
+  return Math.max(0, Math.min(Math.floor(value), 5));
+}
+
+function responseExcerpt(text, limit = 1200) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  return text.length > limit ? `${text.slice(0, limit)}\n…[truncated ${text.length - limit} chars]` : text;
+}
+
 function terminalPlannerOutcome(state, gate, reason) {
   const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
   const observedActions = (state.actionLedger ?? []).filter((action) => action.kind !== 'decide');
@@ -614,29 +626,109 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     runtime.emit('kernel.checkpointed', { stage: 'planning', gateId: gate.id });
     state.currentStep = { id: gate.id, type: gate.type, phase };
     runtime.persist();
-    const planner = await runtime.runStep(gate, { phase, retryAttempts });
-    if (!planner.ok) return planner;
-
+    // Planner turn with bounded correction. An invalid or non-JSON decision is
+    // a content problem, not a dispatch failure: feed the exact validator
+    // issues back to the same orchestrator thread for up to
+    // settings.maxPlannerCorrections turns, then try one other eligible
+    // orchestrator pool, and only then settle on a truthful qualified outcome.
+    const maxCorrections = plannerCorrectionAllowance(settings);
+    let correction = null;
+    let correctionsUsed = 0;
+    let orchestratorEscalated = false;
+    // Pools benched as orchestrator stay benched for the rest of the run (and
+    // across resume); a pool that could not speak the decision schema once is
+    // not asked again on the next checkpoint.
+    state.orchestratorAvoidPools ??= [];
+    const avoidPools = state.orchestratorAvoidPools;
+    let planner;
     let proposal;
-    try {
-      proposal = validateDecisionProposal(normalizeDecisionProposal(planner.proposal), {
-        knownActionIds: (state.plan?.actions ?? []).map((action) => action.id),
-        closedPhases: (state.plan?.actions ?? [])
-          .filter((action) => action.source === 'planner')
-          .map((action) => action.definition?.phase)
-          .filter(Boolean),
-        currentActionCount: state.plan?.actions?.length ?? 0,
-        maxActions: settings.maxActions,
-        maxItemsPerExpansion: settings.maxItemsPerExpansion,
-      });
-    } catch (err) {
-      const why = err instanceof DecisionValidationError ? err.message : `planner decision rejected: ${err.message}`;
-      state.outputs[gate.id] = { ...state.outputs[gate.id], ok: false, why };
-      runtime.emit('decision.rejected', { gateId: gate.id, why, issues: err.issues ?? [] });
-      if (/maxActions|maxItemsPerExpansion/.test(why)) {
-        return terminalPlannerOutcome(state, gate, `Planner expansion safety bound reached: ${why}`);
+    while (true) {
+      if (state.cancelRequested) return { ok: false, why: 'workflow cancellation requested' };
+      planner = await runtime.runStep(
+        avoidPools.length ? { ...gate, avoidPools } : gate,
+        { phase, retryAttempts, correction },
+      );
+      let rejection = null;
+      if (!planner.ok) {
+        // The dispatch itself failed (no eligible pool, auth, cancellation):
+        // there is nothing for the planner to correct.
+        if (planner.dispatchOk !== true) return planner;
+        rejection = { why: planner.why, issues: [planner.parseError ?? planner.why] };
+      } else {
+        try {
+          proposal = validateDecisionProposal(normalizeDecisionProposal(planner.proposal), {
+            knownActionIds: (state.plan?.actions ?? []).map((action) => action.id),
+            closedPhases: (state.plan?.actions ?? [])
+              .filter((action) => action.source === 'planner')
+              .map((action) => action.definition?.phase)
+              .filter(Boolean),
+            currentActionCount: state.plan?.actions?.length ?? 0,
+            maxActions: settings.maxActions,
+            maxItemsPerExpansion: settings.maxItemsPerExpansion,
+          });
+        } catch (err) {
+          const why = err instanceof DecisionValidationError ? err.message : `planner decision rejected: ${err.message}`;
+          rejection = {
+            why,
+            issues: err.issues?.length ? err.issues : [why],
+            safetyBound: /maxActions|maxItemsPerExpansion/.test(why),
+          };
+        }
       }
-      return { ok: false, why };
+      if (!rejection) break;
+
+      state.outputs[gate.id] = { ...state.outputs[gate.id], ok: false, why: rejection.why };
+      runtime.emit('decision.rejected', { gateId: gate.id, why: rejection.why, issues: rejection.issues });
+      if (rejection.safetyBound) {
+        return terminalPlannerOutcome(state, gate, `Planner expansion safety bound reached: ${rejection.why}`);
+      }
+      const feedback = {
+        why: rejection.why,
+        issues: rejection.issues,
+        rejectedProposal: planner.proposal ?? null,
+        rejectedResponse: responseExcerpt(state.outputs[gate.id]?.outputText),
+      };
+      const failedPool = planner.pick?.pool ?? null;
+      if (correctionsUsed < maxCorrections) {
+        correctionsUsed += 1;
+        correction = { ...feedback, attempt: correctionsUsed, maxAttempts: maxCorrections };
+        runtime.setActionStatus(gate, { phase }, 'failed_retryable', { why: rejection.why });
+        runtime.emit('decision.correction_requested', {
+          gateId: gate.id, attempt: correctionsUsed, maxAttempts: maxCorrections,
+          pool: failedPool, why: rejection.why, issues: rejection.issues,
+        });
+        continue;
+      }
+      if (!orchestratorEscalated && !gate.pool && failedPool && settings.escalateOnFail !== false) {
+        avoidPools.push(failedPool);
+        const alternatives = runtime.preparePools({
+          ...gate,
+          avoidPools,
+          lane: gate.lane ?? 'analyze',
+          requiresCapabilities: gate.requiresCapabilities ?? ['workflow-planning', 'strong-analysis'],
+        });
+        if (alternatives.length) {
+          orchestratorEscalated = true;
+          correctionsUsed = 0;
+          correction = { ...feedback, attempt: 1, maxAttempts: maxCorrections + 1 };
+          runtime.setActionStatus(gate, { phase }, 'failed_retryable', { why: rejection.why });
+          runtime.emit('decision.orchestrator_escalated', {
+            gateId: gate.id, from: failedPool, to: alternatives.map((pool) => pool.name),
+            why: rejection.why,
+          });
+          continue;
+        }
+      }
+      runtime.setActionStatus(gate, { phase }, 'failed_terminal', {
+        finishedAt: new Date().toISOString(), why: rejection.why,
+      });
+      runtime.emit('action.failed', { actionId: gate.id, status: 'failed_terminal', why: rejection.why });
+      return terminalPlannerOutcome(
+        state,
+        gate,
+        `Planner could not produce a valid decision after ${correctionsUsed} correction turn(s)` +
+          `${orchestratorEscalated ? ' and one orchestrator escalation' : ''}: ${rejection.why}`,
+      );
     }
 
     const actionDefaults = { ...(gate.addDir != null ? { addDir: gate.addDir } : {}), ...(gate.actionDefaults ?? {}) };

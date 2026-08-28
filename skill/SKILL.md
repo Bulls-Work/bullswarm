@@ -335,6 +335,14 @@ execute -> observe -> decide -> validate proposal -> append -> execute -> observ
 Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
 `retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
 contain bounded actions; malformed or over-budget output executes nothing.
+A malformed or non-JSON decision does not fail the run: the runtime returns
+the exact validator issues to the same orchestrator thread for up to
+`settings.maxPlannerCorrections` (default 2) corrective turns
+(`decision.correction_requested` events), then benches that pool as
+orchestrator for the rest of the run and tries one other eligible pool
+(`decision.orchestrator_escalated`), and only then settles on a qualified
+`completed_with_concerns`/`blocked` outcome. Safety bounds (`maxActions`,
+`maxItemsPerExpansion`) still terminate immediately with a qualified outcome.
 `complete` still requires successful delivery and verification. `stop` returns
 `completed_with_concerns` with a ready best-effort artifact when useful work
 exists, or `blocked` when it does not; neither hides failed verification.

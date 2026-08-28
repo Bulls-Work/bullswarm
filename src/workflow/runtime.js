@@ -664,6 +664,7 @@ export class WorkflowRuntime {
     return this.pools.filter(
       (p) => p.enabled !== false && !isQuarantined(p, now) && p.burstGate !== true &&
         (step.pool == null || p.name === step.pool) &&
+        !(step.avoidPools ?? []).includes(p.name) &&
         (step.requiresCapabilities ?? []).every((capability) =>
           (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)),
     ).map((pool) => {
@@ -996,6 +997,14 @@ export class WorkflowRuntime {
         completionPolicy,
       },
       approval: this.state.approval ?? null,
+      validationFeedback: opts.correction ? {
+        attempt: opts.correction.attempt,
+        maxAttempts: opts.correction.maxAttempts,
+        why: opts.correction.why,
+        issues: opts.correction.issues ?? [],
+        rejectedProposal: opts.correction.rejectedProposal ?? null,
+        rejectedResponseExcerpt: opts.correction.rejectedResponse ?? null,
+      } : null,
       operatorSteering: (this.state.steering ?? []).map((entry) => ({
         id: entry.id,
         message: entry.message,
@@ -1018,13 +1027,21 @@ export class WorkflowRuntime {
     const taskText = [
       rendered.prompt,
       '',
+      ...(opts.correction ? [
+        `CORRECTION REQUIRED (attempt ${opts.correction.attempt} of ${opts.correction.maxAttempts}): the runtime rejected your previous decision. validationFeedback in the durable context lists the exact issues. Fix only those issues and return the corrected JSON decision. No prose, no markdown fences.`,
+        '',
+      ] : []),
       `Return ONLY JSON with schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
       'Allowed decisions: proceed, complete, needs_more_work, retry, escalate, wait_for_approval, stop.',
       'Every proposed action MUST use the field "type" (never "kind").',
       'Every action MUST include a forward-only kebab-case "phase". Never reuse a name listed in closedPhases.',
-      'Action skeleton: {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}.',
+      'Action skeletons (copy the shape exactly; every field shown is required unless marked optional):',
+      '  run:    {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}',
+      '  fanout: {"id":"per-item-check","type":"fanout","phase":"inspect","items":["alpha","beta"],"stepTemplate":{"prompt":"Inspect {{item}} and report concrete evidence."},"dependsOn":["prior-action"]}',
+      '  verify: {"id":"independent-check","type":"verify","phase":"verify","review":"Independently re-run the tests and report pass/fail with evidence.","dependsOn":["bounded-action"]}',
+      'fanout.items MUST be an inline array and fanout.stepTemplate MUST be an object whose prompt uses {{item}}. verify.review MUST be a string. dependsOn is optional and may only name existing or newly proposed action IDs.',
       'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
-      'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal.',
+      'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal and returns rejected proposals to you with the exact issues for a bounded correction turn.',
       'Keep run/fanout actions cohesive and reviewable. If executionConstraints.actionTimeoutSec is non-null, size them to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
       'Agent-count, workflow-duration, and expansion-round budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.',
       'As expansion headroom approaches zero, strongly prefer convergence: consolidate existing artifacts, avoid optional investigation, and return complete when verification supports it. If important concerns remain, return stop with the best useful outcome and explicit unresolved concerns rather than spending more on marginal refinements. Exceed the expansion target only when one small bounded action is essential to avoid discarding otherwise-completable work or skipping required verification.',
@@ -1068,6 +1085,8 @@ export class WorkflowRuntime {
     const result = {
       ...verdict,
       ok: verdict.ok && proposal != null,
+      dispatchOk: verdict.ok === true,
+      parseError,
       why: proposal ? `planner proposed ${proposal.decision ?? 'unknown'}` :
         (parseError ? `planner response invalid: ${parseError}` : verdict.why),
       proposal,

@@ -1,5 +1,27 @@
 # bullswarm changelog
 
+## 0.10.9 — planner self-correction and honest silence
+
+- An invalid or non-JSON orchestrator decision no longer fails the run. The
+  runtime feeds the exact validator issues, the rejected proposal, and a
+  response excerpt back to the same orchestrator thread for bounded corrective
+  turns (`settings.maxPlannerCorrections`, default 2, emits
+  `decision.correction_requested`), then benches that pool as orchestrator for
+  the rest of the run and escalates to one other eligible pool
+  (`decision.orchestrator_escalated`), and only then settles on a qualified
+  `completed_with_concerns`/`blocked` outcome. The decide action's ledger status
+  now agrees with that outcome (`failed_retryable` while correcting,
+  `failed_terminal` on exhaustion) instead of reporting `succeeded`.
+- The planner prompt now shows complete `run`, `fanout` (`items` +
+  `stepTemplate.prompt` with `{{item}}`), and `verify` (`review`) skeletons, so
+  the first proposal can match what `decision.js` validates.
+- `workflow watch` separates two silences: `quiet` counts durable workflow
+  events, and a new `agent output … ago` figure (JSONL `transportQuietForSec`)
+  counts raw output from live agents, so a thinking agent and a dead one look
+  different on the same heartbeat line.
+- Removed the dead thin-leaf help renderer left over from the help unification
+  and stopped hard-coding the test count in AGENTS.md.
+
 ## 0.10.8 — quieter monitoring and resilient orchestration
 
 - Made `workflow watch` aggregate low-level activity into compact interval

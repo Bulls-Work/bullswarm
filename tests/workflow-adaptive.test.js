@@ -20,9 +20,20 @@ function fixture() {
   writeFileSync(worker, [
     'import { readFileSync } from "node:fs";',
     'const task = readFileSync(process.argv[2], "utf8");',
+    'const garbagePlanner = process.argv[3] === "always-garbage-planner";',
     'if (task.includes("BEGIN DURABLE WORKFLOW CONTEXT")) {',
     '  let answer;',
-    '  if (task.includes("FORCE_STOP")) {',
+    '  if (garbagePlanner || task.includes("FORCE_GARBAGE")) {',
+    '    answer = "__GARBAGE__";',
+    '  } else if (task.includes("FORCE_INVALID_ONCE")) {',
+    '    const corrected = task.includes("CORRECTION REQUIRED");',
+    '    const fixedDone = task.includes("corrected-task") && task.includes("succeeded");',
+    '    answer = fixedDone',
+    '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"The corrected bounded action completed with durable evidence.",actions:[]}',
+    '      : corrected',
+    '        ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Corrected proposal: one bounded run action with every required field.",actions:[{id:"corrected-task",type:"run",phase:"correct",prompt:"Perform the corrected bounded action and report concrete evidence.",dependsOn:["initial"]}]}',
+    '        : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"A per-item check is required before completion.",actions:[{id:"bad-fanout",type:"fanout",phase:"inspect",items:["alpha"],dependsOn:["initial"]}]};',
+    '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"wait_for_approval",reason:"A human must approve the bounded next stage.",actions:[]};',
@@ -51,7 +62,9 @@ function fixture() {
     '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"Expanded evidence now proves the requested work is complete and verified.",actions:[]}',
     '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"The initial result lacks one bounded follow-up investigation needed for sufficient evidence.",actions:[{id:"expanded-task",type:"run",lane:"analyze",prompt:"Perform the bounded expanded investigation and report concrete evidence.",dependsOn:["initial"]}]};',
     '  }',
-    '  process.stdout.write(JSON.stringify(answer));',
+    '  process.stdout.write(answer === "__GARBAGE__"',
+    '    ? "I believe the next step should be to run the full test suite and inspect the failing modules, but I cannot express that as the requested decision object right now; please advise on the expected shape."',
+    '    : JSON.stringify(answer));',
     '} else {',
     '  process.stdout.write("Completed the bounded action with concrete evidence, file inspection details, and a sufficiently thorough result for downstream verification.");',
     '}',
@@ -63,12 +76,146 @@ function fixture() {
     meter: { type: 'none' }, costRank: 1, lanes: ['analyze', 'build', 'chore'],
     capabilities: ['strong-analysis', 'workflow-planning', 'code-reading'], timeoutSec: 60,
   };
+  const garbageConnector = {
+    ...connector,
+    name: 'adaptive-garbage',
+    spawn: { cmd: ['node', worker, '{taskFile}', 'always-garbage-planner'], cwdMode: 'task-file-dir' },
+  };
   return {
     root, bullswarmDir,
     pools: [{ name: connector.name, connector, enabled: true, costRank: 1, lanes: connector.lanes, capabilities: connector.capabilities, pace: 0 }],
+    garbagePool: { name: garbageConnector.name, connector: garbageConnector, enabled: true, costRank: 1, lanes: connector.lanes, capabilities: connector.capabilities, pace: 0 },
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
+
+function adaptiveDoc(marker, settings = {}) {
+  return {
+    name: 'adaptive-correction', description: 'planner correction loop', inputs: {},
+    settings: { concurrency: 1, retryAttempts: 0, maxAgents: 12, maxExpansionRounds: 3, maxActions: 8, maxItemsPerExpansion: 4, ...settings },
+    phases: [{ name: 'work', steps: [
+      { id: 'initial', type: 'run', lane: 'analyze', prompt: 'Perform the initial bounded investigation.' },
+      { id: 'planner', type: 'decide', lane: 'analyze', prompt: `Judge sufficiency and propose only necessary bounded work. ${marker}` },
+    ] }],
+  };
+}
+
+function plannerTasks(runDir) {
+  return readdirSync(runDir)
+    .filter((name) => name.startsWith('task-planner-'))
+    .sort()
+    .map((name) => readFileSync(join(runDir, name), 'utf8'));
+}
+
+test('planner prompt shows full run, fanout, and verify skeletons', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_PROCEED'), pools: f.pools, inputs: {} });
+    assert.equal(result.state.status, 'completed');
+    const [task] = plannerTasks(result.runDir);
+    assert.match(task, /"type":"run","phase":"implement","prompt"/);
+    assert.match(task, /"type":"fanout","phase":"inspect","items":\["alpha","beta"\],"stepTemplate":\{"prompt":"Inspect \{\{item\}\}/);
+    assert.match(task, /"type":"verify","phase":"verify","review":/);
+    assert.match(task, /fanout\.stepTemplate MUST be an object/);
+    assert.match(task, /"validationFeedback": null/);
+    assert.doesNotMatch(task, /CORRECTION REQUIRED/);
+  } finally { f.cleanup(); }
+});
+
+test('invalid planner proposal gets one corrective turn with the exact validator issues, then the run completes', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_INVALID_ONCE'), pools: f.pools, inputs: {} });
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outputs['corrected-task'].ok, true);
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+
+    const events = readEvents(result.runDir);
+    const rejected = events.filter((event) => event.type === 'decision.rejected');
+    assert.equal(rejected.length, 1);
+    assert.ok(rejected[0].payload.issues.includes('actions[0].stepTemplate is required'), JSON.stringify(rejected[0]));
+    const corrections = events.filter((event) => event.type === 'decision.correction_requested');
+    assert.equal(corrections.length, 1);
+    assert.equal(corrections[0].payload.attempt, 1);
+    assert.equal(corrections[0].payload.maxAttempts, 2);
+    assert.equal(corrections[0].payload.pool, 'adaptive-echo');
+    assert.ok(!events.some((event) => event.type === 'decision.orchestrator_escalated'));
+
+    const tasks = plannerTasks(result.runDir);
+    // Planner task files are stamped per decision loop turn; the corrective
+    // turn is the one carrying the validator feedback.
+    const correction = tasks.find((task) => task.includes('CORRECTION REQUIRED (attempt 1 of 2)'));
+    assert.ok(correction, 'corrective planner task was written');
+    assert.match(correction, /"actions\[0\]\.stepTemplate is required"/);
+    assert.match(correction, /"rejectedProposal": \{/);
+    assert.match(correction, /"id": "bad-fanout"/);
+    assert.match(correction, /"rejectedResponseExcerpt": "/);
+
+    const gate = result.state.actionLedger.find((action) => action.id === 'planner');
+    assert.equal(gate.status, 'succeeded');
+    assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'planner').length, 3);
+  } finally { f.cleanup(); }
+});
+
+test('exhausted planner corrections settle on a qualified outcome instead of a failed run', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_GARBAGE'), pools: f.pools, inputs: {} });
+    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.equal(result.state.outcome.status, 'completed_with_concerns');
+    assert.equal(result.state.outcome.deliveryActionId, 'initial');
+    assert.match(result.state.outcome.reason, /could not produce a valid decision after 2 correction turn\(s\): planner response invalid/);
+
+    const events = readEvents(result.runDir);
+    assert.equal(events.filter((event) => event.type === 'decision.rejected').length, 3);
+    assert.deepEqual(events.filter((event) => event.type === 'decision.correction_requested').map((event) => event.payload.attempt), [1, 2]);
+    assert.ok(!events.some((event) => event.type === 'decision.orchestrator_escalated'), 'single pool cannot escalate');
+    assert.equal(events.filter((event) => event.type === 'action.failed' && event.payload.actionId === 'planner').length, 1);
+
+    const gate = result.state.actionLedger.find((action) => action.id === 'planner');
+    assert.equal(gate.status, 'failed_terminal');
+    assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'planner').length, 3);
+    assert.ok(plannerTasks(result.runDir).some((task) => task.includes('CORRECTION REQUIRED (attempt 2 of 2)')));
+  } finally { f.cleanup(); }
+});
+
+test('planner corrections can be disabled and a bounded budget is honoured', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_GARBAGE', { maxPlannerCorrections: 0 }), pools: f.pools, inputs: {},
+    });
+    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.match(result.state.outcome.reason, /after 0 correction turn\(s\)/);
+    assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'planner').length, 1);
+    assert.throws(() => validateWorkflow(adaptiveDoc('x', { maxPlannerCorrections: -1 })),
+      (err) => /maxPlannerCorrections must be an integer >= 0/.test([...(err.issues ?? []), err.message].join('\n')));
+  } finally { f.cleanup(); }
+});
+
+test('after corrections are exhausted the orchestrator escalates to another eligible pool', async () => {
+  const f = fixture();
+  try {
+    const pools = [{ ...f.garbagePool, pace: 10 }, { ...f.pools[0], pace: 0 }];
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_ESCALATE'), pools, inputs: {} });
+    assert.equal(result.state.status, 'completed');
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+
+    const events = readEvents(result.runDir);
+    const escalations = events.filter((event) => event.type === 'decision.orchestrator_escalated');
+    assert.equal(escalations.length, 1);
+    assert.equal(escalations[0].payload.from, 'adaptive-garbage');
+    assert.deepEqual(escalations[0].payload.to, ['adaptive-echo']);
+    assert.deepEqual(result.state.orchestratorAvoidPools, ['adaptive-garbage']);
+    assert.equal(events.filter((event) => event.type === 'decision.correction_requested').length, 2);
+
+    const plannerPools = result.state.attempts.filter((attempt) => attempt.actionId === 'planner').map((attempt) => attempt.pool);
+    assert.deepEqual(plannerPools, ['adaptive-garbage', 'adaptive-garbage', 'adaptive-garbage', 'adaptive-echo', 'adaptive-echo']);
+    const gate = result.state.actionLedger.find((action) => action.id === 'planner');
+    assert.equal(gate.status, 'succeeded');
+    assert.ok(plannerTasks(result.runDir).some((task) => task.includes('CORRECTION REQUIRED (attempt 1 of 3)')));
+  } finally { f.cleanup(); }
+});
 
 test('adaptive planner appends a bounded action, executes it, then replans to complete', async () => {
   const f = fixture();

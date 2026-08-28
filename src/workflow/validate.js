@@ -256,6 +256,7 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
     ['maxExpansionRounds', 0],
     ['maxActions', 1],
     ['maxItemsPerExpansion', 1],
+    ['maxPlannerCorrections', 0],
     ['maxWorkflowSeconds', 1],
   ]) {
     if (settings[key] != null) {
