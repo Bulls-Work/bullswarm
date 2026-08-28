@@ -461,6 +461,10 @@ export async function runWorkflow(opts) {
   }
 }
 
+function isScoutAction(action) {
+  return action?.id === 'scout' && action?.parentId == null && action?.kind === 'run';
+}
+
 function actionOutputOk(action, outputs) {
   return Object.hasOwn(outputs ?? {}, action.id)
     ? outputs[action.id]?.ok === true
@@ -505,8 +509,11 @@ function responseExcerpt(text, limit = 1200) {
 function terminalPlannerOutcome(state, gate, reason) {
   const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
   const observedActions = (state.actionLedger ?? []).filter((action) => action.kind !== 'decide');
+  // A read-only scout (goal survey) is evidence for the planner, never a
+  // delivery: a run where only the scout succeeded is blocked, not delivered.
   const usefulWorkers = observedActions.filter((action) =>
-    action.kind !== 'verify' && action.status === 'succeeded' && actionOutputOk(action, state.outputs));
+    action.kind !== 'verify' && !isScoutAction(action)
+    && action.status === 'succeeded' && actionOutputOk(action, state.outputs));
   const latestWorker = usefulWorkers.at(-1) ?? null;
   const concerns = completionEvidenceGaps(
     dynamicActions,
