@@ -316,6 +316,19 @@ author and the `Workflow` runtime.
    sees `outputs.scout.ok=false` with the reason, and a run where only the
    scout succeeded is `blocked`, never "delivered".
 
+8. **Program-level completion** (0.13.0, unreleased at the time of writing) —
+   `completion: { when: "all-actions-ok", reason }` on a program. Claude's
+   script simply returns when its code is done; bullswarm still spent a final
+   planner turn (110–250 s measured) to say `complete` after a clean run. Now
+   the runtime records that decision itself (`source: "program-completion"`,
+   never below the completion policy) and consults the planner only when
+   something failed. With 0.12.0's repair-in-program this makes a clean run
+   **one planner turn**: compile, execute, done — Claude's "0 orchestrator turns
+   during execution" for the passing case.
+9. **Rate limits are waited for** (0.12.1): a burst-gated provider parks the
+   dispatch in `waiting_for_quota` until the window resets instead of failing
+   the run in 4 s, which is what the first 0.12.0 comparison launch did.
+
 **Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
 *barrier*: a verify depending on a data-driven fan-out waits for all items,
 whereas Claude's `pipeline()` overlaps verify-B with fix-C for discovered items

@@ -393,27 +393,27 @@ unit tests, 295/295):
 8. Template refs are grammar-checked; review artifacts are never rendered.
 9. Doctrine: `ok:true` verifies are accepted; concerns are informational.
 10. Burst-gated providers are waited for (`waiting_for_quota`), not failed.
+11. **Program-level completion predicate** (`0bcfd21`, 0.13.0 unreleased while
+    the 0.12.1 observation run is in flight): `completion: { when:
+    "all-actions-ok", reason }` lets a clean program record its own `complete`
+    decision — no final planner turn (110 s here) just to say so. Anything
+    failing still returns to the planner.
 
 **Still open, in priority order** (each is a measured gap, not a guess):
 
-1. **Program-level completion predicate.** Claude's script ends when its code
-   says so; bullswarm still spends a final planner turn (110 s here) to say
-   `complete` after every verify passed. Let the planner attach
-   `completion: { when: "all-verifies-ok" }` to a program so the boundary
-   decision is data-driven when nothing failed — that removes the last
-   orchestrator turn during a clean run.
-2. **Per-item chains for discovered items.** `itemsFrom` removes the planner
+1. **Per-item chains for discovered items.** `itemsFrom` removes the planner
    turn but not the stage barrier; a fan-out whose `stepTemplate` is itself a
    chain (`run → verify(repair)` per item) would give Claude's `pipeline()`
    overlap for unknown item lists too.
-3. **General `outputSchema` on run actions** (Claude's `StructuredOutput`):
+2. **General `outputSchema` on run actions** (Claude's `StructuredOutput`):
    validate a worker's JSON at the dispatch layer and retry once, instead of
    the prose gate plus an extraction action.
-4. **Planner latency.** Every planner turn is a fresh `claude -p --resume`
+3. **Planner latency.** Every planner turn is a fresh `claude -p --resume`
    process reading a large durable context (253–304 s here vs Claude's ~4 min
-   *once*). With 1–2 above, turns drop to one per run; the remaining lever is a
-   smaller planner context (excerpts already budgeted at 36 k chars).
-5. **Adversarial verification by default.** Claude's script verified every
+   *once*). With repair-in-program and self-completion a clean run is one turn;
+   the remaining lever is a smaller planner context (excerpts already budgeted
+   at 36 k chars).
+4. **Adversarial verification by default.** Claude's script verified every
    module with a reviewer told to *refute*; bullswarm's verify prompt is
    whatever the planner wrote. A default skeptic framing in the verify wrapper
    is cheap and would have caught nothing extra here — listed for parity, not
