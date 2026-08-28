@@ -281,7 +281,8 @@ of the fixture. Observed read-only from `state.json` / `events.jsonl`.
 | 18:33:17 → 18:36:39 | Writers finish one by one; each `verify-<module>` starts the moment its own writer finishes (ready-set scheduler); `docs-index` starts at 18:36:40 when the last writer lands. |
 | 18:35:26 | **`verify-slugify` dies with zero attempts**: `template ref "{{maxLength?: number}}" unresolved at render time`. The planner had quoted a JSDoc record type literally in the prompt; the renderer treated the double braces as a template ref. `verify-suite` is then blocked by a failed dependency. |
 | 18:41 → 18:46:01 | Planner turn 2 (~5 min). It diagnosed the render-time death correctly ("two consecutive opening curly braces … treated as an unresolved reference") and proposed **7 actions**: `slugify-recheck` + `verify-slugify-2`, `polish-semver` + `verify-semver-2`, `polish-lru` + `verify-lru-2`, `final-suite`. The two `polish-*` actions react to *non-blocking* nits reported by verifiers that had **passed** (`verify-semver` and `verify-lru` were `ok:true`). |
-| (final rows below) | |
+| 18:46:01 → 19:03:06 | Remediation round runs (3 fixes → 3 re-verifies → `final-suite`), max 3 concurrent. |
+| 19:03:06 → 19:04:56 | Planner turn 3 (110 s): `complete`, verified, no concerns. |
 
 What this run settles, before the numbers: 0.11.x's planning doctrine already
 produces the Claude shape — one decision = the whole graph, six writers in
@@ -293,7 +294,36 @@ concerns as work, and (d) no scout before the first program (the planner
 compiled from the goal text alone — correctly here, because the goal names the
 six modules).
 
-(final numbers pending — run in progress)
+**Numbers** (from `state.json`/`events.jsonl` via `metrics-bullswarm.mjs`; audit
+via `audit-fixture.sh`, read-only, after the run ended)
+
+| Measure | bullswarm 0.11.1 | Claude Code #2 (for reference) |
+| --- | --- | --- |
+| Goal submitted → terminal | 18:23:42 → 19:04:56 Z = **41 min 14 s** (2 474 s) | 58 min 0 s (48 min 51 s of it inside `Workflow`) |
+| Planner / orchestrator time | **667 s = 27 % of wall**, 3 turns (253 s, 304 s, 110 s) | 4 min scouting + 94 s script fix before execution; **0 turns during** the 48 min 51 s execution |
+| Agents dispatched | **22** (19 workers + 3 planner) | 24 workers (6 probe, 6 author, 9 verify, 3 fix) |
+| Max concurrent / mean parallelism | **6** / 2.74 | 6 / 3.1 |
+| Actions per decision | 14, 7, 0 | one script (24 agents) |
+| Actions that died without running | 2 (`verify-slugify` render-time template ref; `verify-suite` blocked by it) | 0 |
+| Remediation rounds | 1 (as a planner turn) | fix loops inside the script (3 fix agents) |
+| Outcome | `completed`, verified, no concerns | done, self-verified inline |
+| Tests after | **130/130** (52 existing + 78 new: 15/14/12/11/13/13 per module) | 168/168 (52 + 116 new: 24/18/19/21/… per module) |
+| Existing `tests/*.test.js` | byte-identical to base (all 7) | byte-identical (all 7) |
+| `src/` changes | comment-only in all 6 modules (0 non-comment line diffs) | comment-only in all 7 files |
+| Deliverables | 6 edge suites, 6 docs pages, `docs/README.md` index (6 links) — all present | same set, all present |
+| Tokens | 148 k *estimated* (utf8 bytes/4 — provider gave no usage; not comparable) | orchestrator 91 k output; workers 534 k output, 52.9 M cache-read (real usage) |
+
+Two things worth noting beyond the table. (1) The run *modified the fixture
+to route around the tool's bug*: the planner's remediation rewrote
+`src/slugify.js`'s JSDoc from `@param {{maxLength?: number}} [options]` to the
+dotted `@param {number} [options.maxLength=0]` form so that no later verify
+would trip on the double braces. Comment-only, goal-compliant, but a
+runtime defect leaked into the deliverable. Root cause is two-fold and both
+are fixed in 0.12.0: the renderer treated any `{{…}}` as a ref, and `verify`
+template-rendered the *review artifact* (a worker's report, arbitrary text)
+together with its instructions. (2) The remediation round spent two of its
+three fixes on "non-blocking" nits from verifiers that had returned
+`ok:true`; 0.12.0's doctrine tells the planner those are informational.
 
 ### bullswarm 0.12.0 (installed binary) — same goal, fresh copy `g2-bs-v3`
 
