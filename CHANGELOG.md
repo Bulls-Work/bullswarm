@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## 0.13.0 (unreleased) — programs can complete themselves
+## 0.13.0 — programs can complete themselves
 
 - A planner may attach `completion: { when: "all-actions-ok", reason }` to a
   program (a `needs_more_work` decision that includes at least one verify).
