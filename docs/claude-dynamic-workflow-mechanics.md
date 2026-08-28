@@ -304,6 +304,18 @@ author and the `Workflow` runtime.
    gate rejected a worker whose whole answer was a JSON array as an
    "announcement without substance".
 
+7. Two robustness gaps the 0.11.1 comparison run itself exposed, fixed
+   before 0.12.0 shipped: (a) a planner-authored verify prompt that quoted a
+   JSDoc type literally — `{{maxLength?: number}}` — was parsed as a template
+   ref and killed the action at render time with zero attempts, forcing an
+   extra planner turn to re-issue it. Only a known root plus dotted
+   identifiers is a ref now; other double-brace text is prompt content.
+   (Claude never has this class of bug: prompts are JS strings, the runtime
+   does no substitution.) (b) The new scout is a failable step ahead of the
+   planner; it is non-fatal by construction (`onError: continue`), the planner
+   sees `outputs.scout.ok=false` with the reason, and a run where only the
+   scout succeeded is `blocked`, never "delivered".
+
 **Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
 *barrier*: a verify depending on a data-driven fan-out waits for all items,
 whereas Claude's `pipeline()` overlaps verify-B with fix-C for discovered items
