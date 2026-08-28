@@ -195,6 +195,7 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair"\s*\]/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /Read before you compile: outputs\.<id>\.outputExcerpt/);
+    assert.match(task, /A verify that returned ok:true is accepted\. Its concerns are informational/);
     assert.match(task, /review is never instructions or a filesystem path/);
     assert.match(task, /fanout needs stepTemplate \(an object whose prompt uses \{\{item\}\}\) plus EITHER inline items OR itemsFrom/);
     assert.match(task, /"validationFeedback": null/);
