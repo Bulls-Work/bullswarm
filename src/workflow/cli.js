@@ -400,7 +400,9 @@ async function wfGoal(opts) {
   if (!opts.foreground && !resumeRunId && !opts.request) {
     const launch = await launchDetachedGoal(doc, opts);
     if (shouldAutoWatchGoal(opts)) {
-      return runWorkflowWatch(BULLSWARM_DIR(), launch.shortId ?? launch.runId);
+      // The detached child writes state.json asynchronously; give it a
+      // bounded grace period instead of failing the handoff on a slow host.
+      return runWorkflowWatch(BULLSWARM_DIR(), launch.runId ?? launch.shortId, { waitForRunMs: 30_000 });
     }
     return 0;
   }

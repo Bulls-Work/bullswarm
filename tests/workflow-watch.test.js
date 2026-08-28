@@ -178,3 +178,26 @@ test('compact heartbeat separates semantic quiet from live agent output', async 
     assert.ok([2, 3, 4].includes(JSON.parse(json).transportQuietForSec));
   } finally { f.cleanup(); }
 });
+
+test('watch waits a bounded grace period for a freshly launched run to write state.json', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-watch-grace-'));
+  const runId = 'wf-mgrace-abcdef';
+  try {
+    const runDir = join(home, 'workflows', runId);
+    setTimeout(() => {
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, 'state.json'), `${JSON.stringify({
+        runId, shortId: 'grc234', status: 'completed', stage: 'delivered',
+        startedAt: new Date(Date.now() - 5000).toISOString(), finishedAt: new Date().toISOString(),
+        attempts: [], activeAgents: {}, steering: [],
+      })}\n`);
+    }, 400);
+    let output = '';
+    const code = await runWorkflowWatch(home, runId, {
+      once: true, waitForRunMs: 5000, output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 0);
+    assert.match(output, /completed\/delivered/);
+    await assert.rejects(() => runWorkflowWatch(home, 'wf-missing-zzzzzz', { once: true, waitForRunMs: 300 }), /no run found/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

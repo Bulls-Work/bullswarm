@@ -1,5 +1,13 @@
 # bullswarm changelog
 
+## 0.11.1 — reliable `--watch` handoff
+
+- `workflow goal --watch` no longer races the detached child: the watcher now
+  waits up to 30 s for the run's `state.json` to appear before attaching, and
+  `runWorkflowWatch` accepts `waitForRunMs`. The 0.11.0 tag failed to publish
+  because this race made the release-gate test fail on the CI runner; 0.11.1
+  carries the full 0.11.0 change set below.
+
 ## 0.11.0 — plan the whole graph, run it wide
 
 Adopts the driving mechanics of Claude Code's dynamic workflow (documented in
