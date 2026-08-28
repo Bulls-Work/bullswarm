@@ -5,9 +5,8 @@
 //       entry. Burn rate starts EMPTY and is labeled "learning".
 //   U2. The wizard suggests a routing table as an EDITABLE ARTIFACT, never a
 //       questionnaire.
-//   U3. CLAUDE.md / AGENTS.md integration is a DIFF with explicit approval
-//       before any write, delimited by versioned bullswarm:begin/end
-//       markers, idempotent on re-run.
+//   U3. Cross-agent skill/instruction integration requires explicit approval,
+//       uses versioned bullswarm:begin/end markers, and is idempotent.
 //   U4. `bullswarm setup` on a configured machine reports state and repairs
 //       broken connector files.
 
@@ -15,14 +14,16 @@ import { execFileSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync,
 } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
 import { loadState, saveState } from './lib/state.js';
+import {
+  awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
+  installIntegration, retireLegacyOffload,
+} from './integrate.js';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
-const MARKER_BEGIN = '<!-- bullswarm:begin v1 -->';
-const MARKER_END = '<!-- bullswarm:end -->';
 
 // --- prompting ------------------------------------------------------------
 // Sequential prompts that work identically on a TTY and with piped answers.
@@ -121,45 +122,15 @@ export function suggestRoutingTable(enabledPools) {
 // --- integration block ------------------------------------------------------------
 
 export function integrationBlock() {
-  return `${MARKER_BEGIN}
-## bullswarm offload policy
-
-When a task fits a bounded lane, prefer offloading it:
-
-    bullswarm run --lane <analyze|build|chore> --add-dir <repo-dir> --task-file <file> --json
-
-Read the verdict JSON: ok:true -> use outFile; keepOnClaude:true -> do it in-session;
-ok:false -> the why field names the failed gate. Delegate output is INPUT you verify,
-never the answer. Final synthesis, architecture decisions, and live-context work stay
-with you. Run \`bullswarm health\` after every offload round.
-${MARKER_END}`;
+  return awarenessBlock();
 }
 
 export function applyIntegrationBlock(filePath, { approved }) {
-  if (!approved) return { changed: false, reason: 'not approved' };
-  let existing = '';
-  try {
-    existing = readFileSync(filePath, 'utf8');
-  } catch {
-    /* new file */
-  }
-  const stripped = existing
-    .replace(new RegExp(`${MARKER_BEGIN}[\\s\\S]*?${MARKER_END}\n?`), '')
-    .trimEnd();
-  const next = stripped
-    ? `${stripped}\n\n${integrationBlock()}\n`
-    : `${integrationBlock()}\n`;
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, next);
-  return { changed: true };
+  return applyAwarenessBlock(filePath, { approved });
 }
 
 export function integrationBlockPresent(filePath) {
-  try {
-    return readFileSync(filePath, 'utf8').includes(MARKER_BEGIN);
-  } catch {
-    return false;
-  }
+  return awarenessBlockPresent(filePath);
 }
 
 // --- repair ---------------------------------------------------------------
@@ -398,21 +369,25 @@ export async function runWizard(bullswarmDir, opts = {}) {
     console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');
   }
 
-  // 6. Integration blocks — diff + approval
-  for (const [label, path] of [
-    ['CLAUDE.md', join(process.env.HOME ?? '', '.claude', 'CLAUDE.md')],
-    ['AGENTS.md', join(process.cwd(), 'AGENTS.md')],
-  ]) {
-    const present = integrationBlockPresent(path);
-    const preview = present
-      ? 'block already present (idempotent re-run)'
-      : `will append to ${path}:\n\n${integrationBlock()}\n`;
-    console.log(`\n${label}: ${preview}`);
-    const ans = (
-      await rl.question(`write ${label} integration block? [y/N] `)
-    ).trim().toLowerCase();
-    const result = applyIntegrationBlock(path, { approved: ans === 'y' && !present });
-    console.log(result.changed ? `  wrote ${path}` : `  skipped ${label}`);
+  // 6. Cross-agent integration — one canonical skill plus concise global
+  // awareness rules. Nothing is written without this explicit answer.
+  const integrateAnswer = (
+    await rl.question('install Bullswarm skill for Codex, Claude, and Grok? [y/N] ')
+  ).trim().toLowerCase();
+  if (integrateAnswer === 'y' || integrateAnswer === 'yes') {
+    const integrated = installIntegration({ approved: true });
+    console.log(`  agent integration: ${integrated.status.ok ? 'ready' : 'incomplete'}`);
+    if (integrated.status.legacyOffload.detected) {
+      const retireAnswer = (
+        await rl.question('archive the retired Claude offload skill? [y/N] ')
+      ).trim().toLowerCase();
+      if (retireAnswer === 'y' || retireAnswer === 'yes') {
+        const retired = retireLegacyOffload({ approved: true });
+        console.log(`  retired offload: ${retired.changed ? `archived at ${retired.destination}` : retired.reason}`);
+      }
+    }
+  } else {
+    console.log('  agent integration: skipped (install later with bullswarm integrate install --yes)');
   }
 
   rl.close();

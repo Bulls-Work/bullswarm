@@ -16,6 +16,7 @@ import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
 import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
+import { cmdIntegrate, installIntegration } from './integrate.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -31,8 +32,10 @@ function parseArgs(argv) {
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--')) {
-      const key = argv[i].slice(2);
+      const eq = argv[i].indexOf('=');
+      const key = argv[i].slice(2, eq > 0 ? eq : undefined);
       if (key === 'json') args.json = true;
+      else if (eq > 0) args[key] = argv[i].slice(eq + 1);
       else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) args[key] = argv[++i];
       else args[key] = true;
     } else rest.push(argv[i]);
@@ -295,12 +298,20 @@ async function cmdSetup(opts) {
       const report = await refreshStrategy(getBullswarmDir());
       strategy = applyStrategyRecommendations(getBullswarmDir(), report);
     }
-    if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r, strategy }, null, 2));
+    let integration = null;
+    if (opts.yes && opts.integrate) {
+      integration = installIntegration({
+        agents: opts.agents,
+        approved: true,
+      });
+    }
+    if (opts.json) console.log(JSON.stringify({ ok: true, mode: 'auto', ...r, strategy, integration }, null, 2));
     else {
       console.log(`setup complete (${r.reason}): enabled ${r.enabledPools.join(', ')}`);
       if (r.repaired.length) console.log(`repaired connector files: ${r.repaired.join(', ')}`);
       console.log(`model strategy: ${r.strategyCommand} (discovers models and refreshes tier suggestions)`);
       if (strategy) console.log(`strategy autopilot: applied ${Object.keys(strategy.applied).join(', ')} tiers; refresh every ${strategy.policy.refreshHours}h`);
+      if (integration) console.log('agent integration: installed (inspect with bullswarm integrate status)');
     }
     return 0;
   }
@@ -413,6 +424,8 @@ export async function main(argv) {
       return cmdWorkflow(['runs', ...rest]);
     case 'strategy':
       return cmdStrategy(rest, { bullswarmDir: getBullswarmDir() });
+    case 'integrate':
+      return cmdIntegrate(opts);
     case 'version':
     case '--version':
       console.log(getVersion());
@@ -421,7 +434,7 @@ export async function main(argv) {
       return cmdRelease(opts);
     default:
       console.error(
-        `unknown verb "${verb}". try: setup | run | health | pools | strategy | doctor | workflow | runs | version | release`,
+        `unknown verb "${verb}". try: setup | integrate | run | health | pools | strategy | doctor | workflow | runs | version | release`,
       );
       return 2;
   }

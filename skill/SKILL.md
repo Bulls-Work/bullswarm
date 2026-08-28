@@ -1,5 +1,5 @@
 ---
-name: bullswarm-setup
+name: bullswarm
 description: Use when you want to offload work to coding-agent subscriptions or run a self-contained goal across heterogeneous providers. bullswarm can accept one goal, select an orchestrator, expand and execute a bounded plan, verify the outcome, and expose the whole run through CLI state and events. Use `bullswarm workflow goal` for ordinary multi-step work, an explicit workflow draft when the graph itself is the contract, and `bullswarm run` for one bounded task. Every verb self-initializes.
 ---
 
@@ -9,6 +9,16 @@ bullswarm lets you offload bounded work to whichever installed coding-agent
 CLI subscription has the most quota headroom. Every delegate output is
 judged by **content**, not exit code. A non-zero exit is never a success; a
 `verified` output is.
+
+This skill is registered globally by:
+
+```bash
+bullswarm integrate install --agents codex,claude,grok --yes
+```
+
+If `BULLSWARM_DEPTH` is already set, you are a Bullswarm delegate. Complete the
+assigned task directly; do not recursively invoke Bullswarm unless the task
+explicitly requires another bounded delegation.
 
 ## When to reach for it
 
@@ -305,6 +315,10 @@ You do NOT need to set up bullswarm. Every verb self-initializes:
 # Always start with this; it tells you what's available:
 bullswarm doctor --json
 ```
+
+Self-initialization prepares routing and connectors; it does not silently edit
+global agent instructions. Inspect or explicitly install agent awareness with
+`bullswarm integrate status --json` and `bullswarm integrate install --yes`.
 
 The output has a `checks[]` array with one entry per readiness concern
 (config, connectors, meters, offload-capable) and a `nextActions[]` list

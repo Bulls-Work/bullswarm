@@ -1,5 +1,23 @@
 # bullswarm changelog
 
+## 0.10.2 — cross-agent skill integration
+
+- Added explicit `bullswarm integrate status|install|remove` support for Codex,
+  Claude, and Grok. Installation registers one packaged `bullswarm` skill with
+  all selected agents and writes concise marker-delimited global awareness
+  rules; removal touches only Bullswarm-managed links and blocks.
+- Added recoverable `integrate retire-legacy --yes` migration for the retired
+  Claude `offload` skill. Detection is read-only and retirement always moves the
+  old skill into `~/.claude/skills-archive/`.
+- Added recursion-aware global guidance: a worker with `BULLSWARM_DEPTH` set
+  performs its assigned task directly instead of casually spawning another
+  swarm.
+- Renamed the published agent skill from `bullswarm-setup` to `bullswarm` and
+  documented single-task, zero-graph goal, fixed-workflow, observation, and
+  integration paths together.
+- Corrected README language so agent/time targets are advisory while graph
+  expansion limits remain hard safeguards.
+
 ## 0.10.1 — initiated-time workflow history search
 
 - Added `workflow runs --since <time> --until <time>` filtering against the
