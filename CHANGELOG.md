@@ -1,5 +1,14 @@
 # bullswarm changelog
 
+## 0.10.3 — contextual help everywhere
+
+- Added side-effect-free `-h` / `--help` handling for the top-level CLI and
+  every command and nested subcommand, including workflow drafts, run history,
+  approvals, actions, integrations, and strategy policy controls.
+- Added a centralized command help tree so contextual help is consistent and
+  intercepted before setup, provider discovery, state writes, or destructive
+  command execution.
+
 ## 0.10.2 — cross-agent skill integration
 
 - Added explicit `bullswarm integrate status|install|remove` support for Codex,

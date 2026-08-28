@@ -5,6 +5,15 @@ orchestrator, build and expand the plan, route bounded worker actions by quota,
 verify the result, and finish without an initiating agent authoring a graph.
 Every delegate output is judged by content before it counts.
 
+Every command and nested subcommand supports contextual `-h` / `--help`
+without initializing state or executing the command:
+
+```bash
+bullswarm --help
+bullswarm workflow run --help
+bullswarm workflow draft step add --help
+```
+
 ## The doctrine (non-negotiable)
 
 1. **Judge by CONTENT, not exit code.** Every delegate CLI can exit 0 while
