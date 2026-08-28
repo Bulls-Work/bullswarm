@@ -54,6 +54,10 @@ finished, or the graph blocked).
   and ignored by the validator. Observed in the 0.11.1 comparison run: a
   planner-authored verify prompt containing `{{maxLength?: number}}` failed
   at render time with zero attempts.
+- Doctrine: an `ok:true` verify is accepted; its concerns are informational.
+  The 0.11.1 comparison run spent a whole extra program round (7 actions,
+  ~10 min) polishing "non-blocking" nits reported by verifiers that had
+  passed, which Claude's fix stage never does.
 - Scout before compiling: `workflow goal` now starts with a read-only `scout`
   run action (tree, manifest, test status, units of work with the files each
   owns, shared files, risks; ends with a JSON array of unit names) so the
