@@ -440,7 +440,7 @@ function cmdRelease(opts) {
     const label = r.dryRun ? 'would release' : 'released';
     console.log(`${label}: ${r.from} → ${r.to} (tag ${r.tag})`);
     if (!r.dryRun) {
-      console.log('next: npm publish (or: npm publish --access public)');
+      console.log('next: git push && git push --tags (CI publishes to npm via trusted publishing)');
     }
     return 0;
   } catch (err) {
