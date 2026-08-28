@@ -149,6 +149,53 @@ multi-phase work (understand → design → implement → review), that often me
 several workflows in sequence — one per phase — so you stay in the loop between
 them."
 
+## 1.11 Upfront plan or mid-flight steering? — the answer
+
+The question that decides how bullswarm should converge: does Claude prepare
+all phases and parallelism **before** the workflow starts, or does it keep
+planning **during** execution?
+
+**Before. Entirely.** The orchestrator model writes one complete program, the
+harness validates it, and then executes it without consulting the model again.
+Evidence:
+
+- **[SPEC]** the script is passed whole and parsed before any agent runs;
+  "Use this tool for multi-step orchestration where control flow should be
+  deterministic (loops, conditionals, fan-out) rather than model-driven";
+  "Workflows run in the background — this tool returns immediately … a
+  task-notification arrives when the workflow completes."
+- **[OBSERVED, goal 2]** ~4 minutes of inline scouting and advisor review →
+  one 23 k-character script (probe → author → adversarial verify → fix-loop,
+  per module) → rejected on a parse error before any agent spawned → corrected
+  in 80 s → ~20 minutes of execution with six agents concurrent and **zero
+  orchestrator decisions**. The session's own words: "the harness will
+  re-invoke me when it completes, so polling would just burn tokens. Waiting."
+
+What *looks* like mid-flight steering is pre-authored into the program:
+
+1. **Data-driven shape.** A stage's structured result (`schema`) becomes the
+   next stage's items: `pipeline(discovery.failures, fix, verify)`,
+   loop-until-dry. The author fixes the *policy*; the runtime fixes the *size*.
+2. **Repair as code.** `if (!verify.ok) { fix; verify }` bounded by a counter.
+   Every fix → re-verify handoff observed in the goal-2 journal was this `if`.
+3. **Budget as data.** `budget.remaining()` scales loops; the ceiling is hard.
+
+Model-level re-planning exists only **at workflow boundaries**: "run several
+in sequence — read each result before deciding the next phase"; the hybrid
+"scout inline first … then call Workflow"; and edit-and-resume ("the longest
+unchanged prefix of agent() calls returns cached results instantly; the first
+edited/new call and everything after it runs live"). Steering means stop, edit
+the program, resume — never a per-step decision.
+
+**Consequence for bullswarm.** Converge on *Direction A — a program, not a
+step list*: one planning turn produces the complete graph **plus** the
+adaptation policy, the runtime executes it to completion, and the planner is
+consulted again only at the boundary (complete, or next program). Do not build
+a continuous mid-flight steering loop (Direction B); Claude has none inside a
+workflow, and bullswarm already has `steer`, cancel and resume for the
+boundary-level levers. What the runtime still lacks to express a program is
+listed in §4.2 (0.12.0 scope).
+
 ## 2. What that looks like from the outside **[OBSERVED]**
 
 Filled from the experiment report as runs complete. Numbers here are copied
@@ -211,6 +258,25 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
    inferred; a `review` that is not `outputs.<actionId>.outFile` is rejected at
    validation (so the 0.10.9 corrective turn fixes it) instead of failing a
    dispatch after a planning round trip.
+
+### 4.2 Planned for 0.12.0 — make a *program* expressible in one decision
+
+1. **Data-driven fan-out in proposals**: a proposed `fanout` may take
+   `itemsFrom: "outputs.<proposedActionId>.json.<path>"`, resolved when the
+   producing action finishes (the static-workflow `itemsFrom` already exists;
+   the decision schema currently forces inline `items`, which is exactly why a
+   planner has to spend a turn waiting to see discovery results). This is
+   Claude's `pipeline(discovery.failures, …)`.
+2. **Structured worker output**: optional `outputSchema` / `expectJson` on run
+   actions; the worker ends with a JSON block, the runtime parses it into
+   `outputs.<id>.json`, and a mismatch costs one bounded corrective re-ask —
+   Claude's schema-enforced `StructuredOutput` retry.
+3. **Pre-authored repair**: `repair: { prompt, maxRounds }` on verify actions
+   so verify-fail → fix → re-verify runs inside the executor without a planner
+   turn — Claude's fix-loop as code.
+4. With 1–3 the loop becomes: decision 1 = the program; execute to completion;
+   decision 2 = complete or next program — one planning turn per boundary,
+   full width in between.
 
 ## 5. Not adopted (yet), and why
 
