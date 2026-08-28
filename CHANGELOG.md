@@ -1,5 +1,18 @@
 # bullswarm changelog
 
+## 0.13.0 (unreleased) — programs can complete themselves
+
+- A planner may attach `completion: { when: "all-actions-ok", reason }` to a
+  program (a `needs_more_work` decision that includes at least one verify).
+  When every action of that program — repairs included — finishes ok and the
+  completion policy is satisfied, the runtime records the `complete` decision
+  itself (`source: "program-completion"`, event `decision.auto_completed`) and
+  the run ends without another planner turn. Anything failing emits
+  `decision.completion_predicate_unmet` (with the failing action ids) and the
+  boundary returns to the planner as before. Measured motivation: in the goal-2
+  comparison every clean bullswarm run still paid a final 110–250 s planner
+  turn just to say "complete"; Claude's script ends when its code says so.
+
 ## 0.12.1 — a burst-gated provider is waited for, never failed on the spot
 
 - `workflow` runs no longer die with `no eligible pool` when every candidate
