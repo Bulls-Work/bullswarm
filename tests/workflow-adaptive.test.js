@@ -10,6 +10,7 @@ import {
 } from '../src/workflow/decision.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
+import { queueSteering } from '../src/workflow/steering.js';
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-adaptive-'));
@@ -112,6 +113,41 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.ok(plannerTasks.every((task) => task.includes('"actionTimeoutSec": null')));
     assert.ok(plannerTasks.every((task) => task.includes('"verificationDispatchReserve": 0')));
     assert.ok(plannerTasks.every((task) => task.includes('The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.')));
+  } finally { f.cleanup(); }
+});
+
+test('queued steering is delivered to the next planner prompt without changing the active worker', async () => {
+  const f = fixture();
+  try {
+    const guidance = 'Prefer a focused regression check before any additional full-suite run.';
+    let queuedDuring = null;
+    const doc = {
+      name: 'adaptive-steering', description: 'deliver guidance at planner boundary', inputs: {},
+      settings: { concurrency: 1, retryAttempts: 0, maxAgents: 6, maxExpansionRounds: 2, maxActions: 8, maxItemsPerExpansion: 4 },
+      phases: [{ name: 'work', steps: [
+        { id: 'initial', type: 'run', lane: 'analyze', prompt: 'Perform the initial bounded investigation.' },
+        { id: 'planner', type: 'decide', lane: 'analyze', prompt: 'Judge sufficiency and propose only necessary bounded work.' },
+      ] }],
+    };
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        if (event.type !== 'step.started' || event.stepId !== 'initial' || queuedDuring) return;
+        const runId = readdirSync(join(f.bullswarmDir, 'workflows'))[0];
+        const live = JSON.parse(readFileSync(join(f.bullswarmDir, 'workflows', runId, 'state.json'), 'utf8'));
+        queuedDuring = live.currentStep;
+        queueSteering(f.bullswarmDir, runId, guidance);
+      },
+    });
+    assert.equal(queuedDuring.id, 'initial');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.steering.length, 1);
+    assert.equal(result.state.steering[0].message, guidance);
+    assert.equal(result.state.steering[0].status, 'delivered_to_planner');
+    assert.ok(readEvents(result.runDir).some((event) => event.type === 'steering.delivered'));
+    const plannerTasks = readdirSync(result.runDir).filter((name) => name.startsWith('task-planner-'));
+    assert.ok(plannerTasks.length >= 1);
+    assert.ok(plannerTasks.some((name) => readFileSync(join(result.runDir, name), 'utf8').includes(guidance)));
   } finally { f.cleanup(); }
 });
 

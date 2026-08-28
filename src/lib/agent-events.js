@@ -84,7 +84,12 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
   };
 
   const decode = (root, stream, at) => {
-    onProgress?.({ at, stream, providerType: compact(getPath(root, eventStream.typePath ?? 'type'), 80) });
+    onProgress?.({
+      at,
+      stream,
+      providerType: compact(getPath(root, eventStream.typePath ?? 'type'), 80),
+      model: compact(firstValue(root, eventStream.modelPaths), 120),
+    });
 
     for (const [index, outputRule] of (eventStream.output ?? []).entries()) {
       if (!matches(root, outputRule.match)) continue;
@@ -183,7 +188,10 @@ export function recordAgentAction(agent, event, maxActions = 3) {
     summaryRaw = `${existing._summaryRaw ?? existing.summary ?? ''}${event.summary}`.slice(-1000);
     summary = compact(summaryRaw);
   }
-  const action = { ...existing, ...event, summary, summaryMode: undefined };
+  // Update frames often omit the original tool name. The neutral decoder
+  // fallback must not erase the specific kind already recorded for this ID.
+  const eventKind = event.kind === 'agent' && existing.kind ? existing.kind : event.kind;
+  const action = { ...existing, ...event, kind: eventKind, summary, summaryMode: undefined };
   Object.defineProperty(action, '_summaryRaw', { value: summaryRaw, writable: true, enumerable: false });
   agent.lastActions.push(action);
   agent.lastActions = agent.lastActions.slice(-maxActions);

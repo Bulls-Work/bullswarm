@@ -44,6 +44,26 @@ test('connector metadata upgrades add packaged capabilities without removing cus
   } finally { cleanup(); }
 });
 
+test('connector metadata upgrades model paths without replacing custom event rules', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    const customRules = [{ rootMatch: { path: 'custom', equals: true }, kind: 'custom' }];
+    writeFileSync(join(dir, 'claude-code.json'), `${JSON.stringify({
+      name: 'claude-code',
+      capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      eventStream: { format: 'jsonl', args: ['--custom-stream'], rules: customRules },
+      modelDiscovery: {}, knownModels: [], modelProfiles: [], modelSelection: {}, subscription: {},
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['claude-code.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'claude-code.json'), 'utf8'));
+    assert.deepEqual(installed.eventStream.modelPaths, ['model', 'message.model']);
+    assert.deepEqual(installed.eventStream.args, ['--custom-stream']);
+    assert.deepEqual(installed.eventStream.rules, customRules);
+  } finally { cleanup(); }
+});
+
 test('integration block: approval required, idempotent markers', () => {
   const { d, cleanup } = tmp();
   try {

@@ -19,6 +19,7 @@
     "$comment": "Optional declarative JSONL adapter. Provider quirks stay here; core emits normalized semantic actions.",
     "format": "jsonl",
     "args": ["CLI flags that enable machine-readable streaming"],
+    "modelPaths": ["provider model-id paths in priority order"],
     "silenceThresholdSec": 600,
     "rules": [{
       "rootMatch": {"path": "provider.event.type", "equals": "tool_started"},

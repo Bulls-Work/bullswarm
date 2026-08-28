@@ -20,6 +20,8 @@ import { readEvents } from './events.js';
 import { buildGoalWorkflow } from './goal.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
+import { runWorkflowWatch } from './watch-cli.js';
+import { queueSteering } from './steering.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -116,6 +118,10 @@ export async function cmdWorkflow(args) {
       catch (err) { console.error(`✗ ${err.message}`); return 1; }
     case 'events':
       return wfEvents(opts);
+    case 'watch':
+      return wfWatch(opts);
+    case 'steer':
+      return wfSteer(opts);
     case 'action':
       return wfAction(opts);
     case 'approval':
@@ -133,7 +139,7 @@ export async function cmdWorkflow(args) {
         );
         return 2;
       }
-       console.error('usage: bullswarm workflow <goal|run|validate|list|draft|runs|capabilities|inspect|tui|events|action|approval> ...');
+       console.error('usage: bullswarm workflow <goal|run|validate|list|draft|runs|capabilities|inspect|tui|watch|events|steer|action|approval> ...');
       return 2;
     }
   }
@@ -247,6 +253,7 @@ async function launchDetachedGoal(doc, opts) {
     cwd: doc.intent.cwd,
     requestedOrchestrator: doc.intent.requestedOrchestrator,
     observe: {
+      watch: `bullswarm workflow watch ${state?.shortId ?? runId}`,
       summary: `bullswarm workflow runs show ${state?.shortId ?? runId}`,
       dashboard: `bullswarm workflow tui --json ${state?.shortId ?? runId}`,
       events: `bullswarm workflow events --json ${state?.shortId ?? runId} --after 0`,
@@ -256,7 +263,7 @@ async function launchDetachedGoal(doc, opts) {
   if (opts.json) console.log(JSON.stringify(launch, null, 2));
   else {
     console.log(`launched autonomous workflow ${launch.shortId ?? runId} (pid ${child.pid})`);
-    console.log(`  observe: ${launch.observe.summary}`);
+    console.log(`  observe: ${launch.observe.watch}`);
     console.log(`  events:  ${launch.observe.events}`);
   }
   return 0;
@@ -426,6 +433,58 @@ function wfEvents(opts) {
   return 0;
 }
 
+async function wfWatch(opts) {
+  const token = opts.rest[0];
+  if (!token) {
+    console.error('usage: bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once]');
+    return 2;
+  }
+  const intervalSec = Number(opts.interval ?? 2);
+  const heartbeatSec = Number(opts.heartbeat ?? 60);
+  if (!Number.isFinite(intervalSec) || intervalSec < 0.1 ||
+      !Number.isFinite(heartbeatSec) || heartbeatSec < 1) {
+    console.error('✗ --interval must be >= 0.1 seconds and --heartbeat must be >= 1 second');
+    return 2;
+  }
+  try {
+    return await runWorkflowWatch(BULLSWARM_DIR(), token, {
+      intervalMs: intervalSec * 1000,
+      heartbeatMs: heartbeatSec * 1000,
+      once: opts.once === true,
+      jsonl: opts.jsonl === true,
+    });
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
+function wfSteer(opts) {
+  const token = opts.rest[0];
+  const message = opts.message ?? opts.rest.slice(1).join(' ');
+  if (!token || !message) {
+    console.error('usage: bullswarm workflow steer <runId> --message "guidance for the next planning checkpoint" [--json]');
+    return 2;
+  }
+  try {
+    const result = queueSteering(BULLSWARM_DIR(), token, message);
+    const payload = {
+      action: 'steer',
+      runId: result.runId,
+      shortId: result.shortId,
+      steering: result.entry,
+      currentStep: result.state.currentStep ?? null,
+      note: 'queued for the next not-yet-started orchestration checkpoint; the active worker is unchanged',
+    };
+    if (opts.json) console.log(JSON.stringify(payload, null, 2));
+    else console.log(`✓ steering ${result.entry.id} queued for ${result.shortId ?? result.runId}; active work is unchanged`);
+    return 0;
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
 function wfAction(opts) {
   const [sub, token, actionId] = opts.rest;
   if (sub !== 'show' || !token || !actionId) {
@@ -496,7 +555,7 @@ function parseFlags(argv) {
     'resume', 'after', 'cwd', 'orchestrator', 'request', 'run-id',
     'max-agents', 'max-expansion-rounds', 'max-actions',
     'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
-    'retry-attempts',
+    'retry-attempts', 'interval', 'heartbeat', 'message',
   ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
