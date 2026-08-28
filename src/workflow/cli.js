@@ -162,11 +162,11 @@ options:
   --detach                       launch independently and return observation commands
   --json                         emit one machine-readable launch/report document
   --orchestrator <pool|auto>     pin only for controlled use; default capability routing
-  --max-agents <n>               hard dispatch ceiling (default 30)
+  --max-agents <n>               advisory dispatch target (default 30)
   --max-expansion-rounds <n>     planner expansion ceiling (default 8)
   --max-actions <n>              durable action ceiling (default 40)
   --max-items-per-expansion <n>  fanout item ceiling (default 8)
-  --max-workflow-seconds <n>     wall-clock ceiling (default 3600)
+  --max-workflow-seconds <n>     advisory duration target (default 3600)
   --concurrency <n>              concurrent dispatch ceiling, max 16 (default 3)
   --retry-attempts <0..3>        same-pool retry bound (default 1)
   --resume <shortId|runId>       resume durable unfinished work`;

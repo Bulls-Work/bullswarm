@@ -50,5 +50,5 @@
     "stealth": false,
     "$comment-stealth": "stealth=true: prompts/completions retained by an anonymous provider — opt-in only, never a default"
   },
-  "timeoutSec": 900
+  "$comment-timeout": "Delegates have no implicit wall-clock timeout; use direct --timeout or workflow step.timeoutSec as an explicit opt-in"
 }

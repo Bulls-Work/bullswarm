@@ -40,15 +40,21 @@ export const OUTPUT_TEXT_CAP_BYTES = 64 * 1024;
 
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
-  const dispatchLimit = Number(budget.dispatchLimit ?? 0);
+  const rawTarget = budget.dispatchTarget ?? budget.dispatchLimit;
+  const dispatchTarget = rawTarget == null ? null : Number(rawTarget);
   const dispatchesUsed = dispatchesUsedBeforePlanner + 1;
+  const hasTarget = Number.isFinite(dispatchTarget);
   return {
     ...budget,
     dispatchesUsed,
     dispatchesUsedBeforePlanner,
-    remainingDispatches: Number.isFinite(dispatchLimit)
-      ? Math.max(0, dispatchLimit - dispatchesUsed)
+    dispatchTarget: hasTarget ? dispatchTarget : null,
+    remainingDispatches: hasTarget
+      ? Math.max(0, dispatchTarget - dispatchesUsed)
       : null,
+    overTargetBy: hasTarget ? Math.max(0, dispatchesUsed - dispatchTarget) : 0,
+    targetExceeded: hasTarget ? dispatchesUsed > dispatchTarget : false,
+    advisoryOnly: true,
     includesCurrentPlannerDispatch: true,
   };
 }
@@ -80,15 +86,43 @@ export class WorkflowRuntime {
       );
     this.limiter = concap;
     this.parentEnv = opts.env ?? process.env;
-    // Counters used by the spend guard (R4 follow-on).
+    // Counters used for planner-visible advisory budgeting.
     this.state.attempts ??= [];
     this.state.actionLedger ??= [];
     this.state.budget ??= {};
     this.dispatchCount = Number(this.state.budget.dispatchesUsed ?? 0);
     this.warningEmitted = false;
+    this.targetExceededEmitted = Boolean(this.state.budget.targetExceededAt);
   }
 
   persist() {
+    const elapsedSec = Math.max(0,
+      (Date.now() - Date.parse(this.state.startedAt ?? new Date().toISOString())) / 1000);
+    const workflowTargetSec = this.state.settings?.maxWorkflowSeconds == null
+      ? null
+      : Number(this.state.settings.maxWorkflowSeconds);
+    const dispatchTarget = this.state.settings?.maxAgents ?? null;
+    this.state.budget.dispatchesUsed = this.dispatchCount;
+    this.state.budget.dispatchTarget = dispatchTarget;
+    this.state.budget.dispatchLimit = dispatchTarget;
+    this.state.budget.remainingDispatches = dispatchTarget == null
+      ? null
+      : Math.max(0, dispatchTarget - this.dispatchCount);
+    this.state.budget.overTargetBy = dispatchTarget == null
+      ? 0
+      : Math.max(0, this.dispatchCount - dispatchTarget);
+    this.state.budget.targetExceeded = this.state.budget.overTargetBy > 0;
+    this.state.budget.workflowElapsedSec = Math.round(elapsedSec * 10) / 10;
+    this.state.budget.workflowTargetSec = Number.isFinite(workflowTargetSec)
+      ? workflowTargetSec
+      : null;
+    this.state.budget.workflowRemainingSec = Number.isFinite(workflowTargetSec)
+      ? Math.max(0, workflowTargetSec - elapsedSec)
+      : null;
+    this.state.budget.workflowOverTargetBySec = Number.isFinite(workflowTargetSec)
+      ? Math.max(0, elapsedSec - workflowTargetSec)
+      : 0;
+    this.state.budget.advisoryOnly = true;
     this.state.runner = {
       ...(this.state.runner ?? {}),
       pid: process.pid,
@@ -198,37 +232,6 @@ export class WorkflowRuntime {
       const action = this.ensureAction(step, opts);
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const workflowElapsedSec = (Date.now() - Date.parse(this.state.startedAt)) / 1000;
-        const workflowLimitSec = Number(this.state.settings.maxWorkflowSeconds ?? Infinity);
-        if (workflowElapsedSec >= workflowLimitSec) {
-          const refused = {
-            ok: false,
-            keepOnClaude: false,
-            why: `budget exhausted: maxWorkflowSeconds=${workflowLimitSec}`,
-            budgetExhausted: true,
-            pick: { pool: null },
-            meta: { exitCode: null },
-          };
-          action.status = 'failed_terminal';
-          action.finishedAt = new Date().toISOString();
-          this.emit('action.failed', { actionId, status: action.status, why: refused.why });
-          return refused;
-        }
-        if (this.state.settings.maxAgents != null
-            && this.dispatchCount >= this.state.settings.maxAgents) {
-          const refused = {
-            ok: false,
-            keepOnClaude: false,
-            why: `spend guard: maxAgents=${this.state.settings.maxAgents} reached`,
-            budgetExhausted: true,
-            pick: { pool: null },
-            meta: { exitCode: null },
-          };
-          action.status = 'failed_terminal';
-          action.finishedAt = new Date().toISOString();
-          this.emit('action.failed', { actionId, status: action.status, why: refused.why });
-          return refused;
-        }
         const effortTier = step.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[step.lane ?? 'chore']);
         const assignments = attemptPools[0]?.strategyAssignments ?? {};
         const assignment = assignments?.[effortTier] ?? null;
@@ -270,8 +273,20 @@ export class WorkflowRuntime {
 
         this.dispatchCount += 1;
         this.state.budget.dispatchesUsed = this.dispatchCount;
+        this.state.budget.dispatchTarget = this.state.settings.maxAgents ?? null;
+        // Keep the historical field readable for existing dashboards/reports,
+        // but it is an advisory target rather than an enforcement limit.
         this.state.budget.dispatchLimit = this.state.settings.maxAgents ?? null;
+        this.state.budget.remainingDispatches = this.state.settings.maxAgents == null
+          ? null
+          : Math.max(0, this.state.settings.maxAgents - this.dispatchCount);
+        this.state.budget.overTargetBy = this.state.settings.maxAgents == null
+          ? 0
+          : Math.max(0, this.dispatchCount - this.state.settings.maxAgents);
+        this.state.budget.targetExceeded = this.state.budget.overTargetBy > 0;
+        this.state.budget.advisoryOnly = true;
         this.maybeWarnLarge();
+        this.maybeRecordTargetOverage();
 
         const attemptNumber = (action.attempts?.length ?? 0) + 1;
         const attemptPaths = attemptNumber === 1 ? paths : {
@@ -349,6 +364,8 @@ export class WorkflowRuntime {
           taskFile: attemptPaths.taskFile,
           outFile: attemptPaths.outFile,
           status: 'running',
+          lastActivityAt: null,
+          outputBytesObserved: 0,
         };
         this.persist();
 
@@ -396,13 +413,21 @@ export class WorkflowRuntime {
         }, 10_000);
         let verdict;
         try {
-          const stepTimeoutSec = step.timeoutSec ?? conn.timeoutSec ?? 900;
-          const remainingWorkflowSec = Math.max(0.001,
-            workflowLimitSec - ((Date.now() - Date.parse(this.state.startedAt)) / 1000));
           verdict = await watchOnce(runtimeConnector, taskText, targetDir, attemptPaths, {
-            timeoutSec: Math.min(stepTimeoutSec, remainingWorkflowSec),
+            // No connector-owned or workflow-owned wall-clock kill timer.
+            // A timeout is honored only when the workflow author explicitly
+            // puts timeoutSec on this action.
+            timeoutSec: step.timeoutSec ?? null,
             env: childEnv,
             shouldCancel: () => this.refreshCancellation(),
+            onActivity: ({ at, bytes }) => {
+              attemptRecord.lastActivityAt = at;
+              const active = this.state.activeAgents?.[activeKey];
+              if (active) {
+                active.lastActivityAt = at;
+                active.outputBytesObserved = Number(active.outputBytesObserved ?? 0) + Number(bytes ?? 0);
+              }
+            },
             model: selectedModel,
             acceptVerifyJson: step.type === 'verify',
             onSpawn: (pid) => {
@@ -414,11 +439,6 @@ export class WorkflowRuntime {
           });
         } finally {
           clearInterval(heartbeat);
-        }
-        if (verdict.meta?.timedOut &&
-            ((Date.now() - Date.parse(this.state.startedAt)) / 1000) >= workflowLimitSec) {
-          verdict.why = `budget exhausted: maxWorkflowSeconds=${workflowLimitSec}`;
-          verdict.budgetExhausted = true;
         }
         this.state.activeAgents[activeKey].status = verdict.ok ? 'completed' : 'failed';
         this.state.activeAgents[activeKey].finishedAt = new Date().toISOString();
@@ -558,7 +578,7 @@ export class WorkflowRuntime {
     } catch { /* never let logging crash a run */ }
   }
 
-  /** Spend-guard: warn once when dispatchCount crosses the threshold. */
+  /** Warn once when dispatchCount crosses the configured visibility threshold. */
   maybeWarnLarge() {
     if (this.warningEmitted) return;
     const t = this.state?.settings?.warnAtAgents ?? 25;
@@ -569,6 +589,19 @@ export class WorkflowRuntime {
         dispatchCount: this.dispatchCount,
       });
     }
+  }
+
+  /** Record, but never block on, crossing the planner's agent-count target. */
+  maybeRecordTargetOverage() {
+    if (this.targetExceededEmitted || !this.state.budget.targetExceeded) return;
+    this.targetExceededEmitted = true;
+    this.state.budget.targetExceededAt = new Date().toISOString();
+    this.emit('workflow.agent_target_exceeded', {
+      target: this.state.budget.dispatchTarget,
+      dispatchCount: this.dispatchCount,
+      overTargetBy: this.state.budget.overTargetBy,
+      advisoryOnly: true,
+    });
   }
 
   async runStep(step, opts = {}) {
@@ -788,6 +821,22 @@ export class WorkflowRuntime {
       finishedAt: action.finishedAt ?? null,
       why: action.why ?? null,
     });
+    const workflowElapsedSec = Math.max(0,
+      (Date.now() - Date.parse(this.state.startedAt)) / 1000);
+    const workflowTargetSec = this.state.settings?.maxWorkflowSeconds == null
+      ? null
+      : Number(this.state.settings.maxWorkflowSeconds);
+    this.state.budget.workflowElapsedSec = Math.round(workflowElapsedSec * 10) / 10;
+    this.state.budget.workflowTargetSec = Number.isFinite(workflowTargetSec)
+      ? workflowTargetSec
+      : null;
+    this.state.budget.workflowRemainingSec = Number.isFinite(workflowTargetSec)
+      ? Math.max(0, workflowTargetSec - workflowElapsedSec)
+      : null;
+    this.state.budget.workflowOverTargetBySec = Number.isFinite(workflowTargetSec)
+      ? Math.max(0, workflowElapsedSec - workflowTargetSec)
+      : 0;
+    this.state.budget.advisoryOnly = true;
     const budget = plannerBudgetContext(this.state.budget);
     const completionPolicy = this.state.orchestration?.completionPolicy ?? {};
     const verificationReserve = completionPolicy.requireSuccessfulVerification === true ? 1 : 0;
@@ -801,6 +850,7 @@ export class WorkflowRuntime {
       budget,
       executionConstraints: {
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
+        actionTimeoutIsExplicitOptIn: step.actionDefaults?.timeoutSec != null || step.timeoutSec != null,
         retryAttempts: Number(this.state.settings?.retryAttempts ?? 0),
         verificationDispatchReserve: verificationReserve,
         dispatchesAvailableBeforeReserve: budget.remainingDispatches == null
@@ -830,8 +880,8 @@ export class WorkflowRuntime {
       'Action skeleton: {"id":"bounded-action","type":"run","prompt":"Do bounded work.","dependsOn":["prior-action"]}.',
       'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
       'New actions may only be type run, fanout with inline items, or verify. The runtime validates every proposal.',
-      'Size every run/fanout action to finish within executionConstraints.actionTimeoutSec; split independent subsystems into separate actions instead of assigning the whole remaining goal to one worker.',
-      'The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt. Do not consume executionConstraints.verificationDispatchReserve with implementation work.',
+      'Keep run/fanout actions cohesive and reviewable. If executionConstraints.actionTimeoutSec is non-null, size them to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
+      'Agent-count and workflow-duration budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt. Prefer staying near the target, but exceed it when required to finish already-started work or obtain required verification.',
       '',
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),

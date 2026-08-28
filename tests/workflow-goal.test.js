@@ -7,6 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildGoalWorkflow, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
+import { normalizeLegacyGeneratedGoalTimeouts } from '../src/workflow/runner.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
@@ -91,6 +92,25 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: ['goal-agent'] }));
 });
 
+test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching authored workflows', () => {
+  const legacy = buildGoalWorkflow({
+    goal: 'Finish the durable goal.', cwd: REPO, name: 'legacy-goal',
+  });
+  const gate = legacy.phases[0].steps[0];
+  gate.timeoutSec = 900;
+  gate.actionDefaults.timeoutSec = 900;
+  const migrated = normalizeLegacyGeneratedGoalTimeouts(legacy);
+  assert.equal(migrated.phases[0].steps[0].timeoutSec, undefined);
+  assert.equal(migrated.phases[0].steps[0].actionDefaults.timeoutSec, undefined);
+  assert.equal(gate.timeoutSec, 900, 'migration must not mutate the durable source document');
+
+  const authored = structuredClone(legacy);
+  authored.description = 'User-authored workflow with an explicit timeout.';
+  const preserved = normalizeLegacyGeneratedGoalTimeouts(authored);
+  assert.equal(preserved.phases[0].steps[0].timeoutSec, 900);
+  assert.equal(preserved.phases[0].steps[0].actionDefaults.timeoutSec, 900);
+});
+
 test('one foreground CLI goal autonomously plans, routes, executes, verifies, and completes', () => {
   const f = fixture();
   try {
@@ -112,9 +132,13 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'autonomous-complete\n');
     assert.equal(existsSync(join(report.artifactsDir, 'workflow.json')), true);
     const firstPlannerTask = readFileSync(report.attempts[0].taskFile, 'utf8');
-    assert.match(firstPlannerTask, /"actionTimeoutSec": 900/);
+    assert.match(firstPlannerTask, /"actionTimeoutSec": null/);
+    assert.match(firstPlannerTask, /"actionTimeoutIsExplicitOptIn": false/);
+    assert.match(firstPlannerTask, /"dispatchTarget": 6/);
+    assert.match(firstPlannerTask, /"remainingDispatches": 5/);
+    assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
-    assert.match(firstPlannerTask, /Do not consume executionConstraints\.verificationDispatchReserve with implementation work/);
+    assert.match(firstPlannerTask, /exceed it when required to finish already-started work or obtain required verification/);
 
     const shown = cli(f, ['workflow', 'tui', '--json', report.shortId]);
     assert.equal(shown.status, 0, shown.stderr);

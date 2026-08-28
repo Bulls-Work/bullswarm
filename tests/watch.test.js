@@ -48,6 +48,44 @@ test('happy path: echo worker completes and passes verification', async () => {
   }
 });
 
+test('connector timeout metadata is advisory unless the caller explicitly opts in', async () => {
+  const ctx = makeCtx();
+  try {
+    const activity = [];
+    const v = await watchOnce(
+      { ...connector, timeoutSec: 0.01 },
+      'SLEEP_MS:80 finish the requested work.',
+      ctx.dir,
+      ctx.paths,
+      { onActivity: (event) => activity.push(event) },
+    );
+    assert.equal(v.ok, true);
+    assert.equal(v.meta.timedOut, false);
+    assert.ok(v.meta.wallSec >= 0.08);
+    assert.ok(activity.some((event) => event.stream === 'stdout' && event.bytes > 0));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('an explicit caller timeout remains an opt-in termination control', async () => {
+  const ctx = makeCtx();
+  try {
+    const v = await watchOnce(
+      connector,
+      'SLEEP_MS:100 finish the requested work.',
+      ctx.dir,
+      ctx.paths,
+      { timeoutSec: 0.02 },
+    );
+    assert.equal(v.ok, false);
+    assert.equal(v.meta.timedOut, true);
+    assert.match(v.why, /timeout after 0\.02s/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('connector-owned model selection replaces or appends the declared flag', () => {
   const base = {
     spawn: { cmd: ['agent', '--model', 'old', '{taskFile}'] },
@@ -67,6 +105,20 @@ test('lying exit 0 with auth failure is caught by signature gate', async () => {
     assert.match(v.why, /auth\/throttle signature/);
     assert.equal(v.quarantineHint, true);
     assert.equal(v.meta.exitCode, 0); // the lie itself
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a streamed auth or quota signature terminates a provider that would otherwise hang', async () => {
+  const ctx = makeCtx();
+  try {
+    const startedAt = Date.now();
+    const v = await watchOnce(connector, 'FAIL:auth-hang please', ctx.dir, ctx.paths);
+    assert.equal(v.ok, false);
+    assert.match(v.why, /auth\/throttle signature/);
+    assert.equal(v.quarantineHint, true);
+    assert.ok(Date.now() - startedAt < 2000);
   } finally {
     ctx.cleanup();
   }

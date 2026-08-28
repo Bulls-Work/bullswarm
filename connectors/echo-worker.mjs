@@ -8,7 +8,14 @@
 import { readFileSync } from 'node:fs';
 
 const task = readFileSync(process.argv[2], 'utf8');
+const sleepMatch = task.match(/SLEEP_MS:(\d+)/);
+if (sleepMatch) await new Promise((resolve) => setTimeout(resolve, Number(sleepMatch[1])));
 
+if (task.includes('FAIL:auth-hang')) {
+  console.log('Authentication failed: quota exhausted; waiting process should be terminated.');
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  process.exit(0);
+}
 if (task.includes('FAIL:auth')) {
   console.log('Authentication failed: no credentials found in keychain.');
   process.exit(0);

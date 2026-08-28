@@ -199,6 +199,14 @@ export class WorkflowTui {
         );
         break;
       }
+      case 'workflow.agent_target_exceeded': {
+        if (this.json) { console.log(JSON.stringify({ ev: 'workflow.agent_target_exceeded', ...event })); return; }
+        this.commitLive();
+        this.print(
+          `  ${this.c(YELLOW, '◇')} Advisory agent target exceeded: ${event.dispatchCount}/${event.target} dispatches (${event.overTargetBy} over). Required work continues.`,
+        );
+        break;
+      }
       case 'phase.skipped-rest': {
         if (this.json) { console.log(JSON.stringify({ ev: 'phase.skipped-rest', ...event })); return; }
         this.commitLive();

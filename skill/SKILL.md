@@ -217,9 +217,18 @@ adds same-pool retries; `escalateOnFail` permits a failed invocation to move to
 another eligible capable pool. `requiresCapabilities` filters pools before
 quota-surplus ranking and never silently selects a weaker pool.
 
+Delegates wait for natural completion by default. Connector timeout metadata
+does not impose an implicit kill timer. Use a step's `timeoutSec` or direct
+run's `--timeout` only as an explicit operator-selected termination control;
+otherwise inspect `activeAgents.lastActivityAt` and `outputBytesObserved`, then
+use workflow cancellation for a genuinely hung process. Some CLIs buffer
+output, so silence is evidence to inspect, not automatic proof of a hang.
+
 For adaptive work, declare a `decide` step plus `maxExpansionRounds` and the
-other hard limits (`maxAgents`, `maxActions`, `maxItemsPerExpansion`, and
-`maxWorkflowSeconds`). The loop is durable:
+other graph-growth safeguards (`maxActions` and `maxItemsPerExpansion`).
+`maxAgents` and `maxWorkflowSeconds` are advisory planning targets: they expose
+remaining headroom and overage to the orchestrator but never stop a worker or
+skip required verification. The loop is durable:
 
 ```text
 execute -> observe -> decide -> validate proposal -> append -> execute -> observe
@@ -365,9 +374,9 @@ bullswarm doctor --json     # self-heals inside the sandbox
 - `"recursion guard"` — the connector you're dispatching to itself
   tried to spawn `bullswarm`. Reduce the depth or the workflow's
   parallelism; the core's depth limit is 2 by default.
-- `"spend guard: maxAgents=... reached"` — you set `maxAgents` and the
-  workflow hit it. Raise the cap in `settings.maxAgents` or split
-  the work into multiple runs.
+- `workflow.agent_target_exceeded` — the run used more dispatches than the
+  advisory `maxAgents` target. This is planning/observability evidence; the
+  workflow continues and still performs required verification.
 - `"auth/throttle signature"` — the delegate's output matched a
   configured auth-error string. The pool is auto-quarantined for
   10 min; subsequent dispatches skip it.

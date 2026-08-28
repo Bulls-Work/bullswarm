@@ -167,7 +167,10 @@ async function cmdRun(opts) {
   };
 
   const verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
-    timeoutSec: Number(opts.timeout ?? connector.timeoutSec ?? 900),
+    // Long-running coding agents are allowed to finish by default. `--timeout`
+    // remains an explicit operator escape hatch; connector metadata no longer
+    // imposes a hidden wall-clock kill timer.
+    timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
     env: childDepthEnv(process.env),
     model: selectedModel,
   });
