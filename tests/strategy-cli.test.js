@@ -12,6 +12,12 @@ import {
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-strategy-cli-'));
   autoSetup(dir, { reason: 'test' });
+  // Strategy tests must not depend on whichever agent CLIs happen to be on
+  // the host PATH. Enable one real packaged connector without dispatching it.
+  const state = loadState(dir);
+  state.pools.codex ??= {};
+  state.pools.codex.enabled = true;
+  saveState(dir, state);
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
