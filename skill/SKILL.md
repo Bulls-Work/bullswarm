@@ -224,6 +224,13 @@ otherwise inspect `activeAgents.lastActivityAt` and `outputBytesObserved`, then
 use workflow cancellation for a genuinely hung process. Some CLIs buffer
 output, so silence is evidence to inspect, not automatic proof of a hang.
 
+For Codex, Claude, Grok, Command Code, and OpenCode, also inspect
+`activeAgents.lastActions` and `activeAgents.stall`. The connector translates
+native JSONL shell commands, reads, edits/writes, tool calls, and response
+blocks into the same action shape and retains the latest three. Ten minutes
+without any transport/event/action evidence becomes `suspected_stalled` with
+`autoTerminate:false`; it is deliberately not treated as proof of death.
+
 For adaptive work, declare a `decide` step plus `maxExpansionRounds` and the
 other graph-growth safeguards (`maxActions` and `maxItemsPerExpansion`).
 `maxAgents` and `maxWorkflowSeconds` are advisory planning targets: they expose

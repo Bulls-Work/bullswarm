@@ -32,6 +32,7 @@ import { Semaphore } from './semaphore.js';
 import { appendEvent } from './events.js';
 import { DECISION_SCHEMA_VERSION, parseDecisionText } from './decision.js';
 import { aggregateUsage } from '../lib/usage.js';
+import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -366,7 +367,16 @@ export class WorkflowRuntime {
           status: 'running',
           lastActivityAt: null,
           outputBytesObserved: 0,
+          eventStreamSupported: Boolean(runtimeConnector.eventStream),
+          lastEventAt: null,
+          lastActionAt: null,
+          lastActions: [],
         };
+        this.state.activeAgents[activeKey].stall = classifyAgentProgress(
+          this.state.activeAgents[activeKey],
+          Date.now(),
+          runtimeConnector.eventStream?.silenceThresholdSec ?? 600,
+        );
         this.persist();
 
         // R6: propagate the recursion env so a connector that itself
@@ -408,7 +418,14 @@ export class WorkflowRuntime {
         // during a legitimate long dispatch.
         const heartbeat = setInterval(() => {
           const active = this.state.activeAgents[activeKey];
-          if (active) active.lastHeartbeatAt = new Date().toISOString();
+          if (active) {
+            active.lastHeartbeatAt = new Date().toISOString();
+            active.stall = classifyAgentProgress(
+              active,
+              Date.now(),
+              runtimeConnector.eventStream?.silenceThresholdSec ?? 600,
+            );
+          }
           this.persist();
         }, 10_000);
         let verdict;
@@ -422,10 +439,35 @@ export class WorkflowRuntime {
             shouldCancel: () => this.refreshCancellation(),
             onActivity: ({ at, bytes }) => {
               attemptRecord.lastActivityAt = at;
+              attemptRecord.outputBytesObserved = Number(attemptRecord.outputBytesObserved ?? 0) + Number(bytes ?? 0);
               const active = this.state.activeAgents?.[activeKey];
               if (active) {
                 active.lastActivityAt = at;
+                active.lastProgressAt = at;
                 active.outputBytesObserved = Number(active.outputBytesObserved ?? 0) + Number(bytes ?? 0);
+              }
+            },
+            onAgentProgress: ({ at, providerType }) => {
+              const active = this.state.activeAgents?.[activeKey];
+              if (!active) return;
+              active.lastEventAt = at;
+              active.lastProgressAt = at;
+              active.lastProviderEventType = providerType ?? null;
+              attemptRecord.lastEventAt = at;
+            },
+            onAgentEvent: (event) => {
+              const active = this.state.activeAgents?.[activeKey];
+              if (!active) return;
+              const change = recordAgentAction(active, event, 3);
+              attemptRecord.lastActionAt = event.at;
+              attemptRecord.lastActions = active.lastActions;
+              if (change.isNew || change.statusChanged) {
+                this.emit('attempt.agent_action', {
+                  actionId, attemptNumber, agentAction: change.action,
+                });
+              } else if (Date.now() - Number(active.lastPanePersistAtMs ?? 0) >= 1000) {
+                active.lastPanePersistAtMs = Date.now();
+                this.persist();
               }
             },
             model: selectedModel,
@@ -449,6 +491,16 @@ export class WorkflowRuntime {
           (attempt < maxAttempts - 1 ? 'failed_retryable' : 'failed_terminal');
         attemptRecord.finishedAt = new Date().toISOString();
         attemptRecord.lastHeartbeatAt = this.state.activeAgents[activeKey].lastHeartbeatAt ?? attemptRecord.finishedAt;
+        attemptRecord.lastActivityAt = this.state.activeAgents[activeKey].lastActivityAt ?? attemptRecord.lastActivityAt ?? null;
+        attemptRecord.outputBytesObserved = this.state.activeAgents[activeKey].outputBytesObserved ?? attemptRecord.outputBytesObserved ?? 0;
+        attemptRecord.lastEventAt = this.state.activeAgents[activeKey].lastEventAt ?? attemptRecord.lastEventAt ?? null;
+        attemptRecord.lastActionAt = this.state.activeAgents[activeKey].lastActionAt ?? attemptRecord.lastActionAt ?? null;
+        attemptRecord.lastActions = this.state.activeAgents[activeKey].lastActions ?? attemptRecord.lastActions ?? [];
+        attemptRecord.stall = classifyAgentProgress(
+          this.state.activeAgents[activeKey],
+          Date.now(),
+          runtimeConnector.eventStream?.silenceThresholdSec ?? 600,
+        );
         attemptRecord.why = verdict.why ?? null;
         attemptRecord.usage = verdict.meta?.usage ?? null;
         attemptRecord.effort = effortTier;

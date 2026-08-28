@@ -12,8 +12,33 @@
   "authSignatures": ["strings in output that mean auth/throttle failure"],
   "outputExtraction": {
     "$comment": "how to get the real answer out of stdout+stderr+files",
-    "strategy": "stdout|stdout-tail|json-field|file",
+    "strategy": "stdout|stdout-tail|json-field|file|event-stream",
     "field": "optional json field path or file glob"
+  },
+  "eventStream": {
+    "$comment": "Optional declarative JSONL adapter. Provider quirks stay here; core emits normalized semantic actions.",
+    "format": "jsonl",
+    "args": ["CLI flags that enable machine-readable streaming"],
+    "silenceThresholdSec": 600,
+    "rules": [{
+      "rootMatch": {"path": "provider.event.type", "equals": "tool_started"},
+      "forEach": "optional.array.path",
+      "match": {"path": "nested.type", "equals": "tool_use"},
+      "idPaths": ["provider action id paths in priority order"],
+      "kindPaths": ["tool or response kind paths"],
+      "summaryPaths": ["safe command/path/text scalar paths"],
+      "status": "queued|running|streaming|completed|failed",
+      "statusPath": "optional provider status path",
+      "statusMap": {"provider-status": "normalized-status"},
+      "aggregate": "consecutive",
+      "summaryMode": "replace|concat"
+    }],
+    "output": [{
+      "match": {"path": "provider.event.type", "equals": "final"},
+      "path": "provider final response scalar path",
+      "mode": "last|concat",
+      "separator": "optional separator"
+    }]
   },
   "meter": {
     "$comment": "none | declared (manual) | reader (programmatic)",

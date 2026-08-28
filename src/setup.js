@@ -216,6 +216,16 @@ export function upgradeConnectorMetadata(bullswarmDir) {
         installed.model = packaged.model;
         changed = true;
       }
+      if (installed.eventStream == null && packaged.eventStream != null) {
+        installed.eventStream = packaged.eventStream;
+        // Older packaged connectors used stdout extraction. Once JSONL flags
+        // are enabled, extraction must use the same connector-declared event
+        // stream or the content gate would judge the raw protocol envelope.
+        if (installed.outputExtraction == null || installed.outputExtraction?.strategy === 'stdout') {
+          installed.outputExtraction = packaged.outputExtraction;
+        }
+        changed = true;
+      }
       for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'subscription']) {
         if (installed[field] == null && packaged[field] != null) {
           installed[field] = packaged[field];
