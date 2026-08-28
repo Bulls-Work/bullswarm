@@ -894,6 +894,40 @@ test('completion requires verification of the latest successful worker', () => {
   }), ['a successful verification of latest worker implementation']);
 });
 
+test('a verify that re-ran ok after its own repair round is evidence for that repair', () => {
+  // Shape produced by the executor's repair loop: the repair depends on the
+  // verify (reverse edge), then the same verify runs again and passes.
+  const actions = [
+    { id: 'build', kind: 'run', status: 'succeeded', dependsOn: [] },
+    { id: 'verify-suite', kind: 'verify', status: 'succeeded', dependsOn: ['build'] },
+    { id: 'verify-suite-repair-1', kind: 'run', status: 'succeeded', dependsOn: ['verify-suite'] },
+  ];
+  const policy = { requireSuccessfulWorker: true, requireSuccessfulVerification: true };
+  assert.deepEqual(completionEvidenceGaps(actions, policy, {
+    build: { ok: true }, 'verify-suite': { ok: true }, 'verify-suite-repair-1': { ok: true },
+  }), []);
+  // The re-verify rejected the repair: no evidence.
+  assert.deepEqual(completionEvidenceGaps(actions, policy, {
+    build: { ok: true }, 'verify-suite': { ok: false }, 'verify-suite-repair-1': { ok: true },
+  }), ['a successful verification of latest worker verify-suite-repair-1']);
+  // An unrelated worker that merely depends on a verify is not its repair.
+  assert.deepEqual(completionEvidenceGaps([
+    ...actions.slice(0, 2),
+    { id: 'followup', kind: 'run', status: 'succeeded', dependsOn: ['verify-suite'] },
+  ], policy, { build: { ok: true }, 'verify-suite': { ok: true }, followup: { ok: true } }),
+  ['a successful verification of latest worker followup']);
+  // Verify ids with regex metacharacters are matched literally.
+  assert.deepEqual(completionEvidenceGaps([
+    { id: 'v.1', kind: 'verify', status: 'succeeded', dependsOn: [] },
+    { id: 'v.1-repair-1', kind: 'run', status: 'succeeded', dependsOn: ['v.1'] },
+  ], policy, { 'v.1': { ok: true }, 'v.1-repair-1': { ok: true } }), []);
+  assert.deepEqual(completionEvidenceGaps([
+    { id: 'v.1', kind: 'verify', status: 'succeeded', dependsOn: [] },
+    { id: 'vx1-repair-1', kind: 'run', status: 'succeeded', dependsOn: ['v.1'] },
+  ], policy, { 'v.1': { ok: true }, 'vx1-repair-1': { ok: true } }),
+  ['a successful verification of latest worker vx1-repair-1']);
+});
+
 test('events reader returns only records after a sequence cursor', async () => {
   const f = fixture();
   try {

@@ -475,6 +475,19 @@ function actionOutputOk(action, outputs) {
     : action.status === 'succeeded';
 }
 
+// A verify is evidence for a worker when the worker feeds it (dependsOn), or
+// when the worker is that verify's own repair action: the executor re-runs the
+// verify after every repair round, so a verify that ended ok:true after its
+// `<verify>-repair-N` has verified the repair even though the dependency edge
+// points the other way. Without this a clean run's `complete` was rejected as
+// "missing a successful verification of latest worker <verify>-repair-1"
+// (observed on goal-2 run wf-mtdcghw0, 2026-08-28) and cost three planner turns.
+export function verifiesWorker(verify, worker) {
+  if ((verify.dependsOn ?? []).includes(worker.id)) return true;
+  return (worker.dependsOn ?? []).includes(verify.id)
+    && new RegExp(`^${verify.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-repair-\\d+$`).test(worker.id);
+}
+
 export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
   const missing = [];
   const successfulWorkers = dynamicActions.filter(
@@ -490,7 +503,7 @@ export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
       && action.status === 'succeeded'
       && actionOutputOk(action, outputs)
       && latestSuccessfulWorker
-      && (action.dependsOn ?? []).includes(latestSuccessfulWorker.id),
+      && verifiesWorker(action, latestSuccessfulWorker),
   )) {
     missing.push(latestSuccessfulWorker
       ? `a successful verification of latest worker ${latestSuccessfulWorker.id}`
