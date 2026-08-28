@@ -1,5 +1,18 @@
 # bullswarm changelog
 
+## 0.13.1 — a repaired verify counts as verification of its repair
+
+- `completionEvidenceGaps` accepted a verify as evidence for the latest worker
+  only when the verify depended on that worker. The executor's repair loop
+  produces the reverse edge — `<verify>-repair-N` depends on `<verify>`, then
+  the same verify re-runs — so after a clean repair round every `complete`
+  was rejected with "missing a successful verification of latest worker
+  <verify>-repair-1", and 0.13.0's `all-actions-ok` auto-completion would
+  have been blocked the same way. Observed on goal-2 run `wf-mtdcghw0`
+  (2026-08-28): three extra planner turns and one redundant verify (~11 min)
+  to prove what the re-verify had already shown. A verify that ended ok:true
+  after its own repair action now verifies that repair.
+
 ## 0.13.0 — programs can complete themselves
 
 - A planner may attach `completion: { when: "all-actions-ok", reason }` to a

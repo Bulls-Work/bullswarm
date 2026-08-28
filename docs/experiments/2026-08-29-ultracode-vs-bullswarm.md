@@ -339,7 +339,56 @@ the runtime parks the dispatch in `waiting_for_quota`, re-reads the meter
 every 60 s, continues when the window resets, and only fails — naming pool,
 usage and reset time — after reset + 10 min grace.
 
-(re-run on 0.12.1 pending — it starts as soon as the 5h window resets at 22:30 Z)
+**Second launch, 19:28:03 Z, installed 0.12.1, run `wf-mtdcghw0-bfefc7` on a
+fresh pristine `g2-bs-v3` — observed the wait working.** The meter read 95 %
+at launch, so the runtime parked the first dispatch (the scout) in stage
+`waiting_for_quota` with `until 22:40:00 Z` (reset 22:30 + 10 min grace),
+event `dispatch.waiting_for_quota` carrying pool, usage and reset time. It
+re-read the meter every 60 s for **3 h 2 min 14 s** (`waitedMs 10933739`) and
+emitted `dispatch.quota_available` at **22:30:16.979 Z** — 17 s after the
+provider reset — then dispatched the scout with no operator action. Wall-clock
+numbers below therefore exclude this wait (`metrics-bullswarm.mjs` reports
+`quotaWaitSec` and `wallExclWaitSec` separately); the wait is a provider
+constraint, not execution time.
+
+**Outcome: `completed`, `verified: true`, 23:18:38 Z.** Timeline (all Z):
+
+| when | what |
+|---|---|
+| 22:30:17 | scout dispatched (read-only survey), 197 s |
+| 22:33:34 → 22:39:14 | planner turn 1, **340 s** → one `needs_more_work` program of 14 actions |
+| 22:39:14 | **7 workers started in the same second**: `build-{csv,duration,intervals,lru,semver,slugify}` + `write-docs-index` |
+| 22:44:45 → 22:46:36 | each `verify-<module>` started the moment its own builder finished — per-chain pipelining, no stage barrier (`verify-intervals` was running while `build-slugify` still built) |
+| 22:52:29 | all six module verifies `ok:true` (`verify-slugify` 354 s — see landmine note) → `verify-full-delivery` |
+| 22:59:02 | `verify-full-delivery` **ok:false**: `docs/README.md` missing → runtime spawned `verify-full-delivery-repair-1` (`source: repair-policy`), no planner turn |
+| 23:01:19 → 23:07:58 | repair wrote `docs/README.md` (137 s); re-verify passed (399 s) |
+| 23:07:58 → 23:09:42 | planner turn 2 (105 s): `complete` — **rejected by the runtime**: "missing a successful verification of latest worker verify-full-delivery-repair-1" |
+| 23:09:42 → 23:12:25 | planner turn 3 (163 s): diagnosed the rejection as mechanical, added one read-only `verify-final-acceptance` depending on the repair |
+| 23:12:25 → 23:17:54 | `verify-final-acceptance` ok:true (328 s) |
+| 23:17:54 → 23:18:38 | planner turn 4 (44 s): `complete`, accepted |
+
+Numbers (`metrics-bullswarm.mjs`, wait excluded):
+
+| metric | 0.11.1 (`g2-bs-v2`) | **0.12.1 (`g2-bs-v3`)** | Claude #2 |
+|---|---|---|---|
+| execution wall | 41 min 14 s | **48 min 21 s** (2 901 s; +10 934 s quota wait) | 58 min |
+| planner turns / seconds | 3 / 667 s (27 %) | **4 / 652 s (22 %)** — turns 2–4 (312 s) plus `verify-final-acceptance` (328 s) exist only because of the rejection bug below | 0 during execution |
+| dispatches / max concurrent | 22 / 6 | **22 / 7** | 24 / ~10 |
+| parallelism (busy ÷ wall) | 2.74 | **2.11** | 3.1 |
+| actions by source | planner 14+7+0 | **planner 14 + 1, repair-policy 1** | script |
+| tests after | 130/130 | **120/120** (52 + 68 new, 6 files ≥ 9 tests each) | 168/168 |
+| existing tests / src | byte-identical / comment-only | **byte-identical / comment-only** (audit-fixture.sh: 0 non-comment line diffs in all 7 src files) | same |
+| deliverables | all | **all** (6 docs pages, `docs/README.md` 6-row index) | all |
+| estimated tokens | — | 201 568 (utf8/4 estimate) | — |
+
+What the run showed:
+
+1. **The brace landmine is closed (controlled A/B).** `g2-bs-v3` is a pristine copy, so `src/slugify.js` still carries the `@param {{maxLength?: number}}` JSDoc that killed 0.11.1's `verify-slugify` with zero attempts. On 0.12.1 the same verify dispatched, reviewed the artifact with the braces intact, and returned `ok:true` (with three informational concerns, none of which spawned a polish action — the doctrine held).
+2. **The planner compiled a Claude-shaped program on the first turn.** Six independent `build → verify` chains + a parallel docs-index builder + one final gate, each verify carrying `repair {maxRounds: 1}`. The runtime then ran it as a pipeline: verifies started per chain, not after a barrier.
+3. **The repair loop worked live, and paid for a planner mistake.** `write-docs-index` was compiled with `dependsOn: []`, so it launched with the builders and found no `docs/` to index; the worker refused to invent summaries and returned a status note. The final verify caught the missing file and the runtime's repair round fixed it — no planner turn, ~9 min. In Claude's model the same mistake is an authoring error in the script; here it is a compile error by the planner. Neither runtime can catch it deterministically; both recover through verification.
+4. **Runtime bug found: a repair action is never "verified".** `completionEvidenceGaps` accepts a verify as evidence for the latest worker only if `verify.dependsOn` includes that worker. A repair action depends on its verify (the reverse edge), and the verify's post-repair re-run *is* its verification, but the check does not know that — so a clean `complete` was rejected and the run spent 3 more turns and ~11 min proving what it already had. The same check gates 0.13.0's `all-actions-ok` auto-completion, which would have been blocked the same way. Fix: 0.13.1 (below).
+
+Take the bug and the dependency slip out and this run is ~29 min of execution with two planner turns — the shape the 0.12.0 design targeted.
 
 The originally planned 0.10.9 goal-2 run was dropped at the user's request
 (2026-08-29): the installed latest is the only baseline that matters.
