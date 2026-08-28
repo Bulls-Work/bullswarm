@@ -10,6 +10,10 @@ CLI subscription has the most quota headroom. Every delegate output is
 judged by **content**, not exit code. A non-zero exit is never a success; a
 `verified` output is.
 
+Every command and nested subcommand supports side-effect-free `-h` / `--help`.
+When a flag or argument is uncertain, inspect the exact surface before acting,
+for example `bullswarm workflow draft step add --help`.
+
 This skill is registered globally by:
 
 ```bash

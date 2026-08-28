@@ -17,6 +17,7 @@ import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
 import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
+import { helpForArgs } from './help.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -394,6 +395,11 @@ async function cmdDoctor(opts) {
 // --- main ---------------------------------------------------------------------
 
 export async function main(argv) {
+  const help = helpForArgs(argv);
+  if (help) {
+    console.log(help);
+    return 0;
+  }
   const [verb, ...rest] = argv;
   const opts = parseArgs(rest);
   const { ensureSetup } = await import('./setup.js');
