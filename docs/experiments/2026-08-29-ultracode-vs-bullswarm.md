@@ -393,27 +393,73 @@ Take the bug and the dependency slip out and this run is ~29 min of execution wi
 The originally planned 0.10.9 goal-2 run was dropped at the user's request
 (2026-08-29): the installed latest is the only baseline that matters.
 
+### bullswarm 0.13.1 (installed binary) — goal 3, discovery-shaped, fresh copy `g3-bs-v3`
+
+Goal 3 was written to exercise what goal 2 cannot: an **unknown item list**.
+"Some — not all — of the exported functions accept a wrong-typed argument and
+misbehave. Find out which modules actually have this problem (probe every
+export; keep only the misbehaving modules), then for EACH affected module only:
+add top-of-function argument validation (TypeError naming function, parameter,
+expected type; behaviour for valid input unchanged) and `tests/<module>.guards.test.js`
+(node:test, one test per guard). Do not modify existing tests or touch modules
+that already validate. Finish with `npm test` passing and report exactly which
+modules you changed and which you left alone, with evidence." Same fixture
+family, same single pool (`claude-opus-5`), 0.13.1 installed after the goal-2
+run ended so the binary each run used is unambiguous. Run `wf-mtdkvx0k-c40480`,
+23:23:56 → 23:52:41 Z.
+
+| when (Z) | what |
+|---|---|
+| 23:23:59 → 23:28:05 | scout (246 s): probed all six modules; found exactly three misbehaving (csv, slugify, semver) with per-function evidence |
+| 23:28:05 → 23:32:59 | planner turn 1 (294 s): **one 9-action program with `completion: {when: "all-actions-ok"}`** — `fix-{csv,slugify,semver}` + `audit-remaining` (independently re-probe duration/intervals/lru/index) in parallel, each with its own `verify-*` carrying `repair {maxRounds: 2}`, then `verify-suite` |
+| 23:32:59 | 4 workers started in the same second |
+| 23:37:04 → 23:39:31 | each `verify-<m>` started as its own fix finished (pipeline, no barrier) |
+| 23:42:44 → 23:52:41 | `verify-suite` (597 s) ok:true |
+| 23:52:41 | **runtime recorded `complete` itself** — `decision.auto_completed`, `source: program-completion`; no second planner process |
+
+| metric | value |
+|---|---|
+| wall | **28 min 42 s** (1 722 s), no quota wait |
+| planner turns / seconds | **1 / 294 s (17 %)** |
+| dispatches / max concurrent / parallelism | 11 / 4 / 1.82 (four items → four chains; width was item-bound, cap 8 unused) |
+| repairs | 0 needed (every verify ok:true first time) |
+| actions by source | planner 9; completion recorded by the runtime |
+| result (audit-fixture.sh + `npm test`) | `src/csv.js`, `src/semver.js`, `src/slugify.js` modified (24/9/9 non-comment lines); duration/intervals/lru/index untouched; 3 new `*.guards.test.js`; existing tests byte-identical; **75/75** (52 + 23) |
+| tokens (estimate) | 51 422 |
+
+Two notes. First, the planner did **not** use `fanout.itemsFrom` — it inlined
+the three modules the scout had already named and gave the "not yet confirmed"
+half of the repo to one `audit-remaining` worker. That is the right call (the
+scout had done the discovery), and it is exactly what Claude's author does when
+it discovers the list inline before writing the script; `itemsFrom` stays the
+tool for lists that only exist after a worker runs. Second, `verify-others` and
+`verify-suite` both flagged `lru` throwing `RangeError` rather than `TypeError`
+for a wrong-typed capacity and both correctly treated it as informational (the
+existing test pins `RangeError`): passing-with-nits produced no extra work,
+as the doctrine intends.
+
 ## Behaviour differences observed
 
 Same goal, same fixture, same model (Opus for every worker and for bullswarm's
 planner; the Claude session's author was Opus too). Read left to right: what
 Claude did, what bullswarm 0.11.1 did on the identical run, and what 0.12.x
-now does about it (built and unit-tested; the live re-run below is the
-confirmation).
+now does about it. Every 0.12.x/0.13.x cell is unit-tested; cells marked
+**observed** were also seen live in the `g2-bs-v3` (0.12.1) and `g3-bs-v3`
+(0.13.1) runs above.
 
-| Dimension | Claude Code `Workflow` (ultracode) — observed | bullswarm 0.11.1 — observed | bullswarm 0.12.0 / 0.12.1 — built |
+| Dimension | Claude Code `Workflow` (ultracode) — observed | bullswarm 0.11.1 — observed | bullswarm 0.12.1 / 0.13.1 |
 | --- | --- | --- | --- |
-| Who plans, and when | The session author read every file and ran the tests inline (4 min), then wrote **one script** (23 k chars, 5 `agent()` sites). **0 orchestrator turns during the 48 min 51 s of execution.** | The planner compiled the **whole 14-action graph in one decision** (253 s) — but blind: goal text + cwd only, no repo survey, no worker output text in its context. Consulted **3 times** (253 s, 304 s, 110 s) = **27 % of wall**. | Read-only `scout` action before the planner; `outputExcerpt` of every finished action in the planner context; prompt reframed as "compile the goal into a PROGRAM"; planner told it is consulted only at the program boundary. |
+| Who plans, and when | The session author read every file and ran the tests inline (4 min), then wrote **one script** (23 k chars, 5 `agent()` sites). **0 orchestrator turns during the 48 min 51 s of execution.** | The planner compiled the **whole 14-action graph in one decision** (253 s) — but blind: goal text + cwd only, no repo survey, no worker output text in its context. Consulted **3 times** (253 s, 304 s, 110 s) = **27 % of wall**. | Read-only `scout` action before the planner; `outputExcerpt` of every finished action in the planner context; prompt reframed as "compile the goal into a PROGRAM"; planner told it is consulted only at the program boundary. **Observed:** both runs compiled the whole program on turn 1 from the scout's survey; goal 3 ran on **one planner turn** (0.13.0 self-completion). |
 | Item discovery | `pipeline(MODULES, probe, author, verify, fix-loop)` over a known list; when a list is unknown Claude discovers it inline *before* writing the script. | Goal named the six modules → inlined them. Nothing to discover here. | `fanout.itemsFrom: "outputs.<discovery>.outFile"` resolved at run time (+ one bounded read-only extraction retry), so an unknown item count never costs a planner turn. |
 | Parallel width and overlap | **6 concurrent** (= six items, cap 8), mean parallelism 3.1. Per-item pipeline: author-B starts the second probe-B ends; no barriers. | **6 concurrent**, mean parallelism 2.74. Ready-set scheduler: each `verify-<m>` started the second its own `module-<m>` finished; `docs-index` waited for all six by design. | Unchanged for known items. Limitation stays: a verify on a *discovered* fan-out waits for all items (no per-item chain inside a fan-out yet). |
-| Verify → fix | Fix loops **pre-authored in code** (`while (!verdict.ok && rounds < N)`): slugify ×2, intervals ×1, all inside the script; 9 verifies, 3 fixes, 0 planner involvement. | A failed/blocked verify came back to the **planner** (turn 2, 304 s), which authored `slugify-recheck` + `verify-slugify-2`. Round trip ≈ 5 min before the fix even started. | `verify.repair { prompt, maxRounds 1–3 }` — the executor runs `<verify>-repair-<n>` with the concerns verbatim and re-runs the same verify; only still-failing verifies return to the planner. |
-| Passing verifies with nits | Schema-forced `{ok, issues}`; the script fixes only when `!ok`. Nits on passing modules were ignored. | Planner spent **2 of 3 remediation fixes** (`polish-semver`, `polish-lru`) on "non-blocking" notes from verifiers that had returned `ok:true` — an extra ~10 min program round. | Doctrine line: an `ok:true` verify is accepted; its concerns are informational. |
-| Robustness to content | Prompts are JS strings; the runtime substitutes nothing. A parse error in the *script* was caught by the harness and corrected inline in 94 s. | The template renderer parsed **any** `{{…}}` — in a planner prompt *and* in the review artifact it appended. `verify-slugify` died at render time with **0 attempts**, blocked `verify-suite`, cost a planner round, and the fix **rewrote fixture source** (JSDoc) to dodge the bug. | Only a known root + dotted identifiers is a template ref; other double braces are text. `verify` appends the reviewed artifact verbatim, never rendered. |
-| Provider rate limits | Agents retry on API errors; a terminal error resolves the agent to `null`, the script keeps going. The session waits. | Pool burst-gated (5h window 91 %) → the whole run **failed in 4 s** with `no eligible pool`, no reset time named (first 0.12.0 launch, 19:09 Z). | 0.12.1: `waiting_for_quota` stage, meter re-read every 60 s, continue when the window resets; fail only after reset + 10 min grace, naming pool / usage / reset time. |
+| Verify → fix | Fix loops **pre-authored in code** (`while (!verdict.ok && rounds < N)`): slugify ×2, intervals ×1, all inside the script; 9 verifies, 3 fixes, 0 planner involvement. | A failed/blocked verify came back to the **planner** (turn 2, 304 s), which authored `slugify-recheck` + `verify-slugify-2`. Round trip ≈ 5 min before the fix even started. | `verify.repair { prompt, maxRounds 1–3 }` — the executor runs `<verify>-repair-<n>` with the concerns verbatim and re-runs the same verify; only still-failing verifies return to the planner. **Observed** (goal 2): `verify-full-delivery` failed on a missing `docs/README.md`, the repair wrote it and the re-verify passed, ~9 min, no planner turn. Exposed the 0.13.1 bug (repair never counted as verified). |
+| Passing verifies with nits | Schema-forced `{ok, issues}`; the script fixes only when `!ok`. Nits on passing modules were ignored. | Planner spent **2 of 3 remediation fixes** (`polish-semver`, `polish-lru`) on "non-blocking" notes from verifiers that had returned `ok:true` — an extra ~10 min program round. | Doctrine line: an `ok:true` verify is accepted; its concerns are informational. **Observed:** 6 + 4 passing verifies with concerns in the two runs, zero polish actions. |
+| Robustness to content | Prompts are JS strings; the runtime substitutes nothing. A parse error in the *script* was caught by the harness and corrected inline in 94 s. | The template renderer parsed **any** `{{…}}` — in a planner prompt *and* in the review artifact it appended. `verify-slugify` died at render time with **0 attempts**, blocked `verify-suite`, cost a planner round, and the fix **rewrote fixture source** (JSDoc) to dodge the bug. | Only a known root + dotted identifiers is a template ref; other double braces are text. `verify` appends the reviewed artifact verbatim, never rendered. **Observed:** same pristine `slugify.js` with `{{maxLength?: number}}`, `verify-slugify` ran and passed. |
+| Provider rate limits | Agents retry on API errors; a terminal error resolves the agent to `null`, the script keeps going. The session waits. | Pool burst-gated (5h window 91 %) → the whole run **failed in 4 s** with `no eligible pool`, no reset time named (first 0.12.0 launch, 19:09 Z). | 0.12.1: `waiting_for_quota` stage, meter re-read every 60 s, continue when the window resets; fail only after reset + 10 min grace, naming pool / usage / reset time. **Observed:** waited 3 h 2 min at 95 %, resumed 17 s after the reset, no operator action. |
 | Structured worker output | `schema:` forces a `StructuredOutput` tool call; mismatches retry at the tool layer, so the script never parses prose. | Prose "content gate" (`looksLikeWork`); a bare JSON array answer was rejected as an "announcement"; the verify verdict is the only structured channel. | Content gate accepts JSON; `parseJsonArray` prefers the trailing array; one extraction action when discovery output has no array. A general `outputSchema` on run actions is still open. |
 | Failure semantics | In code: `parallel()` never rejects, a throwing stage drops its item to `null`, `.filter(Boolean)`. | Runtime `onError: continue` per step; failed dependencies block dependents; blocked graph → planner. | Same, plus: a failed scout is non-fatal; fan-out `ok` is a boolean so dependents can wait on a whole fan-out. |
-| Outcome quality (audits, read-only) | 168/168 tests (52 + 116 new); existing tests byte-identical; `src` comment-only; every deliverable present. | 130/130 tests (52 + 78 new); existing tests byte-identical; `src` comment-only; every deliverable present. | — (re-run below) |
-| Time and agents | 58 min end to end; 24 agents. | 41 min end to end; 22 dispatches. Faster because it wrote fewer tests per module (11–15 vs 16–24) and skipped Claude's probe stage — not because it orchestrated better. | — |
+| Outcome quality (audits, read-only) | 168/168 tests (52 + 116 new); existing tests byte-identical; `src` comment-only; every deliverable present. | 130/130 tests (52 + 78 new); existing tests byte-identical; `src` comment-only; every deliverable present. | Goal 2 on 0.12.1: 120/120 (52 + 68); existing tests byte-identical; `src` comment-only; every deliverable present. Goal 3 on 0.13.1: exactly the three unguarded modules changed, 75/75. |
+| Time and agents | 58 min end to end; 24 agents. | 41 min end to end; 22 dispatches. Faster because it wrote fewer tests per module (11–15 vs 16–24) and skipped Claude's probe stage — not because it orchestrated better. | Goal 2 on 0.12.1: 48 min of execution (+3 h quota wait), 22 dispatches, max 7 concurrent — ~11 min of it spent on the 0.13.1 bug and ~9 min on one repair round. Goal 3 on 0.13.1: 28 min 42 s, 11 dispatches, 1 planner turn. |
 
 The short version: after 0.11.x the *shape* already matched (one decision =
 whole graph, six in parallel, per-item verify overlap). What still separated
@@ -425,8 +471,9 @@ the runtime.
 
 ## What to change in bullswarm
 
-**Shipped in this cycle** (0.12.0 `c1b71a8`, 0.12.1 `beeed94`; all covered by
-unit tests, 295/295):
+**Shipped in this cycle** (0.12.0 `c1b71a8`, 0.12.1 `beeed94`, 0.13.0
+`6e5f620`, 0.13.1 `1bf0840` — all released to npm and installed; unit suite
+299/299):
 
 1. Orchestrator as **compiler**: prompt reframed; planner consulted only at the
    program boundary; `programFeatures: ['itemsFrom', 'repair']` advertised.
@@ -442,11 +489,18 @@ unit tests, 295/295):
 8. Template refs are grammar-checked; review artifacts are never rendered.
 9. Doctrine: `ok:true` verifies are accepted; concerns are informational.
 10. Burst-gated providers are waited for (`waiting_for_quota`), not failed.
-11. **Program-level completion predicate** (`0bcfd21`, 0.13.0 unreleased while
-    the 0.12.1 observation run is in flight): `completion: { when:
+11. **Program-level completion predicate** (0.13.0): `completion: { when:
     "all-actions-ok", reason }` lets a clean program record its own `complete`
-    decision — no final planner turn (110 s here) just to say so. Anything
-    failing still returns to the planner.
+    decision — no final planner turn just to say so. Anything failing still
+    returns to the planner. **Observed** on goal 3: the planner attached it
+    unprompted, the runtime recorded `complete` (`source: program-completion`)
+    at 23:52:41 Z, one planner turn for the whole run.
+12. **A repaired verify counts as verification of its repair** (0.13.1): the
+    completion-evidence check only followed `verify.dependsOn`; a repair action
+    depends on its verify (reverse edge), so after a clean repair round every
+    `complete` was rejected as "missing a successful verification of latest
+    worker <verify>-repair-1" — observed on goal 2 (three extra planner turns,
+    ~11 min) and it would have blocked item 11 in the same situation.
 
 **Still open, in priority order** (each is a measured gap, not a guess):
 
@@ -467,3 +521,14 @@ unit tests, 295/295):
    whatever the planner wrote. A default skeptic framing in the verify wrapper
    is cheap and would have caught nothing extra here — listed for parity, not
    urgency.
+5. **Dependency slips by the planner.** Goal 2's `write-docs-index` was
+   compiled with `dependsOn: []` although it reads the six `docs/<m>.md` files
+   the builders create; it ran first and found nothing. The verify + repair
+   loop recovered it (~9 min). Claude has the same failure class (a mis-ordered
+   `pipeline` stage) and the same recovery. A doctrine line — "an action that
+   reads another proposed action's deliverable must depend on it" — is free;
+   a deterministic check is not possible without declared outputs, which would
+   be a small schema addition (`produces: [paths]`).
+6. **Record `completion` on the decision.** The planner artifact carries the
+   predicate but `state.decisions[]` does not, so `watch`/metrics cannot show
+   that a program declared itself self-completing until it does. One field.

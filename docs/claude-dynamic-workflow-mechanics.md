@@ -216,7 +216,15 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
   policy and race on the barrel file." The policy it cites was a caution line
   in the planner prompt; a concurrency cap of 8 was available and unused.
   Discovery alone then ran 458 s. (Final numbers: experiment report.)
-- (comparison fixture final results: pending)
+- Final comparison on the 6-module fixture (experiment report for the full
+  tables). Goal 2 (known items): Claude 58 min, 24 agents, 0 orchestrator
+  turns during execution, parallelism 3.1 · bullswarm 0.11.1 41 min, 3 planner
+  turns (27 %), max 6 concurrent, parallelism 2.74 · bullswarm 0.12.1 48 min of
+  execution after a 3 h quota wait it survived, 4 planner turns (two caused by
+  the bug fixed in 0.13.1), max 7 concurrent, one live repair round. Goal 3
+  (discovered items) on 0.13.1: 28 min 42 s, **one planner turn**, the runtime
+  recorded `complete` itself, exactly the three unguarded modules fixed,
+  75/75 tests.
 
 ## 3. bullswarm today, mechanic by mechanic
 
@@ -316,7 +324,7 @@ author and the `Workflow` runtime.
    sees `outputs.scout.ok=false` with the reason, and a run where only the
    scout succeeded is `blocked`, never "delivered".
 
-8. **Program-level completion** (0.13.0, unreleased at the time of writing) —
+8. **Program-level completion** (0.13.0) —
    `completion: { when: "all-actions-ok", reason }` on a program. Claude's
    script simply returns when its code is done; bullswarm still spent a final
    planner turn (110–250 s measured) to say `complete` after a clean run. Now
@@ -324,10 +332,24 @@ author and the `Workflow` runtime.
    never below the completion policy) and consults the planner only when
    something failed. With 0.12.0's repair-in-program this makes a clean run
    **one planner turn**: compile, execute, done — Claude's "0 orchestrator turns
-   during execution" for the passing case.
+   during execution" for the passing case. **[OBSERVED]** goal-3 run
+   `wf-mtdkvx0k` (0.13.1): the planner attached the predicate on its own, the
+   runtime emitted `decision.auto_completed` (`source: program-completion`),
+   one planner process for the whole 28 min run.
 9. **Rate limits are waited for** (0.12.1): a burst-gated provider parks the
    dispatch in `waiting_for_quota` until the window resets instead of failing
    the run in 4 s, which is what the first 0.12.0 comparison launch did.
+   **[OBSERVED]** goal-2 run `wf-mtdcghw0`: parked at 95 % for 3 h 2 min,
+   dispatched 17 s after the provider reset.
+10. **A repair is verified by its verify's re-run** (0.13.1). The executor's
+   repair loop creates `<verify>-repair-N` *depending on* the verify, then runs
+   the verify again; the completion-evidence check only followed
+   `verify.dependsOn` and so never saw a repair as verified. **[OBSERVED]** on
+   `wf-mtdcghw0`: a clean `complete` rejected, three more planner turns
+   (~11 min) to re-prove a passed re-verify. In Claude's model this bug cannot
+   exist — the script's `while (!ok)` loop *is* the evidence — which is the
+   general lesson: every piece of control flow bullswarm moves from planner
+   into runtime needs its evidence rule moved with it.
 
 **Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
 *barrier*: a verify depending on a data-driven fan-out waits for all items,
