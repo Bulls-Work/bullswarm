@@ -355,6 +355,12 @@ that expressible without extra turns:
   `ok:false`, the executor runs `<verifyId>-repair-<n>` (`source:
   "repair-policy"`) with the verifier's concerns verbatim and re-runs the same
   verify, up to `maxRounds` (1–3), without a planner turn.
+- `completion: { when: "all-actions-ok", reason }` (top level of a program) —
+  when every action of the program, repairs included, finishes ok and the
+  completion policy is met, the runtime records the `complete` decision itself
+  (`source: "program-completion"`, event `decision.auto_completed`) and the run
+  ends without another planner turn; a failing action emits
+  `decision.completion_predicate_unmet` and the boundary returns to the planner.
 
 Every fan-out records a summary artifact as `outputs.<id>.outFile` and a
 boolean `ok` (item count in `succeeded`), so a verify may depend on a fan-out
