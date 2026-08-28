@@ -346,8 +346,75 @@ The originally planned 0.10.9 goal-2 run was dropped at the user's request
 
 ## Behaviour differences observed
 
-(pending)
+Same goal, same fixture, same model (Opus for every worker and for bullswarm's
+planner; the Claude session's author was Opus too). Read left to right: what
+Claude did, what bullswarm 0.11.1 did on the identical run, and what 0.12.x
+now does about it (built and unit-tested; the live re-run below is the
+confirmation).
+
+| Dimension | Claude Code `Workflow` (ultracode) — observed | bullswarm 0.11.1 — observed | bullswarm 0.12.0 / 0.12.1 — built |
+| --- | --- | --- | --- |
+| Who plans, and when | The session author read every file and ran the tests inline (4 min), then wrote **one script** (23 k chars, 5 `agent()` sites). **0 orchestrator turns during the 48 min 51 s of execution.** | The planner compiled the **whole 14-action graph in one decision** (253 s) — but blind: goal text + cwd only, no repo survey, no worker output text in its context. Consulted **3 times** (253 s, 304 s, 110 s) = **27 % of wall**. | Read-only `scout` action before the planner; `outputExcerpt` of every finished action in the planner context; prompt reframed as "compile the goal into a PROGRAM"; planner told it is consulted only at the program boundary. |
+| Item discovery | `pipeline(MODULES, probe, author, verify, fix-loop)` over a known list; when a list is unknown Claude discovers it inline *before* writing the script. | Goal named the six modules → inlined them. Nothing to discover here. | `fanout.itemsFrom: "outputs.<discovery>.outFile"` resolved at run time (+ one bounded read-only extraction retry), so an unknown item count never costs a planner turn. |
+| Parallel width and overlap | **6 concurrent** (= six items, cap 8), mean parallelism 3.1. Per-item pipeline: author-B starts the second probe-B ends; no barriers. | **6 concurrent**, mean parallelism 2.74. Ready-set scheduler: each `verify-<m>` started the second its own `module-<m>` finished; `docs-index` waited for all six by design. | Unchanged for known items. Limitation stays: a verify on a *discovered* fan-out waits for all items (no per-item chain inside a fan-out yet). |
+| Verify → fix | Fix loops **pre-authored in code** (`while (!verdict.ok && rounds < N)`): slugify ×2, intervals ×1, all inside the script; 9 verifies, 3 fixes, 0 planner involvement. | A failed/blocked verify came back to the **planner** (turn 2, 304 s), which authored `slugify-recheck` + `verify-slugify-2`. Round trip ≈ 5 min before the fix even started. | `verify.repair { prompt, maxRounds 1–3 }` — the executor runs `<verify>-repair-<n>` with the concerns verbatim and re-runs the same verify; only still-failing verifies return to the planner. |
+| Passing verifies with nits | Schema-forced `{ok, issues}`; the script fixes only when `!ok`. Nits on passing modules were ignored. | Planner spent **2 of 3 remediation fixes** (`polish-semver`, `polish-lru`) on "non-blocking" notes from verifiers that had returned `ok:true` — an extra ~10 min program round. | Doctrine line: an `ok:true` verify is accepted; its concerns are informational. |
+| Robustness to content | Prompts are JS strings; the runtime substitutes nothing. A parse error in the *script* was caught by the harness and corrected inline in 94 s. | The template renderer parsed **any** `{{…}}` — in a planner prompt *and* in the review artifact it appended. `verify-slugify` died at render time with **0 attempts**, blocked `verify-suite`, cost a planner round, and the fix **rewrote fixture source** (JSDoc) to dodge the bug. | Only a known root + dotted identifiers is a template ref; other double braces are text. `verify` appends the reviewed artifact verbatim, never rendered. |
+| Provider rate limits | Agents retry on API errors; a terminal error resolves the agent to `null`, the script keeps going. The session waits. | Pool burst-gated (5h window 91 %) → the whole run **failed in 4 s** with `no eligible pool`, no reset time named (first 0.12.0 launch, 19:09 Z). | 0.12.1: `waiting_for_quota` stage, meter re-read every 60 s, continue when the window resets; fail only after reset + 10 min grace, naming pool / usage / reset time. |
+| Structured worker output | `schema:` forces a `StructuredOutput` tool call; mismatches retry at the tool layer, so the script never parses prose. | Prose "content gate" (`looksLikeWork`); a bare JSON array answer was rejected as an "announcement"; the verify verdict is the only structured channel. | Content gate accepts JSON; `parseJsonArray` prefers the trailing array; one extraction action when discovery output has no array. A general `outputSchema` on run actions is still open. |
+| Failure semantics | In code: `parallel()` never rejects, a throwing stage drops its item to `null`, `.filter(Boolean)`. | Runtime `onError: continue` per step; failed dependencies block dependents; blocked graph → planner. | Same, plus: a failed scout is non-fatal; fan-out `ok` is a boolean so dependents can wait on a whole fan-out. |
+| Outcome quality (audits, read-only) | 168/168 tests (52 + 116 new); existing tests byte-identical; `src` comment-only; every deliverable present. | 130/130 tests (52 + 78 new); existing tests byte-identical; `src` comment-only; every deliverable present. | — (re-run below) |
+| Time and agents | 58 min end to end; 24 agents. | 41 min end to end; 22 dispatches. Faster because it wrote fewer tests per module (11–15 vs 16–24) and skipped Claude's probe stage — not because it orchestrated better. | — |
+
+The short version: after 0.11.x the *shape* already matched (one decision =
+whole graph, six in parallel, per-item verify overlap). What still separated
+the two was everything Claude keeps **inside the program** — reading the repo
+before planning, data-driven fan-out, repair loops, tolerating passing-with-
+nits, tolerating rate limits — which bullswarm was still paying a 2–5 minute
+planner round trip for, or failing on. 0.12.0/0.12.1 move each of those into
+the runtime.
 
 ## What to change in bullswarm
 
-(pending)
+**Shipped in this cycle** (0.12.0 `c1b71a8`, 0.12.1 `beeed94`; all covered by
+unit tests, 295/295):
+
+1. Orchestrator as **compiler**: prompt reframed; planner consulted only at the
+   program boundary; `programFeatures: ['itemsFrom', 'repair']` advertised.
+2. `fanout.itemsFrom` — data-driven fan-out resolved at execution time, one
+   bounded read-only extraction retry, `maxItemsPerExpansion` default 24.
+3. `verify.repair { prompt, maxRounds }` — pre-authored fix loops run by the
+   executor.
+4. Fan-out summary artifact; fan-out `ok` is a boolean (count in `succeeded`).
+5. `scout` step before the first program (`--no-scout`), non-fatal.
+6. `outputExcerpt` for every output in the planner context.
+7. Content gate accepts structured JSON; `parseJsonArray` prefers the
+   trailing array.
+8. Template refs are grammar-checked; review artifacts are never rendered.
+9. Doctrine: `ok:true` verifies are accepted; concerns are informational.
+10. Burst-gated providers are waited for (`waiting_for_quota`), not failed.
+
+**Still open, in priority order** (each is a measured gap, not a guess):
+
+1. **Program-level completion predicate.** Claude's script ends when its code
+   says so; bullswarm still spends a final planner turn (110 s here) to say
+   `complete` after every verify passed. Let the planner attach
+   `completion: { when: "all-verifies-ok" }` to a program so the boundary
+   decision is data-driven when nothing failed — that removes the last
+   orchestrator turn during a clean run.
+2. **Per-item chains for discovered items.** `itemsFrom` removes the planner
+   turn but not the stage barrier; a fan-out whose `stepTemplate` is itself a
+   chain (`run → verify(repair)` per item) would give Claude's `pipeline()`
+   overlap for unknown item lists too.
+3. **General `outputSchema` on run actions** (Claude's `StructuredOutput`):
+   validate a worker's JSON at the dispatch layer and retry once, instead of
+   the prose gate plus an extraction action.
+4. **Planner latency.** Every planner turn is a fresh `claude -p --resume`
+   process reading a large durable context (253–304 s here vs Claude's ~4 min
+   *once*). With 1–2 above, turns drop to one per run; the remaining lever is a
+   smaller planner context (excerpts already budgeted at 36 k chars).
+5. **Adversarial verification by default.** Claude's script verified every
+   module with a reviewer told to *refute*; bullswarm's verify prompt is
+   whatever the planner wrote. A default skeptic framing in the verify wrapper
+   is cheap and would have caught nothing extra here — listed for parity, not
+   urgency.
