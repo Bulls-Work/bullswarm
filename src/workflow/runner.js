@@ -748,8 +748,14 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
       runtime.emit('action.reverify_started', { verifyId: action.id, repairId, round });
       state.currentStep = { id: action.id, type: action.type, phase: executionPhase(action) };
       runtime.persist();
+      // The re-verify judges the repair, not the whole artifact afresh: it is
+      // told which concerns were raised and what the repair reports, and may
+      // reject only for an unresolved listed concern or a regression. Earned:
+      // goal-4 rerun r2vu9i — round 2 rejected on two concerns round 1 never
+      // raised although every round-1 concern was fixed (moving goalposts).
+      const repairExcerpt = String(state.outputs?.[repairId]?.outputExcerpt ?? '').slice(0, 1500);
       result = await runtime.runStep(
-        { ...action, parentId: gate.id, _dynamic: true },
+        { ...action, parentId: gate.id, _dynamic: true, _reverify: { round, maxRounds, repairId, concerns, repairExcerpt } },
         { phase: executionPhase(action), retryAttempts },
       );
       runtime.emit(result.ok ? 'action.repaired' : 'action.reverify_rejected', {

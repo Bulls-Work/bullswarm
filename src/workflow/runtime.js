@@ -1087,8 +1087,17 @@ export class WorkflowRuntime {
       }
     })();
 
+    const reverify = step._reverify && typeof step._reverify === 'object' ? step._reverify : null;
     const reviewInstructions = [
       step.prompt ?? 'You are a skeptical reviewer. Independently inspect the work and its current repository state.',
+      ...(reverify ? [
+        '',
+        `RE-VERIFY round ${reverify.round} of ${reverify.maxRounds}: your previous verdict rejected this work and repair ${reverify.repairId} has since edited the repository. Judge the repair, not the work afresh.`,
+        ...(Array.isArray(reverify.concerns) && reverify.concerns.length
+          ? ['Concerns you raised (verbatim):', ...reverify.concerns.map((entry) => `- ${entry}`)] : []),
+        ...(reverify.repairExcerpt ? ['The repair reported:', reverify.repairExcerpt] : []),
+        'Return ok:false ONLY if a listed concern is still unresolved or the repair introduced a regression in the acceptance checks. Anything you notice now that was already true before the repair goes in concerns as informational and never makes ok false: the first verdict was the moment to raise it.',
+      ] : []),
       '',
       'RETURN ONLY a single JSON object of the form',
       '{"ok": <true|false>, "concerns": [<string>...], "summary": <string>}.',
