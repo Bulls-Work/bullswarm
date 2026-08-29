@@ -10,6 +10,12 @@
   Live-proven on `bizp4s`: the one re-verify rejection was an `ENOENT`
   regression in the acceptance checks, and its verdict opens "the two
   original concerns are repaired".
+- A phase is a pipeline stage: rule 3 now says one kebab-case name shared by
+  its actions, never one phase per action, and the complete-program example
+  uses five phases for eight actions (`verify` holds verify-fix, verify-tests
+  and verify-suite). Earned on `bizp4s`: the planner mirrored the example and
+  wrote sixteen one-action phases — no scheduling cost (phases never gate;
+  `dependsOn` does), but a TUI phase list carrying no information.
 - Goal-4 rerun on this release (`bizp4s`, runtime `9af8fdf`, workers on
   `relay/gpt-5.6-luna`): **25 min 13 s** (attempt 3: 44 min; 0.15.0: 72 min;
   audited contract alone: 37 min), one planner turn (247 s, 16 % of wall),
