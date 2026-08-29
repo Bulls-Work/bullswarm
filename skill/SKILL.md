@@ -277,8 +277,12 @@ supports explicit model selection, Bullswarm pins an allowed model in the same
 effort tier; otherwise that pool is excluded because its implicit default
 cannot be guaranteed. Restore eligibility with `strategy include-model`.
 
-In the human TUI, the autonomous orchestrator has a compact selectable panel
-stacked above the phase tree. Select it and press Enter, or press
+In the human TUI, the autonomous orchestrator is presented as Workflow Planner
+in a compact selectable panel stacked above the phase tree. The default desktop
+view pairs that unchanged navigation with a timestamped workflow timeline:
+finished events stay above a live Planner/worker section with each participant's
+latest semantic action, while unexecuted work stays in a separate Next section.
+Select Workflow Planner and press Enter, or press
 `o`, to see a summary-first overview of its current role, latest decision,
 reason, next action, progress, and recent semantic activity. Press `v` for the
 durable provider session, checkpoint prompts and turns, usage, and artifact
