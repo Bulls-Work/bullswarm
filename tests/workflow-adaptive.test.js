@@ -203,7 +203,7 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"repair":\{"prompt":/);
     assert.match(task, /Program skeleton \(discovery → data-driven fan-out → verify with repair/);
     assert.match(task, /compiling the goal into a PROGRAM/);
-    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair",\s*"completion"\s*\]/);
+    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair",\s*"completion",\s*"outputSchema"\s*\]/);
     assert.match(task, /Self-completing programs: .*"completion": \{"when":"all-actions-ok"/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /Read before you compile: outputs\.<id>\.outputExcerpt/);
@@ -986,4 +986,133 @@ test('cancellation terminates an active child and leaves a truthful terminal att
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+function schemaFixture(mode) {
+  const f = fixture();
+  const countFile = join(f.root, `${mode}-dispatch-count.txt`);
+  const worker = join(f.root, `${mode}-schema-worker.mjs`);
+  writeFileSync(worker, [
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    `const countFile = ${JSON.stringify(countFile)};`,
+    'let count = 0; try { count = Number(readFileSync(countFile, "utf8")) || 0; } catch {}',
+    'count += 1; writeFileSync(countFile, String(count));',
+    mode === 'missing-first'
+      ? `process.stdout.write(count === 1 ? ${JSON.stringify('The first answer contains a detailed investigation, concrete file inspection evidence, and a complete explanation, but no structured report.')} : ${JSON.stringify('The corrected answer includes the requested item count, the inspected item name, and durable evidence from the bounded action. The worker checked the bounded input, recorded the resulting item, and reports the exact structured values below so downstream work can consume the evidence without guessing.\n{"items":["alpha"],"count":1}')});`
+      : 'process.stdout.write("{\\"items\\":\\"not-an-array\\",\\"count\\":\\"not-a-number\\"}");',
+  ].join('\n'));
+  const connector = {
+    ...f.pools[0].connector,
+    name: `${mode}-schema`,
+    spawn: { cmd: ['node', worker, '{taskFile}'], cwdMode: 'task-file-dir' },
+  };
+  f.pools = [{
+    name: connector.name, connector, enabled: true, costRank: 1,
+    lanes: connector.lanes, capabilities: connector.capabilities, pace: 0,
+  }];
+  return { ...f, countFile };
+}
+
+const structuredOutputSchema = {
+  type: 'object',
+  properties: {
+    items: { type: 'array', items: { type: 'string' } },
+    count: { type: 'integer' },
+  },
+  required: ['items', 'count'],
+  additionalProperties: false,
+};
+
+test('outputSchema retries a missing trailing JSON object once and records validated data', async () => {
+  const f = schemaFixture('missing-first');
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        name: 'schema-retry-success', description: 'schema retry', inputs: {},
+        settings: { retryAttempts: 0, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [{
+          id: 'structured', type: 'run', lane: 'chore', prompt: 'Return the structured result.',
+          outputSchema: structuredOutputSchema,
+        }] }],
+      },
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.outputs.structured.ok, true);
+    assert.deepEqual(result.state.outputs.structured.data, { items: ['alpha'], count: 1 });
+    assert.equal(result.state.outputs.structured.schemaOk, true);
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 2);
+    assert.equal(events.filter((event) => event.type === 'action.output_schema_retry').length, 1);
+    assert.equal(events.filter((event) => event.type === 'action.output_validated').length, 1);
+    assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 2);
+  } finally { f.cleanup(); }
+});
+
+test('outputSchema records schema errors and output after exactly two failed dispatches', async () => {
+  const f = schemaFixture('always-invalid');
+  try {
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        name: 'schema-retry-failure', description: 'schema retry failure', inputs: {},
+        settings: { retryAttempts: 0, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [{
+          id: 'structured', type: 'run', lane: 'chore', prompt: 'Return the structured result.',
+          outputSchema: structuredOutputSchema,
+        }] }],
+      },
+      pools: f.pools, inputs: {},
+    });
+    assert.equal(result.state.outputs.structured.ok, false);
+    assert.match(result.state.outputs.structured.why, /^output did not match outputSchema:/);
+    assert.equal(result.state.outputs.structured.schemaOk, false);
+    assert.ok(result.state.outputs.structured.schemaErrors.length > 0);
+    assert.match(result.state.outputs.structured.outputText, /not-an-array/);
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 2);
+    assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 2);
+  } finally { f.cleanup(); }
+});
+
+test('resume redispatches a run action whose persisted output is schema-incomplete', async () => {
+  const f = schemaFixture('missing-first');
+  try {
+    const doc = {
+      name: 'schema-resume', description: 'schema resume', inputs: {},
+      settings: { retryAttempts: 0, escalateOnFail: false },
+      phases: [{ name: 'p', steps: [{
+        id: 'structured', type: 'run', lane: 'chore', prompt: 'Return the structured result.',
+        outputSchema: structuredOutputSchema,
+      }] }],
+    };
+    const initial = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
+    assert.equal(initial.state.outputs.structured.schemaOk, true);
+    const statePath = join(f.bullswarmDir, 'workflows', initial.runId, 'state.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    persisted.outputs.structured = {
+      ...persisted.outputs.structured,
+      ok: true,
+      schemaOk: false,
+      data: { items: 'not-an-array', count: 'not-a-number' },
+      schemaErrors: ['items must be array'],
+    };
+    writeFileSync(statePath, `${JSON.stringify(persisted, null, 2)}\n`);
+    writeFileSync(f.countFile, '0');
+    const resumed = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: initial.runId,
+    });
+    assert.equal(resumed.state.outputs.structured.schemaOk, true);
+    assert.deepEqual(resumed.state.outputs.structured.data, { items: ['alpha'], count: 1 });
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 2);
+    assert.equal(resumed.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 4);
+    assert.ok(!readEvents(resumed.runDir).some((event) => event.type === 'step.skipped' && event.payload.stepId === 'structured'));
+
+    writeFileSync(f.countFile, '0');
+    const skipped = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: resumed.runId,
+    });
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 0);
+    assert.equal(skipped.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 4);
+    assert.ok(readEvents(skipped.runDir).some((event) => event.type === 'step.skipped' && event.payload.stepId === 'structured'));
+  } finally { f.cleanup(); }
 });

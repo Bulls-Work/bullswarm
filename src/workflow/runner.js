@@ -343,8 +343,9 @@ export async function runWorkflow(opts) {
       runtime.persist();
       // R2: skip ok:true on resume for both `run` and `verify`. (Fanout
       // is resumed inside the runtime, per-item by fingerprint.)
-      if (resuming && state.outputs[step.id]?.ok === true
-          && (step.type === 'run' || step.type === 'verify')) {
+       if (resuming && state.outputs[step.id]?.ok === true
+           && (step.outputSchema === undefined || state.outputs[step.id]?.schemaOk === true)
+           && (step.type === 'run' || step.type === 'verify')) {
         runtime.emit('step.skipped', { stepId: step.id });
         continue;
       }
@@ -619,7 +620,15 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
   const resolveProposedItems = async (action) => {
     const itemsFrom = action.itemsFrom.trim();
     const producerId = ITEMS_FROM_RE.exec(itemsFrom)?.[1] ?? null;
+    const dataField = ITEMS_FROM_RE.exec(itemsFrom)?.[2] ?? null;
     const limit = Number(settings.maxItemsPerExpansion ?? 50) || 50;
+    if (dataField) {
+      const items = state.outputs?.[producerId]?.data?.[dataField];
+      if (!Array.isArray(items)) return { ok: false, why: `fanout itemsFrom "${itemsFrom}" did not resolve to an array in producer data` };
+      if (items.length > limit) return { ok: false, why: `fanout "${action.id}" resolved ${items.length} items from ${itemsFrom}, exceeding maxItemsPerExpansion=${limit}; propose a narrower discovery or split the fan-out` };
+      runtime.emit('action.items_resolved', { actionId: action.id, itemsFrom, count: items.length });
+      return { ok: true, items };
+    }
     const attempt = (path) => {
       try { return { ok: true, items: extractItems(state, path) }; } catch (err) { return { ok: false, why: err.message }; }
     };
@@ -738,7 +747,8 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     const pending = new Map(actions.map((action) => [action.id, action]));
     const running = new Map();
     const runOne = async (action) => {
-      if (state.outputs[action.id]?.ok === true) {
+       if (state.outputs[action.id]?.ok === true
+           && (action.outputSchema === undefined || state.outputs[action.id]?.schemaOk === true)) {
         runtime.emit('action.resumed', { actionId: action.id, status: 'succeeded' });
         return;
       }

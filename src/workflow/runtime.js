@@ -36,6 +36,7 @@ import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js
 import { deliverSteering } from './steering.js';
 import { resolveDispatchModel } from '../lib/strategy.js';
 import { getMeterReading } from '../meters/registry.js';
+import { validateAgainstSchema } from './schema.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -885,6 +886,78 @@ export class WorkflowRuntime {
     };
   }
 
+  schemaTaskText(taskText, schema, retry = null) {
+    return [
+      taskText,
+      '',
+      retry
+        ? `Your previous answer did not match the required schema: ${retry.errors.join('; ')}. Previous output tail: ${retry.tail}. Return the full answer again and END with a JSON object that matches.`
+        : 'END YOUR OUTPUT with exactly one JSON object matching this schema. No prose or markdown fences may appear after it.',
+      JSON.stringify(schema),
+    ].join('\n');
+  }
+
+  /**
+   * The last JSON object in the output, validated against the schema. Found
+   * the way hasStructuredAnswer finds a trailing array: from the final "}"
+   * walk back over each "{" and try to parse — no hand-rolled brace/quote
+   * scanner (a reverse scan mis-handles \" inside strings and would waste
+   * the single schema retry on a valid answer).
+   */
+  readTrailingObject(path, schema) {
+    let text;
+    try { text = readFileSync(path, 'utf8'); } catch (err) { return { ok: false, errors: [`output file could not be read: ${err.message}`] }; }
+    const trimmed = text.trimEnd();
+    if (!trimmed.endsWith('}')) return { ok: false, errors: ['output did not end with a JSON object'] };
+    const close = trimmed.length - 1;
+    let parseError = null;
+    for (let start = trimmed.lastIndexOf('{', close); start !== -1; start = trimmed.lastIndexOf('{', start - 1)) {
+      let value;
+      try { value = JSON.parse(trimmed.slice(start, close + 1)); } catch (err) { parseError = err.message; if (start === 0) break; continue; }
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) { if (start === 0) break; continue; }
+      const checked = validateAgainstSchema(value, schema);
+      return checked.ok ? { ok: true, data: value } : checked;
+    }
+    return { ok: false, errors: [parseError ? `trailing JSON object could not be parsed: ${parseError}` : 'output did not contain a balanced trailing JSON object'] };
+  }
+
+  async dispatchWithOutputSchema(step, taskText, targetDir, paths, opts = {}) {
+    const schema = step.outputSchema;
+    // Schema validation owns the retry: generic dispatch retries would make
+    // the promised single schema retry depend on workflow settings. Pool
+    // escalation is orthogonal — it only follows a dispatch that FAILED
+    // (exit/content gate); a schema-invalid answer is a successful dispatch,
+    // so the schema retry count stays exactly one.
+    const first = await this.dispatch(step, this.schemaTaskText(taskText, schema), targetDir, paths, {
+      ...opts,
+      retryAttempts: 0,
+    });
+    if (!first.ok) return { verdict: first, schema: null };
+    let checked = this.readTrailingObject(first.outFile ?? paths.outFile, schema);
+    if (checked.ok) {
+      this.emit('action.output_validated', { actionId: this.actionId(step, opts), keys: Object.keys(checked.data) });
+      return { verdict: first, schema: checked };
+    }
+    const firstSchemaErrors = checked.errors;
+    this.emit('action.output_schema_retry', { actionId: this.actionId(step, opts), errors: checked.errors });
+    const retry = await this.dispatch(step, this.schemaTaskText(taskText, schema, {
+      errors: checked.errors,
+      tail: (() => { try { return readFileSync(first.outFile ?? paths.outFile, 'utf8').slice(-2000); } catch { return ''; } })(),
+    }), targetDir, paths, { ...opts, retryAttempts: 0 });
+    if (retry.ok) checked = this.readTrailingObject(retry.outFile ?? paths.outFile, schema);
+    if (retry.ok && checked.ok) {
+      this.emit('action.output_validated', { actionId: this.actionId(step, opts), keys: Object.keys(checked.data) });
+      return { verdict: retry, schema: checked };
+    }
+    // Report the latest evidence: the retry's schema errors when it ran, the
+    // first attempt's when the retry dispatch itself failed.
+    const errors = retry.ok ? checked.errors : firstSchemaErrors;
+    return {
+      verdict: { ...retry, ok: false, why: `output did not match outputSchema: ${errors[0]}` },
+      schema: { ok: false, errors },
+    };
+  }
+
   async runSingle(step, scope, opts = {}) {
     this.enforceRequiredInputs(step.id);
     const rendered = renderDeep(
@@ -907,14 +980,25 @@ export class WorkflowRuntime {
       outFile: join(this.runDir, `out-${stamp}.md`),
     };
 
-    const verdict = await this.dispatch(step, taskText, targetDir, paths, {
+    const dispatched = step.outputSchema
+      ? await this.dispatchWithOutputSchema(step, taskText, targetDir, paths, {
+        escalate: this.state.settings.escalateOnFail !== false,
+        retryAttempts: opts.retryAttempts,
+        phase: opts.phase,
+      })
+      : { verdict: await this.dispatch(step, taskText, targetDir, paths, {
       escalate: this.state.settings.escalateOnFail !== false,
       retryAttempts: opts.retryAttempts,
       phase: opts.phase,
-    });
+      }) };
+    const verdict = dispatched.verdict;
     delete this.state.activeAgents?.[step.id];
     const finalPaths = { taskFile: verdict.taskFile ?? paths.taskFile, outFile: verdict.outFile ?? paths.outFile };
-    this.recordOutput(step.id, verdict, finalPaths);
+    this.recordOutput(step.id, verdict, finalPaths, step.outputSchema ? {
+      data: dispatched.schema?.data,
+      schemaOk: dispatched.schema?.ok === true,
+      ...(dispatched.schema?.ok === false ? { schemaErrors: dispatched.schema.errors } : {}),
+    } : {});
     if (verdict.ok) this.emit('artifact.published', { actionId: step.id, outFile: finalPaths.outFile });
     return verdict;
   }
@@ -1075,8 +1159,11 @@ export class WorkflowRuntime {
       ok: output?.ok,
       why: output?.why ?? null,
       pool: output?.pool ?? null,
-      outFile: output?.outFile ?? null,
-      verify: output?.verify ?? null,
+       outFile: output?.outFile ?? null,
+       data: output?.data ?? null,
+       schemaOk: output?.schemaOk,
+       schemaErrors: output?.schemaErrors ?? null,
+       verify: output?.verify ?? null,
       total: output?.total,
       succeeded: output?.succeeded,
       failed: output?.failed,
@@ -1130,7 +1217,7 @@ export class WorkflowRuntime {
       executionConstraints: {
         concurrency: Number(this.state.settings?.concurrency ?? 1) || 1,
         readySiblingsRunConcurrently: true,
-        programFeatures: ['itemsFrom', 'repair', 'completion'],
+        programFeatures: ['itemsFrom', 'repair', 'completion', 'outputSchema'],
         plannerConsultedOnlyAtProgramBoundary: true,
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
         actionTimeoutIsExplicitOptIn: step.actionDefaults?.timeoutSec != null || step.timeoutSec != null,
@@ -1184,7 +1271,8 @@ export class WorkflowRuntime {
       'PLANNING DOCTRINE — you are compiling the goal into a PROGRAM, not choosing the next step:',
       '- The runtime executes your whole decision to completion without consulting you: a ready-set scheduler starts every action whose dependsOn have all succeeded, concurrently up to executionConstraints.concurrency, and starts each dependent the moment its own dependencies finish. You are consulted again only at the program boundary, when every action has finished or the graph is blocked. Each consultation is a separate process round trip (typically 1-2 minutes), so anything decidable by data must be encoded in the program, never deferred to a later decision.',
       '- Propose the COMPLETE dependency graph you can see now: discovery, per-item work, per-item verification, and the final whole-system verification, all in ONE decision. A decision carrying a single action when several are obvious wastes a round trip.',
-      '- Unknown item count: never spend a decision to learn how many items there are. Propose a discovery run action whose prompt ends with "RETURN ONLY a JSON array of <items>", plus a fanout with "itemsFrom":"outputs.<discovery-id>.outFile" whose stepTemplate.prompt uses {{item}}. The runtime resolves the list when discovery finishes (with one bounded read-only extraction retry if the output is not a clean array) and fans out immediately.',
+       '- Unknown item count: never spend a decision to learn how many items there are. Propose a discovery run action whose prompt ends with "RETURN ONLY a JSON array of <items>", plus a fanout with "itemsFrom":"outputs.<discovery-id>.outFile" whose stepTemplate.prompt uses {{item}}. The runtime resolves the list when discovery finishes (with one bounded read-only extraction retry if the output is not a clean array) and fans out immediately.',
+       '- Declare outputSchema on any worker whose report another action consumes, or whose deliverable is a claim the runtime should check (for example {"files_written":["src/a.js"],"tests_passed":3}). Structured data is recorded and can feed itemsFrom directly via outputs.<id>.data.<field>.',
       '- Verification failures: give each verify a "repair" policy {"prompt":"<how to fix what the verifier rejects>","maxRounds":1-3}. When the verifier returns ok:false, the runtime runs a fix action carrying the verifier concerns verbatim and re-runs the same verify, inside the program. Only verifies still failing after their rounds come back to you.',
       '- A verify that returned ok:true is accepted. Its concerns are informational (overlaps, wording nits, "non-blocking" notes): do not spend a program round polishing them unless the goal text itself demands it. Only ok:false verifies are work.',
       '- Self-completing programs: when the program you propose ends with verification that would satisfy the goal, add a top-level "completion": {"when":"all-actions-ok","reason":"<what a clean run proves>"}. If every action of the program (repairs included) finishes ok and the completion policy is met, the runtime records the completion itself and does not consult you again; anything failing brings the boundary back to you. Use it on every program whose clean run would be the finished goal.',
@@ -1196,7 +1284,9 @@ export class WorkflowRuntime {
       'Action skeletons (copy the shape exactly; every field shown is required unless marked optional):',
       '  run:    {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}',
       '  fanout: {"id":"per-item-check","type":"fanout","phase":"inspect","items":["alpha","beta"],"stepTemplate":{"prompt":"Inspect {{item}} and report concrete evidence."},"dependsOn":["prior-action"]}',
-      '  fanout (data-driven): {"id":"per-module-fix","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo fix only the module {{item}}; run its focused test; report the diff summary."}}',
+       '  fanout (data-driven): {"id":"per-module-fix","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo fix only the module {{item}}; run its focused test; report the diff summary."}}',
+       '  run (structured): {"id":"discover-data","type":"run","phase":"discover","prompt":"Discover items and report evidence.","outputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}}',
+       '  structured run -> data-driven fanout: [{"id":"discover-data","type":"run","phase":"discover","prompt":"Discover items and report evidence.","outputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}},{"id":"process-items","type":"fanout","phase":"process","itemsFrom":"outputs.discover-data.data.items","stepTemplate":{"prompt":"Process {{item}} and report concrete evidence."},"dependsOn":["discover-data"]}]',
       '  verify: {"id":"independent-check","type":"verify","phase":"verify","prompt":"Independently re-run the tests and report pass/fail with evidence.","dependsOn":["bounded-action"],"repair":{"prompt":"In /abs/repo fix the failing behaviour the verifier reports, editing only the files named in the concerns, then re-run the tests.","maxRounds":1}}',
       'verify semantics: the reviewer receives the artifact of the action named in review, which the runtime infers as outputs.<the single dependsOn>.outFile; put the reviewer INSTRUCTIONS in prompt. A verify with several dependsOn must set review explicitly to "outputs.<actionId>.outFile". review is never instructions or a filesystem path.',
       'Program skeleton (discovery → data-driven fan-out → verify with repair → final whole-suite check, all in ONE decision; the runtime runs it to the end without you):',
@@ -1320,9 +1410,11 @@ export class WorkflowRuntime {
         // either side has no fingerprint (old state.json).
         const byFp = resumedByFp.get(fp);
         const byPos = resumed[i];
-        const prev = (byFp && byFp.verdict?.ok === true)
+        const schemaResumeSafe = !step.stepTemplate?.outputSchema || byFp?.schemaOk === true;
+        const positionalSchemaResumeSafe = !step.stepTemplate?.outputSchema || byPos?.schemaOk === true;
+        const prev = (byFp && byFp.verdict?.ok === true && schemaResumeSafe)
           ? byFp
-          : ((!byFp && byPos?.verdict?.ok === true) ? byPos : null);
+          : ((!byFp && byPos?.verdict?.ok === true && positionalSchemaResumeSafe) ? byPos : null);
 
         if (prev) {
           results[i] = { ...prev, item, fingerprint: fp };
@@ -1362,12 +1454,15 @@ export class WorkflowRuntime {
           ?? readFileSync(String(template.taskFile), 'utf8');
 
         this.emit('item.started', { stepId: step.id, index: i, total: items.length, item });
-        const verdict = await this.dispatch(
-          { ...step, ...template, id: step.id },
-          taskText, targetDir, paths,
-          { item, itemIndex: i, phase: opts.phase, escalate: this.state.settings.escalateOnFail !== false, retryAttempts: opts.retryAttempts },
-        );
-        results[i] = { item, verdict, outFile: verdict.outFile ?? paths.outFile, fingerprint: fp };
+         const itemStep = { ...step, ...template, id: step.id, ...(template.outputSchema ? { outputSchema: template.outputSchema } : {}) };
+         const dispatched = itemStep.outputSchema
+           ? await this.dispatchWithOutputSchema(itemStep, taskText, targetDir, paths,
+             { item, itemIndex: i, phase: opts.phase, escalate: this.state.settings.escalateOnFail !== false, retryAttempts: opts.retryAttempts })
+           : { verdict: await this.dispatch(itemStep, taskText, targetDir, paths,
+             { item, itemIndex: i, phase: opts.phase, escalate: this.state.settings.escalateOnFail !== false, retryAttempts: opts.retryAttempts }) };
+         const verdict = dispatched.verdict;
+         results[i] = { item, verdict, outFile: verdict.outFile ?? paths.outFile, fingerprint: fp,
+           ...(itemStep.outputSchema ? { data: dispatched.schema?.data, schemaOk: dispatched.schema?.ok === true, ...(dispatched.schema?.ok === false ? { schemaErrors: dispatched.schema.errors } : {}) } : {}) };
         if (verdict.ok) {
           this.emit('item.completed', { stepId: step.id, index: i, pool: verdict.pick?.pool, wall: verdict.meta?.wallSec });
         } else {
@@ -1447,7 +1542,7 @@ export class WorkflowRuntime {
     return { outFile, outputText: truncated ? full.slice(0, OUTPUT_TEXT_CAP_BYTES) : full, truncated };
   }
 
-  recordOutput(stepId, verdict, paths) {
+  recordOutput(stepId, verdict, paths, extra = {}) {
     let outputText = null;
     let truncated = false;
     try {
@@ -1469,6 +1564,7 @@ export class WorkflowRuntime {
       wallSec: verdict.meta?.wallSec,
       outputText,
       outputTruncated: truncated || undefined,
+      ...extra,
     };
     this.persist();
   }

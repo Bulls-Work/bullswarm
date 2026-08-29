@@ -8,6 +8,7 @@
 //       typo never burns quota discovering itself mid-run.
 
 import { TEMPLATE_TOKEN_RE, isTemplateRef } from './template.js';
+import { isValidOutputSchema } from './schema.js';
 
 const LANES = ['analyze', 'build', 'chore'];
 const ON_ERROR = ['continue', 'fail', 'skip-phase'];
@@ -154,10 +155,10 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         if (typeof step.itemsFrom === 'string' && step.itemsFrom.includes('.')) {
           const [root, target] = step.itemsFrom.split('.');
           collect(issues, root === 'inputs' || (root === 'outputs' && outputs.has(target)),
-            `${sat}.itemsFrom "${step.itemsFrom}" cannot resolve (use inputs.<name> or outputs.<priorStepId>)`);
+            `${sat}.itemsFrom "${step.itemsFrom}" cannot resolve (use inputs.<name> or outputs.<priorStepId>[.data.<field>])`);
         } else if (typeof step.itemsFrom === 'string') {
           collect(issues, false,
-            `${sat}.itemsFrom "${step.itemsFrom}" must be a dotted path (inputs.<name> or outputs.<priorStepId>)`);
+            `${sat}.itemsFrom "${step.itemsFrom}" must be a dotted path (inputs.<name> or outputs.<priorStepId>[.data.<field>])`);
         }
         collect(issues, step.stepTemplate && typeof step.stepTemplate === 'object',
           `${sat}.stepTemplate is required for fanout steps`);
@@ -168,10 +169,20 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         if (step.items != null) {
           collect(issues, Array.isArray(step.items), `${sat}.items must be an array`);
         }
+        if (step.stepTemplate?.outputSchema !== undefined) {
+          const schema = isValidOutputSchema(step.stepTemplate.outputSchema);
+          collect(issues, schema.ok, `${sat}.stepTemplate.outputSchema is invalid: ${schema.issues.join('; ')}`);
+          if (schema.ok) collect(issues, step.stepTemplate.outputSchema.type === 'object', `${sat}.stepTemplate.outputSchema.type must be "object"`);
+        }
       } else if (step.type === 'run') {
         collect(issues,
           typeof step.taskFile === 'string' || typeof step.prompt === 'string',
           `${sat} needs taskFile or prompt`);
+        if (step.outputSchema !== undefined) {
+          const schema = isValidOutputSchema(step.outputSchema);
+          collect(issues, schema.ok, `${sat}.outputSchema is invalid: ${schema.issues.join('; ')}`);
+          if (schema.ok) collect(issues, step.outputSchema.type === 'object', `${sat}.outputSchema.type must be "object"`);
+        }
       } else if (step.type === 'verify') {
         collect(issues, typeof step.review === 'string' && step.review.length > 0,
           `${sat}.review is required for verify steps (path to a prior outFile, e.g. outputs.<prior>.outFile)`);

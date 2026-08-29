@@ -986,3 +986,156 @@ test('watch: outputExtraction.file reads from a file path declared in field', as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// -------------------------------------------------------------------------
+// Structured output schemas: persisted data, template rendering, and
+// data-driven fanout resolution.
+// -------------------------------------------------------------------------
+
+test('outputSchema data renders string and JSON-stringified object/array fields in a dependent prompt', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const worker = join(dir, 'structured-worker.mjs');
+    writeFileSync(worker, [
+      'import { readFileSync } from "node:fs";',
+      'const task = readFileSync(process.argv[2], "utf8");',
+      'if (task.includes("SCHEMA_PRODUCER")) {',
+      '  process.stdout.write("Produced structured data\\n" + JSON.stringify({ greeting: "hello", details: { count: 2 }, values: ["a", "b"] }));',
+      '} else {',
+      '  process.stdout.write("Dependent prompt received the rendered structured values and completed the check with concrete evidence.");',
+      '}',
+    ].join('\n'));
+    const schema = {
+      type: 'object',
+      properties: {
+        greeting: { type: 'string' },
+        details: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] },
+        values: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['greeting', 'details', 'values'],
+    };
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      pools: echoOnlyPools(dir, worker),
+      inputs: {},
+      onEvent: () => {},
+      doc: {
+        name: 'structured-template', description: 'structured output', inputs: {},
+        settings: { concurrency: 1, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [
+          { id: 'producer', type: 'run', lane: 'chore', prompt: 'SCHEMA_PRODUCER', outputSchema: schema },
+          {
+            id: 'consumer', type: 'run', lane: 'chore',
+            prompt: 'Greeting={{outputs.producer.data.greeting}} Details={{outputs.producer.data.details}} Values={{outputs.producer.data.values}}',
+            dependsOn: ['producer'],
+          },
+        ] }],
+      },
+    });
+    assert.equal(result.state.outputs.producer.ok, true);
+    assert.deepEqual(result.state.outputs.producer.data, {
+      greeting: 'hello', details: { count: 2 }, values: ['a', 'b'],
+    });
+    assert.equal(result.state.outputs.producer.schemaOk, true);
+    const consumerAttempt = result.state.attempts.find((attempt) => attempt.actionId === 'consumer');
+    const prompt = readFileSync(consumerAttempt.taskFile, 'utf8');
+    assert.match(prompt, /Greeting=hello/);
+    assert.match(prompt, /Details=\{"count":2\}/);
+    assert.match(prompt, /Values=\["a","b"\]/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('data-backed fanout uses the recorded array without extraction or retry dispatch', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const worker = join(dir, 'fanout-data-worker.mjs');
+    writeFileSync(worker, [
+      'import { readFileSync } from "node:fs";',
+      'const task = readFileSync(process.argv[2], "utf8");',
+      'if (task.includes("SCHEMA_PRODUCER")) {',
+      '  process.stdout.write(JSON.stringify({ items: ["alpha", "beta", "gamma"] }));',
+      '} else {',
+      '  process.stdout.write("Handled fanout item with concrete evidence, inspected the requested item, completed the bounded check, and recorded the result for downstream review.");',
+      '}',
+    ].join('\n'));
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      pools: echoOnlyPools(dir, worker),
+      inputs: {},
+      onEvent: (event) => events.push(event),
+      doc: {
+        name: 'structured-fanout', description: 'structured fanout', inputs: {},
+        settings: { concurrency: 2, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [
+          {
+            id: 'discover', type: 'run', lane: 'chore', prompt: 'SCHEMA_PRODUCER',
+            outputSchema: {
+              type: 'object',
+              properties: { items: { type: 'array', items: { type: 'string' } } },
+              required: ['items'],
+            },
+          },
+          {
+            id: 'fan', type: 'fanout', lane: 'chore', itemsFrom: 'outputs.discover.data.items',
+            stepTemplate: { prompt: 'Handle {{item}}.' },
+          },
+        ] }],
+      },
+    });
+    assert.equal(result.state.outputs.discover.ok, true);
+    assert.deepEqual(result.state.outputs.discover.data.items, ['alpha', 'beta', 'gamma']);
+    assert.equal(result.state.outputs.fan.ok, true, JSON.stringify(result.state.outputs.fan));
+    assert.equal(result.state.outputs.fan.total, 3);
+    assert.equal(result.state.outputs.fan.succeeded, 3);
+    assert.deepEqual(result.state.outputs.fan.items.map((entry) => entry.item), ['alpha', 'beta', 'gamma']);
+    assert.equal(events.some((event) => event.type === 'action.items_extraction_requested'), false);
+    assert.equal(events.some((event) => event.type === 'action.items_extracted'), false);
+    assert.equal(result.state.actionLedger.some((action) => action.id === 'fan-items'), false);
+    assert.equal(result.state.attempts.length, 4);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateDecisionProposal rejects invalid outputSchema placements and accepts valid run and fanout schemas', async () => {
+  const { validateDecisionProposal, normalizeDecisionProposal } = await import('../src/workflow/decision.js');
+  const base = {
+    schemaVersion: 'bullswarm.workflow.decision.v1',
+    decision: 'needs_more_work',
+    reason: 'bounded structured work',
+  };
+  assert.throws(
+    () => validateDecisionProposal({ ...base, actions: [{
+      id: 'review', type: 'verify', review: 'outputs.prior.outFile', outputSchema: { type: 'object' },
+    }] }, { knownActionIds: ['prior'] }),
+    (err) => err.issues.some((issue) => issue.includes('actions[0].outputSchema is only allowed on run actions')),
+  );
+  assert.throws(
+    () => validateDecisionProposal({ ...base, actions: [{
+      id: 'bad', type: 'run', prompt: 'run', outputSchema: { type: 'object', unknownKeyword: true },
+    }] }),
+    (err) => err.issues.some((issue) => issue.includes('unknownKeyword')),
+  );
+  assert.throws(
+    () => validateDecisionProposal({ ...base, actions: [{
+      id: 'bad-type', type: 'run', prompt: 'run', outputSchema: { type: 'array' },
+    }] }),
+    (err) => err.issues.some((issue) => issue.includes('outputSchema.type must be "object"')),
+  );
+
+  const validRunSchema = { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] };
+  const validFanoutSchema = { type: 'object', properties: { file: { type: 'string' } } };
+  const normalized = normalizeDecisionProposal({ ...base, actions: [
+    { id: 'run-data', type: 'run', prompt: 'run', outputSchema: validRunSchema },
+    {
+      id: 'fan', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: validFanoutSchema },
+    },
+  ] });
+  const accepted = validateDecisionProposal(normalized);
+  assert.deepEqual(accepted.actions[0].outputSchema, validRunSchema);
+  assert.deepEqual(accepted.actions[1].stepTemplate.outputSchema, validFanoutSchema);
+});
