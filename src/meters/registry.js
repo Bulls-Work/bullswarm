@@ -6,7 +6,8 @@ import { MeterCache, paceSnapshot, FRESH_MS, STALE_MS } from './framework.js';
 import { fetchCodexUsage, CodexMeterError } from './codex.js';
 import { fetchGrokUsage, GrokMeterError } from './grok.js';
 import { fetchCommandCodeUsage, CommandCodeMeterError } from './command-code.js';
-import { fetchClaudeUsage, ClaudeMeterError } from './claude.js';
+import { fetchClaudeUsage, fetchClaudeUsageWithCredentials, ClaudeMeterError } from './claude.js';
+import { discoverClaudeAccounts, poolNameForSlug } from '../lib/claude-accounts.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
@@ -19,7 +20,26 @@ const READERS = {
   claude: fetchClaudeUsage,
 };
 
+function claudeReaderFor(pool) {
+  return async () => {
+    const accounts = discoverClaudeAccounts();
+    const slug = pool.startsWith('claude-code:') ? pool.slice('claude-code:'.length) : null;
+    const account = accounts.find((a) => poolNameForSlug(a.slug) === pool)
+      ?? accounts.find((a) => a.slug === slug);
+    if (!account) {
+      throw new ClaudeMeterError(
+        `No Claude Code OAuth token for pool ${pool}. Log in with CLAUDE_CONFIG_DIR pointing at that home.`,
+        'no_token',
+      );
+    }
+    return fetchClaudeUsageWithCredentials(account.creds, pool);
+  };
+}
+
 export function readerFor(pool) {
+  if (pool === 'claude-code' || pool === 'claude' || pool.startsWith('claude-code:')) {
+    return claudeReaderFor(pool);
+  }
   return READERS[pool] ?? null;
 }
 

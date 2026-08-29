@@ -457,6 +457,8 @@ async function wfCapabilities(opts) {
       enabled: p.enabled !== false,
       lanes: p.lanes ?? p.connector?.lanes ?? [],
       capabilities: p.capabilities ?? p.connector?.capabilities ?? [],
+      command: p.connector?.profile?.command ?? p.connector?.spawn?.cmd?.[0] ?? null,
+      configDir: p.connector?.profile?.configDir ?? p.connector?.env?.CLAUDE_CONFIG_DIR ?? null,
       model: (() => {
         const cmd = p.connector?.spawn?.cmd ?? [];
         const i = cmd.indexOf('--model');

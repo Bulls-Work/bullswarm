@@ -92,7 +92,10 @@ test('MCP pools tool returns structured JSON', async () => {
         method: 'tools/call',
         params: { name: 'bullswarm_pools', arguments: {} },
       },
-    ], 30000, { BULLSWARM_HOME: bullswarmHome });
+    ], 30000, {
+      BULLSWARM_HOME: bullswarmHome,
+      BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
+    });
     const call = res.find((r) => r.id === 11);
     const payload = JSON.parse(call.result.content[0].text);
     assert.equal(payload.exitCode, 0);
