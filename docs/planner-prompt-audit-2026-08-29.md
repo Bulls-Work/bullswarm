@@ -184,3 +184,7 @@ assignments high/medium/low, cleared after) — structural pass conditions: test
 `verify-src`; more than one file-disjoint writer; parallelism ≥ 1.5; 0 repairs / corrections / schema retries;
 auto-completed; ≥ 299 tests, existing tests extended only; wall reported with the pool mix.
 
+Outcome: `r2vu9i` (runtime `d14c1fa`) met every structural condition except "0 repairs" (4 rounds, 2 of them verifier
+moving-goalposts → re-verify scoping `9af8fdf`); `bizp4s` (runtime `9af8fdf`) then ran in 25 min 13 s with one planner
+turn (247 s), parallelism 1.77, 3 repair rounds each fixing a real defect, 0 schema retries / corrections, 319/319.
+Details in `docs/experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md`.

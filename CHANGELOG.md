@@ -1,12 +1,20 @@
 # bullswarm changelog
 
-## 0.15.1 — a fenced trailing object is still an answer
+## 0.16.0 — the planner sets the width; a re-verify judges the repair
 
 - A re-verify after a repair round now receives the concerns it raised and the
   repair's report, and may return ok:false only for an unresolved listed
   concern or a regression; anything newly noticed is informational. Earned on
   `r2vu9i`: `verify-src` round 2 rejected on two concerns round 1 never raised;
   `verify-tests-runtime` round 2 rejected the very edit its round 1 demanded.
+  Live-proven on `bizp4s`: the one re-verify rejection was an `ENOENT`
+  regression in the acceptance checks, and its verdict opens "the two
+  original concerns are repaired".
+- Goal-4 rerun on this release (`bizp4s`, runtime `9af8fdf`, workers on
+  `relay/gpt-5.6-luna`): **25 min 13 s** (attempt 3: 44 min; 0.15.0: 72 min;
+  audited contract alone: 37 min), one planner turn (247 s, 16 % of wall),
+  parallelism 1.77, 3 repair rounds each fixing a real defect, 0 schema
+  retries, 0 corrections, auto-completed, 319/319, existing tests +174/−0.
 - Goal-4 rerun on the audited contract (`r2vu9i`): 36 min 58 s (attempt 3:
   44 min; 0.15.0: 72 min), 5 parallel writers, parallelism 1.55, tests depend
   on the implementation run rather than its verify, 0 schema retries, 0

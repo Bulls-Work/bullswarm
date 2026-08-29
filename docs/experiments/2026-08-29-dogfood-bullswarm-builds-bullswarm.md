@@ -263,3 +263,47 @@ become informational under it.
 Speed accounting vs `ydpjts`: worker pool (gpt-5.6-luna vs sonnet-5) and width together took the critical path from
 72 to ~27 min of productive work; the remaining ~10 min is the verifier-behaviour waste above.
 
+## Goal-4 rerun with the re-verify fix — `bizp4s` (wf-mtehhbwd-7db3de), 14:36:26 → 15:01:39 Z — **PASS, 25 min 13 s**
+
+Runtime `9af8fdf` (audited contract + runner lane fix + re-verify scoping); workers pinned to
+`opencode2`/`relay/gpt-5.6-luna` via `strategy assign high|medium|low` (cleared after, assignments `{}`); orchestrator
+`claude-code`/`claude-opus-5`; fresh fixture `g4-bs-v4` = a0f0965 (299/299, cloned clean from the v3 fixture commit).
+
+| metric | attempt 3 (0.13.2) | `ydpjts` (0.15.0) | `r2vu9i` (audited contract) | **`bizp4s` (+ re-verify fix)** |
+| --- | ---: | ---: | ---: | ---: |
+| wall | 44 min 17 s | 72 min 14 s | 36 min 58 s | **25 min 13 s** (1 513 s) |
+| planner turns / plannerSec | 2 / 1 045 s (39 %) | 2 / 755 s (17 %) | 2 / 648 s (29 %) | **1 / 247 s (16 %)** |
+| dispatches | 28 | 13 | 26 | 23 (22 gpt-5.6-luna + 1 opus planner) |
+| max concurrent / parallelism | 5 / 1.5 | 2 / 1.05 | 4 / 1.55 | **4 / 1.77** |
+| writers in parallel after planning | 2 (+3) | 2 | 5 | 4 (impl-src ∥ 3 docs), then 2 test writers ∥ verify-src the moment impl-src landed |
+| repairs (rounds / repaired ok / re-verify rejected) | 6 / 2 / 4 | 0 | 4 / 2 / 2 | 3 / 2 / 1 — every rejection a real defect |
+| schema retries / corrections / verdict re-asks | — / 0 / — | 1 / 0 / 0 | 0 / 0 / 0 | **0 / 0 / 0** |
+| tests after | 318 | 326 | 314/314 | **319/319** (299 + 20); existing tests +174 / −0; no commit; version untouched |
+
+Program (one decision, 15 actions + completion): `impl-src`(build/high) ∥ `doc-changelog`(chore/low) ∥
+`doc-skill`(chore/low) ∥ `doc-mechanics`(chore/medium), each doc with its own analyze/low verify; `test-schema`
+(build/medium), `test-runtime`(build/high) and `verify-src`(analyze/high) all `dependsOn: ["impl-src"]`; `verify-suite`
+(analyze/low) on the six unit verifies; `report`(chore/low, no schema) → `verify-report`(analyze/medium);
+`completion: all-actions-ok`. Every planner-set effort tier reached dispatch (`configured <tier> assignment`).
+`decision.auto_completed` — the planner was consulted exactly once.
+
+The three repair rounds, and why none is verifier waste:
+- `verify-src` round 1 (ok:false): `validateWorkflow` did not check `stepTemplate.outputSchema` and the runtime ignored it
+  during fan-out — the fan-out half of the goal was unimplemented. Repair 197 s.
+- `verify-src` re-verify round 1 (ok:false, `action.reverify_rejected`): the repair's schema-retry path handed dispatch a
+  file name that dispatch re-suffixed `-attempt-2`, so the runtime read a nonexistent file (`ENOENT`; 3 focused tests
+  failing). A regression in the acceptance checks — exactly the rejection the new scoping still allows. The task text
+  carried `RE-VERIFY round 1 of 2 … Concerns you raised (verbatim):` with round 1's concerns, and the verdict's summary
+  opens "The two original fan-out concerns are repaired" — the verifier judged the repair, as instructed. Repair 177 s;
+  round 2 re-verify ok (52/52 focused).
+- `verify-test-schema` round 1 (ok:false): no invalid-value case per supported keyword. Repair 63 s, re-verify ok.
+- `verify-test-runtime` accepted first time: the goal's item-5 assertion was satisfied without touching an existing test
+  (+174 / −0), so the "append only" tension of `r2vu9i` never arose.
+
+Pass conditions (set before `r2vu9i`): tests depend on `impl-src` ✓; > 1 file-disjoint writer ✓ (4, then 2 more);
+parallelism ≥ 1.5 ✓ (1.77); 0 corrections ✓; 0 schema retries ✓; auto-completed ✓; ≥ 299 tests, existing tests only
+extended ✓. "0 repairs" ✗ as a literal count (3), but the condition's intent — no repair round that a verifier caused —
+is met: each round fixed a defect the deliverable needed fixed. Prediction before launch was "the two moving-goalpost
+rounds and the 10-min recovery turn vanish, wall ≈ 30 min"; observed 25 min 13 s with one planner turn.
+
+Cost: 22 of 23 dispatches on the unmetered opencode2 seat; Claude quota spent on one 247 s planner turn.
