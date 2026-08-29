@@ -1,5 +1,17 @@
 # bullswarm changelog
 
+## Unreleased
+
+- Rule 7: a verify checks the goal's own acceptance criteria and never adds a
+  process rule the goal does not state (append-only, existing tests
+  untouched); when the implementation changes what an existing assertion
+  pins, a worker must own updating it. Earned three times on goal 4 (attempt
+  3, `r2vu9i`, `euh622`): the planner wrote "EXTEND BY APPENDING only" into
+  the test worker and its verify while the goal said "do NOT modify existing
+  tests except to extend them" and item 5 forced `programFeatures` to grow,
+  so the assertion at `workflow-adaptive.test.js:206` had no owner, the
+  re-verify rejected the mandated extension, and a planner turn recovered.
+
 ## 0.16.0 — the planner sets the width; a re-verify judges the repair
 
 - A re-verify after a repair round now receives the concerns it raised and the
