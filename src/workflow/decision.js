@@ -181,6 +181,9 @@ export function validateDecisionProposal(proposal, {
       action.requiresCapabilities.some((capability) => typeof capability !== 'string' || !ID_RE.test(capability)))) {
       issues.push(`${at}.requiresCapabilities must contain kebab-case names`);
     }
+    if (action.lane != null && !['analyze', 'build', 'chore'].includes(action.lane)) {
+      issues.push(`${at}.lane must be analyze|build|chore`);
+    }
     if (action.effort != null && !['high', 'medium', 'low'].includes(action.effort)) {
       issues.push(`${at}.effort must be high|medium|low`);
     }

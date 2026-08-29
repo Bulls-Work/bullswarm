@@ -249,7 +249,7 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.match(firstPlannerTask, /"remainingDispatches": 4/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
-    assert.match(firstPlannerTask, /Treat agent-count, workflow-duration, and expansion-round budgets as advisory planning targets/);
+    assert.match(firstPlannerTask, /Budgets \(agents, duration, expansion rounds\) are advisory targets/);
     assert.match(firstPlannerTask, /Converge as targets approach/);
 
     const shown = cli(f, ['workflow', 'tui', '--json', report.shortId]);

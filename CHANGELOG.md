@@ -2,6 +2,20 @@
 
 ## 0.15.1 — a fenced trailing object is still an answer
 
+- Planner contract audited against Claude Code's workflow-authoring reference
+  (three-lens review + adversarial verification, run on the real goal-4 task
+  text) and rewritten within the same caps (rules 3,999 / examples 2,938
+  chars). New in substance: a verdict is never data (depend on the run that
+  wrote your files, not on its verify); split to the width the tree allows
+  (one worker for N independent files is N chains in series); outputSchema
+  only where a later action reads the object, never on prose; a repair edits
+  files and cannot rewrite the answer under review; workers run their unit's
+  focused command, never the full suite; the planner sets `lane` and `effort`
+  per action. The complete-program example is now valid JSON and shows tests
+  running beside the src verify. `docs/planner-prompt-audit-2026-08-29.md` §6.
+- Planner-proposed `lane`/`effort`/`requiresCapabilities` now survive the
+  gate defaults (`runner.js` spread order let `lane: build` overwrite every
+  proposal); `lane` is validated like `effort`.
 - `outputSchema` output reading tolerates a closing markdown fence after the
   trailing JSON object, and the schema instruction says the object is an
   INSTANCE whose keys are the `properties` names (never the schema itself).

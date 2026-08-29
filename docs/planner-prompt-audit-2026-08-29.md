@@ -155,3 +155,32 @@ Deliverables:
   context and the separate run-state/TUI attempt view, but does not document a
   renamed/dropped planner-context field shape such as the old attempt records
   or an old `failures` representation.
+
+## 6. Second audit — after the goal-4 rerun on 0.15.0 (`ydpjts`)
+
+Method: a Claude Code dynamic workflow (12 agents, 16 min) reviewed the COMPLETE turn-1 task text of run `ydpjts`
+(19,577 chars; 6,199-char prefix) and the program the planner wrote, from three lenses — width/critical path,
+worker-prompt authoring, clarity vs Claude's own workflow-authoring reference — and adversarially verified every new
+finding (refute-framed, source-checked). 3 known + 6 new findings survived; 2 were refuted (one because `lane` was
+dead text — see the runtime defect below — one for deleting a must-keep rule).
+
+What the planner received said nothing wrong; it said too little in three places, and the example showed a linear
+program:
+
+| finding | evidence on `ydpjts` | contract change |
+| --- | --- | --- |
+| a verify's verdict was treated as a dependency | `tests` dependsOn `verify-src`; 330 s idle | rule 3: "a worker depends on the run that wrote its input files, never on that run's verify (a verdict is not data)" |
+| width framed only as "known N items" | one `tests` worker, 951 s, where three file-disjoint writers were allowed | rule 4: "each file-disjoint unit ... one worker for N independent files is N chains in series" |
+| outputSchema invited on a prose report | `report` schema → stray key, then fenced tail → retry + planner turn (≈ 685 s) | rule 6: schema only where a later action reads the object; prose gets none |
+| repair cannot rewrite an answer under review (new) | `verify-report` repair prompt asked the worker to "restate the report" — unreadable by design (`repairAndReverify` re-reads the original outFile) | rule 7: "the repair edits files and cannot rewrite the answer under review, so reject only what a file edit can fix" |
+| workers demanded `npm test` as acceptance (new) | `tests` prompt: "No other worker is editing the tree while you run" | shared-tree line: unit's focused command, never the full suite |
+| no guidance on `effort`/`lane` (new) | every action ran at build/medium | rule 10: planner sets lane and effort; they pick the model tier |
+| example program was linear and not valid JSON (new) | — | example rewritten: `{"actions":[…],"completion":…}`, tests depend on fix and run beside verify-fix, lane/effort shown |
+| runtime: planner `lane` silently overwritten (new) | `runner.js` merged `{...action, ...actionDefaults}` so `lane: build` won | fixed: action overrides gate defaults; addDir stays runtime-owned; `lane` validated |
+
+Sizes after: rules **3,999** (cap 4,000), examples **2,938** (cap 3,000). Every rule still stated once with its reason.
+Acceptance: goal-4 rerun on the new contract with workers pinned to `opencode2`/`relay/gpt-5.6-luna` (strategy
+assignments high/medium/low, cleared after) — structural pass conditions: tests depend on `impl-src` not
+`verify-src`; more than one file-disjoint writer; parallelism ≥ 1.5; 0 repairs / corrections / schema retries;
+auto-completed; ≥ 299 tests, existing tests extended only; wall reported with the pool mix.
+

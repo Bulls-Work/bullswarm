@@ -221,11 +221,11 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     const [task] = plannerTasks(result.runDir);
     assert.match(task, /"type":"run","phase":"implement","prompt"/);
     assert.match(task, /"type":"fanout","phase":"fix","items":\["alpha"\]/);
-    assert.match(task, /"type":"verify","phase":"verify","prompt":/);
-    assert.match(task, /"itemsFrom":"outputs\.discover\.outFile"/);
+    assert.match(task, /"type":"verify","phase":"verify","lane":"analyze","prompt":/);
+    assert.match(task, /"itemsFrom":"outputs\.discover\.data\.items"/);
     assert.match(task, /"repair":\{"prompt":/);
     assert.match(task, /"completion":\{"when":"all-actions-ok"/);
-    assert.match(task, /"outputSchema":\{"type":"object"\}/);
+    assert.match(task, /"outputSchema":\{"type":"object","properties"/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /fanout has stepTemplate and either items or itemsFrom/);
     assert.match(task, /\{\{item\}\}/);
@@ -376,7 +376,7 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.ok(plannerTasks.every((task) => task.includes('"verificationDispatchReserve": 0')));
     assert.ok(plannerTasks.every((task) => task.includes('Every action MUST include a forward-only kebab-case "phase"')));
     assert.ok(plannerTasks.every((task) => task.includes('"closedPhases"')));
-    assert.ok(plannerTasks.every((task) => task.includes('Treat agent-count, workflow-duration, and expansion-round budgets as advisory planning targets')));
+    assert.ok(plannerTasks.every((task) => task.includes('Budgets (agents, duration, expansion rounds) are advisory targets')));
   } finally { f.cleanup(); }
 });
 
@@ -515,11 +515,11 @@ test('planner context applies full excerpt rules and keeps failure reasons with 
 test('exported planner prompt sections contain the bounded contract and literal item template', () => {
   assert.ok(PLANNER_RULES_SECTION.length <= 4000);
   assert.ok(PLANNER_EXAMPLES_SECTION.length <= 3000);
-  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool']) {
+  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
-  assert.match(PLANNER_EXAMPLES_SECTION, /Complete program:/);
+  assert.match(PLANNER_EXAMPLES_SECTION, /Complete program \(tests depend on fix, not verify-fix/);
   assert.match(PLANNER_EXAMPLES_SECTION, /\{\{item\}\}/);
 });
 
