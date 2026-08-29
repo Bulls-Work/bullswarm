@@ -169,3 +169,56 @@ report → verify-final, `completion: all-actions-ok`. Wall is within noise of b
 model time: probe 4.7 min, guards 5.1 min, verify-guards 4.7 min); the planner side is faster and 5× smaller.
 Zero observation crashes across four runs of TUI/watch/runs/result/static-tui polling and a 20 s stress loop
 (1,681 paints against the live writer, 0 torn, 0 throws).
+
+## Goal-4 rerun on 0.15.0 — `ydpjts` (wf-mte8azjz-bcb079), 10:19:31 → 11:31:48 Z — reliability PASS, speed FAIL
+
+Same goal text (`goal4.txt`), same flags (`--orchestrator claude-code --concurrency 8 --max-agents 40
+--max-expansion-rounds 8`), fresh fixture `g4-bs-v2` = `git archive a0f0965` (v0.13.2, 299/299, no `schema.js`) on
+branch `feat/output-schema`, default `~/.bullswarm` home, runtime `bullswarm-rt` @ 728231d (v0.15.0).
+
+| metric | attempt 3 (0.13.2) | **rerun (0.15.0)** |
+| --- | ---: | ---: |
+| outcome | auto-completed after planner turn 2 | **auto-completed** after a 2-action recovery program |
+| wall | 44 min 17 s | **72 min 14 s** (4 334 s) |
+| planner turns / plannerSec | 2 / 1 045 s (39 %; turn 1 = 634 s) | **2 / 755 s (17 %)** — 476 s + 279 s; completion recorded by the runtime |
+| planner context (turn 1 / turn 2) | — | 12.9 k / 41.5 k chars (`decision.context_built`) |
+| dispatches | 28 (26 opencode2 + 2 planner) | **13** — 2 planner (opus-5) + 11 workers (sonnet-5), all on `claude-code` |
+| max concurrent / parallelism | 5 / 1.5 | **2 / 1.05** |
+| repairs | 6 (4 unrepairable: process-criteria rejections) | **0** — every verify ok:true first round |
+| corrections / rejections / verdict re-asks | 0 / 0 / — | 0 / 0 / 0 |
+| schema retries | — | 1 (`report`; both attempts failed, see below) |
+| tests after | 318/318 (299 + 19) | **326/326** (299 + 27); existing test files extended only (+281 / −0); no commit; version untouched |
+
+Program (turn 1, 476 s): `impl-src` ∥ `docs` → `verify-src`(repair 2) / `verify-docs`(repair 1) → `tests` →
+`verify-tests`(repair 2) → `report`(outputSchema) → `verify-report`(repair 1, `review` defaulted), `completion`
+attached. Three verifies omitted `review` and were accepted (0.14.1 defaulting) — the same omission cost a 5-minute
+correction turn on proof runs 1 and 3. Rule 8 honoured (last worker covered by a verify).
+
+Verifier behaviour is what 0.14.x was meant to produce: `verify-src` passed with a disclosed deviation
+(`programFeatures` literal not extended because `tests/workflow-adaptive.test.js:206` regex-locks it and the goal
+forbids modifying existing assertions) instead of rejecting on a process criterion; `verify-tests` flagged the filler
+prose workaround as a concern, not a failure.
+
+**The one failure and its cost (≈ 11.4 min):** `report` carried an `outputSchema`. Attempt 1 ended with an object
+carrying a stray `"type"` key copied from the schema (`additionalProperties:false` → `type is not allowed`, correct).
+The single retry ended `}\n\`\`\`` — a closing markdown fence — and `readTrailingObject` refused it as "did not end
+with a JSON object" → `report` ok:false → `verify-report` blocked → `decision.completion_predicate_unmet` → planner
+turn 2 (279 s), which diagnosed it correctly and re-delivered the report without a schema. Fixed in `393a914`:
+trailing fences are stripped before the object is read, and the instruction says the object is an INSTANCE whose keys
+are the `properties` names. Unit-tested; not yet exercised live.
+
+**Where the 72 minutes went — the run was serial (parallelism 1.05):** scout 405 s → planner 476 s → `impl-src`
+**1 231 s** → `verify-src` 330 s → `tests` **951 s** → `verify-tests` 116 s → `report` 141 + 123 s → planner 279 s →
+`final-summary` 174 s → `verify-final-summary` 109 s. Two causes, neither a crash:
+1. Routing put every worker on `claude-code`/`claude-sonnet-5` because it was the most-behind capable pool
+   (pace +6.9 vs opencode2 0, `claude-code:wati` −14.8). The same `impl-src` took 398 s on `opencode2`
+   (`relay/gpt-5.6-luna`) in attempt 3; the read-only scout took 405 s vs 92 s. Worker model speed is not part of the
+   surplus formula.
+2. The planner proposed ONE `tests` worker after `verify-src` instead of three file-disjoint test writers in parallel
+   with the src verify (attempt 3's shape). Reliability-first, width-second: correct under the goal's single-implementer
+   constraint, but it lengthened the critical path by ~16 min.
+
+Pass conditions set before the run: ≤ 1 repair round ✓ (0); 0 process-criteria rejections ✓; auto-completed ✓;
+≤ 35 min ✗ (72 min). Reliability at 12-action complexity is now proven on ≥ 0.14.1; speed is worker-bound and
+routing-bound.
+
