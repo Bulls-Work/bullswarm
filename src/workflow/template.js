@@ -32,25 +32,35 @@ export function isTemplateRef(ref) {
  * {{runId}}, {{wfDir}}. Non-string values are JSON-stringified. Double-brace
  * text that is not a ref (see isTemplateRef) is returned untouched.
  */
-export function renderTemplate(str, scope) {
+export function renderTemplate(str, scope, opts = {}) {
   if (typeof str !== 'string') return str;
   return str.replace(TEMPLATE_TOKEN_RE, (match, ref) => {
     if (!isTemplateRef(ref)) return match;
     const v = getPath(scope, ref.trim());
     if (v === undefined) {
-      throw new Error(`template ref "{{${ref.trim()}}}" unresolved at render time`);
+      // A grammar-valid ref with nothing behind it. Planner-authored prompts
+      // legitimately quote refs as text (a goal *about* templates does), and a
+      // worker can usually still act on the literal — so this is reported,
+      // never fatal. Callers that want the old hard failure pass strict:true.
+      // (Observed 2026-08-29: a goal quoting `{{outputs.x.data.field}}` failed
+      // the whole run at validation with "nothing ran".)
+      if (opts.strict === true) {
+        throw new Error(`template ref "{{${ref.trim()}}}" unresolved at render time`);
+      }
+      if (typeof opts.onUnresolved === 'function') opts.onUnresolved(ref.trim());
+      return match;
     }
     return typeof v === 'string' ? v : JSON.stringify(v);
   });
 }
 
 /** Deep-render every string in a step-like object. */
-export function renderDeep(obj, scope) {
-  if (typeof obj === 'string') return renderTemplate(obj, scope);
-  if (Array.isArray(obj)) return obj.map((v) => renderDeep(v, scope));
+export function renderDeep(obj, scope, opts = {}) {
+  if (typeof obj === 'string') return renderTemplate(obj, scope, opts);
+  if (Array.isArray(obj)) return obj.map((v) => renderDeep(v, scope, opts));
   if (obj && typeof obj === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(obj)) out[k] = renderDeep(v, scope);
+    for (const [k, v] of Object.entries(obj)) out[k] = renderDeep(v, scope, opts);
     return out;
   }
   return obj;

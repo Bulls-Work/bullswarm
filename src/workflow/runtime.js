@@ -878,6 +878,13 @@ export class WorkflowRuntime {
     }
   }
 
+  /** renderDeep options that turn an unresolved ref into a visible event. */
+  renderOpts(actionId) {
+    return {
+      onUnresolved: (ref) => this.emit('template.unresolved_ref', { actionId, ref }),
+    };
+  }
+
   async runSingle(step, scope, opts = {}) {
     this.enforceRequiredInputs(step.id);
     const rendered = renderDeep(
@@ -888,6 +895,7 @@ export class WorkflowRuntime {
         taskFile: step.taskFile,
       },
       scope,
+      this.renderOpts(step.id),
     );
     const taskText = rendered.prompt
       ?? readFileSync(rendered.taskFile, 'utf8');
@@ -965,7 +973,7 @@ export class WorkflowRuntime {
       lane: step.lane ?? 'analyze',
       addDir: step.addDir,
       prompt: reviewInstructions,
-    }, scope);
+    }, scope, this.renderOpts(step.id));
     // A custom prompt changes the review instructions, never the review
     // input. Always append the resolved artifact so the skeptic receives
     // the thing it is meant to judge.
@@ -1160,7 +1168,7 @@ export class WorkflowRuntime {
     const rendered = renderDeep({
       prompt: step.prompt ?? 'Judge whether the workflow has enough evidence to finish.',
       addDir: step.addDir,
-    }, scope);
+    }, scope, this.renderOpts(step.id));
     const taskText = [
       rendered.prompt,
       '',
@@ -1328,7 +1336,7 @@ export class WorkflowRuntime {
         const itemScope = { ...scope, item };
         let template;
         try {
-          template = renderDeep(step.stepTemplate, itemScope);
+          template = renderDeep(step.stepTemplate, itemScope, this.renderOpts(`${step.id}[${i}]`));
         } catch (err) {
           const itemAction = this.ensureAction(step, { ...opts, item, itemIndex: i });
           itemAction.status = 'failed_terminal';
