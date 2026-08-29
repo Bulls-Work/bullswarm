@@ -246,7 +246,12 @@ bullswarm workflow steer <shortId> --message "guidance for the next planner chec
 `capabilities` reports available pools, supported lanes, configured models,
 meter readings, burst gates, quarantine state, retry limits, and the important
 routing rule. Automatic routing chooses the highest time-adjusted quota surplus
-among capable pools. For strategic model selection, first run:
+among capable pools. An unmetered pool reads as exactly on pace (surplus 0), so
+whenever every metered pool is burning ahead of its window (negative
+surplus) the unmetered pool wins ALL work — by design: quota protection
+outranks provider diversity (observed 2026-08-29: 26 of 28 dispatches on
+one unmetered pool). If that concentration is unwanted, meter the pool or
+exclude its models via `strategy exclude-model`. For strategic model selection, first run:
 
 ```bash
 bullswarm strategy refresh
@@ -405,6 +410,17 @@ Resume by shortId:
 ```bash
 bullswarm workflow draft run my-audit --resume <shortId> --json --quiet
 ```
+
+## Writing goals that converge
+
+State outcomes, not measurements. A goal that fixes character counts, exact
+event names, or cosmetic layout turns every verifier into a nit machine:
+observed 2026-08-29 (run `ejk9w2`), a spec with hard numeric limits cost a
+12-minute verify/repair loop enforcing them against an intermediate state.
+Say what must be true at the end (`npm test` passes, the planner receives one
+contract stated once, context stays bounded) and let workers pick the numbers;
+put any hard limit in ONE final acceptance check, not on every intermediate
+verify.
 
 ## Writing prompts that the verify gate will accept
 
