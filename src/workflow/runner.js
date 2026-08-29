@@ -1021,9 +1021,15 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     const actionDefaults = { ...(gate.addDir != null ? { addDir: gate.addDir } : {}), ...(gate.actionDefaults ?? {}) };
     proposal = {
       ...proposal,
+      // The planner's lane/effort/requiresCapabilities win over the gate's
+      // defaults (contract rule 10 makes lane and effort the planner's);
+      // addDir stays runtime-owned and is spread last so a proposed null
+      // cannot clobber the target. Earned: every goal-4 action ran as lane
+      // "build" because this merge let the defaults overwrite the proposal.
       actions: proposal.actions.map((action) => ({
-        ...action,
         ...actionDefaults,
+        ...action,
+        ...(actionDefaults.addDir != null ? { addDir: actionDefaults.addDir } : {}),
         ...(action.type === 'fanout' && actionDefaults.addDir != null
           ? { stepTemplate: { ...action.stepTemplate, addDir: actionDefaults.addDir } }
           : {}),
