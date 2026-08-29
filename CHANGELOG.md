@@ -1,5 +1,18 @@
 # bullswarm changelog
 
+## 0.15.1 — a fenced trailing object is still an answer
+
+- `outputSchema` output reading tolerates a closing markdown fence after the
+  trailing JSON object, and the schema instruction says the object is an
+  INSTANCE whose keys are the `properties` names (never the schema itself).
+  Earned on the goal-4 rerun `ydpjts` (0.15.0): a stray `"type"` key and then
+  a `}\n```` tail spent the single schema retry and a 279 s planner turn on
+  an otherwise complete report (≈ 11 min).
+- Goal-4 rerun recorded in `docs/experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md`:
+  0 repairs (attempt 3: 6), planner 17 % of wall (39 %), 326/326 — but 72 min
+  vs 44 min because every worker landed on the slowest most-behind pool and
+  the program ran serially (parallelism 1.05).
+
 ## 0.15.0 — extra Claude Code logins as separate pools
 
 - Claude Code extra logins (`~/.claude-<slug>` / `$CLAUDE_CONFIG_DIR`) become
