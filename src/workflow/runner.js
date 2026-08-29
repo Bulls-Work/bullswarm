@@ -5,7 +5,9 @@
 //   settings.stopOnPhaseFailure: abort after a phase with any failure
 // Resume: steps whose recorded verdict is ok:true are skipped (R2).
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeJsonAtomic } from './fsjson.js';
+import { readSteering } from './steering.js';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { validateWorkflow } from './validate.js';
@@ -91,7 +93,7 @@ export async function runWorkflow(opts) {
     // A generated goal workflow must be restartable without the initiating
     // process or an external draft file. The exact executable definition is
     // therefore a first-class run artifact.
-    writeFileSync(join(runDir, 'workflow.json'), `${JSON.stringify(doc, null, 2)}\n`);
+    writeJsonAtomic(join(runDir, 'workflow.json'), doc);
   }
 
   let state;
@@ -142,7 +144,7 @@ export async function runWorkflow(opts) {
     // Commit cleared terminal/control markers before WorkflowRuntime begins
     // merging dashboard-side state. Otherwise the first resume event can
     // re-import the stale cancelRequested marker from the interrupted run.
-    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
+    writeJsonAtomic(join(runDir, 'state.json'), state);
   } else {
     if (resuming) {
       throw new Error(`cannot resume: no state.json for run ${runId}`);
@@ -221,7 +223,7 @@ export async function runWorkflow(opts) {
     state.orchestration = doc.orchestration
       ? { ...(state.orchestration ?? {}), ...doc.orchestration }
       : state.orchestration;
-    writeFileSync(join(runDir, 'workflow.json'), `${JSON.stringify(doc, null, 2)}\n`);
+    writeJsonAtomic(join(runDir, 'workflow.json'), doc);
   }
   if (opts.inputs && Object.keys(opts.inputs).length) {
     state.inputs = { ...state.inputs, ...opts.inputs };
@@ -447,6 +449,20 @@ export async function runWorkflow(opts) {
     state.recovery = { resumable: true, signal: interruptionSignal, interruptedAt: finishedAt };
   }
   if (abortReason && !interrupted) state.abortReason = abortReason;
+  // Steering queued after the last planner gate must end truthfully: on a
+  // real terminal transition (not interrupted — a resume still has gates
+  // ahead — and not waiting for approval), mark undelivered entries expired.
+  if (!waitingForApproval && !interrupted) {
+    const undelivered = readSteering(runDir).filter((entry) =>
+      !(state.steering ?? []).some((known) => known.id === entry.id));
+    if (undelivered.length) {
+      state.steering = [
+        ...(state.steering ?? []),
+        ...undelivered.map((entry) => ({ ...entry, status: 'expired_undelivered', expiredAt: finishedAt })),
+      ];
+      runtime.emit('steering.expired', { steeringIds: undelivered.map((entry) => entry.id) });
+    }
+  }
   runtime.persist();
 
   const preliminaryReport = buildReport(state, doc, runDir);
@@ -456,7 +472,7 @@ export async function runWorkflow(opts) {
         : state.status === 'blocked' ? 'run.blocked' : 'run.completed';
   runtime.emit(terminalEvent, { runId, status: state.status, report: preliminaryReport.summary, outcome: state.outcome ?? null });
   const report = buildReport(state, doc, runDir);
-  writeFileSync(join(runDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  writeJsonAtomic(join(runDir, 'report.json'), report);
   opts.onEvent?.({ type: 'workflow.completed', runId, status: state.status, report: report.summary });
 
   return { runId, runDir, state, report };
@@ -1077,7 +1093,13 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         .map((entry) => entry.id);
       const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
       const gaps = failing.length ? [] : completionEvidenceGaps(dynamicActions, state.orchestration?.completionPolicy, state.outputs);
-      if (!failing.length && !gaps.length) {
+      // Pending operator steering blocks self-completion: the documented
+      // contract is delivery at the next planner gate, so a clean program
+      // returns to the planner (which delivers the steer) instead of
+      // silently discarding it (defect observed on wf-mtds7tzx, 2026-08-29).
+      const pendingSteering = (failing.length || gaps.length) ? [] : readSteering(runtime.runDir).filter((entry) =>
+        !(state.steering ?? []).some((known) => known.id === entry.id));
+      if (!failing.length && !gaps.length && !pendingSteering.length) {
         const verifyIds = programActions.filter((entry) => entry.kind === 'verify').map((entry) => entry.id);
         const reason = proposal.completion.reason?.trim()
           || `Program completed: all ${programActions.length} actions finished ok, verified by ${verifyIds.join(', ')}.`;
@@ -1114,9 +1136,18 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         runtime.persist();
         return { ok: true, why: reason, complete: true, decision: { decision: 'complete', reason, actions: [], completion: proposal.completion } };
       }
-      runtime.emit('decision.completion_predicate_unmet', {
-        gateId: gate.id, programSequence: decision.sequence, failing, gaps,
-      });
+      if (pendingSteering.length) {
+        runtime.emit('decision.completion_deferred', {
+          gateId: gate.id,
+          programSequence: decision.sequence,
+          reason: 'operator steering pending',
+          steeringIds: pendingSteering.map((entry) => entry.id),
+        });
+      } else {
+        runtime.emit('decision.completion_predicate_unmet', {
+          gateId: gate.id, programSequence: decision.sequence, failing, gaps,
+        });
+      }
     }
     // Loop intentionally returns to observation and invokes the planner again.
   }
