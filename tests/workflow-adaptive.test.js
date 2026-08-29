@@ -850,10 +850,21 @@ test('verify review instructions are recovered into prompt and bad review paths 
     id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'], review: 'Run the whole suite and report.',
   }] }), { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }),
   (err) => err instanceof DecisionValidationError && err.issues.some((issue) => /review must be a dotted artifact path/.test(issue)));
-  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal({ ...base, actions: [{
-    id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'],
-  }] }), { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }),
-  (err) => err instanceof DecisionValidationError && err.issues.some((issue) => /review is required: a verify with one dependsOn/.test(issue)));
+  // A multi-dependency verify without review is not rejected: it reviews the
+  // most downstream dependency's artifact (the planner's obvious intent).
+  const multi = normalizeDecisionProposal({ ...base, actions: [{
+    id: 'verify-all', type: 'verify', dependsOn: ['fix-a', 'fix-b'], prompt: 'Run the whole suite.',
+  }] });
+  assert.equal(multi.actions[0].review, 'outputs.fix-b.outFile');
+  assert.equal(multi.actions[0].reviewDefaultedFrom, 'last-dependency');
+  assert.doesNotThrow(() => validateDecisionProposal(multi, { knownActionIds: ['fix-a', 'fix-b'], currentActionCount: 2 }));
+  // A zero-dependency verify is a repository audit with no artifact to review.
+  const audit = normalizeDecisionProposal({ ...base, actions: [{
+    id: 'audit-unaffected', type: 'verify', phase: 'audit', prompt: 'Probe every export of the untouched modules.',
+  }] });
+  assert.equal(audit.actions[0].review, undefined);
+  assert.equal(audit.actions[0].reviewScope, 'repository');
+  assert.doesNotThrow(() => validateDecisionProposal(audit, { knownActionIds: ['initial'], currentActionCount: 1 }));
   assert.throws(() => validateDecisionProposal({ ...base, actions: [{
     id: 'verify-all', type: 'verify', dependsOn: ['fix-a'], review: 'outputs.ghost.outFile',
   }] }, { knownActionIds: ['fix-a'], currentActionCount: 1 }),

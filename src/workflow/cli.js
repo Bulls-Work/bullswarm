@@ -340,7 +340,7 @@ async function wfGoal(opts) {
     try {
       doc = existsSync(workflowPath)
         ? JSON.parse(readFileSync(workflowPath, 'utf8'))
-        : JSON.parse(readFileSync(statePath, 'utf8'))._doc;
+        : readJsonForUpdate(statePath, 'workflow state')._doc;
     } catch (err) {
       console.error(`✗ cannot load durable workflow for ${resumeRunId}: ${err.message}`);
       return 1;
