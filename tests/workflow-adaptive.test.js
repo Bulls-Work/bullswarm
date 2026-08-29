@@ -84,10 +84,11 @@ function fixture() {
     '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"The advisory expansion target was exceeded; return the useful bounded outcome now without optional work.",actions:[]}',
     '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Another bounded budget test action is essential to avoid discarding useful work.",actions:[{id,type:"run",prompt:"Perform a concrete bounded budget action with durable evidence.",dependsOn:[firstDone?"budget-one":"initial"]}]};',
     '  } else if (task.includes("CRASH_RESUME")) {',
+    '    const slow = task.includes("CRASH_RESUME_SLOW") ? "SLEEP_1500 " : "";',
     '    const done = task.includes("resume-two") && task.includes("succeeded");',
     '    answer = done',
     '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"Both accepted expansion actions are now durably complete after resume.",actions:[]}',
-    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Two ordered bounded actions are required to prove crash-safe expansion resume.",actions:[{id:"resume-one",type:"run",prompt:"Complete first durable resume action with concrete evidence.",dependsOn:["initial"]},{id:"resume-two",type:"run",prompt:"Complete second durable resume action with concrete evidence.",dependsOn:["resume-one"]}]};',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Two ordered bounded actions are required to prove crash-safe expansion resume.",actions:[{id:"resume-one",type:"run",prompt:slow + "Complete first durable resume action with concrete evidence.",dependsOn:["initial"]},{id:"resume-two",type:"run",prompt:"Complete second durable resume action with concrete evidence.",dependsOn:["resume-one"]}]};',
     '  } else {',
     '    const expandedDone = task.includes("expanded-task") && task.includes("succeeded");',
     '    answer = expandedDone',
@@ -1362,5 +1363,61 @@ test('steering that can no longer reach a gate is marked expired at the terminal
     const expired = events.find((event) => event.type === 'steering.expired');
     assert.ok(expired, 'steering.expired emitted');
     assert.equal(expired.steeringIds.length, 1);
+  } finally { f.cleanup(); }
+});
+
+test('resume re-runs an action the interruption cancelled instead of re-planning around a phantom failure', async () => {
+  const f = fixture();
+  try {
+    const doc = {
+      name: 'adaptive-resume-cancelled', description: 'resume after cancel', inputs: {},
+      settings: { retryAttempts: 0, maxAgents: 8, maxExpansionRounds: 2, maxActions: 8, maxItemsPerExpansion: 4 },
+      phases: [{ name: 'p', steps: [
+        { id: 'initial', type: 'run', prompt: 'Initial evidence.' },
+        { id: 'planner', type: 'decide', prompt: 'CRASH_RESUME_SLOW' },
+      ] }],
+    };
+    // Simulate the operator/harness SIGTERM path: while resume-one is running,
+    // request cancellation the way the dashboard does. The runtime records the
+    // attempt as `cancelled` and the run ends `cancelled`, resumable.
+    let cancelledOnce = false;
+    const interrupted = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        if (event.type === 'action.started' && event.actionId === 'resume-one' && !cancelledOnce) {
+          cancelledOnce = true;
+          const runId = readdirSync(join(f.bullswarmDir, 'workflows'))[0];
+          const statePath = join(f.bullswarmDir, 'workflows', runId, 'state.json');
+          const live = JSON.parse(readFileSync(statePath, 'utf8'));
+          live.cancelRequested = true;
+          live.cancelRequestedAt = new Date().toISOString();
+          writeFileSync(statePath, JSON.stringify(live));
+        }
+      },
+    });
+    assert.equal(cancelledOnce, true);
+    const crashedRunId = interrupted.runId;
+    const before = JSON.parse(readFileSync(join(f.bullswarmDir, 'workflows', crashedRunId, 'state.json'), 'utf8'));
+    const cancelledEntry = before.actionLedger.find((entry) => entry.id === 'resume-one');
+    assert.equal(cancelledEntry.status, 'cancelled', 'the in-flight action is recorded cancelled');
+    assert.equal(before.outputs['resume-one'].ok, false);
+    const plannerTurnsBefore = before.attempts.filter((attempt) => attempt.actionId === 'planner').length;
+
+    const events = [];
+    const resumed = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: crashedRunId,
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(resumed.state.status, 'completed');
+    const reopened = events.filter((event) => event.type === 'action.reopened').map((event) => event.actionId);
+    assert.ok(reopened.includes('resume-one'), 'the cancelled action is reopened');
+    assert.equal(resumed.state.outputs['resume-one'].ok, true);
+    assert.equal(resumed.state.outputs['resume-two'].ok, true);
+    // No phantom-failure boundary: the program finished from where it stopped
+    // and the planner was consulted exactly once more (its completion turn).
+    assert.ok(!events.some((event) => event.type === 'action.failed' && /blocked by failed or unresolved/.test(event.why ?? '')));
+    const plannerTurnsAfter = resumed.state.attempts.filter((attempt) => attempt.actionId === 'planner').length;
+    assert.equal(plannerTurnsAfter - plannerTurnsBefore, 1);
+    assert.equal(resumed.state.decisions.at(-1).decision, 'complete');
   } finally { f.cleanup(); }
 });
