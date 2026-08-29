@@ -19,18 +19,24 @@ export class ClaudeMeterError extends Error {
   }
 }
 
+export const DEFAULT_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+export function isUsable(creds, now = Date.now(), skewMs = EXPIRY_SKEW_MS) {
+  return Boolean(creds) && creds.expiresAt - skewMs > now;
+}
+
 export function readOAuthCredentials() {
   if (platform() === 'darwin') {
-    return readFromMacKeychain() ?? readFromCredentialsFile();
+    return readFromMacKeychain(DEFAULT_KEYCHAIN_SERVICE) ?? readFromCredentialsFile();
   }
   return readFromCredentialsFile();
 }
 
-function readFromMacKeychain() {
+export function readFromMacKeychain(service = DEFAULT_KEYCHAIN_SERVICE) {
   try {
     const blob = execFileSync(
       'security',
-      ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+      ['find-generic-password', '-s', service, '-w'],
       { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' },
     );
     return extractCredentials(blob);
@@ -73,13 +79,13 @@ function normalizeWindow(raw) {
   };
 }
 
-export function parseClaudeUsage(body) {
+export function parseClaudeUsage(body, pool = 'claude-code') {
   if (!body || typeof body !== 'object') {
     throw new ClaudeMeterError('Claude usage response missing body', 'parse');
   }
   return {
     captured_at: new Date().toISOString(),
-    pool: 'claude-code',
+    pool,
     five_hour: normalizeWindow(body.five_hour) ?? { utilization: null, resets_at: null },
     seven_day: normalizeWindow(body.seven_day) ?? { utilization: null, resets_at: null },
     monthly: null,
@@ -89,12 +95,11 @@ export function parseClaudeUsage(body) {
   };
 }
 
-export async function fetchClaudeUsage() {
-  const creds = readOAuthCredentials();
+export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code') {
   if (!creds) {
     throw new ClaudeMeterError('No Claude Code OAuth token. Run `claude` to log in.', 'no_token');
   }
-  if (creds.expiresAt - EXPIRY_SKEW_MS <= Date.now()) {
+  if (!isUsable(creds)) {
     throw new ClaudeMeterError(
       'Claude OAuth token expired; open Claude Code to refresh it.',
       'expired',
@@ -122,5 +127,9 @@ export async function fetchClaudeUsage() {
   } catch (err) {
     throw new ClaudeMeterError(`Failed to parse usage response: ${err.message}`, 'parse');
   }
-  return parseClaudeUsage(body);
+  return parseClaudeUsage(body, pool);
+}
+
+export async function fetchClaudeUsage() {
+  return fetchClaudeUsageWithCredentials(readOAuthCredentials(), 'claude-code');
 }

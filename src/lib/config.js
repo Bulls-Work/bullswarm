@@ -13,8 +13,9 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
+import { expandClaudeAccountConnectors } from './claude-accounts.js';
 
-export function loadConnectors(bullswarmDir) {
+export function loadConnectors(bullswarmDir, opts = {}) {
   const dir = join(bullswarmDir, 'connectors');
   if (!existsSync(dir)) return {};
   const out = {};
@@ -28,6 +29,7 @@ export function loadConnectors(bullswarmDir) {
       // never crash a run
     }
   }
+  expandClaudeAccountConnectors(out, opts);
   return out;
 }
 

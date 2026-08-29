@@ -1,5 +1,13 @@
 # bullswarm changelog
 
+## 0.14.1 — extra Claude Code logins as separate pools
+
+- Claude Code extra logins (`~/.claude-<slug>` / `$CLAUDE_CONFIG_DIR`) become
+  their own pools (`claude-code:<slug>`), metered and spawned with
+  `CLAUDE_CONFIG_DIR` set. Discovery is dynamic from the filesystem; there
+  is no hardcoded extra-profile list. The spawn command for each profile is
+  `CLAUDE_CONFIG_DIR=<dir> claude`.
+
 ## 0.14.0 — structured worker output, compact planner contract
 
 - A verify whose reply cannot be parsed as the verdict JSON gets ONE bounded
