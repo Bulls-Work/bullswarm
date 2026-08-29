@@ -1096,12 +1096,14 @@ export class WorkflowRuntime {
         ...(Array.isArray(reverify.concerns) && reverify.concerns.length
           ? ['Concerns you raised (verbatim):', ...reverify.concerns.map((entry) => `- ${entry}`)] : []),
         ...(reverify.repairExcerpt ? ['The repair reported:', reverify.repairExcerpt] : []),
-        'Return ok:false ONLY if a listed concern is still unresolved or the repair introduced a regression in the acceptance checks. Anything you notice now that was already true before the repair goes in concerns as informational and never makes ok false: the first verdict was the moment to raise it.',
+        'Return ok:false ONLY if the work is still unusable by the acceptance standard below: a listed concern that was itself an acceptance failure is unresolved, or the repair broke the acceptance checks. A listed concern the repair chose not to address stays a concern; anything you notice now that was already true before the repair goes in concerns as informational and never makes ok false: the first verdict was the moment to raise it.',
       ] : []),
+      '',
+      'Acceptance standard (runtime-owned; it overrides any stricter rule in the instructions above): ok:false means the work is unusable: its acceptance command fails, a required deliverable is missing, or the answer is nonsense or contradicts its own evidence. Everything else goes in concerns under ok:true: style, wording, scope, cosmetic mismatches, process rules the goal never stated (append-only, diff size), and files changed by other actions that share this working tree, which are never this unit\'s defect. Never reject for something the goal does not require.',
       '',
       'RETURN ONLY a single JSON object of the form',
       '{"ok": <true|false>, "concerns": [<string>...], "summary": <string>}.',
-      'No prose and no markdown fences. Set ok:true only when the requested checks actually pass.',
+      'No prose and no markdown fences. Set ok by the acceptance standard above: true unless the work is unusable.',
     ].join('\n');
     // Only the reviewer INSTRUCTIONS are a template. The review target is a
     // worker's artifact — arbitrary text that routinely contains code, JSDoc

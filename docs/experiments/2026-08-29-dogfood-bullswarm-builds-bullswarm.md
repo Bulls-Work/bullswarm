@@ -351,3 +351,41 @@ Cost of the false rejection: the 266 s planner turn plus the serialised tail ≈
 Fix committed after the run, unreleased (`71960ae`): rule 7 — "A verify checks the goal's own acceptance criteria …
 never add a process rule the goal does not state (append-only, tests untouched); when the implementation changes what
 an existing assertion pins, a worker must own updating it." Proof pending a rerun on that commit.
+
+## Run `8ebi8a` — runtime `7724da1` (rule 7 `71960ae` + PR #5 merge), luna pinned, fixture g4-bs-v6
+
+Launched 2026-08-29 16:42 Z as the live proof of rule 7. Result: **42 min 03 s**, worse than `euh622` (36 min) and
+`bizp4s` (25 min). Measured (`bs-g4-v6-metrics.json`): 3 planner turns / 775 s (31 % of wall; turn 2 430 s, correction
+turn 97 s, turn 1 ≈ 248 s derived), parallelism 1.34, max 3 concurrent, 23 dispatches (20 workers on
+`relay/gpt-5.6-luna`, 3 planner turns on claude-code/opus), 3 repair rounds — every re-verify rejected — 1 validator
+correction, auto-completed by `program-completion`, `npm test` 315/315, existing tests +179/−1 (the mandated `:206`
+extension, finally done by a named action `fix-pinned-test`).
+
+The three rejections were each legitimate under the re-verify rule of `9af8fdf`; the defect was in the prompts the
+planner wrote, and rule 7 did not stop it:
+- `verify-impl` r1: real concern. Repair 1 removed `outputSchema` from `programFeatures` so the OLD assertion at
+  `workflow-adaptive.test.js:206` would pass — because `impl` was told "do NOT modify existing tests", `tests-runtime`
+  (owner of that file) was never told to extend `:206`, and `verify-impl` expected `impl` to have done it. Re-verify
+  rejected (a regression: item 5 mandates the entry). r2 re-added it; the old assertion failed again; rejected.
+  Turn 2's reason names it: "my round-1 prompt asked for it". Nobody owned the assertion — the fourth run with this gap.
+- `verify-docs` r1: its prompt said "only those three doc files were changed by this worker (`git diff --stat`)"; the
+  repo-wide diff showed `impl`'s files, so it rejected on scope. The repair, told "Do not touch src/", still reverted
+  five `src/` files to make `git diff --name-only` show three files (its report: "git diff --name-only reports exactly
+  the three requested documentation files… 299 tests"). Re-verify rejected on the missing implementation.
+- Tail blocked: `verify-tests-schema`, `verify-tests-runtime`, `verify-suite`, `report`, `verify-report` depended on
+  `verify-impl` (a verdict, chosen so repairs would not edit the same files) → `failed_terminal` → planner turn 2,
+  which re-proposed the blocked id `verify-suite` → validator rejection → 97 s correction → recovery program
+  `restore-src` → `fix-pinned-test` → `verify-src` / `verify-tests` → `verify-full-suite` → `final-report` →
+  `verify-final-report`, all ok.
+
+Where the extra time went (vs `bizp4s`): ≈ 17 min in the two failed verify loops, the blocked tail, turn 2 and the
+correction; `impl` 493 s vs 377 s is variance.
+
+Conclusion and fix (unreleased, committed after the run): three runs in a row failed on a different planner-authored
+constraint the goal never stated (append-only → contradictory ownership → repo-wide scope check), so contract text
+alone is whack-a-mole. The runtime now owns the bar: every verify/re-verify instruction ends with a fixed acceptance
+standard (ok:false = unusable; everything else is a concern under ok:true; other actions' files are never this unit's
+defect), every repair prompt says to edit only the reviewed work's files and never revert others' changes, rule 2
+requires one owner per file including an existing test the change breaks, and the validator line states run-wide id
+uniqueness. Direction from the user: "unless it is completely nonsense or unable to finish I don't see a reason to
+reject so easily". Claim to test on the next rerun: none of the three `8ebi8a` rejection reasons can produce ok:false.

@@ -736,7 +736,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
             typeof verdict.summary === 'string' && verdict.summary.trim() ? `: ${verdict.summary.trim()}` : '.'}`,
           ...(concerns.length ? ['Concerns to resolve (verbatim from the verifier):', ...concerns.map((entry) => `- ${entry}`)] : []),
           '',
-          `Repair round ${round} of ${maxRounds}. Resolve every concern above, re-run the acceptance command yourself, and report exactly what changed with evidence.`,
+          `Repair round ${round} of ${maxRounds}. This is a shared working tree: edit only the files the reviewed work owns; a concern about files outside them is not yours to resolve, and never revert, checkout or delete other actions' changes. Resolve the concerns above that a file edit inside the reviewed work can fix, re-run the acceptance command yourself, and report exactly what changed with evidence.`,
         ].join('\n'),
       };
       runtime.emit('action.repair_started', { verifyId: action.id, repairId, round, maxRounds, concerns });
