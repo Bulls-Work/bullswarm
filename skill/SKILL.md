@@ -130,8 +130,10 @@ terminal-owned execution.
 The detached runner does not depend on the initiating CLI remaining alive.
 Resume a process-interrupted run from its persisted definition with
 `bullswarm workflow goal --resume <shortId> --json`. Leave orchestrator
-selection automatic in normal use; `--orchestrator=<pool>` is for controlled
-provider QA. `SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
+selection automatic in normal use. `--orchestrator=<pool>` is a preference
+that falls back when the pool is quota-gated or unavailable;
+`--strict-orchestrator=<pool>` is the exact-provider control for QA and may
+wait for that pool's quota window. `SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
 persist `interrupted`; later workflow commands also reconcile dead or stale
 owners into that explicit resumable state.
 

@@ -13,7 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateWorkflow, WorkflowValidationError } from '../src/workflow/validate.js';
@@ -234,6 +234,39 @@ test('G2: workflow excludes burst-gated pools from dispatch', async () => {
     });
     assert.equal(result.state.outputs.one.ok, false);
     assert.match(result.state.outputs.one.why, /no eligible pool: every candidate is burst-gated \(echo 5h window usage unknown, reset time unknown\)/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('G2: a quota-gated preferred pool falls back immediately to an eligible pool', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const [preferred] = echoOnlyPools(dir);
+    preferred.name = 'preferred';
+    preferred.connector.name = 'preferred';
+    preferred.burstGate = true;
+    preferred.meterSnapshot = {
+      five_hour: { utilization: 100, resets_at: new Date(Date.now() + 60_000).toISOString() },
+    };
+    const [fallback] = echoOnlyPools(dir);
+    fallback.name = 'fallback';
+    fallback.connector.name = 'fallback';
+    fallback.costRank = 6;
+    const doc = twoStepDoc();
+    doc.phases[0].steps[0].preferredPool = 'preferred';
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc,
+      pools: [preferred, fallback],
+      inputs: {},
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.outputs.one.ok, true);
+    assert.equal(result.state.attempts.find((attempt) => attempt.actionId === 'one').pool, 'fallback');
+    assert.ok(!events.some((event) =>
+      event.type === 'dispatch.waiting_for_quota' && event.actionId === 'one'));
   } finally {
     cleanup();
   }
@@ -585,6 +618,7 @@ test('a burst-gated provider is waited for, not failed: the run resumes when the
     pools[0].burstGate = true;
     pools[0].meterSnapshot = { five_hour: { utilization: 95, resets_at: resetsAt } };
     let reads = 0;
+    const heartbeats = [];
     const events = [];
     const result = await runWorkflow({
       bullswarmDir: join(dir, '.bullswarm'),
@@ -594,6 +628,9 @@ test('a burst-gated provider is waited for, not failed: the run resumes when the
       quotaPollMs: 20,
       readMeter: async () => {
         reads += 1;
+        const runId = readdirSync(join(dir, '.bullswarm', 'workflows'))[0];
+        const persisted = JSON.parse(readFileSync(join(dir, '.bullswarm', 'workflows', runId, 'state.json'), 'utf8'));
+        heartbeats.push(persisted.runner.lastHeartbeatAt);
         const gated = reads < 2;
         return { burstGate: gated, snapshot: { five_hour: { utilization: gated ? 95 : 3, resets_at: resetsAt } }, pacing: null };
       },
@@ -611,6 +648,7 @@ test('a burst-gated provider is waited for, not failed: the run resumes when the
     assert.equal(result.state.quotaWait, undefined);
     assert.notEqual(result.state.stage, 'waiting_for_quota');
     assert.ok(reads >= 2);
+    assert.ok(new Set(heartbeats).size >= 2, 'quota polling must refresh the durable runner heartbeat');
   } finally {
     cleanup();
   }

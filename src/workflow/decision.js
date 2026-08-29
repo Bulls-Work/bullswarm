@@ -187,7 +187,7 @@ export function validateDecisionProposal(proposal, {
     if (action.effort != null && !['high', 'medium', 'low'].includes(action.effort)) {
       issues.push(`${at}.effort must be high|medium|low`);
     }
-    for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
+    for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
       if (action[runtimeOwned] != null) issues.push(`${at}.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
     }
     if (action.type === 'run' && typeof action.prompt !== 'string') {
@@ -220,7 +220,7 @@ export function validateDecisionProposal(proposal, {
         }
       }
       if (!action.stepTemplate || typeof action.stepTemplate !== 'object') issues.push(`${at}.stepTemplate is required`);
-       for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
+       for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
         if (action.stepTemplate?.[runtimeOwned] != null) {
           issues.push(`${at}.stepTemplate.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
        }
@@ -248,7 +248,7 @@ export function validateDecisionProposal(proposal, {
         if (repair.effort != null && !['high', 'medium', 'low'].includes(repair.effort)) {
           issues.push(`${at}.repair.effort must be high|medium|low`);
         }
-        for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
+        for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
           if (repair[runtimeOwned] != null) issues.push(`${at}.repair.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
         }
       }

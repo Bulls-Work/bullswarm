@@ -188,8 +188,11 @@ Resume a process-interrupted autonomous run from its persisted workflow:
 bullswarm workflow goal --resume <shortId> --json
 ```
 
-`--orchestrator <pool>` exists for controlled testing; ordinary use should
-leave selection on `auto`. `--max-agents` and `--max-workflow-seconds` are
+`--orchestrator <pool>` expresses a preference and immediately falls back to
+another eligible pool if that provider is quota-gated or unavailable. Ordinary
+use can leave selection on `auto`. For controlled provider QA only,
+`--strict-orchestrator <pool>` requires that exact pool and may wait for its
+quota window. `--max-agents` and `--max-workflow-seconds` are
 advisory planning targets; `--max-expansion-rounds` is also an advisory
 convergence target. Hard structural safeguards are adjusted with
 `--max-actions` and `--max-items-per-expansion`.

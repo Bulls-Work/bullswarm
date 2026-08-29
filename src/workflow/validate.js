@@ -140,6 +140,10 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         collect(issues, validPools.has(step.pool),
           `${sat}.pool "${step.pool}" is not a known pool (${[...validPools].join(', ') || 'none discovered'})`);
       }
+      if (step.preferredPool != null) {
+        collect(issues, validPools.has(step.preferredPool),
+          `${sat}.preferredPool "${step.preferredPool}" is not a known pool (${[...validPools].join(', ') || 'none discovered'})`);
+      }
       if (step.requiresCapabilities != null) {
         collect(issues, Array.isArray(step.requiresCapabilities) &&
           step.requiresCapabilities.length > 0 &&

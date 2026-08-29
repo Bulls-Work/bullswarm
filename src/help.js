@@ -581,7 +581,8 @@ const workflowGoalText = rich({
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
-    { flag: '--orchestrator <pool|auto>', desc: 'pin the orchestrator pool for a new goal, or override it when combined with --resume', default: 'auto (capability- and quota-based selection)' },
+    { flag: '--orchestrator <pool|auto>', desc: 'prefer this orchestrator pool for a new goal or resumed run, falling back immediately when it is quota-gated, ineligible, or unavailable', default: 'auto (capability- and quota-based selection)' },
+    { flag: '--strict-orchestrator <pool>', desc: 'require exactly this orchestrator pool for controlled provider QA; waits when that pool is quota-gated instead of falling back; mutually exclusive with --orchestrator', default: 'off' },
     { flag: '--max-agents <n>', desc: 'planning target for total dispatched agents (soft, not a hard stop)', default: '30 (max 500)' },
     { flag: '--max-expansion-rounds <n>', desc: 'planning target for planner replanning rounds', default: '8 (max 50)' },
     { flag: '--max-actions <n>', desc: 'planning target for total dispatched actions', default: '40 (max 1000)' },
@@ -660,7 +661,7 @@ const workflowCapabilitiesText = rich({
   options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON regardless of this flag' }],
   safety: ['read-only — performs live pool discovery to populate pool/meter state; nothing is written'],
   examples: [{ cmd: 'bullswarm workflow capabilities' }],
-  next: 'bullswarm workflow goal "<goal>" --orchestrator <pool> to pin one of the reported pools, or bullswarm strategy show to review model tier assignments.',
+  next: 'bullswarm workflow goal "<goal>" --orchestrator <pool> to prefer one of the reported pools with fallback, or bullswarm strategy show to review model tier assignments.',
 });
 
 const workflowInspectText = rich({

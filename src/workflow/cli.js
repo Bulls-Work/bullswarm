@@ -295,21 +295,28 @@ export function shouldAutoWatchGoal(opts) {
     opts.json !== true && opts.resume == null && opts.request == null;
 }
 
-export function applyResumeOrchestratorOverride(doc, requested) {
-  if (!requested) return doc;
-  const pool = requested === 'auto' ? null : requested;
+export function applyResumeOrchestratorOverride(doc, requested, strictRequested = null) {
+  if (!requested && !strictRequested) return doc;
+  if (requested && strictRequested) {
+    throw new Error('--orchestrator and --strict-orchestrator are mutually exclusive');
+  }
+  const strict = Boolean(strictRequested);
+  const selected = strictRequested ?? requested;
+  const pool = selected === 'auto' ? null : selected;
   doc.intent ??= {};
   doc.orchestration ??= {};
   doc.intent.requestedOrchestrator = pool ?? 'auto';
   doc.orchestration.requestedPool = pool;
+  doc.orchestration.strictPool = strict ? pool : null;
   doc.orchestration.selection = pool
-    ? 'user-pinned-for-testing'
+    ? (strict ? 'user-strict-for-testing' : 'user-preferred-with-fallback')
     : 'capability-strategy-and-quota';
   for (const phase of doc.phases ?? []) {
     for (const step of phase.steps ?? []) {
       if (step.type !== 'decide') continue;
-      if (pool) step.pool = pool;
-      else delete step.pool;
+      delete step.pool;
+      delete step.preferredPool;
+      if (pool) step[strict ? 'pool' : 'preferredPool'] = pool;
     }
   }
   return doc;
@@ -322,6 +329,10 @@ async function wfGoal(opts) {
   }
   if (opts.watch && (opts.detach || opts.foreground || opts.json || opts.resume || opts.request)) {
     console.error('✗ --watch is only valid for a new human-readable independent launch; do not combine it with --detach, --foreground, --json, --resume, or --request');
+    return 2;
+  }
+  if (opts.orchestrator && opts['strict-orchestrator']) {
+    console.error('✗ --orchestrator and --strict-orchestrator are mutually exclusive');
     return 2;
   }
   const { names, pools } = await livePoolNames();
@@ -345,7 +356,12 @@ async function wfGoal(opts) {
       console.error(`✗ cannot load durable workflow for ${resumeRunId}: ${err.message}`);
       return 1;
     }
-    applyResumeOrchestratorOverride(doc, opts.orchestrator);
+    try {
+      applyResumeOrchestratorOverride(doc, opts.orchestrator, opts['strict-orchestrator']);
+    } catch (err) {
+      console.error(`✗ invalid goal options: ${err.message}`);
+      return 2;
+    }
   } else if (opts.request) {
     try {
       const request = JSON.parse(readFileSync(resolve(opts.request), 'utf8'));
@@ -364,13 +380,15 @@ async function wfGoal(opts) {
       console.error(goalUsage());
       return 2;
     }
-    const orchestrator = opts.orchestrator && opts.orchestrator !== 'auto'
-      ? opts.orchestrator : null;
+    const requestedOrchestrator = opts['strict-orchestrator'] ?? opts.orchestrator;
+    const orchestrator = requestedOrchestrator && requestedOrchestrator !== 'auto'
+      ? requestedOrchestrator : null;
     try {
       doc = buildGoalWorkflow({
         goal,
         cwd: opts.cwd ?? process.cwd(),
         orchestrator,
+        strictOrchestrator: Boolean(opts['strict-orchestrator']),
         settings: goalSettings(opts),
         scout: !opts.noScout,
         worktreeIsolation: loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides',
@@ -616,7 +634,7 @@ async function wfInspect(opts) {
 function parseFlags(argv) {
   const out = { inputs: {}, rest: [] };
   const valueFlags = new Set([
-    'resume', 'after', 'cwd', 'orchestrator', 'request', 'run-id',
+    'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'request', 'run-id',
     'max-agents', 'max-expansion-rounds', 'max-actions',
     'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'message',
