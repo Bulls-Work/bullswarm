@@ -122,7 +122,17 @@ export function buildGoalWorkflow({
         requireSuccessfulVerification: true,
       },
     },
-    inputs: {},
+    // The goal is user text. It is declared as an input and inserted into
+    // prompts at render time ({{inputs.goal}}), so anything in it that looks
+    // like a template ref — a goal about templates quoting
+    // `{{outputs.x.data.field}}`, say — is inserted verbatim, never resolved.
+    inputs: {
+      goal: {
+        description: 'The user goal, verbatim.',
+        required: true,
+        default: goal.trim(),
+      },
+    },
     settings: {
       concurrency,
       retryAttempts,
@@ -141,7 +151,7 @@ export function buildGoalWorkflow({
         type: 'run',
         lane: 'analyze',
         addDir: targetDir,
-        prompt: scoutPrompt(goal.trim(), targetDir),
+        prompt: scoutPrompt('{{inputs.goal}}', targetDir),
       }] : []), {
         id: 'orchestrator',
         type: 'decide',

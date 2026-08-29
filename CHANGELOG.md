@@ -1,5 +1,19 @@
 # bullswarm changelog
 
+## 0.13.2 — user text is never a template
+
+- `workflow goal` failed before anything ran when the goal text quoted
+  something shaped like a template ref (`{{outputs.x.data.field}}` in a goal
+  *about* templates): the goal was spliced into the scout prompt and the
+  workflow validator rejected the ref as unresolvable — "autonomous workflow
+  invalid (nothing ran)". The goal is now a declared input (`inputs.goal`)
+  inserted at render time, so nothing in user text is ever parsed.
+- A grammar-valid ref with nothing behind it no longer kills the action at
+  render time. It is left literally in the prompt and reported as
+  `template.unresolved_ref { actionId, ref }`; planner-authored prompts may
+  quote refs as text, and a worker can usually still act on the literal.
+  `renderTemplate(str, scope, { strict: true })` keeps the old hard failure.
+
 ## 0.13.1 — a repaired verify counts as verification of its repair
 
 - `completionEvidenceGaps` accepted a verify as evidence for the latest worker

@@ -123,7 +123,16 @@ test('double-brace prompt text that is not a ref is left literal, real refs stil
     'Options are `{{maxLength?: number}}`; see /tmp/out.md (run r1). '
     + 'Mustache stays: {{#each items}}{{name}}{{/each}}; JS stays: `${{ a: 1 }}`.',
   );
-  assert.throws(() => renderTemplate('{{outputs.missing.outFile}}', scope), /unresolved at render time/);
+  // A grammar-valid ref with nothing behind it is left literal and reported —
+  // planner prompts legitimately quote refs as text. strict:true keeps the
+  // hard failure for callers that want it.
+  const unresolved = [];
+  assert.equal(
+    renderTemplate('see {{outputs.missing.outFile}}', scope, { onUnresolved: (ref) => unresolved.push(ref) }),
+    'see {{outputs.missing.outFile}}',
+  );
+  assert.deepEqual(unresolved, ['outputs.missing.outFile']);
+  assert.throws(() => renderTemplate('{{outputs.missing.outFile}}', scope, { strict: true }), /unresolved at render time/);
   assert.equal(isTemplateRef('outputs.step-1.outFile'), true);
   assert.equal(isTemplateRef('item.path.to.field'), true);
   assert.equal(isTemplateRef('maxLength?: number'), false);

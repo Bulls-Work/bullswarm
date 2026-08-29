@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { renderTemplate } from '../src/workflow/template.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -100,6 +101,22 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.match(doc.phases[0].steps[1].prompt, /Do not invoke Bullswarm, run shell commands, call tools, or modify repository files/);
   assert.match(doc.phases[0].steps[1].prompt, /compile the goal into a complete workflow program/);
   assert.equal(doc.settings.maxItemsPerExpansion, 24);
+  // The goal is user text: a goal that quotes something shaped like a template
+  // ref must validate and reach the scout verbatim. (Observed 2026-08-29: a
+  // goal quoting `{{outputs.x.data.field}}` failed the run at validation.)
+  const meta = buildGoalWorkflow({
+    goal: 'Make {{outputs.x.data.field}} render; keep `{{maxLength?: number}}` literal.',
+    cwd: REPO, name: 'meta-goal',
+  });
+  assert.equal(meta.inputs.goal.default, meta.intent.goal);
+  assert.doesNotThrow(() => validateWorkflow(meta, { poolNames: ['goal-agent'] }));
+  const scoutStep = meta.phases[0].steps[0];
+  assert.equal(scoutStep.id, 'scout');
+  assert.match(scoutStep.prompt, /Goal: \{\{inputs\.goal\}\}/);
+  assert.doesNotMatch(scoutStep.prompt, /outputs\.x\.data/);
+  const renderedScout = renderTemplate(scoutStep.prompt, { inputs: { goal: meta.inputs.goal.default } });
+  assert.match(renderedScout, /Goal: Make \{\{outputs\.x\.data\.field\}\} render; keep `\{\{maxLength\?: number\}\}` literal\./);
+
   const noScout = buildGoalWorkflow({ goal: 'Implement it.', cwd: REPO, name: 'no-scout', scout: false });
   assert.equal(noScout.phases[0].steps.length, 1);
   assert.equal(noScout.phases[0].steps[0].id, 'orchestrator');
