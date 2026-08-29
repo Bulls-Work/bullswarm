@@ -2,6 +2,15 @@
 
 ## 0.15.1 — a fenced trailing object is still an answer
 
+- A re-verify after a repair round now receives the concerns it raised and the
+  repair's report, and may return ok:false only for an unresolved listed
+  concern or a regression; anything newly noticed is informational. Earned on
+  `r2vu9i`: `verify-src` round 2 rejected on two concerns round 1 never raised;
+  `verify-tests-runtime` round 2 rejected the very edit its round 1 demanded.
+- Goal-4 rerun on the audited contract (`r2vu9i`): 36 min 58 s (attempt 3:
+  44 min; 0.15.0: 72 min), 5 parallel writers, parallelism 1.55, tests depend
+  on the implementation run rather than its verify, 0 schema retries, 0
+  corrections, auto-completed, 314/314.
 - Planner contract audited against Claude Code's workflow-authoring reference
   (three-lens review + adversarial verification, run on the real goal-4 task
   text) and rewritten within the same caps (rules 3,999 / examples 2,938

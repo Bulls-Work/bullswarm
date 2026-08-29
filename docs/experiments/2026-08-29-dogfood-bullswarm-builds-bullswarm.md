@@ -222,3 +222,44 @@ Pass conditions set before the run: ≤ 1 repair round ✓ (0); 0 process-criter
 ≤ 35 min ✗ (72 min). Reliability at 12-action complexity is now proven on ≥ 0.14.1; speed is worker-bound and
 routing-bound.
 
+## Goal-4 rerun on the audited contract — `r2vu9i` (wf-mtefmdie-b39e8f), 13:44:19 → 14:21:21 Z — **structural PASS, 36 min 58 s**
+
+Runtime `d14c1fa` (contract from the second audit, §6 of `docs/planner-prompt-audit-2026-08-29.md`, plus the runner
+lane fix); workers pinned to `opencode2`/`relay/gpt-5.6-luna` via `strategy assign high|medium|low` (cleared after);
+orchestrator `claude-code`/`claude-opus-5`; fresh fixture `g4-bs-v3` = a0f0965 (299/299).
+
+| metric | attempt 3 (0.13.2) | `ydpjts` (0.15.0) | **`r2vu9i` (audited contract)** |
+| --- | ---: | ---: | ---: |
+| wall | 44 min 17 s | 72 min 14 s | **36 min 58 s** (2 219 s) |
+| planner turns / plannerSec | 2 / 1 045 s (39 %) | 2 / 755 s (17 %) | 2 / 648 s (29 %) — 409 s + 238 s |
+| dispatches | 28 | 13 | 26 (24 gpt-5.6-luna workers + 2 opus planner) |
+| max concurrent / parallelism | 5 / 1.5 | 2 / 1.05 | **4 / 1.55** |
+| writers in parallel after planning | 2 (+3 test writers later) | 2 | **5** (impl-src ∥ 3 docs; 2 test writers as soon as impl-src landed) |
+| repairs (rounds / repaired ok / re-verify rejected) | 6 / 2 / 4 | 0 | 4 / 2 / 2 |
+| schema retries / corrections / verdict re-asks | — / 0 / — | 1 / 0 / 0 | **0 / 0 / 0** |
+| tests after | 318 | 326 | **314/314** (299 + 15); existing tests +167 / −1 (one assertion extended, as goal item 5 requires); no commit; version untouched |
+
+Structural pass conditions (set before launch): `tests-*` depend on `impl-src`, not `verify-src` ✓ (the planner's own
+reason: "two file-disjoint test workers depend on that run (not its verify)"); more than one file-disjoint writer ✓ (5);
+parallelism ≥ 1.5 ✓ (1.55); 0 corrections ✓; 0 schema retries ✓ (the report carried no schema); auto-completed ✓;
+≥ 299 tests, existing tests extended only ✓. Failed: 0 repairs ✗ (4 rounds). Lane/effort proposed by the planner reached
+dispatch (`docs-changelog` routed `chore`/`low`) — the runner merge fix is live. `accept-suite` was a verify with no
+dependsOn — the first live exercise of the repository-scope branch.
+
+Where the four repair rounds went, and what each says:
+- `verify-tests-schema` round 1: missing invalid-`minimum` case → repaired, re-verify ok. Legitimate; cost 49 + 30 s.
+- `verify-src` round 1: a real defect (`recordOutput` dropped `data`/`schemaOk`, breaking resume-safety) → repaired.
+  Legitimate. Round 2 then rejected on two concerns round 1 never raised (enum structural equality, root-path naming)
+  → repaired, re-verify ok. **Moving goalposts**: 92 + 268 s spent on nits that should have been round-1 concerns.
+- `verify-tests-runtime` round 1: acceptance command failed on the pre-existing `workflow-adaptive.test.js:206`
+  assertion (goal item 5 requires extending it) → the repair extended it → round 2 rejected BECAUSE an existing test
+  was modified — a process criterion the planner had written into the verify prompt ("append tests only") that
+  contradicts the goal. Unrepairable by construction → `verify-suite`/report blocked → planner turn 2 (238 s), which
+  diagnosed "a false rejection" and recovered in 207 s. Cost ≈ 10 min.
+Fix shipped after the run (`9af8fdf`, unit-tested, not yet live): a re-verify receives the concerns it raised and the
+repair's report and may reject only for an unresolved listed concern or a regression — both round-2 rejections above
+become informational under it.
+
+Speed accounting vs `ydpjts`: worker pool (gpt-5.6-luna vs sonnet-5) and width together took the critical path from
+72 to ~27 min of productive work; the remaining ~10 min is the verifier-behaviour waste above.
+
