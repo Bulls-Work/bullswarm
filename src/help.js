@@ -676,8 +676,9 @@ const workflowInspectText = rich({
 
 const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]',
-  purpose: 'Open the interactive full-screen phase → agent → step/detail browser for ongoing '
-    + 'and historical runs, or print a static/JSON snapshot for a non-interactive caller.',
+  purpose: 'Open the interactive full-screen workflow timeline with Workflow Planner, phase, '
+    + 'live-agent, and technical drill-down views for ongoing and historical runs, or print a '
+    + 'static/JSON snapshot for a non-interactive caller.',
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
     { flag: '--json', desc: "print a JSON snapshot instead of opening the interactive browser (list of ongoing runs, or one run's state/report/events when a runId is given)", default: "opens the interactive browser on a TTY; without a TTY, a given runId instead prints one static text detail tree" },
@@ -689,6 +690,7 @@ const workflowTuiText = rich({
     'interactive mode and the --json/--show/--all views are read-only',
     '--cancel writes state.json (cancelRequested=true, status=cancelling) — cooperative, not a force-kill: the workflow stops at its next safe checkpoint',
     'inside the interactive browser, q detaches without stopping the underlying workflow; c requests the same cancellation with a confirmation prompt',
+    'the default timeline is derived from durable state and events; press v for raw action-ledger and event evidence',
   ],
   examples: [
     { cmd: 'bullswarm workflow tui', note: 'interactive run picker' },

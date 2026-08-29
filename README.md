@@ -289,14 +289,19 @@ bullswarm workflow watch <shortId> --verbose     # detailed agent/action view
 ```
 
 `workflow tui` is the interactive, Claude-style `/workflows` view. For an
-autonomous goal its left navigation stacks a compact Orchestrator panel above
-the Phases panel; internal planner turns never appear as workers or phases.
-Select Orchestration and press Enter, or press `o`
-anywhere, to open a summary-first orchestration overview: what it is doing now,
+autonomous goal its left navigation stacks a compact Workflow Planner panel
+above the Phases panel; internal planner turns never appear as workers or phases.
+The default desktop main panel is a timestamped workflow timeline: completed
+preflight, planner-checkpoint, phase-transition, and worker-result events stay
+above a live section containing the waiting/running Workflow Planner and workers,
+each with its latest semantic action and stream heartbeat. Planned work is kept
+in a separate Next section so it cannot be mistaken for execution evidence.
+Select Workflow Planner and press Enter, or press `o`
+anywhere, to open a summary-first planner overview: what it is doing now,
 its latest decision in plain language, why it chose that path, what happens
-next, progress, and the last three semantic actions. Press `v` to toggle the
-technical view with provider session, every checkpoint turn, usage, prompt,
-and artifact paths. Status marks are consistent throughout the tree: `○` not started,
+next, progress, and the last three semantic actions. Press `v` from the timeline
+for workflow technical state, or from Workflow Planner for provider session,
+every checkpoint turn, usage, prompt, and artifact paths. Status marks are consistent throughout the tree: `○` not started,
 an animated Braille spinner for active work, `⧖` waiting, `✓` finished, and
 `✗` failed or interrupted. The non-emoji `⧖` avoids the inconsistent cell
 width of `⌛` across terminal fonts. It watches ongoing runs from disk and supports `j`/`k` or arrow-key selection, Enter for
