@@ -322,6 +322,11 @@ export function workflowPanelModel(row, {
   }
   for (const [key, active] of Object.entries(state.activeAgents ?? {})) {
     if (representedActiveKeys.has(key)) continue;
+    // The autonomous orchestrator is a control-plane thread, not a worker in
+    // whichever execution phase happens to be selected. It has its own panel.
+    // Without this guard, an active checkpoint is re-added below a completed
+    // phase when both share the durable `autonomous-delivery` phase name.
+    if (orchestrator.autonomous && active.stepId === orchestrator.actionId) continue;
     const action = ledger.find((entry) => entry.id === active.stepId || active.stepId?.startsWith(`${entry.id}[`));
     if ((action?.phase ?? state.currentPhase?.name) !== selectedPhase.name) continue;
     agents.push({
@@ -520,6 +525,7 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
   const conversations = Object.entries(state.orchestration?.conversations ?? {});
   const decisions = state.decisions ?? [];
   const latestDecision = decisions.at(-1);
+  const latestLiveAction = liveActions.at(-1) ?? null;
   const workerAttempts = (state.attempts ?? []).filter((attempt) => attempt.actionId !== orchestrator.actionId);
   const completedWorkers = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
   const activeWorkers = Object.values(state.activeAgents ?? {})
@@ -538,6 +544,14 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
     `Now · ${stateLabel}`,
     `Progress · ${completedWorkers}/${workerAttempts.length} worker attempts finished · ${orchestrator.attempts.length} planning checkpoint${orchestrator.attempts.length === 1 ? '' : 's'}`,
   ];
+  if (active) {
+    lines.push(latestLiveAction
+      ? `Latest action · ${friendlyActionKind(latestLiveAction.kind)}${latestLiveAction.summary ? ` · ${friendlyActionSummary(latestLiveAction)}` : ''}`
+      : 'Latest action · waiting for the first semantic event');
+    lines.push(active.lastEventAt
+      ? `Live stream · event ${durationText(active.lastEventAt)} ago · ${active.outputBytesObserved ?? 0} bytes observed`
+      : 'Live stream · waiting for the first provider event');
+  }
   if (latestDecision) {
     lines.push(`Latest decision · ${decisionLabel(latestDecision.decision)}`);
     if (latestDecision.reason) lines.push(`Why · ${sentencePreview(latestDecision.reason)}`);

@@ -217,11 +217,11 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     state.intent.autonomous = true;
     state.orchestration.mode = 'autonomous';
     state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
-    state.currentStep = { id: 'inspect', type: 'run', phase: 'autonomous-delivery:adaptive' };
+    state.currentStep = { id: 'orchestrator', type: 'decide', phase: 'autonomous-delivery' };
     state.steps = [];
     state.actionLedger = [
       { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'running', attempts: [0, 2] },
-      { id: 'inspect', phase: 'autonomous-delivery:adaptive', kind: 'run', status: 'succeeded', attempts: [1] },
+      { id: 'inspect', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [1] },
     ];
     state.attempts = [
       { actionId: 'orchestrator', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'succeeded' },
@@ -233,6 +233,8 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     state.activeAgents = { orchestrator: {
       stepId: 'orchestrator', pool: 'grok', model: 'grok-4.6', status: 'running',
       actionCount: 5,
+      lastEventAt: new Date().toISOString(),
+      outputBytesObserved: 12345,
       lastActions: [
         { kind: 'read_file', status: 'completed', summary: 'state.json' },
         { kind: 'response', status: 'completed', summary: 'needs_more_work' },
@@ -244,13 +246,13 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     const model = workflowPanelModel(row);
     assert.equal(model.orchestrator.status, 'planning');
     assert.equal(model.orchestrator.attempts.length, 2);
-    assert.deepEqual(model.phases.map((phase) => phase.label), ['Execution']);
+    assert.deepEqual(model.phases.map((phase) => phase.label), ['Autonomous Delivery']);
     assert.deepEqual(model.agents.map((agent) => agent.action.id), ['inspect']);
 
     const tui = renderWorkflowTui(row, { width: 120, height: 30 });
     assert.match(tui, /⠋ Orchestration · planning/);
     assert.match(tui, /1\/1 workers/);
-    assert.match(tui, /Execution · 1\/1 complete/);
+    assert.match(tui, /Autonomous Delivery · 1\/1 complete/);
     assert.doesNotMatch(tui, /orchestrator · grok · grok-4\.6 · #/);
     assert.match(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 1 }), /⠙ Orchestration · planning/);
 
@@ -265,6 +267,8 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     });
     assert.match(thread, /Orchestrator · overview/);
     assert.match(thread, /Now · Choosing the next smallest useful action/);
+    assert.match(thread, /Latest action · Response · Planner decision recorded/);
+    assert.match(thread, /Live stream · event .* ago · 12345 bytes observed/);
     assert.match(thread, /Latest decision · Continue with bounded work/);
     assert.match(thread, /Why · Inspect then verify\./);
     assert.match(thread, /Press v for checkpoint prompts, sessions, usage, and artifact paths/);
@@ -288,7 +292,7 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     state.outputs.inspect = { ok: false, why: 'verify json returned ok:false' };
     writeFileSync(statePath, JSON.stringify(state));
     const semanticFailure = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
-    assert.match(semanticFailure, /1 ✗ Execution 1\/1/);
+    assert.match(semanticFailure, /1 ✗ Autonomous Delivery 1\/1/);
     assert.match(semanticFailure, /✗ inspect · command-code/);
 
     state.attempts[2].status = 'succeeded';
@@ -301,7 +305,7 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
       width: 120, height: 30, controlSelected: true,
     });
     assert.match(waiting, /⧖ Orchestration · directing/);
-    assert.match(waiting, /1 ✓ Execution 1\/1/);
+    assert.match(waiting, /1 ✓ Autonomous Delivery 1\/1/);
   } finally { cleanup(); }
 });
 
