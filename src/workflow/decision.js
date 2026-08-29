@@ -57,8 +57,15 @@ export function looksLikeReviewPath(value) {
 
 export function normalizeDecisionProposal(proposal) {
   if (!proposal || typeof proposal !== 'object' || !Array.isArray(proposal.actions)) return proposal;
+  // An action-bearing "proceed" is unambiguously an executable program. The
+  // schema calls that `needs_more_work`; repairing the representation here
+  // avoids an otherwise identical frontier-model correction turn.
+  const decision = proposal.decision === 'proceed' && proposal.actions.length > 0
+    ? 'needs_more_work'
+    : proposal.decision;
   return {
     ...proposal,
+    decision,
     actions: proposal.actions.map((action) => {
       if (action?.type === 'fanout' && !Array.isArray(action.items) && looksLikeItemsFromPath(action.itemsFrom)) {
         // A fanout fed by an artifact implicitly depends on the producer.
@@ -187,7 +194,7 @@ export function validateDecisionProposal(proposal, {
     if (action.effort != null && !['high', 'medium', 'low'].includes(action.effort)) {
       issues.push(`${at}.effort must be high|medium|low`);
     }
-    for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
+    for (const runtimeOwned of ['pool', 'preferredPool', 'model', 'addDir', 'taskFile']) {
       if (action[runtimeOwned] != null) issues.push(`${at}.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
     }
     if (action.type === 'run' && typeof action.prompt !== 'string') {
@@ -220,7 +227,7 @@ export function validateDecisionProposal(proposal, {
         }
       }
       if (!action.stepTemplate || typeof action.stepTemplate !== 'object') issues.push(`${at}.stepTemplate is required`);
-       for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
+       for (const runtimeOwned of ['pool', 'preferredPool', 'model', 'addDir', 'taskFile']) {
         if (action.stepTemplate?.[runtimeOwned] != null) {
           issues.push(`${at}.stepTemplate.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
        }
@@ -248,7 +255,7 @@ export function validateDecisionProposal(proposal, {
         if (repair.effort != null && !['high', 'medium', 'low'].includes(repair.effort)) {
           issues.push(`${at}.repair.effort must be high|medium|low`);
         }
-        for (const runtimeOwned of ['pool', 'preferredPool', 'addDir', 'taskFile']) {
+        for (const runtimeOwned of ['pool', 'preferredPool', 'model', 'addDir', 'taskFile']) {
           if (repair[runtimeOwned] != null) issues.push(`${at}.repair.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
         }
       }

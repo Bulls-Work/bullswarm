@@ -583,6 +583,9 @@ const workflowGoalText = rich({
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
     { flag: '--orchestrator <pool|auto>', desc: 'prefer this orchestrator pool for a new goal or resumed run, falling back immediately when it is quota-gated, ineligible, or unavailable', default: 'auto (capability- and quota-based selection)' },
     { flag: '--strict-orchestrator <pool>', desc: 'require exactly this orchestrator pool for controlled provider QA; waits when that pool is quota-gated instead of falling back; mutually exclusive with --orchestrator', default: 'off' },
+    { flag: '--orchestrator-model <model|auto>', desc: 'pin the exact model used by the autonomous planner; only pools that can guarantee this model remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, fan-out items, repairs, and verifiers, to one pool', default: 'auto (normal routing)' },
+    { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--max-agents <n>', desc: 'planning target for total dispatched agents (soft, not a hard stop)', default: '30 (max 500)' },
     { flag: '--max-expansion-rounds <n>', desc: 'planning target for planner replanning rounds', default: '8 (max 50)' },
     { flag: '--max-actions <n>', desc: 'planning target for total dispatched actions', default: '40 (max 1000)' },
@@ -606,6 +609,7 @@ const workflowGoalText = rich({
   ],
   examples: [
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd .' },
+    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --strict-orchestrator codex --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
   ],
   next: 'bullswarm workflow watch <shortId> to follow progress, or bullswarm workflow tui for the interactive browser.',
 });
@@ -692,6 +696,7 @@ const workflowTuiText = rich({
     '--cancel writes state.json (cancelRequested=true, status=cancelling) — cooperative, not a force-kill: the workflow stops at its next safe checkpoint',
     'inside the interactive browser, q detaches without stopping the underlying workflow; c requests the same cancellation with a confirmation prompt',
     'the default timeline is derived from durable state and events; press v for raw action-ledger and event evidence',
+    'below 100 columns the timeline remains full-width; press t to toggle Timeline and Phases, then Enter/Esc to drill into agents and activity',
   ],
   examples: [
     { cmd: 'bullswarm workflow tui', note: 'interactive run picker' },
@@ -870,8 +875,8 @@ const workflowRunsShowText = rich({
 
 const workflowRunsResultText = rich({
   usage: 'bullswarm workflow runs result <shortId|runId> [--json]',
-  purpose: 'Print the stable, caller-facing delivery content, verification verdict, progress, '
-    + 'and usage envelope for one run — the intended integration point for scripts and agents.',
+  purpose: 'Print the stable caller envelope: primary delivery, parallel deliveries[] frontier, '
+    + 'strongest verification verdict, progress, and usage for one run — the intended integration point for scripts and agents.',
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
   options: [{ flag: '--json', desc: 'print the full result document as JSON', default: 'human-readable summary (delivery preview truncated to 64KB)' }],
   safety: ['read-only'],
