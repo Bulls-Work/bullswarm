@@ -1095,7 +1095,7 @@ export class WorkflowRuntime {
       outFile: join(this.runDir, `out-${stamp}.md`),
     };
 
-    const verdict = await this.dispatch(step, taskText, targetDir, paths, {
+    let verdict = await this.dispatch(step, taskText, targetDir, paths, {
       escalate: this.state.settings.escalateOnFail !== false,
       retryAttempts: opts.retryAttempts,
       phase: opts.phase,
@@ -1104,18 +1104,45 @@ export class WorkflowRuntime {
 
     const finalPaths = { taskFile: verdict.taskFile ?? paths.taskFile, outFile: verdict.outFile ?? paths.outFile };
 
-    let parsed = null;
-    let parseError = null;
-    try {
-      const out = readFileSync(finalPaths.outFile, 'utf8');
-      const start = out.indexOf('{');
-      const end = out.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        const j = JSON.parse(out.slice(start, end + 1));
-        if (j && typeof j === 'object') parsed = j;
+    const parseVerdictFile = (path) => {
+      try {
+        const out = readFileSync(path, 'utf8');
+        const start = out.indexOf('{');
+        const end = out.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          const j = JSON.parse(out.slice(start, end + 1));
+          if (j && typeof j === 'object') return { parsed: j, parseError: null };
+        }
+        return { parsed: null, parseError: null };
+      } catch (err) {
+        return { parsed: null, parseError: err.message };
       }
-    } catch (err) {
-      parseError = err.message;
+    };
+    let { parsed, parseError } = parseVerdictFile(finalPaths.outFile);
+
+    // An unparseable verdict gets ONE bounded re-ask before it can cost a
+    // planner boundary. Observed 2026-08-29 (run ejk9w2): final-check returned
+    // an unparseable reply, the boundary consulted the planner, and the
+    // follow-up program spent ~8 minutes re-proving a passing state — the
+    // same economics that give outputSchema its single retry.
+    if (verdict.ok && !parsed) {
+      this.emit('verify.verdict_retry', { actionId: step.id, why: parseError ?? 'no JSON object in verdict' });
+      const retryVerdict = await this.dispatch(step, [
+        taskText,
+        '',
+        `Your previous reply could not be used: ${parseError ?? 'it did not contain a parseable JSON object'}.`,
+        'Do the review again if needed, then RETURN ONLY the single JSON object {"ok": <true|false>, "concerns": [...], "summary": "..."} — no prose, no markdown fences, nothing before "{" or after "}".',
+      ].join('\n'), targetDir, paths, {
+        escalate: this.state.settings.escalateOnFail !== false,
+        retryAttempts: 0,
+        phase: opts.phase,
+      });
+      if (retryVerdict.ok) {
+        verdict = retryVerdict;
+        finalPaths.taskFile = retryVerdict.taskFile ?? finalPaths.taskFile;
+        finalPaths.outFile = retryVerdict.outFile ?? finalPaths.outFile;
+        ({ parsed, parseError } = parseVerdictFile(finalPaths.outFile));
+      }
     }
 
     const ok = verdict.ok && !!parsed && parsed.ok === true;
@@ -1170,10 +1197,8 @@ export class WorkflowRuntime {
       excerptBudget -= excerpt.length;
       return { outputExcerpt: excerpt, outputChars: text.length };
     };
-    const fullExcerptFor = (output) => {
-      const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
-      return { outputExcerpt: text || null, outputChars: text.length };
-    };
+    // "Full" excerpts still obey the per-excerpt/total budget: a turn with
+    // many fresh actions must not rebuild the 163 k contexts this replaced.
     const outputEntries = Object.entries(this.state.outputs ?? {});
     const ledgerById = new Map((this.state.actionLedger ?? []).map((action) => [action.id, action]));
     const isNewOutput = (id) => {
@@ -1182,7 +1207,7 @@ export class WorkflowRuntime {
     };
     const excerpts = new Map(outputEntries.slice().reverse().map(([id, output]) => {
       const full = id === 'scout' || isNewOutput(id) || output?.verify?.ok === false;
-      if (full) return [id, fullExcerptFor(output)];
+      if (full) return [id, excerptFor(output)];
       if (output?.ok !== true) return [id, excerptFor(output)];
       const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
       return [id, { outputExcerpt: text ? text.slice(0, 200) : null, outputChars: text.length }];

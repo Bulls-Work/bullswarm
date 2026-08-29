@@ -64,7 +64,7 @@ function fixture() {
     '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Compile a self-completing program: two items, one final check.",completion:{when:"all-actions-ok",reason:"Both items were handled and the final check passed, which is exactly what the goal asked for."},actions:[',
     '          {id:"work-a",type:"run",phase:"work",prompt:"Handle item a in its own file only and report concrete evidence.",dependsOn:["initial"]},',
     '          {id:"work-b",type:"run",phase:"work",prompt:"Handle item b in its own file only and report concrete evidence.",dependsOn:["initial"]},',
-    '          {id:"final-check",type:"verify",phase:"verify",prompt:(failing ? "VERIFY_FAIL" : "VERIFY_OK") + " Confirm both items have evidence.",dependsOn:["work-a","work-b"],review:"outputs.work-b.outFile"}]};',
+    '          {id:"final-check",type:"verify",phase:"verify",prompt:(task.includes("VERDICT_GARBLE") ? "VERIFY_GARBLED" : failing ? "VERIFY_FAIL" : "VERIFY_OK") + " Confirm both items have evidence.",dependsOn:["work-a","work-b"],review:"outputs.work-b.outFile"}]};',
     '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
@@ -110,6 +110,13 @@ function fixture() {
     '  process.stdout.write(JSON.stringify(n === 0',
     '    ? {ok:false, concerns:["item beta lacks evidence of the handled result"], summary:"beta is unproven"}',
     '    : {ok:true, concerns:[], summary:"every item has evidence"}));',
+    '} else if (task.includes("VERIFY_GARBLED")) {',
+    '  const gcounter = new URL("./verify-garbled-count.txt", import.meta.url);',
+    '  let g = 0; try { g = Number(readFileSync(gcounter, "utf8")) || 0; } catch {}',
+    '  writeFileSync(gcounter, String(g + 1));',
+    '  process.stdout.write(g === 0',
+    '    ? "The artifact looks correct overall and both items carry the required evidence, so I would accept it, though I could not produce the object form you asked about here."',
+    '    : JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else if (task.includes("VERIFY_FAIL")) {',
     '  process.stdout.write(JSON.stringify({ok:false, concerns:["item b has no evidence of the handled result"], summary:"b is unproven"}));',
     '} else if (task.includes("VERIFY_OK")) {',
@@ -619,6 +626,28 @@ test('a self-completing program ends without a second planner turn when every ac
     assert.ok(auto, 'decision.auto_completed emitted');
     assert.deepEqual(auto.actions, ['work-a', 'work-b', 'final-check']);
     assert.ok(!events.some((event) => event.type === 'decision.completion_predicate_unmet'));
+  } finally { f.cleanup(); }
+});
+
+test('an unparseable verify verdict is re-asked once, not sent to the planner', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_SELF_COMPLETE VERDICT_GARBLE', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {}, onEvent: (event) => events.push(event),
+    });
+    assert.equal(result.state.status, 'completed');
+    // Still ONE planner consultation: the garbled verdict was re-asked by the
+    // runtime, never surfaced as a boundary.
+    assert.deepEqual(result.state.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    assert.equal(result.state.decisions[1].source, 'program-completion');
+    assert.equal(plannerTasks(result.runDir).length, 1);
+    const retries = events.filter((event) => event.type === 'verify.verdict_retry');
+    assert.equal(retries.length, 1);
+    assert.equal(retries[0].actionId, 'final-check');
+    assert.equal(result.state.outputs['final-check'].ok, true);
+    assert.match(result.state.outputs['final-check'].why, /verify ok/);
   } finally { f.cleanup(); }
 });
 

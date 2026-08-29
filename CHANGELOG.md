@@ -2,6 +2,19 @@
 
 ## 0.14.0 (unreleased) — structured worker output
 
+- A verify whose reply cannot be parsed as the verdict JSON gets ONE bounded
+  re-ask (event `verify.verdict_retry`) before its failure can reach a planner
+  boundary — observed on run `ejk9w2`: one unparseable verdict cost a full
+  planner turn plus ~8 minutes of re-proving a passing state.
+- Planner contract amendments from the same run's observations: a verify is
+  scoped to what can be true at its point in the graph (later-scheduled work is
+  not a defect; cosmetic mismatches are concerns, never ok:false); when the
+  goal's acceptance checks pass the planner returns complete instead of adding
+  polish actions; restored the shared-working-tree, redundant-verification,
+  and operatorSteering guidance dropped by the contract merge.
+- "Full" planner-context excerpts (scout, new-since-last-decision, failing
+  verifies) obey the per-excerpt and total budgets again; the compaction must
+  never rebuild the 163 k-char contexts it replaced.
 - Planner context and contract compacted: complete emitted planner task text up to the durable-context marker, worktree-isolation suffix included **OBSERVED** `16,316 -> 5,208` characters, and a sample turn-2 durable context **COMPUTED** `163,000 -> 23,547` characters by replacing full attempt records with compact ledger rows and retaining full output excerpts only for new/scout or `ok:false` verify actions.
 - Planner `run` actions and fan-out `stepTemplate`s may declare an optional
   `outputSchema`, an object-typed JSON-Schema subset. The runtime tells the
