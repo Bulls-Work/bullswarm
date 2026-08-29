@@ -8,7 +8,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildGoalWorkflow, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
-import { applyResumeOrchestratorOverride, shouldAutoWatchGoal } from '../src/workflow/cli.js';
+import {
+  applyResumeModelOverrides, applyResumeOrchestratorOverride, shouldAutoWatchGoal,
+} from '../src/workflow/cli.js';
 import { normalizeLegacyGeneratedGoalTimeouts } from '../src/workflow/runner.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 
@@ -51,6 +53,8 @@ function fixture() {
     authSignatures: [], outputExtraction: { strategy: 'stdout' },
     meter: { type: 'none' }, costRank: 1, lanes: ['analyze', 'build', 'chore'],
     capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+    knownModels: ['planner-sol', 'worker-luna'],
+    modelSelection: { flag: '--model', mode: 'replace-or-append' },
     timeoutSec: 30,
   };
   writeFileSync(join(home, 'connectors', 'goal-agent.json'), `${JSON.stringify(connector, null, 2)}\n`);
@@ -168,6 +172,62 @@ test('new goals encode ordinary orchestrator choice as a preference and strict Q
   assert.equal(strict.phases[0].steps[1].pool, 'grok');
   assert.equal(strict.phases[0].steps[1].preferredPool, undefined);
   assert.equal(strict.orchestration.selection, 'user-strict-for-testing');
+});
+
+test('goal model locks cover the planner, scout, future workers, and resume overrides', () => {
+  const doc = buildGoalWorkflow({
+    goal: 'Inspect it.', cwd: REPO, name: 'model-locked-route',
+    orchestrator: 'goal-agent', strictOrchestrator: true,
+    orchestratorModel: 'planner-sol', workerPool: 'goal-agent', workerModel: 'worker-luna',
+  });
+  const [scout, planner] = doc.phases[0].steps;
+  assert.equal(scout.pool, 'goal-agent');
+  assert.equal(scout.model, 'worker-luna');
+  assert.equal(planner.pool, 'goal-agent');
+  assert.equal(planner.model, 'planner-sol');
+  assert.equal(planner.actionDefaults.pool, 'goal-agent');
+  assert.equal(planner.actionDefaults.model, 'worker-luna');
+  assert.equal(doc.orchestration.requestedModel, 'planner-sol');
+  assert.equal(doc.orchestration.workerModel, 'worker-luna');
+  assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: ['goal-agent'] }));
+
+  applyResumeModelOverrides(doc, {
+    orchestratorModel: 'planner-sol-2', workerPool: 'goal-agent-2', workerModel: 'worker-luna-2',
+  });
+  assert.equal(planner.model, 'planner-sol-2');
+  assert.equal(planner.actionDefaults.pool, 'goal-agent-2');
+  assert.equal(planner.actionDefaults.model, 'worker-luna-2');
+  assert.equal(scout.pool, 'goal-agent-2');
+  assert.equal(scout.model, 'worker-luna-2');
+
+  applyResumeModelOverrides(doc, {
+    orchestratorModel: 'auto', workerPool: 'auto', workerModel: 'auto',
+  });
+  assert.equal(planner.model, undefined);
+  assert.equal(planner.actionDefaults.pool, undefined);
+  assert.equal(planner.actionDefaults.model, undefined);
+  assert.equal(scout.pool, undefined);
+  assert.equal(scout.model, undefined);
+});
+
+test('CLI exact model locks are preserved on every planner and worker attempt', () => {
+  const f = fixture();
+  try {
+    const result = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt with exact route locks.',
+      '--cwd', f.target, '--foreground', '--json',
+      '--strict-orchestrator', 'goal-agent', '--orchestrator-model', 'planner-sol',
+      '--worker-pool', 'goal-agent', '--worker-model', 'worker-luna',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.ok(report.attempts.length >= 4);
+    for (const attempt of report.attempts) {
+      assert.equal(attempt.pool, 'goal-agent');
+      assert.equal(attempt.model, attempt.actionId === 'orchestrator' ? 'planner-sol' : 'worker-luna');
+      assert.equal(attempt.routing.modelPolicy.source, 'step-model-lock');
+    }
+  } finally { f.cleanup(); }
 });
 
 test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching authored workflows', () => {

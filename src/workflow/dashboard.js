@@ -363,7 +363,7 @@ export function renderWorkflowTui(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
   controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
-  workflowVerbose = false,
+  workflowVerbose = false, mobileTimeline = true,
   spinnerFrame = 0,
 } = {}) {
   width = Math.max(20, Number(width) || 120);
@@ -392,11 +392,13 @@ export function renderWorkflowTui(row, {
       : workflowVerbose
         ? ' ↑/↓ scroll · v overview · Esc back · c stop · q detach'
         : narrow
-          ? ' ↑/↓ select · Enter inspect · Esc back · o planner · v technical · c stop · q detach'
+          ? mobileTimeline && focus === 0
+            ? ' ↑/↓ timeline · t phases · Enter agents · o planner · v technical · q detach'
+            : ' ↑/↓ select · t timeline · Enter inspect · Esc back · o planner · v technical · q detach'
           : ' ↑/↓ select · PgUp/PgDn timeline · Enter inspect · ←/→ switch · v technical · q detach';
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
-    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
+    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow && !mobileTimeline ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
   const messageLine = truncate(rawMessageLine, width);
   const bodyHeight = Math.max(10, height - header.length - 3);
 
@@ -487,7 +489,9 @@ export function renderWorkflowTui(row, {
       body = joinPanels(left, renderPanel('Workflow technical details', visibleTechnical, rightWidth, bodyHeight));
     }
   } else if (narrow) {
-    const mobile = focus === 0
+    const mobile = focus === 0 && mobileTimeline
+      ? null
+      : focus === 0
       ? {
         title: model.orchestrator.autonomous
           ? `Workflow · ${model.phases.length} phase${model.phases.length === 1 ? '' : 's'}`
@@ -497,7 +501,9 @@ export function renderWorkflowTui(row, {
       : focus === 1
         ? { title: agentTitle, lines: visibleAgents }
         : { title: detailTitle, lines: visibleDetail };
-    body = renderPanel(mobile.title, mobile.lines, width, bodyHeight);
+    body = mobile
+      ? renderPanel(mobile.title, mobile.lines, width, bodyHeight)
+      : renderWorkflowOverviewPanel(model, width, bodyHeight, spinnerFrame, detailScroll);
   } else if (focus < 2) {
     const left = model.orchestrator.autonomous
       ? [
@@ -1228,6 +1234,7 @@ export async function runDashboard(bullswarmDir, {
     orchestratorDetail: false,
     orchestratorVerbose: false,
     workflowVerbose: false,
+    mobileTimeline: true,
     spinnerFrame: 0,
   };
   const paintUnsafe = () => {
@@ -1298,8 +1305,10 @@ export async function runDashboard(bullswarmDir, {
       }
       const row = detailRow(bullswarmDir, selectedRunId);
       const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-      if (ui.orchestratorDetail || ui.workflowVerbose) {
-        ui.detailScroll = Math.max(0, ui.detailScroll + delta);
+      const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
+      if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
+        if (narrowTimeline) ui.detailScroll = Math.max(0, ui.detailScroll - delta);
+        else ui.detailScroll = Math.max(0, ui.detailScroll + delta);
         return paint();
       }
       if (ui.focus === 0) {
@@ -1394,6 +1403,14 @@ export async function runDashboard(bullswarmDir, {
           ui.detailScroll = 0;
           message = null;
         } else message = 'This workflow has no autonomous orchestrator thread.';
+        return paint();
+      }
+      if (key === 't' && detail && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
+        ui.mobileTimeline = !ui.mobileTimeline;
+        ui.focus = 0;
+        ui.controlSelected = false;
+        ui.detailScroll = 0;
+        message = null;
         return paint();
       }
       if (key === '1' && detail) { ui.focus = 0; return paint(); }

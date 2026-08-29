@@ -196,9 +196,12 @@ test('narrow workflow view uses one full-width phase, agent, or activity pane', 
     }];
     writeFileSync(statePath, JSON.stringify(state));
     const row = dashboardRows(home)[0];
-    const phases = renderWorkflowTui(row, { width: 80, height: 22, focus: 0 });
+    const timeline = renderWorkflowTui(row, { width: 80, height: 22, focus: 0 });
+    const phases = renderWorkflowTui(row, { width: 80, height: 22, focus: 0, mobileTimeline: false });
     const agents = renderWorkflowTui(row, { width: 80, height: 22, focus: 1 });
     const detail = renderWorkflowTui(row, { width: 80, height: 22, focus: 2 });
+    assert.match(timeline, /Workflow timeline/);
+    assert.match(timeline, /t phases/);
     assert.match(phases, /Phases · 1/);
     assert.doesNotMatch(phases, /52 tok/);
     assert.match(agents, /review · 0\/1 complete/);
@@ -207,7 +210,7 @@ test('narrow workflow view uses one full-width phase, agent, or activity pane', 
     assert.match(detail, /fan · grok/);
     assert.match(detail, /Activity/);
     assert.doesNotMatch(detail, /Phases · 1/);
-    for (const screen of [phases, agents, detail]) {
+    for (const screen of [timeline, phases, agents, detail]) {
       const plain = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
       const overflow = plain.split('\n').filter((line) => line.length > 80);
       assert.deepEqual(overflow, []);
@@ -484,6 +487,37 @@ test('interactive TUI uses alternate screen and q only detaches the viewer', asy
     assert.match(output.text, /No agent has started in this phase yet/);
     const state = JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'state.json')));
     assert.equal(state.cancelRequested, undefined);
+  } finally { cleanup(); }
+});
+
+test('narrow interactive TUI opens on the timeline and t toggles the phase browser', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 80;
+      rows = 26;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
+    const timelineText = output.text;
+    input.emit('data', Buffer.from('t'));
+    const phasesText = output.text;
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+    assert.match(timelineText, /Workflow timeline/);
+    assert.match(timelineText, /t phases/);
+    assert.match(phasesText, /Phases · 1/);
+    assert.match(phasesText, /t timeline/);
   } finally { cleanup(); }
 });
 

@@ -207,13 +207,17 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
         if (step.actionDefaults != null) {
           collect(issues, step.actionDefaults && typeof step.actionDefaults === 'object' && !Array.isArray(step.actionDefaults),
             `${sat}.actionDefaults must be an object`);
-          const allowedDefaults = new Set(['pool', 'lane', 'effort', 'requiresCapabilities', 'addDir', 'timeoutSec']);
+          const allowedDefaults = new Set(['pool', 'model', 'lane', 'effort', 'requiresCapabilities', 'addDir', 'timeoutSec']);
           for (const key of Object.keys(step.actionDefaults ?? {})) {
             collect(issues, allowedDefaults.has(key), `${sat}.actionDefaults.${key} is not runtime-controlled metadata`);
           }
           if (step.actionDefaults?.pool != null) {
             collect(issues, validPools.has(step.actionDefaults.pool),
               `${sat}.actionDefaults.pool "${step.actionDefaults.pool}" is not a known pool`);
+          }
+          if (step.actionDefaults?.model != null) {
+            collect(issues, typeof step.actionDefaults.model === 'string' && step.actionDefaults.model.trim().length > 0,
+              `${sat}.actionDefaults.model must be a non-empty model identifier`);
           }
           if (step.actionDefaults?.lane != null) {
             collect(issues, validLanes.has(step.actionDefaults.lane),
@@ -244,6 +248,10 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
       if (step.timeoutSec != null) {
         collect(issues, Number.isFinite(step.timeoutSec) && step.timeoutSec > 0,
           `${sat}.timeoutSec must be a positive number`);
+      }
+      if (step.model != null) {
+        collect(issues, typeof step.model === 'string' && step.model.trim().length > 0,
+          `${sat}.model must be a non-empty model identifier`);
       }
     });
   });
