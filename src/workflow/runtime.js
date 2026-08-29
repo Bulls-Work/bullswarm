@@ -1377,7 +1377,7 @@ export class WorkflowRuntime {
       `Return ONLY JSON with schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
       'Allowed decisions: proceed, complete, needs_more_work, retry, escalate, wait_for_approval, stop.',
       'Every proposed action MUST use the field "type" (never "kind").',
-      'Every action MUST include a forward-only kebab-case "phase". Never reuse a name listed in closedPhases.',
+      'Every action MUST include a forward-only kebab-case "phase" shared by the actions of its stage. Never reuse a name listed in closedPhases.',
       '',
       ...(rendered.prompt.includes(AUTONOMOUS_ORCHESTRATOR_PROMPT) ? [] : [AUTONOMOUS_ORCHESTRATOR_PROMPT]),
       '',

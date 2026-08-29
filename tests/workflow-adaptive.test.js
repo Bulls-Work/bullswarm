@@ -515,7 +515,7 @@ test('planner context applies full excerpt rules and keeps failure reasons with 
 test('exported planner prompt sections contain the bounded contract and literal item template', () => {
   assert.ok(PLANNER_RULES_SECTION.length <= 4000);
   assert.ok(PLANNER_EXAMPLES_SECTION.length <= 3000);
-  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object']) {
+  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object', 'pipeline stage', 'never one per action']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
