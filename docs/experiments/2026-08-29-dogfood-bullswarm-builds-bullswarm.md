@@ -154,5 +154,18 @@ Baseline (0.13.1, same fixture/goal/pool/flags): 28m42s wall, 1 planner turn, 29
   runtime can default. Fixed in `548eabe`: review defaults to the single/last dependency's artifact, or
   `reviewScope: repository` for a no-dependency audit; contract rule 4 reworded. Run cancelled to re-prove cleanly.
 
-## Proof run 4 — goal-3 re-run `d7xyg2` (wf-mtdzhw88), 0.14.1-pre @ 548eabe
-(pending)
+## Proof run 4 — goal-3 re-run `d7xyg2` (wf-mtdzhw88), 0.14.1-pre @ 548eabe — **PASS**
+| metric | 0.13.1 baseline (x3x2a2-era, same fixture) | 0.14.1-pre run 4 |
+| --- | ---: | ---: |
+| outcome | completed, verified | completed, verified, **auto-completed** (program-completion) |
+| wall | 28 min 42 s | 30 min 12 s |
+| planner turns / plannerSec | 1 / 294 s | **1 / 269 s** |
+| planner context (turn 1) | 32.7 k chars (measured on a sibling run) | **6.2 k chars** |
+| dispatches (workers) | — | 8 (7) · max concurrent 9 |
+| corrections / rejections / repairs / verdict re-asks | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| deliverable | csv + slugify guarded, 63/63 | csv + slugify guarded, **63/63**, existing test files byte-identical |
+Program: scout → probe (all exports, wrong-type matrix) → fanout guards over the discovered modules → verify-guards →
+report → verify-final, `completion: all-actions-ok`. Wall is within noise of baseline (+90 s, dominated by worker
+model time: probe 4.7 min, guards 5.1 min, verify-guards 4.7 min); the planner side is faster and 5× smaller.
+Zero observation crashes across four runs of TUI/watch/runs/result/static-tui polling and a 20 s stress loop
+(1,681 paints against the live writer, 0 torn, 0 throws).
