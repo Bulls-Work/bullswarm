@@ -2,6 +2,8 @@
 
 ## 0.14.1 — the TUI survives its writer; steering lands or expires truthfully
 
+Proven on a goal-3 re-run (`d7xyg2`): 1 planner turn / 269 s (baseline 0.13.1: 1 / 294 s), planner context 6.2 k chars (from 32.7 k), auto-completed, deliverable verified, zero observation crashes — `docs/experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md`.
+
 - Workflow `state.json`/`report.json`/`workflow.json` writes are atomic
   (temp + rename, new `src/workflow/fsjson.js`): a concurrent reader can never
   observe a half-written file. Earned: `workflow tui` crashed with
@@ -35,7 +37,14 @@
   (rule 4); the program's last worker must be covered by a successful verify
   (rule 8) — both were the causes of extra planner gates on the goal-3 proof
   run. A corrective turn's `validationFeedback.rejectedResponseExcerpt` is
-  capped at 2 000 chars.
+  capped at 2 000 chars, and the rejected proposal is resent as a skeleton
+  (ids, shapes, dependsOn; prompts elided) — the planner's thread already
+  holds it verbatim.
+- A verify without `review` is no longer grounds to reject a whole program:
+  it reviews its single (or last) dependency's artifact, or audits the
+  repository directly when it has no `dependsOn` (`reviewScope: repository`).
+  Observed on two proof runs: a 9-action program bounced for one field,
+  costing a 5-minute correction turn each time.
 
 ## 0.14.0 — structured worker output, compact planner contract
 
