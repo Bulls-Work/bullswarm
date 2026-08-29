@@ -1298,3 +1298,69 @@ test('resume redispatches a run action whose persisted output is schema-incomple
     assert.ok(readEvents(skipped.runDir).some((event) => event.type === 'step.skipped' && event.payload.stepId === 'structured'));
   } finally { f.cleanup(); }
 });
+
+test('pending operator steering defers self-completion to the planner instead of being discarded', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const guidance = 'Converge now: accept informational concerns, do not add polish actions.';
+    let queued = false;
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_SELF_COMPLETE', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        events.push(event);
+        // Queue the steer while the accepted self-completing program is
+        // executing — after the gate delivered (nothing), before the boundary.
+        if (event.type === 'kernel.checkpointed' && event.stage === 'executing' && !queued) {
+          queued = true;
+          const runId = readdirSync(join(f.bullswarmDir, 'workflows'))[0];
+          queueSteering(f.bullswarmDir, runId, guidance);
+        }
+      },
+    });
+    assert.equal(queued, true);
+    // The clean program did NOT self-complete: the boundary was deferred to
+    // the planner gate, which is the only place steering may be delivered.
+    const deferred = events.find((event) => event.type === 'decision.completion_deferred');
+    assert.ok(deferred, 'decision.completion_deferred emitted');
+    assert.equal(deferred.reason, 'operator steering pending');
+    assert.equal(deferred.steeringIds.length, 1);
+    assert.ok(!events.some((event) => event.type === 'decision.auto_completed'));
+    assert.equal(plannerTasks(result.runDir).length, 2);
+    assert.equal(result.state.steering.length, 1);
+    assert.equal(result.state.steering[0].status, 'delivered_to_planner');
+    assert.ok(events.some((event) => event.type === 'steering.delivered'));
+    const secondTask = plannerTasks(result.runDir).at(-1);
+    assert.ok(secondTask.includes(guidance), 'second planner task carries the delivered guidance');
+  } finally { f.cleanup(); }
+});
+
+test('steering that can no longer reach a gate is marked expired at the terminal transition', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    let queued = false;
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_STOP'),
+      pools: f.pools, inputs: {},
+      onEvent: (event) => {
+        events.push(event);
+        // Queue AFTER the final planner decision is recorded: no gate remains.
+        if (event.type === 'decision.created' && event.decision === 'stop' && !queued) {
+          queued = true;
+          const runId = readdirSync(join(f.bullswarmDir, 'workflows'))[0];
+          queueSteering(f.bullswarmDir, runId, 'guidance that arrives too late');
+        }
+      },
+    });
+    assert.equal(queued, true);
+    assert.ok(result.state.finishedAt);
+    assert.equal(result.state.steering.length, 1);
+    assert.equal(result.state.steering[0].status, 'expired_undelivered');
+    assert.ok(result.state.steering[0].expiredAt);
+    const expired = events.find((event) => event.type === 'steering.expired');
+    assert.ok(expired, 'steering.expired emitted');
+    assert.equal(expired.steeringIds.length, 1);
+  } finally { f.cleanup(); }
+});
