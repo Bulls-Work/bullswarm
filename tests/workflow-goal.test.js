@@ -129,18 +129,45 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: ['goal-agent'] }));
 });
 
-test('resume can explicitly replace the durable orchestrator route', () => {
+test('resume can prefer an orchestrator with fallback or strictly pin one for QA', () => {
   const doc = buildGoalWorkflow({ goal: 'Verify the change.', cwd: REPO, name: 'resume-route' });
   assert.equal(doc.orchestration.requestedPool, null);
   applyResumeOrchestratorOverride(doc, 'grok');
   assert.equal(doc.intent.requestedOrchestrator, 'grok');
   assert.equal(doc.orchestration.requestedPool, 'grok');
-  assert.equal(doc.orchestration.selection, 'user-pinned-for-testing');
-  assert.equal(doc.phases[0].steps[1].pool, 'grok');
+  assert.equal(doc.orchestration.selection, 'user-preferred-with-fallback');
+  assert.equal(doc.phases[0].steps[1].preferredPool, 'grok');
+  assert.equal(doc.phases[0].steps[1].pool, undefined);
+  applyResumeOrchestratorOverride(doc, null, 'claude-code');
+  assert.equal(doc.orchestration.selection, 'user-strict-for-testing');
+  assert.equal(doc.orchestration.strictPool, 'claude-code');
+  assert.equal(doc.phases[0].steps[1].pool, 'claude-code');
+  assert.equal(doc.phases[0].steps[1].preferredPool, undefined);
   applyResumeOrchestratorOverride(doc, 'auto');
   assert.equal(doc.intent.requestedOrchestrator, 'auto');
   assert.equal(doc.orchestration.requestedPool, null);
   assert.equal(doc.phases[0].steps[1].pool, undefined);
+  assert.equal(doc.phases[0].steps[1].preferredPool, undefined);
+  assert.throws(
+    () => applyResumeOrchestratorOverride(doc, 'grok', 'claude-code'),
+    /mutually exclusive/,
+  );
+});
+
+test('new goals encode ordinary orchestrator choice as a preference and strict QA as a pin', () => {
+  const preferred = buildGoalWorkflow({
+    goal: 'Inspect it.', cwd: REPO, name: 'preferred-route', orchestrator: 'grok',
+  });
+  assert.equal(preferred.phases[0].steps[1].preferredPool, 'grok');
+  assert.equal(preferred.phases[0].steps[1].pool, undefined);
+  assert.equal(preferred.orchestration.selection, 'user-preferred-with-fallback');
+
+  const strict = buildGoalWorkflow({
+    goal: 'Inspect it.', cwd: REPO, name: 'strict-route', orchestrator: 'grok', strictOrchestrator: true,
+  });
+  assert.equal(strict.phases[0].steps[1].pool, 'grok');
+  assert.equal(strict.phases[0].steps[1].preferredPool, undefined);
+  assert.equal(strict.orchestration.selection, 'user-strict-for-testing');
 });
 
 test('legacy generated goals drop Bullswarm-owned 900s timeouts without touching authored workflows', () => {
