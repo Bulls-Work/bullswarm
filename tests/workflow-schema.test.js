@@ -196,4 +196,12 @@ test('readTrailingObject returns the outermost trailing object, not a schema-mat
   assert.equal(rt.readTrailingObject(file, schema).ok, false);
   writeFileSync(file, 'x {"a":1} trailing prose');
   assert.equal(rt.readTrailingObject(file, schema).ok, false);
+  // A closing markdown fence after the object is tolerated (observed live:
+  // goal-4 run ydpjts spent its single retry and a planner turn on "}\n```").
+  writeFileSync(file, 'report\n```json\n{"ok":"fenced"}\n```\n');
+  assert.deepEqual(rt.readTrailingObject(file, schema), { ok: true, data: { ok: 'fenced' } });
+  writeFileSync(file, '{"ok":"bare"}\n```\n\n```\n');
+  assert.deepEqual(rt.readTrailingObject(file, schema), { ok: true, data: { ok: 'bare' } });
+  writeFileSync(file, '```\n{"ok":"x"}\n```\nthen prose');
+  assert.equal(rt.readTrailingObject(file, schema).ok, false);
 });
