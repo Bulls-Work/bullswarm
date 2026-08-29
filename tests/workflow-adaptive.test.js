@@ -727,6 +727,15 @@ test('one decision carries a whole program: discovery, data-driven fan-out, and 
     assert.match(repair.definition.prompt, /Repair round 1 of 2/);
     assert.equal(result.state.outputs['check-repair-1'].ok, true);
     assert.ok(!result.state.plan.actions.some((entry) => entry.id === 'check-repair-2'));
+    // The re-verify is told what it rejected and what the repair did, and may
+    // reject only for an unresolved listed concern or a regression.
+    const checkTasks = readdirSync(result.runDir).filter((name) => /^task-check-[a-z0-9]+\.md$/.test(name))
+      .map((name) => readFileSync(join(result.runDir, name), 'utf8'));
+    assert.equal(checkTasks.length, 2);
+    assert.equal(checkTasks.filter((task) => task.includes('RE-VERIFY round 1 of 2')).length, 1);
+    const reverifyTask = checkTasks.find((task) => task.includes('RE-VERIFY round 1 of 2'));
+    assert.match(reverifyTask, /Concerns you raised \(verbatim\):\n- item beta lacks evidence of the handled result/);
+    assert.match(reverifyTask, /Return ok:false ONLY if a listed concern is still unresolved/);
 
     const types = events.map((event) => event.type);
     for (const type of ['action.items_resolved', 'action.repair_started', 'action.reverify_started', 'action.repaired']) {
