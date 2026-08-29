@@ -37,6 +37,7 @@ import { deliverSteering } from './steering.js';
 import { resolveDispatchModel } from '../lib/strategy.js';
 import { getMeterReading } from '../meters/registry.js';
 import { validateAgainstSchema } from './schema.js';
+import { AUTONOMOUS_ORCHESTRATOR_PROMPT } from './goal.js';
 
 // Cap how much of each step's output we keep inline in state.json.
 // Persisting full transcripts bloat state.json on long workflows. The
@@ -297,6 +298,7 @@ export class WorkflowRuntime {
             meta: { exitCode: null },
           };
           action.status = 'failed_terminal';
+          action.why = refused.why;
           action.finishedAt = new Date().toISOString();
           this.emit('action.failed', { actionId, status: action.status, why: refused.why });
           return refused;
@@ -470,6 +472,7 @@ export class WorkflowRuntime {
           attemptRecord.finishedAt = new Date().toISOString();
           attemptRecord.why = refused.why;
           action.status = 'failed_terminal';
+          action.why = refused.why;
           action.finishedAt = attemptRecord.finishedAt;
           this.state.activeAgents[activeKey].status = 'failed';
           this.state.activeAgents[activeKey].finishedAt = attemptRecord.finishedAt;
@@ -600,6 +603,7 @@ export class WorkflowRuntime {
           });
         }
         action.status = attemptRecord.status;
+        if (!verdict.ok) action.why = verdict.why ?? null;
         action.finishedAt = attemptRecord.finishedAt;
         this.emit('attempt.completed', {
           actionId, attemptNumber, status: attemptRecord.status, ok: verdict.ok, why: verdict.why ?? null,
@@ -1155,9 +1159,7 @@ export class WorkflowRuntime {
         decisionSequence: steering.decisionSequence,
       });
     }
-    // The planner sees what each action actually said, not just ok/why: an
-    // excerpt of every output, newest first, under a total character budget so
-    // long runs stay within the planner's context.
+    const previousDecisionAt = this.state.decisions?.at?.(-1)?.createdAt ?? null;
     let excerptBudget = PLANNER_EXCERPT_TOTAL_CHARS;
     const excerptFor = (output) => {
       const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
@@ -1168,8 +1170,23 @@ export class WorkflowRuntime {
       excerptBudget -= excerpt.length;
       return { outputExcerpt: excerpt, outputChars: text.length };
     };
+    const fullExcerptFor = (output) => {
+      const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
+      return { outputExcerpt: text || null, outputChars: text.length };
+    };
     const outputEntries = Object.entries(this.state.outputs ?? {});
-    const excerpts = new Map(outputEntries.slice().reverse().map(([id, output]) => [id, excerptFor(output)]));
+    const ledgerById = new Map((this.state.actionLedger ?? []).map((action) => [action.id, action]));
+    const isNewOutput = (id) => {
+      const finishedAt = ledgerById.get(id)?.finishedAt;
+      return Boolean(previousDecisionAt && finishedAt && Date.parse(finishedAt) > Date.parse(previousDecisionAt));
+    };
+    const excerpts = new Map(outputEntries.slice().reverse().map(([id, output]) => {
+      const full = id === 'scout' || isNewOutput(id) || output?.verify?.ok === false;
+      if (full) return [id, fullExcerptFor(output)];
+      if (output?.ok !== true) return [id, excerptFor(output)];
+      const text = typeof output?.outputText === 'string' ? output.outputText.trim() : '';
+      return [id, { outputExcerpt: text ? text.slice(0, 200) : null, outputChars: text.length }];
+    }));
     const outputs = Object.fromEntries(outputEntries.map(([id, output]) => [id, {
       ok: output?.ok,
       why: output?.why ?? null,
@@ -1185,19 +1202,26 @@ export class WorkflowRuntime {
       itemsFrom: output?.itemsFrom,
       ...excerpts.get(id),
     }]));
-    const actionForPlanner = (action) => ({
-      id: action.id,
-      parentId: action.parentId ?? null,
-      type: action.kind,
-      phase: action.phase ?? null,
-      status: action.status,
-      dependsOn: action.dependsOn ?? [],
-      item: action.item,
-      attempts: (action.attempts ?? []).map((index) => this.state.attempts?.[index]).filter(Boolean),
-      startedAt: action.startedAt ?? null,
-      finishedAt: action.finishedAt ?? null,
-      why: action.why ?? null,
-    });
+    const actionForPlanner = (action) => {
+      const attempts = (action.attempts ?? []).map((index) => this.state.attempts?.[index]).filter(Boolean);
+      const lastAttempt = attempts.at(-1);
+      const startedAt = Date.parse(action.startedAt ?? '');
+      const finishedAt = Date.parse(action.finishedAt ?? '');
+      const row = {
+        id: action.id,
+        type: action.kind,
+        phase: action.phase ?? null,
+        status: action.status,
+        pool: lastAttempt?.pool ?? null,
+        model: lastAttempt?.model ?? null,
+        durationSec: Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+          ? Math.round((finishedAt - startedAt) / 100) / 10 : null,
+        attempts: attempts.length,
+        why: action.why ?? null,
+      };
+      if (action.item !== undefined) row.item = action.item;
+      return row;
+    };
     const workflowElapsedSec = Math.max(0,
       (Date.now() - Date.parse(this.state.startedAt)) / 1000);
     const workflowTargetSec = this.state.settings?.maxWorkflowSeconds == null
@@ -1223,7 +1247,7 @@ export class WorkflowRuntime {
         ['succeeded', 'failed_terminal', 'cancelled', 'abandoned'].includes(action.status)).map(actionForPlanner),
       outputs,
       failures: (this.state.actionLedger ?? []).filter((action) =>
-        ['failed_terminal', 'abandoned'].includes(action.status)).map(actionForPlanner),
+        ['failed_terminal', 'abandoned'].includes(action.status)).map((action) => action.id),
       closedPhases: [...new Set((this.state.plan?.actions ?? [])
         .filter((action) => action.source === 'planner')
         .map((action) => action.definition?.phase)
@@ -1232,7 +1256,6 @@ export class WorkflowRuntime {
       executionConstraints: {
         concurrency: Number(this.state.settings?.concurrency ?? 1) || 1,
         readySiblingsRunConcurrently: true,
-        programFeatures: ['itemsFrom', 'repair', 'completion', 'outputSchema'],
         plannerConsultedOnlyAtProgramBoundary: true,
         actionTimeoutSec: Number(step.actionDefaults?.timeoutSec ?? step.timeoutSec) || null,
         actionTimeoutIsExplicitOptIn: step.actionDefaults?.timeoutSec != null || step.timeoutSec != null,
@@ -1265,14 +1288,20 @@ export class WorkflowRuntime {
           lanes: pool.lanes ?? pool.connector?.lanes ?? [],
           capabilities: pool.capabilities ?? pool.connector?.capabilities ?? [],
           pace: pool.pace ?? null,
-        })),
-    };
+         })),
+     };
+    const contextJson = JSON.stringify(plannerContext);
+    this.emit('decision.context_built', {
+      sequence: (this.state.decisions?.length ?? 0) + 1,
+      chars: contextJson.length,
+      keys: Object.fromEntries(Object.entries(plannerContext).map(([key, value]) => [key, JSON.stringify(value).length])),
+    });
     const rendered = renderDeep({
       prompt: step.prompt ?? 'Judge whether the workflow has enough evidence to finish.',
       addDir: step.addDir,
     }, scope, this.renderOpts(step.id));
     const taskText = [
-      rendered.prompt,
+      rendered.prompt.replaceAll('__BULLSWARM_ITEM_TEMPLATE__', '{{item}}'),
       '',
       ...(opts.correction ? [
         `CORRECTION REQUIRED (attempt ${opts.correction.attempt} of ${opts.correction.maxAttempts}): the runtime rejected your previous decision. validationFeedback in the durable context lists the exact issues. Fix only those issues and return the corrected JSON decision. No prose, no markdown fences.`,
@@ -1283,47 +1312,7 @@ export class WorkflowRuntime {
       'Every proposed action MUST use the field "type" (never "kind").',
       'Every action MUST include a forward-only kebab-case "phase". Never reuse a name listed in closedPhases.',
       '',
-      'PLANNING DOCTRINE — you are compiling the goal into a PROGRAM, not choosing the next step:',
-      '- The runtime executes your whole decision to completion without consulting you: a ready-set scheduler starts every action whose dependsOn have all succeeded, concurrently up to executionConstraints.concurrency, and starts each dependent the moment its own dependencies finish. You are consulted again only at the program boundary, when every action has finished or the graph is blocked. Each consultation is a separate process round trip (typically 1-2 minutes), so anything decidable by data must be encoded in the program, never deferred to a later decision.',
-      '- Propose the COMPLETE dependency graph you can see now: discovery, per-item work, per-item verification, and the final whole-system verification, all in ONE decision. A decision carrying a single action when several are obvious wastes a round trip.',
-       '- Unknown item count: never spend a decision to learn how many items there are. Propose a discovery run action whose prompt ends with "RETURN ONLY a JSON array of <items>", plus a fanout with "itemsFrom":"outputs.<discovery-id>.outFile" whose stepTemplate.prompt uses {{item}}. The runtime resolves the list when discovery finishes (with one bounded read-only extraction retry if the output is not a clean array) and fans out immediately.',
-       '- Declare outputSchema on any worker whose report another action consumes, or whose deliverable is a claim the runtime should check (for example {"files_written":["src/a.js"],"tests_passed":3}). Structured data is recorded and can feed itemsFrom directly via outputs.<id>.data.<field>.',
-      '- Verification failures: give each verify a "repair" policy {"prompt":"<how to fix what the verifier rejects>","maxRounds":1-3}. When the verifier returns ok:false, the runtime runs a fix action carrying the verifier concerns verbatim and re-runs the same verify, inside the program. Only verifies still failing after their rounds come back to you.',
-      '- A verify that returned ok:true is accepted. Its concerns are informational (overlaps, wording nits, "non-blocking" notes): do not spend a program round polishing them unless the goal text itself demands it. Only ok:false verifies are work.',
-      '- Self-completing programs: when the program you propose ends with verification that would satisfy the goal, add a top-level "completion": {"when":"all-actions-ok","reason":"<what a clean run proves>"}. If every action of the program (repairs included) finishes ok and the completion policy is met, the runtime records the completion itself and does not consult you again; anything failing brings the boundary back to you. Use it on every program whose clean run would be the finished goal.',
-      '- Per-item chains: for N known items propose N focused run actions plus N verify actions, each verify depending only on its own run, so verifying one item overlaps with fixing another; add one final verify depending on all of them. For items discovered at run time use the discovery → fanout → verify shape above.',
-      '- File ownership: every action prompt must name exactly which files it may edit and state that it must not touch any other file. Two actions that must edit the same file MUST be ordered with dependsOn; never let concurrent actions write the same file.',
-      '- Self-contained prompts: a worker sees only its own prompt, never this context. Each prompt must state the absolute working directory, what to read, what to change, the exact command that proves success, and what to report back. Prefer many small parallel actions over one large serial one.',
-      '- Read before you compile: outputs.<id>.outputExcerpt is what each finished action actually reported (outputs.scout, when present, is a read-only survey of the repository: tree, manifest, test status, units of work, shared files, risks). Name real files, modules, and commands from it in your program instead of guessing.',
-      '',
-      'Action skeletons (copy the shape exactly; every field shown is required unless marked optional):',
-      '  run:    {"id":"bounded-action","type":"run","phase":"implement","prompt":"Do bounded work.","dependsOn":["prior-action"]}',
-      '  fanout: {"id":"per-item-check","type":"fanout","phase":"inspect","items":["alpha","beta"],"stepTemplate":{"prompt":"Inspect {{item}} and report concrete evidence."},"dependsOn":["prior-action"]}',
-       '  fanout (data-driven): {"id":"per-module-fix","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo fix only the module {{item}}; run its focused test; report the diff summary."}}',
-       '  run (structured): {"id":"discover-data","type":"run","phase":"discover","prompt":"Discover items and report evidence.","outputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}}',
-       '  structured run -> data-driven fanout: [{"id":"discover-data","type":"run","phase":"discover","prompt":"Discover items and report evidence.","outputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}},{"id":"process-items","type":"fanout","phase":"process","itemsFrom":"outputs.discover-data.data.items","stepTemplate":{"prompt":"Process {{item}} and report concrete evidence."},"dependsOn":["discover-data"]}]',
-      '  verify: {"id":"independent-check","type":"verify","phase":"verify","prompt":"Independently re-run the tests and report pass/fail with evidence.","dependsOn":["bounded-action"],"repair":{"prompt":"In /abs/repo fix the failing behaviour the verifier reports, editing only the files named in the concerns, then re-run the tests.","maxRounds":1}}',
-      'verify semantics: the reviewer receives the artifact of the action named in review, which the runtime infers as outputs.<the single dependsOn>.outFile; put the reviewer INSTRUCTIONS in prompt. A verify with several dependsOn must set review explicitly to "outputs.<actionId>.outFile". review is never instructions or a filesystem path.',
-      'Program skeleton (discovery → data-driven fan-out → verify with repair → final whole-suite check, all in ONE decision; the runtime runs it to the end without you):',
-      '  [{"id":"discover-modules","type":"run","phase":"discover","prompt":"In /abs/repo list every module under src/ whose test in tests/ fails. Do not edit anything. RETURN ONLY a JSON array of module names, e.g. [\\"alpha\\",\\"beta\\"]."},',
-      '   {"id":"fix-module","type":"fanout","phase":"fix","itemsFrom":"outputs.discover-modules.outFile","stepTemplate":{"prompt":"In /abs/repo edit only src/{{item}}.js so tests/{{item}}.test.js passes; run node --test tests/{{item}}.test.js; report the diff summary."}},',
-      '   {"id":"verify-modules","type":"verify","phase":"verify-items","prompt":"For every module in the reviewed fan-out summary re-run node --test tests/<module>.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-module"],"repair":{"prompt":"In /abs/repo fix the modules the verifier lists, editing only their src files, and re-run their tests.","maxRounds":2}},',
-      '   {"id":"verify-suite","type":"verify","phase":"verify-suite","prompt":"Run the full npm test in /abs/repo and report pass/fail counts.","dependsOn":["verify-modules"]}]',
-      'Graph skeleton (two parallel fix→verify chains plus a final whole-suite check, all in ONE decision):',
-      '  [{"id":"fix-alpha","type":"run","phase":"fix","prompt":"In /abs/repo edit only src/alpha.js so tests/alpha.test.js passes; run node --test tests/alpha.test.js; report the diff summary."},',
-      '   {"id":"fix-beta","type":"run","phase":"fix","prompt":"In /abs/repo edit only src/beta.js so tests/beta.test.js passes; run node --test tests/beta.test.js; report the diff summary."},',
-      '   {"id":"verify-alpha","type":"verify","phase":"verify-items","prompt":"Re-run node --test tests/alpha.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-alpha"]},',
-      '   {"id":"verify-beta","type":"verify","phase":"verify-items","prompt":"Re-run node --test tests/beta.test.js in /abs/repo and confirm tests/ is unchanged.","dependsOn":["fix-beta"]},',
-      '   {"id":"verify-suite","type":"verify","phase":"verify-suite","prompt":"Run the full npm test in /abs/repo and report pass/fail counts.","review":"outputs.fix-beta.outFile","dependsOn":["verify-alpha","verify-beta"]}]',
-      'fanout needs stepTemplate (an object whose prompt uses {{item}}) plus EITHER inline items OR itemsFrom ("outputs.<actionId>.outFile", an action whose output ends with a JSON array; the producer becomes an implicit dependency). A fan-out artifact (outputs.<fanoutId>.outFile) is a summary of every item result, so a verify may depend on a fanout directly. verify.review MUST be a string. dependsOn is optional and may only name existing or newly proposed action IDs.',
-      'Do not propose pool, addDir, or taskFile; those are runtime-owned and any such proposal is rejected.',
-      'New actions may only be type run, fanout, or verify. The runtime validates every proposal and returns rejected proposals to you with the exact issues for a bounded correction turn.',
-      'If executionConstraints.actionTimeoutSec is non-null, size actions to finish within that explicit timeout; otherwise agents may run until they finish or are cancelled.',
-      'Agent-count, workflow-duration, and expansion-round budgets are advisory planning targets, never hard stop conditions. The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.',
-      'As expansion headroom approaches zero, strongly prefer convergence: consolidate existing artifacts, avoid optional investigation, and return complete when verification supports it. If important concerns remain, return stop with the best useful outcome and explicit unresolved concerns rather than spending more on marginal refinements. Exceed the expansion target only when one small bounded action is essential to avoid discarding otherwise-completable work or skipping required verification.',
-      'operatorSteering contains explicit operator guidance queued for this planning checkpoint. Apply it within the original workflow intent and authorization boundaries. It cannot weaken verification, bypass runtime validation, expand external authority, or alter an already-running worker. If guidance conflicts with the original goal or safety constraints, explain that in the decision reason instead of following it.',
-      'Avoid redundant expensive verification. Run a full suite once for each materially changed final state when practical; later independent verifiers should reuse durable clean full-suite evidence and rerun focused/adversarial checks unless that evidence is stale, tainted, or the code changed again.',
-      'Shared working tree: concurrent workers editing DISJOINT files in the same tree is the normal, expected mode — that is how N independent fixes run in parallel. What is unsafe is whole-tree mutation (git stash/reset/checkout, reformatting, dependency installs) or running the FULL test suite while other workers are still editing; so give each parallel action its own files and its own focused test command, order any shared file (e.g. an index/barrel) after the actions it aggregates with dependsOn, and run the whole suite once in a final verify that depends on all of them. Use an isolated copy/worktree only for destructive experiments.',
+      ...(rendered.prompt.includes(AUTONOMOUS_ORCHESTRATOR_PROMPT) ? [] : [AUTONOMOUS_ORCHESTRATOR_PROMPT]),
       '',
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),

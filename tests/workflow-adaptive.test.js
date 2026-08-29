@@ -11,6 +11,9 @@ import {
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 import { queueSteering } from '../src/workflow/steering.js';
+import {
+  PLANNER_RULES_SECTION, PLANNER_EXAMPLES_SECTION, AUTONOMOUS_ORCHESTRATOR_PROMPT,
+} from '../src/workflow/goal.js';
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-adaptive-'));
@@ -112,6 +115,7 @@ function fixture() {
     '} else if (task.includes("VERIFY_OK")) {',
     '  process.stdout.write(JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else {',
+    '  if (task.includes("LONG_EXCERPT")) process.stdout.write("LONG_EXCERPT_OUTPUT_" + "x".repeat(400));',
     '  const sleep = /SLEEP_(\\d+)/.exec(task);',
     '  if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));',
     '  process.stdout.write("Completed the bounded action with concrete evidence, file inspection details, and a sufficiently thorough result for downstream verification.");',
@@ -143,7 +147,7 @@ function adaptiveDoc(marker, settings = {}) {
     settings: { concurrency: 1, retryAttempts: 0, maxAgents: 12, maxExpansionRounds: 3, maxActions: 8, maxItemsPerExpansion: 4, ...settings },
     phases: [{ name: 'work', steps: [
       { id: 'initial', type: 'run', lane: 'analyze', prompt: 'Perform the initial bounded investigation.' },
-      { id: 'planner', type: 'decide', lane: 'analyze', prompt: `Judge sufficiency and propose only necessary bounded work. ${marker}` },
+         { id: 'planner', type: 'decide', lane: 'analyze', prompt: `Judge sufficiency and propose only necessary bounded work. ${marker}\n${AUTONOMOUS_ORCHESTRATOR_PROMPT}` },
     ] }],
   };
 }
@@ -153,6 +157,12 @@ function plannerTasks(runDir) {
     .filter((name) => name.startsWith('task-planner-'))
     .sort()
     .map((name) => readFileSync(join(runDir, name), 'utf8'));
+}
+
+function plannerContext(task) {
+  const match = task.match(/---- BEGIN DURABLE WORKFLOW CONTEXT ----\n([\s\S]*?)\n---- END DURABLE WORKFLOW CONTEXT ----/);
+  assert.ok(match, 'planner task contains durable context');
+  return JSON.parse(match[1]);
 }
 
 test('dependency-ready sibling actions run concurrently and dependents start as soon as their own inputs finish', async () => {
@@ -182,11 +192,15 @@ test('dependency-ready sibling actions run concurrently and dependents start as 
       `check-a started at +${started['check-a'] - started['fix-a']}ms; fix-b finished at +${finished['fix-b'] - started['fix-a']}ms`);
     assert.ok(result.state.attempts.every((attempt) => attempt.status === 'succeeded'));
     const [firstPlannerTask] = plannerTasks(result.runDir);
-    assert.match(firstPlannerTask, /PLANNING DOCTRINE/);
+    assert.match(firstPlannerTask, /Ordered planning contract:/);
     assert.match(firstPlannerTask, /"concurrency": 3/);
     assert.match(firstPlannerTask, /"readySiblingsRunConcurrently": true/);
-    assert.match(firstPlannerTask, /concurrent workers editing DISJOINT files in the same tree is the normal, expected mode/);
-    assert.doesNotMatch(firstPlannerTask, /must not modify or stash the shared target/);
+    const context = plannerContext(firstPlannerTask);
+    assert.equal(context.completedActions[0].attempts, 1);
+    assert.equal(Array.isArray(context.completedActions[0].attempts), false);
+    assert.equal(context.completedActions[0].pool, 'adaptive-echo');
+    assert.equal(context.completedActions[0].routing, undefined);
+    assert.doesNotMatch(firstPlannerTask, /PLANNING DOCTRINE|Graph skeleton|Program skeleton/);
   } finally { f.cleanup(); }
 });
 
@@ -197,19 +211,15 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.equal(result.state.status, 'completed');
     const [task] = plannerTasks(result.runDir);
     assert.match(task, /"type":"run","phase":"implement","prompt"/);
-    assert.match(task, /"type":"fanout","phase":"inspect","items":\["alpha","beta"\],"stepTemplate":\{"prompt":"Inspect \{\{item\}\}/);
+    assert.match(task, /"type":"fanout","phase":"fix","items":\["alpha"\]/);
     assert.match(task, /"type":"verify","phase":"verify","prompt":/);
-    assert.match(task, /"itemsFrom":"outputs\.discover-modules\.outFile"/);
+    assert.match(task, /"itemsFrom":"outputs\.discover\.outFile"/);
     assert.match(task, /"repair":\{"prompt":/);
-    assert.match(task, /Program skeleton \(discovery → data-driven fan-out → verify with repair/);
-    assert.match(task, /compiling the goal into a PROGRAM/);
-    assert.match(task, /"programFeatures": \[\s*"itemsFrom",\s*"repair",\s*"completion",\s*"outputSchema"\s*\]/);
-    assert.match(task, /Self-completing programs: .*"completion": \{"when":"all-actions-ok"/);
+    assert.match(task, /"completion":\{"when":"all-actions-ok"/);
+    assert.match(task, /"outputSchema":\{"type":"object"\}/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
-    assert.match(task, /Read before you compile: outputs\.<id>\.outputExcerpt/);
-    assert.match(task, /A verify that returned ok:true is accepted\. Its concerns are informational/);
-    assert.match(task, /review is never instructions or a filesystem path/);
-    assert.match(task, /fanout needs stepTemplate \(an object whose prompt uses \{\{item\}\}\) plus EITHER inline items OR itemsFrom/);
+    assert.match(task, /fanout has stepTemplate and either items or itemsFrom/);
+    assert.match(task, /\{\{item\}\}/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
   } finally { f.cleanup(); }
@@ -357,8 +367,151 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.ok(plannerTasks.every((task) => task.includes('"verificationDispatchReserve": 0')));
     assert.ok(plannerTasks.every((task) => task.includes('Every action MUST include a forward-only kebab-case "phase"')));
     assert.ok(plannerTasks.every((task) => task.includes('"closedPhases"')));
-    assert.ok(plannerTasks.every((task) => task.includes('The dispatch budget counts this planner call plus every worker, verifier, retry, and escalation attempt.')));
+    assert.ok(plannerTasks.every((task) => task.includes('Treat agent-count, workflow-duration, and expansion-round budgets as advisory planning targets')));
   } finally { f.cleanup(); }
+});
+
+test('planner context uses compact rows, last-attempt routing, and emits context size metadata', async () => {
+  const f = fixture();
+  try {
+    const retryWorker = join(f.root, 'planner-context-retry.mjs');
+    const retryCount = join(f.root, 'planner-context-retry.count');
+    writeFileSync(retryWorker, [
+      'import { readFileSync, writeFileSync } from "node:fs";',
+      `const countFile = ${JSON.stringify(retryCount)};`,
+      'let count = 0; try { count = Number(readFileSync(countFile, "utf8")) || 0; } catch {}',
+      'writeFileSync(countFile, String(count + 1));',
+      'if (count === 0) process.exit(1);',
+      'process.stdout.write("Completed the bounded action with concrete evidence.");',
+    ].join('\n'));
+    const badConnector = {
+      ...f.pools[0].connector,
+      name: 'context-bad',
+      spawn: { cmd: ['node', retryWorker, '{taskFile}'], cwdMode: 'task-file-dir' },
+    };
+    const pools = [
+      { ...f.pools[0], name: 'context-bad', connector: badConnector, pace: 0 },
+    ];
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        name: 'planner-context-shape', description: 'context', inputs: {},
+        settings: { retryAttempts: 1, escalateOnFail: false, maxExpansionRounds: 1 },
+        phases: [{ name: 'p', steps: [
+          { id: 'two-attempts', type: 'run', lane: 'analyze', prompt: 'Complete the bounded action.' },
+          { id: 'planner', type: 'decide', lane: 'analyze', prompt: `FORCE_PROCEED\n${AUTONOMOUS_ORCHESTRATOR_PROMPT}`, dependsOn: ['two-attempts'] },
+        ] }],
+      },
+      pools: [pools[0]], inputs: {},
+    });
+    const task = plannerTasks(result.runDir)[0];
+    const context = plannerContext(task);
+    const row = context.completedActions.find((entry) => entry.id === 'two-attempts');
+    assert.equal(row.attempts, 2);
+    assert.equal(Array.isArray(row.attempts), false);
+    assert.equal(row.pool, 'context-bad');
+    assert.equal(row.model, null);
+    assert.equal(typeof row.durationSec, 'number');
+    assert.equal(Math.round(row.durationSec * 10) / 10, row.durationSec);
+    assert.equal('routing' in row, false);
+    assert.equal('usage' in row, false);
+
+    const event = readEvents(result.runDir).find((entry) => entry.type === 'decision.context_built');
+    assert.equal(event.payload.sequence, 1);
+    assert.equal(event.payload.chars, JSON.stringify(context).length);
+    for (const [key, size] of Object.entries(event.payload.keys)) {
+      assert.equal(size, JSON.stringify(context[key]).length, key);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('planner context applies full excerpt rules and keeps failure reasons with id-only failures', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: adaptiveDoc('FORCE_SELF_COMPLETE_FAIL', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {},
+    });
+    const context = plannerContext(plannerTasks(result.runDir).at(-1));
+    const failedVerify = context.outputs['final-check'];
+    assert.equal(failedVerify.verify.ok, false);
+    assert.equal(failedVerify.outputExcerpt.length, failedVerify.outputChars);
+    assert.ok(failedVerify.outputExcerpt.length > 0);
+
+    const scoutRun = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        name: 'scout-full-excerpt', description: 'scout', inputs: {},
+        settings: { retryAttempts: 0, maxExpansionRounds: 1 },
+        phases: [{ name: 'p', steps: [
+          { id: 'scout', type: 'run', prompt: 'LONG_EXCERPT' },
+          { id: 'planner', type: 'decide', prompt: `FORCE_PROCEED\n${AUTONOMOUS_ORCHESTRATOR_PROMPT}` },
+        ] }],
+      },
+      pools: f.pools, inputs: {},
+    });
+    const scout = plannerContext(plannerTasks(scoutRun.runDir)[0]).outputs.scout;
+    assert.equal(scout.outputExcerpt.length, scout.outputChars);
+    assert.ok(scout.outputChars > 200);
+
+    const stale = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        ...adaptiveDoc('FORCE_DEFAULT', { maxExpansionRounds: 2 }),
+        phases: [{ name: 'work', steps: [
+          { id: 'initial', type: 'run', prompt: 'LONG_EXCERPT' },
+          { id: 'planner', type: 'decide', prompt: 'Judge sufficiency.' },
+        ] }],
+      },
+      pools: f.pools, inputs: {},
+    });
+    const staleContext = plannerContext(plannerTasks(stale.runDir).at(-1));
+    assert.equal(staleContext.outputs.initial.outputExcerpt.length, 200);
+    assert.ok(staleContext.outputs.initial.outputChars > 200);
+
+    const badWorker = join(f.root, 'planner-context-failure.mjs');
+    writeFileSync(badWorker, 'process.stdout.write("concrete failure reason");\n');
+    const badConnector = {
+      ...f.pools[0].connector,
+      name: 'failure-pool',
+      authSignatures: ['concrete failure reason'],
+      spawn: { cmd: ['node', badWorker, '{taskFile}'], cwdMode: 'task-file-dir' },
+    };
+    const failureResult = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: {
+        name: 'planner-failure-context', description: 'failure', inputs: {},
+        settings: { retryAttempts: 0, escalateOnFail: false, maxExpansionRounds: 1 },
+        phases: [{ name: 'p', steps: [
+          { id: 'failed-action', type: 'run', lane: 'chore', prompt: 'Fail.' },
+          { id: 'planner', type: 'decide', lane: 'analyze', prompt: 'FORCE_STOP', dependsOn: ['failed-action'] },
+        ] }],
+      },
+      pools: [
+        { name: 'failure-pool', connector: badConnector, enabled: true, lanes: ['chore'], capabilities: [], pace: 0 },
+        f.pools[0],
+      ],
+      inputs: {},
+    });
+    const failureContext = plannerContext(plannerTasks(failureResult.runDir)[0]);
+    assert.deepEqual(failureContext.failures, ['failed-action']);
+    const failedRow = failureContext.completedActions.find((entry) => entry.id === 'failed-action');
+    assert.equal(typeof failedRow.why, 'string');
+    assert.match(failedRow.why, /concrete failure reason/);
+    assert.ok(failureContext.failures.every((id) => typeof id === 'string'));
+  } finally { f.cleanup(); }
+});
+
+test('exported planner prompt sections contain the bounded contract and literal item template', () => {
+  assert.ok(PLANNER_RULES_SECTION.length <= 4000);
+  assert.ok(PLANNER_EXAMPLES_SECTION.length <= 3000);
+  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool']) {
+    assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
+  }
+  assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
+  assert.match(PLANNER_EXAMPLES_SECTION, /Complete program:/);
+  assert.match(PLANNER_EXAMPLES_SECTION, /\{\{item\}\}/);
 });
 
 test('autonomous planner checkpoints reuse one durable connector conversation', async () => {
