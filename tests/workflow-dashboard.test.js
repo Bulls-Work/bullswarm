@@ -147,9 +147,15 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
     assert.match(overview, /Phases · 2/);
     assert.match(overview, /1 ○ discover/);
     assert.match(overview, /2 ⠋ review 0\/1/);
-    assert.match(overview, /review · 0\/1 complete/);
-    assert.match(overview, /fan · grok · grok-4\.6 · #1 · 52 tok/);
+    assert.match(overview, /Workflow timeline/);
+    assert.match(overview, /Live · 1 running · 0 waiting/);
+    assert.match(overview, /fan · grok · grok-4\.6/);
+    assert.match(overview, /shell command · npm test/);
     assert.doesNotMatch(overview, /Activity/);
+
+    const agents = renderWorkflowTui(row, { width: 120, height: 30, focus: 1 });
+    assert.match(agents, /review · 0\/1 complete/);
+    assert.match(agents, /fan · grok · grok-4\.6 · #1 · 52 tok/);
 
     const detail = renderWorkflowTui(row, { width: 120, height: 30, focus: 2 });
     assert.match(detail, /fan · grok/);
@@ -158,7 +164,7 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
     assert.match(detail, /Activity · last 2 of 7/);
     assert.match(detail, /#6 ✓ read_file · completed/);
     assert.match(detail, /#7 ⠋ shell_command · running/);
-    assert.match(detail, /Enter drill in · Esc back/);
+    assert.match(detail, /Enter inspect/);
 
     state.status = 'completed';
     state.finishedAt = new Date().toISOString();
@@ -250,22 +256,23 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     assert.deepEqual(model.agents.map((agent) => agent.action.id), ['inspect']);
 
     const tui = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(tui, /⠋ Orchestration · planning/);
+    assert.match(tui, /Workflow Planner/);
+    assert.match(tui, /\[Workflow Planner\].*planning/);
     assert.match(tui, /1\/1 workers/);
-    assert.match(tui, /Autonomous Delivery · 1\/1 complete/);
+    assert.match(tui, /Autonomous Delivery 1\/1/);
     assert.doesNotMatch(tui, /orchestrator · grok · grok-4\.6 · #/);
-    assert.match(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 1 }), /⠙ Orchestration · planning/);
+    assert.match(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 1 }), /⠙ \[Workflow Planner\]/);
 
     const control = renderWorkflowTui(row, {
       width: 120, height: 30, controlSelected: true,
     });
-    assert.match(control, /⠋ Orchestration · planning/);
+    assert.match(control, /Workflow Planner · planning/);
     assert.match(control, /⠋ planning · grok · grok-4\.6/);
 
     const thread = renderWorkflowTui(row, {
       width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
     });
-    assert.match(thread, /Orchestrator · overview/);
+    assert.match(thread, /Workflow Planner · overview/);
     assert.match(thread, /Now · Choosing the next smallest useful action/);
     assert.match(thread, /Latest action · Response · Planner decision recorded/);
     assert.match(thread, /Live stream · event .* ago · 12345 bytes observed/);
@@ -281,7 +288,7 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
       width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
       orchestratorVerbose: true,
     });
-    assert.match(technicalThread, /Orchestrator · technical details/);
+    assert.match(technicalThread, /Workflow Planner · technical details/);
     assert.match(technicalThread, /Technical thread/);
     assert.match(technicalThread, /Session · grok · thread-123 · resumable/);
     assert.match(technicalThread, /Logical thread · 2 checkpoint turns/);
@@ -293,7 +300,8 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     writeFileSync(statePath, JSON.stringify(state));
     const semanticFailure = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
     assert.match(semanticFailure, /1 ✗ Autonomous Delivery 1\/1/);
-    assert.match(semanticFailure, /✗ inspect · command-code/);
+    const semanticFailureAgents = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30, focus: 1 });
+    assert.match(semanticFailureAgents, /✗ inspect · command-code/);
 
     state.attempts[2].status = 'succeeded';
     state.outputs.inspect = { ok: true, why: 'verified' };
@@ -304,8 +312,123 @@ test('autonomous TUI presents one orchestrator thread outside execution phases',
     const waiting = renderWorkflowTui(dashboardRows(home)[0], {
       width: 120, height: 30, controlSelected: true,
     });
-    assert.match(waiting, /⧖ Orchestration · directing/);
+    assert.match(waiting, /Workflow Planner · directing execution/);
     assert.match(waiting, /1 ✓ Autonomous Delivery 1\/1/);
+  } finally { cleanup(); }
+});
+
+test('workflow overview separates timestamped history from live planner and worker activity', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.startedAt = '2026-08-29T00:00:00.000Z';
+    state.intent.autonomous = true;
+    state.orchestration.mode = 'autonomous';
+    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [
+      { id: 'scout', type: 'run' },
+      { id: 'orchestrator', type: 'decide' },
+    ] }] };
+    state.currentStep = { id: 'implement-b', type: 'run', phase: 'implement' };
+    state.actionLedger = [
+      { id: 'scout', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [0] },
+      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [1] },
+      { id: 'discover-a', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [2] },
+      { id: 'discover-b', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [3] },
+      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [4] },
+      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'running', attempts: [5] },
+      { id: 'verify-all', phase: 'verify', kind: 'verify', status: 'pending', dependsOn: ['implement-b'], attempts: [] },
+    ];
+    state.attempts = [
+      { actionId: 'scout', pool: 'opencode2', model: 'gpt-5.6-luna', status: 'succeeded', startedAt: '2026-08-29T00:00:10.000Z', finishedAt: '2026-08-29T00:02:10.000Z', usage: { tokens: { totalKnown: 3300 } } },
+      { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: '2026-08-29T00:02:10.000Z', finishedAt: '2026-08-29T00:03:10.000Z' },
+      { actionId: 'discover-a', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: '2026-08-29T00:03:10.000Z', finishedAt: '2026-08-29T00:04:10.000Z' },
+      { actionId: 'discover-b', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: '2026-08-29T00:03:10.000Z', finishedAt: '2026-08-29T00:04:20.000Z' },
+      { actionId: 'implement-a', pool: 'command-code', model: 'minimax-m3', status: 'succeeded', startedAt: '2026-08-29T00:04:20.000Z', finishedAt: '2026-08-29T00:05:20.000Z' },
+      { actionId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running', startedAt: '2026-08-29T00:04:20.000Z' },
+    ];
+    state.outputs = {
+      scout: { ok: true },
+      'discover-a': { ok: true },
+      'discover-b': { ok: true },
+      'implement-a': { ok: true },
+    };
+    state.decisions = [{ gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, implement, then independently verify.' }];
+    state.activeAgents = { 'implement-b': {
+      stepId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running',
+      startedAt: '2026-08-29T00:04:20.000Z', lastEventAt: new Date().toISOString(), outputBytesObserved: 83968,
+      lastActions: [{ kind: 'write_file', status: 'running', summary: 'src/workflow/result.js' }],
+    } };
+    writeFileSync(statePath, JSON.stringify(state));
+
+    const row = dashboardRows(home)[0];
+    const overview = renderWorkflowTui(row, { width: 140, height: 54 });
+    assert.match(overview, /Workflow timeline · \d+ milestones?/);
+    assert.match(overview, /\d{2}:\d{2}  ● \[Preflight: Scout\] started/);
+    assert.match(overview, /\d{2}:\d{2}  ✓ \[Preflight: Scout\] completed/);
+    assert.match(overview, /\d{2}:\d{2}  ◆ \[Workflow Planner\] checkpoint #1/);
+    assert.match(overview, /\d{2}:\d{2}  ├─ \[Phase: Discover\] started/);
+    assert.match(overview, /\d{2}:\d{2}  └─✓ \[Phase: Discover\] completed/);
+    assert.match(overview, /\d{2}:\d{2}  ├─ \[Phase: Implement\] started/);
+    assert.doesNotMatch(overview, /\[Phase: Implement\] completed/);
+    assert.match(overview, /Live · 1 running · 1 waiting/);
+    assert.match(overview, /⧖ \[Workflow Planner\].*waiting/);
+    assert.match(overview, /⠋ implement-b · command-code · minimax-m3/);
+    assert.match(overview, /Write file · src\/workflow\/result\.js/);
+    assert.match(overview, /○ \[Phase: Verify\] · verify-all · waiting for implement-b/);
+    assert.doesNotMatch(overview, /Autonomous Delivery/);
+    const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    assert.deepEqual(plain.split('\n').filter((line) => line.length > 140), []);
+
+    const technical = renderWorkflowTui(row, { width: 140, height: 36, workflowVerbose: true });
+    assert.match(technical, /Workflow technical details/);
+    assert.match(technical, /Action ledger/);
+    assert.match(technical, /\[Workflow Planner\] · decide/);
+  } finally { cleanup(); }
+});
+
+test('planner retries do not shift accepted decisions onto rejected attempts', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.intent.autonomous = true;
+    state.startedAt = '2026-08-29T00:00:00.000Z';
+    state.orchestration.mode = 'autonomous';
+    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
+    state.actionLedger = [{ id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [0, 1] }];
+    state.attempts = [
+      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:00.000Z', finishedAt: '2026-08-29T00:00:30.000Z', outFile: '/tmp/rejected.json' },
+      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:31.000Z', finishedAt: '2026-08-29T00:01:00.000Z', outFile: '/tmp/accepted.json' },
+    ];
+    state.decisions = [{
+      sequence: 1, artifact: '/tmp/accepted.json', createdAt: '2026-08-29T00:00:59.000Z',
+      decision: 'needs_more_work', reason: 'Accepted plan belongs to the second turn.',
+    }];
+    writeFileSync(statePath, JSON.stringify(state));
+    appendEvent(join(home, 'workflows', 'wf-test'), state, 'decision.rejected', {
+      gateId: 'orchestrator', why: 'First response did not match the decision schema.',
+    });
+    writeFileSync(statePath, JSON.stringify(state));
+
+    const row = dashboardRows(home)[0];
+    row.events = readEvents(join(home, 'workflows', 'wf-test'));
+    const tui = renderWorkflowTui(row, { width: 140, height: 45 });
+    assert.match(tui, /checkpoint #1.*No accepted decision; correction or retry turn/s);
+    assert.match(tui, /decision rejected.*First response did not match the decision schema/s);
+    assert.match(tui, /checkpoint #2.*Accepted plan belongs to the second turn/s);
+  } finally { cleanup(); }
+});
+
+test('workflow TUI honors terminal widths below the previous 38-column floor', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const row = dashboardRows(home)[0];
+    for (const width of [20, 28, 37]) {
+      const plain = renderWorkflowTui(row, { width, height: 20 })
+        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+      assert.equal(Math.max(...plain.split('\n').map((line) => line.length)) <= width, true);
+    }
   } finally { cleanup(); }
 });
 

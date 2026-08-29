@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Reworked the autonomous workflow TUI around a human-readable execution story:
+  the existing Workflow Planner and phase sidebar now sits beside a timestamped
+  timeline of completed preflight, planner, phase, and worker milestones; active
+  workers and the waiting/running planner are isolated in a Live section with
+  their latest normalized action and stream heartbeat, and future work stays in
+  a distinct Next section. `v` keeps raw action-ledger and event evidence one key
+  away without mixing it into the default view.
 - Rule 7: a verify checks the goal's own acceptance criteria and never adds a
   process rule the goal does not state (append-only, existing tests
   untouched); when the implementation changes what an existing assertion

@@ -259,6 +259,8 @@ export function workflowPanelModel(row, {
   const isControlAction = (action) => orchestrator.autonomous
     && action.id === orchestrator.actionId
     && action.kind === 'decide';
+  const isPreflightAction = (action) => orchestrator.autonomous && action.id === 'scout';
+  const isNonPhaseAction = (action) => isControlAction(action) || isPreflightAction(action);
   const phaseNames = [];
   const addPhase = (name) => {
     if (name && !phaseNames.includes(name)) phaseNames.push(name);
@@ -266,12 +268,13 @@ export function workflowPanelModel(row, {
   for (const phase of state._doc?.phases ?? []) {
     const controlOnly = orchestrator.autonomous
       && (phase.steps ?? []).length
-      && (phase.steps ?? []).every((step) => step.id === orchestrator.actionId && step.type === 'decide');
+      && (phase.steps ?? []).every((step) =>
+        (step.id === orchestrator.actionId && step.type === 'decide') || step.id === 'scout');
     if (!controlOnly) addPhase(phase.name);
   }
-  for (const action of ledger) if (!isControlAction(action)) addPhase(action.phase);
-  for (const step of state.steps ?? []) if (step.stepId !== orchestrator.actionId) addPhase(step.phase);
-  if (state.currentStep?.id !== orchestrator.actionId) addPhase(state.currentStep?.phase);
+  for (const action of ledger) if (!isNonPhaseAction(action)) addPhase(action.phase);
+  for (const step of state.steps ?? []) if (step.stepId !== orchestrator.actionId && step.stepId !== 'scout') addPhase(step.phase);
+  if (state.currentStep?.id !== orchestrator.actionId && state.currentStep?.id !== 'scout') addPhase(state.currentStep?.phase);
   if (!orchestrator.autonomous) addPhase(state.currentPhase?.name);
   if (!phaseNames.length) phaseNames.push(orchestrator.autonomous ? 'execution' : 'starting');
 
@@ -283,7 +286,7 @@ export function workflowPanelModel(row, {
     phaseNames.length - 1,
   );
   const phases = phaseNames.map((name) => {
-    const actions = ledger.filter((action) => action.phase === name && !isControlAction(action));
+    const actions = ledger.filter((action) => action.phase === name && !isNonPhaseAction(action));
     const effectiveStatuses = actions.map((action) => effectiveActionStatus(action, state));
     const completed = effectiveStatuses.filter((status) => TERMINAL_ACTIONS.has(status)).length;
     const failed = effectiveStatuses.filter((status) => String(status).startsWith('failed')).length;
@@ -360,9 +363,10 @@ export function renderWorkflowTui(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
   controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
+  workflowVerbose = false,
   spinnerFrame = 0,
 } = {}) {
-  width = Math.max(38, Number(width) || 120);
+  width = Math.max(20, Number(width) || 120);
   height = Math.max(18, Number(height) || 36);
   const model = workflowPanelModel(row, { phaseIndex, agentIndex });
   const state = model.state;
@@ -384,10 +388,12 @@ export function renderWorkflowTui(row, {
     ? ' Stop this workflow? y confirm · n/Esc keep running'
     : orchestratorDetail
       ? ` ↑/↓ scroll · v ${orchestratorVerbose ? 'overview' : 'technical details'} · Esc back · c stop · q detach`
-      : ` ↑/↓ select · Enter drill in · Esc back · o orchestrator · c stop · q detach`;
+      : workflowVerbose
+        ? ' ↑/↓ scroll · v overview · Esc back · c stop · q detach'
+        : ' ↑/↓ select · PgUp/PgDn timeline · Enter inspect · ←/→ switch · v technical · q detach';
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
-    : ` ${orchestratorDetail ? `Orchestrator ${orchestratorVerbose ? 'technical details' : 'overview'}` : focus === 0 ? 'Phases' : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
+    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? 'Timeline · auto-following newest event' : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
   const messageLine = truncate(rawMessageLine, width);
   const bodyHeight = Math.max(10, height - header.length - 3);
 
@@ -431,8 +437,10 @@ export function renderWorkflowTui(row, {
   const detail = orchestratorDetail
     ? orchestrationLines
     : agentDetailLines(model, Math.max(20, rightWidth - 4), spinnerFrame);
+  const technical = workflowTechnicalLines(model, Math.max(20, rightWidth - 4));
   const contentHeight = bodyHeight - 2;
-  const maxScroll = Math.max(0, detail.length - contentHeight);
+  const scrollSource = workflowVerbose ? technical : detail;
+  const maxScroll = Math.max(0, scrollSource.length - contentHeight);
   const scroll = clamp(detailScroll, 0, maxScroll);
   const visiblePhases = panelWindow(['', ...phaseLines], model.phaseIndex, 1, contentHeight).slice(1);
   const visibleAgents = panelWindow(['', ...agentLines], model.agentIndex, 1, contentHeight).slice(1);
@@ -441,7 +449,7 @@ export function renderWorkflowTui(row, {
   const orchestrationNavLines = model.orchestrator.autonomous
     ? [
       selectLine(
-        `${statusIcon(model.orchestrator.active ? 'running' : model.orchestrator.status, spinnerFrame)} Orchestration · ${model.orchestrator.status}`,
+        `${statusIcon(model.orchestrator.active ? 'running' : model.orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)}`,
         controlSelected,
         focus === 0 && !orchestratorDetail,
         leftWidth - 2,
@@ -450,6 +458,7 @@ export function renderWorkflowTui(row, {
         [model.orchestrator.pool, model.orchestrator.model].filter(Boolean).join(' · ') || 'select to inspect',
         leftWidth - 2,
       ),
+      dimLine(plannerUsageSummary(model), leftWidth - 2),
     ]
     : [];
   const narrowWorkflowLines = model.orchestrator.autonomous
@@ -462,7 +471,19 @@ export function renderWorkflowTui(row, {
 
   let body;
   if (orchestratorDetail) {
-    body = renderPanel(`Orchestrator · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, width, bodyHeight);
+    body = renderPanel(`Workflow Planner · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, width, bodyHeight);
+  } else if (workflowVerbose) {
+    const visibleTechnical = technical.slice(scroll, scroll + contentHeight);
+    if (narrow) body = renderPanel('Workflow technical details', visibleTechnical, width, bodyHeight);
+    else {
+      const left = model.orchestrator.autonomous
+        ? [
+          ...renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, 5),
+          ...renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight - 5),
+        ]
+        : renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight);
+      body = joinPanels(left, renderPanel('Workflow technical details', visibleTechnical, rightWidth, bodyHeight));
+    }
   } else if (narrow) {
     const mobile = focus === 0
       ? {
@@ -478,15 +499,17 @@ export function renderWorkflowTui(row, {
   } else if (focus < 2) {
     const left = model.orchestrator.autonomous
       ? [
-        ...renderPanel('Orchestrator', orchestrationNavLines, leftWidth, 5),
+        ...renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, 5),
         ...renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight - 5),
       ]
       : renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight);
     body = joinPanels(
       left,
       controlSelected
-        ? renderPanel(`Orchestration · ${model.orchestrator.status}`, orchestrationLines.slice(0, contentHeight), rightWidth, bodyHeight)
-        : renderPanel(agentTitle, visibleAgents, rightWidth, bodyHeight),
+        ? renderPanel(`Workflow Planner · ${model.orchestrator.status}`, orchestrationLines.slice(0, contentHeight), rightWidth, bodyHeight)
+        : focus === 0
+          ? renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, detailScroll)
+          : renderPanel(agentTitle, visibleAgents, rightWidth, bodyHeight),
     );
   } else {
     body = joinPanels(
@@ -511,6 +534,348 @@ function renderPanel(title, content, width, height) {
 
 function joinPanels(left, right) {
   return left.map((line, index) => `${line}${right[index] ?? ''}`);
+}
+
+function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0) {
+  const inner = Math.max(1, width - 2);
+  const timeline = workflowTimelineLines(model, inner);
+  const live = workflowLiveLines(model, inner, spinnerFrame);
+  const next = workflowNextLines(model, inner);
+  const contentRows = Math.max(3, height - 4); // outer border + two section dividers
+  const nextRows = Math.min(next.length, 2);
+  const liveRows = Math.min(live.lines.length, Math.max(2, Math.floor(contentRows * 0.42)));
+  const timelineRows = Math.max(1, contentRows - liveRows - nextRows);
+  const maxTimelineScroll = Math.max(0, timeline.lines.length - timelineRows);
+  const scroll = clamp(timelineScroll, 0, maxTimelineScroll);
+  const start = Math.max(0, timeline.lines.length - timelineRows - scroll);
+  let visibleTimeline = timeline.lines.slice(start, start + timelineRows);
+  if (start > 0 && visibleTimeline.length) {
+    visibleTimeline[0] = dimText(`↑ ${start + 1} earlier timeline rows`, inner);
+  }
+  if (start + timelineRows < timeline.lines.length && visibleTimeline.length) {
+    visibleTimeline[visibleTimeline.length - 1] = dimText(`↓ ${timeline.lines.length - start - timelineRows + 1} newer timeline rows`, inner);
+  }
+  const visibleLive = live.lines.slice(0, liveRows);
+  const visibleNext = next.slice(0, nextRows);
+  const title = ` Workflow timeline · ${timeline.milestoneCount} milestone${timeline.milestoneCount === 1 ? '' : 's'} `;
+  const rows = [`┌${truncate(title, inner)}${'─'.repeat(Math.max(0, inner - truncate(title, inner).length))}┐`];
+  for (const line of visibleTimeline) rows.push(`│${panelCell(line, inner)}│`);
+  while (rows.length < 1 + timelineRows) rows.push(`│${panelCell('', inner)}│`);
+  rows.push(sectionDivider(`Live · ${live.running} running · ${live.waiting} waiting`, inner));
+  for (const line of visibleLive) rows.push(`│${panelCell(line, inner)}│`);
+  while (rows.length < 2 + timelineRows + liveRows) rows.push(`│${panelCell('', inner)}│`);
+  rows.push(sectionDivider('Next', inner));
+  for (const line of visibleNext) rows.push(`│${panelCell(line, inner)}│`);
+  while (rows.length < height - 1) rows.push(`│${panelCell('', inner)}│`);
+  rows.push(`└${'─'.repeat(inner)}┘`);
+  return rows.slice(0, height);
+}
+
+function sectionDivider(label, inner) {
+  const text = truncate(` ${label} `, inner);
+  return `├${text}${'─'.repeat(Math.max(0, inner - text.length))}┤`;
+}
+
+function workflowTimelineLines(model, width) {
+  const { state, orchestrator } = model;
+  const ledger = state.actionLedger ?? [];
+  const events = [];
+  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER) => {
+    if (!at) return;
+    events.push({ at, sequence, lines: Array.isArray(lines) ? lines : [lines] });
+  };
+  const scout = ledger.find((action) => action.id === 'scout');
+  add(state.startedAt, [
+    timelineRow(state.startedAt, '● Workflow initiated', '', width),
+    timelineDetail(scout ? 'Goal accepted; preparing repository reconnaissance' : 'Execution started', width),
+  ]);
+
+  const scoutStartedAt = actionStartedAt(state, scout);
+  const scoutFinishedAt = actionFinishedAt(state, scout);
+  if (scoutStartedAt) {
+    add(scoutStartedAt, [
+      timelineRow(scoutStartedAt, '● [Preflight: Scout] started', '', width),
+      timelineDetail('Read-only repository and capability inspection', width),
+    ]);
+  }
+  if (scoutFinishedAt && TERMINAL_ACTIONS.has(effectiveActionStatus(scout, state))) {
+    const attempt = latestAttemptForAction(state, scout);
+    const metadata = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
+    add(scoutFinishedAt, [
+      timelineRow(scoutFinishedAt, `${statusIcon(effectiveActionStatus(scout, state))} [Preflight: Scout] completed`, durationText(scoutStartedAt, scoutFinishedAt), width),
+      ...(metadata ? [timelineDetail(metadata, width)] : []),
+    ]);
+  }
+
+  orchestrator.attempts.forEach((attempt, index) => {
+    if (!attempt.finishedAt || !TERMINAL_ACTIONS.has(attempt.status)) return;
+    const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
+    const summary = decision?.reason ? sentencePreview(decision.reason, Math.max(30, width - 10))
+      : decision ? decisionLabel(decision.decision) : 'No accepted decision; correction or retry turn';
+    add(attempt.finishedAt, [
+      timelineRow(attempt.finishedAt, `◆ [Workflow Planner] checkpoint #${index + 1}`, durationText(attempt.startedAt, attempt.finishedAt), width),
+      timelineDetail(summary, width),
+    ]);
+  });
+
+  const phases = new Map();
+  for (const action of ledger) {
+    if (action.id === 'scout' || (orchestrator.autonomous && action.id === orchestrator.actionId && action.kind === 'decide')) continue;
+    if (!action.phase) continue;
+    if (!phases.has(action.phase)) phases.set(action.phase, []);
+    phases.get(action.phase).push(action);
+  }
+  for (const [name, actions] of phases) {
+    const startedAt = earliestTimestamp(actions.map((action) => actionStartedAt(state, action)));
+    if (!startedAt) continue;
+    const label = phaseLabel(name, orchestrator);
+    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] started`, '', width));
+    const finished = actions
+      .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
+      .sort((a, b) => Date.parse(actionFinishedAt(state, a)) - Date.parse(actionFinishedAt(state, b)));
+    finished.forEach((action, index) => {
+      const terminalPhase = finished.length === actions.length && index === finished.length - 1;
+      const branch = terminalPhase ? '│  └─' : '│  ├─';
+      const actionFinished = actionFinishedAt(state, action);
+      const actionStarted = actionStartedAt(state, action);
+      add(actionFinished, timelineRow(
+        actionFinished,
+        `${branch}${statusIcon(effectiveActionStatus(action, state))} ${action.id}`,
+        actionStarted ? durationText(actionStarted, actionFinished) : '',
+        width,
+      ));
+    });
+    if (finished.length === actions.length && actions.length) {
+      const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
+      const failed = actions.some((action) => String(effectiveActionStatus(action, state)).startsWith('failed'));
+      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : '✓'} [Phase: ${label}] completed`, `${finished.length}/${actions.length}`, width));
+    }
+  }
+
+  for (const event of model.events) {
+    const detail = timelineControlEvent(event, width);
+    if (detail) add(event.committedAt, detail, Number(event.sequence));
+  }
+
+  events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.sequence - b.sequence);
+  const lines = [];
+  events.forEach((event, index) => {
+    if (index) lines.push('');
+    lines.push(...event.lines);
+  });
+  return { lines: lines.length ? lines : ['Waiting for the first durable workflow milestone'], milestoneCount: events.length };
+}
+
+function decisionForPlannerAttempt(state, attempt, index, attempts) {
+  const decisions = state.decisions ?? [];
+  if (attempt?.outFile) {
+    const artifactMatch = decisions.find((decision) => decision.artifact === attempt.outFile);
+    if (artifactMatch) return artifactMatch;
+  }
+  const started = Date.parse(attempt?.startedAt ?? '');
+  const finished = Date.parse(attempt?.finishedAt ?? '');
+  if (Number.isFinite(started) && Number.isFinite(finished)) {
+    const timeMatch = decisions.find((decision) => {
+      const created = Date.parse(decision.createdAt ?? '');
+      return Number.isFinite(created) && created >= started && created <= finished + 2_000;
+    });
+    if (timeMatch) return timeMatch;
+  }
+  const hasDurableCorrelation = decisions.some((decision) => decision.artifact || decision.createdAt)
+    || attempts.some((entry) => entry.outFile);
+  return hasDurableCorrelation ? null : decisions[index];
+}
+
+function timelineControlEvent(event, width) {
+  const labels = {
+    'decision.rejected': '✗ [Workflow Planner] decision rejected',
+    'decision.correction_requested': '⧖ [Workflow Planner] correction requested',
+    'decision.orchestrator_escalated': '◆ [Workflow Planner] provider escalated',
+    'run.cancellation_requested': '⧖ Workflow cancellation requested',
+    'run.cancelling': '⧖ Workflow cancellation requested',
+    'run.interruption_requested': '⧖ Workflow interruption requested',
+    'workflow.expansion_target_exceeded': '! Advisory expansion target exceeded',
+    'workflow.agent_target_exceeded': '! Advisory agent target exceeded',
+  };
+  const label = labels[event.type];
+  if (!label) return null;
+  const reason = event.payload?.why ?? event.payload?.reason;
+  return [
+    timelineRow(event.committedAt, label, '', width),
+    ...(reason ? [timelineDetail(sentencePreview(reason, Math.max(20, width - 8)), width)] : []),
+  ];
+}
+
+function workflowLiveLines(model, width, spinnerFrame) {
+  const { state, orchestrator } = model;
+  const activeWorkers = Object.values(state.activeAgents ?? {})
+    .filter((agent) => agent.stepId !== orchestrator.actionId)
+    .sort((a, b) => String(b.lastEventAt ?? b.lastActivityAt ?? '').localeCompare(String(a.lastEventAt ?? a.lastActivityAt ?? '')));
+  const lines = [];
+  let running = activeWorkers.length + (orchestrator.active ? 1 : 0);
+  let waiting = 0;
+  if (orchestrator.autonomous && !state.finishedAt) {
+    const plannerWaiting = !orchestrator.active && activeWorkers.length > 0;
+    if (plannerWaiting) waiting += 1;
+    const plannerStatus = orchestrator.active ? 'planning' : plannerWaiting ? 'waiting' : orchestrator.status;
+    lines.push(alignRight(
+      `${statusIcon(plannerStatus, spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`,
+      plannerStatus,
+      width,
+    ));
+    if (plannerWaiting) lines.push(`   Waiting for ${activeWorkers.length === 1 ? activeWorkers[0].stepId : `${activeWorkers.length} workers`}`);
+    else if (orchestrator.active) lines.push('   Choosing the next smallest useful action');
+    else lines.push(`   ${humanStatus(orchestrator.status)}`);
+    const plannerAction = orchestrator.active?.lastActions?.at(-1) ?? orchestrator.latestAttempt?.lastActions?.at(-1);
+    if (plannerAction) lines.push(`   ↳ ${friendlyActionKind(plannerAction.kind)}${plannerAction.summary ? ` · ${friendlyActionSummary(plannerAction)}` : ''}`);
+    else if (orchestrator.latestDecision) lines.push(`   ↳ Decision · ${decisionLabel(orchestrator.latestDecision.decision)}`);
+    const plannerStream = streamActivityLine(orchestrator.active);
+    if (plannerStream) lines.push(`   ${plannerStream}`);
+    lines.push('');
+  }
+  for (const agent of activeWorkers) {
+    const action = (state.actionLedger ?? []).find((entry) => entry.id === agent.stepId || agent.stepId?.startsWith(`${entry.id}[`));
+    lines.push(alignRight(
+      `${statusIcon(agent.status ?? 'running', spinnerFrame)} ${agent.stepId} · ${agent.pool ?? 'unassigned'} · ${agent.model ?? 'connector model'}`,
+      durationText(action?.startedAt ?? agent.startedAt),
+      width,
+    ));
+    const latest = agent.lastActions?.at(-1);
+    lines.push(latest
+      ? `   ↳ ${friendlyActionKind(latest.kind)}${latest.summary ? ` · ${friendlyActionSummary(latest)}` : ''}`
+      : '   ↳ waiting for the first semantic action event');
+    const stream = streamActivityLine(agent);
+    if (stream) lines.push(`   ${stream}`);
+    lines.push('');
+  }
+  if (!lines.length) lines.push(state.finishedAt ? '✓ No live agents · workflow is terminal' : '⧖ Waiting for the next dispatch');
+  return { lines, running, waiting };
+}
+
+function workflowNextLines(model, width) {
+  const { state, orchestrator } = model;
+  if (state.finishedAt) return [truncate(`${statusIcon(state.status)} Workflow terminal · obtain the stable result envelope`, width)];
+  const ledger = state.actionLedger ?? [];
+  const pending = ledger.find((action) => action.id !== 'scout'
+    && action.id !== orchestrator.actionId
+    && !TERMINAL_ACTIONS.has(effectiveActionStatus(action, state))
+    && effectiveActionStatus(action, state) !== 'running');
+  if (pending) {
+    const blockers = (pending.dependsOn ?? []).filter((id) => state.outputs?.[id]?.ok !== true);
+    const wait = blockers.length ? ` · waiting for ${blockers.join(', ')}` : '';
+    return [truncate(`○ [Phase: ${phaseLabel(pending.phase, orchestrator)}] · ${pending.id}${wait}`, width)];
+  }
+  if (Object.keys(state.activeAgents ?? {}).some((key) => state.activeAgents[key]?.stepId !== orchestrator.actionId)) {
+    return ['○ [Workflow Planner] will reassess when current work finishes'];
+  }
+  if (orchestrator.active) return ['○ Awaiting the next [Workflow Planner] decision'];
+  return ['○ Awaiting the next [Workflow Planner] decision'];
+}
+
+function workflowTechnicalLines(model, width) {
+  const { state, orchestrator } = model;
+  const lines = [
+    `Status · ${state.status ?? 'starting'}`,
+    `Current · ${state.currentStep?.id ?? '—'} · ${state.currentStep?.phase ?? state.currentPhase?.name ?? '—'}`,
+    `Started · ${state.startedAt ?? '—'}`,
+    `Usage · ${compactUsage(state.usage)}`,
+    '',
+    'Action ledger',
+  ];
+  for (const action of state.actionLedger ?? []) {
+    const control = orchestrator.autonomous && action.id === orchestrator.actionId && action.kind === 'decide';
+    lines.push(`${statusIcon(effectiveActionStatus(action, state))} ${control ? '[Workflow Planner]' : action.id} · ${action.kind} · ${action.status ?? 'pending'} · ${action.phase ?? '—'}`);
+  }
+  if (!(state.actionLedger ?? []).length) lines.push('· no actions recorded');
+  lines.push('', 'Recent durable events');
+  for (const event of model.events.slice(-12)) lines.push(`#${event.sequence} ${event.type}`);
+  if (!model.events.length) lines.push('· no events recorded');
+  return wrapLines(lines, width);
+}
+
+function timelineRow(at, label, right, width) {
+  return alignRight(`${clockText(at)}  ${label}`, right, width);
+}
+
+function timelineDetail(text, width) {
+  return truncate(`       ${text}`, width);
+}
+
+function alignRight(left, right, width) {
+  const suffix = right ? String(right) : '';
+  if (!suffix) return truncate(left, width);
+  const room = Math.max(1, width - suffix.length - 1);
+  const lhs = truncate(left, room);
+  return `${lhs}${' '.repeat(Math.max(1, width - lhs.length - suffix.length))}${suffix}`;
+}
+
+function clockText(value) {
+  const date = new Date(value ?? '');
+  if (!Number.isFinite(date.getTime())) return '--:--';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function earliestTimestamp(values) {
+  return values.filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
+}
+
+function latestTimestamp(values) {
+  return values.filter(Boolean).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+}
+
+function latestAttemptForAction(state, action) {
+  if (!action) return null;
+  return (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean).at(-1) ?? null;
+}
+
+function actionStartedAt(state, action) {
+  if (!action) return null;
+  const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
+  return action.startedAt ?? earliestTimestamp(attempts.map((attempt) => attempt.startedAt));
+}
+
+function actionFinishedAt(state, action) {
+  if (!action) return null;
+  const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
+  return action.finishedAt ?? latestTimestamp(attempts.map((attempt) => attempt.finishedAt));
+}
+
+function streamActivityLine(agent) {
+  if (!agent) return '';
+  const at = agent.lastEventAt ?? agent.lastActivityAt;
+  if (!at) return 'stream waiting for the first provider event';
+  return `stream active ${durationText(at)} ago · ${formatBytes(agent.outputBytesObserved ?? 0)} observed`;
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function humanStatus(value) {
+  return String(value ?? 'waiting').replaceAll('_', ' ').replace(/^./, (char) => char.toUpperCase());
+}
+
+function plannerDisplayStatus(model) {
+  const { orchestrator, state } = model;
+  if (state.finishedAt) return state.status === 'completed' ? 'Completed' : humanStatus(state.status);
+  if (orchestrator.active) return 'Planning next actions';
+  const workers = Object.values(state.activeAgents ?? {}).filter((agent) => agent.stepId !== orchestrator.actionId);
+  if (workers.length) return 'Waiting for workers';
+  if (orchestrator.status === 'reviewing evidence') return 'Reviewing evidence';
+  return humanStatus(orchestrator.status);
+}
+
+function plannerUsageSummary(model) {
+  const checkpoints = model.orchestrator.attempts.length;
+  const cost = model.state.usage?.cost?.estimatedUsd ?? model.state.usage?.cost?.knownSubtotalUsd;
+  return `Checkpoints ${checkpoints}${Number.isFinite(cost) ? ` · $${cost.toFixed(2)}` : ''}`;
+}
+
+function dimText(value, width) {
+  return `\x1b[2m${truncate(value, width)}\x1b[0m`;
 }
 
 function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
@@ -595,7 +960,7 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
   lines.push('', 'Checkpoint turns');
   if (!orchestrator.attempts.length) lines.push('· waiting for the first planning turn');
   orchestrator.attempts.forEach((attempt, index) => {
-    const decision = (state.decisions ?? [])[index];
+    const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
     lines.push(`#${index + 1} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
     lines.push(`  ${compactUsage(attempt.usage)}`);
     if (decision) lines.push(`  decision: ${decision.decision} · ${decision.reason}`);
@@ -859,6 +1224,7 @@ export async function runDashboard(bullswarmDir, {
     controlSelected: false,
     orchestratorDetail: false,
     orchestratorVerbose: false,
+    workflowVerbose: false,
     spinnerFrame: 0,
   };
   const paintUnsafe = () => {
@@ -929,7 +1295,7 @@ export async function runDashboard(bullswarmDir, {
       }
       const row = detailRow(bullswarmDir, selectedRunId);
       const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-      if (ui.orchestratorDetail) {
+      if (ui.orchestratorDetail || ui.workflowVerbose) {
         ui.detailScroll = Math.max(0, ui.detailScroll + delta);
         return paint();
       }
@@ -993,6 +1359,9 @@ export async function runDashboard(bullswarmDir, {
           ui.focus = 0;
           ui.controlSelected = true;
           ui.detailScroll = 0;
+        } else if (ui.workflowVerbose) {
+          ui.workflowVerbose = false;
+          ui.detailScroll = 0;
         } else if (detail && ui.focus > 0) ui.focus -= 1;
         else if (detail && !token) detail = false;
         else message = 'At phase level · press q to detach while the workflow keeps running.';
@@ -1014,6 +1383,7 @@ export async function runDashboard(bullswarmDir, {
         const row = detailRow(bullswarmDir, selectedRunId);
         const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
         if (model.orchestrator.autonomous) {
+          ui.workflowVerbose = false;
           ui.orchestratorDetail = true;
           ui.orchestratorVerbose = false;
           ui.controlSelected = true;
@@ -1025,8 +1395,9 @@ export async function runDashboard(bullswarmDir, {
       if (key === '1' && detail) { ui.focus = 0; return paint(); }
       if (key === '2' && detail) { ui.focus = 1; return paint(); }
       if (key === '3' && detail) { ui.focus = 2; return paint(); }
-      if (key === 'v' && ui.orchestratorDetail) {
-        ui.orchestratorVerbose = !ui.orchestratorVerbose;
+      if (key === 'v' && detail) {
+        if (ui.orchestratorDetail) ui.orchestratorVerbose = !ui.orchestratorVerbose;
+        else ui.workflowVerbose = !ui.workflowVerbose;
         ui.detailScroll = 0;
         message = null;
         return paint();
@@ -1039,6 +1410,7 @@ export async function runDashboard(bullswarmDir, {
           ui.followActiveAgent = true;
         } else if (ui.focus === 0) {
           if (ui.controlSelected) {
+            ui.workflowVerbose = false;
             ui.orchestratorDetail = true;
             ui.orchestratorVerbose = false;
             ui.detailScroll = 0;
