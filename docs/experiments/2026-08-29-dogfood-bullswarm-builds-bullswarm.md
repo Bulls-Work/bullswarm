@@ -145,5 +145,14 @@ Baseline (0.13.1, same fixture/goal/pool/flags): 28m42s wall, 1 planner turn, 29
   (cancelled actions + dependents blocked only by them are reopened on resume, event `action.reopened`; regression
   test drives a cancel marker into a slow in-flight action and asserts exactly one further planner turn).
 
-## Proof run 3 — goal-3 re-run `4t6m5a` (wf-mtdyyqkw), 0.14.1-pre @ 459c58c
+## Proof run 3 — goal-3 re-run `4t6m5a` (wf-mtdyyqkw), 0.14.1-pre @ 459c58c — cancelled after diagnosis
+- Turn-1 proposal (9 actions, sound shape: 3 disjoint impl workers ∥ audit of untouched modules → per-module
+  verifies → final-report → verify-final, completion attached) was **rejected** for one field: a zero-dependsOn
+  audit verify carried no `review`. Correction turn cost ~5 min and re-inflated context to 47.8k chars
+  (validationFeedback 38k — the 2k cap on rejectedResponseExcerpt was insufficient because rejectedProposal
+  itself is 37k). Root cause is the validator's posture, not the planner: rejecting a whole program for a field the
+  runtime can default. Fixed in `548eabe`: review defaults to the single/last dependency's artifact, or
+  `reviewScope: repository` for a no-dependency audit; contract rule 4 reworded. Run cancelled to re-prove cleanly.
+
+## Proof run 4 — goal-3 re-run `d7xyg2` (wf-mtdzhw88), 0.14.1-pre @ 548eabe
 (pending)
