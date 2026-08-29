@@ -72,10 +72,20 @@ export function normalizeDecisionProposal(proposal) {
         };
       }
       if (action?.type !== 'verify') return action;
-      const singleDependency = Array.isArray(action.dependsOn) && action.dependsOn.length === 1
-        ? action.dependsOn[0] : null;
+      const dependsOn = Array.isArray(action.dependsOn) ? action.dependsOn : [];
+      const singleDependency = dependsOn.length === 1 ? dependsOn[0] : null;
       if (action.review == null) {
-        return singleDependency ? { ...action, review: `outputs.${singleDependency}.outFile` } : action;
+        // A verify reviews an artifact; when the planner names none, take the
+        // obvious one instead of rejecting a whole program for one field
+        // (observed 2026-08-29: a 9-action proposal bounced for a
+        // zero-dependency audit verify, costing a 5-minute correction turn).
+        // One dependency -> its artifact. Several -> the most downstream
+        // (last listed). None -> a repository audit with no artifact.
+        if (singleDependency) return { ...action, review: `outputs.${singleDependency}.outFile` };
+        if (dependsOn.length > 1) {
+          return { ...action, review: `outputs.${dependsOn.at(-1)}.outFile`, reviewDefaultedFrom: 'last-dependency' };
+        }
+        return { ...action, reviewScope: 'repository' };
       }
       if (looksLikeReviewPath(action.review)) return { ...action, review: action.review.trim() };
       if (typeof action.review === 'string' && singleDependency) {
@@ -241,8 +251,10 @@ export function validateDecisionProposal(proposal, {
       }
     }
     if (action.type === 'verify') {
-      if (typeof action.review !== 'string') {
-        issues.push(`${at}.review is required: a verify with one dependsOn reviews that artifact automatically; with several, set review to "outputs.<actionId>.outFile" and put reviewer instructions in prompt`);
+      if (action.review == null && action.reviewScope === 'repository') {
+        // Normalized zero-dependency audit: no artifact to review.
+      } else if (typeof action.review !== 'string') {
+        issues.push(`${at}.review must be a dotted artifact path like "outputs.<actionId>.outFile" when present; omit it to review the single/last dependency's artifact, or to audit the repository when the verify has no dependsOn`);
       } else if (!looksLikeReviewPath(action.review)) {
         issues.push(`${at}.review must be a dotted artifact path like "outputs.<actionId>.outFile" (the artifact to review), not instructions or a filesystem path; put reviewer instructions in ${at}.prompt`);
       } else {

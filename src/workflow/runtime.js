@@ -1038,13 +1038,16 @@ export class WorkflowRuntime {
    */
   async runVerify(step, scope, opts = {}) {
     this.enforceRequiredInputs(step.id);
-    if (!step.review) {
+    if (!step.review && step.reviewScope !== 'repository') {
       throw new Error(
         `verify step "${step.id}" needs a "review" path ` +
         `(e.g. review: "outputs.<priorStep>.outFile")`,
       );
     }
     const reviewedText = (() => {
+      if (!step.review) {
+        return '(no artifact: this verify has no upstream action — audit the repository state directly with fresh commands)';
+      }
       try {
         // `review` is a dotted path into the scope, NOT a template
         // (matches the design of `fanout.itemsFrom`). Resolve it the
