@@ -78,7 +78,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       // hazard). Caller-supplied opts.env takes precedence over
       // process.env so the runtime can inject BULLSWARM_DEPTH (recursion
       // guard) and other core-owned env contracts.
-      env: { ...process.env, ...(opts.env ?? {}), PWD: resolvedDir },
+      env: {
+        ...process.env,
+        ...(connector.env ?? {}),
+        ...(opts.env ?? {}),
+        PWD: resolvedDir,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     opts.onSpawn?.(child.pid);

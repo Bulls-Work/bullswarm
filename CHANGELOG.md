@@ -1,5 +1,13 @@
 # bullswarm changelog
 
+## 0.15.0 — extra Claude Code logins as separate pools
+
+- Claude Code extra logins (`~/.claude-<slug>` / `$CLAUDE_CONFIG_DIR`) become
+  their own pools (`claude-code:<slug>`), metered and spawned with
+  `CLAUDE_CONFIG_DIR` set. Discovery is dynamic from the filesystem; there
+  is no hardcoded extra-profile list. The spawn command for each profile is
+  `CLAUDE_CONFIG_DIR=<dir> claude`.
+
 ## 0.14.1 — the TUI survives its writer; steering lands or expires truthfully
 
 Proven on a goal-3 re-run (`d7xyg2`): 1 planner turn / 269 s (baseline 0.13.1: 1 / 294 s), planner context 6.2 k chars (from 32.7 k), auto-completed, deliverable verified, zero observation crashes — `docs/experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md`.
