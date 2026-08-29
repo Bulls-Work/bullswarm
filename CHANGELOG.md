@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## 0.14.0 (unreleased) — structured worker output
+## 0.14.0 — structured worker output, compact planner contract
 
 - A verify whose reply cannot be parsed as the verdict JSON gets ONE bounded
   re-ask (event `verify.verdict_retry`) before its failure can reach a planner
