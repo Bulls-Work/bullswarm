@@ -8,6 +8,7 @@ import { readEvents } from '../src/workflow/events.js';
 import {
   validateDecisionProposal, normalizeDecisionProposal, DecisionValidationError,
 } from '../src/workflow/decision.js';
+import { compactRejectedProposal } from '../src/workflow/runtime.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 import { queueSteering } from '../src/workflow/steering.js';
@@ -1431,4 +1432,23 @@ test('resume re-runs an action the interruption cancelled instead of re-planning
     assert.equal(plannerTurnsAfter - plannerTurnsBefore, 1);
     assert.equal(resumed.state.decisions.at(-1).decision, 'complete');
   } finally { f.cleanup(); }
+});
+
+test('a corrective turn resends only the skeleton of the rejected proposal', () => {
+  const big = 'x'.repeat(5000);
+  const compact = compactRejectedProposal({
+    schemaVersion: 'bullswarm.workflow.decision.v1', decision: 'needs_more_work', reason: big,
+    completion: { when: 'all-actions-ok', reason: 'done' },
+    actions: [
+      { id: 'impl', type: 'run', phase: 'impl', prompt: big, dependsOn: [] },
+      { id: 'check', type: 'verify', phase: 'check', prompt: big, dependsOn: ['impl'], repair: { prompt: big, maxRounds: 2 } },
+      { id: 'fan', type: 'fanout', phase: 'fan', items: ['a'], stepTemplate: { prompt: big } },
+    ],
+  });
+  assert.ok(JSON.stringify(compact).length < 1500, `compact proposal is ${JSON.stringify(compact).length} chars`);
+  assert.deepEqual(compact.actions.map((action) => action.id), ['impl', 'check', 'fan']);
+  assert.equal(compact.actions[1].repair.maxRounds, 2);
+  assert.deepEqual(compact.completion, { when: 'all-actions-ok', reason: 'done' });
+  assert.match(compact.actions[0].prompt, /\[5000 chars\]$/);
+  assert.equal(compactRejectedProposal(null), null);
 });
