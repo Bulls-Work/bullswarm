@@ -14,6 +14,7 @@
 // resolver in short-id.js maps both to the run directory.
 
 import { existsSync, rmSync, readFileSync } from 'node:fs';
+import { readJsonSafe } from './fsjson.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
@@ -161,8 +162,8 @@ function runsShow(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
-  const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
+  const state = readJsonSafe(statePath);
+  const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
 
   if (opts.json) {
@@ -191,8 +192,8 @@ function runsResult(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
-  const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
+  const state = readJsonSafe(statePath);
+  const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
   const result = buildWorkflowResult({
     state, report, runId, shortId: resolved.shortId, ongoing,
@@ -246,8 +247,15 @@ function runsDelete(idToken, opts, rest) {
   // Refuse to delete an ongoing run without --force. Half-finished
   // runs are usually a debugging target, not garbage.
   const statePath = join(runDir, 'state.json');
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
-  const ongoing = isOngoing(runDir, state);
+  // Delete guard: an unreadable (mid-write) state means the run may be live —
+  // treat it as ongoing rather than deleting a live run; --force still wins.
+  let state = null;
+  let stateUnreadable = false;
+  if (existsSync(statePath)) {
+    state = readJsonSafe(statePath, undefined);
+    if (state === undefined) { state = null; stateUnreadable = true; }
+  }
+  const ongoing = stateUnreadable ? true : isOngoing(runDir, state);
   if (ongoing && !opts.force) {
     return err(
       `refusing to delete ongoing run "${runId}" (shortId ${shortId ?? '?'}); ` +

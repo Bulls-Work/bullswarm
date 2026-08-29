@@ -22,6 +22,7 @@
 //       text always lives in the per-step outFile.
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { writeJsonAtomic } from './fsjson.js';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pickPool, isQuarantined } from '../lib/route.js';
@@ -184,7 +185,8 @@ export class WorkflowRuntime {
         if (disk.cancellingAt) this.state.cancellingAt = disk.cancellingAt;
       }
     } catch { /* a partial state file should not break the workflow */ }
-    writeFileSync(join(this.runDir, 'state.json'), `${JSON.stringify(this.state, null, 2)}\n`);
+    // Atomic: a 1s-interval TUI reads this file while we write it (F1).
+    writeJsonAtomic(join(this.runDir, 'state.json'), this.state);
   }
 
   refreshCancellation() {

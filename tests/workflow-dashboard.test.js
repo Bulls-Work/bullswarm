@@ -402,3 +402,43 @@ test('human approval decisions are durable and visible to a resumed planner', ()
     assert.equal(readEvents(join(home, 'workflows', 'wf-test')).at(-1).type, 'approval.granted');
   } finally { cleanup(); }
 });
+
+test('a torn state.json (writer mid-write) never crashes the observation paths', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    // Overwrite with a mid-write snapshot cut inside a string — the exact
+    // shape of the observed `workflow tui` crash (2026-08-29).
+    writeFileSync(statePath, '{"runId":"wf-test","shortId":"abc234","status":"running","intent":{"goal":"do the th');
+    assert.doesNotThrow(() => dashboardRows(home));
+    const shown = dashboardJson(home, { token: 'wf-test' });
+    assert.equal(shown.action, 'show');
+    assert.equal(shown.state, null);
+    // Mutating paths must refuse loudly rather than silently no-op.
+    assert.throws(() => requestCancel(home, 'wf-test'), /unreadable.*retry the command/s);
+  } finally { cleanup(); }
+});
+
+test('an action being re-run reads as running, and its phase as active, despite an earlier failed round', () => {
+  const state = {
+    intent: { autonomous: true },
+    orchestration: { mode: 'autonomous' },
+    decisions: [{ gateId: 'orchestrator' }],
+    actionLedger: [
+      { id: 'verify-docs', phase: 'g:verify-docs', kind: 'verify', status: 'running', attempts: [] },
+      { id: 'verify-impl', phase: 'g:verify-impl', kind: 'verify', status: 'failed', attempts: [] },
+    ],
+    outputs: { 'verify-docs': { ok: false }, 'verify-impl': { ok: false } },
+    activeAgents: { a1: { stepId: 'verify-docs', pool: 'p1' } },
+    _doc: { phases: [] },
+  };
+  const model = workflowPanelModel({ state, events: [] });
+  const reRunning = model.phases.find((phase) => phase.name === 'g:verify-docs');
+  const trulyFailed = model.phases.find((phase) => phase.name === 'g:verify-impl');
+  // Failed round + attempt still spinning => the phase is active, not failed
+  // (user report 2026-08-29: TUI showed ✗ "2/2 complete" beside a spinner).
+  assert.equal(reRunning.status, 'active');
+  assert.equal(reRunning.completed, 0);
+  // No active agent => the failure is real and stays failed.
+  assert.equal(trulyFailed.status, 'failed');
+});
