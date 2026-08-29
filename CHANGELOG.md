@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- `workflow goal` can now guarantee an exact planner model and a separate exact
+  worker route with `--orchestrator-model`, `--worker-pool`, and
+  `--worker-model`. The worker lock is runtime-owned and propagates through the
+  scout, ordinary actions, fan-out items, verification repairs, reverification,
+  and extraction helpers; unsupported or excluded models fail closed instead
+  of silently substituting another model.
+- An action-bearing planner `proceed` is normalized to the schema-equivalent
+  `needs_more_work` program before validation. This removes a redundant
+  correction turn without changing the proposed graph or weakening any safety
+  check (the prior real run spent four frontier planner turns correcting this
+  exact representation mismatch).
+- `workflow runs result` now selects the latest successful verifier that
+  transitively covers the delivery, so a final suite verifier depending on
+  unit verifiers is surfaced ahead of a narrower direct unit check.
+- The same result envelope now adds a backward-compatible `deliveries[]`
+  frontier for parallel multi-worker outcomes while preserving the singular
+  `delivery` field for existing callers.
+- The autonomous planner now batches cheap homogeneous edits instead of paying
+  for a worker and unit verifier per tiny file; substantial independent units
+  still fan out and retain focused verification before the final suite.
+- Narrow SSH and phone terminals now open on a full-width workflow timeline;
+  `t` toggles between that overview and the phase browser without affecting the
+  existing Enter/Esc agent drill-down.
 - Goal-level `--orchestrator <pool>` is now a preference with immediate
   fallback when that pool is quota-gated, ineligible, or unavailable. Exact
   provider testing moves to `--strict-orchestrator <pool>`. Quota waits now

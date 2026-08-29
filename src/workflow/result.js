@@ -18,6 +18,28 @@ export function buildWorkflowResult({ state, report, runId, shortId, ongoing }) 
   const artifact = readDelivery(outFile, deliveryOutput);
   const verificationAction = selectVerificationAction(ledger, deliveryAction?.id);
   const verificationOutput = verificationAction ? state?.outputs?.[verificationAction.id] : null;
+  const deliveryActions = selectDeliveryActions(
+    ledger,
+    state?.outputs,
+    verificationAction,
+    deliveryAction,
+  );
+  const deliveryRecord = (action) => {
+    const attempt = selectAttempt(attempts, action.id);
+    const output = state?.outputs?.[action.id];
+    const path = output?.outFile ?? attempt?.outFile ?? null;
+    const content = readDelivery(path, output);
+    return {
+      actionId: action.id,
+      phase: action.phase ?? null,
+      kind: action.kind ?? null,
+      outFile: path,
+      format: content.format,
+      content: content.content,
+      truncated: content.truncated,
+      bytes: content.bytes,
+    };
+  };
   const finishedAttempts = attempts.filter(
     (attempt) => attempt?.finishedAt || isTerminalAttempt(attempt?.status),
   ).length;
@@ -61,6 +83,10 @@ export function buildWorkflowResult({ state, report, runId, shortId, ongoing }) 
       truncated: artifact.truncated,
       bytes: artifact.bytes,
     } : null,
+    // Backward-compatible multi-delivery view. `delivery` remains the primary
+    // artifact, while this frontier contains every independently completed
+    // worker artifact covered by the selected final verifier.
+    deliveries: deliveryActions.map(deliveryRecord),
     verification: verificationAction ? {
       actionId: verificationAction.id,
       outFile: verificationOutput?.outFile ?? selectAttempt(attempts, verificationAction.id)?.outFile ?? null,
@@ -74,6 +100,39 @@ export function buildWorkflowResult({ state, report, runId, shortId, ongoing }) 
       attemptsMissingCount: missingToolCallAttempts,
     },
   };
+}
+
+function ancestorIds(ledger, action) {
+  const byId = new Map(ledger.map((entry) => [entry?.id, entry]));
+  const ancestors = new Set();
+  const pending = [...(action?.dependsOn ?? [])];
+  while (pending.length) {
+    const id = pending.pop();
+    if (ancestors.has(id)) continue;
+    ancestors.add(id);
+    pending.push(...(byId.get(id)?.dependsOn ?? []));
+  }
+  return ancestors;
+}
+
+function selectDeliveryActions(ledger, outputs, verificationAction, primary) {
+  if (!primary) return [];
+  const verifiedAncestors = ancestorIds(ledger, verificationAction);
+  if (!verificationAction || !verifiedAncestors.has(primary.id)) return [primary];
+  const candidates = ledger.filter(
+    (action) => action?.id !== 'scout'
+      && action?.status === 'succeeded'
+      && !CONTROL_KINDS.has(action.kind)
+      && outputs?.[action.id]?.ok !== false
+      && verifiedAncestors.has(action.id),
+  );
+  const ancestorCache = new Map(candidates.map((action) => [action.id, ancestorIds(ledger, action)]));
+  const frontier = candidates.filter(
+    (action) => !candidates.some(
+      (other) => other.id !== action.id && ancestorCache.get(other.id)?.has(action.id),
+    ),
+  );
+  return frontier.length ? frontier : [primary];
 }
 
 function selectDeliveryAction(ledger, outputs, preferredActionId) {
@@ -90,8 +149,26 @@ function selectVerificationAction(ledger, deliveryId) {
   const verifications = ledger.filter(
     (action) => action?.status === 'succeeded' && action.kind === 'verify',
   );
+  const byId = new Map(ledger.map((action) => [action?.id, action]));
+  const coversDelivery = (action) => {
+    if (!deliveryId) return false;
+    const pending = [...(action?.dependsOn ?? [])];
+    const seen = new Set();
+    while (pending.length) {
+      const id = pending.pop();
+      if (id === deliveryId) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      pending.push(...(byId.get(id)?.dependsOn ?? []));
+    }
+    return false;
+  };
+  // Prefer the latest successful verifier that transitively covers the
+  // delivery. A final suite verify commonly depends on unit verifiers rather
+  // than directly on each worker; selecting only a direct edge hid the
+  // strongest acceptance evidence in the stable caller envelope.
   return [...verifications].reverse().find(
-    (action) => deliveryId && Array.isArray(action.dependsOn) && action.dependsOn.includes(deliveryId),
+    coversDelivery,
   ) ?? [...verifications].reverse()[0] ?? null;
 }
 

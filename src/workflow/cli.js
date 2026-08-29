@@ -322,6 +322,61 @@ export function applyResumeOrchestratorOverride(doc, requested, strictRequested 
   return doc;
 }
 
+export function applyResumeModelOverrides(doc, {
+  orchestratorModel = null,
+  workerPool = null,
+  workerModel = null,
+} = {}) {
+  const normalize = (value) => value === 'auto' ? null : value;
+  const plannerModel = normalize(orchestratorModel);
+  const workers = normalize(workerPool);
+  const workerModelLock = normalize(workerModel);
+  if (orchestratorModel == null && workerPool == null && workerModel == null) return doc;
+  doc.intent ??= {};
+  doc.orchestration ??= {};
+  if (orchestratorModel != null) {
+    doc.intent.requestedOrchestratorModel = plannerModel ?? 'auto';
+    doc.orchestration.requestedModel = plannerModel;
+  }
+  if (workerPool != null) {
+    doc.intent.requestedWorkerPool = workers ?? 'auto';
+    doc.orchestration.workerPool = workers;
+  }
+  if (workerModel != null) {
+    doc.intent.requestedWorkerModel = workerModelLock ?? 'auto';
+    doc.orchestration.workerModel = workerModelLock;
+  }
+  for (const phase of doc.phases ?? []) {
+    for (const step of phase.steps ?? []) {
+      if (step.type === 'decide') {
+        step.actionDefaults ??= {};
+        if (orchestratorModel != null) {
+          if (plannerModel) step.model = plannerModel;
+          else delete step.model;
+        }
+        if (workerPool != null) {
+          if (workers) step.actionDefaults.pool = workers;
+          else delete step.actionDefaults.pool;
+        }
+        if (workerModel != null) {
+          if (workerModelLock) step.actionDefaults.model = workerModelLock;
+          else delete step.actionDefaults.model;
+        }
+        continue;
+      }
+      if (workerPool != null) {
+        if (workers) step.pool = workers;
+        else delete step.pool;
+      }
+      if (workerModel != null) {
+        if (workerModelLock) step.model = workerModelLock;
+        else delete step.model;
+      }
+    }
+  }
+  return doc;
+}
+
 async function wfGoal(opts) {
   if (opts.help) {
     console.log(goalUsage());
@@ -358,6 +413,11 @@ async function wfGoal(opts) {
     }
     try {
       applyResumeOrchestratorOverride(doc, opts.orchestrator, opts['strict-orchestrator']);
+      applyResumeModelOverrides(doc, {
+        orchestratorModel: opts['orchestrator-model'],
+        workerPool: opts['worker-pool'],
+        workerModel: opts['worker-model'],
+      });
     } catch (err) {
       console.error(`✗ invalid goal options: ${err.message}`);
       return 2;
@@ -383,12 +443,21 @@ async function wfGoal(opts) {
     const requestedOrchestrator = opts['strict-orchestrator'] ?? opts.orchestrator;
     const orchestrator = requestedOrchestrator && requestedOrchestrator !== 'auto'
       ? requestedOrchestrator : null;
+    const workerPool = opts['worker-pool'] && opts['worker-pool'] !== 'auto'
+      ? opts['worker-pool'] : null;
+    const workerModel = opts['worker-model'] && opts['worker-model'] !== 'auto'
+      ? opts['worker-model'] : null;
+    const orchestratorModel = opts['orchestrator-model'] && opts['orchestrator-model'] !== 'auto'
+      ? opts['orchestrator-model'] : null;
     try {
       doc = buildGoalWorkflow({
         goal,
         cwd: opts.cwd ?? process.cwd(),
         orchestrator,
         strictOrchestrator: Boolean(opts['strict-orchestrator']),
+        orchestratorModel,
+        workerPool,
+        workerModel,
         settings: goalSettings(opts),
         scout: !opts.noScout,
         worktreeIsolation: loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides',
@@ -634,7 +703,8 @@ async function wfInspect(opts) {
 function parseFlags(argv) {
   const out = { inputs: {}, rest: [] };
   const valueFlags = new Set([
-    'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'request', 'run-id',
+    'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'orchestrator-model',
+    'worker-pool', 'worker-model', 'request', 'run-id',
     'max-agents', 'max-expansion-rounds', 'max-actions',
     'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'message',

@@ -133,7 +133,12 @@ Resume a process-interrupted run from its persisted definition with
 selection automatic in normal use. `--orchestrator=<pool>` is a preference
 that falls back when the pool is quota-gated or unavailable;
 `--strict-orchestrator=<pool>` is the exact-provider control for QA and may
-wait for that pool's quota window. `SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
+wait for that pool's quota window. For a controlled model comparison, add
+`--orchestrator-model=<model>`, `--worker-pool=<pool>`, and
+`--worker-model=<model>`. The worker constraints cover scout, runs, fan-out
+items, repairs, re-verification, and extraction helpers; a pool that cannot
+guarantee the model is excluded rather than silently substituting it.
+`SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
 persist `interrupted`; later workflow commands also reconcile dead or stale
 owners into that explicit resumable state.
 
@@ -225,8 +230,9 @@ ISO timestamps, local dates, today/yesterday/tomorrow/now, or durations such as
 normal ongoing-only scope.
 
 When the run is terminal, use `workflow runs result <id> --json` as the
-handoff contract. Its versioned result envelope points to the selected delivery
-artifact, the dependent verification verdict, progress, and usage. Do not guess
+handoff contract. Its versioned result envelope keeps one primary `delivery`,
+adds every jointly delivered parallel artifact under `deliveries[]`, and points
+to the strongest dependent verification verdict, progress, and usage. Do not guess
 the output schema by scraping task files or assume the last provider response is
 the deliverable; `runs show` is for low-level debugging.
 
@@ -289,6 +295,8 @@ Select Workflow Planner and press Enter, or press
 reason, next action, progress, and recent semantic activity. Press `v` for the
 durable provider session, checkpoint prompts and turns, usage, and artifact
 paths; `v` returns to the overview and Esc returns to phases.
+Below 100 columns the TUI opens on a full-width timeline; `t` toggles Timeline
+and Phases, and Enter/Esc continues through agents and activity.
 The shared state marks are `○` not started, animated Braille spinner active,
 `⧖` waiting, `✓` finished, and `✗` failed or interrupted.
 
@@ -406,7 +414,7 @@ orchestrator for the rest of the run and tries one other eligible pool
 `completed_with_concerns` with a ready best-effort artifact when useful work
 exists, or `blocked` when it does not; neither hides failed verification.
 Use `workflows/adaptive-code-review.json` as the starting template.
-Planner proposals cannot choose `pool`, `addDir`, or `taskFile`. Those fields
+Planner proposals cannot choose `pool`, `model`, `addDir`, or `taskFile`. Those fields
 are runtime-owned. An initiator may constrain them with a decide step's
 `actionDefaults`; absent a pinned default, normal capability and quota routing
 selects the worker.
