@@ -116,3 +116,22 @@ Verified: scout task file of attempt 3 contains `{{outputs.x.data.field}}` verba
 - Routing concentration on the unmetered pool (26/28 dispatches) confirmed as
   design intent (quota protection outranks diversity) and documented in the
   skill rather than changed.
+
+## Proof run 1 — goal-3 re-run `d8pr8s` (wf-mtdvuk9m), 0.14.1-pre @ 0bbe78c
+Baseline (0.13.1, same fixture/goal/pool/flags): 28m42s wall, 1 planner turn, 294 s planner.
+- **completed + verified, deliverable exactly right** (csv+slugify guarded, existing tests byte-identical, 63/63),
+  zero crashes, 8 workers, no repairs.
+- Wall **32m19s**, planner **5 dispatches / 463 s** (195+114+58+66+30). Per-turn latency DOWN (max 195 s vs 294 s);
+  context per turn 6.2k–48k chars (`decision.context_built` measuring itself) vs the old 16.3k prefix + up-to-178k contexts.
+- The 3 extra gates, each diagnosed and fixed in `c0ff947`:
+  1. first proposal rejected — verify with several dependsOn lacked `review` → contract rule 4 now states it;
+  2. evidence-policy boundary + rejected `complete` — final-report left as last unverified worker → rule 8 now
+     states the LAST worker must be covered by a verify;
+  3. one deliberate operator steer — which **live-proved the 0.14.1 steering fix**: `decision.completion_deferred`
+     → `steering.delivered` (first ever observed; the goal-5 defect showed 0) → planner turn honoured it.
+- Also observed and fixed: a corrective turn re-inflated validationFeedback to 24k chars (raw response duplicated
+  the parsed proposal) → excerpt capped at 2k.
+- 0.13.1 completion-evidence policy exercised live for the first time: it refused auto-completion twice, correctly.
+
+## Proof run 2 — goal-3 re-run on 0.14.1-pre @ c0ff947 (contract gaps closed)
+(pending)
