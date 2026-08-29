@@ -1300,7 +1300,12 @@ export class WorkflowRuntime {
         why: opts.correction.why,
         issues: opts.correction.issues ?? [],
         rejectedProposal: opts.correction.rejectedProposal ?? null,
-        rejectedResponseExcerpt: opts.correction.rejectedResponse ?? null,
+        // The raw response duplicates the parsed proposal; cap it so one
+        // corrective turn cannot re-inflate the compacted context (observed:
+        // a 24k-char validationFeedback on run d8pr8s turn 1-correction).
+        rejectedResponseExcerpt: typeof opts.correction.rejectedResponse === 'string'
+          ? opts.correction.rejectedResponse.slice(0, 2000)
+          : null,
       } : null,
       operatorSteering: (this.state.steering ?? []).map((entry) => ({
         id: entry.id,
