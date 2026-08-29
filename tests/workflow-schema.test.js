@@ -166,3 +166,34 @@ test('isValidOutputSchema rejects unknown keywords at the root and nested levels
   assert.ok(result.issues.some((issue) => issue.includes('x_property')));
   assert.ok(result.issues.some((issue) => issue.includes('x_item')));
 });
+
+test('validateAgainstSchema checks own properties only, never inherited names', () => {
+  assert.deepEqual(validateAgainstSchema({}, { type: 'object', required: ['toString'] }),
+    { ok: false, errors: ['toString is required'] });
+  assert.deepEqual(validateAgainstSchema({ constructor: 1 }, { type: 'object', properties: { a: { type: 'string' } }, additionalProperties: false }),
+    { ok: false, errors: ['constructor is not allowed'] });
+  assert.deepEqual(validateAgainstSchema(JSON.parse('{"__proto__": 1}'), { type: 'object', properties: {}, additionalProperties: false }),
+    { ok: false, errors: ['__proto__ is not allowed'] });
+});
+
+test('readTrailingObject returns the outermost trailing object, not a schema-matching nested one', async () => {
+  const { WorkflowRuntime } = await import('../src/workflow/runtime.js');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const rt = Object.create(WorkflowRuntime.prototype);
+  const dir = mkdtempSync(join(tmpdir(), 'bs-trailing-'));
+  const file = join(dir, 'out.md');
+  const schema = { type: 'object', properties: { ok: { type: 'string' } } };
+  writeFileSync(file, 'worker report\n{"wrapper":{"ok":"inner"}}\n');
+  assert.deepEqual(rt.readTrailingObject(file, schema), { ok: true, data: { wrapper: { ok: 'inner' } } });
+  // The outer object is what gets validated; a matching inner object does not rescue it.
+  assert.deepEqual(rt.readTrailingObject(file, { type: 'object', required: ['ok'] }), { ok: false, errors: ['ok is required'] });
+  // Prose braces before the object, escaped quotes and braces inside strings, adjacent objects.
+  writeFileSync(file, 'see {not json} and {"a":1}{"text":"q \\" {x}","ok":"outer"}');
+  assert.deepEqual(rt.readTrailingObject(file, schema), { ok: true, data: { text: 'q " {x}', ok: 'outer' } });
+  writeFileSync(file, 'only prose');
+  assert.equal(rt.readTrailingObject(file, schema).ok, false);
+  writeFileSync(file, 'x {"a":1} trailing prose');
+  assert.equal(rt.readTrailingObject(file, schema).ok, false);
+});

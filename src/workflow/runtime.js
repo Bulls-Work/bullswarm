@@ -910,15 +910,30 @@ export class WorkflowRuntime {
     const trimmed = text.trimEnd();
     if (!trimmed.endsWith('}')) return { ok: false, errors: ['output did not end with a JSON object'] };
     const close = trimmed.length - 1;
+    // Walk "{" positions from the right. Inner braces of the trailing object
+    // parse (as nested objects), then its own "{" parses (the widest), then
+    // every brace further left belongs to prose and fails. The trailing object
+    // is therefore the LAST successful parse before the first failure — never
+    // the first success, which would be its innermost nested object.
+    // (Adversarial review 2026-08-29 caught the first-success version
+    // recording {"ok":"inner"} out of {"wrapper":{"ok":"inner"}}.)
+    let best = null;
     let parseError = null;
-    for (let start = trimmed.lastIndexOf('{', close); start !== -1; start = trimmed.lastIndexOf('{', start - 1)) {
+    // lastIndexOf clamps a negative fromIndex to 0, so the walk must stop
+    // explicitly at position 0 or it spins forever on output that starts with "{".
+    for (let start = trimmed.lastIndexOf('{', close); start !== -1; start = start > 0 ? trimmed.lastIndexOf('{', start - 1) : -1) {
       let value;
-      try { value = JSON.parse(trimmed.slice(start, close + 1)); } catch (err) { parseError = err.message; if (start === 0) break; continue; }
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) { if (start === 0) break; continue; }
-      const checked = validateAgainstSchema(value, schema);
-      return checked.ok ? { ok: true, data: value } : checked;
+      try { value = JSON.parse(trimmed.slice(start, close + 1)); } catch (err) {
+        if (best) break;
+        parseError = err.message;
+        continue;
+      }
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) best = value;
+      else if (best) break;
     }
-    return { ok: false, errors: [parseError ? `trailing JSON object could not be parsed: ${parseError}` : 'output did not contain a balanced trailing JSON object'] };
+    if (!best) return { ok: false, errors: [parseError ? `trailing JSON object could not be parsed: ${parseError}` : 'output did not contain a balanced trailing JSON object'] };
+    const checked = validateAgainstSchema(best, schema);
+    return checked.ok ? { ok: true, data: best } : checked;
   }
 
   async dispatchWithOutputSchema(step, taskText, targetDir, paths, opts = {}) {
