@@ -78,6 +78,7 @@ export function buildGoalWorkflow({
   goal,
   cwd = process.cwd(),
   orchestrator = null,
+  strictOrchestrator = false,
   name = null,
   settings = {},
   scout = true,
@@ -88,6 +89,9 @@ export function buildGoalWorkflow({
   }
   if (orchestrator != null && (typeof orchestrator !== 'string' || !NAME_RE.test(orchestrator))) {
     throw new Error(`invalid orchestrator pool "${orchestrator}"`);
+  }
+  if (typeof strictOrchestrator !== 'boolean') {
+    throw new Error('strictOrchestrator must be a boolean');
   }
 
   const targetDir = resolve(cwd);
@@ -125,7 +129,10 @@ export function buildGoalWorkflow({
     orchestration: {
       mode: 'autonomous',
       requestedPool: orchestrator ?? null,
-      selection: orchestrator ? 'user-pinned-for-testing' : 'capability-strategy-and-quota',
+      strictPool: orchestrator && strictOrchestrator ? orchestrator : null,
+      selection: orchestrator
+        ? (strictOrchestrator ? 'user-strict-for-testing' : 'user-preferred-with-fallback')
+        : 'capability-strategy-and-quota',
       completionPolicy: {
         requireSuccessfulWorker: true,
         requireSuccessfulVerification: true,
@@ -164,7 +171,9 @@ export function buildGoalWorkflow({
       }] : []), {
         id: 'orchestrator',
         type: 'decide',
-        ...(orchestrator ? { pool: orchestrator } : {}),
+        ...(orchestrator
+          ? (strictOrchestrator ? { pool: orchestrator } : { preferredPool: orchestrator })
+          : {}),
         lane: 'analyze',
         requiresCapabilities: ['strong-analysis', 'workflow-planning'],
         addDir: targetDir,
