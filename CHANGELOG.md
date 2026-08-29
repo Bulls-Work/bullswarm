@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.18.0 — exact routes, cheaper plans, clearer results
 
 - `workflow goal` can now guarantee an exact planner model and a separate exact
   worker route with `--orchestrator-model`, `--worker-pool`, and
