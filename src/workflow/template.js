@@ -50,7 +50,7 @@ export function renderTemplate(str, scope, opts = {}) {
       if (typeof opts.onUnresolved === 'function') opts.onUnresolved(ref.trim());
       return match;
     }
-    return typeof v === 'string' ? v : JSON.stringify(v);
+    return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v);
   });
 }
 
@@ -79,6 +79,9 @@ export function extractItems(state, itemsFrom) {
     throw new Error(`fanout itemsFrom "${itemsFrom}" not found in workflow state`);
   }
   if (Array.isArray(v)) return v;
+  if (/^outputs\.[A-Za-z0-9_-]+\.data\.[A-Za-z0-9_-]+$/.test(itemsFrom)) {
+    throw new Error(`fanout itemsFrom "${itemsFrom}" must resolve to an array (got ${typeof v})`);
+  }
 
   // outputs.<stepId> envelope (state.outputs.<id> is the full record
   // with ok/pool/outFile/outputText): use the recorded outputText,

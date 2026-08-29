@@ -361,6 +361,11 @@ that expressible without extra turns:
   (`source: "program-completion"`, event `decision.auto_completed`) and the run
   ends without another planner turn; a failing action emits
   `decision.completion_predicate_unmet` and the boundary returns to the planner.
+- `outputSchema` on a `run` or fan-out `stepTemplate` — declare it when a
+  downstream action needs reliable structured data, such as an object to render
+  into a dependent prompt or an `items` array for `fanout.itemsFrom`; leave it
+  off for ordinary prose; planner proposals must not put it on `verify`, whose
+  verdict shape is fixed.
 
 Every fan-out records a summary artifact as `outputs.<id>.outFile` and a
 boolean `ok` (item count in `succeeded`), so a verify may depend on a fan-out

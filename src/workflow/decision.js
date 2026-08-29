@@ -3,6 +3,7 @@
 // or dispatch any new action.
 
 export const DECISION_SCHEMA_VERSION = 'bullswarm.workflow.decision.v1';
+import { isValidOutputSchema } from './schema.js';
 export const DECISIONS = new Set([
   'proceed', 'complete', 'needs_more_work', 'retry', 'escalate',
   'wait_for_approval', 'stop',
@@ -40,7 +41,7 @@ export function parseDecisionText(text) {
 export const REVIEW_PATH_RE = /^outputs\.([A-Za-z0-9_-]+(?:\[\d+\])?)\.outFile$/;
 // Data-driven fan-out source: the artifact of an earlier (or co-proposed)
 // action whose output ends with a JSON array of items.
-export const ITEMS_FROM_RE = /^outputs\.([A-Za-z0-9_-]+)(?:\.outFile)?$/;
+export const ITEMS_FROM_RE = /^outputs\.([A-Za-z0-9_-]+)(?:\.data\.([A-Za-z0-9_-]+)|\.outFile)?$/;
 export const REPAIR_MAX_ROUNDS = 3;
 // Program-level completion predicates a planner may attach to a program so the
 // runtime can record completion itself when every action finishes ok.
@@ -179,7 +180,15 @@ export function validateDecisionProposal(proposal, {
     if (action.type === 'run' && typeof action.prompt !== 'string') {
       issues.push(`${at} needs a prompt`);
     }
-    if (action.type === 'fanout') {
+       if (action.outputSchema !== undefined) {
+         if (action.type !== 'run') issues.push(`${at}.outputSchema is only allowed on run actions`);
+         else {
+           const schema = isValidOutputSchema(action.outputSchema);
+           if (!schema.ok) issues.push(...schema.issues.map((issue) => `${at}.outputSchema: ${issue}`));
+           else if (action.outputSchema.type !== 'object') issues.push(`${at}.outputSchema.type must be "object"`);
+         }
+       }
+       if (action.type === 'fanout') {
       const hasItems = Array.isArray(action.items);
       const hasItemsFrom = action.itemsFrom != null;
       if (!hasItems && !hasItemsFrom) {
@@ -198,10 +207,15 @@ export function validateDecisionProposal(proposal, {
         }
       }
       if (!action.stepTemplate || typeof action.stepTemplate !== 'object') issues.push(`${at}.stepTemplate is required`);
-      for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
+       for (const runtimeOwned of ['pool', 'addDir', 'taskFile']) {
         if (action.stepTemplate?.[runtimeOwned] != null) {
           issues.push(`${at}.stepTemplate.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
-        }
+       }
+       if (action.stepTemplate?.outputSchema !== undefined) {
+         const schema = isValidOutputSchema(action.stepTemplate.outputSchema);
+         if (!schema.ok) issues.push(...schema.issues.map((issue) => `${at}.stepTemplate.outputSchema: ${issue}`));
+         else if (action.stepTemplate.outputSchema.type !== 'object') issues.push(`${at}.stepTemplate.outputSchema.type must be "object"`);
+       }
       }
     }
     if (action.repair != null && action.type !== 'verify') {

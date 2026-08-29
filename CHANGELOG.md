@@ -1,5 +1,25 @@
 # bullswarm changelog
 
+## 0.14.0 (unreleased) — structured worker output
+
+- Planner `run` actions and fan-out `stepTemplate`s may declare an optional
+  `outputSchema`, an object-typed JSON-Schema subset. The runtime tells the
+  worker to end its output with one matching JSON object, parses and validates
+  it, and persists a `run` result as `outputs.<id>.data` with `schemaOk: true`;
+  fan-out results store those fields inside each `outputs.<fanoutId>.items[]`
+  entry. Successful validation emits `action.output_validated`.
+- Schema failures emit `action.output_schema_retry` and receive exactly one
+  bounded retry with the validation errors and the previous output tail. If
+  that retry also fails, the action remains `ok:false`, records
+  `schemaOk:false` and `schemaErrors`, and keeps the output text with the
+  reason `output did not match outputSchema: <errors>`. Resumed runs do not
+  re-dispatch actions already marked `schemaOk:true`.
+- Dependent prompts can render `{{outputs.<id>.data.<field>}}`, and
+  `fanout.itemsFrom` accepts `outputs.<id>.data.items` without an extraction
+  agent when the array is already present. Planner decision validation rejects
+  `outputSchema` on a proposed `verify` because verify has a fixed verdict
+  shape.
+
 ## 0.13.2 — user text is never a template
 
 - `workflow goal` failed before anything ran when the goal text quoted

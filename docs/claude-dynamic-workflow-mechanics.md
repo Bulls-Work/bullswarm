@@ -234,7 +234,7 @@ from `docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`, never projected.
 | Phases | Labels for grouping; never synchronise | Forward-only kebab-case names per action; also just labels | None |
 | Parallelism | `pipeline` default, `parallel` barrier; cap min(16, CPUs−2) | `executeActions` ran dependency-ready siblings **serially** (`runner.js:558`); only `fanout` items ran concurrently; goal default concurrency 3 | **Fixed in 0.11.0** — ready-set scheduler + default 8 |
 | Planner bias | Script author is told to fan out and default to pipeline | Goal prompt said "return needs_more_work with the **smallest useful set** of bounded … actions" (`goal.js:18`) and planner prompt said "keep actions cohesive" | **Fixed in 0.11.0** — "propose the COMPLETE dependency graph", per-item fix→verify chains, file ownership, self-contained prompts |
-| Per-agent prompt | Self-contained, plus JSON schema enforced at tool layer | Planner-authored prompt; free-text answer, content-verified by heuristics; `verify` returns JSON verdict | Partial. Schema-enforced worker output is a candidate, not adopted yet |
+| Per-agent prompt | Self-contained, plus JSON schema enforced at tool layer | Planner-authored prompt; `outputSchema` validates structured worker data, while `verify` retains its fixed JSON verdict | Adopted for declared schemas; tool-layer enforcement remains a difference |
 | Failure handling | Loops in code; `null` on agent death | Planner replans (costly); 0.10.9 added corrective turns for invalid decisions and 0.11.0 recovers mis-shaped `verify.review` before dispatch | Improved; retry-in-code per action still absent |
 | Determinism / resume | Journal of return values; prefix cache | Durable `state.json` + `events.jsonl` + action ledger; resume skips durable outputs | Equivalent |
 | Data-driven fan-out | `pipeline(discovered.items, …)` — count unknown when the script is written | Decision schema forced inline `items`; the planner spent a turn waiting for discovery | **Fixed in 0.12.0** — `itemsFrom` on proposed fan-outs + one bounded extraction retry |
@@ -288,8 +288,7 @@ author and the `Workflow` runtime.
    if the output still has no array the runtime runs ONE bounded, read-only
    extraction action over it (never re-running the producer, which may have
    mutated files). That is the "schema retry" of Claude's `StructuredOutput`,
-   done as a second cheap agent instead of a tool-layer retry. A general
-   `outputSchema` on run actions is still open (§5).
+   done as a second cheap agent instead of a tool-layer retry.
 3. **Pre-authored repair** — shipped. `repair: { prompt, maxRounds }` on a
    verify: verify-fail → `<verifyId>-repair-<n>` (concerns verbatim) →
    re-verify, inside the executor. Claude's fix-loop as code.
@@ -350,6 +349,21 @@ author and the `Workflow` runtime.
    exist — the script's `while (!ok)` loop *is* the evidence — which is the
    general lesson: every piece of control flow bullswarm moves from planner
    into runtime needs its evidence rule moved with it.
+11. **[SPEC] Schema-enforced worker output** — a planner `run` action or fan-out
+    `stepTemplate` may declare an object-typed `outputSchema` subset. The
+    runtime appends instructions for one trailing matching JSON object, with no
+    prose or markdown fences after it, then parses and validates the object.
+    A successful `run` persists `outputs.<id>.data` and `schemaOk: true`; a
+    fan-out stores those schema results inside each
+    `outputs.<fanoutId>.items[]` entry. Both emit `action.output_validated`. A mismatch emits
+    `action.output_schema_retry` and gets exactly one bounded retry carrying
+    the validation errors and the previous output tail; a second mismatch
+    fails the action while retaining its output text and recording
+    `schemaOk:false` and `schemaErrors`. Dependent prompts can render data
+    fields, and `fanout.itemsFrom` can consume `outputs.<id>.data.items` without
+    extraction when it is already an array. Planner decision validation rejects
+    `outputSchema` on a proposed `verify` because verify has a fixed verdict
+    shape.
 
 **Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
 *barrier*: a verify depending on a data-driven fan-out waits for all items,
@@ -361,10 +375,6 @@ them.
 
 ## 5. Not adopted (yet), and why
 
-- **Schema-enforced worker output.** bullswarm's content verification and the
-  JSON `verify` verdict cover the failure mode today; adding per-action
-  `outputSchema` is the next step if planners keep re-asking workers for
-  structure.
 - **Per-action worktree isolation.** File ownership declared by the planner is
   cheaper and matches Claude's own guidance ("EXPENSIVE … use ONLY when agents
   mutate files in parallel and would otherwise conflict").
