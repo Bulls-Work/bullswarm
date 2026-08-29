@@ -16,7 +16,8 @@
 // not the generator.
 
 import { randomBytes } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { writeJsonAtomic } from './fsjson.js';
 import { join } from 'node:path';
 import { appendEvent } from './events.js';
 import { aggregateUsage } from '../lib/usage.js';
@@ -235,7 +236,7 @@ export function reconcileInterruptedRun(runDir, state, {
   delete state.currentPhase;
   delete state.currentStep;
   appendEvent(runDir, state, 'run.interrupted_reconciled', { reason, resumable: true });
-  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  writeJsonAtomic(statePath, state);
   return state;
 }
 

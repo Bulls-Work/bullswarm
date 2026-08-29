@@ -1,7 +1,8 @@
 // Interactive workflow dashboard, inspired by Claude Code's /workflows view.
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from './fsjson.js';
 import { fanoutSucceededCount } from './runner.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId } from './short-id.js';
@@ -44,7 +45,7 @@ export function requestCancel(bullswarmDir, token) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
-  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const state = readJsonForUpdate(statePath, 'workflow state');
   if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
     return { ...resolved, state, alreadyFinished: true };
   }
@@ -53,7 +54,7 @@ export function requestCancel(bullswarmDir, token) {
   state.status = 'cancelling';
   state.cancellingAt = state.cancelRequestedAt;
   appendEvent(resolved.runDir, state, 'run.cancellation_requested', { requestedAt: state.cancelRequestedAt });
-  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  writeJsonAtomic(statePath, state);
   return { ...resolved, state, alreadyFinished: false };
 }
 
@@ -228,6 +229,12 @@ function autonomousControlPlane(state) {
 }
 
 function effectiveActionStatus(action, state) {
+  // A re-running action (repair round, re-verify, schema retry) must read as
+  // running even when a previous round recorded ok:false — a failed mark on
+  // work that is still being retried misreports the run (user report 2026-08-29).
+  const active = Object.values(state.activeAgents ?? {}).some((agent) =>
+    agent.stepId === action.id || String(agent.stepId ?? '').startsWith(`${action.id}[`));
+  if (active || action.status === 'running') return 'running';
   const output = state.outputs?.[action.id];
   if (output?.ok === false) return 'failed_terminal';
   if (output?.ok === true && action.status === 'succeeded') return 'succeeded';
@@ -282,9 +289,10 @@ export function workflowPanelModel(row, {
     const failed = effectiveStatuses.filter((status) => String(status).startsWith('failed')).length;
     const current = name === activePhaseName && !state.finishedAt;
     const active = effectiveStatuses.some((status) => status === 'running');
-    const status = failed ? 'failed'
-      : actions.length && completed === actions.length ? 'completed'
-        : active ? 'active' : current ? 'waiting' : 'pending';
+    const status = active ? 'active'
+      : failed ? 'failed'
+        : actions.length && completed === actions.length ? 'completed'
+          : current ? 'waiting' : 'pending';
     return { name, label: phaseLabel(name, orchestrator), status, actions, completed, total: actions.length };
   });
   const selectedPhase = phases[selectedPhaseIndex];
@@ -806,8 +814,8 @@ function detailRow(bullswarmDir, token) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   const reportPath = join(resolved.runDir, 'report.json');
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
-  const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
+  const state = readJsonSafe(statePath);
+  const report = readJsonSafe(reportPath);
   return { ...resolved, state, report, events: readEvents(resolved.runDir), status: state?.status };
 }
 
@@ -823,6 +831,7 @@ export async function runDashboard(bullswarmDir, {
   let selected = 0;
   let detail = Boolean(token);
   let message = null;
+  let lastGoodRow = null;
   let rows = dashboardRows(bullswarmDir);
   let selectedRunId = token ? detailRow(bullswarmDir, token).runId : (rows[selected]?.runId ?? null);
   const ui = {
@@ -838,10 +847,14 @@ export async function runDashboard(bullswarmDir, {
     orchestratorVerbose: false,
     spinnerFrame: 0,
   };
-  const paint = () => {
+  const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
     if (detail && selectedRunId) {
-      const row = detailRow(bullswarmDir, selectedRunId);
+      // A torn read while the runner writes state.json yields state:null for
+      // one frame — keep painting the last good snapshot of the same run.
+      const fresh = detailRow(bullswarmDir, selectedRunId);
+      const row = (fresh.state || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
+      if (row === fresh) lastGoodRow = fresh;
       const model = workflowPanelModel(row, {
         phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
         agentIndex: ui.followActiveAgent ? null : ui.agentIndex,
@@ -858,8 +871,19 @@ export async function runDashboard(bullswarmDir, {
     }
     output.write(renderDashboard({ rows, selected, message }));
   };
+  // A render error must never kill the TUI or strand the terminal in
+  // alt-screen raw mode (crash observed 2026-08-29 at detailRow via the
+  // repaint timer). Show the error in the message line and keep running.
+  const paint = () => {
+    try { paintUnsafe(); } catch (err) {
+      message = `display error: ${err.message}`;
+      try { output.write(renderDashboard({ rows, selected, message })); } catch { /* keep the loop alive */ }
+    }
+  };
   const refresh = () => {
-    rows = dashboardRows(bullswarmDir);
+    try {
+      rows = dashboardRows(bullswarmDir);
+    } catch (err) { message = `display error: ${err.message}`; }
     if (!selectedRunId) selectedRunId = rows[selected]?.runId ?? null;
     paint();
   };
@@ -935,7 +959,7 @@ export async function runDashboard(bullswarmDir, {
         refresh();
       } catch (err) { message = err.message; ui.confirmCancel = false; paint(); }
     };
-    const onData = (buf) => {
+    const onDataUnsafe = (buf) => {
       const key = String(buf);
       if (ui.confirmCancel) {
         if (key === 'y' || key === 'Y') return requestSelectedCancel();
@@ -1019,6 +1043,14 @@ export async function runDashboard(bullswarmDir, {
         return paint();
       }
     };
+    const onData = (buf) => {
+      // A key-handler error (e.g. a drill-in racing the writer) must never
+      // kill the TUI; finish() still restores the terminal on q/Ctrl-C.
+      try { onDataUnsafe(buf); } catch (err) {
+        message = `display error: ${err.message}`;
+        paint();
+      }
+    };
     const onResize = () => paint();
     input.on('data', onData);
     output.on?.('resize', onResize);
@@ -1035,8 +1067,8 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
     if (!resolved) throw new Error(`no run found for "${token}"`);
     const statePath = join(resolved.runDir, 'state.json');
     const reportPath = join(resolved.runDir, 'report.json');
-    const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
-    const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
+    const state = readJsonSafe(statePath);
+    const report = readJsonSafe(reportPath);
     const events = readEvents(resolved.runDir);
     return { action: 'show', ...resolved, state, report, events };
   }
@@ -1048,7 +1080,7 @@ export function actionJson(bullswarmDir, token, actionId) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null;
+  const state = readJsonSafe(statePath);
   const action = state?.actionLedger?.find((entry) => entry.id === actionId);
   if (!action) throw new Error(`run "${token}" has no action "${actionId}"`);
   const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
@@ -1062,7 +1094,7 @@ export function decideApproval(bullswarmDir, token, decision) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
-  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const state = readJsonForUpdate(statePath, 'workflow state');
   if (state.status !== 'waiting_for_approval' || !state.approval) {
     throw new Error(`run "${token}" is not waiting for approval`);
   }
@@ -1085,6 +1117,6 @@ export function decideApproval(bullswarmDir, token, decision) {
     gateId: state.approval.gateId,
     decidedAt: at,
   });
-  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  writeJsonAtomic(statePath, state);
   return { ...resolved, decision, state };
 }

@@ -58,12 +58,8 @@ export function draftPaths(bullswarmDir, name) {
   return { dir: d, doc: join(d, 'workflow.json'), meta: join(d, 'meta.json') };
 }
 
-function atomicWrite(p, content) {
-  mkdirSync(dirname(p), { recursive: true });
-  const tmp = `${p}.tmp-${randomBytes(3).toString('hex')}`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, p);
-}
+// Hoisted to fsjson.js (shared with runtime/runner state persistence).
+import { atomicWriteFileSync as atomicWrite } from './fsjson.js';
 
 export function draftExists(bullswarmDir, name) {
   return existsSync(draftPaths(bullswarmDir, name).doc);
