@@ -1,5 +1,32 @@
 # bullswarm changelog
 
+## 0.14.1 — the TUI survives its writer; steering lands or expires truthfully
+
+- Workflow `state.json`/`report.json`/`workflow.json` writes are atomic
+  (temp + rename, new `src/workflow/fsjson.js`): a concurrent reader can never
+  observe a half-written file. Earned: `workflow tui` crashed with
+  "Unterminated string in JSON at position 138968" parsing `state.json`
+  mid-write (observed twice, 2026-08-29).
+- Observation readers tolerate torn or missing JSON: the TUI keeps painting
+  the last good frame of the same run, and a render or key-handler error is
+  shown in the message line instead of killing the process and stranding the
+  terminal in alt-screen raw mode. Mutating commands (stop, approval) retry
+  the read once and then refuse loudly instead of silently dropping the
+  operator's command. `runs delete` treats an unreadable `state.json` as
+  ongoing (refuses without `--force`) rather than deleting a possibly-live run.
+- An action being re-run (repair round, re-verify, schema retry) reads as
+  `running` and its phase as `active` even when its previous round recorded
+  `ok:false`; a failed mark now means failed-and-not-being-retried. (User
+  report: the TUI showed ✗ "2/2 complete" beside a live spinner.)
+- Pending operator steering defers program self-completion: a clean program
+  with `completion: all-actions-ok` returns to the planner gate (event
+  `decision.completion_deferred`), which delivers the steer — instead of
+  auto-completing and silently discarding it (defect observed live:
+  0 `steering.delivered` events for a queued steer). Steering that can no
+  longer reach any gate is marked `expired_undelivered` with event
+  `steering.expired` at the terminal transition; interrupted runs keep their
+  queue for the resumed run's next gate.
+
 ## 0.14.0 — structured worker output, compact planner contract
 
 - A verify whose reply cannot be parsed as the verdict JSON gets ONE bounded
