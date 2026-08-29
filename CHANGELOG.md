@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Workflow timeline (PR #5) hardened after a 16-agent adversarial review against
+  real run state (23 findings, 21 confirmed): worker rows now name their phase
+  (`├─✓ [Verify] verify-impl`) because concurrent phases interleave in time
+  order and the tree glyph alone hung a row under the wrong phase; a phase whose
+  actions never started (a blocked tail) is shown as `[Phase: X] blocked`
+  instead of vanishing; the header line is truncated so widths down to 20
+  columns really hold; PgUp now scrolls the timeline to earlier rows (it was a
+  dead key at the newest view) and scroll state resets when the pane changes;
+  below 100 columns the footer and status line no longer advertise a timeline
+  the narrow layout does not render. Confirmed minors left open are listed on
+  PR #5.
 - Reworked the autonomous workflow TUI around a human-readable execution story:
   the existing Workflow Planner and phase sidebar now sits beside a timestamped
   timeline of completed preflight, planner, phase, and worker milestones; active

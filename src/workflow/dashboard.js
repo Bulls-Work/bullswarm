@@ -368,6 +368,7 @@ export function renderWorkflowTui(row, {
 } = {}) {
   width = Math.max(20, Number(width) || 120);
   height = Math.max(18, Number(height) || 36);
+  const narrow = width < 100;
   const model = workflowPanelModel(row, { phaseIndex, agentIndex });
   const state = model.state;
   const status = row?.status ?? state.status ?? 'starting';
@@ -381,7 +382,7 @@ export function renderWorkflowTui(row, {
   const terminalLabel = state.finishedAt ? ` · ${status === 'completed' ? 'done' : status}` : '';
   const runName = state.workflow ?? row?.shortId ?? state.shortId ?? row?.runId ?? 'workflow';
   const header = [
-    ` ${truncate(runName, Math.max(1, width - agentProgress.length - elapsed.length - terminalLabel.length - 5))} · ${agentProgress}${elapsed}${terminalLabel}`,
+    truncate(` ${truncate(runName, Math.max(1, width - agentProgress.length - elapsed.length - terminalLabel.length - 5))} · ${agentProgress}${elapsed}${terminalLabel}`, width),
     ` ${truncate(state.intent?.goal ?? state.workflow ?? 'workflow', width - 2)}`,
   ];
   const footer = confirmCancel
@@ -390,10 +391,12 @@ export function renderWorkflowTui(row, {
       ? ` ↑/↓ scroll · v ${orchestratorVerbose ? 'overview' : 'technical details'} · Esc back · c stop · q detach`
       : workflowVerbose
         ? ' ↑/↓ scroll · v overview · Esc back · c stop · q detach'
-        : ' ↑/↓ select · PgUp/PgDn timeline · Enter inspect · ←/→ switch · v technical · q detach';
+        : narrow
+          ? ' ↑/↓ select · Enter inspect · Esc back · o planner · v technical · c stop · q detach'
+          : ' ↑/↓ select · PgUp/PgDn timeline · Enter inspect · ←/→ switch · v technical · q detach';
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
-    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? 'Timeline · auto-following newest event' : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
+    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
   const messageLine = truncate(rawMessageLine, width);
   const bodyHeight = Math.max(10, height - header.length - 3);
 
@@ -425,7 +428,6 @@ export function renderWorkflowTui(row, {
 
   // Two information-rich panes become counterproductive on typical 80-column
   // SSH/mobile terminals. Keep the drill-down full-width below 100 columns.
-  const narrow = width < 100;
   const leftWidth = narrow ? width : Math.max(24, Math.min(34, Math.floor(width * 0.27)));
   const rightWidth = narrow ? width : width - leftWidth;
   const orchestrationLines = orchestratorDetailLines(
@@ -626,10 +628,11 @@ function workflowTimelineLines(model, width) {
     phases.get(action.phase).push(action);
   }
   for (const [name, actions] of phases) {
-    const startedAt = earliestTimestamp(actions.map((action) => actionStartedAt(state, action)));
+    const realStart = earliestTimestamp(actions.map((action) => actionStartedAt(state, action)));
+    const startedAt = realStart ?? earliestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
     if (!startedAt) continue;
     const label = phaseLabel(name, orchestrator);
-    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] started`, '', width));
+    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] ${realStart ? 'started' : 'blocked'}`, '', width));
     const finished = actions
       .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
       .sort((a, b) => Date.parse(actionFinishedAt(state, a)) - Date.parse(actionFinishedAt(state, b)));
@@ -640,7 +643,7 @@ function workflowTimelineLines(model, width) {
       const actionStarted = actionStartedAt(state, action);
       add(actionFinished, timelineRow(
         actionFinished,
-        `${branch}${statusIcon(effectiveActionStatus(action, state))} ${action.id}`,
+        `${branch}${statusIcon(effectiveActionStatus(action, state))} [${label}] ${action.id}`,
         actionStarted ? durationText(actionStarted, actionFinished) : '',
         width,
       ));
@@ -1368,17 +1371,18 @@ export async function runDashboard(bullswarmDir, {
         return paint();
       }
       if (key === '\t' || key === '\u001b[C' || key === 'l') {
-        if (detail) ui.focus = (ui.focus + 1) % 3;
+        if (detail) { ui.focus = (ui.focus + 1) % 3; ui.detailScroll = 0; }
         return paint();
       }
       if (key === '\u001b[D' || key === 'h') {
-        if (detail) ui.focus = (ui.focus + 2) % 3;
+        if (detail) { ui.focus = (ui.focus + 2) % 3; ui.detailScroll = 0; }
         return paint();
       }
       if (key === '\u001b[A' || key === 'k') return moveVertical(-1);
       if (key === '\u001b[B' || key === 'j') return moveVertical(1);
-      if (key === '\u001b[5~') { ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
-      if (key === '\u001b[6~') { ui.detailScroll += 8; return paint(); }
+      const timelineScroll = detail && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
+      if (key === '\u001b[5~') { ui.detailScroll = timelineScroll ? ui.detailScroll + 8 : Math.max(0, ui.detailScroll - 8); return paint(); }
+      if (key === '\u001b[6~') { ui.detailScroll = timelineScroll ? Math.max(0, ui.detailScroll - 8) : ui.detailScroll + 8; return paint(); }
       if (key === 'o' && detail) {
         const row = detailRow(bullswarmDir, selectedRunId);
         const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });

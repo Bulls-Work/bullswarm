@@ -377,6 +377,26 @@ test('workflow overview separates timestamped history from live planner and work
     assert.match(overview, /Write file · src\/workflow\/result\.js/);
     assert.match(overview, /○ \[Phase: Verify\] · verify-all · waiting for implement-b/);
     assert.doesNotMatch(overview, /Autonomous Delivery/);
+    // worker rows name their phase: concurrent phases interleave in time order
+    assert.match(overview, /├─✓ \[Discover\] discover-a/);
+    assert.match(overview, /└─✓ \[Discover\] discover-b/);
+    assert.match(overview, /├─✓ \[Implement\] implement-a/);
+    // the header never exceeds the width, down to 20 columns
+    for (const width of [20, 28, 37]) {
+      const narrowLines = renderWorkflowTui(row, { width, height: 22 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n');
+      assert.ok(narrowLines.every((line) => [...line].length <= width), `width ${width}: ${narrowLines.find((line) => [...line].length > width)}`);
+      assert.doesNotMatch(narrowLines.at(-1), /PgUp/);
+    }
+    // a phase whose actions never started (blocked tail) still appears, labelled blocked
+    state.actionLedger.push(
+      { id: 'report', phase: 'report', kind: 'run', status: 'failed', dependsOn: ['verify-all'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
+      { id: 'verify-report', phase: 'report', kind: 'verify', status: 'failed', dependsOn: ['report'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
+    );
+    writeFileSync(statePath, JSON.stringify(state));
+    const blocked = renderWorkflowTui(dashboardRows(home)[0], { width: 140, height: 54 });
+    assert.match(blocked, /\d{2}:\d{2}  ├─ \[Phase: Report\] blocked/);
+    assert.match(blocked, /└─✗ \[Report\] verify-report/);
+    assert.match(blocked, /└─✗ \[Phase: Report\] completed\s+2\/2/);
     const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     assert.deepEqual(plain.split('\n').filter((line) => line.length > 140), []);
 
