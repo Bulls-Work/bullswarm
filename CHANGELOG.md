@@ -11,6 +11,11 @@
   tests except to extend them" and item 5 forced `programFeatures` to grow,
   so the assertion at `workflow-adaptive.test.js:206` had no owner, the
   re-verify rejected the mandated extension, and a planner turn recovered.
+- Goal-4 rerun on v0.16.0 (`euh622`): 36 min 00 s, four stage phases in the TUI
+  (implement, tests, verify, report) instead of sixteen one-action rows, 22/24
+  dispatches on `relay/gpt-5.6-luna`, auto-completed, 319/319; two planner
+  turns because of the false rejection above (planner turn 2: "an append-only
+  rule that the goal itself makes unsatisfiable").
 
 ## 0.16.0 — the planner sets the width; a re-verify judges the repair
 
