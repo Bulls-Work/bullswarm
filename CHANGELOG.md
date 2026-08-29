@@ -2,6 +2,7 @@
 
 ## 0.14.0 (unreleased) — structured worker output
 
+- Planner context and contract compacted: complete emitted planner task text up to the durable-context marker, worktree-isolation suffix included **OBSERVED** `16,316 -> 5,208` characters, and a sample turn-2 durable context **COMPUTED** `163,000 -> 23,547` characters by replacing full attempt records with compact ledger rows and retaining full output excerpts only for new/scout or `ok:false` verify actions.
 - Planner `run` actions and fan-out `stepTemplate`s may declare an optional
   `outputSchema`, an object-typed JSON-Schema subset. The runtime tells the
   worker to end its output with one matching JSON object, parses and validates

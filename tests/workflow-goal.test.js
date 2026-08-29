@@ -98,8 +98,8 @@ test('goal builder internalizes orchestration without requiring an initial graph
   assert.equal(doc.phases[0].steps[1].pool, undefined);
   assert.equal(doc.phases[0].steps[1].prompt, `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\nWorktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.`);
   assert.match(doc.phases[0].steps[1].prompt, /control-plane decision thread/);
-  assert.match(doc.phases[0].steps[1].prompt, /Do not invoke Bullswarm, run shell commands, call tools, or modify repository files/);
-  assert.match(doc.phases[0].steps[1].prompt, /compile the goal into a complete workflow program/);
+  assert.match(doc.phases[0].steps[1].prompt, /Do not invoke Bullswarm, run shell commands, call tools, modify files/);
+  assert.match(doc.phases[0].steps[1].prompt, /Compile the goal into a complete workflow program/);
   assert.equal(doc.settings.maxItemsPerExpansion, 24);
   // The goal is user text: a goal that quotes something shaped like a template
   // ref must validate and reach the scout verbatim. (Observed 2026-08-29: a
@@ -249,8 +249,8 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.match(firstPlannerTask, /"remainingDispatches": 4/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
-    assert.match(firstPlannerTask, /expansion-round budgets are advisory planning targets/);
-    assert.match(firstPlannerTask, /strongly prefer convergence/);
+    assert.match(firstPlannerTask, /Treat agent-count, workflow-duration, and expansion-round budgets as advisory planning targets/);
+    assert.match(firstPlannerTask, /Converge as targets approach/);
 
     const shown = cli(f, ['workflow', 'tui', '--json', report.shortId]);
     assert.equal(shown.status, 0, shown.stderr);

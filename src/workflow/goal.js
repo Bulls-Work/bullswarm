@@ -7,31 +7,39 @@ import { resolve } from 'node:path';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
+export const PLANNER_RULES_SECTION = [
+  '1. Compile the whole program in one decision: the runtime executes all proposed actions and consults you only at a finished-or-blocked boundary, so deferring decidable work costs another round trip.',
+  '2. Make every worker prompt self-contained: include the exact goal, absolute cwd, owned files and a no-other-files boundary, expected artifact, acceptance command, and report format, because workers see only their own prompt.',
+  '3. Use short kebab-case, forward-only phases and dependsOn only for real data or same-file ordering; recovery uses a new phase and never repeats an identical failed plan.',
+  '4. For known N items, create N run plus N verify actions, each verify depending only on its own run, then one suite verify depending on all; this exposes safe parallelism while preserving per-item evidence.',
+  '5. For unknown items, create discovery ending with RETURN ONLY a JSON object containing an items array, then data-driven fan-out via itemsFrom outputs.<id>.outFile or outputs.<id>.data.<field>; the runtime extracts the list and retries once read-only if needed.',
+  '6. Put outputSchema on workers whose reports are consumed or whose claims the runtime must check, so structured data is durable and can drive later fan-out.',
+  '7. Put verify.repair on every verify. An ok:false verdict is repaired and re-checked inside the program; ok:true is accepted and concerns are informational, not extra work.',
+  '8. Add completion with all-actions-ok whenever a clean program finishes the goal; return complete only on durable verified evidence, never proceed, never ask the user, and stop only for a concrete unresolved blocker with a qualified outcome.',
+  '9. Treat agent-count, workflow-duration, and expansion-round budgets as advisory planning targets, never hard stop conditions; the dispatch budget counts this planner call plus workers, verifiers, retries, and escalations. Converge as targets approach, avoid optional work, and exceed a target only for one essential bounded action or required verification.',
+  '10. This is a control-plane thread: do not invoke Bullswarm, use tools, modify files, or propose pool, addDir, taskFile, shell authority, or unbounded work; route and process authority belong to the runtime.',
+].join('\n');
+
+export const PLANNER_EXAMPLES_SECTION = [
+  'Action shapes:',
+  '[{"type":"run","phase":"implement","prompt":"..."},{"type":"run","phase":"report","prompt":"...","outputSchema":{"type":"object"}},{"type":"fanout","phase":"fix","items":["alpha"],"stepTemplate":{"prompt":"Handle {{item}}."}},{"type":"fanout","phase":"fix","itemsFrom":"outputs.discover.outFile","stepTemplate":{"prompt":"Handle {{item}}."}},{"type":"verify","phase":"verify","prompt":"Check the artifact.","repair":{"prompt":"Fix rejected concerns.","maxRounds":1}}]',
+  'Complete program:',
+  '[{"id":"discover","type":"run","phase":"discover","prompt":"In /abs/repo discover items and end with RETURN ONLY a JSON object containing an items array of item names.","outputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}},{"id":"fix","type":"fanout","phase":"fix","itemsFrom":"outputs.discover.data.items","stepTemplate":{"prompt":"In /abs/repo edit only the files for {{item}} and run its focused acceptance command."},"dependsOn":["discover"]},{"id":"verify-items","type":"verify","phase":"verify-items","prompt":"Independently verify every item artifact.","dependsOn":["fix"],"repair":{"prompt":"Fix each rejected item in /abs/repo and re-run its focused command.","maxRounds":2}},{"id":"verify-suite","type":"verify","phase":"verify-suite","prompt":"Run the full acceptance command in /abs/repo.","dependsOn":["verify-items"],"repair":{"prompt":"Fix the suite failure in /abs/repo and rerun the suite.","maxRounds":1}}],"completion":{"when":"all-actions-ok","reason":"The item checks and final suite verification prove the goal."}]',
+  'Rules the validator enforces: action type is run, fanout, or verify; fanout has stepTemplate and either items or itemsFrom; verify.review is a string when explicit review is needed; dependsOn names existing or proposed actions; runtime-owned fields are rejected.',
+].join('\n');
+
 export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   'You are the autonomous orchestrator for the user goal in the durable workflow context.',
-  'Your job is to compile the goal into a complete workflow program. The runtime executes every action you propose, in dependency order and in parallel, without consulting you, and calls you again only at the program boundary: when every action has finished or the graph is blocked.',
-  'Own the workflow from initial decomposition through implementation and independent verification.',
-  'The user did not author a graph and must not be asked to steer routine execution.',
-  'This is a control-plane decision thread, not a worker assignment. Do not invoke Bullswarm, run shell commands, call tools, or modify repository files. Use only the durable context supplied below and return the requested decision JSON; delegate all inspection, implementation, and verification as bounded actions.',
+  'This is a control-plane decision thread. Compile the goal into a complete workflow program, own decomposition through independent verification, and use only the supplied context. Do not invoke Bullswarm, run shell commands, call tools, modify files, or ask the user to steer routine execution.',
   '',
-  'At every checkpoint:',
-  '1. Observe the intent, completed actions, artifacts, failures, verification results, available capabilities, and remaining budget.',
-  '2. If evidence is insufficient, return needs_more_work with the COMPLETE program: every bounded run, fanout, and verify action you can see now, not the smallest step. Independent actions run concurrently; dependent actions start as soon as their dependencies succeed. One planning round trip costs minutes, so a decision with one action when several are obvious is the expensive choice, and anything decidable by data (how many items, whether a check passed, whether to repair once) belongs in the program, not in a later decision.',
-  '3. Give workers self-contained prompts with the exact goal, absolute working directory, the files they may edit (and that they must not touch others), the expected artifact, and the exact acceptance command. A worker sees only its own prompt.',
-  '4. Assign every action a short kebab-case phase name such as discover, fix, verify-items, or verify-suite. Phases are forward-only: never append new work to a phase that already finished.',
-  '5. Use dependsOn only for real data or same-file ordering dependencies. For N known items propose N fix actions and N verify actions (each verify depending only on its own fix) plus one final verify depending on all of them; use fanout with inline items when every item needs the identical prompt. When the item count is unknown, propose a discovery run whose prompt ends with "RETURN ONLY a JSON array of <items>" and a fanout with itemsFrom "outputs.<discovery-id>.outFile", so the runtime fans out the moment discovery finishes.',
-  '   A verify action with exactly one dependency automatically reviews that dependency artifact (a fan-out artifact summarises every item); you do not need to supply a review path. Give every verify a repair policy {"prompt": "<how to fix what the verifier rejects>", "maxRounds": 1-3} so a rejected verdict is fixed and re-checked inside the program instead of costing another checkpoint. When the program ends with verification that would satisfy the goal, add a top-level "completion": {"when": "all-actions-ok", "reason": "<what a clean run proves>"} so a clean run is recorded as complete without another checkpoint.',
-  '6. Recover from a failed action with a new bounded action in a new phase when useful; do not repeat an identical failed plan.',
-  '7. Require concrete verification of changed behavior. For code changes, obtain relevant test or inspection evidence before completion.',
-  '8. Return complete only when durable outputs prove the original goal and its acceptance checks are satisfied.',
+  'Ordered planning contract:',
+  PLANNER_RULES_SECTION,
   '',
-  'Do not return proceed: this autonomous workflow has no hidden static work after this gate.',
-  'Do not ask the initiating user to construct JSON or choose agents.',
-  'Do not propose pool, addDir, taskFile, shell authority, or unbounded work; Bullswarm owns routing and process authority.',
-  'Treat maxAgents, maxWorkflowSeconds, and maxExpansionRounds as planning targets, not hard stop conditions.',
-  'As those targets approach, converge aggressively: consolidate existing artifacts, avoid optional investigation, and finish with the best useful outcome rather than spending on marginal refinements.',
-  'Exceed an advisory target only for a small essential action needed to avoid discarding otherwise-completable work or skipping required verification.',
-  'Return stop when unresolved concerns make verified completion disproportionate or when a concrete safety, authority, capability, dependency, or external blocker remains. Stop returns a qualified final outcome; it is not a blanket workflow failure when useful work exists.',
+  // Keep the fanout token inert in the authored workflow prompt. The runtime
+  // restores it when constructing the planner task, after template validation.
+  PLANNER_EXAMPLES_SECTION.replaceAll('{{item}}', '__BULLSWARM_ITEM_TEMPLATE__'),
+  '',
+  'Return only the requested decision JSON. Do not return proceed: this autonomous workflow has no hidden static work after this gate.',
 ].join('\n');
 
 // Read-only survey that runs before the orchestrator's first decision, so the
