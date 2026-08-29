@@ -916,7 +916,7 @@ export class WorkflowRuntime {
       '',
       retry
         ? `Your previous answer did not match the required schema: ${retry.errors.join('; ')}. Previous output tail: ${retry.tail}. Return the full answer again and END with a JSON object that matches.`
-        : 'END YOUR OUTPUT with exactly one JSON object matching this schema. No prose or markdown fences may appear after it.',
+        : 'END YOUR OUTPUT with exactly one JSON object that is an INSTANCE of this schema — its keys are the names under "properties" (never copy the schema itself or its "type"/"properties" keys). No prose or markdown fences may appear after it.',
       JSON.stringify(schema),
     ].join('\n');
   }
@@ -931,7 +931,11 @@ export class WorkflowRuntime {
   readTrailingObject(path, schema) {
     let text;
     try { text = readFileSync(path, 'utf8'); } catch (err) { return { ok: false, errors: [`output file could not be read: ${err.message}`] }; }
-    const trimmed = text.trimEnd();
+    // A closing markdown fence after the object is the most common way a
+    // worker disobeys "no fences": tolerate it rather than spend the single
+    // retry (or a planner turn) on an otherwise valid answer. Observed live
+    // on goal-4 run ydpjts (2026-08-29): the retry answer ended "}\n```".
+    const trimmed = text.replace(/(\s*```[\w-]*\s*)+$/u, '').trimEnd();
     if (!trimmed.endsWith('}')) return { ok: false, errors: ['output did not end with a JSON object'] };
     const close = trimmed.length - 1;
     // Walk "{" positions from the right. Inner braces of the trailing object
