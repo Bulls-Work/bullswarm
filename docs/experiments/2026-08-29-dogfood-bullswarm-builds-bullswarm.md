@@ -307,3 +307,47 @@ is met: each round fixed a defect the deliverable needed fixed. Prediction befor
 rounds and the 10-min recovery turn vanish, wall ≈ 30 min"; observed 25 min 13 s with one planner turn.
 
 Cost: 22 of 23 dispatches on the unmetered opencode2 seat; Claude quota spent on one 247 s planner turn.
+
+## Goal-4 rerun on v0.16.0 (phase = stage) — `euh622` (wf-mtej85ws-18a3c0), 15:25:14 → 16:01:14 Z — **36 min 00 s, auto-completed; one planner-authored false rejection cost the recovery turn**
+
+Runtime `4bfd7f4` = released v0.16.0 (rule 3 "a phase is a pipeline stage … never one per action"); workers pinned to
+`opencode2`/`relay/gpt-5.6-luna` (cleared after); orchestrator `claude-code`/`claude-opus-5`; fresh fixture `g4-bs-v5`.
+
+| metric | `r2vu9i` | `bizp4s` | **`euh622`** |
+| --- | ---: | ---: | ---: |
+| wall | 36 min 58 s | 25 min 13 s | 36 min 00 s (2 157 s) |
+| planner turns / plannerSec | 2 / 648 s | 1 / 247 s | 2 / 728 s (34 %) — 462 s + 266 s |
+| dispatches | 26 | 23 | 24 (22 luna + 2 opus) |
+| max concurrent / parallelism | 4 / 1.55 | 4 / 1.77 | 4 / 1.5 |
+| phases in the TUI | 19 one-action rows | 16 one-action rows | **4 stages** (implement 2, tests 3, verify 6 + repairs, report 2) + 2 recovery phases |
+| repairs (rounds / repaired ok / re-verify rejected) | 4 / 2 / 2 | 3 / 2 / 1 | 4 / 2 / 2 |
+| tests after | 314 | 319 | **319/319**; existing tests +116/−1 (the mandated `:206` extension) and +153/−0 |
+
+What the phase change did: the planner wrote `implement` (impl ∥ docs), `tests` (three test writers), `verify` (six
+verifies), `report` — the layout asked for, with no scheduling change (impl ∥ docs started together; three test writers
+and verify-impl started the second impl landed; verify-docs ran while impl was still running). Width was one docs
+worker (three files merged; off the critical path) but three test writers — comparable to `bizp4s`.
+
+The four repair rounds:
+- `verify-impl` r1: fan-out items dispatched through plain `dispatch()`, so `stepTemplate.outputSchema` was never applied
+  — real. Re-verify rejected: the repair tested `step.outputSchema` instead of `itemStep.outputSchema` — the listed
+  concern still unresolved, exactly the rejection the re-verify rule permits. r2 repaired; re-verify ok.
+- `verify-test-runtime` r1: the retry case did not assert the `errors` payload of `action.output_schema_retry` — real.
+- `verify-test-refs` r1: the acceptance command failed on the pre-existing assertion at `workflow-adaptive.test.js:206`
+  (`programFeatures` pinned to three entries) because goal item 5 mandates adding `outputSchema` to it. The repair
+  extended the assertion (+116/−1). Re-verify rejected BECAUSE an existing assertion changed — the planner had written
+  "EXTEND BY APPENDING new test cases only" into `test-refs` and "shows APPENDED cases only" into `verify-test-refs`,
+  and "Do NOT modify existing tests" into `impl`, while the goal says "do NOT modify existing tests except to extend
+  them". No worker owned the assertion; the verifier treated its prompt's rule as an unresolved concern. `verify-suite`,
+  `report`, `verify-report` blocked → planner turn 2 (266 s), whose reason is exact: "verify-test-refs ended ok:false
+  on an append-only rule that the goal itself makes unsatisfiable — goal item 5 mandates adding 'outputSchema' to
+  programFeatures". Recovery program `verify-suite-full` → `final-report` → `verify-final-report`, auto-completed.
+  Third occurrence of this shape (attempt 3, `r2vu9i`, here); `bizp4s` avoided it only because its implementation
+  happened to keep the old assertion true.
+
+Cost of the false rejection: the 266 s planner turn plus the serialised tail ≈ 5–6 min; the rest of the gap to
+`bizp4s` is variance (planner turn 1 462 s vs 247 s on the same contract; `impl` 445 s vs 377 s).
+
+Fix committed after the run, unreleased (`71960ae`): rule 7 — "A verify checks the goal's own acceptance criteria …
+never add a process rule the goal does not state (append-only, tests untouched); when the implementation changes what
+an existing assertion pins, a worker must own updating it." Proof pending a rerun on that commit.
