@@ -515,7 +515,7 @@ test('planner context applies full excerpt rules and keeps failure reasons with 
 test('exported planner prompt sections contain the bounded contract and literal item template', () => {
   assert.ok(PLANNER_RULES_SECTION.length <= 4000);
   assert.ok(PLANNER_EXAMPLES_SECTION.length <= 3000);
-  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'never add a process rule the goal does not state']) {
+  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'process rule the goal does not state', 'exactly one owner per file', 'ok:false means unusable']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
@@ -735,7 +735,15 @@ test('one decision carries a whole program: discovery, data-driven fan-out, and 
     assert.equal(checkTasks.filter((task) => task.includes('RE-VERIFY round 1 of 2')).length, 1);
     const reverifyTask = checkTasks.find((task) => task.includes('RE-VERIFY round 1 of 2'));
     assert.match(reverifyTask, /Concerns you raised \(verbatim\):\n- item beta lacks evidence of the handled result/);
-    assert.match(reverifyTask, /Return ok:false ONLY if a listed concern is still unresolved/);
+    assert.match(reverifyTask, /Return ok:false ONLY if the work is still unusable by the acceptance standard below/);
+    // Every verify and re-verify carries the runtime-owned acceptance standard
+    // (ok:false = unusable; everything else is a concern), so a planner-written
+    // prompt cannot raise the bar. Earned: goal-4 rerun 8ebi8a — a verify
+    // rejected on a repo-wide `git diff --stat` scope check while siblings
+    // wrote, and its repair reverted five files it did not own.
+    assert.ok(checkTasks.every((task) => task.includes('Acceptance standard (runtime-owned; it overrides any stricter rule in the instructions above)')));
+    assert.ok(checkTasks.every((task) => task.includes('files changed by other actions that share this working tree, which are never this unit\'s defect')));
+    assert.match(repair.definition.prompt, /edit only the files the reviewed work owns; a concern about files outside them is not yours to resolve, and never revert, checkout or delete other actions' changes/);
 
     const types = events.map((event) => event.type);
     for (const type of ['action.items_resolved', 'action.repair_started', 'action.reverify_started', 'action.repaired']) {

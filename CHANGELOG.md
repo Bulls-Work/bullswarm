@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- The runtime now owns the acceptance bar for every verify and re-verify. Each
+  verifier's instructions end with a fixed "Acceptance standard (runtime-owned;
+  it overrides any stricter rule in the instructions above)": `ok:false` means
+  the work is unusable — its acceptance command fails, a required deliverable
+  is missing, or the answer is nonsense — and everything else (style, scope,
+  cosmetic mismatches, process rules the goal never stated such as append-only,
+  files changed by other actions in the shared tree) goes in `concerns` under
+  `ok:true`. A re-verify rejects only when the work is still unusable or the
+  repair broke the acceptance checks. Direction from the user after `8ebi8a`:
+  "unless it is completely nonsense or unable to finish I don't see a reason to
+  reject so easily".
+- Repair prompts carry a runtime-owned shared-tree rule: edit only the files
+  the reviewed work owns; a concern about other files is not the repair's to
+  resolve; never revert, checkout or delete other actions' changes. Earned on
+  `8ebi8a`: `verify-docs` rejected on a repo-wide `git diff --stat` scope check
+  while siblings were writing, and its repair reverted five `src/` files it did
+  not own to satisfy the concern.
+- Planner contract: rule 2 requires exactly one owner per file, including any
+  existing test the change breaks (the `workflow-adaptive.test.js:206` gap for
+  the fourth time); rule 7 restates the lenient bar above; the validator line
+  now says ids are unique across the whole run, finished and failed actions
+  included (turn 2 of `8ebi8a` re-proposed the blocked id `verify-suite` and
+  spent a 97 s correction turn on it).
+- Goal-4 rerun on `7724da1` (`8ebi8a`, rule 7 + PR #5): 42 min 03 s, three
+  planner turns (775 s, 31 %), parallelism 1.34, 23 dispatches (20 on
+  `relay/gpt-5.6-luna`), three repair rounds each rejected on re-verify for
+  reasons the prompts caused, tail of five actions blocked, recovery program
+  auto-completed, 315/315, existing tests +179/−1. Goal-4 line:
+  44 → 72 → 37 → 25 → 36 → 42 min.
+
+## 0.17.0 — the timeline tells the execution story
+
 - Workflow timeline (PR #5) hardened after a 16-agent adversarial review against
   real run state (23 findings, 21 confirmed): worker rows now name their phase
   (`├─✓ [Verify] verify-impl`) because concurrent phases interleave in time
