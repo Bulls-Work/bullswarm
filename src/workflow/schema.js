@@ -34,9 +34,11 @@ function validateNode(value, schema, path, errors) {
   }
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const properties = schema.properties ?? {};
-    for (const key of schema.required ?? []) if (!(key in value)) errors.push(`${path ? `${path}.` : ''}${key} is required`);
-    for (const [key, child] of Object.entries(properties)) if (key in value) validateNode(value[key], child, `${path ? `${path}.` : ''}${key}`, errors);
-    if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!(key in properties)) errors.push(`${path ? `${path}.` : ''}${key} is not allowed`);
+    // Own properties only: `in` would count inherited names (toString,
+    // constructor, __proto__) as present or as declared.
+    for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) errors.push(`${path ? `${path}.` : ''}${key} is required`);
+    for (const [key, child] of Object.entries(properties)) if (Object.hasOwn(value, key)) validateNode(value[key], child, `${path ? `${path}.` : ''}${key}`, errors);
+    if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(properties, key)) errors.push(`${path ? `${path}.` : ''}${key} is not allowed`);
   }
 }
 
