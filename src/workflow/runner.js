@@ -861,6 +861,41 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
 
   // Resume accepted expansion work before asking the planner for a new
   // semantic decision. Successful actions are skipped by durable output.
+  // An action the interruption cancelled mid-flight (status `cancelled`,
+  // output `ok:false` "workflow cancellation requested") is unfinished work,
+  // not a failure: clear its output so it re-runs, and clear the outputs of
+  // the dependents that were blocked only because of it — otherwise resume
+  // asks the planner to re-plan around a phantom failure (observed on run
+  // djnjka, 2026-08-29: 1 cancelled action → 4 "blocked" → spurious turn).
+  const ledgerById = new Map((state.actionLedger ?? []).map((entry) => [entry.id, entry]));
+  const reopened = new Set();
+  for (const entry of state.plan?.actions ?? []) {
+    if (entry.source !== 'planner' || !entry.definition) continue;
+    if (ledgerById.get(entry.id)?.status === 'cancelled') reopened.add(entry.id);
+  }
+  let grew = reopened.size > 0;
+  while (grew) {
+    grew = false;
+    for (const entry of state.plan?.actions ?? []) {
+      if (entry.source !== 'planner' || !entry.definition || reopened.has(entry.id)) continue;
+      const blocked = state.outputs[entry.id]?.dependencyBlocked === true;
+      if (blocked && (entry.definition.dependsOn ?? []).some((id) => reopened.has(id))) {
+        reopened.add(entry.id);
+        grew = true;
+      }
+    }
+  }
+  for (const id of reopened) {
+    delete state.outputs[id];
+    const ledger = ledgerById.get(id);
+    if (ledger) {
+      ledger.status = 'pending';
+      delete ledger.why;
+      delete ledger.finishedAt;
+    }
+    runtime.emit('action.reopened', { actionId: id, reason: 'interrupted before completion' });
+  }
+  if (reopened.size) runtime.persist();
   const unfinishedAccepted = (state.plan?.actions ?? [])
     .filter((entry) => entry.source === 'planner' && entry.definition &&
       state.outputs[entry.id] == null)
