@@ -302,7 +302,9 @@ export class WorkflowRuntime {
           callerSession: false, // workflow context: every pool is a worker
           now: Date.now(),
           requiredCapabilities: step.requiresCapabilities ?? [],
-          preferredPool: assignment?.pool ?? null,
+          // A goal-level user preference wins while it remains eligible, but
+          // unlike step.pool it never removes healthy fallback candidates.
+          preferredPool: step.preferredPool ?? assignment?.pool ?? null,
           effortTier,
         });
         if (!route.pick) {
@@ -778,9 +780,19 @@ export class WorkflowRuntime {
       if (this.state.cancelRequested) return true;
       try { return JSON.parse(readFileSync(join(this.runDir, 'state.json'), 'utf8')).cancelRequested === true; } catch { return false; }
     };
+    const heartbeat = () => {
+      this.state.runner ??= {};
+      this.state.runner.lastHeartbeatAt = new Date().toISOString();
+      this.persist();
+    };
     let lifted = false;
     while (Date.now() < deadline && !cancelled()) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(this.quotaPollMs, Math.max(1, deadline - Date.now()))));
+      heartbeat();
+      // Keep the durable owner heartbeat comfortably inside the 90-second
+      // reconciliation grace and make cooperative cancellation responsive,
+      // even when provider meter polling is configured less frequently.
+      const waitMs = Math.min(this.quotaPollMs, 30_000, Math.max(1, deadline - Date.now()));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
       for (const gatedView of gated) {
         // preparePools hands out copies; the gate lives on the pool itself.
         const pool = this.pools.find((p) => p.name === gatedView.name) ?? gatedView;
@@ -797,6 +809,7 @@ export class WorkflowRuntime {
           pool.pace = reading.pacing.surplus ?? pool.pace;
         }
       }
+      heartbeat();
       gated = gatedOnly();
       if (!gated) { lifted = true; break; }
     }

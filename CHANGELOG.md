@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Goal-level `--orchestrator <pool>` is now a preference with immediate
+  fallback when that pool is quota-gated, ineligible, or unavailable. Exact
+  provider testing moves to `--strict-orchestrator <pool>`. Quota waits now
+  refresh the durable runner heartbeat at least every 30 seconds, preventing a
+  live waiting run from being falsely reconciled as interrupted and making
+  cooperative cancellation responsive during long meter-poll intervals.
+
 - The runtime now owns the acceptance bar for every verify and re-verify. Each
   verifier's instructions end with a fixed "Acceptance standard (runtime-owned;
   it overrides any stricter rule in the instructions above)": `ok:false` means
