@@ -26,6 +26,16 @@
   longer reach any gate is marked `expired_undelivered` with event
   `steering.expired` at the terminal transition; interrupted runs keep their
   queue for the resumed run's next gate.
+- Resume re-runs an action the interruption cancelled mid-flight instead of
+  re-planning around a phantom failure: cancelled actions and the dependents
+  blocked only by them are reopened (event `action.reopened`) and the accepted
+  program continues from where it stopped. Observed on a SIGTERM-interrupted
+  run: 1 cancelled action → 4 "blocked" → a spurious planner turn.
+- Planner contract: a verify with several `dependsOn` must set `review`
+  (rule 4); the program's last worker must be covered by a successful verify
+  (rule 8) — both were the causes of extra planner gates on the goal-3 proof
+  run. A corrective turn's `validationFeedback.rejectedResponseExcerpt` is
+  capped at 2 000 chars.
 
 ## 0.14.0 — structured worker output, compact planner contract
 
