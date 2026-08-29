@@ -133,5 +133,17 @@ Baseline (0.13.1, same fixture/goal/pool/flags): 28m42s wall, 1 planner turn, 29
   the parsed proposal) → excerpt capped at 2k.
 - 0.13.1 completion-evidence policy exercised live for the first time: it refused auto-completion twice, correctly.
 
-## Proof run 2 — goal-3 re-run on 0.14.1-pre @ c0ff947 (contract gaps closed)
+## Proof run 2 — goal-3 re-run `djnjka` (wf-mtdx5htt), 0.14.1-pre @ c0ff947 — interrupted, then cancelled
+- Turn-1 proposal **accepted first try** (no validation rejection, no correction turn): contract fix #1 confirmed.
+  Turn-1 context 6,201 chars.
+- At 05:21 the driving session's background task was killed by the harness (not the user); SIGTERM reached the
+  runner, which persisted `interrupted` + resumable (1/3 steps, in-flight `triage` cancelled) — the 0.13 interruption
+  path working as designed.
+- Resume at 05:54 exposed a **resume defect**: the cancelled `triage` was persisted `ok:false` ("workflow
+  cancellation requested"), so its 4 dependents were marked "blocked by failed or unresolved dependencies" and the
+  planner was asked to re-plan around a failure that never happened. Cancelled the run; fixed in `459c58c`
+  (cancelled actions + dependents blocked only by them are reopened on resume, event `action.reopened`; regression
+  test drives a cancel marker into a slow in-flight action and asserts exactly one further planner turn).
+
+## Proof run 3 — goal-3 re-run `4t6m5a` (wf-mtdyyqkw), 0.14.1-pre @ 459c58c
 (pending)
