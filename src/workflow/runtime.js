@@ -93,6 +93,24 @@ export function plannerBudgetContext(budget = {}) {
   };
 }
 
+/** Skeleton of a rejected planner proposal: shapes and ids, prompts elided. */
+export function compactRejectedProposal(proposal) {
+  if (!proposal || typeof proposal !== 'object') return proposal ?? null;
+  const elide = (text) => (typeof text === 'string' && text.length > 160 ? `${text.slice(0, 160)}…[${text.length} chars]` : text);
+  return {
+    ...proposal,
+    reason: elide(proposal.reason),
+    actions: Array.isArray(proposal.actions) ? proposal.actions.map((action) => {
+      if (!action || typeof action !== 'object') return action;
+      const out = { ...action };
+      if ('prompt' in out) out.prompt = elide(out.prompt);
+      if (out.repair && typeof out.repair === 'object') out.repair = { ...out.repair, prompt: elide(out.repair.prompt) };
+      if (out.stepTemplate && typeof out.stepTemplate === 'object') out.stepTemplate = { ...out.stepTemplate, prompt: elide(out.stepTemplate.prompt) };
+      return out;
+    }) : proposal.actions,
+  };
+}
+
 export class WorkflowRuntime {
   /**
    * @param {object} opts
@@ -1302,10 +1320,11 @@ export class WorkflowRuntime {
         maxAttempts: opts.correction.maxAttempts,
         why: opts.correction.why,
         issues: opts.correction.issues ?? [],
-        rejectedProposal: opts.correction.rejectedProposal ?? null,
-        // The raw response duplicates the parsed proposal; cap it so one
-        // corrective turn cannot re-inflate the compacted context (observed:
-        // a 24k-char validationFeedback on run d8pr8s turn 1-correction).
+        // The planner's own thread already holds the full rejected proposal
+        // (worker prompts included); resend only its skeleton so a corrective
+        // turn cannot re-inflate the compacted context (observed: 38k-char
+        // validationFeedback on run 4t6m5a, 37k of it the verbatim proposal).
+        rejectedProposal: compactRejectedProposal(opts.correction.rejectedProposal),
         rejectedResponseExcerpt: typeof opts.correction.rejectedResponse === 'string'
           ? opts.correction.rejectedResponse.slice(0, 2000)
           : null,
