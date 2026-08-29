@@ -16,6 +16,17 @@ import {
   PLANNER_RULES_SECTION, PLANNER_EXAMPLES_SECTION, AUTONOMOUS_ORCHESTRATOR_PROMPT,
 } from '../src/workflow/goal.js';
 
+test('action-bearing proceed is normalized without an extra planner correction turn', () => {
+  const normalized = normalizeDecisionProposal({
+    schemaVersion: 'bullswarm.workflow.decision.v1',
+    decision: 'proceed',
+    reason: 'Execute the bounded program now.',
+    actions: [{ id: 'inspect', type: 'run', phase: 'discover', prompt: 'Inspect and report evidence.' }],
+  });
+  assert.equal(normalized.decision, 'needs_more_work');
+  assert.doesNotThrow(() => validateDecisionProposal(normalized));
+});
+
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-adaptive-'));
   const bullswarmDir = join(root, '.bullswarm');
@@ -515,7 +526,7 @@ test('planner context applies full excerpt rules and keeps failure reasons with 
 test('exported planner prompt sections contain the bounded contract and literal item template', () => {
   assert.ok(PLANNER_RULES_SECTION.length <= 4000);
   assert.ok(PLANNER_EXAMPLES_SECTION.length <= 3000);
-  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'file-disjoint unit', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'process rule the goal does not state', 'exactly one owner per file', 'ok:false means unusable']) {
+  for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'batch cheap homogeneous edits', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'process rule the goal does not state', 'exactly one owner per file', 'ok:false means unusable']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
@@ -817,6 +828,9 @@ test('data-driven fanout and repair proposals are normalized and validated befor
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { maxRounds: 1 } }], /repair\.prompt must be a non-empty string/);
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', maxRounds: 9 } }], /repair\.maxRounds must be an integer from 1 to 3/);
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', addDir: '/x' } }], /repair\.addDir is runtime-owned/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', model: 'planner-picked' }], /model is runtime-owned/);
+  rejects([{ id: 'f', type: 'fanout', items: ['a'], stepTemplate: { prompt: '{{item}}', model: 'planner-picked' } }], /stepTemplate\.model is runtime-owned/);
+  rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', model: 'planner-picked' } }], /repair\.model is runtime-owned/);
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: 'just fix it' }], /repair must be an object/);
   rejects([{ id: 'r', type: 'run', prompt: 'x', repair: { prompt: 'fix' } }], /repair is only valid on verify actions/);
 });

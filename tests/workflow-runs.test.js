@@ -573,7 +573,7 @@ test('I10: workflow runs show <id> accepts both shortId and full runId', async (
   } finally { cleanup(); }
 });
 
-test('I10: caller result selects the latest run delivery and its dependent verifier', () => {
+test('I10: caller result selects the latest delivery and strongest downstream verifier', () => {
   const { home, cleanup } = sandbox();
   try {
     const artifact = join(home, 'delivery.json');
@@ -584,17 +584,26 @@ test('I10: caller result selects the latest run delivery and its dependent verif
       startedAt: '2026-08-28T01:00:00.000Z', finishedAt: '2026-08-28T01:02:00.000Z',
       actionLedger: [
         { id: 'draft', kind: 'run', status: 'succeeded', phase: 'audit' },
-        { id: 'delivery', kind: 'run', status: 'succeeded', phase: 'verify' },
-        { id: 'skeptic', kind: 'verify', status: 'succeeded', dependsOn: ['delivery'], phase: 'verify' },
+        { id: 'delivery-a', kind: 'run', status: 'succeeded', phase: 'implement' },
+        { id: 'delivery-b', kind: 'run', status: 'succeeded', phase: 'implement' },
+        { id: 'skeptic-a', kind: 'verify', status: 'succeeded', dependsOn: ['delivery-a'], phase: 'verify' },
+        { id: 'skeptic-b', kind: 'verify', status: 'succeeded', dependsOn: ['delivery-b'], phase: 'verify' },
+        { id: 'suite', kind: 'verify', status: 'succeeded', dependsOn: ['skeptic-a', 'skeptic-b'], phase: 'verify' },
         { id: 'orchestrator', kind: 'decide', status: 'succeeded', phase: 'verify' },
       ],
       outputs: {
-        delivery: { outFile: artifact },
-        skeptic: { outFile: join(home, 'verify.md'), verify: { ok: true, concerns: [], summary: 'checked' } },
+        'delivery-a': { outputText: 'first independent delivery' },
+        'delivery-b': { outFile: artifact },
+        'skeptic-a': { outFile: join(home, 'verify-a.md'), verify: { ok: true, concerns: [], summary: 'checked a' } },
+        'skeptic-b': { outFile: join(home, 'verify-b.md'), verify: { ok: true, concerns: [], summary: 'checked b' } },
+        suite: { outFile: join(home, 'suite.md'), verify: { ok: true, concerns: [], summary: 'full suite checked' } },
       },
       attempts: [
-        { actionId: 'delivery', status: 'succeeded', finishedAt: '2026-08-28T01:01:00.000Z', actionCount: 4 },
-        { actionId: 'skeptic', status: 'succeeded', finishedAt: '2026-08-28T01:01:30.000Z', actionCount: 3 },
+        { actionId: 'delivery-a', status: 'succeeded', finishedAt: '2026-08-28T01:00:50.000Z', actionCount: 2 },
+        { actionId: 'delivery-b', status: 'succeeded', finishedAt: '2026-08-28T01:01:00.000Z', actionCount: 4 },
+        { actionId: 'skeptic-a', status: 'succeeded', finishedAt: '2026-08-28T01:01:20.000Z', actionCount: 2 },
+        { actionId: 'skeptic-b', status: 'succeeded', finishedAt: '2026-08-28T01:01:30.000Z', actionCount: 3 },
+        { actionId: 'suite', status: 'succeeded', finishedAt: '2026-08-28T01:01:45.000Z', actionCount: 1 },
         { actionId: 'orchestrator', status: 'succeeded', finishedAt: '2026-08-28T01:02:00.000Z', actionCount: 2 },
       ],
       steps: [], usage: { tokens: { totalKnown: 4200, output: 800 } },
@@ -603,13 +612,15 @@ test('I10: caller result selects the latest run delivery and its dependent verif
       state, report: { summary: { stepsOk: 3, stepsFailed: 0 } },
       runId: 'wf-example', shortId: 'abc234', ongoing: false,
     });
-    assert.equal(result.delivery.actionId, 'delivery');
+    assert.equal(result.delivery.actionId, 'delivery-b');
     assert.equal(result.delivery.format, 'json');
     assert.deepEqual(result.delivery.content, { confirmed: 3, refuted: 6 });
-    assert.equal(result.verification.actionId, 'skeptic');
+    assert.deepEqual(result.deliveries.map((entry) => entry.actionId), ['delivery-a', 'delivery-b']);
+    assert.equal(result.deliveries[0].content, 'first independent delivery');
+    assert.equal(result.verification.actionId, 'suite');
     assert.equal(result.verification.verdict.ok, true);
     assert.equal(result.totalTokens, 4200);
-    assert.deepEqual(result.totalToolCalls, { known: 9, complete: true, attemptsMissingCount: 0 });
+    assert.deepEqual(result.totalToolCalls, { known: 14, complete: true, attemptsMissingCount: 0 });
   } finally { cleanup(); }
 });
 

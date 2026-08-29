@@ -677,6 +677,8 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         type: 'run',
         phase: action.phase,
         ...(action.lane != null ? { lane: action.lane } : {}),
+        ...(action.pool != null ? { pool: action.pool } : {}),
+        ...(action.model != null ? { model: action.model } : {}),
         ...(action.addDir != null ? { addDir: action.addDir } : {}),
         ...(action.timeoutSec != null ? { timeoutSec: action.timeoutSec } : {}),
         dependsOn: producerId ? [producerId] : [],
@@ -724,6 +726,8 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         type: 'run',
         phase: action.phase,
         ...(action.lane != null ? { lane: action.lane } : {}),
+        ...(action.pool != null ? { pool: action.pool } : {}),
+        ...(action.model != null ? { model: action.model } : {}),
         ...(action.addDir != null ? { addDir: action.addDir } : {}),
         ...(action.timeoutSec != null ? { timeoutSec: action.timeoutSec } : {}),
         ...(action.repair.effort != null ? { effort: action.repair.effort } : {}),
@@ -949,7 +953,16 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         rejection = { why: planner.why, issues: [planner.parseError ?? planner.why] };
       } else {
         try {
-          proposal = validateDecisionProposal(normalizeDecisionProposal(planner.proposal), {
+          const normalizedProposal = normalizeDecisionProposal(planner.proposal);
+          if (normalizedProposal?.decision !== planner.proposal?.decision) {
+            runtime.emit('decision.normalized', {
+              gateId: gate.id,
+              from: planner.proposal?.decision ?? null,
+              to: normalizedProposal?.decision ?? null,
+              reason: 'action-bearing proceed is an executable needs_more_work program',
+            });
+          }
+          proposal = validateDecisionProposal(normalizedProposal, {
             knownActionIds: (state.plan?.actions ?? []).map((action) => action.id),
             closedPhases: (state.plan?.actions ?? [])
               .filter((action) => action.source === 'planner')

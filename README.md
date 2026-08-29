@@ -192,7 +192,19 @@ bullswarm workflow goal --resume <shortId> --json
 another eligible pool if that provider is quota-gated or unavailable. Ordinary
 use can leave selection on `auto`. For controlled provider QA only,
 `--strict-orchestrator <pool>` requires that exact pool and may wait for its
-quota window. `--max-agents` and `--max-workflow-seconds` are
+quota window. Controlled comparisons can additionally pin the exact planner
+and worker routes without changing global strategy:
+
+```bash
+bullswarm workflow goal "Implement and verify the change" --cwd . \
+  --strict-orchestrator codex --orchestrator-model gpt-5.6-sol \
+  --worker-pool opencode2 --worker-model relay/gpt-5.6-luna
+```
+
+The worker lock covers the scout, ordinary runs, fan-out items, repairs,
+re-verification, and runtime extraction helpers. A pool that cannot guarantee
+the requested model is ineligible rather than silently substituting another
+model. `--max-agents` and `--max-workflow-seconds` are
 advisory planning targets; `--max-expansion-rounds` is also an advisory
 convergence target. Hard structural safeguards are adjusted with
 `--max-actions` and `--max-items-per-expansion`.
@@ -261,8 +273,9 @@ Values accept ISO timestamps, local `YYYY-MM-DD` dates, `today`, `yesterday`,
 After a workflow reaches a terminal state, agents should consume
 `workflow runs result <id> --json` instead of probing `state.json`, task files,
 or provider-specific output. The versioned `bullswarm.workflow.result.v1`
-envelope identifies the final delivery artifact and its matching verification
-verdict, and includes progress, step logs, tokens, and an explicitly
+envelope retains the primary `delivery`, adds a `deliveries[]` frontier when
+parallel workers jointly form the outcome, and identifies their strongest
+matching verification verdict. It also includes progress, step logs, tokens, and an explicitly
 complete-or-partial tool-call total. `runs show` remains the low-level debugging
 surface.
 Goal launch output includes an `instructions` handoff with four named paths:
@@ -311,7 +324,8 @@ width of `⌛` across terminal fonts. It watches ongoing runs from disk and supp
 details, Esc to go back, `c` to request a confirmed cooperative stop, `r` to
 refresh, and `q` to detach. Its responsive drill-down fits both desktop and
 mobile SSH terminals without squeezing phase, agent, and activity into three
-narrow columns.
+narrow columns. Below 100 columns it opens on a full-width timeline; press `t`
+to toggle Timeline and Phases, then use Enter/Esc for agents and activity.
 
 ```bash
 bullswarm workflow tui
@@ -439,7 +453,7 @@ appending anything. It executes ready actions, observes their durable results,
 and calls the planner again. `events.jsonl`, `state.json`, the TUI, and JSON
 inspection expose the same plan, actions, attempts, decisions, budgets, and
 artifacts. See `workflows/adaptive-code-review.json` for a complete example.
-Planner actions cannot set `pool`, `addDir`, or `taskFile`. If those need to be
+Planner actions cannot set `pool`, `model`, `addDir`, or `taskFile`. If those need to be
 fixed by the initiator, declare them under the `decide` step's `actionDefaults`;
 otherwise eligible capable pools are ranked by live quota surplus.
 

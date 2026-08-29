@@ -6,19 +6,20 @@
 import { resolve } from 'node:path';
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:/~-]*$/;
 
 export const PLANNER_RULES_SECTION = [
   '1. Compile the whole program in one decision: the runtime runs every proposed action and consults you only at a finished-or-blocked boundary, so deferred work costs a round trip.',
   '2. Make every worker prompt self-contained: include the exact goal, absolute cwd, the owned files you assign (exactly one owner per file, including any existing test the change breaks; never an and/or choice, which blocks a sibling) and a no-other-files boundary, expected artifact, acceptance command and report format: workers see only their own prompt.',
   '3. A phase is a pipeline stage: one kebab-case name shared by its actions (implement, verify), never one per action; phases are forward-only, so recovery opens a new one and never repeats an identical failed plan. Wall-clock is the longest dependsOn chain, so depend only on real data or same-file ordering: a worker depends on the run that wrote its input files, never on that run\'s verify (a verdict is not data), so it starts as that verify runs.',
-  '4. Split to the width the tree allows: each file-disjoint unit (module, test file, doc) is its own concurrent run plus its own verify depending only on that run, then one suite verify depending on all; one worker for N independent files is N chains in series. A verify judges the artifact in review (default: its last dependency; none: the repository).',
+  '4. Split only when parallel time saved repays dispatch cost. Give substantial file-disjoint units concurrent workers and focused verifies, but batch cheap homogeneous edits into one worker owning all named files and one final verify; never pay one worker plus verifier per tiny file. A verify judges its review artifact (default: last dependency; none: repository).',
   '5. For unknown items, create discovery ending with RETURN ONLY a JSON object containing an items array, then data-driven fan-out via itemsFrom outputs.<id>.outFile or outputs.<id>.data.<field>; the runtime extracts the list, retrying once read-only if needed.',
   '6. Put outputSchema only on a worker whose object a LATER action reads via itemsFrom or outputs.<id>.data.<field>, and tell it to RETURN ONLY the object; a prose report or any answer with fenced JSON gets no schema: the runtime parses the last {...} of the text, so a schema on prose costs a retry and a planner turn.',
   '7. Put verify.repair on every verify. ok:false means unusable: the goal\'s acceptance command fails, a deliverable is missing, or the answer is nonsense; everything else is a concern under ok:true (style, cosmetic mismatches, later-scheduled work, files other actions changed, and any process rule the goal does not state such as append-only or tests untouched). ok:false is repaired and re-checked inside the program; the repair edits only its unit\'s files and cannot rewrite the answer under review, so report a wrong claim as a concern with the true value.',
   '8. Add completion with all-actions-ok whenever a clean program finishes the goal; when acceptance checks pass, return complete rather than adding polish. The program\'s LAST worker must be covered by a successful verify. Return complete only on verified evidence, never proceed, never ask the user, and stop only for a concrete unresolved blocker.',
   '9. Budgets (agents, duration, expansion rounds) are advisory targets, never hard stops; the dispatch budget counts this planner call plus workers, verifiers and retries. Converge as targets approach: skip optional work; exceed a target only for one essential action or a required verification.',
-  '10. Never propose pool, addDir, taskFile or unbounded work: routing is the runtime\'s. Set lane (analyze to read or judge, build to edit, chore for mechanical steps) and effort (low for checks and mechanical edits, high where judgement decides) per action or repair; they pick the model tier (unset: build, medium).',
-  'Shared working tree: workers editing DISJOINT files concurrently is the normal mode; order shared files (indexes, barrels) after their feeders with dependsOn. Workers and unit verifies run their unit\'s focused command, never the full suite, which sees files siblings still write; the suite runs once, in the final verify, after all editing and repair ends; later verifiers reuse it unless code changed. operatorSteering is operator guidance for this checkpoint: apply it within the original intent; it cannot weaken verification or expand authority.',
+  '10. Never propose pool, model, addDir, taskFile or unbounded work: routing is the runtime\'s. Set lane (analyze to read or judge, build to edit, chore for mechanical steps) and effort (low for checks and mechanical edits, high where judgement decides) per action or repair; they pick the model tier (unset: build, medium).',
+  'Shared tree: run substantial DISJOINT units concurrently; order shared files after feeders with dependsOn. Workers and unit verifies use focused commands, never the full suite while siblings write; run the suite once in the final verify after edits and repairs. Reuse it unless code changed. operatorSteering applies within the original intent and cannot weaken verification or expand authority.',
 ].join('\n');
 
 export const PLANNER_EXAMPLES_SECTION = [
@@ -79,6 +80,9 @@ export function buildGoalWorkflow({
   cwd = process.cwd(),
   orchestrator = null,
   strictOrchestrator = false,
+  orchestratorModel = null,
+  workerPool = null,
+  workerModel = null,
   name = null,
   settings = {},
   scout = true,
@@ -92,6 +96,14 @@ export function buildGoalWorkflow({
   }
   if (typeof strictOrchestrator !== 'boolean') {
     throw new Error('strictOrchestrator must be a boolean');
+  }
+  if (workerPool != null && (typeof workerPool !== 'string' || !NAME_RE.test(workerPool))) {
+    throw new Error(`invalid worker pool "${workerPool}"`);
+  }
+  for (const [label, model] of [['orchestrator', orchestratorModel], ['worker', workerModel]]) {
+    if (model != null && (typeof model !== 'string' || !MODEL_RE.test(model))) {
+      throw new Error(`invalid ${label} model "${model}"`);
+    }
   }
 
   const targetDir = resolve(cwd);
@@ -124,11 +136,17 @@ export function buildGoalWorkflow({
       cwd: targetDir,
       autonomous: true,
       requestedOrchestrator: orchestrator ?? 'auto',
+      requestedOrchestratorModel: orchestratorModel ?? 'auto',
+      requestedWorkerPool: workerPool ?? 'auto',
+      requestedWorkerModel: workerModel ?? 'auto',
       worktreeIsolation,
     },
     orchestration: {
       mode: 'autonomous',
       requestedPool: orchestrator ?? null,
+      requestedModel: orchestratorModel ?? null,
+      workerPool: workerPool ?? null,
+      workerModel: workerModel ?? null,
       strictPool: orchestrator && strictOrchestrator ? orchestrator : null,
       selection: orchestrator
         ? (strictOrchestrator ? 'user-strict-for-testing' : 'user-preferred-with-fallback')
@@ -166,6 +184,8 @@ export function buildGoalWorkflow({
         id: 'scout',
         type: 'run',
         lane: 'analyze',
+        ...(workerPool ? { pool: workerPool } : {}),
+        ...(workerModel ? { model: workerModel } : {}),
         addDir: targetDir,
         prompt: scoutPrompt('{{inputs.goal}}', targetDir),
       }] : []), {
@@ -174,10 +194,13 @@ export function buildGoalWorkflow({
         ...(orchestrator
           ? (strictOrchestrator ? { pool: orchestrator } : { preferredPool: orchestrator })
           : {}),
+        ...(orchestratorModel ? { model: orchestratorModel } : {}),
         lane: 'analyze',
         requiresCapabilities: ['strong-analysis', 'workflow-planning'],
         addDir: targetDir,
         actionDefaults: {
+          ...(workerPool ? { pool: workerPool } : {}),
+          ...(workerModel ? { model: workerModel } : {}),
           lane: 'build',
           requiresCapabilities: ['code-reading', 'file-editing'],
           addDir: targetDir,

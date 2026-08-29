@@ -158,6 +158,9 @@ test('every "runs" alias path resolves to identical text as its "workflow runs" 
 test('previously-drifted flags are present in --help now that help.js is canonical', () => {
   const goalHelp = helpForArgs(['workflow', 'goal', '--help']);
   assert.match(goalHelp, /--detach/, 'workflow goal --help must document --detach (accepted by the real parser)');
+  for (const flag of ['--orchestrator-model', '--worker-pool', '--worker-model']) {
+    assert.ok(goalHelp.includes(flag), `workflow goal --help must document ${flag}`);
+  }
 
   const runsHelp = helpForArgs(['workflow', 'runs', '--help']);
   for (const alias of ['--from', '--started-after', '--to', '--started-before']) {

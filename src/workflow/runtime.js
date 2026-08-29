@@ -35,7 +35,7 @@ import { DECISION_SCHEMA_VERSION, parseDecisionText } from './decision.js';
 import { aggregateUsage } from '../lib/usage.js';
 import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
 import { deliverSteering } from './steering.js';
-import { resolveDispatchModel } from '../lib/strategy.js';
+import { isModelExcluded, resolveDispatchModel } from '../lib/strategy.js';
 import { getMeterReading } from '../meters/registry.js';
 import { validateAgainstSchema } from './schema.js';
 import { AUTONOMOUS_ORCHESTRATOR_PROMPT } from './goal.js';
@@ -315,6 +315,8 @@ export class WorkflowRuntime {
             keepOnClaude: false,
             why: stillGated.length
               ? `no eligible pool: every candidate is burst-gated (${WorkflowRuntime.describeBurstGate(stillGated)}) and the wait for the window expired`
+              : step.model != null
+                ? `no eligible pool can guarantee requested model ${step.model}${step.pool ? ` on pool ${step.pool}` : ''}`
               : `no eligible pool (${route.why})`,
             pick: { pool: null },
             meta: { exitCode: null },
@@ -327,7 +329,7 @@ export class WorkflowRuntime {
         }
         const poolView = route.pick.connector;
         const connector = poolView?.connector ?? poolView;
-        const selectedModel = poolView?.modelPolicy?.model
+        const selectedModel = step.model ?? poolView?.modelPolicy?.model
           ?? (assignment?.pool === connector.name && !poolView?.strategyExcludedModels?.includes(assignment.model)
             ? assignment.model : null);
         const runtimeConnector = {
@@ -720,10 +722,34 @@ export class WorkflowRuntime {
           (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)),
     ).map((pool) => {
       const assignment = pool.strategyAssignments?.[effortTier] ?? null;
-      const modelPolicy = resolveDispatchModel(pool.connector ?? pool, effortTier, {
+      const connector = pool.connector ?? pool;
+      const excludedModels = pool.strategyExcludedModels ?? [];
+      let modelPolicy = resolveDispatchModel(connector, effortTier, {
         assignment,
-        excludedModels: pool.strategyExcludedModels ?? [],
+        excludedModels,
       });
+      if (step.model != null) {
+        const requested = String(step.model).trim();
+        const configuredIndex = connector.spawn?.cmd?.indexOf('--model') ?? -1;
+        const configured = connector.model
+          ?? (configuredIndex >= 0 ? connector.spawn.cmd[configuredIndex + 1] ?? null : null);
+        const known = new Set([...(connector.knownModels ?? []), configured].filter(Boolean));
+        const selectable = Boolean(connector.modelSelection?.flag);
+        if (isModelExcluded(requested, excludedModels)) {
+          modelPolicy = { eligible: false, model: null, source: 'step-model-lock', reason: `requested model ${requested} is excluded` };
+        } else if (requested === configured || (selectable && (known.size === 0 || known.has(requested)))) {
+          modelPolicy = { eligible: true, model: requested, source: 'step-model-lock' };
+        } else {
+          modelPolicy = {
+            eligible: false,
+            model: null,
+            source: 'step-model-lock',
+            reason: selectable
+              ? `connector ${connector.name} does not advertise requested model ${requested}`
+              : `connector ${connector.name} cannot select requested model ${requested}`,
+          };
+        }
+      }
       return { ...pool, modelPolicy };
     }).filter((pool) => pool.modelPolicy.eligible);
   }
