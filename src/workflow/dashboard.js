@@ -58,10 +58,14 @@ export function requestCancel(bullswarmDir, token) {
   return { ...resolved, state, alreadyFinished: false };
 }
 
-export function dashboardRows(bullswarmDir) {
+export function dashboardRows(bullswarmDir, { all = false } = {}) {
   return listRuns(bullswarmDir)
-    .filter((r) => r.ongoing)
-    .sort((a, b) => String(b.state?.startedAt ?? '').localeCompare(String(a.state?.startedAt ?? '')))
+    .filter((r) => all || r.ongoing)
+    .sort((a, b) => {
+      if (a.ongoing !== b.ongoing) return a.ongoing ? -1 : 1;
+      return String(b.state?.startedAt ?? b.report?.startedAt ?? '')
+        .localeCompare(String(a.state?.startedAt ?? a.report?.startedAt ?? ''));
+    })
     .map((r) => {
       const state = r.state ?? {};
       const steps = state.steps ?? [];
@@ -83,23 +87,154 @@ export function dashboardRows(bullswarmDir) {
     });
 }
 
-export function renderDashboard({ rows, selected = 0, message = null } = {}) {
-  const out = [`${ESC}2J${ESC}H`, ' bullswarm · workflows', ''];
-  if (!rows?.length) {
-    out.push(' No ongoing workflows.', '', ' Press r to refresh · q to quit');
-    return out.join('\n');
+export function renderDashboard({
+  rows, allRows = rows, selected = 0, message = null, width = 120, height = 36,
+  filter = 'active', query = '', filterEditing = false, spinnerFrame = 0,
+  previewRow = null,
+} = {}) {
+  width = Math.max(20, Number(width) || 120);
+  height = Math.max(12, Number(height) || 36);
+  rows = rows ?? [];
+  allRows = allRows ?? rows;
+  const narrow = width < 100;
+  const active = allRows.filter((row) => row.ongoing).length;
+  const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
+  const historical = Math.max(0, allRows.length - active);
+  const selectedRow = previewRow ?? rows[selected] ?? null;
+  const summary = `${active} active · ${waiting} waiting · ${historical} recent`;
+  const header = [
+    truncate(` bullswarm workflows · ${summary}`, width),
+    selectedRow
+      ? truncate(` ${selectedRow.shortId ?? '------'} · ${workflowRunLabel(selectedRow)}`, width)
+      : truncate(` ${filter === 'active' ? 'Active workflows' : 'All workflows'}`, width),
+  ];
+  const footer = filterEditing
+    ? truncate(` Filter: ${query}█ · Enter apply · Esc clear`, width)
+    : narrow
+      ? truncate(' ↑/↓ select · Enter open · / filter · a active/all · q exit', width)
+      : truncate(' ↑/↓ select · Enter open · / filter · a active/all · r refresh · c stop · q exit', width);
+  const messageLine = message
+    ? truncate(` ${message}`, width)
+    : truncate(` Runs · ${filter}${query ? ` · filter “${query}”` : ''} · workflow continues after dashboard exit`, width);
+  const bodyHeight = Math.max(6, height - header.length - 2);
+  const listLines = dashboardRunLines(rows, selected, narrow, width);
+
+  let body;
+  if (narrow) {
+    body = renderPanel(`Runs · ${filter}`, listWindow(listLines, selected, bodyHeight - 2, true), width, bodyHeight);
+  } else {
+    const leftWidth = Math.max(32, Math.min(46, Math.floor(width * 0.36)));
+    const rightWidth = width - leftWidth;
+    const left = renderPanel(
+      `Runs · ${filter}`,
+      listWindow(listLines, selected, bodyHeight - 2, false),
+      leftWidth,
+      bodyHeight,
+    );
+    let right;
+    if (selectedRow?.state) {
+      const model = workflowPanelModel(selectedRow);
+      right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
+    } else {
+      const hint = allRows.length && filter === 'active'
+        ? ['No active workflows.', '', 'Press a to browse recent runs.']
+        : ['No workflow runs yet.', '', 'Start one with:', 'bullswarm workflow goal "…"'];
+      right = renderPanel('Selected workflow', hint, rightWidth, bodyHeight);
+    }
+    body = joinPanels(left, right);
   }
-  out.push(' Select a run with j/k or arrows · Enter details · c stop · r refresh · q quit', '');
-  out.push('    ID       WORKFLOW                 STATUS     PHASE                 PROGRESS');
-  out.push('    ' + '-'.repeat(82));
-  rows.forEach((r, i) => {
-    const mark = i === selected ? '>' : ' ';
-    const progress = `${r.stepsOk}/${r.stepsTotal} steps` + (r.fanout.total ? ` · ${r.fanout.ok}/${r.fanout.total} items` : '');
-    out.push(`${mark}   ${(r.shortId ?? '------').padEnd(8)} ${(r.state?.workflow ?? '?').slice(0, 24).padEnd(24)} ${(r.status ?? 'running').padEnd(10)} ${(r.phase ?? 'starting').slice(0, 20).padEnd(20)} ${progress}`);
+  return [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, footer].join('\n');
+}
+
+function isWaitingWorkflow(state) {
+  const value = String(state?.status ?? state?.stage ?? '').toLowerCase();
+  return value.includes('waiting') || value === 'paused';
+}
+
+function workflowRunLabel(row) {
+  const state = row?.state ?? {};
+  const workflow = String(state.workflow ?? '').trim();
+  if (workflow && !workflow.startsWith('goal-')) return workflow;
+  return String(state.intent?.goal ?? state.intent?.description ?? workflow ?? row?.runId ?? 'workflow')
+    .split('\n')[0]
+    .trim();
+}
+
+function workflowConcernCount(row) {
+  const concerns = row?.state?.outcome?.concerns ?? row?.report?.concerns ?? [];
+  return Array.isArray(concerns) ? concerns.length : 0;
+}
+
+function dashboardRunLines(rows, selected, narrow, width) {
+  if (!rows.length) return [{ selected: false, lines: ['No workflows in this view.'] }];
+  return rows.map((row, index) => {
+    const state = row.state ?? {};
+    const selectedRow = index === selected;
+    const icon = statusIcon(row.ongoing ? (state.status ?? 'running') : (state.status ?? 'completed'));
+    const elapsed = durationText(state.startedAt ?? row.report?.startedAt, state.finishedAt ?? row.report?.finishedAt);
+    const workerAttempts = (state.attempts ?? []).filter((attempt) =>
+      attempt.actionId !== state.orchestration?.actionId && attempt.actionId !== 'orchestrator');
+    const finished = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
+    let progress = workerAttempts.length
+      ? `${finished}/${workerAttempts.length} workers`
+      : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
+    if (row.fanout?.total) progress += ` · ${row.fanout.ok}/${row.fanout.total} items`;
+    const concerns = workflowConcernCount(row);
+    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(state.status, row.ongoing);
+    const name = workflowRunLabel(row);
+    const phase = humanPhaseName(row.phase ?? state.stage ?? 'starting');
+    if (narrow) {
+      const inner = Math.max(1, width - 4);
+      return {
+        selected: selectedRow,
+        lines: [
+          selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, inner),
+          selectLine(`  ${progress} · ${elapsed}`, selectedRow, false, inner),
+          selectLine(`  ${phase} · ${status}`, selectedRow, false, inner),
+          '',
+        ],
+      };
+    }
+    return {
+      selected: selectedRow,
+      lines: [
+        selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, 44),
+        selectLine(`  ${progress} · ${elapsed} · ${status}`, selectedRow, false, 44),
+        '',
+      ],
+    };
   });
-  if (message) out.push('', ` ${message}`);
-  out.push('', ' Press Enter for details · q to quit');
-  return out.join('\n');
+}
+
+function listWindow(groups, selected, height, narrow) {
+  const linesPerGroup = narrow ? 4 : 3;
+  const capacity = Math.max(1, Math.floor(height / linesPerGroup));
+  const start = clamp(selected - Math.floor(capacity / 2), 0, Math.max(0, groups.length - capacity));
+  return groups.slice(start, start + capacity).flatMap((group) => group.lines).slice(0, height);
+}
+
+function humanWorkflowStatus(status, ongoing) {
+  const value = String(status ?? '').replaceAll('_', ' ');
+  if (ongoing && (!value || value === 'running')) return 'running';
+  if (value === 'completed') return 'finished';
+  if (value === 'completed with concerns') return 'finished with concerns';
+  return value || (ongoing ? 'running' : 'finished');
+}
+
+function humanPhaseName(value) {
+  return String(value ?? 'starting').replaceAll('-', ' ').replaceAll(':', ' › ');
+}
+
+function filterDashboardRows(rows, filter, query) {
+  const needle = String(query ?? '').trim().toLowerCase();
+  return (rows ?? []).filter((row) => {
+    if (filter === 'active' && !row.ongoing) return false;
+    if (!needle) return true;
+    const state = row.state ?? {};
+    return [row.shortId, row.runId, state.workflow, state.intent?.goal, row.phase, state.status]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(needle));
+  });
 }
 
 export function renderDetails(row, { interactive = true } = {}) {
@@ -1281,7 +1416,11 @@ export async function runDashboard(bullswarmDir, {
   let detail = Boolean(token);
   let message = null;
   let lastGoodRow = null;
-  let rows = dashboardRows(bullswarmDir);
+  let dashboardFilter = 'active';
+  let query = '';
+  let filterEditing = false;
+  let allRows = dashboardRows(bullswarmDir, { all: true });
+  let rows = filterDashboardRows(allRows, dashboardFilter, query);
   let selectedRunId = token ? detailRow(bullswarmDir, token).runId : (rows[selected]?.runId ?? null);
   let lastPaintedFrame = null;
   const ui = {
@@ -1306,9 +1445,10 @@ export async function runDashboard(bullswarmDir, {
   // a taller detail view to a shorter picker view.
   const writeFrame = (text) => {
     const clearPrefix = `${ESC}2J${ESC}H`;
-    const source = String(text ?? '').startsWith(clearPrefix)
+    let source = String(text ?? '').startsWith(clearPrefix)
       ? String(text ?? '').slice(clearPrefix.length)
       : String(text ?? '');
+    if (source.startsWith('\n')) source = source.slice(1);
     const height = Math.max(1, Number(output.rows) || source.split('\n').length);
     const lines = source.split('\n').slice(0, height);
     while (lines.length < height) lines.push('');
@@ -1339,7 +1479,27 @@ export async function runDashboard(bullswarmDir, {
       }));
       return;
     }
-    writeFrame(renderDashboard({ rows, selected, message }));
+    let previewRow = null;
+    if (selectedRunId) {
+      const fresh = detailRow(bullswarmDir, selectedRunId);
+      previewRow = (fresh.state || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
+      if (previewRow === fresh) lastGoodRow = fresh;
+      const selectedListRow = rows[selected];
+      if (previewRow && selectedListRow) previewRow.ongoing = selectedListRow.ongoing;
+    }
+    writeFrame(renderDashboard({
+      rows,
+      allRows,
+      selected,
+      message,
+      width: output.columns,
+      height: output.rows,
+      filter: dashboardFilter,
+      query,
+      filterEditing,
+      spinnerFrame: ui.spinnerFrame,
+      previewRow,
+    }));
   };
   // A render error must never kill the TUI or strand the terminal in
   // alt-screen raw mode (crash observed 2026-08-29 at detailRow via the
@@ -1347,14 +1507,24 @@ export async function runDashboard(bullswarmDir, {
   const paint = () => {
     try { paintUnsafe(); } catch (err) {
       message = `display error: ${err.message}`;
-      try { writeFrame(renderDashboard({ rows, selected, message })); } catch { /* keep the loop alive */ }
+      try {
+        writeFrame(renderDashboard({
+          rows, allRows, selected, message, width: output.columns, height: output.rows,
+          filter: dashboardFilter, query, filterEditing, spinnerFrame: ui.spinnerFrame,
+        }));
+      } catch { /* keep the loop alive */ }
     }
   };
   const refresh = () => {
     try {
-      rows = dashboardRows(bullswarmDir);
+      const previousRunId = selectedRunId;
+      allRows = dashboardRows(bullswarmDir, { all: true });
+      rows = filterDashboardRows(allRows, dashboardFilter, query);
+      const preserved = rows.findIndex((row) => row.runId === previousRunId);
+      if (preserved >= 0) selected = preserved;
+      else selected = clamp(selected, 0, Math.max(0, rows.length - 1));
     } catch (err) { message = `display error: ${err.message}`; }
-    if (!selectedRunId) selectedRunId = rows[selected]?.runId ?? null;
+    selectedRunId = rows[selected]?.runId ?? null;
     paint();
   };
   input.setRawMode?.(true);
@@ -1364,7 +1534,7 @@ export async function runDashboard(bullswarmDir, {
   const timer = setInterval(refresh, refreshMs);
   const spinnerTimer = setInterval(() => {
     ui.spinnerFrame = (ui.spinnerFrame + 1) % SPINNER_FRAMES.length;
-    if (detail) paint();
+    if (detail || rows[selected]?.ongoing) paint();
   }, Math.max(50, Number(spinnerMs) || 400));
   return new Promise((resolve) => {
     const finish = () => {
@@ -1433,6 +1603,28 @@ export async function runDashboard(bullswarmDir, {
     };
     const onDataUnsafe = (buf) => {
       const key = String(buf);
+      if (filterEditing) {
+        if (key === '\r' || key === '\n') {
+          filterEditing = false;
+          message = query ? `Showing workflows matching “${query}”.` : null;
+          return refresh();
+        }
+        if (key === '\u001b' || key === '\u0003') {
+          filterEditing = false;
+          query = '';
+          message = null;
+          return refresh();
+        }
+        if (key === '\u007f' || key === '\b') {
+          query = query.slice(0, -1);
+          return refresh();
+        }
+        if (/^[ -~]+$/.test(key)) {
+          query += key;
+          return refresh();
+        }
+        return;
+      }
       if (ui.confirmCancel) {
         if (key === 'y' || key === 'Y') return requestSelectedCancel();
         if (key === 'n' || key === 'N' || key === '\u001b' || key === '\u0003') {
@@ -1444,6 +1636,16 @@ export async function runDashboard(bullswarmDir, {
       }
       if (key === 'q' || key === '\u0003') return finish();
       if (key === 'r') { message = null; return refresh(); }
+      if (!detail && key === '/') {
+        filterEditing = true;
+        message = null;
+        return paint();
+      }
+      if (!detail && key === 'a') {
+        dashboardFilter = dashboardFilter === 'active' ? 'all' : 'active';
+        message = dashboardFilter === 'active' ? 'Showing active workflows.' : 'Showing active and recent workflows.';
+        return refresh();
+      }
       if (key === '\u001b' || key === 'b') {
         if (ui.orchestratorDetail) {
           ui.orchestratorDetail = false;
@@ -1506,6 +1708,12 @@ export async function runDashboard(bullswarmDir, {
       if (key === '\r' || key === '\n') {
         if (!detail) {
           selectedRunId = rows[selected]?.runId ?? selectedRunId;
+          if (!selectedRunId) {
+            message = dashboardFilter === 'active'
+              ? 'No active workflow selected · press a to browse recent runs.'
+              : 'No workflow selected.';
+            return paint();
+          }
           detail = true;
           ui.followActivePhase = true;
           ui.followActiveAgent = true;
