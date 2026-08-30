@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, actionJson, decideApproval, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
+import { cmdWorkflow } from '../src/workflow/cli.js';
 
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-'));
@@ -26,6 +27,26 @@ function fixture() {
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
+function addHistoricalRun(home) {
+  const dir = join(home, 'workflows', 'wf-done');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({
+    runId: 'wf-done', shortId: 'def345', workflow: 'docs-audit',
+    startedAt: '2026-08-30T01:00:00.000Z', finishedAt: '2026-08-30T01:05:00.000Z',
+    status: 'completed_with_concerns', stage: 'delivered',
+    intent: { goal: 'Audit documentation freshness.' },
+    outcome: { concerns: ['One stale example remains.'] },
+    actionLedger: [{ id: 'audit', phase: 'audit', kind: 'run', status: 'succeeded', attempts: [0] }],
+    attempts: [{
+      actionId: 'audit', attemptNumber: 1, pool: 'opencode2', model: 'luna',
+      status: 'succeeded', startedAt: '2026-08-30T01:00:00.000Z', finishedAt: '2026-08-30T01:05:00.000Z',
+    }],
+    steps: [{ phase: 'audit', stepId: 'audit', ok: true }],
+    outputs: { audit: { ok: true, outputText: 'Audit complete.' } },
+  }));
+  writeFileSync(join(dir, 'report.json'), JSON.stringify({ status: 'completed_with_concerns' }));
+}
+
 test('dashboard renders ongoing run progress and details', () => {
   const { home, cleanup } = fixture();
   try {
@@ -39,6 +60,38 @@ test('dashboard renders ongoing run progress and details', () => {
     assert.match(renderDetails(rows[0]), /planner-agent · planner-v1 · capability-and-quota/);
     assert.match(renderDetails(rows[0]), /read=120 cache-read=40 cache-write=10 output=30/);
     assert.match(renderDetails(rows[0]), /quota≈0.5%/);
+  } finally { cleanup(); }
+});
+
+test('unified dashboard lists active before recent runs and renders a selected-run preview', () => {
+  const { home, cleanup } = fixture();
+  try {
+    addHistoricalRun(home);
+    const active = dashboardRows(home);
+    const all = dashboardRows(home, { all: true });
+    assert.equal(active.length, 1);
+    assert.deepEqual(all.map((row) => row.shortId), ['abc234', 'def345']);
+
+    const desktop = renderDashboard({
+      rows: all, allRows: all, selected: 1, previewRow: all[1],
+      filter: 'all', width: 120, height: 30,
+    });
+    assert.match(desktop, /1 active · 0 waiting · 1 recent/);
+    assert.match(desktop, /def345 · docs-audit/);
+    assert.match(desktop, /1 concern/);
+    assert.match(desktop, /Workflow timeline/);
+
+    const mobile = renderDashboard({
+      rows: all, allRows: all, selected: 0, previewRow: all[0],
+      filter: 'all', width: 60, height: 24,
+    });
+    assert.match(mobile, /Runs · all/);
+    assert.match(mobile, /abc234 · audit-files/);
+    assert.match(mobile, /def345 · docs-audit/);
+    assert.doesNotMatch(mobile, /Workflow timeline/);
+    assert.match(mobile, /Enter open · \/ filter · a active\/all/);
+    const plain = mobile.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    assert.equal(Math.max(...plain.split('\n').map((line) => line.length)) <= 60, true);
   } finally { cleanup(); }
 });
 
@@ -514,6 +567,46 @@ test('interactive TUI uses alternate screen and q only detaches the viewer', asy
     assert.match(output.text, /No agent has started in this phase yet/);
     const state = JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'state.json')));
     assert.equal(state.cancelRequested, undefined);
+  } finally { cleanup(); }
+});
+
+test('bare workflow dashboard navigates active and recent runs on mobile', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    addHistoricalRun(home);
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      rawModes = [];
+      setRawMode(value) { this.rawModes.push(value); }
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 60;
+      rows = 26;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = cmdWorkflow([], { bullswarmDir: home, input, output });
+    input.emit('data', Buffer.from('a')); // active -> all
+    input.emit('data', Buffer.from('\u001b[B')); // select historical
+    input.emit('data', Buffer.from('\r')); // open timeline
+    input.emit('data', Buffer.from('\u001b')); // back to runs
+    input.emit('data', Buffer.from('/'));
+    input.emit('data', Buffer.from('docs'));
+    input.emit('data', Buffer.from('\r'));
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+    assert.deepEqual(input.rawModes, [true, false]);
+    assert.match(output.text, /Runs · all/);
+    assert.match(output.text, /def345 · docs-audit/);
+    assert.match(output.text, /Workflow timeline/);
+    assert.match(output.text, /Showing workflows matching “docs”/);
+    assert.match(output.text, /Enter open · \/ filter · a active\/all · q exit/);
+    assert.match(output.text, /\x1b\[\?1049l/);
   } finally { cleanup(); }
 });
 
