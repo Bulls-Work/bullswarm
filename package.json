@@ -1,6 +1,6 @@
 {
   "name": "bullswarm",
-  "version": "0.18.2",
+  "version": "0.18.3",
   "description": "Route work across coding-agent CLI subscriptions — paced by live quota meters, verified by content, never trusting exit codes.",
   "type": "module",
   "bin": {
