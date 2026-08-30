@@ -764,13 +764,35 @@ function workflowLiveLines(model, width, spinnerFrame) {
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
   }
-  if (!lines.length) lines.push(state.finishedAt ? '✓ No agents running · workflow finished' : '⧖ Waiting for the next dispatch');
+  if (!lines.length) lines.push(state.finishedAt
+    ? `${statusIcon(state.status)} No agents running · ${terminalWorkflowLabel(state.status)}`
+    : '⧖ Waiting for the next dispatch');
   return { lines, running, waiting };
+}
+
+function terminalWorkflowLabel(status) {
+  if (status === 'completed') return 'workflow finished';
+  if (status === 'completed_with_concerns') return 'workflow finished with concerns';
+  if (status === 'blocked') return 'workflow stopped with blockers';
+  if (status === 'failed') return 'workflow failed';
+  if (status === 'cancelled') return 'workflow cancelled';
+  if (status === 'interrupted') return 'workflow interrupted';
+  return 'workflow stopped';
 }
 
 function workflowNextLines(model, width) {
   const { state, orchestrator } = model;
-  if (state.finishedAt) return [truncate(`${statusIcon(state.status)} Workflow finished · result ready`, width)];
+  if (state.finishedAt) {
+    const next = state.status === 'completed' || state.status === 'completed_with_concerns'
+      ? 'result ready'
+      : state.status === 'blocked' ? 'review blockers and partial work'
+        : state.status === 'failed' ? 'inspect the failure before using partial work'
+          : state.status === 'cancelled' ? 'review any partial work'
+            : state.status === 'interrupted' ? 'resume the workflow or inspect partial work'
+              : 'inspect the workflow result';
+    const label = terminalWorkflowLabel(state.status);
+    return [truncate(`${statusIcon(state.status)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
+  }
   const ledger = state.actionLedger ?? [];
   const pending = ledger.find((action) => action.id !== 'scout'
     && action.id !== orchestrator.actionId

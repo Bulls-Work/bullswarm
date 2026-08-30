@@ -183,6 +183,12 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
     assert.match(completedOverview, /No agents running · workflow finished/);
     assert.match(completedOverview, /Workflow finished · result ready/);
     assert.doesNotMatch(completedOverview, /workflow is terminal|stable result envelope/);
+    state.status = 'blocked';
+    writeFileSync(statePath, JSON.stringify(state));
+    const blockedOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
+    assert.match(blockedOverview, /No agents running · workflow stopped with blockers/);
+    assert.match(blockedOverview, /Workflow stopped with blockers · review blockers and partial work/);
+    assert.doesNotMatch(blockedOverview, /result ready/i);
   } finally { cleanup(); }
 });
 
@@ -405,7 +411,10 @@ test('workflow overview separates timestamped history from live planner and work
     assert.match(blocked, /└─✗ \[Report\] verify-report/);
     assert.match(blocked, /└─✗ \[Phase: Report\] completed\s+2\/2/);
     const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    assert.doesNotMatch(plain, /\[Workflow Planner\] plan created[^]*?\n\s*\n[^]*?\[Phase: Discover\] started/);
+    const plainBlocked = blocked.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    for (const rendered of [plain, plainBlocked]) {
+      assert.doesNotMatch(rendered, /\[Workflow Planner\] plan created[^]*?\n\s*\n[^]*?\[Phase: Discover\] started/);
+    }
     assert.deepEqual(plain.split('\n').filter((line) => line.length > 140), []);
 
     const technical = renderWorkflowTui(row, { width: 140, height: 36, workflowVerbose: true });
@@ -424,15 +433,18 @@ test('planner retries do not shift accepted decisions onto rejected attempts', (
     state.startedAt = '2026-08-29T00:00:00.000Z';
     state.orchestration.mode = 'autonomous';
     state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
-    state.actionLedger = [{ id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [0, 1] }];
+    state.actionLedger = [{ id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [0, 1, 2, 3] }];
     state.attempts = [
       { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:00.000Z', finishedAt: '2026-08-29T00:00:30.000Z', outFile: '/tmp/rejected.json' },
       { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:31.000Z', finishedAt: '2026-08-29T00:01:00.000Z', outFile: '/tmp/accepted.json' },
+      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:01:01.000Z', finishedAt: '2026-08-29T00:01:30.000Z', outFile: '/tmp/updated.json' },
+      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:01:31.000Z', finishedAt: '2026-08-29T00:02:00.000Z', outFile: '/tmp/complete.json' },
     ];
-    state.decisions = [{
-      sequence: 1, artifact: '/tmp/accepted.json', createdAt: '2026-08-29T00:00:59.000Z',
-      decision: 'needs_more_work', reason: 'Accepted plan belongs to the second turn.',
-    }];
+    state.decisions = [
+      { sequence: 1, artifact: '/tmp/accepted.json', createdAt: '2026-08-29T00:00:59.000Z', decision: 'needs_more_work', reason: 'Accepted plan belongs to the second turn.' },
+      { sequence: 2, artifact: '/tmp/updated.json', createdAt: '2026-08-29T00:01:29.000Z', decision: 'needs_more_work', reason: 'The plan gained one bounded verification action.' },
+      { sequence: 3, artifact: '/tmp/complete.json', createdAt: '2026-08-29T00:01:59.000Z', decision: 'complete', reason: 'All required work is independently verified.' },
+    ];
     writeFileSync(statePath, JSON.stringify(state));
     appendEvent(join(home, 'workflows', 'wf-test'), state, 'decision.rejected', {
       gateId: 'orchestrator', why: 'First response did not match the decision schema.',
@@ -445,6 +457,8 @@ test('planner retries do not shift accepted decisions onto rejected attempts', (
     assert.match(tui, /planning retry #1.*No accepted decision; correction or retry turn/s);
     assert.match(tui, /decision rejected.*First response did not match the decision schema/s);
     assert.match(tui, /plan created.*Accepted plan belongs to the second turn/s);
+    assert.match(tui, /plan updated #2.*The plan gained one bounded verification action/s);
+    assert.match(tui, /completion confirmed.*All required work is independently verified/s);
   } finally { cleanup(); }
 });
 
