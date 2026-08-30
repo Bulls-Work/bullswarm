@@ -10,6 +10,10 @@
 - Workflow decisions persist the suggested conceptual plan alongside the
   original intent, while the packaged skill keeps the common path concise and
   moves operational detail into a focused reference.
+- Planner context now labels the preflight scout as completion-ineligible and
+  requires the first program to contain a real delivery worker plus its
+  verifier, preventing an apparently complete scout report from causing a
+  rejected completion and redundant recovery round.
 - Agent integration upgrades its managed awareness marker to advertise the
   common interface consistently across Codex, Claude, and Grok.
 - Classification now understands negated and instructional mutation language,

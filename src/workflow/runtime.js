@@ -1402,9 +1402,12 @@ export class WorkflowRuntime {
       const lastAttempt = attempts.at(-1);
       const startedAt = Date.parse(action.startedAt ?? '');
       const finishedAt = Date.parse(action.finishedAt ?? '');
+      const preflightScout = action.id === 'scout' && action.parentId == null && action.kind === 'run';
       const row = {
         id: action.id,
         type: action.kind,
+        role: preflightScout ? 'preflight-scout' : action.kind === 'verify' ? 'verifier' : 'worker',
+        completionEligible: !preflightScout,
         phase: action.phase ?? null,
         status: action.status,
         pool: lastAttempt?.pool ?? null,
@@ -1460,6 +1463,7 @@ export class WorkflowRuntime {
           ? null
           : Math.max(0, budget.remainingDispatches - verificationReserve),
         completionPolicy,
+        preflightActionsExcludedFromCompletion: ['scout'],
       },
       approval: this.state.approval ?? null,
       validationFeedback: opts.correction ? {
