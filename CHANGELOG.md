@@ -23,6 +23,9 @@
 - A trailing `help` token remains contextual and side-effect-free even after
   options, matching `-h` and `--help`; several README and setup/help examples
   were also brought back into sync with the real CLI.
+- Historical workflow design documents now identify themselves as dated
+  implementation records and list the current `verify`, `decide`, and
+  `outputSchema` surfaces instead of presenting resolved gaps as current.
 
 ## 0.19.0 — unified workflow dashboard
 

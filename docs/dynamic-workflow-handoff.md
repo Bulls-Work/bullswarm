@@ -1,4 +1,4 @@
-# Bullswarm Dynamic Workflow Handoff
+# Bullswarm Dynamic Workflow Handoff (Historical)
 
 **Purpose:** iteration brief for making bullswarm's workflow system behave like
 Claude Code's dynamic workflows while preserving bullswarm's provider routing,
@@ -6,8 +6,10 @@ quota pacing, content verification, and agent-friendly CLI contracts.
 
 **Audience:** the next implementation agent.
 
-**Status:** build target, based on repository inspection, real OpenCode/Luna QA,
-and a Fleetlens inspection of Claude workflow telemetry.
+**Status:** historical implementation brief from 2026-08-21. The gaps and task
+list below describe the state at that date; they are not a current capability
+matrix. For current behavior use `README.md`, `skill/SKILL.md`,
+`docs/claude-dynamic-workflow-mechanics.md`, and the contextual CLI help.
 
 ## Executive Summary
 
@@ -23,10 +25,12 @@ understand request
   -> repeat until complete
 ```
 
-Bullswarm currently has a validated JSON plan, sequential phases, dynamic
-fan-out, retries, escalation, verification, resume, and a basic dashboard. It
-does not yet have the central `observe -> decide -> schedule` loop. Its graph
-is fixed after validation; only a fan-out's item count can expand at runtime.
+Bullswarm now has the control loop this brief proposed: a durable orchestrator
+observes completed work, proposes a bounded program, deterministic validation
+accepts or rejects it, and the runtime schedules ready actions before the next
+checkpoint. Static JSON workflows remain supported alongside zero-graph
+`workflow goal` execution. The rest of this document preserves the historical
+evidence and build rationale that led to that implementation.
 
 The target is not an uncontrolled mutable DAG and not an LLM that owns the
 runtime. The target is a hybrid:
@@ -235,6 +239,8 @@ Supported step types:
 - `run`: one delegate invocation.
 - `fanout`: one delegate invocation per item.
 - `verify`: a skeptical review of a prior output artifact.
+- `decide`: a durable adaptive planning gate whose proposal is validated before
+  any new action is appended or executed.
 
 The implementation is mainly in:
 
@@ -360,7 +366,14 @@ bullswarm workflow inspect <file-or-name>
 bullswarm workflow tui --json
 ```
 
-## 3. Important Gaps, Ordered by Priority
+## 3. Historical Gaps, Ordered by Priority
+
+This section is an as-built checklist from the original handoff. The adaptive
+decision loop, bounded graph expansion, structured decisions, attempt ledger,
+ordered event log, cancellation, and timeline/dashboard surfaces described
+below are implemented now. The past-tense gap text is retained so reviewers can
+trace requirements to the resulting runtime and tests; it must not be read as
+current product status.
 
 ### P0: no observe-plan-execute loop
 

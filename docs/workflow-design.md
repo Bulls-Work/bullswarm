@@ -1,6 +1,6 @@
 # bullswarm Dynamic Workflows — Design
 
-**Status:** PROTOTYPE · **Branch:** `feat/dynamic-workflow` · **Created:** 2026-08-21
+**Status:** implemented; historical design rationale retained · **Created:** 2026-08-21
 
 ## Problem
 
@@ -65,7 +65,7 @@ added as a second format without touching the runtime contract.
       "steps": [
         {
           "id": "fanout-review",            // required, unique
-          "type": "run",                    // run | fanout
+          "type": "run",                    // run | fanout | verify | decide
           "taskFile": "/tmp/wf/{{runId}}/task-{{item}}.md",
           "lane": "analyze",
           "addDir": "{{inputs.targetDir}}",
@@ -105,6 +105,15 @@ Step fields (all pass through to the existing `run` pipeline):
 - **`fanout`** — expand `stepTemplate` once per item from `itemsFrom`.
   Items may be strings or objects (`{{item.path}}` paths work). Concurrency
   capped by min(step, settings).
+- **`verify`** — independently review a prior artifact and require structured
+  `{ok, concerns, summary}` evidence before dependent work may trust it.
+- **`decide`** — give the durable orchestrator current intent, outputs,
+  failures, budgets, and capabilities. Its versioned proposal is validated
+  before bounded `run`, `fanout`, or `verify` actions enter the plan.
+
+`run` and fan-out templates may declare `outputSchema` when later actions need
+structured `outputs.<id>.data` or data-backed fan-out. Ordinary prose should
+leave it unset; `verify` has its own fixed verdict schema.
 
 ### Templating
 
