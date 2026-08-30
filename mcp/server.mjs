@@ -46,6 +46,13 @@ function result(id, r) {
   write({ jsonrpc: '2.0', id, result: r });
 }
 
+let inputClosed = false;
+let pendingCalls = 0;
+
+function exitWhenDrained() {
+  if (inputClosed && pendingCalls === 0) process.exit(0);
+}
+
 async function callTool(name, args) {
   // Reuse the CLI verbs but capture stdout instead of leaking to our protocol
   // stream: swap console.log for the duration of the call.
@@ -108,6 +115,7 @@ function handleMessage(line) {
       result(id, { tools: TOOLS });
       break;
     case 'tools/call':
+      pendingCalls += 1;
       callTool(params.name, params.arguments ?? {})
         .then((r) => id != null && result(id, r))
         .catch((err) =>
@@ -117,7 +125,11 @@ function handleMessage(line) {
             id,
             error: { code: -32603, message: err?.message ?? 'internal error' },
           }),
-        );
+        )
+        .finally(() => {
+          pendingCalls -= 1;
+          exitWhenDrained();
+        });
       break;
     case 'ping':
       result(id, {});
@@ -135,4 +147,7 @@ function handleMessage(line) {
 
 const rl = createInterface({ input: process.stdin });
 rl.on('line', handleMessage);
-rl.on('close', () => process.exit(0));
+rl.on('close', () => {
+  inputClosed = true;
+  exitWhenDrained();
+});

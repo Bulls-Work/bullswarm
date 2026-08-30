@@ -24,6 +24,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { writeJsonAtomic } from './fsjson.js';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { watchOnce } from '../lib/watch.js';
@@ -55,6 +56,7 @@ const PLANNER_EXCERPT_TOTAL_CHARS = 36_000;
 export const BURST_WAIT_GRACE_MS = 10 * 60_000;
 export const BURST_WAIT_UNKNOWN_RESET_MS = 5 * 3600_000;
 export const QUOTA_POLL_MS = 60_000;
+const SCHEMA_CHECKER_PATH = fileURLToPath(new URL('../../bin/check-output-schema.js', import.meta.url));
 
 export function enforceVerifyRequirementCoverage(parsed, requiredCoverage = []) {
   if (!parsed || !requiredCoverage.length) return { parsed, concerns: [] };
@@ -1045,7 +1047,8 @@ export class WorkflowRuntime {
     };
   }
 
-  schemaTaskText(taskText, schema, retry = null) {
+  schemaTaskText(taskText, schema, schemaPath, retry = null) {
+    const checkerCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(SCHEMA_CHECKER_PATH)} --schema ${JSON.stringify(schemaPath)} --value "$candidate_file"`;
     return [
       taskText,
       '',
@@ -1053,6 +1056,12 @@ export class WorkflowRuntime {
         ? `Your previous answer did not match the required schema: ${retry.errors.join('; ')}. Previous output tail: ${retry.tail}. Return the full answer again and END with a JSON object that matches.`
         : 'END YOUR OUTPUT with exactly one JSON object that is an INSTANCE of this schema — its keys are the names under "properties" (never copy the schema itself or its "type"/"properties" keys). No prose or markdown fences may appear after it.',
       JSON.stringify(schema),
+      '',
+      'MANDATORY SCHEMA PREFLIGHT before replying:',
+      '1. Write only your candidate JSON object to a temporary file: candidate_file=$(mktemp)',
+      `2. Run: ${checkerCommand}`,
+      '3. If it exits non-zero, fix the candidate and rerun until it exits zero.',
+      '4. End your response with the exact validated candidate object, then remove the temporary file.',
     ].join('\n');
   }
 
@@ -1110,12 +1119,14 @@ export class WorkflowRuntime {
 
   async dispatchWithOutputSchema(step, taskText, targetDir, paths, opts = {}) {
     const schema = step.outputSchema;
+    const schemaPath = `${paths.taskFile}.schema.json`;
+    writeJsonAtomic(schemaPath, schema);
     // Schema validation owns the retry: generic dispatch retries would make
     // the promised single schema retry depend on workflow settings. Pool
     // escalation is orthogonal — it only follows a dispatch that FAILED
     // (exit/content gate); a schema-invalid answer is a successful dispatch,
     // so the schema retry count stays exactly one.
-    const first = await this.dispatch(step, this.schemaTaskText(taskText, schema), targetDir, paths, {
+    const first = await this.dispatch(step, this.schemaTaskText(taskText, schema, schemaPath), targetDir, paths, {
       ...opts,
       retryAttempts: 0,
     });
@@ -1127,7 +1138,7 @@ export class WorkflowRuntime {
     }
     const firstSchemaErrors = checked.errors;
     this.emit('action.output_schema_retry', { actionId: this.actionId(step, opts), errors: checked.errors });
-    const retry = await this.dispatch(step, this.schemaTaskText(taskText, schema, {
+    const retry = await this.dispatch(step, this.schemaTaskText(taskText, schema, schemaPath, {
       errors: checked.errors,
       tail: (() => { try { return readFileSync(first.outFile ?? paths.outFile, 'utf8').slice(-2000); } catch { return ''; } })(),
     }), targetDir, paths, { ...opts, retryAttempts: 0 });
