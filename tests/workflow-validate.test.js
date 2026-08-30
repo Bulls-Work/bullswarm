@@ -115,6 +115,36 @@ test('{{item}} allowed only inside fanout stepTemplate', () => {
   );
 });
 
+test('fanout itemsFrom accepts only declared inputs or bounded prior-output paths', () => {
+  const good = baseDoc({
+    inputs: { items: { default: 'alpha' } },
+    phases: [{ name: 'p', steps: [
+      { id: 'discover', type: 'run', prompt: 'discover' },
+      { id: 'from-input', type: 'fanout', itemsFrom: 'inputs.items', stepTemplate: { prompt: '{{item}}' } },
+      { id: 'from-output', type: 'fanout', itemsFrom: 'outputs.discover.data.items', stepTemplate: { prompt: '{{item}}' } },
+    ] }],
+  });
+  assert.doesNotThrow(() => validateWorkflow(good, { poolNames: POOLS }));
+
+  for (const itemsFrom of [
+    'inputs.missing',
+    'outputs.discover.data.items.extra',
+    'outputs.discover.unknown',
+    'outputs.self',
+  ]) {
+    const bad = baseDoc({
+      phases: [{ name: 'p', steps: [{
+        id: 'self', type: 'fanout', itemsFrom, stepTemplate: { prompt: '{{item}}' },
+      }] }],
+    });
+    assert.throws(
+      () => validateWorkflow(bad, { poolNames: POOLS }),
+      (error) => error.issues.some((issue) => issue.includes('itemsFrom')),
+      itemsFrom,
+    );
+  }
+});
+
 test('undeclared input usage is a warning, not an error', () => {
   const doc = baseDoc({
     phases: [{ name: 'p', steps: [{ id: 's', type: 'run', lane: 'chore', prompt: 'go to {{inputs.wherever}}' }] }],
