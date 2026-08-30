@@ -1557,6 +1557,7 @@ export class WorkflowRuntime {
       '',
       'FINAL CONTROL RESPONSE (mandatory): return exactly one JSON object and no prose or markdown.',
       `It must contain schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
+      'decision MUST be one of: needs_more_work, retry, escalate, complete, wait_for_approval, stop. Use needs_more_work for a new executable program with actions.',
       `When the evidence is sufficient, return {"schemaVersion":"${DECISION_SCHEMA_VERSION}","decision":"complete","reason":"<evidence-backed reason>","actions":[]}.`,
     ].join('\n');
     const targetDir = rendered.addDir

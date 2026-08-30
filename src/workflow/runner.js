@@ -983,7 +983,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
               gateId: gate.id,
               from: planner.proposal?.decision ?? null,
               to: normalizedProposal?.decision ?? null,
-              reason: 'action-bearing proceed is an executable needs_more_work program',
+              reason: 'action-bearing control alias is an executable needs_more_work program',
             });
           }
           proposal = validateDecisionProposal(normalizedProposal, {
