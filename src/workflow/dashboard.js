@@ -559,18 +559,20 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
   const timelineRows = Math.max(1, contentRows - liveRows - nextRows);
   const maxTimelineScroll = Math.max(0, timeline.lines.length - timelineRows);
   const scroll = clamp(timelineScroll, 0, maxTimelineScroll);
-  let start = Math.max(0, timeline.lines.length - timelineRows - scroll);
+  const end = Math.max(0, timeline.lines.length - scroll);
+  let start = Math.max(0, end - timelineRows);
   if (start > 0) {
-    while (start < timeline.lines.length && !/^\d{2}:\d{2}\s/.test(timeline.lines[start])) start += 1;
+    start = Math.max(0, end - Math.max(0, timelineRows - 1));
+    while (start < end && !/^\d{2}:\d{2}\s/.test(timeline.lines[start])) start += 1;
   }
-  const historyRows = start > 0 ? Math.max(0, timelineRows - 1) : timelineRows;
-  let visibleTimeline = timeline.lines.slice(start, start + historyRows);
+  let visibleTimeline = timeline.lines.slice(start, end);
   if (start > 0) {
     visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
   }
-  const end = start + historyRows;
   if (end < timeline.lines.length && visibleTimeline.length) {
-    visibleTimeline[visibleTimeline.length - 1] = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, inner);
+    const marker = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, inner);
+    if (visibleTimeline.length >= timelineRows) visibleTimeline[visibleTimeline.length - 1] = marker;
+    else visibleTimeline.push(marker);
   }
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);

@@ -1,5 +1,10 @@
 # bullswarm changelog
 
+## 0.18.4 — reliable auto-follow tail
+
+- Timestamp-aligned mobile auto-follow now preserves the newest workflow
+  milestone instead of replacing it with a spurious newer-rows marker.
+
 ## 0.18.3 — mobile timeline polish
 
 - Auto-follow now begins at a timestamped milestone instead of exposing an
