@@ -81,10 +81,17 @@ function discover() {
   return found;
 }
 
-export async function cmdWorkflow(args) {
-  reconcileInterruptedRuns(BULLSWARM_DIR());
+export async function cmdWorkflow(args, {
+  bullswarmDir = BULLSWARM_DIR(), input = process.stdin, output = process.stdout,
+} = {}) {
+  reconcileInterruptedRuns(bullswarmDir);
   const [sub, ...rest] = args;
   const opts = parseFlags(rest);
+
+  if (!sub && input.isTTY && output.isTTY) {
+    try { return await runDashboard(bullswarmDir, { input, output }); }
+    catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  }
 
   switch (sub) {
     case 'goal':
@@ -107,7 +114,7 @@ export async function cmdWorkflow(args) {
       try {
         if (opts.json || opts.cancel || opts.show || opts.all) {
           const token = opts.rest[0] ?? opts.show;
-          const result = dashboardJson(BULLSWARM_DIR(), {
+          const result = dashboardJson(bullswarmDir, {
             all: opts.all,
             token,
             cancel: opts.cancel,
@@ -115,7 +122,7 @@ export async function cmdWorkflow(args) {
           console.log(JSON.stringify(result, null, 2));
           return 0;
         }
-        return await runDashboard(BULLSWARM_DIR(), { token: opts.rest[0] ?? null });
+        return await runDashboard(bullswarmDir, { token: opts.rest[0] ?? null, input, output });
       }
       catch (err) { console.error(`✗ ${err.message}`); return 1; }
     case 'events':

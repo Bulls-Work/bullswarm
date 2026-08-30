@@ -528,10 +528,11 @@ const strategyAutoOffText = rich({
 // them branch on opts.json.
 
 const workflowText = rich({
-  usage: 'bullswarm workflow <command> [options]',
+  usage: 'bullswarm workflow [<command>] [options]',
   purpose: 'Create, execute, observe, and audit durable multi-agent workflows: autonomous '
     + 'goals, fixed workflow files, and incrementally-built drafts all run through the same '
-    + 'durable, resumable execution engine.',
+    + 'durable, resumable execution engine. With no command on a TTY, opens the unified '
+    + 'full-screen workflow dashboard.',
   argsTitle: 'Commands',
   args: [
     { name: 'goal "<goal>"', desc: 'autonomously plan, execute, verify, and replan a goal' },
@@ -551,6 +552,8 @@ const workflowText = rich({
   ],
   options: [],
   safety: [
+    'bare bullswarm workflow opens a read-only active/recent run dashboard only when stdin and '
+      + 'stdout are TTYs; non-interactive callers receive this help text instead',
     'reconcileInterruptedRuns() runs before every workflow subcommand dispatch — including a '
       + 'mistyped bare "help" argument, since only --help/-h/leading "help" bypass dispatch '
       + 'entirely — and can rewrite state.json for any run whose heartbeat looks stale',
@@ -560,6 +563,7 @@ const workflowText = rich({
       + 'their own --help)',
   ],
   examples: [
+    { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
     { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd .', note: 'autonomous goal, launched independently' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
   ],
@@ -681,8 +685,8 @@ const workflowInspectText = rich({
 
 const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]',
-  purpose: 'Open the interactive full-screen workflow timeline with Workflow Planner, phase, '
-    + 'live-agent, and technical drill-down views for ongoing and historical runs, or print a '
+  purpose: 'Open the interactive full-screen workflow dashboard with an active/recent run list, '
+    + 'selected-run preview, Workflow Planner, phase, live-agent, and technical drill-down views, or print a '
     + 'static/JSON snapshot for a non-interactive caller.',
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
@@ -699,7 +703,7 @@ const workflowTuiText = rich({
     'below 100 columns the timeline remains full-width; press t to toggle Timeline and Phases, then Enter/Esc to drill into agents and activity',
   ],
   examples: [
-    { cmd: 'bullswarm workflow tui', note: 'interactive run picker' },
+    { cmd: 'bullswarm workflow tui', note: 'compatibility alias for the bare workflow dashboard' },
     { cmd: 'bullswarm workflow tui --json --all' },
   ],
   next: 'bullswarm workflow watch <runId> for a low-noise non-interactive follow, or bullswarm workflow approval approve <runId> if it is waiting on a decision gate.',
