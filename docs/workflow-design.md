@@ -143,9 +143,9 @@ artifacts + report + exit code
 - **State**: `~/.bullswarm/workflows/<runId>/state.json` after every step —
   crash-safe by construction.
 - **Resume**: `workflow run --resume <runId>` skips steps whose saved verdict
-  is `ok:true`; everything else re-runs. Fanout re-runs only unverified items.
-  (Simpler than odw fingerprints and sufficient because our units are
-  coarse-grained.)
+  is `ok:true` and whose declared output schema, if any, is satisfied;
+  everything else re-runs. Fanout items resume by content fingerprint, so
+  already verified items remain complete even when discovery order changes.
 - **Artifacts** per run: `state.json`, `report.json`, every task/out file.
 
 ## Terminal UX (the deliverable's face)
