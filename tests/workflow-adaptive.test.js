@@ -256,6 +256,8 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /\{\{item\}\}/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
+    assert.match(task, /---- END DURABLE WORKFLOW CONTEXT ----\n\nFINAL CONTROL RESPONSE \(mandatory\):/);
+    assert.match(task, /"decision":"complete","reason":"<evidence-backed reason>","actions":\[\]\}\.$/);
   } finally { f.cleanup(); }
 });
 
