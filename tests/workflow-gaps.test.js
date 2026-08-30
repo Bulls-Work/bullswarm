@@ -1154,6 +1154,41 @@ test('data-backed fanout uses the recorded array without extraction or retry dis
   }
 });
 
+test('fanout preserves outputSchema text while rendering the item prompt', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const worker = join(dir, 'schema-template-worker.mjs');
+    writeFileSync(worker, 'process.stdout.write(JSON.stringify({ item: "alpha" }));\n');
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'), pools: echoOnlyPools(dir, worker), inputs: {},
+      doc: {
+        name: 'schema-template-source', description: 'preserve schema source', inputs: {},
+        settings: { concurrency: 1, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [{
+          id: 'fan', type: 'fanout', items: ['alpha'],
+          stepTemplate: {
+            prompt: 'Handle {{item}}.',
+            outputSchema: {
+              type: 'object',
+              description: 'result for {{item}}',
+              properties: { item: { type: 'string', description: 'literal {{item}} token' } },
+              required: ['item'], additionalProperties: false,
+            },
+          },
+        }] }],
+      },
+    });
+    assert.equal(result.state.outputs.fan.ok, true);
+    const attempt = result.state.attempts.find((entry) => entry.actionId === 'fan[0]');
+    const task = readFileSync(attempt.taskFile, 'utf8');
+    assert.match(task, /Handle alpha\./);
+    assert.match(task, /"description":"result for \{\{item\}\}"/);
+    assert.match(task, /"description":"literal \{\{item\}\} token"/);
+  } finally {
+    cleanup();
+  }
+});
+
 test('validateDecisionProposal rejects invalid outputSchema placements and accepts valid run and fanout schemas', async () => {
   const { validateDecisionProposal, normalizeDecisionProposal } = await import('../src/workflow/decision.js');
   const base = {

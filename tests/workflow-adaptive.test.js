@@ -1594,3 +1594,19 @@ test('a corrective turn resends only the skeleton of the rejected proposal', () 
   assert.match(compact.actions[0].prompt, /\[5000 chars\]$/);
   assert.equal(compactRejectedProposal(null), null);
 });
+
+test('completion evidence rejects schema-invalid worker output', () => {
+  const actions = [
+    { id: 'producer', kind: 'run', status: 'succeeded', dependsOn: [] },
+    { id: 'verify', kind: 'verify', status: 'succeeded', dependsOn: ['producer'] },
+  ];
+  const policy = { requireSuccessfulWorker: true, requireSuccessfulVerification: true };
+  const outputs = {
+    producer: { ok: true, schemaOk: false, schemaErrors: ['items must be array'] },
+    verify: { ok: true, verify: { ok: true, concerns: [], summary: 'ok' } },
+  };
+  assert.deepEqual(completionEvidenceGaps(actions, policy, outputs), [
+    'a successful worker action',
+    'a successful verification action',
+  ]);
+});

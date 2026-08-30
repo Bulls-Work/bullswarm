@@ -1674,7 +1674,11 @@ export class WorkflowRuntime {
         const itemScope = { ...scope, item };
         let template;
         try {
-          template = renderDeep(step.stepTemplate, itemScope, this.renderOpts(`${step.id}[${i}]`));
+          // Schema strings are contract source, not workflow templates. Keep
+          // descriptions and patterns containing `{{...}}` byte-for-byte.
+          const { outputSchema, ...renderableTemplate } = step.stepTemplate ?? {};
+          template = renderDeep(renderableTemplate, itemScope, this.renderOpts(`${step.id}[${i}]`));
+          if (outputSchema !== undefined) template.outputSchema = outputSchema;
         } catch (err) {
           const itemAction = this.ensureAction(step, { ...opts, item, itemIndex: i });
           itemAction.status = 'failed_terminal';

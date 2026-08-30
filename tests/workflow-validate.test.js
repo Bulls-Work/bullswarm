@@ -127,7 +127,7 @@ test('fanout itemsFrom accepts only declared inputs or bounded prior-output path
   assert.doesNotThrow(() => validateWorkflow(good, { poolNames: POOLS }));
 
   for (const itemsFrom of [
-    'inputs.missing',
+    'inputs.items.extra',
     'outputs.discover.data.items.extra',
     'outputs.discover.unknown',
     'outputs.self',
@@ -143,6 +143,16 @@ test('fanout itemsFrom accepts only declared inputs or bounded prior-output path
       itemsFrom,
     );
   }
+});
+
+test('fanout itemsFrom permits an exact runtime-supplied input path', () => {
+  const doc = baseDoc({
+    phases: [{ name: 'p', steps: [{
+      id: 'fan', type: 'fanout', itemsFrom: 'inputs.items',
+      stepTemplate: { prompt: '{{item}}' },
+    }] }],
+  });
+  assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: POOLS }));
 });
 
 test('undeclared input usage is a warning, not an error', () => {
