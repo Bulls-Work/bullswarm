@@ -430,7 +430,13 @@ async function cmdDoctor(opts) {
 // --- main ---------------------------------------------------------------------
 
 export async function main(argv) {
-  const help = helpForArgs(argv);
+  // Bare `bullswarm workflow` is the human workflow home on a terminal.
+  // Non-TTY callers still receive side-effect-free help, exactly as before.
+  const bareWorkflowDashboard = argv.length === 1
+    && argv[0] === 'workflow'
+    && process.stdin.isTTY
+    && process.stdout.isTTY;
+  const help = bareWorkflowDashboard ? null : helpForArgs(argv);
   if (help) {
     console.log(help);
     return 0;
