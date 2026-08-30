@@ -1545,6 +1545,10 @@ export class WorkflowRuntime {
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),
       '---- END DURABLE WORKFLOW CONTEXT ----',
+      '',
+      'FINAL CONTROL RESPONSE (mandatory): return exactly one JSON object and no prose or markdown.',
+      `It must contain schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
+      `When the evidence is sufficient, return {"schemaVersion":"${DECISION_SCHEMA_VERSION}","decision":"complete","reason":"<evidence-backed reason>","actions":[]}.`,
     ].join('\n');
     const targetDir = rendered.addDir
       ? String(rendered.addDir).replace(/^~/, process.env.HOME ?? '')
