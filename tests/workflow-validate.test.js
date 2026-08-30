@@ -145,6 +145,23 @@ test('fanout itemsFrom accepts only declared inputs or bounded prior-output path
   }
 });
 
+test('fanout itemsFrom rejects a later step even when that output id exists in the document', () => {
+  const doc = baseDoc({
+    phases: [{ name: 'p', steps: [
+      {
+        id: 'fan', type: 'fanout', itemsFrom: 'outputs.future.data.items',
+        stepTemplate: { prompt: '{{item}}' },
+      },
+      { id: 'future', type: 'run', prompt: 'produce items later' },
+    ] }],
+  });
+  assert.throws(
+    () => validateWorkflow(doc, { poolNames: POOLS }),
+    (error) => error.issues.some((issue) =>
+      issue.includes('itemsFrom "outputs.future.data.items" cannot resolve')),
+  );
+});
+
 test('fanout itemsFrom permits an exact runtime-supplied input path', () => {
   const doc = baseDoc({
     phases: [{ name: 'p', steps: [{
