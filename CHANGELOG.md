@@ -1,5 +1,17 @@
 # bullswarm changelog
 
+## 0.18.2 — truthful recovery timeline and verifier cleanup
+
+- Dependency-blocked plan branches now appear as a single skipped phase in the
+  workflow timeline instead of several failed agents followed by a
+  contradictory completed phase.
+- The Live panel ignores stale terminal agent records, and verifier retry
+  cleanup now removes the retrying agent as soon as the bounded retry ends.
+- Verifier verdict parsing conservatively repairs an otherwise valid JSON
+  object truncated only by missing final closing brackets. Malformed content
+  still fails closed, while provider truncation no longer forces an expensive
+  planner recovery round.
+
 ## 0.18.1 — original-goal verification and denser timeline
 
 - Goal workflows now derive a durable requirement ledger from the original

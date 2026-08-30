@@ -201,15 +201,19 @@ const TERMINAL_ACTIONS = new Set([
 ]);
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+function isLiveAgent(agent) {
+  return !agent?.status || agent.status === 'running';
+}
+
 function autonomousControlPlane(state) {
   const autonomous = state.intent?.autonomous === true || state.orchestration?.mode === 'autonomous';
   if (!autonomous) return { autonomous: false, actionId: null, attempts: [], active: null };
   const actionId = state.decisions?.find((decision) => decision.gateId)?.gateId ?? 'orchestrator';
   const attempts = (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId);
-  const active = Object.values(state.activeAgents ?? {}).find((agent) => agent.stepId === actionId) ?? null;
+  const active = Object.values(state.activeAgents ?? {}).find((agent) => agent.stepId === actionId && isLiveAgent(agent)) ?? null;
   const latestAttempt = attempts.at(-1) ?? null;
   const terminal = Boolean(state.finishedAt);
-  const workerActive = Object.values(state.activeAgents ?? {}).some((agent) => agent.stepId !== actionId);
+  const workerActive = Object.values(state.activeAgents ?? {}).some((agent) => agent.stepId !== actionId && isLiveAgent(agent));
   const status = terminal
     ? state.status === 'completed' ? 'completed' : state.status ?? 'finished'
     : active ? 'planning'
@@ -233,7 +237,7 @@ function effectiveActionStatus(action, state) {
   // running even when a previous round recorded ok:false — a failed mark on
   // work that is still being retried misreports the run (user report 2026-08-29).
   const active = Object.values(state.activeAgents ?? {}).some((agent) =>
-    agent.stepId === action.id || String(agent.stepId ?? '').startsWith(`${action.id}[`));
+    isLiveAgent(agent) && (agent.stepId === action.id || String(agent.stepId ?? '').startsWith(`${action.id}[`)));
   if (active || action.status === 'running') return 'running';
   const output = state.outputs?.[action.id];
   if (output?.ok === false) return 'failed_terminal';
@@ -645,6 +649,17 @@ function workflowTimelineLines(model, width) {
     const startedAt = realStart ?? earliestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
     if (!startedAt) continue;
     const label = phaseLabel(name, orchestrator);
+    const dependencyBlocked = actions.filter((action) => state.outputs?.[action.id]?.dependencyBlocked === true);
+    if (!realStart && dependencyBlocked.length === actions.length) {
+      const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
+      if (finishedAt) {
+        add(finishedAt, [
+          timelineRow(finishedAt, `⊘ [Phase: ${label}] skipped`, `${actions.length} action${actions.length === 1 ? '' : 's'} not run`, width),
+          timelineDetail('Required earlier work did not pass; the planner chose a recovery path', width),
+        ], Number.MAX_SAFE_INTEGER, 'execution');
+      }
+      continue;
+    }
     add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] ${realStart ? 'started' : 'blocked'}`, '', width), Number.MAX_SAFE_INTEGER, 'execution');
     const finished = actions
       .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
@@ -654,17 +669,21 @@ function workflowTimelineLines(model, width) {
       const branch = terminalPhase ? '│  └─' : '│  ├─';
       const actionFinished = actionFinishedAt(state, action);
       const actionStarted = actionStartedAt(state, action);
+      const blocked = state.outputs?.[action.id]?.dependencyBlocked === true;
       add(actionFinished, timelineRow(
         actionFinished,
-        `${branch}${statusIcon(effectiveActionStatus(action, state))} [${label}] ${action.id}`,
+        `${branch}${blocked ? '⊘' : statusIcon(effectiveActionStatus(action, state))} [${label}] ${action.id}`,
         actionStarted ? durationText(actionStarted, actionFinished) : '',
         width,
       ), Number.MAX_SAFE_INTEGER, 'execution');
     });
     if (finished.length === actions.length && actions.length) {
       const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
-      const failed = actions.some((action) => String(effectiveActionStatus(action, state)).startsWith('failed'));
-      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : '✓'} [Phase: ${label}] completed`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, 'execution');
+      const blocked = actions.some((action) => state.outputs?.[action.id]?.dependencyBlocked === true);
+      const failed = actions.some((action) => state.outputs?.[action.id]?.dependencyBlocked !== true
+        && String(effectiveActionStatus(action, state)).startsWith('failed'));
+      const outcome = failed ? 'finished with failures' : blocked ? 'incomplete' : 'completed';
+      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : blocked ? '!' : '✓'} [Phase: ${label}] ${outcome}`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, 'execution');
     }
   }
 
@@ -725,7 +744,7 @@ function timelineControlEvent(event, width) {
 function workflowLiveLines(model, width, spinnerFrame) {
   const { state, orchestrator } = model;
   const activeWorkers = Object.values(state.activeAgents ?? {})
-    .filter((agent) => agent.stepId !== orchestrator.actionId)
+    .filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent))
     .sort((a, b) => String(b.lastEventAt ?? b.lastActivityAt ?? '').localeCompare(String(a.lastEventAt ?? a.lastActivityAt ?? '')));
   const lines = [];
   let running = activeWorkers.length + (orchestrator.active ? 1 : 0);
@@ -900,7 +919,7 @@ function plannerDisplayStatus(model) {
   const { orchestrator, state } = model;
   if (state.finishedAt) return state.status === 'completed' ? 'Completed' : humanStatus(state.status);
   if (orchestrator.active) return 'Planning next actions';
-  const workers = Object.values(state.activeAgents ?? {}).filter((agent) => agent.stepId !== orchestrator.actionId);
+  const workers = Object.values(state.activeAgents ?? {}).filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent));
   if (workers.length) return 'Waiting for workers';
   if (orchestrator.status === 'reviewing evidence') return 'Reviewing evidence';
   return humanStatus(orchestrator.status);
@@ -932,7 +951,7 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
   const workerAttempts = (state.attempts ?? []).filter((attempt) => attempt.actionId !== orchestrator.actionId);
   const completedWorkers = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
   const activeWorkers = Object.values(state.activeAgents ?? {})
-    .filter((agent) => agent.stepId !== orchestrator.actionId);
+    .filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent));
   const nextActions = latestDecision?.actions?.map((action) => action.id).filter(Boolean) ?? [];
   const stateLabel = active
     ? 'Choosing the next smallest useful action'
