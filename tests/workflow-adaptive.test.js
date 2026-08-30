@@ -256,6 +256,8 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /fanout has stepTemplate and either items or itemsFrom/);
     assert.match(task, /one consolidated read-only audit or evidence report/);
+    assert.match(task, /changes are conditional on evidence/);
+    assert.match(task, /the first program MUST remain read-only/);
     assert.match(task, /never tell a worker to write a Bullswarm outFile/);
     assert.match(task, /\{\{item\}\}/);
     assert.match(task, /"validationFeedback": null/);
@@ -1342,6 +1344,11 @@ test('outputSchema retries a missing trailing JSON object once and records valid
     assert.equal(events.filter((event) => event.type === 'action.output_schema_retry').length, 1);
     assert.equal(events.filter((event) => event.type === 'action.output_validated').length, 1);
     assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 2);
+    const firstAttempt = result.state.attempts.find((attempt) => attempt.actionId === 'structured');
+    const task = readFileSync(firstAttempt.taskFile, 'utf8');
+    assert.match(task, /MANDATORY SCHEMA PREFLIGHT/);
+    assert.match(task, /check-output-schema\.js" --schema/);
+    assert.match(task, /--value "\$candidate_file"/);
   } finally { f.cleanup(); }
 });
 

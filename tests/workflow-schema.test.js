@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isValidOutputSchema, validateAgainstSchema } from '../src/workflow/schema.js';
+
+const CHECKER = new URL('../bin/check-output-schema.js', import.meta.url).pathname;
 
 test('validateAgainstSchema accepts every supported keyword in a nested schema', () => {
   const schema = {
@@ -174,6 +180,39 @@ test('validateAgainstSchema checks own properties only, never inherited names', 
     { ok: false, errors: ['constructor is not allowed'] });
   assert.deepEqual(validateAgainstSchema(JSON.parse('{"__proto__": 1}'), { type: 'object', properties: {}, additionalProperties: false }),
     { ok: false, errors: ['__proto__ is not allowed'] });
+});
+
+test('schema validation ignores inherited keywords consistently', () => {
+  const inherited = Object.create({
+    type: 'string',
+    required: ['name'],
+    additionalProperties: false,
+  });
+  assert.deepEqual(isValidOutputSchema(inherited), { ok: true, issues: [] });
+  assert.deepEqual(validateAgainstSchema({ extra: true }, inherited), { ok: true, errors: [] });
+});
+
+test('worker schema preflight exits deterministically for valid and invalid candidates', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-schema-check-'));
+  try {
+    const schemaPath = join(dir, 'schema.json');
+    const valuePath = join(dir, 'value.json');
+    writeFileSync(schemaPath, JSON.stringify({
+      type: 'object', properties: { count: { type: 'integer' } },
+      required: ['count'], additionalProperties: false,
+    }));
+    writeFileSync(valuePath, JSON.stringify({ count: 2 }));
+    const valid = spawnSync(process.execPath, [CHECKER, '--schema', schemaPath, '--value', valuePath], { encoding: 'utf8' });
+    assert.equal(valid.status, 0, valid.stderr);
+    assert.deepEqual(JSON.parse(valid.stdout), { ok: true, errors: [] });
+
+    writeFileSync(valuePath, JSON.stringify({ count: 'two' }));
+    const invalid = spawnSync(process.execPath, [CHECKER, '--schema', schemaPath, '--value', valuePath], { encoding: 'utf8' });
+    assert.equal(invalid.status, 1, invalid.stderr);
+    assert.deepEqual(JSON.parse(invalid.stdout), { ok: false, errors: ['count must be integer'] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('readTrailingObject returns the outermost trailing object, not a schema-matching nested one', async () => {

@@ -94,6 +94,19 @@ the internal `review` artifact path. Bullswarm now deterministically infers that
 path for a verifier with one dependency and always appends the required JSON
 verdict contract. This is deliberately runtime knowledge, not caller steering.
 
+## Structured Output Evidence
+
+For an optional object `outputSchema` on a `run`, the runtime appends the
+contract to the worker prompt, parses the trailing object, and allows exactly
+one schema correction retry. The durable `state.json` record exposes
+`outputs.<id>.data` and `schemaOk`; a failed correction retains `schemaErrors`
+and the output text. Fan-out item records use the same fields under
+`outputs.<fanoutId>.items[]`. Offline regressions in
+`tests/workflow-adaptive.test.js` and `tests/workflow-gaps.test.js` verify retry
+events, persisted state, resume behavior, downstream rendering, and data-backed
+fan-out. The stable result envelope returns the durable artifact content; typed
+worker data remains inspectable in `state.outputs.<id>.data`.
+
 ## Acceptance interpretation
 
 - Provider output is accepted by content verification, never by exit status alone.

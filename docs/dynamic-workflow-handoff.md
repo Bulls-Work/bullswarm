@@ -282,7 +282,18 @@ A later step can reference them with templates:
 {{outputs.previous.pool}}
 {{outputs.previous.outputText}}
 {{outputs.previous.outFile}}
+{{outputs.previous.data.field}}
 ```
+
+For a structured `run`, declare an object `outputSchema` when a later step
+needs typed data. The successful state record contains `data` and
+`schemaOk: true`; after the single schema correction retry fails it retains the
+output text and contains `schemaOk: false` and `schemaErrors`. A schema retry is
+observable as `action.output_schema_retry`, followed by
+`action.output_validated` only when the corrected object passes validation.
+The task also supplies an exact local schema-preflight command. The worker uses
+it on a temporary candidate before replying, while the runtime independently
+revalidates the captured response before exposing `data` downstream.
 
 A fan-out can use a prior output file as its item source:
 
@@ -296,8 +307,13 @@ A fan-out can use a prior output file as its item source:
 }
 ```
 
-The runtime reads the referenced file and parses a JSON array. This is dynamic
-item expansion, not dynamic workflow graph expansion.
+The runtime first consumes an already-recorded array such as
+`outputs.discover.data.items`. For the legacy `outputs.<id>.outFile` form it
+reads the referenced file and parses a JSON array. This is dynamic item
+expansion, not dynamic workflow graph expansion. Fan-out schemas belong on
+`stepTemplate.outputSchema`; each item stores its own `data`, `schemaOk`, and
+possible `schemaErrors`, and resume re-runs only items whose verdict or schema
+is incomplete.
 
 ### Routing and model selection
 
@@ -341,6 +357,7 @@ Bullswarm currently has:
 - Recursion-depth propagation and guard
 - Resume of successful steps
 - Fan-out resume by item fingerprint
+- Structured worker output with one schema retry and durable schema state
 - Cooperative cancellation through `state.json`
 - Heartbeats during long dispatches
 - Basic interactive dashboard
@@ -352,6 +369,7 @@ Bullswarm currently has:
 bullswarm doctor --json
 bullswarm workflow capabilities --json
 bullswarm workflow inspect <file-or-name>
+bullswarm workflow runs result <shortId> --json
 bullswarm workflow tui --json
 bullswarm workflow tui --json <shortId>
 bullswarm workflow tui --json --cancel <shortId>

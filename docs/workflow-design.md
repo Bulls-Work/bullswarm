@@ -112,8 +112,18 @@ Step fields (all pass through to the existing `run` pipeline):
   before bounded `run`, `fanout`, or `verify` actions enter the plan.
 
 `run` and fan-out templates may declare `outputSchema` when later actions need
-structured `outputs.<id>.data` or data-backed fan-out. Ordinary prose should
-leave it unset; `verify` has its own fixed verdict schema.
+structured data. The schema is an object-typed JSON-Schema subset. A successful
+run records `outputs.<id>.data` and `schemaOk: true`; a fan-out records the same
+fields on each `outputs.<fanoutId>.items[]` entry. A mismatch gets one bounded
+schema retry and records `schemaOk: false` plus `schemaErrors` if the retry also
+fails. Ordinary prose should leave `outputSchema` unset; `verify` has its own
+fixed verdict schema.
+
+Before replying, a schema-bound worker receives the exact schema file and a
+deterministic `check-output-schema` command for a temporary candidate object.
+It must correct the candidate until that preflight exits zero and then emit the
+validated object. The runtime validates the captured response again; worker
+preflight reduces avoidable retries but never replaces the authoritative gate.
 
 ### Templating
 
