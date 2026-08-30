@@ -353,6 +353,10 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.match(firstPlannerTask, /"remainingDispatches": 4/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
+    assert.match(firstPlannerTask, /"role": "preflight-scout"/);
+    assert.match(firstPlannerTask, /"completionEligible": false/);
+    assert.match(firstPlannerTask, /"preflightActionsExcludedFromCompletion": \[\s*"scout"\s*\]/);
+    assert.match(firstPlannerTask, /scout .* is evidence, never a worker/);
     assert.match(firstPlannerTask, /Budgets \(agents, duration, expansion rounds\) are advisory targets/);
     assert.match(firstPlannerTask, /Converge as targets approach/);
 
