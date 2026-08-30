@@ -1268,7 +1268,8 @@ function detailRow(bullswarmDir, token) {
 }
 
 export async function runDashboard(bullswarmDir, {
-  input = process.stdin, output = process.stdout, refreshMs = 1000, token = null,
+  input = process.stdin, output = process.stdout, refreshMs = 1000,
+  spinnerMs = 400, token = null,
 } = {}) {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
@@ -1282,6 +1283,7 @@ export async function runDashboard(bullswarmDir, {
   let lastGoodRow = null;
   let rows = dashboardRows(bullswarmDir);
   let selectedRunId = token ? detailRow(bullswarmDir, token).runId : (rows[selected]?.runId ?? null);
+  let lastPaintedFrame = null;
   const ui = {
     focus: 0,
     phaseIndex: null,
@@ -1297,6 +1299,24 @@ export async function runDashboard(bullswarmDir, {
     mobileTimeline: true,
     spinnerFrame: 0,
   };
+  // Clearing the entire alternate screen for every spinner frame produces a
+  // visible blank flash on slower terminals, especially mobile SSH sessions.
+  // Enter/clear the alternate screen once, then repaint each row in place.
+  // Padding to the terminal height also removes remnants when switching from
+  // a taller detail view to a shorter picker view.
+  const writeFrame = (text) => {
+    const clearPrefix = `${ESC}2J${ESC}H`;
+    const source = String(text ?? '').startsWith(clearPrefix)
+      ? String(text ?? '').slice(clearPrefix.length)
+      : String(text ?? '');
+    const height = Math.max(1, Number(output.rows) || source.split('\n').length);
+    const lines = source.split('\n').slice(0, height);
+    while (lines.length < height) lines.push('');
+    const frame = `${ESC}H${lines.map((line) => `${line}${ESC}K`).join('\n')}`;
+    if (frame === lastPaintedFrame) return;
+    lastPaintedFrame = frame;
+    output.write(frame);
+  };
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
     if (detail && selectedRunId) {
@@ -1311,7 +1331,7 @@ export async function runDashboard(bullswarmDir, {
       });
       ui.phaseIndex = model.phaseIndex;
       ui.agentIndex = model.agentIndex;
-      output.write(renderWorkflowTui(row, {
+      writeFrame(renderWorkflowTui(row, {
         width: output.columns,
         height: output.rows,
         ...ui,
@@ -1319,7 +1339,7 @@ export async function runDashboard(bullswarmDir, {
       }));
       return;
     }
-    output.write(renderDashboard({ rows, selected, message }));
+    writeFrame(renderDashboard({ rows, selected, message }));
   };
   // A render error must never kill the TUI or strand the terminal in
   // alt-screen raw mode (crash observed 2026-08-29 at detailRow via the
@@ -1327,7 +1347,7 @@ export async function runDashboard(bullswarmDir, {
   const paint = () => {
     try { paintUnsafe(); } catch (err) {
       message = `display error: ${err.message}`;
-      try { output.write(renderDashboard({ rows, selected, message })); } catch { /* keep the loop alive */ }
+      try { writeFrame(renderDashboard({ rows, selected, message })); } catch { /* keep the loop alive */ }
     }
   };
   const refresh = () => {
@@ -1339,13 +1359,13 @@ export async function runDashboard(bullswarmDir, {
   };
   input.setRawMode?.(true);
   input.resume();
-  output.write(`${ESC}?1049h${ESC}?25l`);
+  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H`);
   paint();
   const timer = setInterval(refresh, refreshMs);
   const spinnerTimer = setInterval(() => {
     ui.spinnerFrame = (ui.spinnerFrame + 1) % SPINNER_FRAMES.length;
     if (detail) paint();
-  }, 160);
+  }, Math.max(50, Number(spinnerMs) || 400));
   return new Promise((resolve) => {
     const finish = () => {
       clearInterval(timer);
