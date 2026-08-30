@@ -517,6 +517,50 @@ test('interactive TUI uses alternate screen and q only detaches the viewer', asy
   } finally { cleanup(); }
 });
 
+test('interactive TUI repaints spinner frames in place without clearing the screen', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.currentPhase = { index: 0, name: 'review', total: 1 };
+    state.actionLedger = [{ id: 'fan', phase: 'review', kind: 'run', status: 'running', attempts: [0] }];
+    state.attempts = [{
+      actionId: 'fan', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'running',
+      startedAt: new Date().toISOString(),
+    }];
+    state.activeAgents = { fan: {
+      stepId: 'fan', pool: 'grok', model: 'grok-4.6', attempt: 1, status: 'running',
+      startedAt: new Date().toISOString(),
+    } };
+    writeFileSync(statePath, JSON.stringify(state));
+
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 110;
+      rows = 26;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = runDashboard(home, {
+      token: 'abc234', input, output, refreshMs: 60_000, spinnerMs: 50,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+    assert.equal((output.text.match(/\x1b\[2J/g) ?? []).length, 1, 'alternate screen is cleared only once');
+    assert.ok((output.text.match(/\x1b\[H/g) ?? []).length >= 3, 'spinner frames repaint from cursor home');
+    assert.ok((output.text.match(/\x1b\[K/g) ?? []).length >= output.rows, 'each row clears only its stale tail');
+  } finally { cleanup(); }
+});
+
 test('narrow interactive TUI opens on the timeline and t toggles the phase browser', async () => {
   const { home, cleanup } = fixture();
   try {
