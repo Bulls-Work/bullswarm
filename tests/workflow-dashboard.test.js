@@ -710,4 +710,6 @@ test('auto-follow starts at a timestamped milestone instead of an orphaned detai
   const marker = rows.findIndex((line) => line.includes('earlier timeline rows'));
   assert.ok(marker >= 0, plain);
   assert.match(rows[marker + 1], /│\d{2}:\d{2}\s/);
+  assert.match(plain, /\[Phase: Phase 7\] completed/);
+  assert.doesNotMatch(plain, /newer timeline rows/);
 });
