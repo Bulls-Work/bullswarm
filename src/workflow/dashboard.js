@@ -588,9 +588,9 @@ function workflowTimelineLines(model, width) {
   const { state, orchestrator } = model;
   const ledger = state.actionLedger ?? [];
   const events = [];
-  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER) => {
+  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER, group = null) => {
     if (!at) return;
-    events.push({ at, sequence, lines: Array.isArray(lines) ? lines : [lines] });
+    events.push({ at, sequence, group, lines: Array.isArray(lines) ? lines : [lines] });
   };
   const scout = ledger.find((action) => action.id === 'scout');
   add(state.startedAt, [
@@ -620,10 +620,17 @@ function workflowTimelineLines(model, width) {
     const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
     const summary = decision?.reason ? sentencePreview(decision.reason, Math.max(30, width - 10))
       : decision ? decisionLabel(decision.decision) : 'No accepted decision; correction or retry turn';
+    const acceptedBefore = orchestrator.attempts.slice(0, index).filter((entry, priorIndex) =>
+      decisionForPlannerAttempt(state, entry, priorIndex, orchestrator.attempts)).length;
+    const plannerLabel = !decision
+      ? `planning retry #${index + 1}`
+      : decision.decision === 'complete'
+        ? 'completion confirmed'
+        : acceptedBefore === 0 ? 'plan created' : `plan updated #${acceptedBefore + 1}`;
     add(attempt.finishedAt, [
-      timelineRow(attempt.finishedAt, `◆ [Workflow Planner] checkpoint #${index + 1}`, durationText(attempt.startedAt, attempt.finishedAt), width),
+      timelineRow(attempt.finishedAt, `◆ [Workflow Planner] ${plannerLabel}`, durationText(attempt.startedAt, attempt.finishedAt), width),
       timelineDetail(summary, width),
-    ]);
+    ], Number.MAX_SAFE_INTEGER, 'execution');
   });
 
   const phases = new Map();
@@ -638,7 +645,7 @@ function workflowTimelineLines(model, width) {
     const startedAt = realStart ?? earliestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
     if (!startedAt) continue;
     const label = phaseLabel(name, orchestrator);
-    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] ${realStart ? 'started' : 'blocked'}`, '', width));
+    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] ${realStart ? 'started' : 'blocked'}`, '', width), Number.MAX_SAFE_INTEGER, 'execution');
     const finished = actions
       .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
       .sort((a, b) => Date.parse(actionFinishedAt(state, a)) - Date.parse(actionFinishedAt(state, b)));
@@ -652,24 +659,24 @@ function workflowTimelineLines(model, width) {
         `${branch}${statusIcon(effectiveActionStatus(action, state))} [${label}] ${action.id}`,
         actionStarted ? durationText(actionStarted, actionFinished) : '',
         width,
-      ));
+      ), Number.MAX_SAFE_INTEGER, 'execution');
     });
     if (finished.length === actions.length && actions.length) {
       const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
       const failed = actions.some((action) => String(effectiveActionStatus(action, state)).startsWith('failed'));
-      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : '✓'} [Phase: ${label}] completed`, `${finished.length}/${actions.length}`, width));
+      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : '✓'} [Phase: ${label}] completed`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, 'execution');
     }
   }
 
   for (const event of model.events) {
     const detail = timelineControlEvent(event, width);
-    if (detail) add(event.committedAt, detail, Number(event.sequence));
+    if (detail) add(event.committedAt, detail, Number(event.sequence), event.type.startsWith('decision.') ? 'execution' : null);
   }
 
   events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.sequence - b.sequence);
   const lines = [];
   events.forEach((event, index) => {
-    if (index) lines.push('');
+    if (index && (!event.group || event.group !== events[index - 1].group)) lines.push('');
     lines.push(...event.lines);
   });
   return { lines: lines.length ? lines : ['Waiting for the first durable workflow milestone'], milestoneCount: events.length };
@@ -757,13 +764,35 @@ function workflowLiveLines(model, width, spinnerFrame) {
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
   }
-  if (!lines.length) lines.push(state.finishedAt ? '✓ No live agents · workflow is terminal' : '⧖ Waiting for the next dispatch');
+  if (!lines.length) lines.push(state.finishedAt
+    ? `${statusIcon(state.status)} No agents running · ${terminalWorkflowLabel(state.status)}`
+    : '⧖ Waiting for the next dispatch');
   return { lines, running, waiting };
+}
+
+function terminalWorkflowLabel(status) {
+  if (status === 'completed') return 'workflow finished';
+  if (status === 'completed_with_concerns') return 'workflow finished with concerns';
+  if (status === 'blocked') return 'workflow stopped with blockers';
+  if (status === 'failed') return 'workflow failed';
+  if (status === 'cancelled') return 'workflow cancelled';
+  if (status === 'interrupted') return 'workflow interrupted';
+  return 'workflow stopped';
 }
 
 function workflowNextLines(model, width) {
   const { state, orchestrator } = model;
-  if (state.finishedAt) return [truncate(`${statusIcon(state.status)} Workflow terminal · obtain the stable result envelope`, width)];
+  if (state.finishedAt) {
+    const next = state.status === 'completed' || state.status === 'completed_with_concerns'
+      ? 'result ready'
+      : state.status === 'blocked' ? 'review blockers and partial work'
+        : state.status === 'failed' ? 'inspect the failure before using partial work'
+          : state.status === 'cancelled' ? 'review any partial work'
+            : state.status === 'interrupted' ? 'resume the workflow or inspect partial work'
+              : 'inspect the workflow result';
+    const label = terminalWorkflowLabel(state.status);
+    return [truncate(`${statusIcon(state.status)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
+  }
   const ledger = state.actionLedger ?? [];
   const pending = ledger.find((action) => action.id !== 'scout'
     && action.id !== orchestrator.actionId

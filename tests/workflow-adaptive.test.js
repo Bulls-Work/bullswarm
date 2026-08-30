@@ -8,7 +8,7 @@ import { readEvents } from '../src/workflow/events.js';
 import {
   validateDecisionProposal, normalizeDecisionProposal, DecisionValidationError,
 } from '../src/workflow/decision.js';
-import { compactRejectedProposal } from '../src/workflow/runtime.js';
+import { compactRejectedProposal, enforceVerifyRequirementCoverage } from '../src/workflow/runtime.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 import { queueSteering } from '../src/workflow/steering.js';
@@ -76,7 +76,7 @@ function fixture() {
     '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"Compile a self-completing program: two items, one final check.",completion:{when:"all-actions-ok",reason:"Both items were handled and the final check passed, which is exactly what the goal asked for."},actions:[',
     '          {id:"work-a",type:"run",phase:"work",prompt:"Handle item a in its own file only and report concrete evidence.",dependsOn:["initial"]},',
     '          {id:"work-b",type:"run",phase:"work",prompt:"Handle item b in its own file only and report concrete evidence.",dependsOn:["initial"]},',
-    '          {id:"final-check",type:"verify",phase:"verify",prompt:(task.includes("VERDICT_GARBLE") ? "VERIFY_GARBLED" : failing ? "VERIFY_FAIL" : "VERIFY_OK") + " Confirm both items have evidence.",dependsOn:["work-a","work-b"],review:"outputs.work-b.outFile"}]};',
+    '          {id:"final-check",type:"verify",phase:"verify",prompt:(task.includes("VERDICT_GARBLE") ? "VERIFY_GARBLED" : task.includes("VERDICT_CONCERN") ? "VERIFY_CONCERN" : failing ? "VERIFY_FAIL" : "VERIFY_OK") + " Confirm both items have evidence.",dependsOn:["work-a","work-b"],review:"outputs.work-b.outFile"}]};',
     '  } else if (task.includes("FORCE_STOP")) {',
     '    answer = {schemaVersion:"bullswarm.workflow.decision.v1",decision:"stop",reason:"A terminal semantic blocker prevents safe completion.",actions:[]};',
     '  } else if (task.includes("FORCE_WAIT")) {',
@@ -132,6 +132,8 @@ function fixture() {
     '    : JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else if (task.includes("VERIFY_FAIL")) {',
     '  process.stdout.write(JSON.stringify({ok:false, concerns:["item b has no evidence of the handled result"], summary:"b is unproven"}));',
+    '} else if (task.includes("VERIFY_CONCERN")) {',
+    '  process.stdout.write(JSON.stringify({ok:true, concerns:["A cosmetic message could be clearer."], summary:"every required item has evidence"}));',
     '} else if (task.includes("VERIFY_OK")) {',
     '  process.stdout.write(JSON.stringify({ok:true, concerns:[], summary:"every item has evidence"}));',
     '} else {',
@@ -232,7 +234,7 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     const [task] = plannerTasks(result.runDir);
     assert.match(task, /"type":"run","phase":"implement","prompt"/);
     assert.match(task, /"type":"fanout","phase":"fix","items":\["alpha"\]/);
-    assert.match(task, /"type":"verify","phase":"verify","lane":"analyze","prompt":/);
+    assert.match(task, /"type":"verify","phase":"verify","lane":"analyze","covers":\["R1"\],"prompt":/);
     assert.match(task, /"itemsFrom":"outputs\.discover\.data\.items"/);
     assert.match(task, /"repair":\{"prompt":/);
     assert.match(task, /"completion":\{"when":"all-actions-ok"/);
@@ -664,6 +666,21 @@ test('an unparseable verify verdict is re-asked once, not sent to the planner', 
   } finally { f.cleanup(); }
 });
 
+test('successful verifier concerns are preserved as a verified qualified completion', async () => {
+  const f = fixture();
+  try {
+    const result = await runWorkflow({
+      bullswarmDir: f.bullswarmDir,
+      doc: adaptiveDoc('FORCE_SELF_COMPLETE VERDICT_CONCERN', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
+      pools: f.pools, inputs: {},
+    });
+    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.equal(result.state.outcome.verified, true);
+    assert.equal(result.state.outcome.bestEffort, false);
+    assert.deepEqual(result.state.outcome.concerns, ['A cosmetic message could be clearer.']);
+  } finally { f.cleanup(); }
+});
+
 test('a self-completing program whose check fails comes back to the planner with the failing actions named', async () => {
   const f = fixture();
   try {
@@ -833,6 +850,33 @@ test('data-driven fanout and repair proposals are normalized and validated befor
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: { prompt: 'fix', model: 'planner-picked' } }], /repair\.model is runtime-owned/);
   rejects([{ id: 'v', type: 'verify', dependsOn: ['initial'], prompt: 'x', repair: 'just fix it' }], /repair must be an object/);
   rejects([{ id: 'r', type: 'run', prompt: 'x', repair: { prompt: 'fix' } }], /repair is only valid on verify actions/);
+});
+
+test('goal requirement coverage is planner-declared and completion-gated', () => {
+  const base = {
+    schemaVersion: 'bullswarm.workflow.decision.v1', decision: 'needs_more_work', reason: 'Implement and verify.',
+    completion: { when: 'all-actions-ok' },
+    actions: [
+      { id: 'work', type: 'run', phase: 'implement', prompt: 'Implement it.' },
+      { id: 'verify', type: 'verify', phase: 'verify', dependsOn: ['work'], prompt: 'Verify it.', covers: ['R1'] },
+    ],
+  };
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal(base), { requiredRequirementIds: ['R1', 'R2'] }), /coverage for R2/);
+  const complete = structuredClone(base);
+  complete.actions[1].covers.push('R2');
+  assert.doesNotThrow(() => validateDecisionProposal(normalizeDecisionProposal(complete), { requiredRequirementIds: ['R1', 'R2'] }));
+  complete.actions[1].covers.push('R3');
+  assert.throws(() => validateDecisionProposal(normalizeDecisionProposal(complete), { requiredRequirementIds: ['R1', 'R2'] }), /unknown requirement "R3"/);
+});
+
+test('verifier cannot pass covered goal requirements without specific evidence', () => {
+  const requirements = [{ id: 'R1', text: 'Add schemaOk.' }, { id: 'R2', text: 'Add retry events.' }];
+  const result = enforceVerifyRequirementCoverage({
+    ok: true, concerns: [], summary: 'Looks good.',
+    requirements: { R1: { ok: true, evidence: 'src/workflow/runtime.js emits schemaOk.' } },
+  }, requirements);
+  assert.equal(result.parsed.ok, false);
+  assert.match(result.parsed.concerns.at(-1), /R2 lacks passing, specific verification evidence/);
 });
 
 test('malformed or over-budget planner proposals are rejected before dispatch', () => {
@@ -1118,6 +1162,11 @@ test('completion requires verification of the latest successful worker', () => {
     implementation: { ok: true },
     'implementation-verify': { ok: false },
   }), ['a successful verification of latest worker implementation']);
+  actions.at(-1).covers = ['R1'];
+  assert.deepEqual(completionEvidenceGaps(actions, policy, {
+    audit: { ok: true }, 'audit-verify': { ok: true }, implementation: { ok: true },
+    'implementation-verify': { ok: true, verify: { requirements: { R1: { ok: true, evidence: 'npm test: pass' } } } },
+  }, [{ id: 'R1', text: 'Run the suite.' }]), []);
 });
 
 test('a verify that re-ran ok after its own repair round is evidence for that repair', () => {

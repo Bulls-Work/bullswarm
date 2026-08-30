@@ -111,6 +111,8 @@ export function normalizeDecisionProposal(proposal) {
 
 export function validateDecisionProposal(proposal, {
   knownActionIds = [],
+  requiredRequirementIds = [],
+  completedRequirementIds = [],
   closedPhases = [],
   currentActionCount = 0,
   maxActions = 100,
@@ -161,6 +163,8 @@ export function validateDecisionProposal(proposal, {
   }
 
   const known = new Set(knownActionIds);
+  const requiredRequirements = new Set(requiredRequirementIds);
+  const completedRequirements = new Set(completedRequirementIds);
   const proposedIds = new Set(safeActions.map((action) => action?.id).filter((id) => typeof id === 'string'));
   const closed = new Set(closedPhases);
   const proposed = new Set();
@@ -261,6 +265,21 @@ export function validateDecisionProposal(proposal, {
       }
     }
     if (action.type === 'verify') {
+      if (requiredRequirements.size) {
+        if (!Array.isArray(action.covers) || action.covers.length === 0) {
+          issues.push(`${at}.covers must name one or more intent requirement IDs`);
+        } else {
+          const seen = new Set();
+          for (const requirementId of action.covers) {
+            if (typeof requirementId !== 'string' || !requiredRequirements.has(requirementId)) {
+              issues.push(`${at}.covers references unknown requirement "${requirementId}"`);
+            } else if (seen.has(requirementId)) {
+              issues.push(`${at}.covers repeats requirement "${requirementId}"`);
+            }
+            seen.add(requirementId);
+          }
+        }
+      }
       if (action.review == null && action.reviewScope === 'repository') {
         // Normalized zero-dependency audit: no artifact to review.
       } else if (typeof action.review !== 'string') {
@@ -273,6 +292,9 @@ export function validateDecisionProposal(proposal, {
           issues.push(`${at}.review references unknown action "${reviewed}"`);
         }
       }
+    }
+    if (action.type !== 'verify' && action.covers != null) {
+      issues.push(`${at}.covers is only valid on verify actions`);
     }
   }
   if (proposedItems > maxItemsPerExpansion) {
@@ -299,6 +321,15 @@ export function validateDecisionProposal(proposal, {
     visited.add(id);
   };
   for (const id of proposed) visit(id);
+
+  if (requiredRequirements.size && (proposal.completion || proposal.decision === 'complete')) {
+    const covered = new Set(completedRequirements);
+    for (const action of safeActions.filter((entry) => entry?.type === 'verify')) {
+      for (const requirementId of action.covers ?? []) covered.add(requirementId);
+    }
+    const missing = [...requiredRequirements].filter((id) => !covered.has(id));
+    if (missing.length) issues.push(`completion lacks verifier coverage for ${missing.join(', ')}`);
+  }
 
   if (issues.length) throw new DecisionValidationError(issues);
   return {
