@@ -1,5 +1,13 @@
 # bullswarm changelog
 
+## 0.19.1 — Relay OpenCode keys as separate pools
+
+- Extra Relay providers in `~/.config/opencode/opencode.json` (`relay-2`, …)
+  become `opencode2:<id>` pools, spawned with `--model <id>/gpt-5.6-luna`.
+  Spend is read from `GET /api/usage/token` plus
+  `/v1/dashboard/billing/usage` (USD = `total_usage / 100`). The HTML wallet
+  page still needs a browser session and is not the key API.
+
 ## 0.19.0 — unified workflow dashboard
 
 - Running `bullswarm workflow` on an interactive terminal now opens one
