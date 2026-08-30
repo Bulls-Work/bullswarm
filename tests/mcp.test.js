@@ -30,18 +30,25 @@ function rpc(messages, timeoutMs = 8000, env = {}) {
     child.on('error', rejectP);
     child.stdin.write(messages.map((m) => `${JSON.stringify(m)}\n`).join(''));
     child.stdin.end();
-    const timer = setTimeout(() => {
+    let settled = false;
+    let poll;
+    const finish = (value, error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
       child.kill();
-      resolveP(lines.length ? lines : (() => { throw new Error(`MCP timeout. stderr: ${stderr}`); })());
+      if (error) rejectP(error);
+      else resolveP(value);
+    };
+    const timer = setTimeout(() => {
+      finish(null, new Error(`MCP timeout after ${timeoutMs}ms; received ids: ${lines.map((line) => line.id).filter((id) => id != null).join(', ') || 'none'}. stderr: ${stderr}`));
     }, timeoutMs);
     // settle early once every non-notification has a response
-    const poll = setInterval(() => {
+    poll = setInterval(() => {
       const ids = messages.filter((m) => m.id != null).map((m) => m.id);
       if (ids.every((id) => lines.some((l) => l.id === id))) {
-        clearTimeout(timer);
-        clearInterval(poll);
-        child.kill();
-        resolveP(lines);
+        finish(lines);
       }
     }, 50);
   });
@@ -95,6 +102,7 @@ test('MCP pools tool returns structured JSON', async () => {
     ], 30000, {
       BULLSWARM_HOME: bullswarmHome,
       BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
+      BULLSWARM_DISABLE_OPENCODE_RELAY: '1',
     });
     const call = res.find((r) => r.id === 11);
     const payload = JSON.parse(call.result.content[0].text);

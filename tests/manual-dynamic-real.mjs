@@ -65,6 +65,69 @@ async function caseProceed() {
   } finally { f.cleanup(); }
 }
 
+async function caseStructuredContract() {
+  const f = home('structured-contract');
+  try {
+    const doc = {
+      name: 'real-structured-contract', description: 'real structured producer, consumer, and verifier', inputs: {},
+      settings: { retryAttempts: 0, escalateOnFail: false, concurrency: 2, maxAgents: 4, maxWorkflowSeconds: 600 },
+      phases: [
+        { name: 'inventory', steps: [{
+          ...runStep('inventory-targets', [
+            'Read package.json in the working directory. Do not modify files.',
+            'RETURN ONLY one JSON object with exactly these keys:',
+            '- "items": ["package.json"]',
+            '- "evidence": a string stating the exact package name, version, Node engine, and test command.',
+            'No prose or markdown fences before or after the object.',
+          ].join('\n'), {
+            lane: 'chore',
+            outputSchema: {
+              type: 'object',
+              properties: {
+                items: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                evidence: { type: 'string', minLength: 40 },
+              },
+              required: ['items', 'evidence'],
+              additionalProperties: false,
+            },
+          }),
+        }] },
+        { name: 'consume', steps: [{
+          id: 'inspect-targets', type: 'fanout', pool: 'opencode2', lane: 'analyze',
+          itemsFrom: 'outputs.inventory-targets.data.items', concurrency: 1,
+          stepTemplate: {
+            prompt: 'Read {{item}} without modifying files. Report the exact package name, version, Node engine, and test command, citing the JSON keys. Explain in at least 160 characters how those facts fit together.',
+            timeoutSec: 180,
+          },
+        }] },
+        { name: 'verify', steps: [{
+          id: 'verify-inspection', type: 'verify', pool: 'opencode2', lane: 'analyze',
+          review: 'outputs.inspect-targets.outFile',
+          prompt: 'Independently read package.json and check that every fanout report states the exact package name, version, Node engine, and test command with no invented claims. Return ok:false only for a materially wrong or missing required fact.',
+          timeoutSec: 180,
+        }] },
+      ],
+    };
+    const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: [realPool()] });
+    const events = readEvents(result.runDir);
+    assert.equal(result.state.status, 'completed');
+    assert.deepEqual(result.state.outputs['inventory-targets'].data.items, ['package.json']);
+    assert.equal(result.state.outputs['inspect-targets'].total, 1);
+    assert.equal(result.state.outputs['inspect-targets'].failed, 0);
+    assert.equal(result.state.outputs['verify-inspection'].verify.ok, true);
+    assert.deepEqual(result.state.attempts.map((attempt) => attempt.status), ['succeeded', 'succeeded', 'succeeded']);
+    assert.equal(events.some((event) => event.type === 'decision.rejected'), false);
+    assert.equal(events.some((event) => event.type === 'action.repair_started'), false);
+    return {
+      runId: result.runId,
+      status: result.state.status,
+      attempts: result.state.attempts.length,
+      rejects: 0,
+      schemaItems: result.state.outputs['inventory-targets'].data.items.length,
+    };
+  } finally { f.cleanup(); }
+}
+
 async function caseExpansionFanout() {
   const f = home('expansion-fanout');
   try {
@@ -251,6 +314,7 @@ async function caseResume() {
 const results = {};
 const selected = new Set(process.argv.slice(2));
 for (const [name, fn] of [
+  ['structured-contract', caseStructuredContract],
   ['proceed', caseProceed],
   ['expansion-fanout', caseExpansionFanout],
   ['retry', caseRetry],

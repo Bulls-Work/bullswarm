@@ -459,6 +459,7 @@ async function wfGoal(opts) {
     try {
       doc = buildGoalWorkflow({
         goal,
+        suggestedPlan: opts['suggested-plan'] ?? null,
         cwd: opts.cwd ?? process.cwd(),
         orchestrator,
         strictOrchestrator: Boolean(opts['strict-orchestrator']),
@@ -712,6 +713,7 @@ function parseFlags(argv) {
   const valueFlags = new Set([
     'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'orchestrator-model',
     'worker-pool', 'worker-model', 'request', 'run-id',
+    'suggested-plan',
     'max-agents', 'max-expansion-rounds', 'max-actions',
     'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'message',

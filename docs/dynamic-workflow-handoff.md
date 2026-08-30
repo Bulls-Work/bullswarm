@@ -1,4 +1,4 @@
-# Bullswarm Dynamic Workflow Handoff
+# Bullswarm Dynamic Workflow Handoff (Historical)
 
 **Purpose:** iteration brief for making bullswarm's workflow system behave like
 Claude Code's dynamic workflows while preserving bullswarm's provider routing,
@@ -6,8 +6,10 @@ quota pacing, content verification, and agent-friendly CLI contracts.
 
 **Audience:** the next implementation agent.
 
-**Status:** build target, based on repository inspection, real OpenCode/Luna QA,
-and a Fleetlens inspection of Claude workflow telemetry.
+**Status:** historical implementation brief from 2026-08-21. The gaps and task
+list below describe the state at that date; they are not a current capability
+matrix. For current behavior use `README.md`, `skill/SKILL.md`,
+`docs/claude-dynamic-workflow-mechanics.md`, and the contextual CLI help.
 
 ## Executive Summary
 
@@ -23,10 +25,12 @@ understand request
   -> repeat until complete
 ```
 
-Bullswarm currently has a validated JSON plan, sequential phases, dynamic
-fan-out, retries, escalation, verification, resume, and a basic dashboard. It
-does not yet have the central `observe -> decide -> schedule` loop. Its graph
-is fixed after validation; only a fan-out's item count can expand at runtime.
+Bullswarm now has the control loop this brief proposed: a durable orchestrator
+observes completed work, proposes a bounded program, deterministic validation
+accepts or rejects it, and the runtime schedules ready actions before the next
+checkpoint. Static JSON workflows remain supported alongside zero-graph
+`workflow goal` execution. The rest of this document preserves the historical
+evidence and build rationale that led to that implementation.
 
 The target is not an uncontrolled mutable DAG and not an LLM that owns the
 runtime. The target is a hybrid:
@@ -235,6 +239,8 @@ Supported step types:
 - `run`: one delegate invocation.
 - `fanout`: one delegate invocation per item.
 - `verify`: a skeptical review of a prior output artifact.
+- `decide`: a durable adaptive planning gate whose proposal is validated before
+  any new action is appended or executed.
 
 The implementation is mainly in:
 
@@ -276,7 +282,18 @@ A later step can reference them with templates:
 {{outputs.previous.pool}}
 {{outputs.previous.outputText}}
 {{outputs.previous.outFile}}
+{{outputs.previous.data.field}}
 ```
+
+For a structured `run`, declare an object `outputSchema` when a later step
+needs typed data. The successful state record contains `data` and
+`schemaOk: true`; after the single schema correction retry fails it retains the
+output text and contains `schemaOk: false` and `schemaErrors`. A schema retry is
+observable as `action.output_schema_retry`, followed by
+`action.output_validated` only when the corrected object passes validation.
+The task also supplies an exact local schema-preflight command. The worker uses
+it on a temporary candidate before replying, while the runtime independently
+revalidates the captured response before exposing `data` downstream.
 
 A fan-out can use a prior output file as its item source:
 
@@ -290,8 +307,13 @@ A fan-out can use a prior output file as its item source:
 }
 ```
 
-The runtime reads the referenced file and parses a JSON array. This is dynamic
-item expansion, not dynamic workflow graph expansion.
+The runtime first consumes an already-recorded array such as
+`outputs.discover.data.items`. For the legacy `outputs.<id>.outFile` form it
+reads the referenced file and parses a JSON array. This is dynamic item
+expansion, not dynamic workflow graph expansion. Fan-out schemas belong on
+`stepTemplate.outputSchema`; each item stores its own `data`, `schemaOk`, and
+possible `schemaErrors`, and resume re-runs only items whose verdict or schema
+is incomplete.
 
 ### Routing and model selection
 
@@ -335,6 +357,7 @@ Bullswarm currently has:
 - Recursion-depth propagation and guard
 - Resume of successful steps
 - Fan-out resume by item fingerprint
+- Structured worker output with one schema retry and durable schema state
 - Cooperative cancellation through `state.json`
 - Heartbeats during long dispatches
 - Basic interactive dashboard
@@ -346,6 +369,7 @@ Bullswarm currently has:
 bullswarm doctor --json
 bullswarm workflow capabilities --json
 bullswarm workflow inspect <file-or-name>
+bullswarm workflow runs result <shortId> --json
 bullswarm workflow tui --json
 bullswarm workflow tui --json <shortId>
 bullswarm workflow tui --json --cancel <shortId>
@@ -360,7 +384,14 @@ bullswarm workflow inspect <file-or-name>
 bullswarm workflow tui --json
 ```
 
-## 3. Important Gaps, Ordered by Priority
+## 3. Historical Gaps, Ordered by Priority
+
+This section is an as-built checklist from the original handoff. The adaptive
+decision loop, bounded graph expansion, structured decisions, attempt ledger,
+ordered event log, cancellation, and timeline/dashboard surfaces described
+below are implemented now. The past-tense gap text is retained so reviewers can
+trace requirements to the resulting runtime and tests; it must not be read as
+current product status.
 
 ### P0: no observe-plan-execute loop
 

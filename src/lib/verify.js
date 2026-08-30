@@ -17,6 +17,7 @@
 export const FAILURE_SCAN_HEAD = 400; // chars scanned for failure patterns
 export const SHORT_OUTPUT_MAX = 600;  // below this, whole output is the head
 export const MIN_SUBSTANCE_CHARS = 80;
+export const MIN_MULTI_UNIT_SUBSTANCE_CHARS = 40;
 
 // Patterns indicating the DELEGATE ITSELF failed (not that it discusses
 // failure). Case-insensitive against the head slice.
@@ -100,9 +101,18 @@ function scanForFailure(text) {
  * announcement is still a no-op).
  */
 export function looksLikeWork(text) {
-  const sentences = splitSentences(text);
-  const substance = sentences.filter((s) => !INTENT_RE.test(s)).join(' ');
-  return substance.trim().length >= MIN_SUBSTANCE_CHARS;
+  // Provider CLIs commonly stream an announcement line followed by a compact
+  // bullet result. A missing full stop on the announcement must not make the
+  // whole newline-separated answer one intent-bearing sentence and discard
+  // the completed bullets with it. Preserve V4 inside each line while treating
+  // hard line boundaries as semantic units.
+  const sentences = String(text)
+    .split(/\r?\n+/)
+    .flatMap((line) => splitSentences(line));
+  const substanceUnits = sentences.filter((s) => !INTENT_RE.test(s));
+  const substance = substanceUnits.join(' ').trim();
+  return substance.length >= MIN_SUBSTANCE_CHARS
+    || (substanceUnits.length >= 2 && substance.length >= MIN_MULTI_UNIT_SUBSTANCE_CHARS);
 }
 
 function hasVerifyJson(text) {

@@ -24,6 +24,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { writeJsonAtomic } from './fsjson.js';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { watchOnce } from '../lib/watch.js';
@@ -55,6 +56,7 @@ const PLANNER_EXCERPT_TOTAL_CHARS = 36_000;
 export const BURST_WAIT_GRACE_MS = 10 * 60_000;
 export const BURST_WAIT_UNKNOWN_RESET_MS = 5 * 3600_000;
 export const QUOTA_POLL_MS = 60_000;
+const SCHEMA_CHECKER_PATH = fileURLToPath(new URL('../../bin/check-output-schema.js', import.meta.url));
 
 export function enforceVerifyRequirementCoverage(parsed, requiredCoverage = []) {
   if (!parsed || !requiredCoverage.length) return { parsed, concerns: [] };
@@ -183,6 +185,21 @@ export function compactRejectedProposal(proposal) {
   };
 }
 
+// Connector-owned soft concurrency prevents a cheapest/highest-headroom pool
+// from receiving every ready sibling when that CLI/account is unstable under
+// parallel sessions. Prefer pools with room, but preserve availability when
+// every eligible pool is already busy; this is routing diversity, not a hard
+// scheduler limit.
+export function preferPoolsWithCapacity(pools, activeByPool = new Map()) {
+  const available = pools.filter((pool) => {
+    const connector = pool.connector ?? pool;
+    const preferred = Number(connector.preferredConcurrency);
+    return !Number.isFinite(preferred) || preferred < 1
+      || Number(activeByPool.get(pool.name) ?? 0) < preferred;
+  });
+  return available.length ? available : pools;
+}
+
 export class WorkflowRuntime {
   /**
    * @param {object} opts
@@ -210,6 +227,7 @@ export class WorkflowRuntime {
       );
     this.limiter = concap;
     this.parentEnv = opts.env ?? process.env;
+    this.activeByPool = new Map();
     // Meter refresh used while waiting on a burst gate; tests inject a fake.
     this.readMeter = opts.readMeter ?? ((name) => getMeterReading(name, { force: true }));
     this.quotaPollMs = Math.max(10, Number(opts.quotaPollMs ?? this.state?.settings?.quotaPollMs ?? QUOTA_POLL_MS));
@@ -358,7 +376,10 @@ export class WorkflowRuntime {
     await this.awaitBurstRoom(step, effortTier, this.actionId(step, opts));
     if (this.state.cancelRequested) return { ok: false, keepOnClaude: false, why: 'workflow cancellation requested', pick: { pool: null }, meta: {} };
     return this.limiter.runWith(async () => {
-      const attemptPools = this.preparePools(step, effortTier);
+      const attemptPools = preferPoolsWithCapacity(
+        this.preparePools(step, effortTier),
+        this.activeByPool,
+      );
       let lastVerdict = null;
       const retryAllowance = Math.max(0, Math.min(Number(opts.retryAttempts ?? 1), 3));
       const escalationAllowance = opts.escalate && !step.pool ? 1 : 0;
@@ -595,6 +616,7 @@ export class WorkflowRuntime {
           this.persist();
         }, 10_000);
         let verdict;
+        this.activeByPool.set(conn.name, Number(this.activeByPool.get(conn.name) ?? 0) + 1);
         try {
           verdict = await watchOnce(runtimeConnector, taskText, targetDir, attemptPaths, {
             // No connector-owned or workflow-owned wall-clock kill timer.
@@ -660,6 +682,9 @@ export class WorkflowRuntime {
           });
         } finally {
           clearInterval(heartbeat);
+          const remaining = Number(this.activeByPool.get(conn.name) ?? 1) - 1;
+          if (remaining > 0) this.activeByPool.set(conn.name, remaining);
+          else this.activeByPool.delete(conn.name);
         }
         if (conversation && verdict.ok) {
           const thread = this.state.orchestration?.conversations?.[conn.name];
@@ -1022,7 +1047,8 @@ export class WorkflowRuntime {
     };
   }
 
-  schemaTaskText(taskText, schema, retry = null) {
+  schemaTaskText(taskText, schema, schemaPath, retry = null) {
+    const checkerCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(SCHEMA_CHECKER_PATH)} --schema ${JSON.stringify(schemaPath)} --value "$candidate_file"`;
     return [
       taskText,
       '',
@@ -1030,6 +1056,21 @@ export class WorkflowRuntime {
         ? `Your previous answer did not match the required schema: ${retry.errors.join('; ')}. Previous output tail: ${retry.tail}. Return the full answer again and END with a JSON object that matches.`
         : 'END YOUR OUTPUT with exactly one JSON object that is an INSTANCE of this schema — its keys are the names under "properties" (never copy the schema itself or its "type"/"properties" keys). No prose or markdown fences may appear after it.',
       JSON.stringify(schema),
+      '',
+      'MANDATORY SCHEMA PREFLIGHT before replying:',
+      '1. Write only your candidate JSON object to a temporary file: candidate_file=$(mktemp)',
+      `2. Run: ${checkerCommand}`,
+      '3. If it exits non-zero, fix the candidate and rerun until it exits zero.',
+      '4. End your response with the exact validated candidate object, then remove the temporary file.',
+    ].join('\n');
+  }
+
+  artifactTaskText(taskText) {
+    return [
+      taskText,
+      '',
+      'DELIVERY CONTRACT: put the requested artifact in your final response; Bullswarm captures that response durably.',
+      'Do not write, replace, or guess any path under ~/.bullswarm/workflows, including task-* and out-* files.',
     ].join('\n');
   }
 
@@ -1078,12 +1119,14 @@ export class WorkflowRuntime {
 
   async dispatchWithOutputSchema(step, taskText, targetDir, paths, opts = {}) {
     const schema = step.outputSchema;
+    const schemaPath = `${paths.taskFile}.schema.json`;
+    writeJsonAtomic(schemaPath, schema);
     // Schema validation owns the retry: generic dispatch retries would make
     // the promised single schema retry depend on workflow settings. Pool
     // escalation is orthogonal — it only follows a dispatch that FAILED
     // (exit/content gate); a schema-invalid answer is a successful dispatch,
     // so the schema retry count stays exactly one.
-    const first = await this.dispatch(step, this.schemaTaskText(taskText, schema), targetDir, paths, {
+    const first = await this.dispatch(step, this.schemaTaskText(taskText, schema, schemaPath), targetDir, paths, {
       ...opts,
       retryAttempts: 0,
     });
@@ -1095,7 +1138,7 @@ export class WorkflowRuntime {
     }
     const firstSchemaErrors = checked.errors;
     this.emit('action.output_schema_retry', { actionId: this.actionId(step, opts), errors: checked.errors });
-    const retry = await this.dispatch(step, this.schemaTaskText(taskText, schema, {
+    const retry = await this.dispatch(step, this.schemaTaskText(taskText, schema, schemaPath, {
       errors: checked.errors,
       tail: (() => { try { return readFileSync(first.outFile ?? paths.outFile, 'utf8').slice(-2000); } catch { return ''; } })(),
     }), targetDir, paths, { ...opts, retryAttempts: 0 });
@@ -1125,8 +1168,8 @@ export class WorkflowRuntime {
       scope,
       this.renderOpts(step.id),
     );
-    const taskText = rendered.prompt
-      ?? readFileSync(rendered.taskFile, 'utf8');
+    const taskText = this.artifactTaskText(rendered.prompt
+      ?? readFileSync(rendered.taskFile, 'utf8'));
     const targetDir = rendered.addDir ? String(rendered.addDir).replace(/^~/, process.env.HOME ?? '') : process.cwd();
 
     const stamp = `${step.id}-${Date.now().toString(36)}`;
@@ -1402,9 +1445,12 @@ export class WorkflowRuntime {
       const lastAttempt = attempts.at(-1);
       const startedAt = Date.parse(action.startedAt ?? '');
       const finishedAt = Date.parse(action.finishedAt ?? '');
+      const preflightScout = action.id === 'scout' && action.parentId == null && action.kind === 'run';
       const row = {
         id: action.id,
         type: action.kind,
+        role: preflightScout ? 'preflight-scout' : action.kind === 'verify' ? 'verifier' : 'worker',
+        completionEligible: !preflightScout,
         phase: action.phase ?? null,
         status: action.status,
         pool: lastAttempt?.pool ?? null,
@@ -1460,6 +1506,7 @@ export class WorkflowRuntime {
           ? null
           : Math.max(0, budget.remainingDispatches - verificationReserve),
         completionPolicy,
+        preflightActionsExcludedFromCompletion: ['scout'],
       },
       approval: this.state.approval ?? null,
       validationFeedback: opts.correction ? {
@@ -1518,6 +1565,11 @@ export class WorkflowRuntime {
       '---- BEGIN DURABLE WORKFLOW CONTEXT ----',
       JSON.stringify(plannerContext, null, 2),
       '---- END DURABLE WORKFLOW CONTEXT ----',
+      '',
+      'FINAL CONTROL RESPONSE (mandatory): return exactly one JSON object and no prose or markdown.',
+      `It must contain schemaVersion "${DECISION_SCHEMA_VERSION}", decision, reason, and actions.`,
+      'decision MUST be one of: needs_more_work, retry, escalate, complete, wait_for_approval, stop. Use needs_more_work for a new executable program with actions.',
+      `When the evidence is sufficient, return {"schemaVersion":"${DECISION_SCHEMA_VERSION}","decision":"complete","reason":"<evidence-backed reason>","actions":[]}.`,
     ].join('\n');
     const targetDir = rendered.addDir
       ? String(rendered.addDir).replace(/^~/, process.env.HOME ?? '')
@@ -1633,7 +1685,11 @@ export class WorkflowRuntime {
         const itemScope = { ...scope, item };
         let template;
         try {
-          template = renderDeep(step.stepTemplate, itemScope, this.renderOpts(`${step.id}[${i}]`));
+          // Schema strings are contract source, not workflow templates. Keep
+          // descriptions and patterns containing `{{...}}` byte-for-byte.
+          const { outputSchema, ...renderableTemplate } = step.stepTemplate ?? {};
+          template = renderDeep(renderableTemplate, itemScope, this.renderOpts(`${step.id}[${i}]`));
+          if (outputSchema !== undefined) template.outputSchema = outputSchema;
         } catch (err) {
           const itemAction = this.ensureAction(step, { ...opts, item, itemIndex: i });
           itemAction.status = 'failed_terminal';
@@ -1655,8 +1711,8 @@ export class WorkflowRuntime {
         const targetDir = template.addDir
           ? String(template.addDir).replace(/^~/, process.env.HOME ?? '')
           : process.cwd();
-        const taskText = template.prompt
-          ?? readFileSync(String(template.taskFile), 'utf8');
+        const taskText = this.artifactTaskText(template.prompt
+          ?? readFileSync(String(template.taskFile), 'utf8'));
 
         this.emit('item.started', { stepId: step.id, index: i, total: items.length, item });
          const itemStep = { ...step, ...template, id: step.id, ...(template.outputSchema ? { outputSchema: template.outputSchema } : {}) };

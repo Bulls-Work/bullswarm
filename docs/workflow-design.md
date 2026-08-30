@@ -1,6 +1,6 @@
 # bullswarm Dynamic Workflows — Design
 
-**Status:** PROTOTYPE · **Branch:** `feat/dynamic-workflow` · **Created:** 2026-08-21
+**Status:** implemented; historical design rationale retained · **Created:** 2026-08-21
 
 ## Problem
 
@@ -65,7 +65,7 @@ added as a second format without touching the runtime contract.
       "steps": [
         {
           "id": "fanout-review",            // required, unique
-          "type": "run",                    // run | fanout
+          "type": "run",                    // run | fanout | verify | decide
           "taskFile": "/tmp/wf/{{runId}}/task-{{item}}.md",
           "lane": "analyze",
           "addDir": "{{inputs.targetDir}}",
@@ -105,6 +105,25 @@ Step fields (all pass through to the existing `run` pipeline):
 - **`fanout`** — expand `stepTemplate` once per item from `itemsFrom`.
   Items may be strings or objects (`{{item.path}}` paths work). Concurrency
   capped by min(step, settings).
+- **`verify`** — independently review a prior artifact and require structured
+  `{ok, concerns, summary}` evidence before dependent work may trust it.
+- **`decide`** — give the durable orchestrator current intent, outputs,
+  failures, budgets, and capabilities. Its versioned proposal is validated
+  before bounded `run`, `fanout`, or `verify` actions enter the plan.
+
+`run` and fan-out templates may declare `outputSchema` when later actions need
+structured data. The schema is an object-typed JSON-Schema subset. A successful
+run records `outputs.<id>.data` and `schemaOk: true`; a fan-out records the same
+fields on each `outputs.<fanoutId>.items[]` entry. A mismatch gets one bounded
+schema retry and records `schemaOk: false` plus `schemaErrors` if the retry also
+fails. Ordinary prose should leave `outputSchema` unset; `verify` has its own
+fixed verdict schema.
+
+Before replying, a schema-bound worker receives the exact schema file and a
+deterministic `check-output-schema` command for a temporary candidate object.
+It must correct the candidate until that preflight exits zero and then emit the
+validated object. The runtime validates the captured response again; worker
+preflight reduces avoidable retries but never replaces the authoritative gate.
 
 ### Templating
 
@@ -134,9 +153,9 @@ artifacts + report + exit code
 - **State**: `~/.bullswarm/workflows/<runId>/state.json` after every step —
   crash-safe by construction.
 - **Resume**: `workflow run --resume <runId>` skips steps whose saved verdict
-  is `ok:true`; everything else re-runs. Fanout re-runs only unverified items.
-  (Simpler than odw fingerprints and sufficient because our units are
-  coarse-grained.)
+  is `ok:true` and whose declared output schema, if any, is satisfied;
+  everything else re-runs. Fanout items resume by content fingerprint, so
+  already verified items remain complete even when discovery order changes.
 - **Artifacts** per run: `state.json`, `report.json`, every task/out file.
 
 ## Terminal UX (the deliverable's face)
