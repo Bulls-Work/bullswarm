@@ -183,6 +183,21 @@ export function compactRejectedProposal(proposal) {
   };
 }
 
+// Connector-owned soft concurrency prevents a cheapest/highest-headroom pool
+// from receiving every ready sibling when that CLI/account is unstable under
+// parallel sessions. Prefer pools with room, but preserve availability when
+// every eligible pool is already busy; this is routing diversity, not a hard
+// scheduler limit.
+export function preferPoolsWithCapacity(pools, activeByPool = new Map()) {
+  const available = pools.filter((pool) => {
+    const connector = pool.connector ?? pool;
+    const preferred = Number(connector.preferredConcurrency);
+    return !Number.isFinite(preferred) || preferred < 1
+      || Number(activeByPool.get(pool.name) ?? 0) < preferred;
+  });
+  return available.length ? available : pools;
+}
+
 export class WorkflowRuntime {
   /**
    * @param {object} opts
@@ -210,6 +225,7 @@ export class WorkflowRuntime {
       );
     this.limiter = concap;
     this.parentEnv = opts.env ?? process.env;
+    this.activeByPool = new Map();
     // Meter refresh used while waiting on a burst gate; tests inject a fake.
     this.readMeter = opts.readMeter ?? ((name) => getMeterReading(name, { force: true }));
     this.quotaPollMs = Math.max(10, Number(opts.quotaPollMs ?? this.state?.settings?.quotaPollMs ?? QUOTA_POLL_MS));
@@ -358,7 +374,10 @@ export class WorkflowRuntime {
     await this.awaitBurstRoom(step, effortTier, this.actionId(step, opts));
     if (this.state.cancelRequested) return { ok: false, keepOnClaude: false, why: 'workflow cancellation requested', pick: { pool: null }, meta: {} };
     return this.limiter.runWith(async () => {
-      const attemptPools = this.preparePools(step, effortTier);
+      const attemptPools = preferPoolsWithCapacity(
+        this.preparePools(step, effortTier),
+        this.activeByPool,
+      );
       let lastVerdict = null;
       const retryAllowance = Math.max(0, Math.min(Number(opts.retryAttempts ?? 1), 3));
       const escalationAllowance = opts.escalate && !step.pool ? 1 : 0;
@@ -595,6 +614,7 @@ export class WorkflowRuntime {
           this.persist();
         }, 10_000);
         let verdict;
+        this.activeByPool.set(conn.name, Number(this.activeByPool.get(conn.name) ?? 0) + 1);
         try {
           verdict = await watchOnce(runtimeConnector, taskText, targetDir, attemptPaths, {
             // No connector-owned or workflow-owned wall-clock kill timer.
@@ -660,6 +680,9 @@ export class WorkflowRuntime {
           });
         } finally {
           clearInterval(heartbeat);
+          const remaining = Number(this.activeByPool.get(conn.name) ?? 1) - 1;
+          if (remaining > 0) this.activeByPool.set(conn.name, remaining);
+          else this.activeByPool.delete(conn.name);
         }
         if (conversation && verdict.ok) {
           const thread = this.state.orchestration?.conversations?.[conn.name];
