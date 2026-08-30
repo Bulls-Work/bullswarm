@@ -405,11 +405,13 @@ test('workflow overview separates timestamped history from live planner and work
       { id: 'report', phase: 'report', kind: 'run', status: 'failed', dependsOn: ['verify-all'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
       { id: 'verify-report', phase: 'report', kind: 'verify', status: 'failed', dependsOn: ['report'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
     );
+    state.outputs.report = { ok: false, dependencyBlocked: true };
+    state.outputs['verify-report'] = { ok: false, dependencyBlocked: true };
     writeFileSync(statePath, JSON.stringify(state));
     const blocked = renderWorkflowTui(dashboardRows(home)[0], { width: 140, height: 54 });
-    assert.match(blocked, /\d{2}:\d{2}  ├─ \[Phase: Report\] blocked/);
-    assert.match(blocked, /└─✗ \[Report\] verify-report/);
-    assert.match(blocked, /└─✗ \[Phase: Report\] completed\s+2\/2/);
+    assert.match(blocked, /\d{2}:\d{2}  ⊘ \[Phase: Report\] skipped\s+2 actions not run/);
+    assert.match(blocked, /Required earlier work did not pass; the planner chose a recovery path/);
+    assert.doesNotMatch(blocked, /\[Report\] verify-report|\[Phase: Report\] completed/);
     const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     const plainBlocked = blocked.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     for (const rendered of [plain, plainBlocked]) {
@@ -641,4 +643,36 @@ test('an action being re-run reads as running, and its phase as active, despite 
   assert.equal(reRunning.completed, 0);
   // No active agent => the failure is real and stays failed.
   assert.equal(trulyFailed.status, 'failed');
+});
+
+test('timeline calls dependency-blocked phases skipped and excludes stale completed agents from Live', () => {
+  const startedAt = '2026-08-30T03:28:00.000Z';
+  const finishedAt = '2026-08-30T03:29:00.000Z';
+  const state = {
+    runId: 'wf-blocked', shortId: 'blk234', workflow: 'blocked-recovery', status: 'running', startedAt,
+    intent: { autonomous: true, goal: 'Recover after a rejected check.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'gpt-5.6-sol' },
+    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
+    actionLedger: [
+      { id: 'verify-full-suite', phase: 'g:acceptance', kind: 'verify', status: 'failed_terminal', finishedAt, attempts: [] },
+      { id: 'report', phase: 'g:report', kind: 'run', status: 'failed_terminal', finishedAt, attempts: [] },
+    ],
+    outputs: {
+      'verify-full-suite': { ok: false, dependencyBlocked: true },
+      report: { ok: false, dependencyBlocked: true },
+    },
+    activeAgents: {
+      stale: { stepId: 'verify-docs', pool: 'opencode2', model: 'luna', status: 'completed' },
+      live: { stepId: 'repair', pool: 'opencode2', model: 'luna', status: 'running' },
+    },
+    _doc: { phases: [] },
+  };
+  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 34 });
+  assert.match(screen, /\[Phase: Acceptance\] skipped/);
+  assert.match(screen, /\[Phase: Report\] skipped/);
+  assert.match(screen, /Required earlier work did not pass; the planner chose a recovery path/);
+  assert.doesNotMatch(screen, /\[Phase: (Acceptance|Report)\] completed/);
+  assert.match(screen, /Live · 1 running · 1 waiting/);
+  assert.match(screen, /repair · opencode2 · luna/);
+  assert.doesNotMatch(screen, /verify-docs · opencode2/);
 });

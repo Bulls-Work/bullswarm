@@ -8,7 +8,7 @@ import { readEvents } from '../src/workflow/events.js';
 import {
   validateDecisionProposal, normalizeDecisionProposal, DecisionValidationError,
 } from '../src/workflow/decision.js';
-import { compactRejectedProposal, enforceVerifyRequirementCoverage } from '../src/workflow/runtime.js';
+import { compactRejectedProposal, enforceVerifyRequirementCoverage, parseVerifyJsonText } from '../src/workflow/runtime.js';
 import { requestCancel } from '../src/workflow/dashboard.js';
 import { validateWorkflow } from '../src/workflow/validate.js';
 import { queueSteering } from '../src/workflow/steering.js';
@@ -25,6 +25,18 @@ test('action-bearing proceed is normalized without an extra planner correction t
   });
   assert.equal(normalized.decision, 'needs_more_work');
   assert.doesNotThrow(() => validateDecisionProposal(normalized));
+});
+
+test('truncated verifier JSON is conservatively closed only when the verdict shape is intact', () => {
+  const truncated = 'Reviewer preface\n{"ok":true,"concerns":[],"summary":"usable","requirements":{"R1":{"ok":true,"evidence":"checked"}}';
+  assert.deepEqual(parseVerifyJsonText(truncated).parsed, {
+    ok: true,
+    concerns: [],
+    summary: 'usable',
+    requirements: { R1: { ok: true, evidence: 'checked' } },
+  });
+  assert.equal(parseVerifyJsonText('{"ok":true,"concerns":[],"summary":"unterminated').parsed, null);
+  assert.equal(parseVerifyJsonText('{"nested":{"ok":true,"concerns":[],"summary":"wrong object"}}').parsed, null);
 });
 
 function fixture() {
@@ -663,6 +675,7 @@ test('an unparseable verify verdict is re-asked once, not sent to the planner', 
     assert.equal(retries[0].actionId, 'final-check');
     assert.equal(result.state.outputs['final-check'].ok, true);
     assert.match(result.state.outputs['final-check'].why, /verify ok/);
+    assert.deepEqual(result.state.activeAgents ?? {}, {});
   } finally { f.cleanup(); }
 });
 
