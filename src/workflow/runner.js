@@ -487,9 +487,10 @@ function isScoutAction(action) {
 }
 
 function actionOutputOk(action, outputs) {
-  return Object.hasOwn(outputs ?? {}, action.id)
-    ? outputs[action.id]?.ok === true
-    : action.status === 'succeeded';
+  if (!Object.hasOwn(outputs ?? {}, action.id)) return action.status === 'succeeded';
+  const output = outputs[action.id];
+  if (output?.schemaOk === false) return false;
+  return output?.ok === true;
 }
 
 // A verify is evidence for a worker when the worker feeds it (dependsOn), or
@@ -983,7 +984,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
               gateId: gate.id,
               from: planner.proposal?.decision ?? null,
               to: normalizedProposal?.decision ?? null,
-              reason: 'action-bearing proceed is an executable needs_more_work program',
+              reason: 'action-bearing control alias is an executable needs_more_work program',
             });
           }
           proposal = validateDecisionProposal(normalizedProposal, {

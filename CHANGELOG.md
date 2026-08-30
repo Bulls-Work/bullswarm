@@ -1,5 +1,41 @@
 # bullswarm changelog
 
+## 0.20.0 — common agent delegation entry point
+
+- `/bullswarm` and `bullswarm delegate` now give agents one transparent entry
+  point for arbitrary self-contained tasks: classify the request as one bounded
+  delegate or an autonomous workflow, show the reason and conceptual plan, then
+  execute the selected engine. Explicit mode and lane overrides remain
+  available, and `--dry-run --json` exposes the decision without dispatching.
+- Workflow decisions persist the suggested conceptual plan alongside the
+  original intent, while the packaged skill keeps the common path concise and
+  moves operational detail into a focused reference.
+- Planner context now labels the preflight scout as completion-ineligible and
+  requires the first program to contain a real delivery worker plus its
+  verifier, preventing an apparently complete scout report from causing a
+  rejected completion and redundant recovery round.
+- Ready siblings now honor a connector-owned soft concurrency preference. The
+  OpenCode route prefers one in-flight worker, so additional parallel work is
+  spread across healthy subscriptions instead of risking correlated headless
+  session exits; a lone eligible pool still runs rather than failing capacity.
+- Agent integration upgrades its managed awareness marker to advertise the
+  common interface consistently across Codex, Claude, and Grok.
+- Classification now understands negated and instructional mutation language,
+  so read-only requests that discuss how to add or write something do not
+  accidentally enter the build lane, while a later affirmative implementation
+  request still does.
+- A trailing `help` token remains contextual and side-effect-free even after
+  options, matching `-h` and `--help`; several README and setup/help examples
+  were also brought back into sync with the real CLI.
+- Historical workflow design documents now identify themselves as dated
+  implementation records and list the current `verify`, `decide`, and
+  `outputSchema` surfaces instead of presenting resolved gaps as current.
+- Extra Relay providers in `~/.config/opencode/opencode.json` (`relay-2`, …)
+  become `opencode2:<id>` pools, spawned with `--model <id>/gpt-5.6-luna`.
+  Spend is read from `GET /api/usage/token` plus
+  `/v1/dashboard/billing/usage` (USD = `total_usage / 100`). The HTML wallet
+  page still needs a browser session and is not the key API.
+
 ## 0.19.0 — unified workflow dashboard
 
 - Running `bullswarm workflow` on an interactive terminal now opens one

@@ -14,6 +14,8 @@ const LANES = ['analyze', 'build', 'chore'];
 const ON_ERROR = ['continue', 'fail', 'skip-phase'];
 const STEP_TYPES = ['run', 'fanout', 'verify', 'decide'];
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+const INPUT_ITEMS_FROM_RE = /^inputs\.([A-Za-z0-9_-]+)$/;
+const OUTPUT_ITEMS_FROM_RE = /^outputs\.([A-Za-z0-9_-]+)(?:\.outFile|\.data\.([A-Za-z0-9_-]+))?$/;
 
 export class WorkflowValidationError extends Error {
   constructor(issues) {
@@ -149,20 +151,31 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
           step.requiresCapabilities.length > 0 &&
           step.requiresCapabilities.every((capability) =>
             typeof capability === 'string' && NAME_RE.test(capability)),
-        `${sat}.requiresCapabilities must be a non-empty array of kebab-case capability names`);
+          `${sat}.requiresCapabilities must be a non-empty array of kebab-case capability names`);
+      }
+      if (step.outputSchema !== undefined && step.type !== 'run') {
+        collect(issues, false, `${sat}.outputSchema is only allowed on run steps; fanout schemas belong on stepTemplate.outputSchema`);
       }
 
       if (step.type === 'fanout') {
         collect(issues, (typeof step.itemsFrom === 'string' && step.itemsFrom.length > 0) || Array.isArray(step.items),
           `${sat} needs itemsFrom or an inline items array`);
-        // itemsFrom must reference declared inputs or a prior step's output
-        if (typeof step.itemsFrom === 'string' && step.itemsFrom.includes('.')) {
-          const [root, target] = step.itemsFrom.split('.');
-          collect(issues, root === 'inputs' || (root === 'outputs' && outputs.has(target)),
-            `${sat}.itemsFrom "${step.itemsFrom}" cannot resolve (use inputs.<name> or outputs.<priorStepId>[.data.<field>])`);
-        } else if (typeof step.itemsFrom === 'string') {
-          collect(issues, false,
-            `${sat}.itemsFrom "${step.itemsFrom}" must be a dotted path (inputs.<name> or outputs.<priorStepId>[.data.<field>])`);
+        // Fail closed on the same bounded path grammar the runtime supports.
+        // A loose root/target split used to accept suffixes such as
+        // outputs.discover.data.items.extra and defer the failure until after
+        // agents had already run.
+        if (typeof step.itemsFrom === 'string') {
+          const inputMatch = INPUT_ITEMS_FROM_RE.exec(step.itemsFrom);
+          const outputMatch = OUTPUT_ITEMS_FROM_RE.exec(step.itemsFrom);
+          const resolves = inputMatch
+            // Inputs may be supplied only at `workflow run` time. Validate the
+            // bounded path grammar here without requiring a draft declaration.
+            ? true
+            : outputMatch
+              ? outputs.has(outputMatch[1]) && outputMatch[1] !== step.id
+              : false;
+          collect(issues, resolves,
+            `${sat}.itemsFrom "${step.itemsFrom}" cannot resolve (use inputs.<declaredName>, outputs.<priorStepId>, outputs.<priorStepId>.outFile, or outputs.<priorStepId>.data.<field>)`);
         }
         collect(issues, step.stepTemplate && typeof step.stepTemplate === 'object',
           `${sat}.stepTemplate is required for fanout steps`);

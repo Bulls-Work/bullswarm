@@ -16,15 +16,17 @@ import {
   PLANNER_RULES_SECTION, PLANNER_EXAMPLES_SECTION, AUTONOMOUS_ORCHESTRATOR_PROMPT,
 } from '../src/workflow/goal.js';
 
-test('action-bearing proceed is normalized without an extra planner correction turn', () => {
-  const normalized = normalizeDecisionProposal({
-    schemaVersion: 'bullswarm.workflow.decision.v1',
-    decision: 'proceed',
-    reason: 'Execute the bounded program now.',
-    actions: [{ id: 'inspect', type: 'run', phase: 'discover', prompt: 'Inspect and report evidence.' }],
-  });
-  assert.equal(normalized.decision, 'needs_more_work');
-  assert.doesNotThrow(() => validateDecisionProposal(normalized));
+test('action-bearing control aliases normalize without an extra planner correction turn', () => {
+  for (const decision of ['proceed', 'workflow', 'plan', 'execute']) {
+    const normalized = normalizeDecisionProposal({
+      schemaVersion: 'bullswarm.workflow.decision.v1',
+      decision,
+      reason: 'Execute the bounded program now.',
+      actions: [{ id: 'inspect', type: 'run', phase: 'discover', prompt: 'Inspect and report evidence.' }],
+    });
+    assert.equal(normalized.decision, 'needs_more_work');
+    assert.doesNotThrow(() => validateDecisionProposal(normalized));
+  }
 });
 
 test('truncated verifier JSON is conservatively closed only when the verdict shape is intact', () => {
@@ -253,9 +255,16 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"outputSchema":\{"type":"object","properties"/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /fanout has stepTemplate and either items or itemsFrom/);
+    assert.match(task, /one consolidated read-only audit or evidence report/);
+    assert.match(task, /changes are conditional on evidence/);
+    assert.match(task, /the first program MUST remain read-only/);
+    assert.match(task, /never tell a worker to write a Bullswarm outFile/);
     assert.match(task, /\{\{item\}\}/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
+    assert.match(task, /---- END DURABLE WORKFLOW CONTEXT ----\n\nFINAL CONTROL RESPONSE \(mandatory\):/);
+    assert.match(task, /decision MUST be one of: needs_more_work/);
+    assert.match(task, /"decision":"complete","reason":"<evidence-backed reason>","actions":\[\]\}\.$/);
   } finally { f.cleanup(); }
 });
 
@@ -543,6 +552,7 @@ test('exported planner prompt sections contain the bounded contract and literal 
   for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'batch cheap homogeneous edits', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'process rule the goal does not state', 'exactly one owner per file', 'ok:false means unusable']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
+  assert.match(PLANNER_RULES_SECTION, /Do not add a separate verifier for a small shared integration step/);
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
   assert.match(PLANNER_EXAMPLES_SECTION, /Complete program \(tests depend on fix, not verify-fix/);
   assert.match(PLANNER_EXAMPLES_SECTION, /\{\{item\}\}/);
@@ -1334,6 +1344,11 @@ test('outputSchema retries a missing trailing JSON object once and records valid
     assert.equal(events.filter((event) => event.type === 'action.output_schema_retry').length, 1);
     assert.equal(events.filter((event) => event.type === 'action.output_validated').length, 1);
     assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 2);
+    const firstAttempt = result.state.attempts.find((attempt) => attempt.actionId === 'structured');
+    const task = readFileSync(firstAttempt.taskFile, 'utf8');
+    assert.match(task, /MANDATORY SCHEMA PREFLIGHT/);
+    assert.match(task, /check-output-schema\.js" --schema/);
+    assert.match(task, /--value "\$candidate_file"/);
   } finally { f.cleanup(); }
 });
 
@@ -1402,6 +1417,47 @@ test('resume redispatches a run action whose persisted output is schema-incomple
     assert.equal(Number(readFileSync(f.countFile, 'utf8')), 0);
     assert.equal(skipped.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 4);
     assert.ok(readEvents(skipped.runDir).some((event) => event.type === 'step.skipped' && event.payload.stepId === 'structured'));
+  } finally { f.cleanup(); }
+});
+
+test('fanout outputSchema persists item data and resume re-runs only a schema-incomplete item', async () => {
+  const f = schemaFixture('missing-first');
+  try {
+    const doc = {
+      name: 'fanout-schema-resume', description: 'fanout schema resume', inputs: {},
+      settings: { retryAttempts: 0, concurrency: 2, escalateOnFail: false },
+      phases: [{ name: 'p', steps: [{
+        id: 'fan', type: 'fanout', items: ['alpha', 'beta'],
+        stepTemplate: {
+          lane: 'chore', prompt: 'Return structured evidence for {{item}}.',
+          outputSchema: structuredOutputSchema,
+        },
+      }] }],
+    };
+    const initial = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
+    assert.equal(initial.state.outputs.fan.ok, true);
+    assert.deepEqual(initial.state.outputs.fan.items.map((item) => item.schemaOk), [true, true]);
+    assert.deepEqual(initial.state.outputs.fan.items.map((item) => item.data), [
+      { items: ['alpha'], count: 1 },
+      { items: ['alpha'], count: 1 },
+    ]);
+
+    const statePath = join(f.bullswarmDir, 'workflows', initial.runId, 'state.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    persisted.outputs.fan.items[0].schemaOk = false;
+    persisted.outputs.fan.items[0].data = { items: 'invalid', count: 'invalid' };
+    writeFileSync(statePath, `${JSON.stringify(persisted, null, 2)}\n`);
+    writeFileSync(f.countFile, '0');
+    const events = [];
+    const resumed = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: initial.runId,
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(resumed.state.outputs.fan.items[0].schemaOk, true);
+    assert.deepEqual(resumed.state.outputs.fan.items[0].data, { items: ['alpha'], count: 1 });
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 2);
+    assert.deepEqual(events.filter((event) => event.type === 'item.skipped').map((event) => event.index), [1]);
+    assert.deepEqual(events.filter((event) => event.type === 'item.started').map((event) => event.index), [0]);
   } finally { f.cleanup(); }
 });
 
@@ -1544,4 +1600,20 @@ test('a corrective turn resends only the skeleton of the rejected proposal', () 
   assert.deepEqual(compact.completion, { when: 'all-actions-ok', reason: 'done' });
   assert.match(compact.actions[0].prompt, /\[5000 chars\]$/);
   assert.equal(compactRejectedProposal(null), null);
+});
+
+test('completion evidence rejects schema-invalid worker output', () => {
+  const actions = [
+    { id: 'producer', kind: 'run', status: 'succeeded', dependsOn: [] },
+    { id: 'verify', kind: 'verify', status: 'succeeded', dependsOn: ['producer'] },
+  ];
+  const policy = { requireSuccessfulWorker: true, requireSuccessfulVerification: true };
+  const outputs = {
+    producer: { ok: true, schemaOk: false, schemaErrors: ['items must be array'] },
+    verify: { ok: true, verify: { ok: true, concerns: [], summary: 'ok' } },
+  };
+  assert.deepEqual(completionEvidenceGaps(actions, policy, outputs), [
+    'a successful worker action',
+    'a successful verification action',
+  ]);
 });

@@ -83,10 +83,12 @@ function cli(f, args) {
 test('goal builder internalizes orchestration without requiring an initial graph', () => {
   const doc = buildGoalWorkflow({
     goal: 'Implement and verify the requested repository change.',
+    suggestedPlan: 'Discover the owned surface, implement the change, then independently verify it.',
     cwd: REPO,
     name: 'autonomous-test',
   });
   assert.equal(doc.intent.autonomous, true);
+  assert.equal(doc.intent.suggestedPlan, 'Discover the owned surface, implement the change, then independently verify it.');
   assert.deepEqual(doc.intent.requirements, [{ id: 'R1', text: 'Implement and verify the requested repository change.' }]);
   assert.equal(doc.intent.requestedOrchestrator, 'auto');
   assert.equal(doc.phases.length, 1);
@@ -139,6 +141,12 @@ test('goal requirements preserve numbered deliverables and explicit completion c
     { id: 'R1', text: 'Add outputSchema validation and schemaOk.' },
     { id: 'R2', text: 'Emit retry events and preserve resume state.' },
     { id: 'R3', text: 'Finish with focused tests and documentation.' },
+  ]);
+
+  assert.deepEqual(extractGoalRequirements('Release acceptance. 1. Inspect the entry point. 2. Exercise read-only classification. 3. Confirm integration and package dry-run evidence.'), [
+    { id: 'R1', text: 'Inspect the entry point.' },
+    { id: 'R2', text: 'Exercise read-only classification.' },
+    { id: 'R3', text: 'Confirm integration and package dry-run evidence.' },
   ]);
 });
 
@@ -345,6 +353,10 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
     assert.match(firstPlannerTask, /"remainingDispatches": 4/);
     assert.match(firstPlannerTask, /"advisoryOnly": true/);
     assert.match(firstPlannerTask, /"verificationDispatchReserve": 1/);
+    assert.match(firstPlannerTask, /"role": "preflight-scout"/);
+    assert.match(firstPlannerTask, /"completionEligible": false/);
+    assert.match(firstPlannerTask, /"preflightActionsExcludedFromCompletion": \[\s*"scout"\s*\]/);
+    assert.match(firstPlannerTask, /scout .* is evidence, never a worker/);
     assert.match(firstPlannerTask, /Budgets \(agents, duration, expansion rounds\) are advisory targets/);
     assert.match(firstPlannerTask, /Converge as targets approach/);
 

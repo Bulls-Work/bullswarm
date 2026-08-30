@@ -24,6 +24,28 @@ test('valid minimal workflow passes', () => {
   assert.deepEqual(r.warnings, []);
 });
 
+test('outputSchema is accepted only on run or fanout stepTemplate', () => {
+  const schema = { type: 'object', properties: { item: { type: 'string' } } };
+  assert.doesNotThrow(() => validateWorkflow(baseDoc({
+    phases: [{ name: 'p', steps: [{
+      id: 'fan', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: schema },
+    }] }],
+  }), { poolNames: POOLS }));
+  for (const step of [
+    { id: 'fan', type: 'fanout', items: ['one'], stepTemplate: { prompt: 'handle {{item}}' }, outputSchema: schema },
+    { id: 'verify', type: 'verify', review: 'outputs.prior.outFile', outputSchema: schema },
+  ]) {
+    const phases = step.type === 'verify'
+      ? [{ name: 'p', steps: [{ id: 'prior', type: 'run', prompt: 'work' }, step] }]
+      : [{ name: 'p', steps: [step] }];
+    assert.throws(
+      () => validateWorkflow(baseDoc({ phases }), { poolNames: POOLS }),
+      (err) => err.issues.some((issue) => issue.includes('outputSchema is only allowed on run steps')),
+    );
+  }
+});
+
 test('rejects bad lane and unknown pinned pool', () => {
   assert.throws(
     () => validateWorkflow(baseDoc({ phases: [{ name: 'p', steps: [{ id: 'a', type: 'run', lane: 'vibes', prompt: 'x' }] }] }), { poolNames: POOLS }),
@@ -91,6 +113,63 @@ test('{{item}} allowed only inside fanout stepTemplate', () => {
     () => validateWorkflow(good, { poolNames: POOLS }),
     (err) => err.issues.some((i) => i.includes('itemsFrom') || i.includes('src')),
   );
+});
+
+test('fanout itemsFrom accepts only declared inputs or bounded prior-output paths', () => {
+  const good = baseDoc({
+    inputs: { items: { default: 'alpha' } },
+    phases: [{ name: 'p', steps: [
+      { id: 'discover', type: 'run', prompt: 'discover' },
+      { id: 'from-input', type: 'fanout', itemsFrom: 'inputs.items', stepTemplate: { prompt: '{{item}}' } },
+      { id: 'from-output', type: 'fanout', itemsFrom: 'outputs.discover.data.items', stepTemplate: { prompt: '{{item}}' } },
+    ] }],
+  });
+  assert.doesNotThrow(() => validateWorkflow(good, { poolNames: POOLS }));
+
+  for (const itemsFrom of [
+    'inputs.items.extra',
+    'outputs.discover.data.items.extra',
+    'outputs.discover.unknown',
+    'outputs.self',
+  ]) {
+    const bad = baseDoc({
+      phases: [{ name: 'p', steps: [{
+        id: 'self', type: 'fanout', itemsFrom, stepTemplate: { prompt: '{{item}}' },
+      }] }],
+    });
+    assert.throws(
+      () => validateWorkflow(bad, { poolNames: POOLS }),
+      (error) => error.issues.some((issue) => issue.includes('itemsFrom')),
+      itemsFrom,
+    );
+  }
+});
+
+test('fanout itemsFrom rejects a later step even when that output id exists in the document', () => {
+  const doc = baseDoc({
+    phases: [{ name: 'p', steps: [
+      {
+        id: 'fan', type: 'fanout', itemsFrom: 'outputs.future.data.items',
+        stepTemplate: { prompt: '{{item}}' },
+      },
+      { id: 'future', type: 'run', prompt: 'produce items later' },
+    ] }],
+  });
+  assert.throws(
+    () => validateWorkflow(doc, { poolNames: POOLS }),
+    (error) => error.issues.some((issue) =>
+      issue.includes('itemsFrom "outputs.future.data.items" cannot resolve')),
+  );
+});
+
+test('fanout itemsFrom permits an exact runtime-supplied input path', () => {
+  const doc = baseDoc({
+    phases: [{ name: 'p', steps: [{
+      id: 'fan', type: 'fanout', itemsFrom: 'inputs.items',
+      stepTemplate: { prompt: '{{item}}' },
+    }] }],
+  });
+  assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: POOLS }));
 });
 
 test('undeclared input usage is a warning, not an error', () => {

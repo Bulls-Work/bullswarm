@@ -55,13 +55,15 @@ function rich({ usage, purpose, argsTitle = 'Arguments', args = [], options = []
 
 const top = rich({
   usage: 'bullswarm <command> [options]',
-  purpose: 'Route bounded work across coding-agent subscriptions (or keep it on the calling '
-    + 'agent) and verify the result before treating it as done. Reach for a specific '
-    + "command's --help for that command's full arguments, options, and defaults.",
+  purpose: 'Route work across coding-agent subscriptions and verify the result before treating '
+    + 'it as done. `bullswarm delegate` is the default agent-facing entry point: it chooses '
+    + 'one bounded agent or an autonomous workflow and previews that choice before execution. '
+    + "Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
   args: [
     { name: 'setup', desc: 'discover and configure installed coding agents' },
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
+    { name: 'delegate', desc: 'classify any task, preview the execution shape, and route it to one agent or a workflow' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, and quarantine state' },
@@ -80,6 +82,7 @@ const top = rich({
     '--help/-h/help never reads or writes state, calls a network endpoint, or spawns a process, on any command',
   ],
   examples: [
+    { cmd: 'bullswarm delegate --prompt "Fix the parser and verify the focused tests"', note: 'classify, preview, and execute through the appropriate engine' },
     { cmd: 'bullswarm setup --yes && bullswarm run --lane analyze "audit this repo for TODOs"', note: 'one-time initialization, then one bounded task' },
   ],
   next: "bullswarm <command> --help for that command's full arguments, options, and defaults.",
@@ -88,13 +91,14 @@ const top = rich({
 // --- setup --------------------------------------------------------------------
 
 const setupText = rich({
-  usage: 'bullswarm setup [--yes] [--integrate] [--agents <list>] [--json]',
+  usage: 'bullswarm setup [--yes] [--strategy] [--integrate] [--agents <list>] [--json]',
   purpose: 'Discover installed agent CLIs (codex, claude, grok, ...) and initialize local '
     + 'routing state. Without --yes on a TTY, opens the interactive wizard instead of '
     + 'applying discovered defaults automatically.',
   args: [],
   options: [
     { flag: '--yes', desc: 'skip the interactive wizard and initialize with discovered defaults', default: 'prompts on a TTY' },
+    { flag: '--strategy', desc: 'discover models, apply the recommended effort-tier routes, and enable strategy autopilot; requires --yes', default: 'off' },
     { flag: '--integrate', desc: 'also install agent integration (skill symlink + awareness block); requires --yes', default: 'off' },
     { flag: '--agents <list>', desc: 'comma-separated agent list for --integrate (codex, claude, grok)', default: 'all three' },
     { flag: '--json', desc: 'print a machine-readable result instead of human summary lines', default: 'human summary' },
@@ -129,7 +133,7 @@ const integrateText = rich({
     { flag: '--json', desc: 'machine-readable output' },
   ],
   safety: [
-    'install/remove write outside this repo, under each agent\'s home-dir config (~/.codex, ~/.claude, ~/.grok); status is read-only',
+    'install/remove write outside this repo, under each agent\'s home-dir config (~/.codex, ~/.claude, ~/.grok); status only reads integration files, though the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine',
     'install refuses to replace a non-Bullswarm file found at the same path',
     'retire-legacy renames (moves), never deletes, the legacy skill directory',
   ],
@@ -148,7 +152,7 @@ const integrateStatusText = rich({
     { flag: '--agents codex,claude,grok', desc: 'restrict the report to specific agents', default: 'all three' },
     { flag: '--json', desc: 'machine-readable output', default: 'human summary lines' },
   ],
-  safety: ['read-only: no files are written'],
+  safety: ['does not change agent integration files; the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine'],
   examples: [{ cmd: 'bullswarm integrate status --json' }],
   next: 'bullswarm integrate install --yes if anything reported is missing.',
 });
@@ -208,6 +212,40 @@ const integrateRetireLegacyText = rich({
 });
 
 // --- run ------------------------------------------------------------------------
+
+const delegateText = rich({
+  usage: 'bullswarm delegate [--mode auto|single|workflow] [--cwd <dir>] '
+    + '(--task-file <file> | --prompt <text> | <task text...>) [options]',
+  purpose: 'Provide one agent-facing interface for arbitrary self-contained work. Bullswarm '
+    + 'classifies the task as one bounded delegate or an autonomous workflow, explains the '
+    + 'decision and conceptual plan, then executes through the existing verified engines.',
+  args: [
+    { name: '<task text...>', desc: 'the task request as trailing words; mutually exclusive with --prompt and --task-file' },
+  ],
+  options: [
+    { flag: '--mode <auto|single|workflow>', desc: 'use transparent automatic classification or explicitly choose an execution shape', default: 'auto' },
+    { flag: '--cwd <dir>', desc: 'working directory for the delegate or workflow', default: 'current directory' },
+    { flag: '--task-file <file>', desc: 'read the task from a file' },
+    { flag: '--prompt <text>', desc: 'pass the task inline as one flag value' },
+    { flag: '--lane <analyze|build|chore>', desc: 'single-agent lane override; ignored for workflow mode', default: 'inferred from the task' },
+    { flag: '--plan <text>', desc: 'caller-supplied conceptual plan; persisted as workflow guidance without replacing planner ownership', default: 'generated from the classification' },
+    { flag: '--effort <high|medium|low>', desc: 'single-agent effort-tier override', default: 'derived from the selected lane' },
+    { flag: '--timeout <seconds>', desc: 'single-agent hard timeout', default: 'none' },
+    { flag: '--no-caller', desc: 'single-agent mode may not fall back to the calling agent', default: 'caller fallback allowed' },
+    { flag: '--dry-run', desc: 'print the decision, plan, and intended command without dispatching an agent', default: 'off' },
+    { flag: '--json', desc: 'print one machine-readable decision and execution envelope', default: 'human plan followed by execution summary' },
+  ],
+  safety: [
+    '--dry-run classifies only and does not dispatch a coding agent; like other non-help commands it may self-initialize Bullswarm first',
+    'single mode blocks until one delegate result passes or fails the content gate; workflow mode launches a durable background workflow and returns observation commands',
+    'automatic classification is transparent and overridable; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
+  ],
+  examples: [
+    { cmd: 'bullswarm delegate --dry-run --prompt "Explain src/workflow/result.js"', note: 'preview a likely single-agent analysis' },
+    { cmd: 'bullswarm delegate --prompt "Implement the feature, add tests, update docs, and independently verify it"', note: 'preview and launch the selected workflow' },
+  ],
+  next: 'For a single result, read the reported output file; for a workflow, use the printed watch/TUI/result commands.',
+});
 
 const runText = rich({
   usage: 'bullswarm run --lane <analyze|build|chore> --add-dir <dir> (--task-file <file> | --prompt <text> | <task text...>) [options]',
@@ -414,7 +452,7 @@ const strategyShowText = rich({
     + 'exclusions); runs a first discovery pass automatically if none is cached yet.',
   args: [],
   options: [{ flag: '--json', desc: 'print the full report as JSON', default: 'human-readable summary' }],
-  safety: ['read path is safe; a cold cache triggers the same discovery I/O as refresh'],
+  safety: ['does not change approved routing assignments; a cold cache runs model discovery and persists the resulting strategy report'],
   examples: [{ cmd: 'bullswarm strategy show --json' }],
   next: 'bullswarm strategy assign <tier> --pool <pool> --model <model> to override a suggestion.',
 });
@@ -429,7 +467,7 @@ const strategyAssignText = rich({
     { flag: '--model <model>', desc: 'exact model identifier to assign', default: 'required; no default' },
   ],
   safety: ['writes state.strategy.assignments[tier] and invalidates the cached report'],
-  examples: [{ cmd: 'bullswarm strategy assign high --pool claude --model claude-opus-5' }],
+  examples: [{ cmd: 'bullswarm strategy assign high --pool claude-code --model claude-opus-5' }],
   next: 'bullswarm strategy clear-assignment high to release the pin later.',
 });
 
@@ -590,6 +628,7 @@ const workflowGoalText = rich({
     { flag: '--orchestrator-model <model|auto>', desc: 'pin the exact model used by the autonomous planner; only pools that can guarantee this model remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, fan-out items, repairs, and verifiers, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--suggested-plan <text>', desc: 'persist a caller-imagined conceptual execution shape in intent for the planner to consider; it does not author or bypass the validated graph', default: 'none' },
     { flag: '--max-agents <n>', desc: 'planning target for total dispatched agents (soft, not a hard stop)', default: '30 (max 500)' },
     { flag: '--max-expansion-rounds <n>', desc: 'planning target for planner replanning rounds', default: '8 (max 50)' },
     { flag: '--max-actions <n>', desc: 'planning target for total dispatched actions', default: '40 (max 1000)' },
@@ -1090,7 +1129,7 @@ const workflowDraftSetText = rich({
     { flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' },
   ],
   safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft set audit-repo description "Audit repo for TODOs"' }],
+  examples: [{ cmd: 'bullswarm workflow draft set audit-repo description --value "Audit repo for TODOs"' }],
   next: 'bullswarm workflow draft show audit-repo to confirm.',
 });
 
@@ -1162,6 +1201,7 @@ const HELP = {
     'retire-legacy': { _text: integrateRetireLegacyText },
   },
   run: { _text: runText },
+  delegate: { _text: delegateText },
   health: { _text: healthText },
   pools: { _text: poolsText },
   doctor: { _text: doctorText },
@@ -1216,12 +1256,14 @@ HELP.runs = HELP.workflow.runs;
 export const HELP_PATHS = Object.freeze(collectPaths(HELP));
 
 export function helpForArgs(argv) {
-  const wantsHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help';
+  const positionalHelp = argv.at(-1) === 'help';
+  const wantsHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help' || positionalHelp;
   if (!wantsHelp) return null;
+  if (argv.includes('--version')) return HELP.version._text;
   const tokens = argv[0] === 'help' ? argv.slice(1) : argv;
   let node = HELP;
   for (const token of tokens) {
-    if (token === '--help' || token === '-h' || token.startsWith('-')) continue;
+    if (token === 'help' || token === '--help' || token === '-h' || token.startsWith('-')) continue;
     if (!node[token]) break;
     node = node[token];
   }

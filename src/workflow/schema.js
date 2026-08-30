@@ -1,5 +1,6 @@
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
 const KEYWORDS = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'minItems', 'maxItems', 'enum', 'minimum', 'maximum', 'minLength', 'pattern', 'description']);
+const hasOwn = (value, key) => Object.hasOwn(value, key);
 
 function matches(value, type) {
   if (type === 'null') return value === null;
@@ -11,34 +12,34 @@ function matches(value, type) {
 }
 
 function validateNode(value, schema, path, errors) {
-  if (schema.type !== undefined) {
+  if (hasOwn(schema, 'type')) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
     if (!types.some((type) => matches(value, type))) {
       errors.push(`${path || 'value'} must be ${types.join('|')}`);
       return;
     }
   }
-  if (schema.enum !== undefined && !schema.enum.some((candidate) => Object.is(candidate, value))) errors.push(`${path || 'value'} must be one of ${JSON.stringify(schema.enum)}`);
+  if (hasOwn(schema, 'enum') && !schema.enum.some((candidate) => Object.is(candidate, value))) errors.push(`${path || 'value'} must be one of ${JSON.stringify(schema.enum)}`);
   if (typeof value === 'string') {
-    if (schema.minLength !== undefined && value.length < schema.minLength) errors.push(`${path || 'value'} must have at least ${schema.minLength} characters`);
-    if (schema.pattern !== undefined && !(new RegExp(schema.pattern)).test(value)) errors.push(`${path || 'value'} must match pattern ${JSON.stringify(schema.pattern)}`);
+    if (hasOwn(schema, 'minLength') && value.length < schema.minLength) errors.push(`${path || 'value'} must have at least ${schema.minLength} characters`);
+    if (hasOwn(schema, 'pattern') && !(new RegExp(schema.pattern)).test(value)) errors.push(`${path || 'value'} must match pattern ${JSON.stringify(schema.pattern)}`);
   }
   if (typeof value === 'number' && Number.isFinite(value)) {
-    if (schema.minimum !== undefined && value < schema.minimum) errors.push(`${path || 'value'} must be at least ${schema.minimum}`);
-    if (schema.maximum !== undefined && value > schema.maximum) errors.push(`${path || 'value'} must be at most ${schema.maximum}`);
+    if (hasOwn(schema, 'minimum') && value < schema.minimum) errors.push(`${path || 'value'} must be at least ${schema.minimum}`);
+    if (hasOwn(schema, 'maximum') && value > schema.maximum) errors.push(`${path || 'value'} must be at most ${schema.maximum}`);
   }
   if (Array.isArray(value)) {
-    if (schema.minItems !== undefined && value.length < schema.minItems) errors.push(`${path || 'value'} must contain at least ${schema.minItems} items`);
-    if (schema.maxItems !== undefined && value.length > schema.maxItems) errors.push(`${path || 'value'} must contain at most ${schema.maxItems} items`);
-    if (schema.items) value.forEach((item, index) => validateNode(item, schema.items, `${path}[${index}]`, errors));
+    if (hasOwn(schema, 'minItems') && value.length < schema.minItems) errors.push(`${path || 'value'} must contain at least ${schema.minItems} items`);
+    if (hasOwn(schema, 'maxItems') && value.length > schema.maxItems) errors.push(`${path || 'value'} must contain at most ${schema.maxItems} items`);
+    if (hasOwn(schema, 'items')) value.forEach((item, index) => validateNode(item, schema.items, `${path}[${index}]`, errors));
   }
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const properties = schema.properties ?? {};
+    const properties = hasOwn(schema, 'properties') ? schema.properties : {};
     // Own properties only: `in` would count inherited names (toString,
     // constructor, __proto__) as present or as declared.
-    for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) errors.push(`${path ? `${path}.` : ''}${key} is required`);
+    for (const key of (hasOwn(schema, 'required') ? schema.required : [])) if (!Object.hasOwn(value, key)) errors.push(`${path ? `${path}.` : ''}${key} is required`);
     for (const [key, child] of Object.entries(properties)) if (Object.hasOwn(value, key)) validateNode(value[key], child, `${path ? `${path}.` : ''}${key}`, errors);
-    if (schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(properties, key)) errors.push(`${path ? `${path}.` : ''}${key} is not allowed`);
+    if (hasOwn(schema, 'additionalProperties') && schema.additionalProperties === false) for (const key of Object.keys(value)) if (!Object.hasOwn(properties, key)) errors.push(`${path ? `${path}.` : ''}${key} is not allowed`);
   }
 }
 
@@ -46,23 +47,23 @@ function schemaIssues(schema, path = 'schema') {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return [`${path} must be an object`];
   const issues = [];
   for (const key of Object.keys(schema)) if (!KEYWORDS.has(key)) issues.push(`${path}.${key} is an unknown keyword`);
-  if (schema.type !== undefined) {
+  if (hasOwn(schema, 'type')) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
     if (!types.length || types.some((type) => !TYPES.has(type))) issues.push(`${path}.type must be a supported type or array of supported types`);
   }
-  if (schema.properties !== undefined && (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties))) issues.push(`${path}.properties must be an object`);
-  else for (const [key, child] of Object.entries(schema.properties ?? {})) issues.push(...schemaIssues(child, `${path}.properties.${key}`));
-  if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== 'string'))) issues.push(`${path}.required must be an array of strings`);
-  if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') issues.push(`${path}.additionalProperties must be a boolean`);
-  if (schema.items !== undefined) issues.push(...schemaIssues(schema.items, `${path}.items`));
-  if (schema.enum !== undefined && !Array.isArray(schema.enum)) issues.push(`${path}.enum must be an array`);
-  for (const key of ['minItems', 'maxItems', 'minLength']) if (schema[key] !== undefined && (!Number.isInteger(schema[key]) || schema[key] < 0)) issues.push(`${path}.${key} must be a non-negative integer`);
-  for (const key of ['minimum', 'maximum']) if (schema[key] !== undefined && (typeof schema[key] !== 'number' || !Number.isFinite(schema[key]))) issues.push(`${path}.${key} must be a finite number`);
-  if (schema.pattern !== undefined) {
+  if (hasOwn(schema, 'properties') && (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties))) issues.push(`${path}.properties must be an object`);
+  else for (const [key, child] of Object.entries(hasOwn(schema, 'properties') ? schema.properties : {})) issues.push(...schemaIssues(child, `${path}.properties.${key}`));
+  if (hasOwn(schema, 'required') && (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== 'string'))) issues.push(`${path}.required must be an array of strings`);
+  if (hasOwn(schema, 'additionalProperties') && typeof schema.additionalProperties !== 'boolean') issues.push(`${path}.additionalProperties must be a boolean`);
+  if (hasOwn(schema, 'items')) issues.push(...schemaIssues(schema.items, `${path}.items`));
+  if (hasOwn(schema, 'enum') && !Array.isArray(schema.enum)) issues.push(`${path}.enum must be an array`);
+  for (const key of ['minItems', 'maxItems', 'minLength']) if (hasOwn(schema, key) && (!Number.isInteger(schema[key]) || schema[key] < 0)) issues.push(`${path}.${key} must be a non-negative integer`);
+  for (const key of ['minimum', 'maximum']) if (hasOwn(schema, key) && (typeof schema[key] !== 'number' || !Number.isFinite(schema[key]))) issues.push(`${path}.${key} must be a finite number`);
+  if (hasOwn(schema, 'pattern')) {
     if (typeof schema.pattern !== 'string') issues.push(`${path}.pattern must be a string`);
     else try { new RegExp(schema.pattern); } catch (err) { issues.push(`${path}.pattern is not a valid regex: ${err.message}`); }
   }
-  if (schema.description !== undefined && typeof schema.description !== 'string') issues.push(`${path}.description must be a string`);
+  if (hasOwn(schema, 'description') && typeof schema.description !== 'string') issues.push(`${path}.description must be a string`);
   return issues;
 }
 

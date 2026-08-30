@@ -1,0 +1,7 @@
+interface:
+  display_name: "Bullswarm"
+  short_description: "Choose one agent or a verified workflow"
+  default_prompt: "Use $bullswarm to classify, preview, and execute this task with the smallest reliable agent setup."
+
+policy:
+  allow_implicit_invocation: true

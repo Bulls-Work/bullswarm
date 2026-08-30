@@ -34,6 +34,8 @@ test('integration installs one canonical skill and awareness rule for every agen
       assert.equal(awarenessBlockPresent(entry.instructionsPath), true);
       const instructions = readFileSync(entry.instructionsPath, 'utf8');
       assert.match(instructions, /read the `bullswarm` skill/);
+      assert.match(instructions, /`bullswarm delegate`/);
+      assert.match(instructions, /conceptual plan/);
       assert.match(instructions, /BULLSWARM_DEPTH/);
     }
     assert.match(readFileSync(join(SKILL_SOURCE, 'SKILL.md'), 'utf8'), /name: bullswarm\n/);

@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { validateWorkflow, WorkflowValidationError } from '../src/workflow/validate.js';
 import { runWorkflow } from '../src/workflow/runner.js';
 import { Semaphore } from '../src/workflow/semaphore.js';
-import { plannerBudgetContext } from '../src/workflow/runtime.js';
+import { plannerBudgetContext, preferPoolsWithCapacity } from '../src/workflow/runtime.js';
 import { WorkflowTui } from '../src/workflow/tui.js';
 import { loadState, saveState, quarantinePool, DEPTH_ENV } from '../src/lib/state.js';
 
@@ -139,6 +139,22 @@ test('G4: Semaphore never leaks permits on exception', async () => {
   // A second caller can still acquire after the throw.
   const r = await sem.runWith(async () => 42);
   assert.equal(r, 42);
+});
+
+test('ready siblings prefer another pool when a connector reaches its soft concurrency', () => {
+  const pools = [
+    { name: 'cheap', connector: { preferredConcurrency: 1 } },
+    { name: 'fallback', connector: {} },
+  ];
+  assert.deepEqual(
+    preferPoolsWithCapacity(pools, new Map([['cheap', 1]])).map((pool) => pool.name),
+    ['fallback'],
+  );
+  assert.deepEqual(
+    preferPoolsWithCapacity([{ name: 'only', connector: { preferredConcurrency: 1 } }], new Map([['only', 1]])).map((pool) => pool.name),
+    ['only'],
+    'soft capacity must not manufacture a no-pool failure when no alternative exists',
+  );
 });
 
 // -------------------------------------------------------------------------
@@ -1138,6 +1154,41 @@ test('data-backed fanout uses the recorded array without extraction or retry dis
   }
 });
 
+test('fanout preserves outputSchema text while rendering the item prompt', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const worker = join(dir, 'schema-template-worker.mjs');
+    writeFileSync(worker, 'process.stdout.write(JSON.stringify({ item: "alpha" }));\n');
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'), pools: echoOnlyPools(dir, worker), inputs: {},
+      doc: {
+        name: 'schema-template-source', description: 'preserve schema source', inputs: {},
+        settings: { concurrency: 1, escalateOnFail: false },
+        phases: [{ name: 'p', steps: [{
+          id: 'fan', type: 'fanout', items: ['alpha'],
+          stepTemplate: {
+            prompt: 'Handle {{item}}.',
+            outputSchema: {
+              type: 'object',
+              description: 'result for {{item}}',
+              properties: { item: { type: 'string', description: 'literal {{item}} token' } },
+              required: ['item'], additionalProperties: false,
+            },
+          },
+        }] }],
+      },
+    });
+    assert.equal(result.state.outputs.fan.ok, true);
+    const attempt = result.state.attempts.find((entry) => entry.actionId === 'fan[0]');
+    const task = readFileSync(attempt.taskFile, 'utf8');
+    assert.match(task, /Handle alpha\./);
+    assert.match(task, /"description":"result for \{\{item\}\}"/);
+    assert.match(task, /"description":"literal \{\{item\}\} token"/);
+  } finally {
+    cleanup();
+  }
+});
+
 test('validateDecisionProposal rejects invalid outputSchema placements and accepts valid run and fanout schemas', async () => {
   const { validateDecisionProposal, normalizeDecisionProposal } = await import('../src/workflow/decision.js');
   const base = {
@@ -1163,6 +1214,13 @@ test('validateDecisionProposal rejects invalid outputSchema placements and accep
     }] }),
     (err) => err.issues.some((issue) => issue.includes('outputSchema.type must be "object"')),
   );
+  assert.throws(
+    () => validateDecisionProposal({ ...base, actions: [{
+      id: 'bad-fan-schema', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: { type: 'object', unknownKeyword: true } },
+    }] }),
+    (err) => err.issues.filter((issue) => issue.includes('unknownKeyword')).length === 1,
+  );
 
   const validRunSchema = { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] };
   const validFanoutSchema = { type: 'object', properties: { file: { type: 'string' } } };
@@ -1176,4 +1234,14 @@ test('validateDecisionProposal rejects invalid outputSchema placements and accep
   const accepted = validateDecisionProposal(normalized);
   assert.deepEqual(accepted.actions[0].outputSchema, validRunSchema);
   assert.deepEqual(accepted.actions[1].stepTemplate.outputSchema, validFanoutSchema);
+
+  const optionalNulls = validateDecisionProposal(normalizeDecisionProposal({ ...base, actions: [
+    { id: 'plain-run', type: 'run', prompt: 'run', outputSchema: null },
+    {
+      id: 'plain-fan', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: null },
+    },
+  ] }));
+  assert.equal(Object.hasOwn(optionalNulls.actions[0], 'outputSchema'), false);
+  assert.equal(Object.hasOwn(optionalNulls.actions[1].stepTemplate, 'outputSchema'), false);
 });

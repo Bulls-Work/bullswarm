@@ -10,16 +10,16 @@ const MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:/~-]*$/;
 
 export const PLANNER_RULES_SECTION = [
   '1. Compile the whole program in one decision: the runtime runs every proposed action and consults you only at a finished-or-blocked boundary, so deferred work costs a round trip.',
-  '2. Make every worker prompt self-contained: include the exact goal, absolute cwd, the owned files you assign (exactly one owner per file, including any existing test the change breaks; never an and/or choice, which blocks a sibling) and a no-other-files boundary, expected artifact, acceptance command and report format: workers see only their own prompt.',
-  '3. A phase is a pipeline stage: one kebab-case name shared by its actions (implement, verify), never one per action; phases are forward-only, so recovery opens a new one and never repeats an identical failed plan. Wall-clock is the longest dependsOn chain, so depend only on real data or same-file ordering: a worker depends on the run that wrote its input files, never on that run\'s verify (a verdict is not data), so it starts as that verify runs.',
-  '4. Split only when parallel time saved repays dispatch cost. Give substantial file-disjoint units concurrent workers and focused verifies, but batch cheap homogeneous edits into one worker owning all named files and one final verify; never pay one worker plus verifier per tiny file. A verify judges its review artifact (default: last dependency; none: repository).',
+  '2. Each worker sees only its prompt. Include the exact goal, cwd, exactly one owner per file (including affected tests), a no-other-files boundary, expected artifact, acceptance command and report format. Avoid and/or ownership. Bullswarm captures the final response; never tell a worker to write a Bullswarm outFile or workflow path.',
+  '3. A phase is a pipeline stage: one shared kebab-case name, never one per action. Phases move forward; recovery uses a new name. Depend only on real data or same-file ordering: depend on the run that wrote an input, never its verify (a verdict is not data), so siblings start early.',
+  '4. Split only when parallel time saved repays dispatch cost. Run substantial file-disjoint units concurrently, but batch cheap homogeneous edits. For one consolidated read-only audit or evidence report, use one worker; never add lossy consolidation. When changes are conditional on evidence and the scout is green, the first program MUST remain read-only: audit and verify, then repair later only if evidence proves a defect. A verify judges its review artifact (default: last dependency; none: repository).',
   '5. For unknown items, create discovery ending with RETURN ONLY a JSON object containing an items array, then data-driven fan-out via itemsFrom outputs.<id>.outFile or outputs.<id>.data.<field>; the runtime extracts the list, retrying once read-only if needed.',
   '6. Put outputSchema only on a worker whose object a LATER action reads via itemsFrom or outputs.<id>.data.<field>, and tell it to RETURN ONLY the object; a prose report or any answer with fenced JSON gets no schema: the runtime parses the last {...} of the text, so a schema on prose costs a retry and a planner turn.',
   '7. Put verify.repair on every verify. ok:false means unusable: the goal\'s acceptance command fails, a deliverable is missing, or the answer is nonsense; everything else is a concern under ok:true (style, cosmetic mismatches, later-scheduled work, files other actions changed, and any process rule the goal does not state such as append-only or tests untouched). ok:false is repaired and re-checked inside the program; the repair edits only its unit\'s files and cannot rewrite the answer under review, so report a wrong claim as a concern with the true value.',
-  '8. Every verify declares covers:["R1",...] from intent.requirements. Before completion, successful verifies must cover every requirement with runtime evidence against the ORIGINAL goal, not a reduced plan. Add completion with all-actions-ok when that verified program finishes the goal; return complete rather than adding polish. The program\'s LAST worker must be covered by a successful verify. Never proceed, never ask the user, and stop only for a concrete unresolved blocker.',
+  '8. Every verify declares covers:["R1",...]. The scout (role preflight-scout, completionEligible false) is evidence, never a worker; the first program needs a run/fanout and its verify. Verifies must cover every ORIGINAL requirement with runtime evidence. Add completion with all-actions-ok when done; return complete, not polish. The LAST worker must be verified. Never proceed or ask the user; stop only for a concrete blocker.',
   '9. Budgets (agents, duration, expansion rounds) are advisory targets, never hard stops; the dispatch budget counts this planner call plus workers, verifiers and retries. Converge as targets approach: skip optional work; exceed a target only for one essential action or a required verification.',
   '10. Never propose pool, model, addDir, taskFile or unbounded work: routing is the runtime\'s. Set lane (analyze to read or judge, build to edit, chore for mechanical steps) and effort (low for checks and mechanical edits, high where judgement decides) per action or repair; they pick the model tier (unset: build, medium).',
-  'Shared tree: run substantial DISJOINT units concurrently; order shared files after feeders with dependsOn. Workers and unit verifies use focused commands, never the full suite while siblings write; run the suite once in the final verify after edits and repairs. Reuse it unless code changed. operatorSteering applies within the original intent and cannot weaken verification or expand authority.',
+  'Shared tree: run substantial DISJOINT units concurrently; order shared files after feeders with dependsOn. Workers and unit verifies use focused commands; run the suite once in the final verify. Do not add a separate verifier for a small shared integration step: make the final verify depend on and judge it. Reuse the suite unless code changed. operatorSteering cannot weaken verification or expand authority.',
 ].join('\n');
 
 export const PLANNER_EXAMPLES_SECTION = [
@@ -52,6 +52,16 @@ export function extractGoalRequirements(goal) {
     }
   }
   if (current) numbered.push(current);
+  if (!numbered.length) {
+    const markers = [...text.matchAll(/(?:^|\s)(\d+)[.)]\s+/g)];
+    for (let index = 0; index < markers.length; index += 1) {
+      const marker = markers[index];
+      const start = marker.index + marker[0].length;
+      const end = markers[index + 1]?.index ?? text.length;
+      const requirement = text.slice(start, end).trim();
+      if (requirement) numbered.push({ number: marker[1], text: requirement });
+    }
+  }
   const requirements = numbered.map((entry, index) => ({
     id: `R${index + 1}`,
     text: compactRequirement(entry.text),
@@ -112,6 +122,7 @@ function positiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER }
 
 export function buildGoalWorkflow({
   goal,
+  suggestedPlan = null,
   cwd = process.cwd(),
   orchestrator = null,
   strictOrchestrator = false,
@@ -125,6 +136,9 @@ export function buildGoalWorkflow({
 } = {}) {
   if (typeof goal !== 'string' || !goal.trim()) {
     throw new Error('goal text is required');
+  }
+  if (suggestedPlan != null && (typeof suggestedPlan !== 'string' || !suggestedPlan.trim())) {
+    throw new Error('suggestedPlan must be a non-empty string when provided');
   }
   if (orchestrator != null && (typeof orchestrator !== 'string' || !NAME_RE.test(orchestrator))) {
     throw new Error(`invalid orchestrator pool "${orchestrator}"`);
@@ -169,6 +183,7 @@ export function buildGoalWorkflow({
     intent: {
       goal: goal.trim(),
       requirements: extractGoalRequirements(goal),
+      ...(suggestedPlan ? { suggestedPlan: suggestedPlan.trim() } : {}),
       cwd: targetDir,
       autonomous: true,
       requestedOrchestrator: orchestrator ?? 'auto',

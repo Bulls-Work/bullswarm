@@ -68,6 +68,16 @@ test('curly-apostrophe intent announcements are not mistaken for completed work'
   assert.equal(judgeContent(output).verdict, 'intent_only');
 });
 
+test('an announcement line does not hide substantive result bullets', () => {
+  const output = [
+    'I’ll inspect `package.json` and return only the three requested facts.',
+    '- Package name: `bullswarm`',
+    '- Version: `0.19.0`',
+    '- Supported Node engine: `>=18`',
+  ].join('\n');
+  assert.equal(judgeContent(output).verdict, 'pass');
+});
+
 test('substantive report may explain unauthorized matching near its head', () => {
   const output = "I'll inspect the requested files. Source text that contains `unauthorized` is not treated as a provider auth failure. The watch layer distinguishes structured transcript content from error-shaped provider diagnostics, and the content gate only rejects a standalone auth failure at the output start. Both behaviors were verified against the named source files.";
   assert.equal(judgeContent(output).verdict, 'pass');
