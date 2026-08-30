@@ -183,6 +183,12 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
     assert.match(completedOverview, /No agents running · workflow finished/);
     assert.match(completedOverview, /Workflow finished · result ready/);
     assert.doesNotMatch(completedOverview, /workflow is terminal|stable result envelope/);
+    state.status = 'completed_with_concerns';
+    state.outcome = { concerns: ['one', 'two'] };
+    writeFileSync(statePath, JSON.stringify(state));
+    const concernsOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
+    assert.match(concernsOverview, /No agents running · workflow finished with 2 concerns/);
+    assert.match(concernsOverview, /Workflow finished with 2 concerns · review 2 concerns in result/);
     state.status = 'blocked';
     writeFileSync(statePath, JSON.stringify(state));
     const blockedOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
@@ -675,4 +681,33 @@ test('timeline calls dependency-blocked phases skipped and excludes stale comple
   assert.match(screen, /Live · 1 running · 1 waiting/);
   assert.match(screen, /repair · opencode2 · luna/);
   assert.doesNotMatch(screen, /verify-docs · opencode2/);
+});
+
+test('auto-follow starts at a timestamped milestone instead of an orphaned detail row', () => {
+  const base = Date.parse('2026-08-30T03:00:00.000Z');
+  const actions = Array.from({ length: 8 }, (_, index) => ({
+    id: `work-${index}`, phase: `g:phase-${index}`, kind: 'run', status: 'succeeded',
+    startedAt: new Date(base + index * 120_000).toISOString(),
+    finishedAt: new Date(base + index * 120_000 + 60_000).toISOString(),
+    attempts: [index],
+  }));
+  const state = {
+    runId: 'wf-scroll', shortId: 'scr234', workflow: 'scroll-test', status: 'running',
+    startedAt: new Date(base).toISOString(),
+    intent: { autonomous: true, goal: 'Render enough milestones to scroll.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
+    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
+    actionLedger: actions,
+    attempts: actions.map((action) => ({
+      actionId: action.id, status: 'succeeded', startedAt: action.startedAt, finishedAt: action.finishedAt,
+    })),
+    outputs: Object.fromEntries(actions.map((action) => [action.id, { ok: true }])),
+    activeAgents: {}, _doc: { phases: [] },
+  };
+  const plain = renderWorkflowTui({ state, events: [] }, { width: 80, height: 22 })
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  const rows = plain.split('\n');
+  const marker = rows.findIndex((line) => line.includes('earlier timeline rows'));
+  assert.ok(marker >= 0, plain);
+  assert.match(rows[marker + 1], /│\d{2}:\d{2}\s/);
 });

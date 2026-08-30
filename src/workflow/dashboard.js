@@ -559,13 +559,18 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
   const timelineRows = Math.max(1, contentRows - liveRows - nextRows);
   const maxTimelineScroll = Math.max(0, timeline.lines.length - timelineRows);
   const scroll = clamp(timelineScroll, 0, maxTimelineScroll);
-  const start = Math.max(0, timeline.lines.length - timelineRows - scroll);
-  let visibleTimeline = timeline.lines.slice(start, start + timelineRows);
-  if (start > 0 && visibleTimeline.length) {
-    visibleTimeline[0] = dimText(`↑ ${start + 1} earlier timeline rows`, inner);
+  let start = Math.max(0, timeline.lines.length - timelineRows - scroll);
+  if (start > 0) {
+    while (start < timeline.lines.length && !/^\d{2}:\d{2}\s/.test(timeline.lines[start])) start += 1;
   }
-  if (start + timelineRows < timeline.lines.length && visibleTimeline.length) {
-    visibleTimeline[visibleTimeline.length - 1] = dimText(`↓ ${timeline.lines.length - start - timelineRows + 1} newer timeline rows`, inner);
+  const historyRows = start > 0 ? Math.max(0, timelineRows - 1) : timelineRows;
+  let visibleTimeline = timeline.lines.slice(start, start + historyRows);
+  if (start > 0) {
+    visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
+  }
+  const end = start + historyRows;
+  if (end < timeline.lines.length && visibleTimeline.length) {
+    visibleTimeline[visibleTimeline.length - 1] = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, inner);
   }
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);
@@ -784,14 +789,16 @@ function workflowLiveLines(model, width, spinnerFrame) {
     lines.push('');
   }
   if (!lines.length) lines.push(state.finishedAt
-    ? `${statusIcon(state.status)} No agents running · ${terminalWorkflowLabel(state.status)}`
+    ? `${statusIcon(state.status)} No agents running · ${terminalWorkflowLabel(state.status, state.outcome?.concerns?.length)}`
     : '⧖ Waiting for the next dispatch');
   return { lines, running, waiting };
 }
 
-function terminalWorkflowLabel(status) {
+function terminalWorkflowLabel(status, concernCount = 0) {
   if (status === 'completed') return 'workflow finished';
-  if (status === 'completed_with_concerns') return 'workflow finished with concerns';
+  if (status === 'completed_with_concerns') return concernCount
+    ? `workflow finished with ${concernCount} concern${concernCount === 1 ? '' : 's'}`
+    : 'workflow finished with concerns';
   if (status === 'blocked') return 'workflow stopped with blockers';
   if (status === 'failed') return 'workflow failed';
   if (status === 'cancelled') return 'workflow cancelled';
@@ -802,14 +809,17 @@ function terminalWorkflowLabel(status) {
 function workflowNextLines(model, width) {
   const { state, orchestrator } = model;
   if (state.finishedAt) {
-    const next = state.status === 'completed' || state.status === 'completed_with_concerns'
+    const concernCount = state.outcome?.concerns?.length ?? 0;
+    const next = state.status === 'completed'
       ? 'result ready'
+      : state.status === 'completed_with_concerns'
+        ? concernCount ? `review ${concernCount} concern${concernCount === 1 ? '' : 's'} in result` : 'review concerns in result'
       : state.status === 'blocked' ? 'review blockers and partial work'
         : state.status === 'failed' ? 'inspect the failure before using partial work'
           : state.status === 'cancelled' ? 'review any partial work'
             : state.status === 'interrupted' ? 'resume the workflow or inspect partial work'
               : 'inspect the workflow result';
-    const label = terminalWorkflowLabel(state.status);
+    const label = terminalWorkflowLabel(state.status, concernCount);
     return [truncate(`${statusIcon(state.status)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
   }
   const ledger = state.actionLedger ?? [];
