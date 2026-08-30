@@ -550,6 +550,7 @@ test('exported planner prompt sections contain the bounded contract and literal 
   for (const keyword of ['completion', 'repair', 'itemsFrom', 'outputSchema', 'dependsOn', 'phase', 'pool', 'lane', 'effort', 'verdict is not data', 'batch cheap homogeneous edits', 'RETURN ONLY the object', 'pipeline stage', 'never one per action', 'process rule the goal does not state', 'exactly one owner per file', 'ok:false means unusable']) {
     assert.match(PLANNER_RULES_SECTION, new RegExp(keyword));
   }
+  assert.match(PLANNER_RULES_SECTION, /final verify also judge a small shared integration step/);
   assert.match(PLANNER_EXAMPLES_SECTION, /Action shapes:/);
   assert.match(PLANNER_EXAMPLES_SECTION, /Complete program \(tests depend on fix, not verify-fix/);
   assert.match(PLANNER_EXAMPLES_SECTION, /\{\{item\}\}/);
