@@ -25,6 +25,8 @@
   "$comment-exit1": "known failure mode: writes a complete correct answer, then dies with a Console-sync auth error and exit 1. The verdict sets contentUsableDespiteExit instead of discarding the work.",
   "meter": { "type": "none" },
   "costRank": 1,
+  "preferredConcurrency": 1,
+  "$comment-preferredConcurrency": "OpenCode's shared local/provider session can terminate sibling headless runs together under parallel load. Prefer one in-flight OpenCode worker and route other ready siblings to healthy pools; if no alternative is eligible, availability wins and OpenCode may still be used.",
   "lanes": ["analyze", "build", "chore"],
   "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
   "modelDiscovery": { "cmd": ["opencode", "models"], "parse": "lines", "includePattern": "^[^\\s]+/[^\\s]+$", "timeoutMs": 20000, "maxModels": 250 },

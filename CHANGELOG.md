@@ -14,6 +14,10 @@
   requires the first program to contain a real delivery worker plus its
   verifier, preventing an apparently complete scout report from causing a
   rejected completion and redundant recovery round.
+- Ready siblings now honor a connector-owned soft concurrency preference. The
+  OpenCode route prefers one in-flight worker, so additional parallel work is
+  spread across healthy subscriptions instead of risking correlated headless
+  session exits; a lone eligible pool still runs rather than failing capacity.
 - Agent integration upgrades its managed awareness marker to advertise the
   common interface consistently across Codex, Claude, and Grok.
 - Classification now understands negated and instructional mutation language,
