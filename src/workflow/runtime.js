@@ -56,6 +56,25 @@ export const BURST_WAIT_GRACE_MS = 10 * 60_000;
 export const BURST_WAIT_UNKNOWN_RESET_MS = 5 * 3600_000;
 export const QUOTA_POLL_MS = 60_000;
 
+export function enforceVerifyRequirementCoverage(parsed, requiredCoverage = []) {
+  if (!parsed || !requiredCoverage.length) return { parsed, concerns: [] };
+  const normalized = { ...parsed };
+  normalized.requirements = parsed.requirements && typeof parsed.requirements === 'object'
+    ? parsed.requirements : {};
+  const concerns = [];
+  for (const requirement of requiredCoverage) {
+    const evidence = normalized.requirements[requirement.id];
+    if (!evidence || evidence.ok !== true || typeof evidence.evidence !== 'string' || !evidence.evidence.trim()) {
+      concerns.push(`${requirement.id} lacks passing, specific verification evidence: ${requirement.text}`);
+    }
+  }
+  if (concerns.length) {
+    normalized.ok = false;
+    normalized.concerns = [...new Set([...(Array.isArray(parsed.concerns) ? parsed.concerns : []), ...concerns])];
+  }
+  return { parsed: normalized, concerns };
+}
+
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
   const rawTarget = budget.dispatchTarget ?? budget.dispatchLimit;
@@ -239,6 +258,7 @@ export class WorkflowRuntime {
         parentId: opts.itemIndex == null ? (step.parentId ?? null) : step.id,
         kind: opts.itemIndex == null ? step.type : 'run',
         dependsOn: [...(step.dependsOn ?? [])],
+        ...(step.type === 'verify' && Array.isArray(step.covers) ? { covers: [...step.covers] } : {}),
         status: 'queued',
         phase: opts.phase ?? null,
         item: opts.item,
@@ -1127,6 +1147,22 @@ export class WorkflowRuntime {
     })();
 
     const reverify = step._reverify && typeof step._reverify === 'object' ? step._reverify : null;
+    const requiredCoverage = Array.isArray(step.covers)
+      ? step.covers.map((id) => this.state.intent?.requirements?.find((entry) => entry.id === id)).filter(Boolean)
+      : [];
+    const coverageVerdictShape = requiredCoverage.length
+      ? JSON.stringify(Object.fromEntries(requiredCoverage.map((entry) => [entry.id, { ok: true, evidence: 'specific evidence' }])))
+      : null;
+    const coverageContract = requiredCoverage.length ? [
+      '',
+      'ORIGINAL USER GOAL (runtime-owned; it overrides any narrower planner or worker scope):',
+      this.state.intent?.goal ?? '(goal unavailable)',
+      '',
+      'REQUIRED COVERAGE FOR THIS VERIFIER:',
+      ...requiredCoverage.map((entry) => `- ${entry.id}: ${entry.text}`),
+      'A missing explicitly required deliverable is unusable and MUST produce ok:false.',
+      'For every ID above, include requirements.<ID> = {"ok":true|false,"evidence":"specific file, symbol, command, or observed result"}. Empty or generic evidence is invalid.',
+    ] : [];
     const reviewInstructions = [
       step.prompt ?? 'You are a skeptical reviewer. Independently inspect the work and its current repository state.',
       ...(reverify ? [
@@ -1139,9 +1175,12 @@ export class WorkflowRuntime {
       ] : []),
       '',
       'Acceptance standard (runtime-owned; it overrides any stricter rule in the instructions above): ok:false means the work is unusable: its acceptance command fails, a required deliverable is missing, or the answer is nonsense or contradicts its own evidence. Everything else goes in concerns under ok:true: style, wording, scope, cosmetic mismatches, process rules the goal never stated (append-only, diff size), and files changed by other actions that share this working tree, which are never this unit\'s defect. Never reject for something the goal does not require.',
+      ...coverageContract,
       '',
       'RETURN ONLY a single JSON object of the form',
-      '{"ok": <true|false>, "concerns": [<string>...], "summary": <string>}.',
+      requiredCoverage.length
+        ? `{"ok": <true|false>, "concerns": [<string>...], "summary": <string>, "requirements": ${coverageVerdictShape}}.`
+        : '{"ok": <true|false>, "concerns": [<string>...], "summary": <string>}.',
       'No prose and no markdown fences. Set ok by the acceptance standard above: true unless the work is unusable.',
     ].join('\n');
     // Only the reviewer INSTRUCTIONS are a template. The review target is a
@@ -1208,7 +1247,7 @@ export class WorkflowRuntime {
         taskText,
         '',
         `Your previous reply could not be used: ${parseError ?? 'it did not contain a parseable JSON object'}.`,
-        'Do the review again if needed, then RETURN ONLY the single JSON object {"ok": <true|false>, "concerns": [...], "summary": "..."} — no prose, no markdown fences, nothing before "{" or after "}".',
+        `Do the review again if needed, then RETURN ONLY the single JSON object ${requiredCoverage.length ? `{"ok":true,"concerns":[],"summary":"...","requirements":${coverageVerdictShape}}` : '{"ok": <true|false>, "concerns": [...], "summary": "..."}'} — no prose, no markdown fences, nothing before "{" or after "}".`,
       ].join('\n'), targetDir, paths, {
         escalate: this.state.settings.escalateOnFail !== false,
         retryAttempts: 0,
@@ -1222,6 +1261,7 @@ export class WorkflowRuntime {
       }
     }
 
+    ({ parsed } = enforceVerifyRequirementCoverage(parsed, requiredCoverage));
     const ok = verdict.ok && !!parsed && parsed.ok === true;
     const verifyVerdict = {
       ok,

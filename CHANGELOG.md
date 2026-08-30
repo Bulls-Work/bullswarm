@@ -1,5 +1,22 @@
 # bullswarm changelog
 
+## 0.18.1 — original-goal verification and denser timeline
+
+- Goal workflows now derive a durable requirement ledger from the original
+  user goal. Planner verify actions declare which requirements they cover, and
+  neither explicit nor program-level completion is accepted until every
+  requirement has a successful verifier with specific evidence. The verifier
+  receives the original goal from the runtime, so a reduced planner scope can
+  no longer silently omit requested APIs, events, tests, or documentation.
+- Successful verifier concerns are preserved in a verified
+  `completed_with_concerns` result instead of being discarded or triggering
+  unnecessary follow-up spending.
+- The human timeline calls its first accepted planner decision `plan created`,
+  later decisions `plan updated`, and the final one `completion confirmed`.
+  Execution milestones are rendered as one dense block without blank rows.
+  Finished workflows now say `No agents running · workflow finished` and
+  `Workflow finished · result ready` instead of control-plane terminology.
+
 ## 0.18.0 — exact routes, cheaper plans, clearer results
 
 - `workflow goal` can now guarantee an exact planner model and a separate exact

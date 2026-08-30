@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { buildGoalWorkflow, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
+import { buildGoalWorkflow, extractGoalRequirements, AUTONOMOUS_ORCHESTRATOR_PROMPT } from '../src/workflow/goal.js';
 import {
   applyResumeModelOverrides, applyResumeOrchestratorOverride, shouldAutoWatchGoal,
 } from '../src/workflow/cli.js';
@@ -32,16 +32,16 @@ function fixture() {
     '  process.exit(3);',
     '} else if (task.includes("BEGIN DURABLE WORKFLOW CONTEXT")) {',
     '  const done = task.includes("goal-verify") && task.includes("succeeded");',
-    '  const premature = task.includes("PREMATURE_COMPLETION") && !task.includes("goal-work") && !task.includes("autonomous completion rejected");',
+    '  const premature = task.includes("PREMATURE_COMPLETION") && !task.includes("goal-work") && !task.includes("CORRECTION REQUIRED");',
     '  const answer = premature',
     '    ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"Claiming completion before any evidence for policy testing.",actions:[]}',
     '    : done',
     '      ? {schemaVersion:"bullswarm.workflow.decision.v1",decision:"complete",reason:"The worker artifact and concrete acceptance evidence prove the autonomous goal is complete.",actions:[]}',
-    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"One bounded implementation action and an independent verification are required.",actions:[{id:"goal-work",type:"run",prompt:"Create done.txt containing autonomous-complete, then read it back and report the exact path and contents as verification evidence.",dependsOn:[]},{id:"goal-verify",type:"verify",prompt:"Independently verify done.txt exists with the exact expected contents.",dependsOn:["goal-work"]}]};',
+    '      : {schemaVersion:"bullswarm.workflow.decision.v1",decision:"needs_more_work",reason:"One bounded implementation action and an independent verification are required.",actions:[{id:"goal-work",type:"run",phase:"implement",prompt:"Create done.txt containing autonomous-complete, then read it back and report the exact path and contents as verification evidence.",dependsOn:[]},{id:"goal-verify",type:"verify",phase:"verify",covers:["R1"],prompt:"Independently verify done.txt exists with the exact expected contents.",dependsOn:["goal-work"]}]};',
     '  process.stdout.write(JSON.stringify(answer));',
     '} else if (task.includes("RETURN ONLY a single JSON object")) {',
     '  const ok = readFileSync("done.txt", "utf8") === "autonomous-complete\\n";',
-    '  process.stdout.write(JSON.stringify({ok,concerns:ok?[]:["wrong contents"],summary:ok?"Independent verification read done.txt from the target directory, compared every byte with the expected autonomous-complete line, and confirmed the durable artifact exactly satisfies acceptance.":"Independent verification found that done.txt does not contain the exact expected autonomous-complete line, so acceptance is not satisfied."}));',
+    '  process.stdout.write(JSON.stringify({ok,concerns:ok?[]:["wrong contents"],summary:ok?"Independent verification read done.txt from the target directory, compared every byte with the expected autonomous-complete line, and confirmed the durable artifact exactly satisfies acceptance.":"Independent verification found that done.txt does not contain the exact expected autonomous-complete line, so acceptance is not satisfied.",requirements:{R1:{ok,evidence:ok?"done.txt contains exactly autonomous-complete followed by a newline":"done.txt content mismatch"}}}));',
     '} else {',
     '  writeFileSync("done.txt", "autonomous-complete\\n");',
     '  process.stdout.write("Implemented the bounded goal and verified the durable artifact at done.txt. Exact contents: autonomous-complete. The file was read back successfully and acceptance is satisfied.");',
@@ -87,6 +87,7 @@ test('goal builder internalizes orchestration without requiring an initial graph
     name: 'autonomous-test',
   });
   assert.equal(doc.intent.autonomous, true);
+  assert.deepEqual(doc.intent.requirements, [{ id: 'R1', text: 'Implement and verify the requested repository change.' }]);
   assert.equal(doc.intent.requestedOrchestrator, 'auto');
   assert.equal(doc.phases.length, 1);
   // A read-only scout surveys the repository before the orchestrator compiles its first program.
@@ -131,6 +132,14 @@ test('goal builder internalizes orchestration without requiring an initial graph
     requireSuccessfulVerification: true,
   });
   assert.doesNotThrow(() => validateWorkflow(doc, { poolNames: ['goal-agent'] }));
+});
+
+test('goal requirements preserve numbered deliverables and explicit completion criteria', () => {
+  assert.deepEqual(extractGoalRequirements(`Update the workflow engine.\n1. Add outputSchema validation and schemaOk.\n2) Emit retry events and preserve resume state.\nFinish with focused tests and documentation.`), [
+    { id: 'R1', text: 'Add outputSchema validation and schemaOk.' },
+    { id: 'R2', text: 'Emit retry events and preserve resume state.' },
+    { id: 'R3', text: 'Finish with focused tests and documentation.' },
+  ]);
 });
 
 test('resume can prefer an orchestrator with fallback or strictly pin one for QA', () => {
@@ -358,9 +367,9 @@ test('autonomous completion is rejected until worker and verification evidence e
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
     assert.equal(report.status, 'completed');
-    assert.deepEqual(report.decisions.map((decision) => decision.decision), ['complete', 'needs_more_work', 'complete']);
-    assert.equal(report.decisions[0].accepted, false);
-    assert.match(report.decisions[0].rejectionReason, /successful worker action.*successful verification action/);
+    assert.deepEqual(report.decisions.map((decision) => decision.decision), ['needs_more_work', 'complete']);
+    assert.ok(report.attempts.filter((attempt) => attempt.actionId === 'orchestrator').length >= 2,
+      'premature completion is corrected before it becomes an accepted durable decision');
     assert.equal(report.decisions.at(-1).accepted, true);
   } finally { f.cleanup(); }
 });
