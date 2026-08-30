@@ -149,7 +149,10 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
           step.requiresCapabilities.length > 0 &&
           step.requiresCapabilities.every((capability) =>
             typeof capability === 'string' && NAME_RE.test(capability)),
-        `${sat}.requiresCapabilities must be a non-empty array of kebab-case capability names`);
+          `${sat}.requiresCapabilities must be a non-empty array of kebab-case capability names`);
+      }
+      if (step.outputSchema !== undefined && step.type !== 'run') {
+        collect(issues, false, `${sat}.outputSchema is only allowed on run steps; fanout schemas belong on stepTemplate.outputSchema`);
       }
 
       if (step.type === 'fanout') {

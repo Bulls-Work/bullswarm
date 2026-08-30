@@ -248,11 +248,11 @@ export function validateDecisionProposal(proposal, {
         if (action.stepTemplate?.[runtimeOwned] != null) {
           issues.push(`${at}.stepTemplate.${runtimeOwned} is runtime-owned and cannot be proposed by a planner`);
        }
-       if (action.stepTemplate?.outputSchema !== undefined) {
-         const schema = isValidOutputSchema(action.stepTemplate.outputSchema);
-         if (!schema.ok) issues.push(...schema.issues.map((issue) => `${at}.stepTemplate.outputSchema: ${issue}`));
-         else if (action.stepTemplate.outputSchema.type !== 'object') issues.push(`${at}.stepTemplate.outputSchema.type must be "object"`);
-       }
+      }
+      if (action.stepTemplate?.outputSchema !== undefined) {
+        const schema = isValidOutputSchema(action.stepTemplate.outputSchema);
+        if (!schema.ok) issues.push(...schema.issues.map((issue) => `${at}.stepTemplate.outputSchema: ${issue}`));
+        else if (action.stepTemplate.outputSchema.type !== 'object') issues.push(`${at}.stepTemplate.outputSchema.type must be "object"`);
       }
     }
     if (action.repair != null && action.type !== 'verify') {

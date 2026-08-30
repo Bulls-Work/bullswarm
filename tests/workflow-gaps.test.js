@@ -1179,6 +1179,13 @@ test('validateDecisionProposal rejects invalid outputSchema placements and accep
     }] }),
     (err) => err.issues.some((issue) => issue.includes('outputSchema.type must be "object"')),
   );
+  assert.throws(
+    () => validateDecisionProposal({ ...base, actions: [{
+      id: 'bad-fan-schema', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: { type: 'object', unknownKeyword: true } },
+    }] }),
+    (err) => err.issues.filter((issue) => issue.includes('unknownKeyword')).length === 1,
+  );
 
   const validRunSchema = { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] };
   const validFanoutSchema = { type: 'object', properties: { file: { type: 'string' } } };

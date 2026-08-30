@@ -13,6 +13,8 @@ Every statement is tagged:
   (`docs/experiments/2026-08-29-ultracode-vs-bullswarm.md`).
 - **[INFERRED]** — my reading of how the harness must behave to satisfy the
   spec. Not confirmed by source; treat as a hypothesis.
+- **[IMPLEMENTED]** — behavior shipped in Bullswarm and backed by its source
+  and regression suite, rather than a claim about Claude's workflow contract.
 
 ## 0. The one-paragraph shape
 
@@ -349,7 +351,7 @@ author and the `Workflow` runtime.
    exist — the script's `while (!ok)` loop *is* the evidence — which is the
    general lesson: every piece of control flow bullswarm moves from planner
    into runtime needs its evidence rule moved with it.
-11. **[SPEC] Schema-enforced worker output** — a planner `run` action or fan-out
+11. **[IMPLEMENTED] Schema-enforced worker output** — a planner `run` action or fan-out
     `stepTemplate` may declare an object-typed `outputSchema` subset. The
     runtime appends instructions for one trailing matching JSON object, with no
     prose or markdown fences after it, then parses and validates the object.
@@ -363,7 +365,10 @@ author and the `Workflow` runtime.
     fields, and `fanout.itemsFrom` can consume `outputs.<id>.data.items` without
     extraction when it is already an array. Planner decision validation rejects
     `outputSchema` on a proposed `verify` because verify has a fixed verdict
-    shape.
+    shape. Schema-backed dispatches suppress ordinary same-pool retries so the
+    schema contract gets exactly its one bounded correction attempt. On resume,
+    a fan-out item is skipped only when both its verdict and declared schema
+    are satisfied; the schema must be declared on `stepTemplate.outputSchema`.
 
 **Honest limitation.** `itemsFrom` removes the planner *turn*, not the stage
 *barrier*: a verify depending on a data-driven fan-out waits for all items,

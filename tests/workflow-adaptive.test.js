@@ -253,6 +253,8 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"outputSchema":\{"type":"object","properties"/);
     assert.match(task, /"outputExcerpt": "Completed the bounded action with concrete evidence/);
     assert.match(task, /fanout has stepTemplate and either items or itemsFrom/);
+    assert.match(task, /one consolidated read-only audit or evidence report/);
+    assert.match(task, /never tell a worker to write a Bullswarm outFile/);
     assert.match(task, /\{\{item\}\}/);
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
@@ -1404,6 +1406,47 @@ test('resume redispatches a run action whose persisted output is schema-incomple
     assert.equal(Number(readFileSync(f.countFile, 'utf8')), 0);
     assert.equal(skipped.state.attempts.filter((attempt) => attempt.actionId === 'structured').length, 4);
     assert.ok(readEvents(skipped.runDir).some((event) => event.type === 'step.skipped' && event.payload.stepId === 'structured'));
+  } finally { f.cleanup(); }
+});
+
+test('fanout outputSchema persists item data and resume re-runs only a schema-incomplete item', async () => {
+  const f = schemaFixture('missing-first');
+  try {
+    const doc = {
+      name: 'fanout-schema-resume', description: 'fanout schema resume', inputs: {},
+      settings: { retryAttempts: 0, concurrency: 2, escalateOnFail: false },
+      phases: [{ name: 'p', steps: [{
+        id: 'fan', type: 'fanout', items: ['alpha', 'beta'],
+        stepTemplate: {
+          lane: 'chore', prompt: 'Return structured evidence for {{item}}.',
+          outputSchema: structuredOutputSchema,
+        },
+      }] }],
+    };
+    const initial = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
+    assert.equal(initial.state.outputs.fan.ok, true);
+    assert.deepEqual(initial.state.outputs.fan.items.map((item) => item.schemaOk), [true, true]);
+    assert.deepEqual(initial.state.outputs.fan.items.map((item) => item.data), [
+      { items: ['alpha'], count: 1 },
+      { items: ['alpha'], count: 1 },
+    ]);
+
+    const statePath = join(f.bullswarmDir, 'workflows', initial.runId, 'state.json');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    persisted.outputs.fan.items[0].schemaOk = false;
+    persisted.outputs.fan.items[0].data = { items: 'invalid', count: 'invalid' };
+    writeFileSync(statePath, `${JSON.stringify(persisted, null, 2)}\n`);
+    writeFileSync(f.countFile, '0');
+    const events = [];
+    const resumed = await runWorkflow({
+      bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {}, resumeRunId: initial.runId,
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(resumed.state.outputs.fan.items[0].schemaOk, true);
+    assert.deepEqual(resumed.state.outputs.fan.items[0].data, { items: ['alpha'], count: 1 });
+    assert.equal(Number(readFileSync(f.countFile, 'utf8')), 2);
+    assert.deepEqual(events.filter((event) => event.type === 'item.skipped').map((event) => event.index), [1]);
+    assert.deepEqual(events.filter((event) => event.type === 'item.started').map((event) => event.index), [0]);
   } finally { f.cleanup(); }
 });
 
