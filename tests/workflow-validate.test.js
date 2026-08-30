@@ -24,6 +24,28 @@ test('valid minimal workflow passes', () => {
   assert.deepEqual(r.warnings, []);
 });
 
+test('outputSchema is accepted only on run or fanout stepTemplate', () => {
+  const schema = { type: 'object', properties: { item: { type: 'string' } } };
+  assert.doesNotThrow(() => validateWorkflow(baseDoc({
+    phases: [{ name: 'p', steps: [{
+      id: 'fan', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: schema },
+    }] }],
+  }), { poolNames: POOLS }));
+  for (const step of [
+    { id: 'fan', type: 'fanout', items: ['one'], stepTemplate: { prompt: 'handle {{item}}' }, outputSchema: schema },
+    { id: 'verify', type: 'verify', review: 'outputs.prior.outFile', outputSchema: schema },
+  ]) {
+    const phases = step.type === 'verify'
+      ? [{ name: 'p', steps: [{ id: 'prior', type: 'run', prompt: 'work' }, step] }]
+      : [{ name: 'p', steps: [step] }];
+    assert.throws(
+      () => validateWorkflow(baseDoc({ phases }), { poolNames: POOLS }),
+      (err) => err.issues.some((issue) => issue.includes('outputSchema is only allowed on run steps')),
+    );
+  }
+});
+
 test('rejects bad lane and unknown pinned pool', () => {
   assert.throws(
     () => validateWorkflow(baseDoc({ phases: [{ name: 'p', steps: [{ id: 'a', type: 'run', lane: 'vibes', prompt: 'x' }] }] }), { poolNames: POOLS }),

@@ -1056,6 +1056,15 @@ export class WorkflowRuntime {
     ].join('\n');
   }
 
+  artifactTaskText(taskText) {
+    return [
+      taskText,
+      '',
+      'DELIVERY CONTRACT: put the requested artifact in your final response; Bullswarm captures that response durably.',
+      'Do not write, replace, or guess any path under ~/.bullswarm/workflows, including task-* and out-* files.',
+    ].join('\n');
+  }
+
   /**
    * The last JSON object in the output, validated against the schema. Found
    * the way hasStructuredAnswer finds a trailing array: from the final "}"
@@ -1148,8 +1157,8 @@ export class WorkflowRuntime {
       scope,
       this.renderOpts(step.id),
     );
-    const taskText = rendered.prompt
-      ?? readFileSync(rendered.taskFile, 'utf8');
+    const taskText = this.artifactTaskText(rendered.prompt
+      ?? readFileSync(rendered.taskFile, 'utf8'));
     const targetDir = rendered.addDir ? String(rendered.addDir).replace(/^~/, process.env.HOME ?? '') : process.cwd();
 
     const stamp = `${step.id}-${Date.now().toString(36)}`;
@@ -1686,8 +1695,8 @@ export class WorkflowRuntime {
         const targetDir = template.addDir
           ? String(template.addDir).replace(/^~/, process.env.HOME ?? '')
           : process.cwd();
-        const taskText = template.prompt
-          ?? readFileSync(String(template.taskFile), 'utf8');
+        const taskText = this.artifactTaskText(template.prompt
+          ?? readFileSync(String(template.taskFile), 'utf8'));
 
         this.emit('item.started', { stepId: step.id, index: i, total: items.length, item });
          const itemStep = { ...step, ...template, id: step.id, ...(template.outputSchema ? { outputSchema: template.outputSchema } : {}) };
