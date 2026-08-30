@@ -57,10 +57,10 @@ export function looksLikeReviewPath(value) {
 
 export function normalizeDecisionProposal(proposal) {
   if (!proposal || typeof proposal !== 'object' || !Array.isArray(proposal.actions)) return proposal;
-  // An action-bearing "proceed" is unambiguously an executable program. The
-  // schema calls that `needs_more_work`; repairing the representation here
-  // avoids an otherwise identical frontier-model correction turn.
-  const decision = proposal.decision === 'proceed' && proposal.actions.length > 0
+  // Action-bearing control aliases are unambiguously executable programs. The
+  // schema calls that `needs_more_work`; normalize common frontier-model words
+  // here rather than spend a correction turn on an otherwise valid program.
+  const decision = ['proceed', 'workflow', 'plan', 'execute'].includes(proposal.decision) && proposal.actions.length > 0
     ? 'needs_more_work'
     : proposal.decision;
   return {

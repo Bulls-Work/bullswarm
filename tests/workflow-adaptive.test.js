@@ -16,15 +16,17 @@ import {
   PLANNER_RULES_SECTION, PLANNER_EXAMPLES_SECTION, AUTONOMOUS_ORCHESTRATOR_PROMPT,
 } from '../src/workflow/goal.js';
 
-test('action-bearing proceed is normalized without an extra planner correction turn', () => {
-  const normalized = normalizeDecisionProposal({
-    schemaVersion: 'bullswarm.workflow.decision.v1',
-    decision: 'proceed',
-    reason: 'Execute the bounded program now.',
-    actions: [{ id: 'inspect', type: 'run', phase: 'discover', prompt: 'Inspect and report evidence.' }],
-  });
-  assert.equal(normalized.decision, 'needs_more_work');
-  assert.doesNotThrow(() => validateDecisionProposal(normalized));
+test('action-bearing control aliases normalize without an extra planner correction turn', () => {
+  for (const decision of ['proceed', 'workflow', 'plan', 'execute']) {
+    const normalized = normalizeDecisionProposal({
+      schemaVersion: 'bullswarm.workflow.decision.v1',
+      decision,
+      reason: 'Execute the bounded program now.',
+      actions: [{ id: 'inspect', type: 'run', phase: 'discover', prompt: 'Inspect and report evidence.' }],
+    });
+    assert.equal(normalized.decision, 'needs_more_work');
+    assert.doesNotThrow(() => validateDecisionProposal(normalized));
+  }
 });
 
 test('truncated verifier JSON is conservatively closed only when the verdict shape is intact', () => {
@@ -259,6 +261,7 @@ test('planner prompt shows full run, fanout, and verify skeletons', async () => 
     assert.match(task, /"validationFeedback": null/);
     assert.doesNotMatch(task, /CORRECTION REQUIRED/);
     assert.match(task, /---- END DURABLE WORKFLOW CONTEXT ----\n\nFINAL CONTROL RESPONSE \(mandatory\):/);
+    assert.match(task, /decision MUST be one of: needs_more_work/);
     assert.match(task, /"decision":"complete","reason":"<evidence-backed reason>","actions":\[\]\}\.$/);
   } finally { f.cleanup(); }
 });
