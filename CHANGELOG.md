@@ -1,5 +1,25 @@
 # bullswarm changelog
 
+## 0.20.0 — common agent delegation entry point
+
+- `/bullswarm` and `bullswarm delegate` now give agents one transparent entry
+  point for arbitrary self-contained tasks: classify the request as one bounded
+  delegate or an autonomous workflow, show the reason and conceptual plan, then
+  execute the selected engine. Explicit mode and lane overrides remain
+  available, and `--dry-run --json` exposes the decision without dispatching.
+- Workflow decisions persist the suggested conceptual plan alongside the
+  original intent, while the packaged skill keeps the common path concise and
+  moves operational detail into a focused reference.
+- Agent integration upgrades its managed awareness marker to advertise the
+  common interface consistently across Codex, Claude, and Grok.
+- Classification now understands negated and instructional mutation language,
+  so read-only requests that discuss how to add or write something do not
+  accidentally enter the build lane, while a later affirmative implementation
+  request still does.
+- A trailing `help` token remains contextual and side-effect-free even after
+  options, matching `-h` and `--help`; several README and setup/help examples
+  were also brought back into sync with the real CLI.
+
 ## 0.19.0 — unified workflow dashboard
 
 - Running `bullswarm workflow` on an interactive terminal now opens one

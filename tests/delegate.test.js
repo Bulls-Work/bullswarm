@@ -28,10 +28,15 @@ test('task classifier keeps one bounded outcome on a single agent', () => {
     'Read-only: inspect how to add a new connector; do not change files.',
     'Do not modify files; explain the add-connector process.',
     'Do not add, create, or delete any files; explain the workflow.',
+    'Do not add or create anything; only inspect and report.',
+    'Inspect how to add a connector without changing code or files.',
   ]) {
     const decision = classifyTask({ task });
     assert.equal(decision.lane, 'analyze', task);
   }
+
+  const mixedIntent = classifyTask({ task: 'Do not modify tests; implement the production fix.' });
+  assert.equal(mixedIntent.lane, 'build', 'a scoped prohibition must not hide a later positive mutation');
 });
 
 test('task classifier selects workflows for explicit deliverables and coordination', () => {
