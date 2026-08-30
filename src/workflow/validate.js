@@ -168,7 +168,9 @@ export function validateWorkflow(wf, { lanes = LANES, poolNames = [] } = {}) {
           const inputMatch = INPUT_ITEMS_FROM_RE.exec(step.itemsFrom);
           const outputMatch = OUTPUT_ITEMS_FROM_RE.exec(step.itemsFrom);
           const resolves = inputMatch
-            ? inputs[inputMatch[1]] != null
+            // Inputs may be supplied only at `workflow run` time. Validate the
+            // bounded path grammar here without requiring a draft declaration.
+            ? true
             : outputMatch
               ? outputs.has(outputMatch[1]) && outputMatch[1] !== step.id
               : false;
