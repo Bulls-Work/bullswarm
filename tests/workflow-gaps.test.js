@@ -1176,4 +1176,14 @@ test('validateDecisionProposal rejects invalid outputSchema placements and accep
   const accepted = validateDecisionProposal(normalized);
   assert.deepEqual(accepted.actions[0].outputSchema, validRunSchema);
   assert.deepEqual(accepted.actions[1].stepTemplate.outputSchema, validFanoutSchema);
+
+  const optionalNulls = validateDecisionProposal(normalizeDecisionProposal({ ...base, actions: [
+    { id: 'plain-run', type: 'run', prompt: 'run', outputSchema: null },
+    {
+      id: 'plain-fan', type: 'fanout', items: ['one'],
+      stepTemplate: { prompt: 'handle {{item}}', outputSchema: null },
+    },
+  ] }));
+  assert.equal(Object.hasOwn(optionalNulls.actions[0], 'outputSchema'), false);
+  assert.equal(Object.hasOwn(optionalNulls.actions[1].stepTemplate, 'outputSchema'), false);
 });

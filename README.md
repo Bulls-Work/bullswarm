@@ -5,6 +5,11 @@ orchestrator, build and expand the plan, route bounded worker actions by quota,
 verify the result, and finish without an initiating agent authoring a graph.
 Every delegate output is judged by content before it counts.
 
+For agents, `/bullswarm` (or `$bullswarm` where skills use that syntax) is the
+common entry point. Its durable CLI equivalent is `bullswarm delegate`: it
+first explains whether the request needs one bounded agent or an autonomous
+workflow, shows the conceptual plan, and then executes the selected engine.
+
 Every command and nested subcommand supports contextual `-h` / `--help`
 without initializing state or executing the command:
 
@@ -66,6 +71,9 @@ bullswarm          # first run: interactive setup wizard
 bullswarm setup    # re-run or repair
 bullswarm pools    # meter state, pace position, quarantine status
 bullswarm strategy refresh --apply --yes  # approve capability-aware tier autopilot
+bullswarm delegate --cwd ~/some-repo --prompt "Explain the parser"            # one agent
+bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and independently verify"  # workflow
+bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # decision + plan only
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
 bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser" --json
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo
@@ -78,6 +86,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 |---|---|
 | `setup` | Discover installed agent CLIs, show quota state, toggle pools, suggest a routing table, write config. Approval-gated, idempotent. |
 | `integrate` | Register or remove the canonical Bullswarm skill and global awareness rules for Codex, Claude, and Grok. |
+| `delegate` | Explain and execute the smallest reliable shape: one content-verified agent or an autonomous verified workflow. |
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
@@ -227,7 +236,7 @@ bullswarm workflow draft phase add audit-code discover
 bullswarm workflow draft phase add audit-code review
 bullswarm workflow draft step add audit-code discover list-files \
     --type run --lane chore --prompt "List every .js file in src/" \
-    --addDir '{{inputs.targetDir}}'
+    --add-dir '{{inputs.targetDir}}'
 bullswarm workflow draft step add audit-code review per-file \
     --type fanout --items-from 'outputs.list-files.outFile' \
     --lane analyze --concurrency 2 \
