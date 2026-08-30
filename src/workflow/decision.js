@@ -66,7 +66,20 @@ export function normalizeDecisionProposal(proposal) {
   return {
     ...proposal,
     decision,
-    actions: proposal.actions.map((action) => {
+    actions: proposal.actions.map((rawAction) => {
+      let action = rawAction;
+      if (action && Object.hasOwn(action, 'outputSchema') && action.outputSchema == null) {
+        const { outputSchema, ...rest } = action;
+        void outputSchema;
+        action = rest;
+      }
+      if (action?.type === 'fanout' && action.stepTemplate
+          && Object.hasOwn(action.stepTemplate, 'outputSchema')
+          && action.stepTemplate.outputSchema == null) {
+        const { outputSchema, ...stepTemplate } = action.stepTemplate;
+        void outputSchema;
+        action = { ...action, stepTemplate };
+      }
       if (action?.type === 'fanout' && !Array.isArray(action.items) && looksLikeItemsFromPath(action.itemsFrom)) {
         // A fanout fed by an artifact implicitly depends on the producer.
         const itemsFrom = action.itemsFrom.trim();

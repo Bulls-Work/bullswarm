@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { helpText } from './help.js';
 
 const SKILL_SOURCE = fileURLToPath(new URL('../skill', import.meta.url));
-const MARKER_BEGIN = '<!-- bullswarm:begin v2 -->';
+const MARKER_BEGIN = '<!-- bullswarm:begin v3 -->';
 const MARKER_END = '<!-- bullswarm:end -->';
 const MARKER_RE = /<!-- bullswarm:begin v\d+ -->[\s\S]*?<!-- bullswarm:end -->\n?/;
 
@@ -31,11 +31,13 @@ export function awarenessBlock() {
 
 Bullswarm is available for bounded external delegation. When delegation,
 offloading, independent verification, or autonomous multi-step execution is
-requested, read the \`bullswarm\` skill before acting. Use \`bullswarm run\` for
-one bounded task, \`bullswarm workflow goal\` for ordinary autonomous multi-step
-work, and workflow drafts only when the graph itself is the contract. Treat
-returned artifacts and verification as evidence, not authority. This policy
-supersedes retired pre-Bullswarm \`offload\` routing instructions. If
+requested, read the \`bullswarm\` skill before acting. Its default \`/bullswarm\`
+flow previews whether the request needs one bounded agent or an autonomous
+workflow, tells the user the decision and conceptual plan, then executes via
+\`bullswarm delegate\`. Use direct \`run\`, \`workflow goal\`, or draft commands
+only when the shape is already explicit or the graph itself is the contract.
+Treat returned artifacts and verification as evidence, not authority. This
+policy supersedes retired pre-Bullswarm \`offload\` routing instructions. If
 \`BULLSWARM_DEPTH\` is already set, perform the assigned task directly and do
 not recursively invoke Bullswarm unless the task explicitly requires it.
 ${MARKER_END}`;

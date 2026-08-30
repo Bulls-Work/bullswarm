@@ -52,6 +52,16 @@ export function extractGoalRequirements(goal) {
     }
   }
   if (current) numbered.push(current);
+  if (!numbered.length) {
+    const markers = [...text.matchAll(/(?:^|\s)(\d+)[.)]\s+/g)];
+    for (let index = 0; index < markers.length; index += 1) {
+      const marker = markers[index];
+      const start = marker.index + marker[0].length;
+      const end = markers[index + 1]?.index ?? text.length;
+      const requirement = text.slice(start, end).trim();
+      if (requirement) numbered.push({ number: marker[1], text: requirement });
+    }
+  }
   const requirements = numbered.map((entry, index) => ({
     id: `R${index + 1}`,
     text: compactRequirement(entry.text),
@@ -112,6 +122,7 @@ function positiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER }
 
 export function buildGoalWorkflow({
   goal,
+  suggestedPlan = null,
   cwd = process.cwd(),
   orchestrator = null,
   strictOrchestrator = false,
@@ -125,6 +136,9 @@ export function buildGoalWorkflow({
 } = {}) {
   if (typeof goal !== 'string' || !goal.trim()) {
     throw new Error('goal text is required');
+  }
+  if (suggestedPlan != null && (typeof suggestedPlan !== 'string' || !suggestedPlan.trim())) {
+    throw new Error('suggestedPlan must be a non-empty string when provided');
   }
   if (orchestrator != null && (typeof orchestrator !== 'string' || !NAME_RE.test(orchestrator))) {
     throw new Error(`invalid orchestrator pool "${orchestrator}"`);
@@ -169,6 +183,7 @@ export function buildGoalWorkflow({
     intent: {
       goal: goal.trim(),
       requirements: extractGoalRequirements(goal),
+      ...(suggestedPlan ? { suggestedPlan: suggestedPlan.trim() } : {}),
       cwd: targetDir,
       autonomous: true,
       requestedOrchestrator: orchestrator ?? 'auto',

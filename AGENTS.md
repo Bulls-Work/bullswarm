@@ -57,18 +57,21 @@ bullswarm workflow runs delete <shortId> --yes
 ## Using bullswarm from another agent
 
 If you are an agent that wants to offload bounded work via bullswarm,
-read `skill/SKILL.md` — that's the agent-facing user guide. It covers
-when to reach for `run` vs `workflow draft`, the verify-step pattern,
-how to write prompts that pass the content gate, and the failure modes
-you'll hit. The skill is published alongside the package and is the
-canonical reference for the CLI surface.
+read `skill/SKILL.md` — that's the agent-facing user guide. Use
+`bullswarm delegate` (or the installed `/bullswarm` skill) by default: it
+previews whether one bounded agent or an autonomous workflow is appropriate,
+shows the conceptual plan, and executes the chosen engine. Reach for `run`,
+`workflow goal`, or a fixed workflow graph directly only when the caller has
+already chosen that execution shape. The skill is published alongside the
+package and is the canonical reference for the CLI surface.
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:
   prime `~/.bullswarm/meters/*.json` caches with fresh timestamps if needed.
 - Every verb must work non-interactively (no TTY). The interactive wizard is
   a human convenience, never a requirement.
 - Version single source: package.json. Release via
-  `node bin/bullswarm.js release patch|minor|major` then `git push --tags`
+  `node bin/bullswarm.js release patch|minor|major`, then `git push` and
+  `git push --tags`
   — CI publishes through npm trusted publishing (OIDC), no tokens.
 
 ## Adding a connector

@@ -51,6 +51,7 @@ test('help command syntax and aliases resolve without executing commands', () =>
   assert.match(helpForArgs(['help']), /Commands:/);
   assert.match(helpForArgs(['help', 'workflow', 'watch']), /workflow watch <runId>/);
   assert.match(helpForArgs(['runs', 'delete', '--help']), /workflow runs delete/);
+  assert.match(helpForArgs(['--version', '--help']), /^Usage: bullswarm version/);
   assert.equal(helpForArgs(['workflow', 'list']), null);
 });
 
@@ -156,6 +157,7 @@ test('every "runs" alias path resolves to identical text as its "workflow runs" 
 // test-and-docs-map.md §3): help.js's hand-typed text had fallen behind
 // what the real parsers (runs-cli.js, workflow/cli.js) actually accept.
 test('previously-drifted flags are present in --help now that help.js is canonical', () => {
+  assert.match(helpForArgs(['setup', '--help']), /--strategy/);
   const goalHelp = helpForArgs(['workflow', 'goal', '--help']);
   assert.match(goalHelp, /--detach/, 'workflow goal --help must document --detach (accepted by the real parser)');
   for (const flag of ['--orchestrator-model', '--worker-pool', '--worker-model']) {

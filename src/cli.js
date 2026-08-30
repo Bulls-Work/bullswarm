@@ -19,6 +19,7 @@ import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
 import { resolveDispatchModel } from './lib/strategy.js';
+import { cmdDelegate } from './delegate.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -459,6 +460,8 @@ export async function main(argv) {
       return cmdSetup(opts);
     case 'run':
       return cmdRun(opts);
+    case 'delegate':
+      return cmdDelegate(opts);
     case 'health':
       return cmdHealth(opts);
     case 'pools':

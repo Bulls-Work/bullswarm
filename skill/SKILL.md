@@ -1,582 +1,117 @@
 ---
 name: bullswarm
-description: Use when you want to offload work to coding-agent subscriptions or run a self-contained goal across heterogeneous providers. bullswarm can accept one goal, select an orchestrator, expand and execute a bounded plan, verify the outcome, and expose the whole run through CLI state and events. Use `bullswarm workflow goal` for ordinary multi-step work, an explicit workflow draft when the graph itself is the contract, and `bullswarm run` for one bounded task. Every verb self-initializes.
+description: Use when the user invokes /bullswarm or $bullswarm, asks to delegate or offload a self-contained task, or wants Bullswarm to choose between one quota-routed agent and an autonomous multi-agent workflow. Classify first, show the decision and conceptual plan, then execute through the common delegate interface.
 ---
 
-# bullswarm — agent guide
-
-bullswarm lets you offload bounded work to whichever installed coding-agent
-CLI subscription has the most quota headroom. Every delegate output is
-judged by **content**, not exit code. A non-zero exit is never a success; a
-`verified` output is.
-
-Every command and nested subcommand supports side-effect-free `-h` / `--help`.
-When a flag or argument is uncertain, inspect the exact surface before acting,
-for example `bullswarm workflow draft step add --help`.
-
-This skill is registered globally by:
-
-```bash
-bullswarm integrate install --agents codex,claude,grok --yes
-```
-
-If `BULLSWARM_DEPTH` is already set, you are a Bullswarm delegate. Complete the
-assigned task directly; do not recursively invoke Bullswarm unless the task
-explicitly requires another bounded delegation.
-
-## When to reach for it
-
-You should consider bullswarm when **any** of the following apply:
-
-- A task can be expressed as a `run` or `verify` of a single prompt against a
-  repo (file reading, summarization, "review this PR", "explain this module",
-  "draft a commit message"). → use `bullswarm run`.
-- A goal needs autonomous decomposition, implementation, verification, and
-  replanning without you choosing agents or authoring JSON. → use
-  `bullswarm workflow goal "..." --cwd <repo>`.
-- A task has a fixed **pipeline** whose exact graph is itself a contract. → use
-  `bullswarm workflow draft ...`.
-- A task is naturally a **fan-out** — the same operation applied to N
-  items (every file in a directory, every commit in a range, every issue
-  in a list). → `bullswarm workflow draft ...` with a `fanout` step.
-- You want **adversarial review** of an agent's output before acting on
-  it. → add a `verify` step right after the step whose output you don't
-  trust.
-- You have multiple agent CLIs installed (`codex`, `grok`, `claude`,
-  `opencode`, `command-code`) and you don't want to reason about which
-  one to use — let bullswarm pick by live meter.
-
-Do NOT use bullswarm when:
-
-- The work needs live conversation context (use the frontier session).
-- A single `Read`/`Grep`/`Bash` call is enough.
-- The user is asking for a one-liner, a quick edit, or a command to run.
-
-## Single-task shape (`bullswarm run`)
-
-```bash
-bullswarm run --lane <analyze|build|chore> \
-  --add-dir <abs/path/to/repo> \
-  --task-file <abs/path/to/task.md> \
-  --json
-
-# Equivalent explicit prompt form (also accepts trailing task text)
-bullswarm run --lane analyze --add-dir <abs/path/to/repo> \
-  --prompt "Inspect and verify the parser" --json
-```
-
-The verdict shape:
-
-```json
-{ "ok": true, "keepOnClaude": false, "why": "verified",
-  "pick": { "pool": "grok", "command": ["grok","-p","..."] },
-  "contentUsableDespiteExit": false, "outFile": "/tmp/dlg.out" }
-```
-
-- `ok: true` → read `outFile`, that's the answer
-- `keepOnClaude: true` → do it in-session; no pool could take it
-- `ok: false` → `why` names the failed gate; do not use the output
-- `contentUsableDespiteExit: true` → non-zero exit but full content; read anyway
-
-Lanes are work-nature, not pool:
-- `analyze` — read, explain, audit, review
-- `build` — implement, modify, write code
-- `chore` — reformat, convert, summarize, smoke-check
-
-## Autonomous multi-step shape (`bullswarm workflow goal`)
-
-Prefer this for ordinary goal-driven work. The caller supplies intent only:
-
-```bash
-bullswarm workflow goal \
-  "Fix the failing parser tests with the smallest correct change and verify them" \
-  --cwd=<abs/path/to/repo> --json
-```
-
-The returned JSON contains `runId`, `shortId`, logs, and exact observation
-commands. Its `instructions` object separates `agentInspect`, low-noise `watch`,
-interactive `humanTui`, and terminal `result` retrieval. Bullswarm chooses a capable orchestrator by quota surplus, supplies
-the internal planning contract, validates every proposed graph expansion,
-routes workers independently, requires verification evidence, and replans until
-a truthful terminal state. The initiating agent does not create phases, action
-IDs, dependency JSON, planner prompts, or pool assignments.
-
-The autonomous orchestrator is one durable control-plane conversation, separate
-from execution phases. Connectors that declare conversation continuation (Grok
-and Claude Code) resume the provider session at later evidence checkpoints;
-individual turns remain visible in JSON audit state for spend and recovery, but
-the human TUI displays one orchestrator thread rather than several agents.
-Planner-created actions also have forward-only named phases. Once a phase has
-executed, a later turn must use a new phase name; Bullswarm rejects attempts to
-append new work beneath a completed phase.
-
-Observe from any other shell or agent:
-
-```bash
-bullswarm workflow runs show <shortId>
-bullswarm workflow watch <shortId>
-bullswarm workflow tui --json <shortId>
-bullswarm workflow events --json <shortId> --after 0
-bullswarm workflow action show --json <shortId> <actionId>
-```
-
-`workflow goal` starts the durable runner in the background, prints operating
-instructions, and returns by default. Add `--watch` to immediately follow
-low-noise progress until terminal. Open the full-screen Phase → Agent →
-Agent-steps viewer with the printed `humanTui` command; Up/Down, Enter, Esc, and
-`q` navigate or detach while work continues. `--foreground` explicitly restores
-terminal-owned execution.
-
-The detached runner does not depend on the initiating CLI remaining alive.
-Resume a process-interrupted run from its persisted definition with
-`bullswarm workflow goal --resume <shortId> --json`. Leave orchestrator
-selection automatic in normal use. `--orchestrator=<pool>` is a preference
-that falls back when the pool is quota-gated or unavailable;
-`--strict-orchestrator=<pool>` is the exact-provider control for QA and may
-wait for that pool's quota window. For a controlled model comparison, add
-`--orchestrator-model=<model>`, `--worker-pool=<pool>`, and
-`--worker-model=<model>`. The worker constraints cover scout, runs, fan-out
-items, repairs, re-verification, and extraction helpers; a pool that cannot
-guarantee the model is excluded rather than silently substituting it.
-`SIGTERM`/`SIGINT` cooperatively terminate the active delegate and
-persist `interrupted`; later workflow commands also reconcile dead or stale
-owners into that explicit resumable state.
-
-## Multi-step shape (`bullswarm workflow draft ...`)
-
-If the work is more than one logical step, build a draft incrementally
-from the shell. Drafts persist under `~/.bullswarm/drafts/<name>/` and
-become first-class workflows the moment they exist (discoverable, runnable
-by name, validatable).
-
-```bash
-# Create and add a phase:
-bullswarm workflow draft create my-audit --description "Audit the source"
-bullswarm workflow draft phase add my-audit discover
-
-# Add a step. --type can be `run`, `fanout`, or `verify`:
-bullswarm workflow draft step add my-audit discover list-files \
-  --type=run --lane=chore --prompt="List every .ts file under src/" \
-  --addDir=<abs/path/to/repo> --timeout=60
-
-# Add a fanout that reads the discover output:
-bullswarm workflow draft step add my-audit review per-file \
-  --type=fanout --itemsFrom=outputs.list-files.outFile \
-  --lane=analyze --concurrency=4 \
-  --step-template='{"lane":"analyze","prompt":"Review {{item}} in 60 words. Sign with Model=<id>."}'
-
-# Add a skeptic step (adversarial review of the prior step):
-bullswarm workflow draft step add my-audit review skeptic \
-  --type=verify --review=outputs.per-file.outFile \
-  --prompt='Read the work. Reply ONLY with JSON {"ok":<bool>,"concerns":[...],"summary":"..."}' \
-  --on-error=continue
-
-# Run it:
-bullswarm workflow draft run my-audit --input=targetDir=<abs/repo/path> --json --quiet
-```
-
-Built-in step types:
-
-- **`run`** — one delegate dispatch. Outputs `outFile` (path) and
-  `outputText` (truncated to 64 KB in `state.json`).
-- **`fanout`** — expand a list and dispatch one per item. The list comes
-  from `itemsFrom`, a dotted path. Either an input array (`inputs.items`)
-  or a prior step's outFile (`outputs.<stepId>.outFile` — runtime reads
-  the file and parses the first JSON array).
-- **`verify`** — adversarial review. Runtime inlines the prior outFile
-  into a structured prompt asking for `{"ok":<bool>,"concerns":[],"summary":""}`
-  and the step is `ok:true` only if the JSON parses AND `ok===true`.
-  Use this between any step whose output you won't believe without a
-  second pair of eyes.
-- **`decide`** — an explicit adaptive planning gate. The planner receives the
-  durable intent, completed actions, failures, artifact paths, verification
-  results, remaining budgets, and available connector capabilities. Its
-  versioned JSON is a proposal; deterministic validation decides whether any
-  new `run`, inline-`fanout`, or `verify` actions may execute.
-
-Flag style: prefer `--key=value` over `--key value` — the `=` form
-survives shell quoting, agents calling from JSON tools don't have
-to think about it, and the parser is unambiguous when the value
-itself starts with `--`. Both forms work; the `=` form is recommended.
-
-## Operating on runs
-
-Every run gets a 6-character shortId (Crockford-style alphabet, no
-`0/1/i/l/o`). The full `wf-...` runId is the durable handle on disk.
-
-```bash
-bullswarm workflow runs                       # ongoing only (default)
-bullswarm workflow runs --all                 # ongoing + historical
-bullswarm workflow runs --name <workflow>     # filter by workflow name
-bullswarm workflow runs --all --since 7d      # initiated in the last 7 days
-bullswarm workflow runs --historical --since yesterday --until today
-bullswarm workflow runs show <shortId>        # state + report + summary
-bullswarm workflow runs result <shortId> --json # stable delivery for the caller
-bullswarm workflow runs delete <shortId> --yes
-
-bullswarm workflow list
-bullswarm workflow validate workflows/demo.json
-```
-
-`workflow goal --request <path>` and `--run-id <id>` are internal detached-runner
-plumbing. Ordinary callers should provide a goal or resume with
-`--resume <shortId|runId>`.
-
-Historical time ranges filter the workflow's initiation time (`startedAt`),
-not completion time. `--since` is inclusive and `--until` is exclusive, with
-`--from`/`--to` and `--started-after`/`--started-before` aliases. Bounds accept
-ISO timestamps, local dates, today/yesterday/tomorrow/now, or durations such as
-`7d`. Add `--all` or `--historical`; time filters do not silently change the
-normal ongoing-only scope.
-
-When the run is terminal, use `workflow runs result <id> --json` as the
-handoff contract. Its versioned result envelope keeps one primary `delivery`,
-adds every jointly delivered parallel artifact under `deliveries[]`, and points
-to the strongest dependent verification verdict, progress, and usage. Do not guess
-the output schema by scraping task files or assume the last provider response is
-the deliverable; `runs show` is for low-level debugging.
-
-Before authoring or choosing a workflow, agents can inspect the live execution
-fabric and the workflow document itself:
-
-```bash
-bullswarm workflow capabilities --json
-bullswarm workflow inspect <file-or-name>
-bullswarm workflow watch <shortId>              # low-noise progress until terminal
-bullswarm workflow watch <shortId> --jsonl      # machine-readable progress stream
-bullswarm workflow tui <shortId>              # text phase/action/attempt tree
-bullswarm workflow events --json <shortId> --after 20
-bullswarm workflow action show --json <shortId> <actionId>
-bullswarm workflow approval approve --json <shortId>
-bullswarm workflow steer <shortId> --message "guidance for the next planner checkpoint"
-```
-
-`capabilities` reports available pools, supported lanes, configured models,
-meter readings, burst gates, quarantine state, retry limits, and the important
-routing rule. Automatic routing chooses the highest time-adjusted quota surplus
-among capable pools. An unmetered pool reads as exactly on pace (surplus 0), so
-whenever every metered pool is burning ahead of its window (negative
-surplus) the unmetered pool wins ALL work — by design: quota protection
-outranks provider diversity (observed 2026-08-29: 26 of 28 dispatches on
-one unmetered pool). If that concentration is unwanted, meter the pool or
-exclude its models via `strategy exclude-model`. For strategic model selection, first run:
-
-```bash
-bullswarm strategy refresh
-bullswarm strategy show --json
-bullswarm strategy apply --yes --refresh-hours 24
-bullswarm strategy auto status
-bullswarm strategy assign high --pool <pool> --model <model>
-bullswarm strategy exclude-model <model>
-```
-
-Connector-declared discovery, dated benchmark/pricing evidence, live quota,
-and tier-specific capability requirements produce high/medium/low suggestions;
-unknown evidence remains null. `apply --yes` is the explicit approval gate: it
-persists assignments and enables TTL-based discovery/re-application. A step's
-`effort` or a lane default (`analyze=high`, `build=medium`, `chore=low`) can use
-an assignment, but it never bypasses capability, quarantine, exhaustion, or
-burst-gate safety. Each attempt records the chosen agent/model and labeled
-token, cost, and normalized-quota estimates in the workflow tree.
-
-`exclude-model` is a persisted hard policy, not a prompt hint. Excluded models
-are removed from recommendations and ignored in assignments. When a connector
-supports explicit model selection, Bullswarm pins an allowed model in the same
-effort tier; otherwise that pool is excluded because its implicit default
-cannot be guaranteed. Restore eligibility with `strategy include-model`.
-
-In the human TUI, the autonomous orchestrator is presented as Workflow Planner
-in a compact selectable panel stacked above the phase tree. The default desktop
-view pairs that unchanged navigation with a timestamped workflow timeline:
-finished events stay above a live Planner/worker section with each participant's
-latest semantic action, while unexecuted work stays in a separate Next section.
-Select Workflow Planner and press Enter, or press
-`o`, to see a summary-first overview of its current role, latest decision,
-reason, next action, progress, and recent semantic activity. Press `v` for the
-durable provider session, checkpoint prompts and turns, usage, and artifact
-paths; `v` returns to the overview and Esc returns to phases.
-Below 100 columns the TUI opens on a full-width timeline; `t` toggles Timeline
-and Phases, and Enter/Esc continues through agents and activity.
-The shared state marks are `○` not started, animated Braille spinner active,
-`⧖` waiting, `✓` finished, and `✗` failed or interrupted.
-
-Run state also exposes the versioned plan, action ledger, aggregate usage, every attempt,
-planner decisions and reasons, budgets, `currentPhase`, `currentStep`, and
-`activeAgents` in `workflow tui --json <shortId>`. Each attempt includes its
-pool, selected model, effort tier, routing reason and eligible candidates,
-usage/cost estimate, status, task/output artifacts, timings, failure
-reason, and child-process termination evidence. `workflow tui` displays the
-same information interactively. `workflow events` supports replay after a
-monotonic sequence cursor.
-
-Prefer `workflow watch` for ordinary monitoring; default human text is a compact
-aggregate heartbeat with status/location, interval event and agent-action counts,
-and quiet duration. It does not repeat command or response excerpts. Add
-`--verbose` for the detailed agent and last-action view. `--jsonl` keeps the
-machine-readable snapshot stream. Compact terminal text includes overall timing
-and the exact `workflow runs result <shortId> --json` next command; `--verbose`
-adds per-attempt timing and token details. `workflow steer` is an optional durable queue for autonomous workflows:
-it never changes the active worker and is delivered only to the next
-not-yet-started decision gate. Steering cannot expand the original authority,
-weaken verification, or bypass proposal validation.
-
-Retries are bounded. `settings.retryAttempts` is an integer from 0 to 3 and
-adds same-pool retries; `escalateOnFail` permits a failed invocation to move to
-another eligible capable pool. `requiresCapabilities` filters pools before
-quota-surplus ranking and never silently selects a weaker pool.
-
-Delegates wait for natural completion by default. Connector timeout metadata
-does not impose an implicit kill timer. Use a step's `timeoutSec` or direct
-run's `--timeout` only as an explicit operator-selected termination control;
-otherwise inspect `activeAgents.lastActivityAt` and `outputBytesObserved`, then
-use workflow cancellation for a genuinely hung process. Some CLIs buffer
-output, so silence is evidence to inspect, not automatic proof of a hang.
-
-For Codex, Claude, Grok, Command Code, and OpenCode, also inspect
-`activeAgents.lastActions` and `activeAgents.stall`. The connector translates
-native JSONL shell commands, reads, edits/writes, tool calls, and response
-blocks into the same action shape and retains the latest three. Ten minutes
-without any transport/event/action evidence becomes `suspected_stalled` with
-`autoTerminate:false`; it is deliberately not treated as proof of death.
-
-For adaptive work, declare a `decide` step plus advisory
-`maxExpansionRounds` and the hard structural safeguards (`maxActions` and
-`maxItemsPerExpansion`). `maxAgents`, `maxWorkflowSeconds`, and
-`maxExpansionRounds` expose remaining headroom and overage to the orchestrator
-but never stop a worker or skip required verification. Near the targets the
-planner is instructed to converge, consolidate existing artifacts, and avoid
-optional work. The loop is durable:
-
-```text
-execute -> observe -> decide -> validate proposal -> append -> execute -> observe
-```
-
-Execution of an accepted proposal is a ready-set scheduler: every action whose
-`dependsOn` have succeeded starts at once (up to `settings.concurrency`, default
-8 for `workflow goal`), and a dependent action starts the moment its own inputs
-finish. The planner is instructed to propose the complete graph per decision —
-per-item fix→verify chains plus one whole-system verify — because each planning
-turn is a full orchestrator round trip. See
-`docs/claude-dynamic-workflow-mechanics.md` for the model this follows.
-
-Since 0.12.0 a decision is meant to be a whole *program*: the runtime executes
-it to the end and consults the planner again only at the program boundary
-(every action finished, or the graph blocked). Two planner-level features make
-that expressible without extra turns:
-
-- `fanout.itemsFrom: "outputs.<actionId>.outFile"` — fan out over the JSON
-  array an earlier (or co-proposed) action ends its output with. The producer
-  becomes an implicit dependency and the list is resolved at execution time. A
-  producer that answered in prose gets one bounded read-only extraction action
-  (`<fanoutId>-items`, `source: "runtime-extraction"`) before the fan-out fails
-  truthfully.
-- `verify.repair: { prompt, maxRounds }` — when the verifier returns
-  `ok:false`, the executor runs `<verifyId>-repair-<n>` (`source:
-  "repair-policy"`) with the verifier's concerns verbatim and re-runs the same
-  verify, up to `maxRounds` (1–3), without a planner turn.
-- `completion: { when: "all-actions-ok", reason }` (top level of a program) —
-  when every action of the program, repairs included, finishes ok and the
-  completion policy is met, the runtime records the `complete` decision itself
-  (`source: "program-completion"`, event `decision.auto_completed`) and the run
-  ends without another planner turn; a failing action emits
-  `decision.completion_predicate_unmet` and the boundary returns to the planner.
-- `outputSchema` on a `run` or fan-out `stepTemplate` — declare it when a
-  downstream action needs reliable structured data, such as an object to render
-  into a dependent prompt or an `items` array for `fanout.itemsFrom`; leave it
-  off for ordinary prose; planner proposals must not put it on `verify`, whose
-  verdict shape is fixed.
-
-Every fan-out records a summary artifact as `outputs.<id>.outFile` and a
-boolean `ok` (item count in `succeeded`), so a verify may depend on a fan-out
-directly. The planner context carries `outputs.<id>.outputExcerpt` (what each
-finished action reported), and `workflow goal` runs a read-only `scout` action
-first (`--no-scout` to skip) so the first program is compiled from a real
-survey of the repository rather than from the goal text alone.
-
-A burst-gated provider (5-hour window ≥ 90 % used) is a *wait*, not a
-failure: the run parks in stage `waiting_for_quota` (`state.quotaWait` shows
-the pool, usage and reset time), re-reads the meter every 60 s, and continues
-when the window resets. Only after the reset time plus 10 min of grace does the
-action fail, with the gate named in `why`.
-
-Allowed planner decisions are `proceed`, `complete`, `needs_more_work`,
-`retry`, `escalate`, `wait_for_approval`, and `stop`. Expansion decisions must
-contain bounded actions; malformed or over-budget output executes nothing.
-A malformed or non-JSON decision does not fail the run: the runtime returns
-the exact validator issues to the same orchestrator thread for up to
-`settings.maxPlannerCorrections` (default 2) corrective turns
-(`decision.correction_requested` events), then benches that pool as
-orchestrator for the rest of the run and tries one other eligible pool
-(`decision.orchestrator_escalated`), and only then settles on a qualified
-`completed_with_concerns`/`blocked` outcome. Safety bounds (`maxActions`,
-`maxItemsPerExpansion`) still terminate immediately with a qualified outcome.
-`complete` still requires successful delivery and verification. `stop` returns
-`completed_with_concerns` with a ready best-effort artifact when useful work
-exists, or `blocked` when it does not; neither hides failed verification.
-Use `workflows/adaptive-code-review.json` as the starting template.
-Planner proposals cannot choose `pool`, `model`, `addDir`, or `taskFile`. Those fields
-are runtime-owned. An initiator may constrain them with a decide step's
-`actionDefaults`; absent a pinned default, normal capability and quota routing
-selects the worker.
-
-Resume by shortId:
-
-```bash
-bullswarm workflow draft run my-audit --resume <shortId> --json --quiet
-```
-
-## Writing goals that converge
-
-State outcomes, not measurements. A goal that fixes character counts, exact
-event names, or cosmetic layout turns every verifier into a nit machine:
-observed 2026-08-29 (run `ejk9w2`), a spec with hard numeric limits cost a
-12-minute verify/repair loop enforcing them against an intermediate state.
-Say what must be true at the end (`npm test` passes, the planner receives one
-contract stated once, context stays bounded) and let workers pick the numbers;
-put any hard limit in ONE final acceptance check, not on every intermediate
-verify.
-
-## Writing prompts that the verify gate will accept
-
-The verify gate (`src/lib/verify.js`) flags outputs as `intent_only`
-when they look like announcements with no work behind them. To pass:
-
-- ≥ 80 characters of *non-intent* prose after intent sentences
-  ("I'll", "I will", "let me", "I'm going to") are stripped.
-- No "rate limit", "auth", "unauthorized" or other failure markers
-  in the first 400 chars.
-- Substantive work: bullet lists, code blocks, paragraphs of analysis.
-
-If you want a step to reliably pass, prompt the model to *show its
-work*: "In 200 words: (1) the top 3 risks, (2) cited file paths,
-(3) a one-sentence recommendation." Not "Summarize the codebase."
-
-## Self-initialization
-
-You do NOT need to set up bullswarm. Every verb self-initializes:
-
-- Missing `~/.bullswarm/`? Created on first call.
-- No enabled pools? `autoSetup` enables every installed real agent CLI. The
-  deterministic `echo` connector is a test fixture and is never auto-enabled.
-- `bullswarm doctor --json` returns a readiness report; non-zero exit
-  only on a real problem. The first call to `doctor` self-heals.
-
-```bash
-# Always start with this; it tells you what's available:
-bullswarm doctor --json
-```
-
-Self-initialization prepares routing and connectors; it does not silently edit
-global agent instructions. Inspect or explicitly install agent awareness with
-`bullswarm integrate status --json` and `bullswarm integrate install --yes`.
-
-The output has a `checks[]` array with one entry per readiness concern
-(config, connectors, meters, offload-capable) and a `nextActions[]` list
-of exact commands to fix anything missing.
-
-## Common patterns
-
-### "Audit every file in this directory"
-
-A discover-based fanout requires the discover delegate to return a bare
-JSON array in its output file. The built-in `echo` pool is a disabled test
-fixture and deliberately returns prose, so use a real provider for this
-variant:
-
-```bash
-bullswarm workflow draft create file-audit \
-  --description="Audit every file" --input=targetDir=<abs/path>
-bullswarm workflow draft phase add file-audit discover
-bullswarm workflow draft phase add file-audit review
-bullswarm workflow draft step add file-audit discover list \
-  --type=run --lane=chore \
-  --prompt="List every file in <DIR> (exclude dotfiles). Return ONLY a JSON array." \
-  --addDir=<abs/path> --timeout=60
-bullswarm workflow draft step add file-audit review per-file \
-  --type=fanout --itemsFrom=outputs.list.outFile \
-  --lane=analyze --concurrency=4 \
-  --step-template='{"lane":"analyze","prompt":"In 80 words: top risk in {{item}}"}'
-bullswarm workflow draft run file-audit --json --quiet
-```
-
-For a deterministic no-network smoke test, provide the fanout items
-as a JSON input instead of asking a delegate to discover them:
-
-```bash
-bullswarm workflow draft create file-audit-smoke \
-  --description="Deterministic fanout smoke test" \
-  --input=targetDir=<abs/path>
-bullswarm workflow draft phase add file-audit-smoke review
-bullswarm workflow draft step add file-audit-smoke review per-file \
-  --type=fanout --itemsFrom=inputs.items --lane=chore --concurrency=2 \
-  --step-template='{"lane":"chore","prompt":"Process {{item}} and report the concrete result."}'
-bullswarm workflow draft run file-audit-smoke \
-  --input='items=["src/index.js","README.md"]' --json --quiet
-```
-
-### "Research this question, get a second opinion, then write up the result"
-
-```bash
-bullswarm workflow draft create research-x
-bullswarm workflow draft phase add research-x research
-bullswarm workflow draft phase add research-x verify
-bullswarm workflow draft phase add research-x write
-# step 1: do the research
-bullswarm workflow draft step add research-x research gather \
-  --type=run --lane=analyze --prompt="<your question>" \
-  --addDir=<abs> --timeout=180
-# step 2: skeptic reviews the research
-bullswarm workflow draft step add research-x verify skeptic \
-  --type=verify --review=outputs.gather.outFile \
-  --prompt='Be a strict skeptic. Reply JSON {ok,concerns,summary}.'
-# step 3: write the final answer, gated by the skeptic's ok
-bullswarm workflow draft step add research-x write final \
-  --type=run --lane=build \
-  --prompt="Write the final answer. Read {{inputs.gather}}." \
-  --addDir=<abs> --timeout=180
-bullswarm workflow draft run research-x --json --quiet
-```
-
-### "I already have a workflow file, just run it"
-
-```bash
-bullswarm workflow run <path-or-name> --input k=v --json --quiet
-# resume:
-bullswarm workflow run <path-or-name> --resume <shortId|runId> --json --quiet
-```
-
-## Sandbox for tests / sandboxes
-
-Set `BULLSWARM_HOME=/tmp/bs-sandbox` to redirect all state into a temp
-directory. Use this when running bullswarm from a subshell, a CI
-runner, or any context where the user's real `~/.bullswarm/` is
-inaccessible. The env var is read on every call, not at module load,
-so changing it between calls works as expected.
-
-```bash
-export BULLSWARM_HOME=/tmp/bs-sandbox
-bullswarm doctor --json     # self-heals inside the sandbox
-```
-
-## Failure modes you will see
-
-- `"refusing to delete without --yes"` — you tried `runs delete` or
-  `draft delete` without the flag. Add `--yes`.
-- `"recursion guard"` — the connector you're dispatching to itself
-  tried to spawn `bullswarm`. Reduce the depth or the workflow's
-  parallelism; the core's depth limit is 2 by default.
-- `workflow.agent_target_exceeded` — the run used more dispatches than the
-  advisory `maxAgents` target. This is planning/observability evidence; the
-  workflow continues and still performs required verification.
-- `"auth/throttle signature"` — the delegate's output matched a
-  configured auth-error string. The pool is auto-quarantined for
-  10 min; subsequent dispatches skip it.
-
-## Reference
-
-- All verbs: `bullswarm <verb> --help` (most also support `--json`)
-- Verdict contract: `src/lib/verify.js`
-- Pacing: `src/meters/framework.js` (5h = burst gate; weekly/monthly = pace)
-- Routing: `src/lib/route.js` (most-behind capable pool; cost-guard)
-- Workflows: `src/workflow/*`
-- Short IDs: `src/workflow/short-id.js`
+# Bullswarm — one delegation interface
+
+Use Bullswarm to decide the smallest execution shape that can deliver a
+verified result. The caller supplies the task; Bullswarm selects either one
+bounded agent or an autonomous workflow and routes providers by capability,
+quota pace, and persisted model policy.
+
+If `BULLSWARM_DEPTH` is already set, perform the assigned task directly. Do not
+invoke Bullswarm recursively unless the user explicitly requires another
+bounded delegation.
+
+## Default `/bullswarm` flow
+
+1. Preserve the user's request verbatim and identify the working directory.
+   Do not broaden authority, invent external writes, or move live conversation
+   context into a delegate that cannot see it.
+2. Preview the common decision without dispatching work:
+
+   ```bash
+   bullswarm delegate --dry-run --json --cwd=<abs-dir> --prompt='<request>'
+   ```
+
+3. Before execution, tell the user:
+
+   - `Single bounded agent` or `Autonomous workflow`;
+   - the decision's `reason`;
+   - the short conceptual `phases` plan.
+
+   This is an update, not an approval gate. Continue immediately unless the
+   selected work itself needs new authority or the user asked only for a plan.
+4. Execute the same decision explicitly so the preview cannot drift:
+
+   ```bash
+   bullswarm delegate --mode=<single|workflow> --cwd=<abs-dir> \
+     --plan='<decision.suggestedPlan>' --prompt='<request>' --json
+   ```
+
+   Use `--task-file` instead of `--prompt` when the request is already in a
+   file or contains text that is awkward to quote safely.
+5. Judge the returned evidence, not the process exit alone.
+
+   - Single mode: if `execution.keepOnClaude`/`keepOnCaller` is true, complete
+     the task in the current agent even if `execution.ok` is also true. Otherwise,
+     when `execution.ok` is true, read `execution.outFile` and use its content.
+     Report concrete failures; do not pretend delegation succeeded.
+   - Workflow mode: report the short ID and observation commands. Use the
+     low-noise watch when the user asked to wait for completion, and obtain the
+     terminal contract with `bullswarm workflow runs result <id> --json`.
+
+Every command self-initializes. Use `bullswarm doctor --json` only when a
+dispatch reports a readiness problem; it is not required before every task.
+
+## How the decision should read
+
+Prefer **single** when one agent can own one bounded outcome without an
+orchestration round:
+
+- explain or inspect one module;
+- review one diff or draft one message;
+- make one localized fix and run its focused test;
+- perform one mechanical conversion or summary.
+
+Prefer **workflow** when coordination materially improves correctness or wall
+time:
+
+- multiple explicit deliverables or lifecycle stages;
+- independent, file-disjoint units that can run concurrently;
+- broad repeated inspection across files, commands, packages, issues, or data;
+- implementation plus independent acceptance, release, or deployment proof;
+- unknown scope requiring discovery followed by fan-out;
+- a goal likely to need repair and re-verification.
+
+Do not choose a workflow merely because a prompt is long. Do not choose one
+agent merely to save a dispatch when the result has independent units or a
+high-stakes acceptance boundary. The CLI classifier is transparent and
+overridable; the agent may pass `--mode` when domain context makes the correct
+shape clearer than textual signals.
+
+## Workflow plan boundary
+
+The preview is an imagined execution shape, not a hand-authored graph. Pass it
+through `--plan`; Bullswarm persists it as `intent.suggestedPlan`. The workflow
+planner may refine it using repository evidence, but must still obey the
+original goal, runtime-owned requirements, verification policy, budgets, and
+proposal validator. Never generate action IDs, pool choices, dependency JSON,
+or a draft workflow unless the user specifically says the graph is the
+contract.
+
+Optimize for convergence:
+
+- batch cheap related edits rather than paying one worker and verifier per
+  tiny file;
+- run substantial disjoint work concurrently;
+- use focused checks while siblings are editing and one final acceptance check;
+- repair only genuine rejection failures;
+- stop with a useful verified result and disclosed non-blocking concerns rather
+  than expanding for optional polish.
+
+## Direct modes and advanced operation
+
+Use the common `delegate` interface by default. Reach for the underlying
+commands only when the user explicitly chooses the execution shape or needs a
+fixed graph:
+
+- `bullswarm run` — one bounded task;
+- `bullswarm workflow goal` — an autonomous goal;
+- `bullswarm workflow draft` — a fixed graph whose exact structure is the
+  contract.
+
+For observation, resume, fan-out, verification, strategy, and failure handling,
+read [references/operations.md](references/operations.md) only when that detail
+is needed.
