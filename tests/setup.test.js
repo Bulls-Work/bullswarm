@@ -105,6 +105,22 @@ test('connector metadata upgrades model paths without replacing custom event rul
   } finally { cleanup(); }
 });
 
+test('connector metadata upgrades additive provider concurrency preferences', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
+      name: 'opencode2', capabilities: ['custom-local-capability'],
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    assert.equal(installed.preferredConcurrency, 1);
+    assert.ok(installed.capabilities.includes('custom-local-capability'));
+    assert.deepEqual(upgradeConnectorMetadata(d), []);
+  } finally { cleanup(); }
+});
+
 test('integration block: approval required, idempotent markers', () => {
   const { d, cleanup } = tmp();
   try {

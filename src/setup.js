@@ -216,7 +216,7 @@ export function upgradeConnectorMetadata(bullswarmDir) {
         installed.eventStream.modelPaths = packaged.eventStream.modelPaths;
         changed = true;
       }
-      for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription']) {
+      for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
         if (installed[field] == null && packaged[field] != null) {
           installed[field] = packaged[field];
           changed = true;
