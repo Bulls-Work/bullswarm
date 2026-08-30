@@ -30,6 +30,11 @@
 - Historical workflow design documents now identify themselves as dated
   implementation records and list the current `verify`, `decide`, and
   `outputSchema` surfaces instead of presenting resolved gaps as current.
+- Extra Relay providers in `~/.config/opencode/opencode.json` (`relay-2`, …)
+  become `opencode2:<id>` pools, spawned with `--model <id>/gpt-5.6-luna`.
+  Spend is read from `GET /api/usage/token` plus
+  `/v1/dashboard/billing/usage` (USD = `total_usage / 100`). The HTML wallet
+  page still needs a browser session and is not the key API.
 
 ## 0.19.0 — unified workflow dashboard
 
