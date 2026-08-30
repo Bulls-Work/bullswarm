@@ -505,7 +505,19 @@ export function verifiesWorker(verify, worker) {
     && new RegExp(`^${verify.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-repair-\\d+$`).test(worker.id);
 }
 
-export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
+export function completedRequirementIds(dynamicActions, outputs = {}) {
+  const completed = new Set();
+  for (const action of dynamicActions) {
+    if (action.kind !== 'verify' || action.status !== 'succeeded' || !actionOutputOk(action, outputs)) continue;
+    for (const id of action.covers ?? []) {
+      const evidence = outputs?.[action.id]?.verify?.requirements?.[id];
+      if (evidence?.ok === true && typeof evidence.evidence === 'string' && evidence.evidence.trim()) completed.add(id);
+    }
+  }
+  return [...completed];
+}
+
+export function completionEvidenceGaps(dynamicActions, policy, outputs = {}, requirements = []) {
   const missing = [];
   const successfulWorkers = dynamicActions.filter(
     (action) => action.kind !== 'verify' && action.status === 'succeeded'
@@ -526,7 +538,18 @@ export function completionEvidenceGaps(dynamicActions, policy, outputs = {}) {
       ? `a successful verification of latest worker ${latestSuccessfulWorker.id}`
       : 'a successful verification action');
   }
+  const covered = new Set(completedRequirementIds(dynamicActions, outputs));
+  const missingRequirements = requirements.filter((entry) => !covered.has(entry.id)).map((entry) => entry.id);
+  if (missingRequirements.length) missing.push(`verified original-goal coverage for ${missingRequirements.join(', ')}`);
   return missing;
+}
+
+function successfulVerifyConcerns(dynamicActions, outputs = {}) {
+  return [...new Set(dynamicActions
+    .filter((action) => action.kind === 'verify' && action.status === 'succeeded' && actionOutputOk(action, outputs))
+    .flatMap((action) => Array.isArray(outputs?.[action.id]?.verify?.concerns)
+      ? outputs[action.id].verify.concerns.map(String) : [])
+    .filter(Boolean))];
 }
 
 function plannerCorrectionAllowance(settings) {
@@ -553,6 +576,7 @@ function terminalPlannerOutcome(state, gate, reason) {
     dynamicActions,
     state.orchestration?.completionPolicy,
     state.outputs,
+    state.intent?.requirements ?? [],
   );
   for (const action of observedActions.filter((entry) => entry.kind === 'verify')) {
     const output = state.outputs?.[action.id];
@@ -964,6 +988,11 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
           }
           proposal = validateDecisionProposal(normalizedProposal, {
             knownActionIds: (state.plan?.actions ?? []).map((action) => action.id),
+            requiredRequirementIds: (state.intent?.requirements ?? []).map((entry) => entry.id),
+            completedRequirementIds: completedRequirementIds(
+              (state.actionLedger ?? []).filter((action) => action.parentId === gate.id),
+              state.outputs,
+            ),
             closedPhases: (state.plan?.actions ?? [])
               .filter((action) => action.source === 'planner')
               .map((action) => action.definition?.phase)
@@ -1071,7 +1100,7 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
     if (proposal.decision === 'complete') {
       const policy = state.orchestration?.completionPolicy;
       const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
-      const missing = completionEvidenceGaps(dynamicActions, policy, state.outputs);
+      const missing = completionEvidenceGaps(dynamicActions, policy, state.outputs, state.intent?.requirements ?? []);
       if (missing.length) {
         const why = `autonomous completion rejected: missing ${missing.join(' and ')}`;
         decision.accepted = false;
@@ -1081,16 +1110,18 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         runtime.persist();
         continue;
       }
+      const concerns = successfulVerifyConcerns(dynamicActions, state.outputs);
+      const terminalStatus = concerns.length ? 'completed_with_concerns' : 'completed';
       state.outcome = {
-        status: 'completed',
+        status: terminalStatus,
         verified: true,
         bestEffort: false,
         reason: proposal.reason,
-        concerns: [],
+        concerns,
         deliveryActionId: dynamicActions.filter((action) =>
           action.kind !== 'verify' && actionOutputOk(action, state.outputs)).at(-1)?.id ?? null,
       };
-      return { ok: true, why: proposal.reason, complete: true, decision: proposal };
+      return { ok: true, why: proposal.reason, complete: true, terminalStatus, decision: proposal };
     }
     if (proposal.decision === 'proceed') return { ok: true, why: proposal.reason, decision: proposal };
     if (proposal.decision === 'stop') {
@@ -1152,7 +1183,12 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         .filter((entry) => !ledgerById.has(entry.id) || !actionOutputOk(ledgerById.get(entry.id), state.outputs))
         .map((entry) => entry.id);
       const dynamicActions = (state.actionLedger ?? []).filter((action) => action.parentId === gate.id);
-      const gaps = failing.length ? [] : completionEvidenceGaps(dynamicActions, state.orchestration?.completionPolicy, state.outputs);
+      const gaps = failing.length ? [] : completionEvidenceGaps(
+        dynamicActions,
+        state.orchestration?.completionPolicy,
+        state.outputs,
+        state.intent?.requirements ?? [],
+      );
       // Pending operator steering blocks self-completion: the documented
       // contract is delivery at the next planner gate, so a clean program
       // returns to the planner (which delivers the steer) instead of
@@ -1182,19 +1218,21 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
           gateId: gate.id, sequence: auto.sequence, programSequence: decision.sequence,
           actions: programActions.map((entry) => entry.id), reason,
         });
+        const concerns = successfulVerifyConcerns(dynamicActions, state.outputs);
+        const terminalStatus = concerns.length ? 'completed_with_concerns' : 'completed';
         state.outcome = {
-          status: 'completed',
+          status: terminalStatus,
           verified: true,
           bestEffort: false,
           reason,
-          concerns: [],
+          concerns,
           deliveryActionId: dynamicActions.filter((action) =>
             action.kind !== 'verify' && actionOutputOk(action, state.outputs)).at(-1)?.id ?? null,
           source: 'program-completion',
         };
         state.outputs[gate.id] = { ...state.outputs[gate.id], ok: true, why: reason, autoCompleted: true };
         runtime.persist();
-        return { ok: true, why: reason, complete: true, decision: { decision: 'complete', reason, actions: [], completion: proposal.completion } };
+        return { ok: true, why: reason, complete: true, terminalStatus, decision: { decision: 'complete', reason, actions: [], completion: proposal.completion } };
       }
       if (pendingSteering.length) {
         runtime.emit('decision.completion_deferred', {
