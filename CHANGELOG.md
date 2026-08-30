@@ -1,5 +1,26 @@
 # bullswarm changelog
 
+## 0.19.0 — unified workflow dashboard
+
+- Running `bullswarm workflow` on an interactive terminal now opens one
+  full-screen home for active and recent runs, with filtering, safe detach,
+  and direct navigation into each workflow's timeline, planner, phases,
+  agents, and activity.
+- Wide terminals pair the run list with a live selected-run preview. Narrow
+  phone and SSH terminals use a full-width stacked list before opening the
+  selected workflow, preserving readable navigation without duplicating the
+  desktop layout.
+- Non-interactive callers still receive side-effect-free help, existing JSON
+  contracts remain stable, and `workflow tui` remains a compatibility alias.
+- Exact-height mobile repainting now preserves the footer while retaining the
+  no-flash in-place refresh behavior.
+
+## 0.18.5 — no-flash workflow TUI
+
+- Full-screen workflow views repaint rows in place instead of repeatedly
+  clearing the terminal, removing the visible flash on slower mobile and SSH
+  sessions.
+
 ## 0.18.4 — reliable auto-follow tail
 
 - Timestamp-aligned mobile auto-follow now preserves the newest workflow
