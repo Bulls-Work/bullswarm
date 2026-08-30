@@ -4,3 +4,4 @@ node_modules/
 /tmp/
 bullswarm-*.tgz
 .commandcode/
+.relay-api-key*

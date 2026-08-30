@@ -7,7 +7,9 @@ import { fetchCodexUsage, CodexMeterError } from './codex.js';
 import { fetchGrokUsage, GrokMeterError } from './grok.js';
 import { fetchCommandCodeUsage, CommandCodeMeterError } from './command-code.js';
 import { fetchClaudeUsage, fetchClaudeUsageWithCredentials, ClaudeMeterError } from './claude.js';
+import { fetchRelayUsage, RelayMeterError } from './relay.js';
 import { discoverClaudeAccounts, poolNameForSlug } from '../lib/claude-accounts.js';
+import { discoverRelayProviders } from '../lib/opencode-relay.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
@@ -36,9 +38,27 @@ function claudeReaderFor(pool) {
   };
 }
 
+function relayReaderFor(pool) {
+  return async () => {
+    const providers = discoverRelayProviders();
+    const hit = providers.find((p) => p.pool === pool);
+    if (!hit) {
+      throw new RelayMeterError(`No Relay key configured in OpenCode for pool ${pool}.`, 'no_token');
+    }
+    const includedUsd = Number(process.env.RELAY_PLAN_USD ?? 50);
+    return fetchRelayUsage(hit.apiKey, {
+      pool,
+      includedUsd: Number.isFinite(includedUsd) && includedUsd > 0 ? includedUsd : null,
+    });
+  };
+}
+
 export function readerFor(pool) {
   if (pool === 'claude-code' || pool === 'claude' || pool.startsWith('claude-code:')) {
     return claudeReaderFor(pool);
+  }
+  if (pool === 'opencode2' || pool.startsWith('opencode2:')) {
+    return relayReaderFor(pool);
   }
   return READERS[pool] ?? null;
 }
@@ -102,4 +122,4 @@ export async function getAllMeterReadings(poolNames, opts = {}) {
   return out;
 }
 
-export { CodexMeterError, GrokMeterError, CommandCodeMeterError, ClaudeMeterError, FRESH_MS, STALE_MS };
+export { CodexMeterError, GrokMeterError, CommandCodeMeterError, ClaudeMeterError, RelayMeterError, FRESH_MS, STALE_MS };
