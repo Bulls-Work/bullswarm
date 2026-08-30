@@ -1,5 +1,12 @@
 # bullswarm changelog
 
+## 0.18.3 — mobile timeline polish
+
+- Auto-follow now begins at a timestamped milestone instead of exposing an
+  orphaned detail line when a long timeline is clipped on a small terminal.
+- Qualified terminal runs state the number of concerns and direct the user to
+  review them in the result envelope.
+
 ## 0.18.2 — truthful recovery timeline and verifier cleanup
 
 - Dependency-blocked plan branches now appear as a single skipped phase in the
