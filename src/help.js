@@ -1256,13 +1256,14 @@ HELP.runs = HELP.workflow.runs;
 export const HELP_PATHS = Object.freeze(collectPaths(HELP));
 
 export function helpForArgs(argv) {
-  const wantsHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help';
+  const positionalHelp = argv.at(-1) === 'help';
+  const wantsHelp = argv.includes('--help') || argv.includes('-h') || argv[0] === 'help' || positionalHelp;
   if (!wantsHelp) return null;
   if (argv.includes('--version')) return HELP.version._text;
   const tokens = argv[0] === 'help' ? argv.slice(1) : argv;
   let node = HELP;
   for (const token of tokens) {
-    if (token === '--help' || token === '-h' || token.startsWith('-')) continue;
+    if (token === 'help' || token === '--help' || token === '-h' || token.startsWith('-')) continue;
     if (!node[token]) break;
     node = node[token];
   }

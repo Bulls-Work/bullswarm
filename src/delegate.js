@@ -12,9 +12,12 @@ const MODES = new Set(['auto', 'single', 'workflow']);
 const LANES = new Set(['analyze', 'build', 'chore']);
 const EFFORTS = new Set(['high', 'medium', 'low']);
 
-const MUTATION_RE = /\b(?:add|build|change|create|delete|edit|fix|implement|migrate|modify|patch|refactor|remove|rename|replace|update|write)\b/i;
-const NEGATED_MUTATION_RE = /\b(?:do not|don't|must not|never)\s+(?:\w+\s+){0,2}(?:add|build|change|create|delete|edit|fix|implement|migrate|modify|patch|refactor|remove|rename|replace|update|write)\b/gi;
-const READ_ONLY_DIRECTIVE_RE = /\bread[- ]only\b|\b(?:do not|don't|must not|never)\b[^.\n;]{0,80}\b(?:add|build|change|create|delete|edit|fix|implement|migrate|modify|patch|refactor|remove|rename|replace|update|write)\b[^.\n;]{0,80}\b(?:files?|code|repository|repo|worktree)\b/i;
+const MUTATION_WORDS = '(?:add|build|change|create|delete|edit|fix|implement|migrate|modify|patch|refactor|remove|rename|replace|update|write)';
+const MUTATION_RE = new RegExp(`\\b${MUTATION_WORDS}\\b(?!-)`, 'i');
+const READ_ONLY_LABEL_RE = /\bread[- ]only\b/i;
+const NEGATED_CLAUSE_RE = /\b(?:do not|don't|must not|never)\b[^.;\n]*/gi;
+const WITHOUT_CLAUSE_RE = /\bwithout\b[^.;\n]*/gi;
+const INSTRUCTIONAL_MUTATION_RE = new RegExp(`\\b(?:how|ways?)\\s+to\\s+${MUTATION_WORDS}\\b`, 'gi');
 const ANALYSIS_RE = /\b(?:analy[sz]e|audit|diagnose|explain|inspect|investigate|research|review|summari[sz]e|verify)\b/i;
 const CHORE_RE = /\b(?:convert|draft|format|list|reformat|rename|summari[sz]e|transcribe)\b/i;
 
@@ -91,8 +94,13 @@ export function classifyTask({ task, mode = 'auto', lane = null, plan = null } =
 
 function hasMutationIntent(task) {
   const text = String(task);
-  if (READ_ONLY_DIRECTIVE_RE.test(text)) return false;
-  return MUTATION_RE.test(text.replace(NEGATED_MUTATION_RE, ''));
+  if (READ_ONLY_LABEL_RE.test(text)) return false;
+  const removeNonIntentClause = (clause) => (MUTATION_RE.test(clause) ? '' : clause);
+  const remaining = text
+    .replace(NEGATED_CLAUSE_RE, removeNonIntentClause)
+    .replace(WITHOUT_CLAUSE_RE, removeNonIntentClause)
+    .replace(INSTRUCTIONAL_MUTATION_RE, '');
+  return MUTATION_RE.test(remaining);
 }
 
 function workflowPhases(text, { readOnly }) {
