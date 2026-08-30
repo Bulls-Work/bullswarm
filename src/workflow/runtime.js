@@ -75,6 +75,59 @@ export function enforceVerifyRequirementCoverage(parsed, requiredCoverage = []) 
   return { parsed: normalized, concerns };
 }
 
+export function parseVerifyJsonText(text) {
+  const source = String(text ?? '').trim();
+  const starts = [];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] === '{') starts.push(index);
+  }
+  let parseError = null;
+  for (const start of starts) {
+    const suffix = source.slice(start);
+    const candidates = [];
+    const lastClose = suffix.lastIndexOf('}');
+    if (lastClose > 0) candidates.push(suffix.slice(0, lastClose + 1));
+    const repaired = closeTruncatedJsonObject(suffix);
+    if (repaired && !candidates.includes(repaired)) candidates.push(repaired);
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object'
+          && typeof parsed.ok === 'boolean'
+          && Array.isArray(parsed.concerns)
+          && typeof parsed.summary === 'string') {
+          return { parsed, parseError: null };
+        }
+      } catch (err) {
+        parseError = err.message;
+      }
+    }
+  }
+  return { parsed: null, parseError };
+}
+
+function closeTruncatedJsonObject(source) {
+  const stack = [];
+  let quoted = false;
+  let escaped = false;
+  for (const char of source) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') quoted = true;
+    else if (char === '{') stack.push('}');
+    else if (char === '[') stack.push(']');
+    else if (char === '}' || char === ']') {
+      if (stack.pop() !== char) return null;
+    }
+  }
+  if (quoted || !stack.length) return null;
+  return `${source}${stack.reverse().join('')}`;
+}
+
 export function plannerBudgetContext(budget = {}) {
   const dispatchesUsedBeforePlanner = Number(budget.dispatchesUsed ?? 0);
   const rawTarget = budget.dispatchTarget ?? budget.dispatchLimit;
@@ -1223,13 +1276,7 @@ export class WorkflowRuntime {
     const parseVerdictFile = (path) => {
       try {
         const out = readFileSync(path, 'utf8');
-        const start = out.indexOf('{');
-        const end = out.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-          const j = JSON.parse(out.slice(start, end + 1));
-          if (j && typeof j === 'object') return { parsed: j, parseError: null };
-        }
-        return { parsed: null, parseError: null };
+        return parseVerifyJsonText(out);
       } catch (err) {
         return { parsed: null, parseError: err.message };
       }
@@ -1243,16 +1290,22 @@ export class WorkflowRuntime {
     // same economics that give outputSchema its single retry.
     if (verdict.ok && !parsed) {
       this.emit('verify.verdict_retry', { actionId: step.id, why: parseError ?? 'no JSON object in verdict' });
-      const retryVerdict = await this.dispatch(step, [
-        taskText,
-        '',
-        `Your previous reply could not be used: ${parseError ?? 'it did not contain a parseable JSON object'}.`,
-        `Do the review again if needed, then RETURN ONLY the single JSON object ${requiredCoverage.length ? `{"ok":true,"concerns":[],"summary":"...","requirements":${coverageVerdictShape}}` : '{"ok": <true|false>, "concerns": [...], "summary": "..."}'} — no prose, no markdown fences, nothing before "{" or after "}".`,
-      ].join('\n'), targetDir, paths, {
-        escalate: this.state.settings.escalateOnFail !== false,
-        retryAttempts: 0,
-        phase: opts.phase,
-      });
+      let retryVerdict;
+      try {
+        retryVerdict = await this.dispatch(step, [
+          taskText,
+          '',
+          `Your previous reply could not be used: ${parseError ?? 'it did not contain a parseable JSON object'}.`,
+          `Do the review again if needed, then RETURN ONLY the single JSON object ${requiredCoverage.length ? `{"ok":true,"concerns":[],"summary":"...","requirements":${coverageVerdictShape}}` : '{"ok": <true|false>, "concerns": [...], "summary": "..."}'} — no prose, no markdown fences, nothing before "{" or after "}".`,
+        ].join('\n'), targetDir, paths, {
+          escalate: this.state.settings.escalateOnFail !== false,
+          retryAttempts: 0,
+          phase: opts.phase,
+        });
+      } finally {
+        delete this.state.activeAgents?.[step.id];
+        this.persist();
+      }
       if (retryVerdict.ok) {
         verdict = retryVerdict;
         finalPaths.taskFile = retryVerdict.taskFile ?? finalPaths.taskFile;
