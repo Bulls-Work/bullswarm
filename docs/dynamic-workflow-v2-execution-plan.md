@@ -176,8 +176,16 @@ The autonomous cutover is intentionally one-way:
   retained;
 - a resume request for an old autonomous run returns a clear unsupported-run
   diagnostic before dispatching anything; and
-- old run directories may be listed and explicitly deleted, but their repair
-  chains, verifier ancestry, and result envelopes are not migrated.
+- old autonomous run directories are disposable development data. They may be
+  deleted at cutover and V2 listing, resume, result, watch, and TUI code has no
+  obligation to parse or display them; and
+- there is no autonomous state adapter, migration command, compatibility
+  renderer, mixed-version test matrix, or fallback into the old planner.
+
+The only compatibility behavior is fail-closed detection: if an old
+autonomous run directory is encountered explicitly, Bullswarm reports that it
+is unsupported and performs no dispatch. This guard exists to prevent an
+accidental paid run, not to preserve V1 data.
 
 ## 2. Kernel invariants
 

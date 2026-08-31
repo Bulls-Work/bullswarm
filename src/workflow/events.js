@@ -45,7 +45,7 @@ export function appendEvent(runDir, state, type, payload = {}) {
   }
   try {
     const diskLast = readEvents(runDir).at(-1)?.sequence ?? 0;
-    const sequence = Math.max(Number(state.eventSequence ?? 0), diskLast) + 1;
+    const sequence = Math.max(Number(state.events?.sequence ?? state.eventSequence ?? 0), diskLast) + 1;
     const event = {
       sequence,
       type,
@@ -56,8 +56,13 @@ export function appendEvent(runDir, state, type, payload = {}) {
     // One append call writes one complete line. Readers ignore any malformed
     // trailing line left by an interrupted filesystem write.
     appendFileSync(eventsPath(runDir), `${JSON.stringify(event)}\n`, { flag: 'a' });
-    state.eventSequence = sequence;
-    state.lastEvent = { sequence, type, committedAt: event.committedAt };
+    if (state.events && typeof state.events === 'object') {
+      state.events.sequence = sequence;
+      state.events.last = { sequence, type, committedAt: event.committedAt };
+    } else {
+      state.eventSequence = sequence;
+      state.lastEvent = { sequence, type, committedAt: event.committedAt };
+    }
     return event;
   } finally {
     closeSync(lockFd);

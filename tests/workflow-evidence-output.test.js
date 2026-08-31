@@ -8,6 +8,7 @@ import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION,
   EVIDENCE_OUTPUT_SCHEMA_VERSION,
   buildEvidencePreflight,
+  parseEvidenceOutput,
   validateEvidenceContract,
   validateEvidenceOutput,
 } from '../src/workflow/evidence-output.js';
@@ -26,6 +27,13 @@ test('accepts the exact V2 envelope and defensively normalizes it', () => {
   assert.deepEqual(result, { ok: true, errors: [], value: input });
   input.requirements.result.evidence[0] = 'changed';
   assert.equal(result.value.requirements.result.evidence[0], 'tests passed');
+});
+
+test('parses only a trailing schema-valid evidence object', () => {
+  const parsed = parseEvidenceOutput(`inspection notes\n${JSON.stringify(value())}`, contract());
+  assert.equal(parsed.ok, true);
+  assert.equal(parseEvidenceOutput('not json', contract()).ok, false);
+  assert.equal(parseEvidenceOutput(JSON.stringify({ ...value(), requirements: {} }), contract()).ok, false);
 });
 
 test('requires exact coverage, own fields, substantive evidence, and string concerns', () => {
