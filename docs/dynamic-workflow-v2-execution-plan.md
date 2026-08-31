@@ -51,6 +51,14 @@ forbid parallel writers, but several coherent acceptance slices may reuse those
 files in a short ordered sequence, with each behavior kept beside its focused
 regression test.
 
+The next planning probe improved to two ordered work actions, but the first
+still used one umbrella action for several independently observable clauses
+inside a single long requirement. Direct inspection found missing Esc-at-list
+and sibling-workflow fallback semantics before the next slice finished, so the
+run was cancelled without waiting for rejection. Scout and planner guidance
+now permits multiple ordered actions to affect the same requirement and keeps
+independently testable clauses as separate default task boundaries.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
