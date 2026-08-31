@@ -75,6 +75,36 @@ test('top-level run rejects empty and ambiguous task usage with exit 2', () => {
   } finally { f.cleanup(); }
 });
 
+test('top-level run validates heartbeat interval before dispatch', () => {
+  const f = sandbox();
+  try {
+    const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '0', 'TASK', '--json']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /heartbeat.*greater than or equal to 1/);
+    assert.equal(result.stdout, '');
+    const missing = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '--json', 'TASK']);
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /heartbeat.*greater than or equal to 1/);
+  } finally { f.cleanup(); }
+});
+
+test('top-level run heartbeat keeps JSON stdout clean and emits aggregate stderr only', () => {
+  const f = sandbox();
+  try {
+    const worker = join(f.home, 'slow-worker.mjs');
+    writeFileSync(worker, `setTimeout(() => console.log(${JSON.stringify('## Completed\n\nImplemented the bounded task and verified the requested behavior with focused regression evidence. The result is complete, concrete, and saved for inspection.')}), 1150);\n`);
+    const connectorPath = join(f.home, 'connectors', 'local-agent.json');
+    const connector = JSON.parse(readFileSync(connectorPath, 'utf8'));
+    connector.spawn.cmd = ['node', worker, '{taskFile}'];
+    writeFileSync(connectorPath, JSON.stringify(connector));
+
+    const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '1', 'TASK', '--json']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+    assert.match(result.stderr, /^bullswarm run · active 1s · 0 events · 0 B · activity 1s ago\n$/);
+  } finally { f.cleanup(); }
+});
+
 test('health rejudges saved content instead of trusting the saved exit verdict', () => {
   const f = sandbox();
   try {

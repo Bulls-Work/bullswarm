@@ -20,6 +20,7 @@ import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
 import { resolveDispatchModel } from './lib/strategy.js';
 import { cmdDelegate } from './delegate.js';
+import { createRunHeartbeat } from './lib/run-heartbeat.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -90,6 +91,11 @@ async function cmdPools(opts) {
 async function cmdRun(opts) {
   const now = Date.now();
   const lane = opts.lane;
+  const heartbeatSec = opts.heartbeat == null || opts.heartbeat === true ? null : Number(opts.heartbeat);
+  if (opts.heartbeat === true || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
+    console.error('--heartbeat must be a number of seconds greater than or equal to 1');
+    return 2;
+  }
   const effortTier = opts.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[lane] ?? null);
   if (effortTier && !['high', 'medium', 'low'].includes(effortTier)) {
     console.error('--effort must be high, medium, or low');
@@ -203,14 +209,23 @@ async function cmdRun(opts) {
     outFile: join(runDir, `out-${stamp}.md`),
   };
 
-  const verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
-    // Long-running coding agents are allowed to finish by default. `--timeout`
-    // remains an explicit operator escape hatch; connector metadata no longer
-    // imposes a hidden wall-clock kill timer.
-    timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
-    env: childDepthEnv(process.env),
-    model: selectedModel,
-  });
+  const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
+  heartbeat.start();
+  let verdict;
+  try {
+    verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
+      // Long-running coding agents are allowed to finish by default. `--timeout`
+      // remains an explicit operator escape hatch; connector metadata no longer
+      // imposes a hidden wall-clock kill timer.
+      timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
+      env: childDepthEnv(process.env),
+      model: selectedModel,
+      onActivity: (event) => heartbeat.activity(event),
+      onAgentEvent: () => heartbeat.event(),
+    });
+  } finally {
+    heartbeat.stop();
+  }
 
   // Persist incumbency on success; quarantine hint on auth failure.
   if (verdict.ok) {
