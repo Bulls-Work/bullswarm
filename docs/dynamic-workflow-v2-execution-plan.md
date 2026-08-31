@@ -69,6 +69,15 @@ slice, with an explicit prohibition on sibling, downstream, or whole-goal work.
 The full requirement text remains available to the kernel-owned evidence
 action, where it belongs.
 
+The following retry exposed a separate isolation leak before the first worker
+finished: the runtime header named the isolated action worktree, while the
+planner-authored action prose still repeated the integration target path. A
+worker command consequently created scratch files in the target worktree
+instead of its isolated worktree. The kernel now rewrites exact target-path
+references in mutating action prose to the action's actual workspace before
+dispatch; regression coverage proves the integration path is absent from an
+isolated worker task.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
