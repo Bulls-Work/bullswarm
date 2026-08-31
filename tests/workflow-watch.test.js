@@ -8,6 +8,8 @@ import {
   renderWatchSnapshot, runWorkflowWatch,
 } from '../src/workflow/watch-cli.js';
 import { appendEvent } from '../src/workflow/events.js';
+import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
+import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
 function fixture(state = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bs-watch-'));
@@ -51,6 +53,46 @@ test('watch snapshot is concise and stable between heartbeats', () => {
     assert.equal(snapshotFingerprint(snapshot), snapshotFingerprint(later));
     assert.equal(formatDuration(3661), '1h01m');
   } finally { f.cleanup(); }
+});
+
+test('V2 watch heartbeat reports only counts, latest purpose, freshness, and result command', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-watch-v2-'));
+  const runId = 'wf-v2watch-abcdef';
+  const runDir = join(home, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  try {
+    const goal = createV2GoalDocument({ goal: 'Write and inspect a report', cwd: '/tmp/repo', requirements: [{ id: 'report-correct', text: 'Report is correct' }], settings: { scout: false } });
+    let state = createV2State(goal, { runId, shortId: 'v2w234' });
+    state.lifecycle = { status: 'running', startedAt: new Date(Date.now() - 60_000).toISOString(), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write then inspect.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'write-report', purpose: 'Write report', dependsOn: [], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Write it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['report'] },
+        { id: 'inspect-report', purpose: 'Inspect report', dependsOn: ['write-report'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report'], produces: [] },
+      ] },
+    });
+    state.actions[0].status = 'running'; state.actions[0].startedAt = new Date(Date.now() - 30_000).toISOString(); state.actions[0].attempts = 1;
+    state.attempts.push({ id: 'write-report-1', actionId: 'write-report', ordinal: 1, status: 'running', pool: 'relay', model: 'gpt-5.6-luna', startedAt: state.actions[0].startedAt, finishedAt: null, lastActivityAt: new Date(Date.now() - 2_000).toISOString(), outputBytesObserved: 1200, lastAgentEvent: { kind: 'tool', summary: 'node --test' } });
+    appendEvent(runDir, state, 'action.started', { actionId: 'write-report' });
+    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    const snapshot = watchSnapshot(runDir, state, new Date());
+    const compact = renderWatchSnapshot(snapshot, { events: [{ type: 'action.started' }] });
+    assert.match(compact, /1 running, 1 waiting/);
+    assert.match(compact, /latest: Write report/);
+    assert.match(compact, /1 new events/);
+    assert.doesNotMatch(compact, /node --test|taskFile|outputFile/);
+    assert.match(renderWatchSnapshot(snapshot, { verbose: true }), /tool:running · node --test/);
+
+    state.actions[0].status = 'succeeded'; state.actions[0].finishedAt = new Date().toISOString();
+    state.actions[1].status = 'blocked';
+    state.attempts[0].status = 'succeeded'; state.attempts[0].finishedAt = state.actions[0].finishedAt;
+    state.lifecycle = { status: 'partial', startedAt: state.lifecycle.startedAt, finishedAt: new Date().toISOString(), resultFile: join(runDir, 'result.json') };
+    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    let output = '';
+    assert.equal(await runWorkflowWatch(home, 'v2w234', { once: true, output: { write: (text) => { output += text; } } }), 0);
+    assert.match(output, /workflow ended partial; result ready/);
+    assert.match(output, /next: bullswarm workflow runs result v2w234 --json/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('human watch reports interval activity without repeating excerpts', () => {

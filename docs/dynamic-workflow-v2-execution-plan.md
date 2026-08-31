@@ -9,11 +9,31 @@ loops.
 
 This plan consolidates the design and reliability findings from the current
 dynamic-workflow implementation, its dogfood runs, and the recent TUI work. It
-is the implementation order, not a claim that the V2 behavior already exists.
+is both the implementation order and the acceptance ledger below; unchecked
+provider and release gates must not be inferred from completed local work.
 
 During this revamp, delegated work must use bounded `bullswarm run` calls. Do
 not dogfood `bullswarm workflow goal` to build its own replacement until the
 new deterministic kernel gates pass.
+
+### Current execution checkpoint
+
+As of 2026-08-31, sequences 0-14 are implemented in the candidate worktree and
+the offline suite passes 493/493. This includes the V2-only goal/state/result
+schemas, generic action and evidence contracts, requirement ledger, planner
+validator, dependency scheduler, changed-path ownership, isolated integration,
+mechanical-only retry/fallback, gap consolidation, kernel completion, durable
+presentation stages, unified desktop/mobile dashboard, quiet watch, native V2
+runs/result commands, cancellation/resume, help, README, and skill updates.
+
+The retired autonomous V1 builder, resume-override helpers, and runtime
+migration rewrite have been removed. Old autonomous documents and run IDs fail
+before dispatch. The separately authored fixed-graph engine remains supported.
+
+Sequences 15-17 remain acceptance work: bounded real-Luna component probes,
+the five-run zero-rejection canary streak (including the difficult goal three
+times), independent review/PR/CI, release, installed-binary verification, and
+the final installed canary.
 
 ## 1. Locked product shape
 

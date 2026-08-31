@@ -7,6 +7,8 @@ import { EventEmitter } from 'node:events';
 import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, actionJson, decideApproval, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
+import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
+import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-'));
@@ -113,6 +115,55 @@ test('dashboard renders ongoing run progress and details', () => {
     assert.match(renderDetails(rows[0]), /read=120 cache-read=40 cache-write=10 output=30/);
     assert.match(renderDetails(rows[0]), /quota≈0.5%/);
   } finally { cleanup(); }
+});
+
+test('V2 dashboard renders durable presentation stages, dense timeline, live filtering, and plain next step', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-v2-'));
+  try {
+    const runId = 'wf-v2dash-abcdef';
+    const dir = join(home, 'workflows', runId);
+    mkdirSync(dir, { recursive: true });
+    const goal = createV2GoalDocument({
+      goal: 'Implement and prove a result envelope', cwd: '/tmp/repo',
+      requirements: [{ id: 'result-correct', text: 'The result envelope is correct' }],
+      settings: { scout: false, concurrency: 2 },
+    });
+    let state = createV2State(goal, { runId, shortId: 'v2d234' });
+    state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Implement then collect independent evidence.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'implement-result', purpose: 'Implement result envelope', dependsOn: [], affects: ['result-correct'], ownedFiles: ['src/result.js'], prompt: 'Implement it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['result'] },
+        { id: 'check-result', purpose: 'Collect independent evidence', dependsOn: ['implement-result'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['result-correct'], inputs: ['result'], produces: [] },
+      ] },
+    });
+    state.presentation.stages[0].startedAt = iso(2);
+    state.presentation.stages[0].completedAt = iso(5);
+    Object.assign(state.actions[0], { status: 'succeeded', startedAt: iso(2), finishedAt: iso(5), attempts: 1 });
+    state.attempts.push({ id: 'implement-result-1', actionId: 'implement-result', ordinal: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(2), finishedAt: iso(5) });
+    state.presentation.stages[1].startedAt = iso(6);
+    Object.assign(state.actions[1], { status: 'running', startedAt: iso(6), attempts: 1 });
+    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay-2', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null, lastActivityAt: iso(7), outputBytesObserved: 42, lastAgentEvent: { at: iso(7), kind: 'tool', summary: 'node --test' } });
+    const emit = (type, committedAt, payload) => appendEvent(dir, state, type, { ...payload, committedAt });
+    emit('workflow.started', iso(0), {});
+    emit('planner.finished', iso(1), { turn: 1, ok: true, summary: 'Implement then collect independent evidence.' });
+    emit('presentation.stage_started', iso(2), { stageId: 'r1-implementation', label: 'Implementation' });
+    emit('action.finished', iso(5), { actionId: 'implement-result', status: 'succeeded' });
+    emit('presentation.stage_completed', iso(5), { stageId: 'r1-implementation', label: 'Implementation', status: 'completed', completed: 1, total: 1 });
+    emit('presentation.stage_started', iso(6), { stageId: 'r1-evidence', label: 'Evidence' });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const screen = renderWorkflowTui(row, { width: 120, height: 30 });
+    assert.match(screen, /\[Workflow Planner\] plan created/);
+    assert.match(screen, /\[Phase: Implementation\] started/);
+    assert.match(screen, /\[Phase: Implementation\] completed/);
+    assert.match(screen, /check-result · relay-2 · gpt-5\.6-luna/);
+    assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
+    assert.match(screen, /Waiting for 1 worker/);
+    assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
+    const cancelled = requestCancel(home, 'v2d234');
+    assert.equal(cancelled.state.cancellation.requested, true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('unified dashboard lists active before recent runs and renders a selected-run preview', () => {

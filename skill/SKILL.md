@@ -73,7 +73,7 @@ time:
 - broad repeated inspection across files, commands, packages, issues, or data;
 - implementation plus independent acceptance, release, or deployment proof;
 - unknown scope requiring discovery followed by fan-out;
-- a goal likely to need repair and re-verification.
+- a goal likely to expose a real semantic gap that benefits from one bounded planner update.
 
 Do not choose a workflow merely because a prompt is long. Do not choose one
 agent merely to save a dispatch when the result has independent units or a
@@ -105,7 +105,7 @@ Optimize for convergence:
   tiny file;
 - run substantial disjoint work concurrently;
 - use focused checks while siblings are editing and one final acceptance check;
-- repair only genuine rejection failures;
+- let the kernel retry only mechanical failures; semantic gaps return to the planner once as a consolidated report;
 - stop with a useful verified result and disclosed non-blocking concerns rather
   than expanding for optional polish.
 

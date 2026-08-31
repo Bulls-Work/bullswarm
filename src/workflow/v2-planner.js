@@ -2,6 +2,7 @@ import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-v
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState } from './v2-state.js';
+import { deriveV2PresentationStages } from './v2-presentation.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -151,6 +152,7 @@ export function applyV2PlannerResponse(state, response, options = {}) {
     revision,
     actions: [...next.program.actions, ...accepted.program.actions],
   };
+  next.presentation.stages.push(...deriveV2PresentationStages(accepted.program.actions, revision));
   for (const action of accepted.program.actions) next.actions.push({
     id: action.id, status: 'pending', attempts: 0, programRevision: revision,
     workRevision: next.ledger.workRevision, startedAt: null, finishedAt: null,

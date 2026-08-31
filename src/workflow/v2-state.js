@@ -17,6 +17,7 @@ const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
 const LIFECYCLE_STATUSES = new Set(['queued', 'planning', 'running', 'waiting', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
+const PREFLIGHT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'skipped']);
 const ACTION_STATE_FIELDS = new Set([
   'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',
   'outputFile', 'artifactIds', 'lastFailure',
@@ -34,6 +35,9 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
   'ordinal', 'turn', 'status', 'pool', 'model', 'startedAt', 'finishedAt',
   'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
   'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
+]);
+const PRESENTATION_STAGE_FIELDS = new Set([
+  'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -165,8 +169,10 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     intent: goalDocument.intent,
     config: goalDocument.config,
     lifecycle: { status: 'queued', startedAt: null, finishedAt: null, resultFile: null },
+    preflight: { scout: { status: goalDocument.config.settings.scout === false ? 'skipped' : 'pending', startedAt: null, finishedAt: null, outputFile: null, attempts: [], lastFailure: null } },
     planner: { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] },
     program: { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, revision: 0, actions: [] },
+    presentation: { stages: [] },
     actions: [], attempts: [],
     budget: { agents: 0, seconds: 0, expansions: 0 },
     cancellation: { requested: false, requestedAt: null, reason: null },
@@ -225,6 +231,36 @@ function validateEvents(events) {
   } else if (events.sequence !== 0) fail('state.events.last is required when sequence is non-zero');
 }
 
+function validatePresentation(presentation, program) {
+  object(presentation, 'state.presentation');
+  noUnknown(presentation, new Set(['stages']), 'state.presentation');
+  if (!Array.isArray(presentation.stages)) fail('state.presentation.stages must be an array');
+  const programIds = new Set(program.actions.map((action) => action.id));
+  const assigned = new Set();
+  const stageIds = new Set();
+  for (const [index, stage] of presentation.stages.entries()) {
+    object(stage, `state.presentation.stages[${index}]`);
+    noUnknown(stage, PRESENTATION_STAGE_FIELDS, `state.presentation.stages[${index}]`);
+    const id = identifier(stage.id, `state.presentation.stages[${index}].id`);
+    if (stageIds.has(id)) fail(`duplicate presentation stage ${id}`);
+    stageIds.add(id);
+    requiredString(stage.label, `state.presentation.stages[${index}].label`);
+    nonNegativeInteger(stage.revision, `state.presentation.stages[${index}].revision`);
+    if (stage.revision < 1 || stage.revision > program.revision) fail(`state.presentation.stages[${index}].revision must reference an existing program revision`);
+    if (!Array.isArray(stage.actionIds) || !stage.actionIds.length) fail(`state.presentation.stages[${index}].actionIds must be a non-empty array`);
+    for (const actionId of stage.actionIds) {
+      identifier(actionId, `state.presentation.stages[${index}].actionIds`);
+      if (!programIds.has(actionId)) fail(`presentation stage ${id} references unknown action ${actionId}`);
+      if (assigned.has(actionId)) fail(`program action ${actionId} appears in multiple presentation stages`);
+      assigned.add(actionId);
+    }
+    timestamp(stage.startedAt, `state.presentation.stages[${index}].startedAt`);
+    timestamp(stage.completedAt, `state.presentation.stages[${index}].completedAt`);
+    if (stage.completedAt && !stage.startedAt) fail(`presentation stage ${id} cannot complete before it starts`);
+  }
+  for (const actionId of programIds) if (!assigned.has(actionId)) fail(`presentation is missing program action ${actionId}`);
+}
+
 function validateLifecycle(lifecycle) {
   object(lifecycle, 'state.lifecycle');
   noUnknown(lifecycle, new Set(['status', 'startedAt', 'finishedAt', 'resultFile']), 'state.lifecycle');
@@ -234,6 +270,32 @@ function validateLifecycle(lifecycle) {
   nullableString(lifecycle.resultFile, 'state.lifecycle.resultFile');
   if (lifecycle.finishedAt !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.finishedAt requires a terminal status');
   if (lifecycle.resultFile !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.resultFile requires a terminal status');
+}
+
+function validatePreflight(preflight) {
+  object(preflight, 'state.preflight');
+  noUnknown(preflight, new Set(['scout']), 'state.preflight');
+  object(preflight.scout, 'state.preflight.scout');
+  noUnknown(preflight.scout, new Set(['status', 'startedAt', 'finishedAt', 'outputFile', 'attempts', 'lastFailure']), 'state.preflight.scout');
+  if (!PREFLIGHT_STATUSES.has(preflight.scout.status)) fail('state.preflight.scout.status is invalid');
+  timestamp(preflight.scout.startedAt, 'state.preflight.scout.startedAt');
+  timestamp(preflight.scout.finishedAt, 'state.preflight.scout.finishedAt');
+  nullableString(preflight.scout.outputFile, 'state.preflight.scout.outputFile');
+  if (preflight.scout.lastFailure !== null && !isObject(preflight.scout.lastFailure)) fail('state.preflight.scout.lastFailure must be null or an object');
+  if (!Array.isArray(preflight.scout.attempts)) fail('state.preflight.scout.attempts must be an array');
+  for (const [index, attempt] of preflight.scout.attempts.entries()) {
+    object(attempt, `state.preflight.scout.attempts[${index}]`);
+    noUnknown(attempt, PLANNER_ATTEMPT_FIELDS, `state.preflight.scout.attempts[${index}]`);
+    if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.preflight.scout.attempts[${index}].status is invalid`);
+    for (const field of ['ordinal', 'turn']) if (attempt[field] !== undefined) nonNegativeInteger(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
+    for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
+    if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.preflight.scout.attempts[${index}].usage must be null or an object`);
+    if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.preflight.scout.attempts[${index}].wallSec must be null or a non-negative finite number`);
+    if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.preflight.scout.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.preflight.scout.attempts[${index}].lastAgentEvent must be null or an object`);
+  }
+  if (preflight.scout.status === 'succeeded' && !preflight.scout.outputFile) fail('successful state.preflight.scout requires outputFile');
 }
 
 function validateProgram(program, state) {
@@ -375,14 +437,16 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'planner', 'program', 'actions', 'attempts', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
   if (state.schemaVersion !== V2_STATE_SCHEMA_VERSION) fail(`state schemaVersion must be ${V2_STATE_SCHEMA_VERSION}`);
   requiredString(state.runId, 'state.runId');
   requiredString(state.shortId, 'state.shortId');
   requiredString(state.intentId, 'state.intentId');
   validateGoal({ schemaVersion: V2_GOAL_SCHEMA_VERSION, intentId: state.intentId, intent: state.intent, config: state.config });
   validateLifecycle(state.lifecycle);
+  validatePreflight(state.preflight);
   validatePlanner(state.planner);
+  validatePresentation(state.presentation, state.program);
   const ledger = validateLedger(state);
   validateActionStates(state.actions, state.program);
   validateProgram(state.program, { ...state, ledger });
