@@ -99,7 +99,7 @@ export function scoutPrompt(goal, cwd) {
     'TREE: the directory tree to depth 3 (skip node_modules, .git, build output), one entry per line.',
     'MANIFEST: package/build manifest facts that matter (name, language/runtime, test command, lint/format command, module system).',
     'TEST STATUS: run the test command once and report the exact pass/fail counts and any failing test names.',
-    'UNITS OF WORK: one bullet per independent item the goal implies (module, file, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, and anything already present.',
+    'UNITS OF WORK: one bullet per independent item the goal implies (module, file, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, anything already present, and semantic dependencies. Explicitly identify tests that specify behavior introduced by another unit: isolated parallel workers cannot see sibling changes, so those tests must be combined with or run after that implementation.',
     'SHARED FILES: files that more than one unit would touch (indexes, barrels, README tables, config) and therefore must be edited by one action after the others.',
     'RISKS: anything that constrains the plan (files that must not change, flaky tests, missing tools, ambiguous requirements).',
     'Finally, END your output with a JSON array of the unit-of-work names in UNITS OF WORK, e.g. ["csv","duration"]. Nothing after the array.',

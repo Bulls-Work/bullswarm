@@ -94,6 +94,8 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.equal(initial.boundary, 'initial');
   const prompt = buildV2PlannerPrompt(initial);
   assert.match(prompt, /kernel, not you, decides completion and failure/i);
+  assert.match(prompt, /acceptance-independent/);
+  assert.match(prompt, /tests for behavior introduced by another action/);
   assert.match(prompt, /reviewer, verify, repair/);
   assert.ok(!prompt.includes('actionLedger'));
 });
