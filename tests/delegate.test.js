@@ -174,3 +174,181 @@ test('human output reports caller fallback before the generic ok flag', async ()
   assert.match(out.join('\n'), /Delegate result · keep on caller/);
   assert.doesNotMatch(out.join('\n'), /Delegate result · verified/);
 });
+
+// --- LLM-refined classification (R2) ----------------------------------------
+
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+function classificationFixture(content) {
+  const outFile = join(mkdtempSync(join(tmpdir(), 'bullswarm-classify-')), 'out.md');
+  writeFileSync(outFile, content);
+  return outFile;
+}
+
+test('auto mode refines the deterministic guess through one analyze/low classification dispatch', async () => {
+  const outFile = classificationFixture('{"mode":"workflow","reason":"Hidden coordination across services."}');
+  const calls = [];
+  const out = [];
+  const status = await cmdDelegate({
+    prompt: 'Explain one module.', mode: 'auto', cwd: '/tmp', json: true, rest: [],
+  }, {
+    execute: async (argv) => {
+      calls.push(argv);
+      if (calls.length === 1) {
+        return { status: 0, stdout: JSON.stringify({ ok: true, why: 'verified', outFile }), stderr: '' };
+      }
+      return { status: 0, stdout: JSON.stringify({ action: 'goal-launched', shortId: 'abc123' }), stderr: '' };
+    },
+    writeOut: (value) => out.push(value),
+    writeErr: (value) => out.push(value),
+  });
+  assert.equal(status, 0);
+  assert.equal(calls.length, 2);
+  const [classification, main] = calls;
+  assert.equal(classification[0], 'run');
+  assert.equal(classification[classification.indexOf('--lane') + 1], 'analyze');
+  assert.equal(classification[classification.indexOf('--effort') + 1], 'low');
+  assert.equal(classification[classification.indexOf('--timeout') + 1], '90');
+  assert.ok(classification.includes('--no-caller'));
+  const prompt = classification[classification.indexOf('--prompt') + 1];
+  assert.match(prompt, /Explain one module\./);
+  assert.match(prompt, /Deterministic guess: single/);
+  assert.match(prompt, /Deterministic score: 0/);
+  assert.match(prompt, /Deterministic signals: \(none\)/);
+  assert.match(prompt, /\{"mode":"single"\|"workflow","reason":"<one short sentence>"\}/);
+  assert.equal(main[0], 'workflow');
+  const envelope = JSON.parse(out.join('\n'));
+  assert.equal(envelope.decision.mode, 'workflow');
+  assert.equal(envelope.decision.source, 'llm-classifier');
+  assert.equal(envelope.decision.reason, 'Hidden coordination across services.');
+  assert.deepEqual(envelope.decision.deterministic, {
+    mode: 'single',
+    score: 0,
+    signals: [],
+    reason: 'This request has one bounded outcome and does not need a planning round or multiple coordinated agents.',
+  });
+});
+
+test('classification failures silently fall back to the deterministic decision', async () => {
+  const failures = [
+    ['timeout with empty output', async () => ({
+      status: 1,
+      stdout: JSON.stringify({ ok: false, why: 'timeout after 90s', outFile: classificationFixture('') }),
+      stderr: '',
+    })],
+    ['unusable non-JSON answer', async () => ({
+      status: 0,
+      stdout: JSON.stringify({ ok: true, outFile: classificationFixture('maybe single? maybe not.') }),
+      stderr: '',
+    })],
+    ['dispatch rejection', async () => { throw new Error('spawn failed'); }],
+    ['no pool available (keep-on-caller)', async () => ({
+      status: 0,
+      stdout: JSON.stringify({ ok: true, keepOnClaude: true, why: 'caller has the best eligible route' }),
+      stderr: '',
+    })],
+    ['non-JSON verdict', async () => ({ status: 0, stdout: 'not json', stderr: '' })],
+  ];
+  for (const [label, first] of failures) {
+    const calls = [];
+    const out = [];
+    const status = await cmdDelegate({
+      prompt: 'Explain one module.', mode: 'auto', cwd: '/tmp', json: true, rest: [],
+    }, {
+      execute: async (argv) => {
+        calls.push(argv);
+        if (calls.length === 1) return first();
+        return { status: 0, stdout: JSON.stringify({ ok: true, why: 'verified', outFile: '/tmp/out.md' }), stderr: '' };
+      },
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => out.push(value),
+    });
+    assert.equal(status, 0, label);
+    assert.equal(calls.length, 2, label);
+    assert.equal(calls[1][0], 'run', label);
+    const envelope = JSON.parse(out.join('\n'));
+    assert.equal(envelope.decision.mode, 'single', label);
+    assert.equal(envelope.decision.source, 'deterministic-classifier', label);
+    assert.equal(envelope.decision.deterministic, undefined, label);
+  }
+});
+
+test('--classify=deterministic never dispatches a classification request', async () => {
+  const calls = [];
+  const status = await cmdDelegate({
+    prompt: 'Explain one module.', mode: 'auto', classify: 'deterministic', cwd: '/tmp', json: true, rest: [],
+  }, {
+    execute: async (argv) => {
+      calls.push(argv);
+      return { status: 0, stdout: JSON.stringify({ ok: true, why: 'verified' }), stderr: '' };
+    },
+    writeOut: () => {},
+    writeErr: () => {},
+  });
+  assert.equal(status, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'run');
+});
+
+test('explicit mode never dispatches classification, even with --classify=llm', async () => {
+  for (const mode of ['single', 'workflow']) {
+    const calls = [];
+    const status = await cmdDelegate({
+      prompt: 'Explain one module.', mode, classify: 'llm', cwd: '/tmp', json: true, rest: [],
+    }, {
+      execute: async (argv) => {
+        calls.push(argv);
+        return { status: 0, stdout: JSON.stringify({ ok: true, action: 'goal-launched' }), stderr: '' };
+      },
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+    assert.equal(status, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], mode === 'single' ? 'run' : 'workflow');
+  }
+});
+
+test('--classify=llm fails clearly when classification cannot succeed', async () => {
+  const errors = [];
+  const calls = [];
+  const status = await cmdDelegate({
+    prompt: 'Explain one module.', mode: 'auto', classify: 'llm', cwd: '/tmp', json: true, rest: [],
+  }, {
+    execute: async (argv) => {
+      calls.push(argv);
+      return {
+        status: 0,
+        stdout: JSON.stringify({ ok: true, keepOnClaude: true, why: 'caller has the best eligible route' }),
+        stderr: '',
+      };
+    },
+    writeOut: () => {},
+    writeErr: (value) => errors.push(value),
+  });
+  assert.equal(status, 2);
+  assert.equal(calls.length, 1, 'the main invocation must not run after a required-LLM failure');
+  assert.match(errors.join('\n'), /--classify=llm failed: no delegate pool available for classification/);
+});
+
+test('delegate rejects malformed --classify values before dispatch', async () => {
+  for (const [value, message] of [
+    ['vibes', /--classify must be deterministic or llm/],
+    [true, /--classify requires a value/],
+  ]) {
+    const errors = [];
+    let executed = false;
+    const status = await cmdDelegate({
+      prompt: 'Explain one module.', mode: 'auto', classify: value, cwd: '/tmp', rest: [],
+    }, {
+      execute: async () => { executed = true; return { status: 0, stdout: '{}', stderr: '' }; },
+      writeOut: () => {},
+      writeErr: (v) => errors.push(v),
+    });
+    assert.equal(status, 2);
+    assert.equal(executed, false);
+    assert.match(errors.join('\n'), message);
+  }
+});

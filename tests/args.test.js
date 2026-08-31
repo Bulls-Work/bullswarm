@@ -22,3 +22,14 @@ test('value flags still consume their following operand', () => {
     { lane: 'analyze', timeout: '30', rest: ['task'] },
   );
 });
+
+test('classify flag accepts both eq and space value forms', () => {
+  assert.deepEqual(
+    parseArgs(['--classify=llm', 'inspect', 'this']),
+    { classify: 'llm', rest: ['inspect', 'this'] },
+  );
+  assert.deepEqual(
+    parseArgs(['--classify', 'deterministic', 'task']),
+    { classify: 'deterministic', rest: ['task'] },
+  );
+});

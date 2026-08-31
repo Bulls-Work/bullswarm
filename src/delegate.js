@@ -11,6 +11,8 @@ const BIN = fileURLToPath(new URL('../bin/bullswarm.js', import.meta.url));
 const MODES = new Set(['auto', 'single', 'workflow']);
 const LANES = new Set(['analyze', 'build', 'chore']);
 const EFFORTS = new Set(['high', 'medium', 'low']);
+const CLASSIFIERS = new Set(['deterministic', 'llm']);
+const CLASSIFY_TIMEOUT_SEC = 90;
 
 const MUTATION_WORDS = '(?:add|build|change|create|delete|edit|fix|implement|migrate|modify|patch|refactor|remove|rename|replace|update|write)';
 const MUTATION_RE = new RegExp(`\\b${MUTATION_WORDS}\\b(?!-)`, 'i');
@@ -85,6 +87,7 @@ export function classifyTask({ task, mode = 'auto', lane = null, plan = null } =
     source: overridden ? 'caller-override' : 'deterministic-classifier',
     confidence: overridden || score === 0 || score >= 5 ? 'high' : 'medium',
     reason,
+    score,
     signals,
     lane: selectedMode === 'single' ? selectedLane : null,
     phases,
@@ -151,6 +154,104 @@ export function buildDelegateInvocation(decision, {
   };
 }
 
+// --- LLM-refined classification (R2) ----------------------------------------
+// The classification request travels through the exact same runtime dispatch
+// path as any delegated task (`bullswarm run`), so pool routing, metering,
+// depth guards, and quarantine all apply. Nothing here is provider-specific.
+
+export function buildClassificationPrompt(task, decision) {
+  return [
+    'You are a delegation-mode classifier for Bullswarm.',
+    'Decide whether the task below should run as one bounded single-agent delegation ("single") or an autonomous multi-agent workflow ("workflow").',
+    '',
+    `Deterministic guess: ${decision.mode}`,
+    `Deterministic score: ${decision.score}`,
+    `Deterministic signals: ${decision.signals.length ? decision.signals.join('; ') : '(none)'}`,
+    '',
+    'Task:',
+    task,
+    '',
+    'Respond with strict JSON only — no prose, no code fences, exactly:',
+    '{"mode":"single"|"workflow","reason":"<one short sentence>"}',
+  ].join('\n');
+}
+
+export function buildClassificationInvocation(task, decision) {
+  return [
+    'run', '--lane', 'analyze', '--effort', 'low',
+    '--timeout', String(CLASSIFY_TIMEOUT_SEC), '--no-caller',
+    '--prompt', buildClassificationPrompt(task, decision), '--json',
+  ];
+}
+
+export function extractModeDecision(text) {
+  const stripped = String(text ?? '').replace(/```[a-z]*\n?/gi, '');
+  const candidates = [stripped.trim(), ...(stripped.match(/\{[^{}]*\}/g) ?? [])];
+  for (const candidate of candidates) {
+    let parsed;
+    try { parsed = JSON.parse(candidate); } catch { continue; }
+    if (parsed && typeof parsed === 'object'
+      && (parsed.mode === 'single' || parsed.mode === 'workflow')
+      && typeof parsed.reason === 'string' && parsed.reason.trim()) {
+      return { mode: parsed.mode, reason: parsed.reason.trim() };
+    }
+  }
+  return null;
+}
+
+async function requestLlmClassification(task, decision, execute) {
+  let child;
+  try {
+    child = await execute(buildClassificationInvocation(task, decision));
+  } catch (error) {
+    throw new Error(`classification dispatch failed: ${error.message}`);
+  }
+  let verdict;
+  try { verdict = JSON.parse(child.stdout); }
+  catch { throw new Error('classification dispatch returned a non-JSON verdict'); }
+  if (verdict.keepOnClaude) {
+    throw new Error(`no delegate pool available for classification${verdict.why ? `: ${verdict.why}` : ''}`);
+  }
+  // Parseability of the delegate's answer is the acceptance criterion — the
+  // generic content gate may reject a one-line JSON body, so verdict.ok is
+  // deliberately not consulted here.
+  let output = typeof verdict.response === 'string' ? verdict.response : '';
+  if (!output.trim() && typeof verdict.outFile === 'string') {
+    try { output = readFileSync(verdict.outFile, 'utf8'); } catch { output = ''; }
+  }
+  const llm = extractModeDecision(output);
+  if (!llm) {
+    throw new Error(`classification produced unusable output${verdict.why ? ` (${verdict.why})` : ''}`);
+  }
+  return llm;
+}
+
+async function refineDecision({ task, deterministic, opts, execute }) {
+  let llm;
+  try {
+    llm = await requestLlmClassification(task, deterministic, execute);
+  } catch (error) {
+    if (opts.classify === 'llm') throw new Error(`--classify=llm failed: ${error.message}`);
+    return deterministic; // silent fallback to the deterministic decision
+  }
+  const refined = classifyTask({
+    task, mode: llm.mode, lane: opts.lane ?? null, plan: opts.plan ?? null,
+  });
+  return {
+    ...refined,
+    source: 'llm-classifier',
+    confidence: 'high',
+    reason: llm.reason,
+    score: deterministic.score,
+    deterministic: {
+      mode: deterministic.mode,
+      score: deterministic.score,
+      signals: deterministic.signals,
+      reason: deterministic.reason,
+    },
+  };
+}
+
 export async function cmdDelegate(opts, {
   execute = executeInvocation,
   writeOut = (value) => console.log(value),
@@ -159,12 +260,18 @@ export async function cmdDelegate(opts, {
   try {
     validateOptions(opts);
     const task = taskText(opts);
-    const decision = classifyTask({
+    const requestedMode = opts.mode ?? 'auto';
+    let decision = classifyTask({
       task,
-      mode: opts.mode ?? 'auto',
+      mode: requestedMode,
       lane: opts.lane ?? null,
       plan: opts.plan ?? null,
     });
+    // LLM refinement runs only in auto mode: explicit --mode and --dry-run
+    // never dispatch classification, and --classify=deterministic opts out.
+    if (requestedMode === 'auto' && opts['dry-run'] !== true && opts.classify !== 'deterministic') {
+      decision = await refineDecision({ task, deterministic: decision, opts, execute });
+    }
     const invocation = buildDelegateInvocation(decision, {
       task,
       cwd: opts.cwd ?? process.cwd(),
@@ -204,11 +311,14 @@ export async function cmdDelegate(opts, {
 }
 
 function validateOptions(opts) {
-  for (const name of ['mode', 'lane', 'plan', 'effort', 'timeout', 'cwd', 'task-file', 'prompt']) {
+  for (const name of ['mode', 'lane', 'plan', 'effort', 'timeout', 'cwd', 'task-file', 'prompt', 'classify']) {
     if (opts[name] === true) throw new Error(`--${name} requires a value`);
   }
   if (opts.effort != null && !EFFORTS.has(opts.effort)) {
     throw new Error('--effort must be high, medium, or low');
+  }
+  if (opts.classify != null && !CLASSIFIERS.has(opts.classify)) {
+    throw new Error('--classify must be deterministic or llm');
   }
   if (opts.timeout != null && (!Number.isFinite(Number(opts.timeout)) || Number(opts.timeout) <= 0)) {
     throw new Error('--timeout must be a positive number of seconds');

@@ -94,6 +94,20 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
 
+### Delegate classification
+
+With the default `--mode auto`, `delegate` first uses deterministic task
+signals, then uses an LLM to refine the choice between a single delegate and a
+workflow during execution. If that optional refinement is unavailable or
+unusable, automatic mode uses the deterministic decision.
+
+Use `--classify deterministic` to bypass the LLM refinement. Use
+`--classify llm` when an LLM decision is required: the command fails if it
+cannot obtain a usable one. `--dry-run` reports the deterministic decision
+without dispatching a classifier. An explicit `--mode single` or
+`--mode workflow` is the caller's decision and bypasses automatic LLM
+classification.
+
 Discover and validate workflow definitions without executing them:
 
 ```bash
@@ -213,7 +227,18 @@ bullswarm workflow goal "Implement and verify the change" --cwd . \
 The worker lock covers the scout, ordinary runs, fan-out items, repairs,
 re-verification, and runtime extraction helpers. A pool that cannot guarantee
 the requested model is ineligible rather than silently substituting another
-model. `--max-agents` and `--max-workflow-seconds` are
+model.
+
+The `opencode2` connector itself does not require a Relay provider: its base
+spawn command carries no hardcoded model, so a plain OpenCode installation
+dispatches with OpenCode's own configured default. When
+`~/.config/opencode/opencode.json` has one or more Relay providers configured,
+Bullswarm discovers them and pins an explicit `--model <providerId>/gpt-5.6-luna`
+per provider — the first as the primary `opencode2` pool, each additional one
+as its own `opencode2:<id>` pool — which is what the `--worker-model
+relay/gpt-5.6-luna` example above locks onto.
+
+`--max-agents` and `--max-workflow-seconds` are
 advisory planning targets; `--max-expansion-rounds` is also an advisory
 convergence target. Hard structural safeguards are adjusted with
 `--max-actions` and `--max-items-per-expansion`.

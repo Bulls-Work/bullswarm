@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,6 +12,8 @@ import {
 } from '../src/lib/opencode-relay.js';
 import { parseRelayUsage } from '../src/meters/relay.js';
 
+const baseConnector = JSON.parse(readFileSync(new URL('../connectors/opencode2.json', import.meta.url), 'utf8'));
+
 test('Relay host detection and pool naming', () => {
   assert.equal(isRelayBaseUrl('https://api.relay.com/v1'), true);
   assert.equal(isRelayBaseUrl('https://api.openai.com/v1'), false);
@@ -21,6 +23,18 @@ test('Relay host detection and pool naming', () => {
     retargetOpenCodeModel(['opencode', 'run', '--model', 'relay/gpt-5.6-luna', '{taskFile}'], 'relay-2'),
     ['opencode', 'run', '--model', 'relay-2/gpt-5.6-luna', '{taskFile}'],
   );
+  assert.deepEqual(
+    retargetOpenCodeModel(['opencode', 'run', '--auto', '{taskFile}'], 'relay-2'),
+    ['opencode', 'run', '--auto', '--model', 'relay-2/gpt-5.6-luna', '{taskFile}'],
+  );
+});
+
+test('base OpenCode connector uses the installation default without Relay providers', () => {
+  assert.equal(baseConnector.spawn.cmd.includes('--model'), false);
+  assert.deepEqual(discoverRelayProviders({ providers: [] }), []);
+  const connectors = { opencode2: structuredClone(baseConnector) };
+  expandOpenCodeRelayConnectors(connectors, { providers: [] });
+  assert.equal(connectors.opencode2.spawn.cmd.includes('--model'), false);
 });
 
 test('discoverRelayProviders reads OpenCode config, relay first', () => {
@@ -57,7 +71,7 @@ test('expandOpenCodeRelayConnectors clones opencode2 per extra Relay provider', 
     opencode2: {
       name: 'opencode2',
       bin: 'opencode',
-      spawn: { cmd: ['opencode', 'run', '--auto', '--model', 'relay/gpt-5.6-luna', '{taskFile}'] },
+       spawn: { cmd: ['opencode', 'run', '--auto', '{taskFile}'] },
       flags: { stealth: false },
       meter: { type: 'none' },
     },

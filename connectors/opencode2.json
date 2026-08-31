@@ -3,7 +3,7 @@
   "bin": "opencode",
   "configDirs": ["~/.config/opencode"],
   "spawn": {
-    "cmd": ["opencode", "run", "--auto", "--model", "relay/gpt-5.6-luna", "{taskFile}"],
+    "cmd": ["opencode", "run", "--auto", "{taskFile}"],
     "cwdMode": "pwd",
     "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
   },
@@ -21,7 +21,7 @@
       { "match": { "path": "type", "equals": "text" }, "path": "part.text", "mode": "concat", "separator": "\n" }
     ]
   },
-  "$comment-auto": "--auto is required for headless workflow dispatch: task files live under ~/.bullswarm, outside the target repo, and OpenCode otherwise pauses for an interactive permission approval. --model pins the QA/runtime pool to Luna instead of the CLI default.",
+  "$comment-auto": "--auto is required for headless workflow dispatch: task files live under ~/.bullswarm, outside the target repo, and OpenCode otherwise pauses for an interactive permission approval. The base connector intentionally leaves --model unset so a plain OpenCode installation uses its own default; opencode-relay.js adds --model <providerId>/gpt-5.6-luna only for discovered Relay providers, after which modelSelection can replace it for assignments and step locks.",
   "$comment-exit1": "known failure mode: writes a complete correct answer, then dies with a Console-sync auth error and exit 1. The verdict sets contentUsableDespiteExit instead of discarding the work.",
   "meter": { "type": "none" },
   "costRank": 1,
