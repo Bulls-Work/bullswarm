@@ -180,6 +180,13 @@ function compactV2Requirements(goal) {
   }));
 }
 
+export function extractV2GoalConstraints(goal) {
+  const source = String(goal ?? '');
+  const explicitReadOnly = /^\s*read[- ]only(?:\s|:|$)/i.test(source)
+    || /\b(?:do not|must not|never)\s+(?:modify|edit|write(?:\s+to)?|change)\s+(?:any\s+)?(?:repository|repo|workspace)\s+files?\b/i.test(source);
+  return explicitReadOnly ? { workspaceMutation: 'forbidden' } : null;
+}
+
 function v2Routing({ pool = null, model = null, strict = false } = {}) {
   const routing = {};
   if (pool) routing[strict ? 'pool' : 'preferredPool'] = pool;
@@ -385,6 +392,7 @@ async function wfGoal(opts) {
       const isolationPolicy = loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides';
       doc = createV2GoalDocument({
         goal, cwd: resolve(opts.cwd ?? process.cwd()), requirements: compactV2Requirements(goal),
+        constraints: extractV2GoalConstraints(goal),
         settings: {
           ...goalSettings(opts), scout: !opts.noScout,
           workspaceMode: isolationPolicy === 'off' ? 'shared' : 'isolated',

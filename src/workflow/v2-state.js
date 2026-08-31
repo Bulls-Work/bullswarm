@@ -39,6 +39,7 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
 ]);
+const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 
 export class V2StateValidationError extends TypeError {
   constructor(message) {
@@ -112,6 +113,18 @@ function routing(value, name) {
   return clone(value);
 }
 
+function intentConstraints(value) {
+  if (value == null) return null;
+  object(value, 'goalDocument.intent.constraints');
+  for (const key of Object.keys(value)) {
+    if (!INTENT_CONSTRAINT_FIELDS.has(key)) fail(`goalDocument.intent.constraints.${key} is not allowed`);
+  }
+  if (!['allowed', 'forbidden'].includes(value.workspaceMutation)) {
+    fail('goalDocument.intent.constraints.workspaceMutation must be allowed|forbidden');
+  }
+  return { workspaceMutation: value.workspaceMutation };
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (isObject(value)) return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
@@ -128,10 +141,11 @@ function validateGoal(goal) {
   if (goal.schemaVersion !== V2_GOAL_SCHEMA_VERSION) fail(`goal schemaVersion must be ${V2_GOAL_SCHEMA_VERSION}`);
   requiredString(goal.intentId, 'goalDocument.intentId');
   object(goal.intent, 'goalDocument.intent');
-  noUnknown(goal.intent, new Set(['goal', 'cwd', 'requirements']), 'goalDocument.intent');
+  noUnknown(goal.intent, new Set(['goal', 'cwd', 'requirements', 'constraints']), 'goalDocument.intent');
   requiredString(goal.intent.goal, 'goalDocument.intent.goal');
   requiredString(goal.intent.cwd, 'goalDocument.intent.cwd');
   const requirements = requirementsFor(goal.intent.requirements);
+  intentConstraints(goal.intent.constraints);
   object(goal.config, 'goalDocument.config');
   noUnknown(goal.config, new Set(['settings', 'plannerRouting', 'workerRouting']), 'goalDocument.config');
   object(goal.config.settings, 'goalDocument.config.settings');
@@ -142,12 +156,16 @@ function validateGoal(goal) {
   return { requirements };
 }
 
-export function createV2GoalDocument({ goal, cwd, requirements, settings = {}, plannerRouting = null, workerRouting = null } = {}) {
+export function createV2GoalDocument({ goal, cwd, requirements, constraints = null, settings = {}, plannerRouting = null, workerRouting = null } = {}) {
   requiredString(goal, 'goal');
   requiredString(cwd, 'cwd');
   const normalizedRequirements = requirementsFor(requirements);
   object(settings, 'settings');
-  const intent = { goal: goal.trim(), cwd, requirements: normalizedRequirements };
+  const normalizedConstraints = intentConstraints(constraints);
+  const intent = {
+    goal: goal.trim(), cwd, requirements: normalizedRequirements,
+    ...(normalizedConstraints ? { constraints: normalizedConstraints } : {}),
+  };
   const document = {
     schemaVersion: V2_GOAL_SCHEMA_VERSION,
     intentId: stableId(intent),
@@ -323,6 +341,7 @@ function validateProgram(program, state) {
         knownActions,
         knownArtifacts,
         freshEvidenceRequirementIds: [],
+        workspaceMutation: state.intent.constraints?.workspaceMutation ?? 'allowed',
         requireMandatoryEvidence: false,
         maxActions: state.config.settings.maxActions ?? 100,
         maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,

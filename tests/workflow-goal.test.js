@@ -7,7 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { extractGoalRequirements } from '../src/workflow/goal.js';
-import { shouldAutoWatchGoal } from '../src/workflow/cli.js';
+import { extractV2GoalConstraints, shouldAutoWatchGoal } from '../src/workflow/cli.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -79,6 +79,13 @@ test('goal requirements preserve numbered deliverables and explicit completion c
     { id: 'R2', text: 'Exercise read-only classification.' },
     { id: 'R3', text: 'Confirm integration and package dry-run evidence.' },
   ]);
+});
+
+test('goal CLI extracts only explicit workspace read-only constraints', () => {
+  assert.deepEqual(extractV2GoalConstraints('Read-only: inspect this repository.'), { workspaceMutation: 'forbidden' });
+  assert.deepEqual(extractV2GoalConstraints('Audit this repo. Do not modify repository files.'), { workspaceMutation: 'forbidden' });
+  assert.equal(extractV2GoalConstraints('Change the read-only label into an editable control.'), null);
+  assert.equal(extractV2GoalConstraints('Implement and verify the requested feature.'), null);
 });
 
 test('retired autonomous V1 documents and runs fail closed before dispatch', () => {

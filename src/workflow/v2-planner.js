@@ -41,6 +41,7 @@ function runtimeFromState(state) {
     })),
     knownArtifacts,
     freshEvidenceRequirementIds,
+    workspaceMutation: state.intent.constraints?.workspaceMutation ?? 'allowed',
     maxActions: Math.max(0, Number(state.config.settings.maxActions ?? 100) - state.program.actions.length),
     maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
   };
@@ -125,6 +126,9 @@ export function buildV2PlannerPrompt(context) {
     'Use only generic actions. A work action declares affects and any exact ownedFiles. An evidence action declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. File-disjoint work should be parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
+    context.intent.constraints?.workspaceMutation === 'forbidden'
+      ? 'This goal is deterministically read-only. Every action must have empty ownedFiles and must not modify workspace files; reports belong in the action output artifact.'
+      : 'Workspace mutation is allowed only through exact ownedFiles declared by the action.',
     context.boundary === 'gaps'
       ? 'This is one consolidated gap boundary. Propose only new actions that close the supplied gaps. If no useful bounded action remains, return kind=exhausted with a concrete reason; this does not declare workflow failure.'
       : 'This is initial planning. Return kind=program with the complete useful program; kind=exhausted is invalid here.',
