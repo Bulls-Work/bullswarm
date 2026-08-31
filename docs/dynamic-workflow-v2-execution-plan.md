@@ -99,6 +99,15 @@ canaries move work actions to Command Code Luna while retaining Luna-only
 routing, so provider-shell behavior is tested independently of the planning
 contract.
 
+That route probe immediately exposed a CLI contract defect: `--worker-pool
+command-code` was stored as a preference, so the ineligible analyze-only scout
+silently fell through to `claude-code` with the Luna model and failed. The flag
+is documented as a pin and now persists an exact strict worker pool; an
+ineligible pinned pool fails closed instead of dispatching a different
+provider. Because Command Code is currently declared build/chore-only, the
+full hard-case canary remains on Relay/OpenCode Luna rather than pretending it
+can pin every scout, work, and evidence action to Command Code.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

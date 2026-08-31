@@ -154,6 +154,9 @@ test('CLI exact model locks are preserved on every planner and worker attempt', 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
     const state = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'state.json'), 'utf8'));
+    assert.deepEqual(state.config.workerRouting, {
+      pool: 'goal-agent', preferredModel: 'worker-luna', strictPool: 'goal-agent',
+    });
     const attempts = [...state.preflight.scout.attempts, ...state.planner.attempts, ...state.attempts];
     assert.ok(attempts.length >= 4);
     for (const attempt of attempts) {

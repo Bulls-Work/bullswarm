@@ -399,7 +399,7 @@ async function wfGoal(opts) {
           ...(opts['suggested-plan'] ? { suggestedPlan: String(opts['suggested-plan']).trim() } : {}),
         },
         plannerRouting: v2Routing({ pool: orchestrator, model: orchestratorModel, strict: Boolean(opts['strict-orchestrator']) }),
-        workerRouting: v2Routing({ pool: workerPool, model: workerModel }),
+        workerRouting: v2Routing({ pool: workerPool, model: workerModel, strict: Boolean(workerPool) }),
       });
     } catch (err) {
       console.error(`✗ invalid goal options: ${err.message}`);
