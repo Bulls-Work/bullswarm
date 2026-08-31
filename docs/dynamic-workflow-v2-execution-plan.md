@@ -19,7 +19,7 @@ new deterministic kernel gates pass.
 ### Current execution checkpoint
 
 As of 2026-09-01, sequences 0-15 are implemented or accepted in the candidate
-worktree and the offline suite passes 499/499. This includes the V2-only goal/state/result
+worktree and the offline suite passes 500/500. This includes the V2-only goal/state/result
 schemas, generic action and evidence contracts, requirement ledger, planner
 validator, dependency scheduler, changed-path ownership, isolated integration,
 mechanical-only retry/fallback, gap consolidation, kernel completion, durable
@@ -42,6 +42,14 @@ behavioral test. The candidate now rejects planner-owned evidence formats
 before dispatch and requires mutating workers to demonstrate behavioral
 regressions through the real production path. Focused coverage and the full
 offline suite pass after both corrections.
+
+A subsequent difficult-goal probe was cancelled before its evidence verdict
+after direct inspection found that one high-effort Luna action had grouped four
+independently testable TUI behaviors and produced shallow coverage. The scout
+and planner now distinguish mutation ordering from task size: shared files
+forbid parallel writers, but several coherent acceptance slices may reuse those
+files in a short ordered sequence, with each behavior kept beside its focused
+regression test.
 
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,

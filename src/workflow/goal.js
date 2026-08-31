@@ -99,8 +99,8 @@ export function scoutPrompt(goal, cwd) {
     'TREE: the directory tree to depth 3 (skip node_modules, .git, build output), one entry per line.',
     'MANIFEST: package/build manifest facts that matter (name, language/runtime, test command, lint/format command, module system).',
     'TEST STATUS: run the test command once and report the exact pass/fail counts and any failing test names.',
-    'UNITS OF WORK: one bullet per independent item the goal implies (module, file, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, anything already present, and semantic dependencies. Explicitly identify tests that specify behavior introduced by another unit: isolated parallel workers cannot see sibling changes, so those tests must be combined with or run after that implementation.',
-    'SHARED FILES: files that more than one unit would touch (indexes, barrels, README tables, config) and therefore must be edited by one action after the others.',
+    'UNITS OF WORK: one bullet per coherent acceptance slice the goal implies (behavior, module, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, anything already present, and semantic dependencies. Explicitly identify tests that specify behavior introduced by another unit: each focused regression belongs with that behavior implementation, while later cross-cutting acceptance may depend on the integrated earlier slices.',
+    'SHARED FILES: files that more than one slice would touch. Shared ownership forbids parallel mutation, but it does not require one monolithic action: if the slices are independently testable, recommend a small ordered sequence that reuses the same owned files and builds on the integrated prior slice.',
     'RISKS: anything that constrains the plan (files that must not change, flaky tests, missing tools, ambiguous requirements).',
     'Finally, END your output with a JSON array of the unit-of-work names in UNITS OF WORK, e.g. ["csv","duration"]. Nothing after the array.',
   ].join('\n');

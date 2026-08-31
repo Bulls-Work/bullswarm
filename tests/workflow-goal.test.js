@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { extractGoalRequirements } from '../src/workflow/goal.js';
+import { extractGoalRequirements, scoutPrompt } from '../src/workflow/goal.js';
 import { extractV2GoalConstraints, shouldAutoWatchGoal } from '../src/workflow/cli.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
@@ -86,6 +86,13 @@ test('goal CLI extracts only explicit workspace read-only constraints', () => {
   assert.deepEqual(extractV2GoalConstraints('Audit this repo. Do not modify repository files.'), { workspaceMutation: 'forbidden' });
   assert.equal(extractV2GoalConstraints('Change the read-only label into an editable control.'), null);
   assert.equal(extractV2GoalConstraints('Implement and verify the requested feature.'), null);
+});
+
+test('scout treats shared files as ordered acceptance slices instead of a forced monolith', () => {
+  const prompt = scoutPrompt('Implement three related dashboard behaviors.', '/tmp/repo');
+  assert.match(prompt, /each focused regression belongs with that behavior implementation/i);
+  assert.match(prompt, /does not require one monolithic action/i);
+  assert.match(prompt, /small ordered sequence that reuses the same owned files/i);
 });
 
 test('retired autonomous V1 documents and runs fail closed before dispatch', () => {
