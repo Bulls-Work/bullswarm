@@ -135,6 +135,15 @@ initial program, every exact scout unit ID must exist as its own non-evidence
 work action before dispatch; shared files are ordered by dependencies, while
 the planner may no longer silently rename, omit, or absorb a unit.
 
+That exact-unit canary still exposed a second information-loss boundary: the
+final evidence agent found `q exit` versus `q detach`, but the responsible work
+task contained only requirement identifiers and planner-authored prose. The
+explicit original clause naming that inconsistency had been removed in an
+earlier anti-scope-leak hardening. Bounded work tasks now include the exact text
+of only the requirements listed in `affects`, framed as authoritative
+clause-by-clause acceptance evidence rather than permission to perform sibling
+or downstream work; the full parent goal remains omitted.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

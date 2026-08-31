@@ -146,7 +146,11 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
       ? `You own exactly these files for mutation: ${action.ownedFiles.join(', ')}. Do not modify any other path.`
       : 'This action is read-only. Do not modify workspace files.',
     requirements.length
-      ? `Requirement traceability (identifiers only; the kernel-owned evidence stage judges the full requirement text): ${requirements.map((item) => item.id).join(', ')}`
+      ? [
+        'Authoritative acceptance text for this bounded action:',
+        ...requirements.map((item) => `- ${item.id}: ${item.text}`),
+        'Use this text clause by clause to test the action purpose. It does not authorize sibling, downstream, or whole-goal work outside this action.',
+      ].join('\n')
       : '',
     dependencyArtifacts(state, action).length ? `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}` : '',
     mutationProof,
