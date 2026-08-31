@@ -57,6 +57,27 @@ test('planner cannot declare completion/failure or use retired action concepts',
   assert.throws(() => validateV2PlannerResponse({ ...response(), completion: { when: 'all-ok' } }, state()), (error) => error.issues.some((issue) => issue.includes('completion')));
 });
 
+test('explicit read-only intent rejects mutating planner actions before dispatch', () => {
+  const readOnly = createV2State(createV2GoalDocument({
+    goal: 'Read-only: inspect the report and return findings without changing files',
+    cwd: '/tmp/repo', requirements: [{ id: 'report-ready', text: 'Report is inspected' }],
+    constraints: { workspaceMutation: 'forbidden' },
+    settings: { concurrency: 2, maxActions: 6, maxExpansionRounds: 1 },
+  }), { runId: 'wf-readonly-abcdef', shortId: 'roa234' });
+  assert.throws(
+    () => validateV2PlannerResponse(response(), readOnly),
+    (error) => error.issues.some((issue) => issue.includes('goal forbids workspace mutation')),
+  );
+
+  const inspectOnly = response();
+  inspectOnly.program.actions[0] = {
+    ...inspectOnly.program.actions[0], ownedFiles: [], affects: [], produces: ['report'],
+    prompt: 'Inspect without modifying files and return the report as action output.',
+  };
+  assert.equal(validateV2PlannerResponse(inspectOnly, readOnly).kind, 'program');
+  assert.match(buildV2PlannerPrompt(createV2PlannerContext(readOnly)), /deterministically read-only/i);
+});
+
 test('exhausted is allowed only at a real consolidated gap boundary', () => {
   const exhausted = { schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'exhausted', summary: 'No bounded action remains.', reason: 'The external service is unavailable.' };
   assert.throws(() => validateV2PlannerResponse(exhausted, state()), /problem/);

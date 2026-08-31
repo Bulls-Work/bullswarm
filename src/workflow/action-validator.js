@@ -292,6 +292,14 @@ export function validateActionProgram(program, runtime = {}) {
     if (hasId(action.id)) byId.set(action.id, action);
   });
 
+  if (runtime.workspaceMutation === 'forbidden') {
+    for (const action of actions) {
+      if (action.ownedFiles.length) {
+        issues.push(`${action.id}.ownedFiles must be empty because the goal forbids workspace mutation`);
+      }
+    }
+  }
+
   const forbidden = ['type', 'verify', 'repair', 'fanout', 'pool', 'model', 'preferredPool', 'taskFile', 'timeoutSec', 'completion', 'decision', 'onError', 'phase', 'requiresCapabilities'];
   for (const action of rawActions) for (const field of forbidden) if (Object.hasOwn(action ?? {}, field)) {
     issues.push(`actions[${rawActions.indexOf(action)}].${field} is not allowed in V2`);
