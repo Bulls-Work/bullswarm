@@ -130,6 +130,7 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
     '- Before implementing, run the focused regression against the untouched baseline and observe the expected failure. If the behavior already exists, capture concrete baseline proof instead of adding a redundant test.',
     '- After implementing, map every affected requirement to an exact production path and assertion, run the focused checks, then run the goal\'s full acceptance command when one is supplied.',
     '- For interactive or state-machine behavior, build a transition matrix for every affected level and input. Use distinguishable before/after fixtures and assert the observable state or selected item after each real input; merely finding text that was already rendered does not prove a transition.',
+    '- Treat a focused test that greatly exceeds its observed baseline as a defect, not useful waiting. If it runs longer than 60 seconds or twice the baseline (whichever is greater) without progress, interrupt it, inspect open handles or unresolved async work, fix the cause, and rerun before finishing.',
     '- Before finishing, reread the bounded action instruction clause by clause and name the exact production-path assertion that proves each clause. Add missing coverage before claiming success.',
     '- A green suite is necessary but not sufficient: inspect the final diff for vacuous assertions, skipped coverage, and requirement wording that the implementation did not actually satisfy.',
   ].join('\n') : '';
