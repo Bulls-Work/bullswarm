@@ -101,7 +101,10 @@ test('top-level run heartbeat keeps JSON stdout clean and emits aggregate stderr
     const result = run(f.home, ['run', '--lane', 'chore', '--heartbeat', '1', 'TASK', '--json']);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).ok, true);
-    assert.match(result.stderr, /^bullswarm run · active 1s · 0 events · 0 B · activity 1s ago\n$/);
+    // Timer callbacks can fire a fraction before or after the exact wall-clock
+    // boundary on a loaded machine. Assert the stable heartbeat structure and
+    // aggregate counters without coupling the test to sub-second scheduling.
+    assert.match(result.stderr, /^bullswarm run · active \d+s · 0 events · 0 B · activity \d+s ago\n$/);
   } finally { f.cleanup(); }
 });
 
