@@ -42,6 +42,10 @@ export class WorkflowTui {
     this.liveLine = null;      // current in-flight line to rewrite
     this.counts = { ok: 0, fail: 0 };
     this.startedAt = null;
+    // The durable terminal event (`run.completed`, or the legacy
+    // `run.completed_with_concerns`) carries the outcome envelope and lands on
+    // this same sink just before `workflow.completed`.
+    this.outcome = null;
     if (!this.json && !this.isTTY) {
       // Non-TTY human mode: no ANSI colors (plain marks still readable)
       this.color = false;
@@ -82,6 +86,7 @@ export class WorkflowTui {
   }
 
   handle(event) {
+    if (event.outcome) this.outcome = event.outcome;
     switch (event.type) {
       case 'workflow.started': {
         this.startedAt = Date.now();
@@ -232,13 +237,25 @@ export class WorkflowTui {
         const s = event.report ?? {};
         this.print('');
         this.print(this.c(DIM, '─'.repeat(58)));
-        const status = event.status === 'completed'
-          ? this.c(GREEN, '✓ completed')
-          : event.status === 'completed_with_concerns'
-            ? this.c(YELLOW, '! completed with concerns')
-            : event.status === 'blocked'
-              ? this.c(YELLOW, '⧖ blocked with final outcome')
-              : this.c(RED, `✗ ${event.status ?? 'failed'}`);
+        const outcome = event.outcome ?? this.outcome;
+        const concernCount = outcome?.concerns?.length ?? 0;
+        // A legacy run dir replayed without an outcome envelope: its status
+        // string is the only record that concerns were raised.
+        const legacyConcerns = event.status === 'completed_with_concerns'
+          && !Array.isArray(outcome?.concerns);
+        const bestEffort = outcome?.bestEffort === true && outcome?.verified !== true;
+        const concerns = concernCount
+          ? ` · ${concernCount} concern${concernCount === 1 ? '' : 's'}`
+          : legacyConcerns ? ' with concerns' : '';
+        const status = isDeliveredStatus(event.status)
+          ? bestEffort
+            ? this.c(YELLOW, `! best-effort delivery, unverified${concerns}`)
+            : concerns
+              ? this.c(YELLOW, `! completed${concerns}`)
+              : this.c(GREEN, '✓ completed')
+          : event.status === 'blocked'
+            ? this.c(YELLOW, '⧖ blocked with final outcome')
+            : this.c(RED, `✗ ${event.status ?? 'failed'}`);
         this.print(
           `${status}  steps ✓${s.stepsOk ?? 0}/✗${s.stepsFailed ?? 0} · fanout ✓${s.fanoutOk ?? 0}/✗${s.fanoutFailed ?? 0} · elapsed ${elapsed}`
         );
@@ -249,6 +266,12 @@ export class WorkflowTui {
         if (this.json) console.log(JSON.stringify({ ev: event.type, ...event }));
     }
   }
+}
+
+// `completed_with_concerns` is a legacy terminal status; new runs deliver as
+// `completed` and state their concerns in the outcome envelope.
+function isDeliveredStatus(status) {
+  return status === 'completed' || status === 'completed_with_concerns';
 }
 
 function makeLiveLine(markChar, label, pool, tui, preview) {

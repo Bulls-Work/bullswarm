@@ -476,3 +476,42 @@ deliverable found a real product defect: `integrate status` computes skill-link 
 against the *invoking checkout's* path, so any other valid Bullswarm install reports
 `conflict`/exit 1 and `integrate install` refuses to repair it — stale skill symlinks are
 sticky until removed by hand (see docs/integration-audit-2026-08-31.md §2, §7).
+
+## Run wxfwda — retire completed_with_concerns + two dashboard truthfulness fixes (2026-08-31)
+
+User directive: "having concern is not a problem of bullswarm itself but part of the agent
+lifecycle, I do not think we need to formalize it as a feature" — plus two screenshot
+defects from viewing run p3jbha: permanent ✗ phase marks on a delivered run, and
+"Final Verification · 1/1 complete" over a pane saying "Not started yet" for the
+never-dispatched verify-suite. Launched through the repo binary at f11e544; the preview was
+the **first live canonical-flow use of the always-LLM classifier** — `source:
+llm-classifier` in 20.6 s, agreeing with the deterministic hint (workflow, score 7).
+
+**Outcome: auto-completed, verified: true.** Wall 1,541 s (25m41s), busy 3,110 s,
+**parallelism 2.02** (best of the series), max 4 concurrent, planner 80 s (5.2%),
+15 attempts, zero quota wait. Diff: 11 files +444/−67. Operator-verified: `npm test`
+**394/394** (5 new tests), and both defects proven fixed by rendering the real
+wf-mtgr56l1-167281 run dir with the new code — phase 6 renders `✓ Audit Verification 2/2`,
+phase 7 renders `⊘ Final Verification 0/1` with pane "⊘ verify-suite · never dispatched ·
+blocked by verify-integration-audit", planner panel "! Completed with 5 concerns" from the
+outcome envelope.
+
+**Design as landed:** new runs always terminate `completed` (or blocked/failed/…); the
+qualification lives in `outcome` (`verified`, `bestEffort`, `concerns`, new
+`qualification: 'verified'|'qualified'`). The stage `delivered_with_concerns` and event
+`run.completed_with_concerns` are gone for new runs. `completed_with_concerns` remains
+parse-only for legacy run dirs (the `budget_exhausted` precedent), rendered through the same
+outcome-driven sentences. Dashboard invariants: a delivered run's phase list carries no
+failure marks (attempt rows keep true history; failed/blocked/interrupted runs keep ✗);
+a never-dispatched dependency-blocked action gets `⊘`, is excluded from "N/N complete",
+and its pane names the failed dependency (`outputs[id].dependencyBlocked`, which the real
+runner already writes).
+
+**Reliability tally:** 1 rejection (verify-watcher-compatibility round 1) — cross-ownership
+again: its concerns *praised* the reviewed work (10/10 focused tests, correctly refused to
+touch unowned files) and complained about a missing `// legacy runs` comment in status.js,
+a file the action did not own. Repaired in 36 s, re-verified ok. Third run in a row where
+the only rejections judge files outside the reviewed work's ownership — the
+requirement-coverage entanglement follow-up is now clearly the top reliability fix.
+This run itself was labeled `completed_with_concerns` by the pre-change runtime it ran on —
+expected artifact, not a failed fix; the label class it removes dies with the next release.

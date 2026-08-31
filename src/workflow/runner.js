@@ -433,8 +433,7 @@ export async function runWorkflow(opts) {
   state.stage = interrupted ? 'interrupted' : cancelled ? 'cancelled'
     : waitingForApproval ? 'waiting_for_approval'
       : aborted ? 'failed'
-        : state.status === 'completed_with_concerns' ? 'delivered_with_concerns'
-          : state.status === 'blocked' ? 'blocked' : 'delivered';
+        : state.status === 'blocked' ? 'blocked' : 'delivered';
   delete state.currentPhase;
   delete state.currentStep;
   delete state.activeAgents;
@@ -468,8 +467,7 @@ export async function runWorkflow(opts) {
   const preliminaryReport = buildReport(state, doc, runDir);
   const terminalEvent = interrupted ? 'run.interrupted' : cancelled ? 'run.cancelled'
     : waitingForApproval ? 'run.waiting_for_approval'
-      : state.status === 'completed_with_concerns' ? 'run.completed_with_concerns'
-        : state.status === 'blocked' ? 'run.blocked' : 'run.completed';
+      : state.status === 'blocked' ? 'run.blocked' : 'run.completed';
   runtime.emit(terminalEvent, { runId, status: state.status, report: preliminaryReport.summary, outcome: state.outcome ?? null });
   const report = buildReport(state, doc, runDir);
   writeJsonAtomic(join(runDir, 'report.json'), report);
@@ -586,9 +584,10 @@ function terminalPlannerOutcome(state, gate, reason) {
     if (!(output.verify?.concerns ?? []).length && output.why) concerns.push(String(output.why));
   }
   const uniqueConcerns = [...new Set(concerns.filter(Boolean))];
-  const status = latestWorker ? 'completed_with_concerns' : 'blocked';
+  const status = latestWorker ? 'completed' : 'blocked';
   state.outcome = {
     status,
+    qualification: latestWorker ? 'qualified' : null,
     verified: false,
     bestEffort: true,
     reason,
@@ -1112,9 +1111,10 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
         continue;
       }
       const concerns = successfulVerifyConcerns(dynamicActions, state.outputs);
-      const terminalStatus = concerns.length ? 'completed_with_concerns' : 'completed';
+      const terminalStatus = 'completed';
       state.outcome = {
         status: terminalStatus,
+        qualification: concerns.length ? 'qualified' : 'verified',
         verified: true,
         bestEffort: false,
         reason: proposal.reason,
@@ -1220,9 +1220,10 @@ async function runDecisionLoop({ runtime, gate, phase, state, retryAttempts }) {
           actions: programActions.map((entry) => entry.id), reason,
         });
         const concerns = successfulVerifyConcerns(dynamicActions, state.outputs);
-        const terminalStatus = concerns.length ? 'completed_with_concerns' : 'completed';
+        const terminalStatus = 'completed';
         state.outcome = {
           status: terminalStatus,
+          qualification: concerns.length ? 'qualified' : 'verified',
           verified: true,
           bestEffort: false,
           reason,

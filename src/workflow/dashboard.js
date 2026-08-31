@@ -7,7 +7,7 @@ import { fanoutSucceededCount } from './runner.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
-import { isTerminalWorkflowStatus } from './status.js';
+import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 
 const ESC = '\x1b[';
 
@@ -170,7 +170,9 @@ function dashboardRunLines(rows, selected, narrow, width) {
   return rows.map((row, index) => {
     const state = row.state ?? {};
     const selectedRow = index === selected;
-    const icon = statusIcon(row.ongoing ? (state.status ?? 'running') : (state.status ?? 'completed'));
+    const icon = row.ongoing
+      ? statusIcon(state.status ?? 'running')
+      : workflowStatusIcon(state.status ? state : { ...state, status: 'completed' });
     const elapsed = durationText(state.startedAt ?? row.report?.startedAt, state.finishedAt ?? row.report?.finishedAt);
     const workerAttempts = (state.attempts ?? []).filter((attempt) =>
       attempt.actionId !== state.orchestration?.actionId && attempt.actionId !== 'orchestrator');
@@ -380,6 +382,61 @@ function effectiveActionStatus(action, state) {
   return action.status ?? 'pending';
 }
 
+// Qualification belongs to the outcome envelope, not to the status string:
+// a delivered run reads `verified`, `bestEffort` and its concern count from
+// `state.outcome`, so a new run and a legacy `completed_with_concerns` run
+// render the same sentence.
+function outcomeQualification(state) {
+  const outcome = state?.outcome ?? null;
+  const concernCount = outcome?.concerns?.length ?? 0;
+  const verified = outcome?.verified === true;
+  // Legacy run dirs predate the envelope: without a concerns array the old
+  // status string is the only evidence that concerns were recorded.
+  const legacyConcerns = state?.status === 'completed_with_concerns' && !Array.isArray(outcome?.concerns);
+  return {
+    outcome,
+    concernCount,
+    verified,
+    bestEffort: outcome?.bestEffort === true && !verified,
+    concerned: concernCount > 0 || legacyConcerns,
+  };
+}
+
+function concernPhrase(count) {
+  return `${count} concern${count === 1 ? '' : 's'}`;
+}
+
+function deliveredRun(state) {
+  return Boolean(state?.finishedAt) && isDeliveredWorkflowStatus(state?.status);
+}
+
+// An action can end terminal without ever being dispatched: the runner marks
+// dynamic actions whose dependencies failed `dependencyBlocked`, and they
+// record no attempt. Such an action never ran, so it neither completed nor
+// has an agent pane to show.
+function actionWasDispatched(action, state) {
+  if ((action?.attempts ?? []).length) return true;
+  return (state?.attempts ?? []).some((attempt) => attempt.actionId === action?.id
+    || String(attempt.actionId ?? '').startsWith(`${action?.id}[`));
+}
+
+function isNeverDispatchedBlocked(action, state) {
+  return state?.outputs?.[action?.id]?.dependencyBlocked === true && !actionWasDispatched(action, state);
+}
+
+// Name the dependency that actually failed instead of repeating the runner's
+// generic "blocked by failed or unresolved dependencies" message.
+function blockingDependencies(action, state) {
+  const deps = action?.dependsOn ?? [];
+  const failed = deps.filter((id) => {
+    const output = state?.outputs?.[id];
+    if (output && output.ok !== true) return true;
+    const dep = (state?.actionLedger ?? []).find((entry) => entry.id === id);
+    return dep ? String(effectiveActionStatus(dep, state)).startsWith('failed') : false;
+  });
+  return failed.length ? failed : deps;
+}
+
 function phaseLabel(name, control) {
   if (control.autonomous) {
     if (name === 'execution' || String(name).endsWith(':adaptive')) return 'Execution';
@@ -424,18 +481,39 @@ export function workflowPanelModel(row, {
     0,
     phaseNames.length - 1,
   );
+  const delivered = deliveredRun(state);
   const phases = phaseNames.map((name) => {
     const actions = ledger.filter((action) => action.phase === name && !isNonPhaseAction(action));
-    const effectiveStatuses = actions.map((action) => effectiveActionStatus(action, state));
-    const completed = effectiveStatuses.filter((status) => TERMINAL_ACTIONS.has(status)).length;
-    const failed = effectiveStatuses.filter((status) => String(status).startsWith('failed')).length;
+    const entries = actions.map((action) => ({
+      action,
+      status: effectiveActionStatus(action, state),
+      blocked: isNeverDispatchedBlocked(action, state),
+    }));
+    // A never-dispatched action is not finished work: counting it produced
+    // "1/1 complete" above an empty agent pane (user report 2026-08-31).
+    const completed = entries.filter((entry) => !entry.blocked && TERMINAL_ACTIONS.has(entry.status)).length;
+    const failed = entries.filter((entry) => String(entry.status).startsWith('failed')).length;
+    const blockedActions = entries.filter((entry) => entry.blocked).map((entry) => ({
+      id: entry.action.id,
+      kind: entry.action.kind ?? 'run',
+      blockedBy: blockingDependencies(entry.action, state),
+    }));
     const current = name === activePhaseName && !state.finishedAt;
-    const active = effectiveStatuses.some((status) => status === 'running');
+    const active = entries.some((entry) => entry.status === 'running');
+    // On a delivered run every failure was recovered or superseded before the
+    // delivery, so a permanent ✗ on the phase list misreports the run (user
+    // report 2026-08-31). Attempt rows keep their true per-attempt history,
+    // and failed, blocked or interrupted runs keep their failure marks.
+    const failureMarks = delivered ? 0 : failed;
     const status = active ? 'active'
-      : failed ? 'failed'
-        : actions.length && completed === actions.length ? 'completed'
-          : current ? 'waiting' : 'pending';
-    return { name, label: phaseLabel(name, orchestrator), status, actions, completed, total: actions.length };
+      : failureMarks ? 'failed'
+        : blockedActions.length && completed < actions.length ? 'dependency_blocked'
+          : actions.length && completed === actions.length ? 'completed'
+            : current ? 'waiting' : 'pending';
+    return {
+      name, label: phaseLabel(name, orchestrator), status, actions,
+      completed, total: actions.length, blockedActions,
+    };
   });
   const selectedPhase = phases[selectedPhaseIndex];
 
@@ -554,7 +632,17 @@ export function renderWorkflowTui(row, {
   });
 
   const agentLines = [];
-  if (!model.agents.length) agentLines.push(dimLine('Not started yet', width));
+  if (!model.agents.length) {
+    const blockedActions = model.selectedPhase.blockedActions ?? [];
+    if (blockedActions.length) {
+      for (const blocked of blockedActions) {
+        agentLines.push(dimLine(
+          `⊘ ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`,
+          width,
+        ));
+      }
+    } else agentLines.push(dimLine('Not started yet', width));
+  }
   model.agents.forEach((agent, index) => {
     const icon = statusIcon(agent.status, spinnerFrame);
     const attempt = agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1;
@@ -592,7 +680,9 @@ export function renderWorkflowTui(row, {
   const orchestrationNavLines = model.orchestrator.autonomous
     ? [
       selectLine(
-        `${statusIcon(model.orchestrator.active ? 'running' : model.orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)}`,
+        `${model.orchestrator.active ? statusIcon('running', spinnerFrame)
+          : state.finishedAt ? workflowStatusIcon(state, spinnerFrame)
+            : statusIcon(model.orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)}`,
         controlSelected,
         focus === 0 && !orchestratorDetail,
         leftWidth - 2,
@@ -926,16 +1016,19 @@ function workflowLiveLines(model, width, spinnerFrame) {
     lines.push('');
   }
   if (!lines.length) lines.push(state.finishedAt
-    ? `${statusIcon(state.status)} No agents running · ${terminalWorkflowLabel(state.status, state.outcome?.concerns?.length)}`
+    ? `${workflowStatusIcon(state)} No agents running · ${terminalWorkflowLabel(state)}`
     : '⧖ Waiting for the next dispatch');
   return { lines, running, waiting };
 }
 
-function terminalWorkflowLabel(status, concernCount = 0) {
-  if (status === 'completed') return 'workflow finished';
-  if (status === 'completed_with_concerns') return concernCount
-    ? `workflow finished with ${concernCount} concern${concernCount === 1 ? '' : 's'}`
-    : 'workflow finished with concerns';
+function terminalWorkflowLabel(state) {
+  const status = state?.status;
+  const { concernCount, bestEffort, concerned } = outcomeQualification(state);
+  if (isDeliveredWorkflowStatus(status)) {
+    const concerns = concernCount ? concernPhrase(concernCount) : concerned ? 'concerns' : '';
+    if (bestEffort) return `best-effort delivery, unverified${concerns ? ` — ${concerns}` : ''}`;
+    return concerns ? `workflow finished with ${concerns}` : 'workflow finished';
+  }
   if (status === 'blocked') return 'workflow stopped with blockers';
   if (status === 'failed') return 'workflow failed';
   if (status === 'cancelled') return 'workflow cancelled';
@@ -946,18 +1039,19 @@ function terminalWorkflowLabel(status, concernCount = 0) {
 function workflowNextLines(model, width) {
   const { state, orchestrator } = model;
   if (state.finishedAt) {
-    const concernCount = state.outcome?.concerns?.length ?? 0;
-    const next = state.status === 'completed'
-      ? 'result ready'
-      : state.status === 'completed_with_concerns'
-        ? concernCount ? `review ${concernCount} concern${concernCount === 1 ? '' : 's'} in result` : 'review concerns in result'
+    const { concernCount, bestEffort, concerned } = outcomeQualification(state);
+    const next = isDeliveredWorkflowStatus(state.status)
+      ? concernCount ? `review ${concernPhrase(concernCount)} in result`
+        : concerned ? 'review concerns in result'
+          : bestEffort ? 'review the unverified best-effort delivery'
+            : 'result ready'
       : state.status === 'blocked' ? 'review blockers and partial work'
         : state.status === 'failed' ? 'inspect the failure before using partial work'
           : state.status === 'cancelled' ? 'review any partial work'
             : state.status === 'interrupted' ? 'resume the workflow or inspect partial work'
               : 'inspect the workflow result';
-    const label = terminalWorkflowLabel(state.status, concernCount);
-    return [truncate(`${statusIcon(state.status)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
+    const label = terminalWorkflowLabel(state);
+    return [truncate(`${workflowStatusIcon(state)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
   }
   const ledger = state.actionLedger ?? [];
   const pending = ledger.find((action) => action.id !== 'scout'
@@ -1064,7 +1158,15 @@ function humanStatus(value) {
 
 function plannerDisplayStatus(model) {
   const { orchestrator, state } = model;
-  if (state.finishedAt) return state.status === 'completed' ? 'Completed' : humanStatus(state.status);
+  if (state.finishedAt && isDeliveredWorkflowStatus(state.status)) {
+    const { concernCount, bestEffort, concerned } = outcomeQualification(state);
+    const concerns = concernCount ? concernPhrase(concernCount) : concerned ? 'concerns' : '';
+    // The planner pane is a 34-column nav column: state the qualification
+    // here and leave the count to the Live, Next and Result lines.
+    if (bestEffort) return 'Best-effort, unverified';
+    return concerns ? `Completed with ${concerns}` : 'Completed';
+  }
+  if (state.finishedAt) return humanStatus(state.status);
   if (orchestrator.active) return 'Planning next actions';
   const workers = Object.values(state.activeAgents ?? {}).filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent));
   if (workers.length) return 'Waiting for workers';
@@ -1134,9 +1236,14 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
 
   if (!verbose) {
     if (state.finishedAt) {
-      const verified = state.outcome?.verified === true;
-      lines.push('', `Result · ${verified ? 'Verified delivery is ready' : state.status === 'completed_with_concerns' ? 'Best useful delivery is ready with concerns' : state.status === 'blocked' ? 'No useful delivery could be completed' : 'Workflow is terminal'}`);
-      const concernCount = state.outcome?.concerns?.length ?? 0;
+      const { verified, bestEffort, concernCount, concerned } = outcomeQualification(state);
+      const concerns = concernCount ? ` · ${concernPhrase(concernCount)}` : concerned ? ' with concerns' : '';
+      const result = isDeliveredWorkflowStatus(state.status)
+        ? verified
+          ? `Verified delivery is ready${concerns}`
+          : `Best useful delivery is ready${bestEffort ? ', unverified' : ''}${concerns}`
+        : state.status === 'blocked' ? 'No useful delivery could be completed' : 'Workflow is terminal';
+      lines.push('', `Result · ${result}`);
       if (concernCount) lines.push(`Concerns · ${concernCount} recorded in the result envelope`);
     }
     lines.push('', 'Recent activity');
@@ -1231,7 +1338,13 @@ function agentDetailLines(model, width, spinnerFrame) {
   if (!agent) {
     const lines = ['No agent selected.', '', 'Planned steps in this phase:'];
     for (const action of model.selectedPhase.actions) {
-      lines.push(`${statusIcon(action.status, spinnerFrame)} ${action.id} · ${action.kind} · ${action.status}`);
+      const blocked = (model.selectedPhase.blockedActions ?? []).find((entry) => entry.id === action.id);
+      lines.push(blocked
+        ? `⊘ ${action.id} · ${action.kind} · never dispatched`
+        : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${action.kind} · ${action.status}`);
+      if (blocked) {
+        lines.push(`  blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`);
+      }
     }
     if (!model.selectedPhase.actions.length) lines.push('· waiting for the orchestrator to add work');
     return wrapLines(lines, width);
@@ -1327,10 +1440,19 @@ function wrapLines(lines, width) {
   return out;
 }
 
+// Workflow-level glyph: the qualification comes from the outcome envelope, so
+// a `completed` run that recorded concerns still reads as `!`.
+function workflowStatusIcon(state, spinnerFrame = 0) {
+  const { concernCount, bestEffort, concerned } = outcomeQualification(state);
+  if (isDeliveredWorkflowStatus(state?.status) && (concernCount || concerned || bestEffort)) return '!';
+  return statusIcon(state?.status, spinnerFrame);
+}
+
 function statusIcon(status, spinnerFrame = 0) {
   const value = String(status ?? '').toLowerCase();
   if (value === 'completed' || value.startsWith('succeeded')) return '✓';
-  if (value === 'completed_with_concerns') return '!';
+  if (value === 'completed_with_concerns') return '!'; // legacy runs
+  if (value === 'dependency_blocked') return '⊘';
   if (value.startsWith('failed') || value === 'cancelled' || value === 'interrupted') return '✗';
   if (value === 'running' || value === 'active' || value === 'planning') {
     return SPINNER_FRAMES[Math.abs(Number(spinnerFrame) || 0) % SPINNER_FRAMES.length];

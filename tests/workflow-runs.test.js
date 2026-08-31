@@ -39,6 +39,7 @@ import {
   generateShortId, isShortId, resolveRunId, listRuns, isOngoing,
   reconcileInterruptedRun, SHORT_ID_ALPHABET, SHORT_ID_LEN, ONGOING_GRACE_MS,
 } from '../src/workflow/short-id.js';
+import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from '../src/workflow/status.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -624,13 +625,13 @@ test('I10: caller result selects the latest delivery and strongest downstream ve
   } finally { cleanup(); }
 });
 
-test('I10: qualified terminal result remains ready and exposes unresolved concerns', () => {
+test('I10: legacy qualified terminal result remains ready and exposes unresolved concerns', () => {
   const { home, cleanup } = sandbox();
   try {
     const artifact = join(home, 'best-effort.md');
     writeFileSync(artifact, 'Useful completed analysis with one unresolved verification concern.');
     const outcome = {
-      status: 'completed_with_concerns', verified: false, bestEffort: true,
+       status: 'completed_with_concerns', verified: false, bestEffort: true,
       reason: 'Further refinement is disproportionate.', concerns: ['Independent verification was not satisfied.'],
       deliveryActionId: 'analysis',
     };
@@ -647,6 +648,9 @@ test('I10: qualified terminal result remains ready and exposes unresolved concer
     assert.equal(result.verified, false);
     assert.deepEqual(result.outcome, outcome);
     assert.equal(result.delivery.actionId, 'analysis');
+    assert.equal(isTerminalWorkflowStatus('completed_with_concerns'), true);
+    assert.equal(isDeliveredWorkflowStatus('completed_with_concerns'), true);
+    assert.equal(isTerminalWorkflowStatus('budget_exhausted'), true);
   } finally { cleanup(); }
 });
 

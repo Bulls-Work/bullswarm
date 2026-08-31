@@ -83,6 +83,11 @@ and exclusions. Never weaken those controls in a prompt.
   or JSON activity and stall fields before cancellation.
 - Malformed planner decisions receive bounded correction turns, then one
   orchestrator escalation, before a truthful qualified outcome.
-- `completed_with_concerns` can be a ready verified result. Read the concerns;
-  do not equate it with total failure.
+- Concerns are an attribute of a completed outcome, not a distinct terminal
+  status to branch on. A ready, verified result can still carry
+  `outcome.concerns`; read them, do not equate their presence with total
+  failure. The status value `completed_with_concerns` still appears in some
+  run records, including legacy runs written before this framing — every
+  consumer (`runs result`, the TUI, `workflow watch`) reads it the same way
+  it reads `completed`, so older runs stay fully readable.
 - Use cancellation only for a genuinely hung or no-longer-authorized run.
