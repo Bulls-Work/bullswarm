@@ -551,3 +551,30 @@ add-tests on claude-code (856 s); the only "fable" string in state is the exclus
 **Cosmetic observations for a later pass:** an empty `── Planner · continued ──` header can
 render with no rows beneath it when its events fall outside the viewport; the top status
 line now reads `· done` for a plain completed run (new wording from the status collapse).
+
+## Run 5: 9watya (unified TUI shell) — cancelled mid-grind, finished by a bounded run
+
+Goal: one key grammar across all four depths, persistent breadcrumb, uniform
+two-pane drill-down (approved mockup). Run wf-mtgx1fu5-aa61b2 (9watya) built
+most of it (implement-dashboard ok, breadcrumb + key map + shell in place,
+36/37 focused tests) but then entered a repair→verify grind: three rounds
+(shell v1→v2→v3) over ~1 hour on one pool (opencode2/luna). Every rejection
+was legitimate — missing CHANGELOG entry (same class as run 4's cascade),
+wording drift only partially fixed each round (`q` exit/detach, Enter
+"inspect"), 30- vs 34-column sidebar — but each repair fixed only part of the
+concern list, so the verifier correctly kept rejecting. Cancelled
+cooperatively by the operator (`workflow tui --cancel`).
+
+Finish: one bounded `bullswarm run --lane build` against the WIP tree closed
+the three named gaps (verdict `ok:true, why:verified`); independently
+verified 37/37 focused and 405/405 full. Committed as b09fa33; released in
+v0.21.0.
+
+Lessons (not yet built):
+- Repair prompts must require the repairer to address every listed concern
+  and self-check each one before the re-verify dispatches; partial repairs
+  make legitimate verifiers into grind loops.
+- The delegate classifier over-weights enumeration formatting: a
+  three-small-edit finish task scored deterministic 10 / "workflow" purely
+  from "3 numbered deliverables"; the correct shape (chosen by explicit
+  `--mode` override) was one bounded run.
