@@ -73,6 +73,24 @@ test('independent evidence avoids ancestor pool when another is eligible', async
   assert.equal(result.attempts[0].pool, 'luna-2');
 });
 
+test('strict evidence routing reuses its pinned ancestor instead of deadlocking on unrelated pools', async () => {
+  const h = harness([good]);
+  const result = await dispatchV2Action({
+    action: { ...action, lane: 'analyze' },
+    taskText: 'inspect',
+    targetDir: '/tmp',
+    paths,
+    pools: [connector('pinned-luna'), connector('unrelated-luna')],
+    preferredPool: 'pinned-luna',
+    strictPool: 'pinned-luna',
+    avoidPools: ['pinned-luna'],
+    bullswarmDir: '/tmp/bs',
+    dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].pool, 'pinned-luna');
+});
+
 test('provider-qualified model pins cannot run under another credential pool label', async () => {
   const h = harness([good]);
   const primary = connector('opencode2', {

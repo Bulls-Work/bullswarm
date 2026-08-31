@@ -108,6 +108,14 @@ provider. Because Command Code is currently declared build/chore-only, the
 full hard-case canary remains on Relay/OpenCode Luna rather than pretending it
 can pin every scout, work, and evidence action to Command Code.
 
+The first strict OpenCode hard-case canary then exposed an ordering defect in
+evidence dispatch: ancestor-pool avoidance ran before the strict pool filter.
+The presence of unrelated eligible pools removed the pinned OpenCode ancestor,
+then strict filtering removed those unrelated pools, producing `no eligible
+pool` without an agent attempt. Strict routing now defines the candidate scope
+first; evidence prefers an independent credential only inside that scope and
+reuses the pinned ancestor when independence would otherwise deadlock.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
