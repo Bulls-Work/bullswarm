@@ -99,6 +99,8 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /disconnected helpers, no-op assertions/i);
   assert.match(prompt, /transition matrix for every affected level and input/i);
   assert.match(prompt, /text already present before the input is vacuous/i);
+  assert.match(prompt, /node --test-timeout=60000 --test/);
+  assert.match(prompt, /forbid raw `node --test`/);
   assert.match(prompt, /beyond 60 seconds or twice that baseline/i);
   assert.match(prompt, /open-handle or unresolved-async defect/i);
   assert.match(prompt, /coherent acceptance slices, not merely by shared files/i);
