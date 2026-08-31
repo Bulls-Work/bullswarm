@@ -177,15 +177,17 @@ test('isolated mode runs file-disjoint writers concurrently and integrates both 
   const parallelProgram = {
     schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Write two disjoint files and inspect them together.',
     program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
-      { id: 'write-left', purpose: 'Write left', dependsOn: [], affects: ['report-correct'], ownedFiles: ['left.txt'], prompt: 'Write left.txt.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['left'] },
+      { id: 'write-left', purpose: 'Write left', dependsOn: [], affects: ['report-correct'], ownedFiles: ['left.txt'], prompt: `In ${f.workspace}, write left.txt.`, lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['left'] },
       { id: 'write-right', purpose: 'Write right', dependsOn: [], affects: ['report-correct'], ownedFiles: ['right.txt'], prompt: 'Write right.txt.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['right'] },
       { id: 'inspect-pair', purpose: 'Inspect pair', dependsOn: ['write-left', 'write-right'], affects: [], ownedFiles: [], prompt: 'Inspect both files.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['left', 'right'], produces: [] },
     ] },
   };
   let active = 0; let peak = 0;
+  let isolatedTask = '';
   const dispatch = fakeDispatch(async (options, _calls, files) => {
     if (options.action.id === 'workflow-planner') return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: parallelProgram }, outFile: files.outFile, meta: { exitCode: 0 } } };
     if (options.action.id.startsWith('write-')) {
+      if (options.action.id === 'write-left') isolatedTask = options.taskText;
       active += 1; peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 25));
       const name = options.action.id === 'write-left' ? 'left.txt' : 'right.txt';
@@ -201,6 +203,8 @@ test('isolated mode runs file-disjoint writers concurrently and integrates both 
   const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-isolate-abcdef', dependencies: { dispatchV2Action: dispatch } });
   assert.equal(result.result.status, 'completed');
   assert.equal(peak, 2);
+  assert.match(isolatedTask, /workspaces\/write-left/);
+  assert.equal(isolatedTask.includes(f.workspace), false, 'worker task must not retain the integration target path');
   assert.equal(readFileSync(join(f.workspace, 'left.txt'), 'utf8'), 'left.txt\n');
   assert.equal(readFileSync(join(f.workspace, 'right.txt'), 'utf8'), 'right.txt\n');
 });

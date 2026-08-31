@@ -121,6 +121,9 @@ function ancestorPools(state, action) {
 
 function buildWorkTask(state, action, targetDir = state.intent.cwd) {
   const requirements = state.intent.requirements.filter((requirement) => action.affects.includes(requirement.id));
+  const scopedPrompt = targetDir === state.intent.cwd
+    ? action.prompt
+    : action.prompt.split(state.intent.cwd).join(targetDir);
   const mutationProof = action.ownedFiles.length ? [
     'Behavioral acceptance discipline:',
     '- For new or changed behavior, exercise the real production entry point or state transition. Do not satisfy acceptance with a disconnected helper, a no-op assertion, or a test-only implementation path.',
@@ -142,7 +145,7 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
       : '',
     dependencyArtifacts(state, action).length ? `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}` : '',
     mutationProof,
-    '', action.prompt,
+    '', scopedPrompt,
     '',
     'Finish with a concise, substantive delivery summary containing the concrete work or findings and exact validation performed.',
   ].filter(Boolean).join('\n');
