@@ -389,3 +389,33 @@ defect), every repair prompt says to edit only the reviewed work's files and nev
 requires one owner per file including an existing test the change breaks, and the validator line states run-wide id
 uniqueness. Direction from the user: "unless it is completely nonsense or unable to finish I don't see a reason to
 reject so easily". Claim to test on the next rerun: none of the three `8ebi8a` rejection reasons can produce ok:false.
+
+## Run `5cvj72` — bullswarm 0.20.0 builds bullswarm's next release (2026-08-31, real repo, installed runtime)
+
+Goal: (R1) remove the hardcoded `relay/gpt-5.6-luna` from `connectors/opencode2.json` while keeping Relay per-provider
+model injection, (R2) LLM-refined delegation classification on top of the deterministic guess, (R3) docs, (R4) full
+suite green. Launched through `bullswarm delegate` itself (dry-run preview → executed pinned `--mode=workflow`).
+
+Result: **13 min 58 s** (838 s), 1 planner turn (73 s, 8.7 %), 12 dispatches, parallelism 1.69, max 3 concurrent,
+9-action program (3 implementers ∥ → 3 unit verifies covering R1–R3 → suite verify covering R1–R4), auto-completed
+`completed_with_concerns` (1 informational concern), 388/388 tests — verified independently by the operator.
+
+Reliability events, all self-healed: `update-documentation` on claude-code/sonnet-5 failed the output substance gate
+("announcement without substance") → escalated to codex/gpt-5.6-terra, succeeded. `verify-classifier` rejected once —
+legitimately under the lenient bar (R2 demanded BOTH reasons in the decision; `refineDecision()` dropped the
+deterministic one; the focused tests themselves passed 18/18) — one repair round fixed it, re-verify accepted. The
+coverage-evidence flip fired only alongside that real concern; no false rejection this run.
+
+Routing: soft `preferredConcurrency:1` spillover worked as designed — 9/12 dispatches on `opencode2 relay-2/gpt-5.6-luna`
+(the all-tier assignment), while parallel siblings spilled to claude-code (fable-5 for `implement-classifier`,
+sonnet-5 for the failed docs attempt) and codex (terra). Note: the per-pool assignment pins the model only on its own
+pool; spillover pools use their connector default, so a luna-only run needs either per-pool assignments or no
+concurrent siblings.
+
+Post-run verification by the operator: repo connector via a temp home — Relay off ⇒ `["opencode","run","--auto",
+"{taskFile}"]` (no `--model`); Relay on ⇒ `--model relay/gpt-5.6-luna`, `relay-2/…`, `relay-3/…` injected per provider.
+Live `--classify=llm` end-to-end: decision came back `source: llm-classifier` with both reasons and a sensible verdict.
+Two observations recorded, not fixed: (a) `--dry-run` never consults the LLM, so the canonical skill flow
+(dry-run preview → pinned re-execute) exercises only the deterministic classifier; (b) the substance gate rejected a
+correct 16-char answer ("bullswarm 0.20.0") from the tiny smoke delegation — legitimately terse outputs still fail the
+40/80-char floors. Installed homes keep the old connector until a setup upgrade copies the new file.

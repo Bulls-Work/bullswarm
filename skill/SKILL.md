@@ -77,9 +77,14 @@ time:
 
 Do not choose a workflow merely because a prompt is long. Do not choose one
 agent merely to save a dispatch when the result has independent units or a
-high-stakes acceptance boundary. The CLI classifier is transparent and
-overridable; the agent may pass `--mode` when domain context makes the correct
-shape clearer than textual signals.
+high-stakes acceptance boundary. In automatic execution, the CLI starts with
+deterministic signals and lets an LLM refine its decision; if that refinement
+is unavailable or unusable, it keeps the deterministic decision. Pass
+`--classify deterministic` to bypass LLM refinement, or `--classify llm` to
+require a usable LLM decision (and fail if none is available). `--dry-run`
+uses only the deterministic decision. The classifier is transparent and
+overridable: an explicit `--mode single|workflow` is the caller's choice and
+bypasses automatic LLM classification.
 
 ## Workflow plan boundary
 

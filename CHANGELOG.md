@@ -1,5 +1,23 @@
 # bullswarm changelog
 
+## Unreleased
+
+- Delegation classification now starts with deterministic signals and, in
+  automatic execution, lets an LLM refine the choice between a single delegate
+  and a workflow. `--classify deterministic` bypasses that refinement;
+  `--classify llm` requires it and fails if no usable LLM decision is available.
+  An explicit `--mode single|workflow` remains the caller's choice and bypasses
+  automatic LLM classification.
+
+- OpenCode connector portability: `connectors/opencode2.json` no longer
+  hardcodes `--model relay/gpt-5.6-luna` in `spawn.cmd`. A plain OpenCode
+  install with no Relay provider configured now dispatches with OpenCode's
+  own default model instead of failing to resolve a Relay-only model.
+  `src/lib/opencode-relay.js` still injects the explicit
+  `--model <providerId>/gpt-5.6-luna` for each discovered Relay provider, so
+  the primary `opencode2` pool and any extra `opencode2:<id>` pools keep
+  dispatching with their pinned per-provider model exactly as before.
+
 ## 0.20.0 — common agent delegation entry point
 
 - `/bullswarm` and `bullswarm delegate` now give agents one transparent entry

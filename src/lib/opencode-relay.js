@@ -2,14 +2,16 @@
 // opencode2 connector once per extra key. Pool names:
 //   opencode2            → first relay* provider (historical)
 //   opencode2:<id>       → extra providers (relay-2, relay-3, …)
-// Spawn retargets `--model relay/…` to `--model <id>/…`. No hardcoded key
-// list — whatever OpenCode has configured with a Relay base URL is used.
+// Spawn adds or retargets `--model` to `<id>/gpt-5.6-luna` for discovered
+// providers. No hardcoded key list — whatever OpenCode has configured with a
+// Relay base URL is used.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export const RELAY_BASE_HOST = 'api.relay.com';
+export const RELAY_OPENCODE_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_OPENCODE_CONFIG = () =>
   join(homedir(), '.config', 'opencode', 'opencode.json');
 
@@ -27,10 +29,20 @@ export function poolNameForRelayProvider(providerId, index) {
 }
 
 export function retargetOpenCodeModel(cmd, providerId) {
-  return (cmd ?? []).map((arg) => {
+  const retargeted = (cmd ?? []).map((arg) => {
     if (typeof arg !== 'string') return arg;
     return arg.replace(/^relay(?:-\d+)?\//, `${providerId}/`);
   });
+  const modelIndex = retargeted.indexOf('--model');
+  const model = `${providerId}/${RELAY_OPENCODE_MODEL}`;
+  if (modelIndex >= 0) {
+    retargeted[modelIndex + 1] = model;
+  } else {
+    const taskIndex = retargeted.indexOf('{taskFile}');
+    const insertAt = taskIndex >= 0 ? taskIndex : retargeted.length;
+    retargeted.splice(insertAt, 0, '--model', model);
+  }
+  return retargeted;
 }
 
 export function discoverRelayProviders(opts = {}) {
@@ -69,7 +81,7 @@ export function discoverRelayProviders(opts = {}) {
   return found.map((p, index) => ({
     ...p,
     pool: poolNameForRelayProvider(p.id, index),
-    command: `opencode run --auto --model ${p.id}/gpt-5.6-luna`,
+      command: `opencode run --auto --model ${p.id}/${RELAY_OPENCODE_MODEL}`,
   }));
 }
 

@@ -217,13 +217,15 @@ const delegateText = rich({
   usage: 'bullswarm delegate [--mode auto|single|workflow] [--cwd <dir>] '
     + '(--task-file <file> | --prompt <text> | <task text...>) [options]',
   purpose: 'Provide one agent-facing interface for arbitrary self-contained work. Bullswarm '
-    + 'classifies the task as one bounded delegate or an autonomous workflow, explains the '
-    + 'decision and conceptual plan, then executes through the existing verified engines.',
+    + 'uses deterministic task signals and, in automatic execution, an LLM refinement to '
+    + 'choose one bounded delegate or an autonomous workflow. It explains the decision and '
+    + 'conceptual plan, then executes through the existing verified engines.',
   args: [
     { name: '<task text...>', desc: 'the task request as trailing words; mutually exclusive with --prompt and --task-file' },
   ],
   options: [
     { flag: '--mode <auto|single|workflow>', desc: 'use transparent automatic classification or explicitly choose an execution shape', default: 'auto' },
+    { flag: '--classify <deterministic|llm>', desc: 'bypass LLM refinement or require a usable LLM classification; applies only to automatic execution', default: 'automatic mode refines deterministic signals with an LLM and falls back if unavailable' },
     { flag: '--cwd <dir>', desc: 'working directory for the delegate or workflow', default: 'current directory' },
     { flag: '--task-file <file>', desc: 'read the task from a file' },
     { flag: '--prompt <text>', desc: 'pass the task inline as one flag value' },
@@ -238,7 +240,8 @@ const delegateText = rich({
   safety: [
     '--dry-run classifies only and does not dispatch a coding agent; like other non-help commands it may self-initialize Bullswarm first',
     'single mode blocks until one delegate result passes or fails the content gate; workflow mode launches a durable background workflow and returns observation commands',
-    'automatic classification is transparent and overridable; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
+    '--classify deterministic and --dry-run use the deterministic decision without dispatching an LLM classifier; --classify llm fails if a usable LLM decision cannot be obtained',
+    'an explicit --mode single or --mode workflow is the caller\'s choice and bypasses automatic LLM classification; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
   ],
   examples: [
     { cmd: 'bullswarm delegate --dry-run --prompt "Explain src/workflow/result.js"', note: 'preview a likely single-agent analysis' },
