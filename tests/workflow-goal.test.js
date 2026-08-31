@@ -6,7 +6,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { extractGoalRequirements, scoutPrompt } from '../src/workflow/goal.js';
+import { extractGoalRequirements, extractScoutUnitIds, scoutPrompt } from '../src/workflow/goal.js';
 import { extractV2GoalConstraints, shouldAutoWatchGoal } from '../src/workflow/cli.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
@@ -23,7 +23,7 @@ function fixture() {
     'import { readFileSync, writeFileSync } from "node:fs";',
     'const task = readFileSync(process.argv[2], "utf8");',
     'if (task.includes("read-only SCOUT")) {',
-    '  process.stdout.write(["TREE:\\n- target/", "MANIFEST:\\n- fixture repository", "TEST STATUS:\\n- no test command required", "UNITS OF WORK:\\n- create done.txt and inspect it", "SHARED FILES:\\n- none", "RISKS:\\n- exact byte content must match", "The target is a bounded disposable fixture. ".repeat(8)].join("\\n"));',
+    '  process.stdout.write(["TREE:\\n- target/", "MANIFEST:\\n- fixture repository", "TEST STATUS:\\n- no test command required", "UNITS OF WORK:\\n- goal-work: create done.txt and inspect it", "SHARED FILES:\\n- none", "RISKS:\\n- exact byte content must match", "The target is a bounded disposable fixture. ".repeat(8), "[\\\"goal-work\\\"]"].join("\\n"));',
     '} else if (task.includes("single logical Workflow Planner for Bullswarm autonomous V2")) {',
     '  process.stdout.write(JSON.stringify({schemaVersion:"bullswarm.workflow.planner-response.v2",kind:"program",summary:"Create the bounded artifact and inspect it independently.",program:{schemaVersion:"bullswarm.workflow.program.v2",actions:[{id:"goal-work",purpose:"Create done artifact",dependsOn:[],affects:["requirement-1"],ownedFiles:["done.txt"],prompt:"Create done.txt containing exactly autonomous-complete followed by a newline, then read it back.",lane:"build",effort:"low",evidenceFor:[],inputs:[],produces:["done-artifact"]},{id:"goal-evidence",purpose:"Inspect done artifact",dependsOn:["goal-work"],affects:[],ownedFiles:[],prompt:"Read done.txt and compare every byte with the required content.",lane:"analyze",effort:"low",evidenceFor:["requirement-1"],inputs:["done-artifact"],produces:[]}]}}));',
     '} else if (task.includes("autonomous V2 evidence action")) {',
@@ -95,6 +95,13 @@ test('scout treats shared files as ordered acceptance slices instead of a forced
   assert.match(prompt, /avoid an umbrella unit named after the whole requirement/i);
   assert.match(prompt, /does not require one monolithic action/i);
   assert.match(prompt, /small ordered sequence that reuses the same owned files/i);
+});
+
+test('scout unit handoff accepts only a trailing unique kebab-case JSON array', () => {
+  assert.deepEqual(extractScoutUnitIds('UNITS OF WORK:\n- alpha\n["alpha","beta-two"]'), ['alpha', 'beta-two']);
+  assert.deepEqual(extractScoutUnitIds('UNITS OF WORK:\n- alpha\n["Alpha"]'), []);
+  assert.deepEqual(extractScoutUnitIds('UNITS OF WORK:\n- alpha\n["alpha","alpha"]'), []);
+  assert.deepEqual(extractScoutUnitIds('UNITS OF WORK:\n- alpha'), []);
 });
 
 test('retired autonomous V1 documents and runs fail closed before dispatch', () => {

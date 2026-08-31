@@ -70,6 +70,21 @@ export function extractGoalRequirements(goal) {
   return requirements.length ? requirements : [{ id: 'R1', text: compactRequirement(text) }];
 }
 
+export function extractScoutUnitIds(report) {
+  const source = String(report ?? '').trim();
+  for (let index = source.lastIndexOf('['); index >= 0; index = source.lastIndexOf('[', index - 1)) {
+    try {
+      const parsed = JSON.parse(source.slice(index));
+      if (!Array.isArray(parsed) || !parsed.length) continue;
+      const units = parsed.map((unit) => String(unit).trim());
+      if (units.some((unit) => !/^[a-z0-9][a-z0-9-]*$/.test(unit))) continue;
+      if (new Set(units).size !== units.length) continue;
+      return units;
+    } catch { /* try an earlier trailing array opener */ }
+  }
+  return [];
+}
+
 export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   'You are the autonomous orchestrator for the user goal in the durable workflow context.',
   'This is a control-plane decision thread. Compile the goal into a complete workflow program, own decomposition through independent verification, and use only the supplied context. Do not invoke Bullswarm, run shell commands, call tools, modify files, or ask the user to steer routine execution.',
