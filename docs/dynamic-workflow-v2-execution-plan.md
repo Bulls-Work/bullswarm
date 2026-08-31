@@ -88,6 +88,17 @@ explicit level-by-input transition matrix, distinguishable before/after
 fixtures, observable live-state assertions, and a clause-by-clause final
 coverage audit for interactive or state-machine work.
 
+The next difficult-goal retry completed four first-attempt actions, then an
+ancestor-navigation worker left the normally sub-second focused dashboard test
+process idle with an open handle for several minutes. The process remained
+alive but semantic activity had stopped, so the watchdog investigation
+cancelled the run instead of waiting indefinitely. Planner and worker
+contracts now define a focused test exceeding 60 seconds or twice its observed
+baseline without progress as a defect to interrupt and diagnose. Subsequent
+canaries move work actions to Command Code Luna while retaining Luna-only
+routing, so provider-shell behavior is tested independently of the planning
+contract.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
