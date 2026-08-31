@@ -53,13 +53,17 @@ function fakeDispatch(handler) {
 
 test('runs a complete V2 program and kernel—not planner—writes verified result', async () => {
   const f = setup();
+  let evidenceTask = '';
+  let workTask = '';
   const dispatch = fakeDispatch(async (options, _calls, files) => {
     if (options.action.id === 'workflow-planner') return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
     if (options.action.id === 'write-report') {
+      workTask = options.taskText;
       writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
       writeFileSync(files.outFile, 'wrote report.md');
       return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
     }
+    evidenceTask = options.taskText;
     const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
     writeFileSync(files.outFile, JSON.stringify(evidence));
     return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
@@ -68,6 +72,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(result.result.status, 'completed');
   assert.equal(result.result.verified, true);
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
+  assert.match(workTask, /exercise the real production entry point or state transition/i);
+  assert.match(workTask, /untouched baseline and observe the expected failure/i);
+  assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
+  assert.match(evidenceTask, /mandatory V2 evidence preflight below is the only output contract/i);
   assert.deepEqual(result.state.actions.map((action) => action.status), ['succeeded', 'succeeded']);
   assert.deepEqual(result.state.presentation.stages.map((stage) => stage.label), ['Implementation', 'Evidence']);
   assert.ok(result.state.presentation.stages.every((stage) => stage.startedAt && stage.completedAt));
