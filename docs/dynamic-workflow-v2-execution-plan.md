@@ -18,8 +18,8 @@ new deterministic kernel gates pass.
 
 ### Current execution checkpoint
 
-As of 2026-08-31, sequences 0-15 are implemented or accepted in the candidate
-worktree and the offline suite passes 493/493. This includes the V2-only goal/state/result
+As of 2026-09-01, sequences 0-15 are implemented or accepted in the candidate
+worktree and the offline suite passes 499/499. This includes the V2-only goal/state/result
 schemas, generic action and evidence contracts, requirement ledger, planner
 validator, dependency scheduler, changed-path ownership, isolated integration,
 mechanical-only retry/fallback, gap consolidation, kernel completion, durable
@@ -33,6 +33,15 @@ before dispatch. The separately authored fixed-graph engine remains supported.
 The bounded real-Luna component probes passed without model rejection or
 schema correction; their timings, token counts, routes, and durable outputs are
 recorded in `docs/experiments/2026-08-31-v2-component-probes.md`.
+
+The first difficult-goal canary exposed two plan-boundary weaknesses before the
+acceptance streak began. Evidence prompts could prescribe the retired V1
+`{ok, concerns, summary}` shape in conflict with the kernel-owned V2 envelope,
+and a mutating action could satisfy a green suite with a disconnected no-op
+behavioral test. The candidate now rejects planner-owned evidence formats
+before dispatch and requires mutating workers to demonstrate behavioral
+regressions through the real production path. Focused coverage and the full
+offline suite pass after both corrections.
 
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
