@@ -96,6 +96,8 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /kernel, not you, decides completion and failure/i);
   assert.match(prompt, /acceptance-independent/);
   assert.match(prompt, /tests for behavior introduced by another action/);
+  assert.match(prompt, /disconnected helpers, no-op assertions/i);
+  assert.match(prompt, /kernel exclusively supplies and validates the evidence output contract/i);
   assert.match(prompt, /reviewer, verify, repair/);
   assert.ok(!prompt.includes('actionLedger'));
 });

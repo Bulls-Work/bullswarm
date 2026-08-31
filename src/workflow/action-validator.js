@@ -11,6 +11,14 @@ const ACTION_FIELDS = new Set([
   'lane', 'effort', 'evidenceFor', 'inputs', 'produces',
 ]);
 
+const EVIDENCE_OUTPUT_DIRECTIVE = /\b(?:return|respond|reply|output|emit|produce|provide|finish|end)\b[\s\S]{0,120}\b(?:json|schema|object|format|form|envelope)\b/i;
+const LEGACY_EVIDENCE_SHAPE = /["']?ok["']?\s*:\s*(?:true|false|boolean|true\s*\|\s*false)[\s\S]{0,240}["']?(?:concerns|summary)["']?\s*:/i;
+
+function evidencePromptOwnsOutput(prompt) {
+  return typeof prompt === 'string'
+    && (EVIDENCE_OUTPUT_DIRECTIVE.test(prompt) || LEGACY_EVIDENCE_SHAPE.test(prompt));
+}
+
 export class ActionValidationError extends Error {
   constructor(issues) {
     super(`workflow action program invalid: ${issues.length} problem(s)`);
@@ -278,6 +286,9 @@ export function validateActionProgram(program, runtime = {}) {
     if (!EFFORTS.has(action.effort)) issues.push(`${at}.effort must be high|medium|low`);
     if (evidenceFor.length && (affects.length || ownedFiles.length)) {
       issues.push(`${at} evidence actions must have empty affects and ownedFiles`);
+    }
+    if (evidenceFor.length && evidencePromptOwnsOutput(action.prompt)) {
+      issues.push(`${at}.prompt must describe inspection scope only; evidence output schema is supplied by the V2 kernel`);
     }
     if (!evidenceFor.length && ownedFiles.length && !affects.length) {
       issues.push(`${at} mutating actions with ownedFiles must affect a requirement`);

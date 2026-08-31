@@ -106,3 +106,20 @@ test('rejects evidence that misses a known affecting work ancestor and handles m
     return true;
   });
 });
+
+test('rejects planner-owned output contracts in evidence prompts before dispatch', () => {
+  for (const prompt of [
+    'Inspect the result. Return JSON exactly in the form {"ok":true,"concerns":[],"summary":"done"}.',
+    'Check the requirement and respond with an object containing the verdict.',
+    'Inspect the files, then emit an evidence envelope with your findings.',
+  ]) {
+    assert.throws(
+      () => validateActionProgram(program([work(), evidence({ prompt })]), { mandatoryRequirements: ['result'] }),
+      (error) => error.issues.some((issue) => issue.includes('kernel')),
+    );
+  }
+  assert.equal(
+    validateActionProgram(program([work(), evidence({ prompt: 'Inspect the result, run the focused tests, and cite concrete findings.' })]), { mandatoryRequirements: ['result'] }).actions.length,
+    2,
+  );
+});
