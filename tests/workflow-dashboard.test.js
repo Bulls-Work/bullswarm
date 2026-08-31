@@ -47,6 +47,58 @@ function addHistoricalRun(home) {
   writeFileSync(join(dir, 'report.json'), JSON.stringify({ status: 'completed_with_concerns' }));
 }
 
+// ---------------------------------------------------------------------------
+// Timeline redesign: the overview timeline groups events under phase segment
+// headers shaped `── Implement ──────── 2m10s ──` instead of prefixing every
+// event line with `[Phase: ...]`. A phase re-opened after another phase ran in
+// between reads `── Implement · continued ── …`, and a viewport that starts mid
+// segment re-emits that continuation header. The helpers below read the
+// timeline pane structurally so the assertions never depend on dash padding,
+// panel geometry, or the terminal width in use.
+// ---------------------------------------------------------------------------
+
+function timelinePaneRows(screen) {
+  const rows = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n');
+  const top = rows.findIndex((line) => line.includes('Workflow timeline ·'));
+  if (top < 0) return [];
+  const left = rows[top].indexOf('┌ Workflow timeline');
+  const pane = [];
+  for (const line of rows.slice(top + 1)) {
+    const cell = line.slice(left);
+    if (!cell.startsWith('│')) break; // the Live divider closes the timeline pane
+    pane.push(cell.replace(/^│/, '').replace(/│$/, '').trimEnd());
+  }
+  return pane;
+}
+
+function timelineSegments(screen) {
+  const segments = [];
+  for (const line of timelinePaneRows(screen)) {
+    const header = /^─{2,}\s+(.+?)\s+─{2,}\s+(\S+)\s+─+$/.exec(line);
+    if (header) segments.push({ label: header[1], elapsed: header[2], rows: [] });
+    else if (/^─{2,}/.test(line)) segments.push({ label: line.replace(/─+/g, ' ').trim(), elapsed: null, rows: [] });
+    else if (segments.length && line.trim()) segments[segments.length - 1].rows.push(line);
+  }
+  return segments;
+}
+
+function segmentLabels(screen) {
+  return timelineSegments(screen).map((segment) => segment.label);
+}
+
+function normalizeRow(line) {
+  return line.replace(/^\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
+}
+
+function segmentRows(screen, label) {
+  return timelineSegments(screen)
+    .filter((segment) => segment.label === label)
+    .flatMap((segment) => segment.rows);
+}
+
+const iso = (seconds, base = '2026-08-29T00:00:00.000Z') =>
+  new Date(Date.parse(base) + seconds * 1000).toISOString();
+
 test('dashboard renders ongoing run progress and details', () => {
   const { home, cleanup } = fixture();
   try {
@@ -104,6 +156,8 @@ test('tui with a run ID prints a historical text tree without a TTY', async () =
     assert.equal(code, 0);
     assert.match(printed, /bullswarm · audit-files · abc234/);
     assert.match(printed, /action tree:/);
+    assert.match(printed, /Workflow timeline/);
+    assert.match(printed, /── Preflight/);
     assert.doesNotMatch(printed, /Press b to go back/);
     assert.doesNotMatch(printed, /\x1b/);
   } finally { cleanup(); }
@@ -436,23 +490,29 @@ test('workflow overview separates timestamped history from live planner and work
     const row = dashboardRows(home)[0];
     const overview = renderWorkflowTui(row, { width: 140, height: 54 });
     assert.match(overview, /Workflow timeline · \d+ milestones?/);
-    assert.match(overview, /\d{2}:\d{2}  ● \[Preflight: Scout\] started/);
-    assert.match(overview, /\d{2}:\d{2}  ✓ \[Preflight: Scout\] completed/);
-    assert.match(overview, /\d{2}:\d{2}  ◆ \[Workflow Planner\] plan created/);
-    assert.match(overview, /\d{2}:\d{2}  ├─ \[Phase: Discover\] started/);
-    assert.match(overview, /\d{2}:\d{2}  └─✓ \[Phase: Discover\] completed/);
-    assert.match(overview, /\d{2}:\d{2}  ├─ \[Phase: Implement\] started/);
-    assert.doesNotMatch(overview, /\[Phase: Implement\] completed/);
+    // the timeline names each phase once, in a segment header, instead of
+    // prefixing every event line with `[Phase: ...]`
+    assert.deepEqual(segmentLabels(overview), ['Preflight', 'Discover', 'Implement']);
+    const preflightRows = segmentRows(overview, 'Preflight').join('\n');
+    assert.match(preflightRows, /\d{2}:\d{2}  ● Scout started/);
+    assert.match(preflightRows, /\d{2}:\d{2}  ✓ Scout completed/);
+    assert.match(preflightRows, /\d{2}:\d{2}  ◆ \[Workflow Planner\] plan created/);
+    assert.match(segmentRows(overview, 'Discover').join('\n'), /\d{2}:\d{2}  ├─ started/);
+    assert.match(segmentRows(overview, 'Discover').join('\n'), /\d{2}:\d{2}  └─✓ completed/);
+    assert.match(segmentRows(overview, 'Implement').join('\n'), /\d{2}:\d{2}  ├─ started/);
+    assert.deepEqual(segmentRows(overview, 'Implement').filter((line) => line.includes('completed')), []);
+    assert.deepEqual(timelinePaneRows(overview).filter((line) => line.includes('[Phase:')), []);
     assert.match(overview, /Live · 1 running · 1 waiting/);
     assert.match(overview, /⧖ \[Workflow Planner\].*waiting/);
     assert.match(overview, /⠋ implement-b · command-code · minimax-m3/);
     assert.match(overview, /Write file · src\/workflow\/result\.js/);
     assert.match(overview, /○ \[Phase: Verify\] · verify-all · waiting for implement-b/);
     assert.doesNotMatch(overview, /Autonomous Delivery/);
-    // worker rows name their phase: concurrent phases interleave in time order
-    assert.match(overview, /├─✓ \[Discover\] discover-a/);
-    assert.match(overview, /└─✓ \[Discover\] discover-b/);
-    assert.match(overview, /├─✓ \[Implement\] implement-a/);
+    // worker rows sit under their own phase segment: concurrent phases still
+    // interleave in time order
+    assert.match(segmentRows(overview, 'Discover').join('\n'), /├─✓ discover-a/);
+    assert.match(segmentRows(overview, 'Discover').join('\n'), /└─✓ discover-b/);
+    assert.match(segmentRows(overview, 'Implement').join('\n'), /├─✓ implement-a/);
     // the header never exceeds the width, down to 20 columns
     for (const width of [20, 28, 37]) {
       const narrowLines = renderWorkflowTui(row, { width, height: 22 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n');
@@ -468,13 +528,21 @@ test('workflow overview separates timestamped history from live planner and work
     state.outputs['verify-report'] = { ok: false, dependencyBlocked: true };
     writeFileSync(statePath, JSON.stringify(state));
     const blocked = renderWorkflowTui(dashboardRows(home)[0], { width: 140, height: 54 });
-    assert.match(blocked, /\d{2}:\d{2}  ⊘ \[Phase: Report\] skipped\s+2 actions not run/);
+    assert.match(segmentRows(blocked, 'Report').join('\n'), /\d{2}:\d{2}  ⊘ skipped\s+2 actions not run/);
     assert.match(blocked, /Required earlier work did not pass; the planner chose a recovery path/);
-    assert.doesNotMatch(blocked, /\[Report\] verify-report|\[Phase: Report\] completed/);
+    assert.doesNotMatch(segmentRows(blocked, 'Report').join('\n'), /verify-report|completed/);
+    assert.deepEqual(timelinePaneRows(blocked).filter((line) => line.includes('[Phase:')), []);
     const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     const plainBlocked = blocked.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    for (const rendered of [plain, plainBlocked]) {
-      assert.doesNotMatch(rendered, /\[Workflow Planner\] plan created[^]*?\n\s*\n[^]*?\[Phase: Discover\] started/);
+    // the planner turn and the phase that follows it are separated by a segment
+    // header, never by a bare blank gap
+    for (const rendered of [overview, blocked]) {
+      const pane = timelinePaneRows(rendered);
+      pane.forEach((line, index) => {
+        if (line.trim() || index === pane.length - 1) return;
+        assert.ok(!pane[index + 1].trim() || /^─{2,}/.test(pane[index + 1]),
+          `blank timeline row ${index} is not a segment separator: ${pane[index + 1]}`);
+      });
     }
     assert.deepEqual(plain.split('\n').filter((line) => line.length > 140), []);
 
@@ -811,10 +879,11 @@ test('timeline calls dependency-blocked phases skipped and excludes stale comple
     _doc: { phases: [] },
   };
   const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 34 });
-  assert.match(screen, /\[Phase: Acceptance\] skipped/);
-  assert.match(screen, /\[Phase: Report\] skipped/);
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Acceptance', 'Report']);
+  assert.match(segmentRows(screen, 'Acceptance').join('\n'), /⊘ skipped/);
+  assert.match(segmentRows(screen, 'Report').join('\n'), /⊘ skipped/);
   assert.match(screen, /Required earlier work did not pass; the planner chose a recovery path/);
-  assert.doesNotMatch(screen, /\[Phase: (Acceptance|Report)\] completed/);
+  assert.deepEqual(timelinePaneRows(screen).filter((line) => /completed|\[Phase:/.test(line)), []);
   assert.match(screen, /Live · 1 running · 1 waiting/);
   assert.match(screen, /repair · opencode2 · luna/);
   assert.doesNotMatch(screen, /verify-docs · opencode2/);
@@ -841,14 +910,18 @@ test('auto-follow starts at a timestamped milestone instead of an orphaned detai
     outputs: Object.fromEntries(actions.map((action) => [action.id, { ok: true }])),
     activeAgents: {}, _doc: { phases: [] },
   };
-  const plain = renderWorkflowTui({ state, events: [] }, { width: 80, height: 22 })
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  const rows = plain.split('\n');
-  const marker = rows.findIndex((line) => line.includes('earlier timeline rows'));
-  assert.ok(marker >= 0, plain);
-  assert.match(rows[marker + 1], /│\d{2}:\d{2}\s/);
-  assert.match(plain, /\[Phase: Phase 7\] completed/);
-  assert.doesNotMatch(plain, /newer timeline rows/);
+  const screen = renderWorkflowTui({ state, events: [] }, { width: 80, height: 22 });
+  const rendered = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  const pane = timelinePaneRows(screen);
+  const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
+  assert.ok(marker >= 0, rendered);
+  // the viewport re-announces the segment it scrolled into, then resumes at a
+  // timestamped milestone rather than an orphaned detail row
+  assert.match(pane[marker + 1], /^─{2,}\s+.+ · continued\s+─{2,}/);
+  assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
+  // auto-follow still ends on the newest milestone
+  assert.match(segmentRows(screen, 'Phase 7').join('\n'), /└─✓ completed\s+1\/1/);
+  assert.doesNotMatch(rendered, /newer timeline rows/);
 });
 
 function plain(screen) {
@@ -1004,4 +1077,236 @@ test('a run that did not deliver keeps its phase failure marks, and still never 
   const screen = plain(renderWorkflowTui({ state: failed, events: [] }, { width: 120, height: 30 }));
   assert.match(screen, /✗ Audit Verification 2\/2/);
   assert.match(screen, /✗ Final Verification 0\/1/);
+});
+
+// An autonomous run with a preflight scout, one accepted planner turn, a
+// finished Discover phase, and a still-running Implement phase.
+function segmentedRunState(overrides = {}) {
+  return {
+    runId: 'wf-segments', shortId: 'seg234', workflow: 'segmented', status: 'running',
+    startedAt: iso(0),
+    intent: { autonomous: true, goal: 'Group the timeline into phase segments.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'claude-code', selectedModel: 'opus-5' },
+    currentStep: { id: 'implement-b', type: 'run', phase: 'implement' },
+    _doc: { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'scout', type: 'run' }, { id: 'orchestrator', type: 'decide' }] }] },
+    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, then implement.' }],
+    actionLedger: [
+      { id: 'scout', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [0] },
+      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [1] },
+      { id: 'discover-a', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [2] },
+      { id: 'discover-b', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [3] },
+      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [4] },
+      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'running', attempts: [5] },
+      { id: 'verify-all', phase: 'verify', kind: 'verify', status: 'pending', dependsOn: ['implement-b'], attempts: [] },
+    ],
+    attempts: [
+      { actionId: 'scout', pool: 'opencode2', model: 'luna', status: 'succeeded', startedAt: iso(10), finishedAt: iso(130) },
+      { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: iso(130), finishedAt: iso(190) },
+      { actionId: 'discover-a', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: iso(190), finishedAt: iso(250) },
+      { actionId: 'discover-b', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: iso(190), finishedAt: iso(260) },
+      { actionId: 'implement-a', pool: 'command-code', model: 'minimax-m3', status: 'succeeded', startedAt: iso(260), finishedAt: iso(320) },
+      { actionId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running', startedAt: iso(320) },
+    ],
+    outputs: { scout: { ok: true }, 'discover-a': { ok: true }, 'discover-b': { ok: true }, 'implement-a': { ok: true } },
+    activeAgents: {},
+    ...overrides,
+  };
+}
+
+test('timeline segments replace per-line phase prefixes with one header per phase change', () => {
+  const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 120, height: 40 });
+  const pane = timelinePaneRows(screen);
+
+  // one header per phase change, in chronological order, and none repeated
+  // between two events of the same phase
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
+
+  // the event lines themselves no longer name their phase
+  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+  assert.deepEqual(pane.filter((line) => /\[(Discover|Implement|Preflight):? ?[^\]]*\]/.test(line)), []);
+
+  // glyphs, action names, timestamps, and right-aligned durations survive
+  const discover = segmentRows(screen, 'Discover');
+  // (timestamps render in the local zone, so only their shape is asserted)
+  assert.deepEqual(discover.map(normalizeRow), [
+    'HH:MM ├─ started',
+    'HH:MM │ ├─✓ discover-a 1m00s',
+    'HH:MM │ └─✓ discover-b 1m10s',
+    'HH:MM └─✓ completed 2/2',
+  ]);
+  // four Discover events, one Discover header: no header between same-phase events
+  assert.equal(pane.filter((line) => /^─{2,}\s+Discover\s/.test(line)).length, 1);
+
+  // the running phase keeps its started row and reports no completion
+  const implement = segmentRows(screen, 'Implement');
+  assert.match(implement.join('\n'), /├─ started/);
+  assert.match(implement.join('\n'), /├─✓ implement-a\s+1m00s/);
+  assert.deepEqual(implement.filter((line) => line.includes('completed')), []);
+
+  // every blank separator inside the timeline introduces a segment header
+  pane.forEach((line, index) => {
+    if (line.trim() || index === pane.length - 1) return;
+    const next = pane[index + 1];
+    assert.ok(!next.trim() || /^─{2,}/.test(next), `blank row ${index} is not a segment separator: ${next}`);
+  });
+
+  // the prefix removal is scoped to timeline event lines: the Next pane still
+  // names the phase of the pending work it announces
+  const rendered = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  assert.match(rendered, /Workflow timeline · \d+ milestones?/);
+  assert.match(rendered, /○ \[Phase: Verify\] · verify-all/);
+});
+
+test('a phase re-opened after another phase renders a continued segment header', () => {
+  const state = {
+    runId: 'wf-interleaved', shortId: 'int234', workflow: 'interleaved', status: 'completed',
+    startedAt: iso(0), finishedAt: iso(270),
+    intent: { autonomous: true, goal: 'Interleave two phases in time.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
+    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
+    actionLedger: [
+      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [0] },
+      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [1] },
+      { id: 'verify-a', phase: 'verify', kind: 'verify', status: 'succeeded', attempts: [2] },
+    ],
+    attempts: [
+      { actionId: 'implement-a', status: 'succeeded', startedAt: iso(60), finishedAt: iso(120) },
+      { actionId: 'implement-b', status: 'succeeded', startedAt: iso(210), finishedAt: iso(240) },
+      { actionId: 'verify-a', status: 'succeeded', startedAt: iso(150), finishedAt: iso(180) },
+    ],
+    outputs: { 'implement-a': { ok: true }, 'implement-b': { ok: true }, 'verify-a': { ok: true } },
+    activeAgents: {}, _doc: { phases: [] },
+  };
+  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 40 });
+
+  // Implement opens, Verify runs inside it, Implement re-opens as `· continued`
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Implement', 'Verify', 'Implement · continued']);
+  // the first appearance of a phase is never marked continued
+  assert.equal(segmentLabels(screen).filter((label) => label.startsWith('Implement')).length, 2);
+  assert.deepEqual(segmentRows(screen, 'Implement · continued').map(normalizeRow), [
+    'HH:MM │ └─✓ implement-b 30s',
+    'HH:MM └─✓ completed 2/2',
+  ]);
+
+  // chronological order is preserved across the interleave
+  const stamps = timelinePaneRows(screen)
+    .map((line) => /^(\d{2}:\d{2})\s/.exec(line)?.[1])
+    .filter(Boolean);
+  assert.deepEqual(stamps, [...stamps].sort());
+  assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
+});
+
+test('scout and the first planner turn share Preflight; later checkpoints open a Planner segment', () => {
+  const state = segmentedRunState({
+    status: 'completed', finishedAt: iso(280), currentStep: null,
+    decisions: [
+      { gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, then implement.' },
+      { gateId: 'orchestrator', decision: 'complete', reason: 'Every requirement is verified.' },
+    ],
+  });
+  state.actionLedger = state.actionLedger
+    .filter((action) => !action.id.startsWith('implement'))
+    .map((action) => (action.id === 'orchestrator' ? { ...action, attempts: [1, 6] } : action));
+  state.attempts = [
+    ...state.attempts.filter((attempt) => !attempt.actionId.startsWith('implement')),
+    { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: iso(260), finishedAt: iso(270) },
+  ];
+  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 40 });
+
+  // one Preflight segment carries the run start, the scout, and the first plan
+  assert.equal(segmentLabels(screen).filter((label) => label === 'Preflight').length, 1);
+  assert.equal(segmentLabels(screen)[0], 'Preflight');
+  const preflight = segmentRows(screen, 'Preflight').join('\n');
+  assert.match(preflight, /● Workflow initiated/);
+  assert.match(preflight, /● Scout started/);
+  assert.match(preflight, /✓ Scout completed/);
+  assert.match(preflight, /◆ \[Workflow Planner\] plan created/);
+  // neither the scout nor the planner opens a segment of its own before work starts
+  assert.deepEqual(segmentLabels(screen).filter((label) => /^(Scout|Workflow Planner)/.test(label)), []);
+
+  // a later planner checkpoint lands in its own Planner segment, after the phase
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Planner']);
+  assert.match(segmentRows(screen, 'Planner').join('\n'), /◆ \[Workflow Planner\] completion confirmed/);
+});
+
+test('finished segment headers carry elapsed time and the active segment reads running', () => {
+  const running = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 120, height: 40 });
+  const headers = Object.fromEntries(timelineSegments(running).map((segment) => [segment.label, segment.elapsed]));
+  // Preflight spans the run start through the accepted plan (0s → 3m10s)
+  assert.equal(headers.Preflight, '3m10s');
+  // Discover spans its own first and last event (00:03:10 → 00:04:20)
+  assert.equal(headers.Discover, '1m10s');
+  // the phase still executing reports running instead of a finished duration
+  assert.equal(headers.Implement, 'running');
+
+  const finished = renderWorkflowTui({
+    state: segmentedRunState({ status: 'completed', finishedAt: iso(400), currentStep: null }),
+    events: [],
+  }, { width: 120, height: 40 });
+  const finishedHeaders = timelineSegments(finished);
+  assert.deepEqual(finishedHeaders.filter((segment) => segment.elapsed === 'running'), []);
+  for (const segment of finishedHeaders) {
+    assert.match(segment.elapsed, /^\d+(?:h\d+m|m\d+s|s)$|^\d+s$/, `${segment.label} header lost its elapsed time`);
+  }
+});
+
+// A single long phase: any viewport short enough to scroll starts mid-segment.
+function longPhaseState() {
+  const actions = Array.from({ length: 12 }, (_, index) => ({
+    id: `work-${index}`, phase: 'g:implement', kind: 'run', status: 'succeeded', attempts: [index],
+  }));
+  return {
+    runId: 'wf-long', shortId: 'lng234', workflow: 'long-phase', status: 'running',
+    startedAt: iso(0),
+    intent: { autonomous: true, goal: 'Render more rows than the viewport holds.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
+    currentStep: { id: 'work-11', type: 'run', phase: 'g:implement' },
+    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
+    actionLedger: [...actions, { id: 'tail', phase: 'g:implement', kind: 'run', status: 'running', attempts: [12] }],
+    attempts: [
+      ...actions.map((action, index) => ({
+        actionId: action.id, status: 'succeeded', startedAt: iso(60 + index * 120), finishedAt: iso(120 + index * 120),
+      })),
+      { actionId: 'tail', status: 'running', startedAt: iso(60 + 12 * 120) },
+    ],
+    outputs: Object.fromEntries(actions.map((action) => [action.id, { ok: true }])),
+    activeAgents: {}, _doc: { phases: [] },
+  };
+}
+
+test('a timeline viewport that starts mid-segment re-emits a continuation header', () => {
+  const state = longPhaseState();
+  const tall = renderWorkflowTui({ state, events: [] }, { width: 100, height: 46 });
+  // with room for every row the phase is introduced once and never continued
+  assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implement']);
+
+  const short = renderWorkflowTui({ state, events: [] }, { width: 100, height: 22 });
+  const pane = timelinePaneRows(short);
+  const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
+  assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
+  // the scrolled-into segment is re-announced before its first visible event
+  assert.match(pane[marker + 1], /^─{2,}\s+Implement · continued\s+─{2,}/);
+  assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
+  assert.deepEqual(segmentLabels(short), ['Implement · continued']);
+  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+});
+
+test('narrow timeline rendering uses the same segment headers and no phase prefixes', () => {
+  // tall enough that the whole timeline fits: nothing here is a scroll artifact
+  const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 60, height: 44 });
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
+  const pane = timelinePaneRows(screen);
+  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+  assert.match(segmentRows(screen, 'Discover').join('\n'), /├─✓ discover-a/);
+  assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implement').elapsed, 'running');
+  // headers obey the narrow width like every other row
+  const overflow = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n').filter((line) => [...line].length > 60);
+  assert.deepEqual(overflow, []);
+
+  // and the narrow viewport re-emits the continuation header when it scrolls
+  const scrolled = renderWorkflowTui({ state: longPhaseState(), events: [] }, { width: 60, height: 22 });
+  const narrowPane = timelinePaneRows(scrolled);
+  const marker = narrowPane.findIndex((line) => line.includes('earlier timeline rows'));
+  assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
+  assert.match(narrowPane[marker + 1], /^─{2,}\s+Implement · continued\s+─{2,}/);
 });

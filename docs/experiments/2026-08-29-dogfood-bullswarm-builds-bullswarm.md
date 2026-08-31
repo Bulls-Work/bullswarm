@@ -515,3 +515,39 @@ the only rejections judge files outside the reviewed work's ownership — the
 requirement-coverage entanglement follow-up is now clearly the top reliability fix.
 This run itself was labeled `completed_with_concerns` by the pre-change runtime it ran on —
 expected artifact, not a failed fix; the label class it removes dies with the next release.
+
+## Run hdtdxs — phase-segmented timeline (2026-08-31)
+
+User picked the segmented layout from a three-way mockup (headers on phase boundaries,
+`· continued` on interleave, per-line `[Phase: …]` prefixes dropped, chronology preserved).
+Launched through the repo binary at 5064c0f; preview `source: llm-classifier` in 16.6 s.
+**First run executing on the post-removal runtime: it terminated plain `completed`
+(qualification: qualified, 1 concern) — live validation of the wxfwda status collapse.**
+
+**Outcome: auto-completed, verified: true.** Wall 2,290 s (38m10s), busy 3,038 s,
+parallelism 1.33, max 2 concurrent, planner 214 s across 4 checkpoints + 1 correction
+(9.3%), 23 attempts. Diff: 3 files +440/−49. Operator-verified: `npm test` **400/400**
+(6 new tests) and `node --test tests/workflow-dashboard.test.js` 32/32 — which makes the
+run's single recorded concern (a focused-test failure on the narrow-width continuation
+header) stale by the time of handoff; the repair that closed verify-final-acceptance fixed
+it. Rendering both real run dirs shows 0 `[Phase:` prefixes and correct headers:
+`── Suite ─── 1m08s ──`, `── Verify · continued ─── 16m13s ──`,
+`── Final Acceptance Verify ─── 6m58s ──`; scrolled viewports re-emit a continuation
+header. Non-interactive `workflow tui <runId>` now prints the same segmented timeline
+(added mid-run after a verifier rejected the render evidence as unverifiable).
+
+**Reliability tally — the best verifier showing of the series: 5 rejections, ALL
+legitimate.** verify-renderer r1 (3 stale tests genuinely failing under the acceptance
+command), r2 (narrow variant genuinely still emitted `[Phase:` prefixes), verify-tests r1
+(CHANGELOG entry genuinely missing — this one cascaded: 8 downstream actions
+dependency-blocked across two recovery attempts before planner turn 4 landed the fix),
+verify-final-changelog r1 (the goal's required documentation choice genuinely absent),
+verify-final-acceptance r1 (render evidence genuinely invalid — non-interactive tui had no
+timeline; the repair added it). Zero cross-ownership rejections for the first time in four
+runs. Cost of the cascade: 2 extra planner turns + 1 planner correction (it tried to reuse
+a finished phase name), ~8 min of wall. Routing clean: opencode2/luna everywhere except
+add-tests on claude-code (856 s); the only "fable" string in state is the exclusion entry.
+
+**Cosmetic observations for a later pass:** an empty `── Planner · continued ──` header can
+render with no rows beneath it when its events fall outside the viewport; the top status
+line now reads `· done` for a plain completed run (new wording from the status collapse).
