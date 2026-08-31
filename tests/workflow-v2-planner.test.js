@@ -99,6 +99,8 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /disconnected helpers, no-op assertions/i);
   assert.match(prompt, /coherent acceptance slices, not merely by shared files/i);
   assert.match(prompt, /Do not collapse an entire multi-requirement feature/i);
+  assert.match(prompt, /single long requirement may be affected by several ordered actions/i);
+  assert.match(prompt, /Do not merge scout units merely because they share a requirement ID/i);
   assert.match(prompt, /kernel exclusively supplies and validates the evidence output contract/i);
   assert.match(prompt, /reviewer, verify, repair/);
   assert.ok(!prompt.includes('actionLedger'));
