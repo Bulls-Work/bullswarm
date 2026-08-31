@@ -56,7 +56,14 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   let evidenceTask = '';
   let workTask = '';
   const dispatch = fakeDispatch(async (options, _calls, files) => {
-    if (options.action.id === 'workflow-planner') return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    if (options.action.id === 'workflow-planner') {
+      const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+      assert.ok(candidatePath);
+      writeFileSync(candidatePath, JSON.stringify(programResponse()));
+      const structured = options.outputValidator('malformed planner response prose');
+      assert.deepEqual(structured, { ok: true, errors: [], value: programResponse() });
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
     if (options.action.id === 'write-report') {
       workTask = options.taskText;
       writeFileSync(join(f.workspace, 'report.md'), 'READY\n');

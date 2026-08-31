@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { validateV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { deserializeV2DurableState } from '../src/workflow/v2-state.js';
+import { extractScoutUnitIds } from '../src/workflow/goal.js';
 
 function parseArgs(args) {
   if (args.length !== 6 || args[0] !== '--state' || args[2] !== '--boundary' || args[4] !== '--value') return null;
@@ -21,7 +22,11 @@ if (!parsed) {
 try {
   const state = deserializeV2DurableState(readFileSync(parsed.statePath, 'utf8'));
   const value = JSON.parse(readFileSync(parsed.valuePath, 'utf8'));
-  validateV2PlannerResponse(value, state, { boundary: parsed.boundary });
+  const scoutPath = state.preflight.scout.outputFile;
+  const requiredScoutUnits = parsed.boundary === 'initial' && scoutPath && existsSync(scoutPath)
+    ? extractScoutUnitIds(readFileSync(scoutPath, 'utf8'))
+    : [];
+  validateV2PlannerResponse(value, state, { boundary: parsed.boundary, requiredScoutUnits });
   process.stdout.write(`${JSON.stringify({ ok: true, errors: [] })}\n`);
   process.exit(0);
 } catch (error) {

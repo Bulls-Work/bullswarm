@@ -13,7 +13,7 @@ import {
 } from './v2-state.js';
 import {
   applyV2PlannerResponse, buildPlannerPreflight, buildV2PlannerPrompt,
-  createV2PlannerContext, parseV2PlannerResponse, plannerCorrectionRequest,
+  createV2PlannerContext, readPlannerCandidate, plannerCorrectionRequest,
   V2PlannerValidationError,
 } from './v2-planner.js';
 import { extractScoutUnitIds } from './goal.js';
@@ -422,12 +422,14 @@ export async function runV2AutonomousWorkflow({
       ],
       boundary,
     });
-    const prompt = `${buildV2PlannerPrompt(context)}\n\n${buildPlannerPreflight(statePath(runDir), boundary)}`;
+    const turn = state.planner.turns + 1;
+    const candidatePath = join(runDir, `candidate-workflow-planner-turn-${turn}.json`);
+    rmSync(candidatePath, { force: true });
+    const prompt = `${buildV2PlannerPrompt(context)}\n\n${buildPlannerPreflight(statePath(runDir), boundary, candidatePath)}`;
     state.planner.status = 'running';
     state.lifecycle.status = 'planning';
     persist();
     emit('planner.started', { turn: state.planner.turns + 1, boundary });
-    const turn = state.planner.turns + 1;
     let currentAttemptId = null;
     let lastProgressPersist = 0;
     const plannerAttempt = () => state.planner.attempts.find((item) => item.ordinal === currentAttemptId);
@@ -450,19 +452,10 @@ export async function runV2AutonomousWorkflow({
       currentSession: state.planner.session,
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation,
-      outputValidator: (text) => {
-        try {
-          return {
-            ok: true,
-            errors: [],
-            value: parseV2PlannerResponse(text, state, {
-              boundary,
-              requiredScoutUnits: boundary === 'initial' ? context.scoutUnits : [],
-            }),
-          };
-        }
-        catch (error) { return { ok: false, errors: error.issues ?? [error.message] }; }
-      },
+      outputValidator: () => readPlannerCandidate(candidatePath, state, {
+        boundary,
+        requiredScoutUnits: boundary === 'initial' ? context.scoutUnits : [],
+      }),
       correctionTask: (verdict, details) => {
         const error = new V2PlannerValidationError(verdict?.structured?.errors ?? []);
         const request = plannerCorrectionRequest(error, { attempt: 1, maxCorrections: 1 });
