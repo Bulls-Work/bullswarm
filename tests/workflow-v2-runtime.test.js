@@ -74,9 +74,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
   assert.match(workTask, /one bounded slice of a larger workflow/i);
   assert.match(workTask, /Do not implement sibling, downstream, or whole-goal work early/i);
-  assert.match(workTask, /Requirement traceability .*report-correct/i);
+  assert.match(workTask, /Authoritative acceptance text for this bounded action/i);
+  assert.match(workTask, /report-correct: report\.md exists and contains READY/i);
+  assert.match(workTask, /does not authorize sibling, downstream, or whole-goal work/i);
   assert.doesNotMatch(workTask, /Goal: Deliver a correct report/);
-  assert.doesNotMatch(workTask, /report\.md exists and contains READY/);
   assert.match(workTask, /exercise the real production entry point or state transition/i);
   assert.match(workTask, /untouched baseline and observe the expected failure/i);
   assert.match(workTask, /transition matrix for every affected level and input/i);
