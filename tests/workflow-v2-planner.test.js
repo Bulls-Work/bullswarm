@@ -90,7 +90,7 @@ test('exhausted is allowed only at a real consolidated gap boundary', () => {
 });
 
 test('context and prompt contain compact gaps and forbid planner authority', () => {
-  const initial = createV2PlannerContext(state(), { scout: 'TREE: report.md absent' });
+  const initial = createV2PlannerContext(state(), { scout: 'TREE: report.md absent\n["write-report"]' });
   assert.equal(initial.boundary, 'initial');
   const prompt = buildV2PlannerPrompt(initial);
   assert.match(prompt, /kernel, not you, decides completion and failure/i);
@@ -107,9 +107,23 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /Do not collapse an entire multi-requirement feature/i);
   assert.match(prompt, /single long requirement may be affected by several ordered actions/i);
   assert.match(prompt, /Do not merge scout units merely because they share a requirement ID/i);
+  assert.match(prompt, /Every exact ID in context\.scoutUnits is a kernel-required work action/i);
+  assert.deepEqual(initial.scoutUnits, ['write-report']);
   assert.match(prompt, /kernel exclusively supplies and validates the evidence output contract/i);
   assert.match(prompt, /reviewer, verify, repair/);
   assert.ok(!prompt.includes('actionLedger'));
+});
+
+test('initial planning cannot absorb or omit an exact scout work unit', () => {
+  const current = state();
+  assert.throws(
+    () => validateV2PlannerResponse(response(), current, {
+      boundary: 'initial',
+      requiredScoutUnits: ['write-report', 'separate-footer-contract'],
+    }),
+    (error) => error instanceof V2PlannerValidationError
+      && error.issues.some((issue) => /missing exact scout work actions: separate-footer-contract/.test(issue)),
+  );
 });
 
 test('parser accepts only a trailing schema-valid object and corrections are bounded', () => {

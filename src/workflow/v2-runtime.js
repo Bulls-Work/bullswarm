@@ -16,6 +16,7 @@ import {
   createV2PlannerContext, parseV2PlannerResponse, plannerCorrectionRequest,
   V2PlannerValidationError,
 } from './v2-planner.js';
+import { extractScoutUnitIds } from './goal.js';
 import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, parseEvidenceOutput,
 } from './evidence-output.js';
@@ -344,7 +345,12 @@ export async function runV2AutonomousWorkflow({
       const source = String(text ?? '').trim();
       const missing = ['TREE', 'MANIFEST', 'TEST STATUS', 'UNITS OF WORK', 'SHARED FILES', 'RISKS']
         .filter((heading) => !new RegExp(`(?:^|\\n)\\s*(?:#+\\s*)?${heading}:`, 'i').test(source));
-      const errors = [...(source.length < 200 ? ['scout report must contain at least 200 characters'] : []), ...missing.map((heading) => `missing ${heading}: heading`)];
+      const units = extractScoutUnitIds(source);
+      const errors = [
+        ...(source.length < 200 ? ['scout report must contain at least 200 characters'] : []),
+        ...missing.map((heading) => `missing ${heading}: heading`),
+        ...(units.length ? [] : ['scout report must end with a non-empty unique kebab-case JSON unit array']),
+      ];
       return { ok: errors.length === 0, errors, value: source };
     };
     const result = await dispatch({
@@ -441,7 +447,16 @@ export async function runV2AutonomousWorkflow({
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation,
       outputValidator: (text) => {
-        try { return { ok: true, errors: [], value: parseV2PlannerResponse(text, state, { boundary }) }; }
+        try {
+          return {
+            ok: true,
+            errors: [],
+            value: parseV2PlannerResponse(text, state, {
+              boundary,
+              requiredScoutUnits: boundary === 'initial' ? context.scoutUnits : [],
+            }),
+          };
+        }
         catch (error) { return { ok: false, errors: error.issues ?? [error.message] }; }
       },
       correctionTask: (verdict, details) => {

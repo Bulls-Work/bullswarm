@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState } from './v2-state.js';
 import { deriveV2PresentationStages } from './v2-presentation.js';
+import { extractScoutUnitIds } from './goal.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -47,7 +48,10 @@ function runtimeFromState(state) {
   };
 }
 
-export function validateV2PlannerResponse(response, state, { boundary = state?.program?.actions?.length ? 'gaps' : 'initial' } = {}) {
+export function validateV2PlannerResponse(response, state, {
+  boundary = state?.program?.actions?.length ? 'gaps' : 'initial',
+  requiredScoutUnits = [],
+} = {}) {
   validateV2DurableState(state);
   const issues = [];
   if (!plain(response)) throw new V2PlannerValidationError(['response must be a plain object']);
@@ -59,7 +63,16 @@ export function validateV2PlannerResponse(response, state, { boundary = state?.p
   if (response.kind === 'program') {
     if (response.reason !== undefined) issues.push('reason is allowed only for kind=exhausted');
     if (!plain(response.program)) issues.push('program must be an object for kind=program');
-    else try { program = validateActionProgram(response.program, runtimeFromState(state)); }
+    else try {
+      program = validateActionProgram(response.program, runtimeFromState(state));
+      if (boundary === 'initial' && requiredScoutUnits.length) {
+        const workIds = new Set(program.actions
+          .filter((action) => action.evidenceFor.length === 0)
+          .map((action) => action.id));
+        const missing = requiredScoutUnits.filter((unit) => !workIds.has(unit));
+        if (missing.length) issues.push(`program is missing exact scout work actions: ${missing.join(', ')}`);
+      }
+    }
     catch (error) { issues.push(...(Array.isArray(error?.issues) ? error.issues : [error.message])); }
   }
   if (response.kind === 'exhausted') {
@@ -113,6 +126,7 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
     freshPassedRequirements: Object.values(state.ledger.requirements).filter((requirement) => requirement.status === 'passed').map((requirement) => requirement.id),
     gaps: plannerBoundary === 'gaps' ? consolidateV2Gaps(state) : null,
     scout: scout == null ? null : String(scout),
+    scoutUnits: extractScoutUnitIds(scout),
     steering: Array.isArray(steering) ? steering.map(String) : [],
     correction: correction == null ? null : clone(correction),
   };
@@ -132,6 +146,7 @@ export function buildV2PlannerPrompt(context) {
     'When a focused test baseline is known, action prompts must treat execution beyond 60 seconds or twice that baseline (whichever is greater) without progress as an open-handle or unresolved-async defect to interrupt and diagnose, never as an unbounded wait.',
     'Bound actions by coherent acceptance slices, not merely by shared files. When a goal has several independently testable cross-cutting behaviors in the same files, prefer a small ordered sequence whose actions reuse those exact ownedFiles and each deliver one behavior plus its focused regression. Do not collapse an entire multi-requirement feature into one monolithic worker just because its files overlap, and do not split one behavior from its own test.',
     'Treat the scout\'s independently testable units as the default action boundaries. A single long requirement may be affected by several ordered actions, each closing one observable clause; multiple actions may therefore list the same requirement in affects. Do not merge scout units merely because they share a requirement ID or owned files. Merge only when the combined change is genuinely trivial for one bounded worker.',
+    'Every exact ID in context.scoutUnits is a kernel-required work action. Use each ID unchanged on one non-evidence action and order shared-file units with dependencies. Do not rename, omit, or absorb one scout unit into another action; the response is rejected before dispatch if any unit is missing.',
     'For evidence actions, the prompt describes only what to inspect and which concrete checks to run. Never prescribe a response JSON, object, schema, envelope, format, or fields such as ok/concerns/summary; the V2 kernel exclusively supplies and validates the evidence output contract.',
     context.intent.constraints?.workspaceMutation === 'forbidden'
       ? 'This goal is deterministically read-only. Every action must have empty ownedFiles and must not modify workspace files; reports belong in the action output artifact.'

@@ -126,6 +126,15 @@ tests to run as `node --test-timeout=60000 --test <focused files>` and forbid
 failure to the same worker for diagnosis without imposing a wall-clock limit on
 the overall agent conversation.
 
+The next hard-case evidence action then correctly rejected a superficially
+green implementation: the scout had identified eight independently observable
+units, but the planner collapsed footer wording, sibling Tab navigation, and
+level-by-level ascent into one long action, which missed those clauses. The
+scout's trailing kebab-case unit array is now a validated kernel handoff. On the
+initial program, every exact scout unit ID must exist as its own non-evidence
+work action before dispatch; shared files are ordered by dependencies, while
+the planner may no longer silently rename, omit, or absorb a unit.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
