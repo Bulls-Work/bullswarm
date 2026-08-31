@@ -26,7 +26,7 @@ function setup(settings = {}) {
   const bullswarmDir = join(root, 'home');
   const workspace = join(root, 'repo');
   mkdirSync(bullswarmDir); mkdirSync(workspace);
-  const goal = createV2GoalDocument({ goal: 'Deliver a correct report', cwd: workspace, requirements: [requirement], settings: { concurrency: 2, maxExpansionRounds: 1, ...settings } });
+  const goal = createV2GoalDocument({ goal: 'Deliver a correct report', cwd: workspace, requirements: [requirement], settings: { scout: false, concurrency: 2, maxExpansionRounds: 1, ...settings } });
   return { root, bullswarmDir, workspace, goal };
 }
 
@@ -69,12 +69,46 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(result.result.verified, true);
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
   assert.deepEqual(result.state.actions.map((action) => action.status), ['succeeded', 'succeeded']);
+  assert.deepEqual(result.state.presentation.stages.map((stage) => stage.label), ['Implementation', 'Evidence']);
+  assert.ok(result.state.presentation.stages.every((stage) => stage.startedAt && stage.completedAt));
+  assert.equal(readEvents(result.runDir).filter((event) => event.type === 'presentation.stage_completed').length, 2);
   assert.equal(dispatch.calls(), 3);
   assert.equal(result.state.budget.seconds, 3);
   assert.ok(existsSync(join(result.runDir, 'goal.json')));
   assert.ok(existsSync(join(result.runDir, 'result.json')));
   assert.equal(readEvents(result.runDir).at(-1).type, 'workflow.finished');
   assert.equal(deserializeV2DurableState(readFileSync(join(result.runDir, 'state.json'), 'utf8')).lifecycle.status, 'completed');
+});
+
+test('preflight scout is deterministically validated, persisted, and supplied to planning', async () => {
+  const f = setup({ scout: true });
+  const scoutReport = [
+    'TREE:\n- report.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- tests pass',
+    'UNITS OF WORK:\n- report', 'SHARED FILES:\n- none', 'RISKS:\n- none',
+    'Additional repository facts '.repeat(8),
+  ].join('\n');
+  let plannerTask = '';
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'preflight-scout') {
+      writeFileSync(files.outFile, scoutReport);
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: scoutReport }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'workflow-planner') {
+      plannerTask = options.taskText;
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-scout1-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(result.state.preflight.scout.status, 'succeeded');
+  assert.equal(result.state.preflight.scout.attempts.length, 1);
+  assert.match(plannerTask, /Additional repository facts/);
+  assert.equal(result.result.status, 'completed');
 });
 
 test('isolated mode runs file-disjoint writers concurrently and integrates both before evidence', async () => {
@@ -132,6 +166,60 @@ test('out-of-scope work becomes one consolidated gap and returns useful partial 
   assert.match(result.result.reason, /undeclared path|cannot be trusted/);
 });
 
+test('schema-valid semantic evidence failure is consolidated once and never auto-repaired', async () => {
+  const f = setup();
+  let plannerTurns = 0;
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      plannerTurns += 1;
+      const value = plannerTurns === 1 ? programResponse() : exhausted;
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'NOT READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'failed', evidence: ['report.md does not contain READY'], concerns: ['Expected READY but observed NOT READY.'] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-semantic-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(result.result.status, 'partial');
+  assert.equal(result.state.ledger.requirements['report-correct'].status, 'failed');
+  assert.equal(plannerTurns, 2, 'one initial plan plus one consolidated gap update');
+  assert.deepEqual(result.state.attempts.map((attempt) => attempt.actionId), ['write-report', 'inspect-report']);
+  assert.equal(result.state.planner.attempts.length, 2);
+  assert.equal(result.state.program.revision, 1, 'no repair program was invented');
+});
+
+test('repeatedly invalid planner output stops before any worker dispatch', async () => {
+  const f = setup();
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    assert.equal(options.action.id, 'workflow-planner');
+    return {
+      ok: false, status: 'failed', failureKind: 'schema',
+      verdict: { ok: false, why: 'planner response remained schema-invalid after one correction', outFile: files.outFile, meta: { exitCode: 0 } },
+    };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-badplan-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(dispatch.calls(), 1);
+  assert.equal(result.result.status, 'partial');
+  assert.equal(result.state.actions.length, 0);
+  assert.match(result.result.reason, /schema-invalid/);
+});
+
+test('hard agent cap stops before another paid dispatch and returns an explicit partial result', async () => {
+  const f = setup({ maxAgents: 1 });
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    assert.equal(options.action.id, 'workflow-planner');
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-budget1-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(dispatch.calls(), 1);
+  assert.equal(result.result.status, 'partial');
+  assert.match(result.result.reason, /1-agent dispatch limit/);
+  assert.deepEqual(result.state.actions.map((action) => action.status), ['pending', 'pending']);
+});
+
 test('resume mechanically requeues an interrupted V2 action and rejects old run shapes', async () => {
   const f = setup();
   const runId = 'wf-test3a-abcdef';
@@ -144,6 +232,7 @@ test('resume mechanically requeues an interrupted V2 action and rejects old run 
   state.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [
     { id: 'inspect-report', purpose: 'Inspect report', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Inspect report.md.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: [], produces: [] },
   ] };
+  state.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['inspect-report'], startedAt: '2026-08-31T01:00:00Z', completedAt: null }] };
   state.actions = [{ id: 'inspect-report', status: 'running', attempts: 1, programRevision: 1, workRevision: 'initial', startedAt: '2026-08-31T01:00:00Z', finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null }];
   state.attempts = [{ id: 'inspect-report-1', actionId: 'inspect-report', ordinal: 1, status: 'running', pool: 'relay', model: 'gpt-5.6-luna', startedAt: '2026-08-31T01:00:00Z', finishedAt: null }];
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
@@ -159,4 +248,23 @@ test('resume mechanically requeues an interrupted V2 action and rejects old run 
   mkdirSync(oldDir, { recursive: true });
   writeFileSync(join(oldDir, 'state.json'), JSON.stringify({ schemaVersion: 'bullswarm.workflow.state.v1' }));
   await assert.rejects(() => runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-oldrun-abcdef', pools: [] }), /unsupported old autonomous run/);
+});
+
+test('durable cancellation resumes directly to a stable cancelled result without dispatch', async () => {
+  const f = setup();
+  const runId = 'wf-cancel1-abcdef';
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, 'goal.json'), JSON.stringify(f.goal));
+  const state = createV2State(f.goal, { runId, shortId: 'can234' });
+  state.lifecycle.status = 'planning';
+  state.cancellation = { requested: true, requestedAt: '2026-08-31T01:00:01.000Z', reason: 'operator requested stop' };
+  writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+  const dispatch = fakeDispatch(async () => { throw new Error('cancelled resume must not dispatch'); });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [], dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(dispatch.calls(), 0);
+  assert.equal(result.result.status, 'cancelled');
+  assert.equal(result.result.verified, false);
+  assert.equal(result.state.lifecycle.status, 'cancelled');
+  assert.ok(existsSync(join(runDir, 'result.json')));
 });

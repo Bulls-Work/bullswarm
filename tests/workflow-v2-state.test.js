@@ -19,11 +19,13 @@ test('creates intent-only V2 goal and empty durable state', () => {
   const state = createV2DurableState(goal, { runId: 'wf-1', shortId: 'abc234' });
   assert.equal(state.schemaVersion, V2_STATE_SCHEMA_VERSION);
   assert.deepEqual(state.program, { schemaVersion: 'bullswarm.workflow.program.v2', revision: 0, actions: [] });
+  assert.deepEqual(state.presentation, { stages: [] });
   assert.deepEqual(state.actions, []);
   assert.deepEqual(state.attempts, []);
   assert.deepEqual(state.lifecycle, { status: 'queued', startedAt: null, finishedAt: null, resultFile: null });
   assert.deepEqual(state.planner, { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] });
   assert.deepEqual(state.events, { sequence: 0, last: null });
+  assert.deepEqual(state.preflight, { scout: { status: 'pending', startedAt: null, finishedAt: null, outputFile: null, attempts: [], lastFailure: null } });
   assert.equal(state.ledger.requirements['result-versioned'].status, 'pending');
 });
 
@@ -65,6 +67,7 @@ test('round trips a progressed durable state', () => {
     }],
   };
   state.actions = [{ id: 'inspect-result', status: 'running', attempts: 1, programRevision: 1, startedAt: '2026-08-31T01:00:00.000Z', artifactIds: [] }];
+  state.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['inspect-result'], startedAt: '2026-08-31T01:00:00.000Z', completedAt: null }] };
   state.attempts = [{ id: 'inspect-result-1', actionId: 'inspect-result', ordinal: 1, status: 'running', pool: 'relay', model: 'gpt-5.6-luna', startedAt: '2026-08-31T01:00:00.000Z' }];
   state.budget.agents = 1;
   state.usage = { total: 1234, byPool: { relay: 1234 } };
@@ -101,5 +104,6 @@ test('rejects schema mismatch and graph-shaped state fields', () => {
   progressed.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [{ id: 'inspect', purpose: 'Inspect', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Inspect.', lane: 'analyze', effort: 'low', evidenceFor: ['result-versioned'], inputs: [], produces: [] }] };
   assert.throws(() => serializeV2DurableState(progressed), /missing program action inspect/);
   progressed.actions = [{ id: 'inspect', status: 'pending', attempts: 1, programRevision: 1 }];
+  progressed.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['inspect'], startedAt: null, completedAt: null }] };
   assert.throws(() => serializeV2DurableState(progressed), /does not match durable attempt records/);
 });

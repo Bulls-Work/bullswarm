@@ -90,6 +90,13 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
     if (plannerExhausted || limitsExhausted) return { status: 'partial', terminal: true, reason: terminalReason ?? 'planning ended without an executable program', gaps: consolidateV2Gaps(state) };
     return { status: 'needs-planner', terminal: false, boundary: 'initial', reason: 'the goal has not been planned yet' };
   }
+  // A hard dispatch/growth limit is stronger than the scheduler's knowledge
+  // that work would otherwise be runnable. Once no paid attempt is active,
+  // finalize the best evidence-backed partial result instead of spinning on
+  // actions the kernel is forbidden to dispatch.
+  if (limitsExhausted && !schedule.active.length) {
+    return { status: 'partial', terminal: true, reason: terminalReason ?? 'workflow limits ended further useful work', gaps: consolidateV2Gaps(state) };
+  }
   if (schedule.active.length || schedule.selected.length || nonterminal.some((action) => schedule.waiting.some((entry) => entry.id === action.id))) {
     return {
       status: 'running', terminal: false,

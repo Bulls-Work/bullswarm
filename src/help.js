@@ -572,12 +572,12 @@ const strategyAutoOffText = rich({
 const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
   purpose: 'Create, execute, observe, and audit durable multi-agent workflows: autonomous '
-    + 'goals, fixed workflow files, and incrementally-built drafts all run through the same '
-    + 'durable, resumable execution engine. With no command on a TTY, opens the unified '
-    + 'full-screen workflow dashboard.',
+    + 'V2 goals use the generic action/evidence kernel, while fixed workflow files and drafts '
+    + 'retain their authored-graph executor. With no command on a TTY, opens the unified '
+    + 'full-screen workflow home.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'autonomously plan, execute, verify, and replan a goal' },
+    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal through planning, generic actions, evidence, and kernel completion' },
     { name: 'run <file-or-name>', desc: 'run an existing workflow file or saved draft' },
     { name: 'draft ...', desc: 'incrementally build a fixed workflow graph' },
     { name: 'validate <file-or-name>', desc: 'validate without executing' },
@@ -585,7 +585,7 @@ const workflowText = rich({
     { name: 'list', desc: 'list available workflow definitions' },
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
-    { name: 'tui [runId]', desc: 'full-screen phase → agent → step/detail browser' },
+    { name: 'tui [runId]', desc: 'open the workflow home or one run timeline; bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
@@ -596,9 +596,8 @@ const workflowText = rich({
   safety: [
     'bare bullswarm workflow opens a read-only active/recent run dashboard only when stdin and '
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
-    'reconcileInterruptedRuns() runs before every workflow subcommand dispatch — including a '
-      + 'mistyped bare "help" argument, since only --help/-h/leading "help" bypass dispatch '
-      + 'entirely — and can rewrite state.json for any run whose heartbeat looks stale',
+    'before command dispatch, stale-owner reconciliation may mark an interrupted authored-graph '
+      + 'run resumable; autonomous V2 state is resumed only by its own kernel',
     'goal/run/draft run dispatch real coding-agent CLI processes and write durable state under '
       + '~/.bullswarm/workflows/<runId>/; validate/inspect/list/capabilities/tui/watch/events are '
       + 'read-only (tui --cancel, steer, approval, and "runs delete" are the exceptions — see '
@@ -615,10 +614,10 @@ const workflowText = rich({
 const workflowGoalText = rich({
   usage: 'bullswarm workflow goal "<goal>" [--cwd <dir>] [--watch|--foreground] [--json] '
     + '[--resume <shortId|runId>] [planning options]',
-  purpose: 'Autonomously plan, execute, verify, and replan a goal end to end: an orchestrator '
-    + 'expands the goal into phases and steps, dispatches them to delegate pools, and adapts '
-    + 'the plan as results come in. Launches independently by default so the calling agent is '
-    + 'not blocked.',
+  purpose: 'Run an autonomous V2 goal end to end. One resumable Workflow Planner proposes a '
+    + 'bounded generic action program; the kernel validates and schedules it, agents produce work '
+    + 'or requirement-scoped evidence, and the kernel alone computes the stable result. Launches '
+    + 'independently by default so the caller is not blocked.',
   args: [
     { name: '"<goal>"', desc: 'the goal text, as one argument; not used (and not required) with --resume or the internal --request relaunch mode' },
   ],
@@ -627,21 +626,19 @@ const workflowGoalText = rich({
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
-    { flag: '--orchestrator <pool|auto>', desc: 'prefer this orchestrator pool for a new goal or resumed run, falling back immediately when it is quota-gated, ineligible, or unavailable', default: 'auto (capability- and quota-based selection)' },
-    { flag: '--strict-orchestrator <pool>', desc: 'require exactly this orchestrator pool for controlled provider QA; waits when that pool is quota-gated instead of falling back; mutually exclusive with --orchestrator', default: 'off' },
+    { flag: '--orchestrator <pool|auto>', desc: 'prefer this Workflow Planner pool for a new goal, falling back immediately when it is quota-gated, ineligible, or unavailable', default: 'auto (capability- and quota-based selection)' },
+    { flag: '--strict-orchestrator <pool>', desc: 'require exactly this Workflow Planner pool for controlled provider QA; fails if it is unavailable rather than silently substituting; mutually exclusive with --orchestrator', default: 'off' },
     { flag: '--orchestrator-model <model|auto>', desc: 'pin the exact model used by the autonomous planner; only pools that can guarantee this model remain eligible', default: 'auto (effort-tier strategy or connector default)' },
-    { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, fan-out items, repairs, and verifiers, to one pool', default: 'auto (normal routing)' },
+    { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--suggested-plan <text>', desc: 'persist a caller-imagined conceptual execution shape in intent for the planner to consider; it does not author or bypass the validated graph', default: 'none' },
-    { flag: '--max-agents <n>', desc: 'planning target for total dispatched agents (soft, not a hard stop)', default: '30 (max 500)' },
-    { flag: '--max-expansion-rounds <n>', desc: 'planning target for planner replanning rounds', default: '8 (max 50)' },
-    { flag: '--max-actions <n>', desc: 'planning target for total dispatched actions', default: '40 (max 1000)' },
-    { flag: '--max-items-per-expansion <n>', desc: 'cap on fanout items per planner round, inline or resolved from itemsFrom at execution time', default: '24 (max 100)' },
-    { flag: '--no-scout', desc: 'skip the read-only scout action that surveys the repository (tree, manifest, test status, units of work) before the orchestrator compiles its first program', default: 'scout runs first' },
-    { flag: '--max-workflow-seconds <n>', desc: 'planning target for total wall-clock seconds', default: '3600 (max 86400)' },
-    { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready actions from one decision run concurrently up to this cap', default: '8 (max 16)' },
-    { flag: '--retry-attempts <0..3>', desc: 'same-pool retries per failed action', default: '1' },
-    { flag: '--resume <shortId|runId>', desc: 'resume a previously started run instead of starting a new goal; mutually exclusive with typing new goal text', default: 'starts a new goal' },
+    { flag: '--max-agents <n>', desc: 'hard cap on paid scout, planner, work, evidence, and mechanical-correction dispatches', default: '30' },
+    { flag: '--max-expansion-rounds <n>', desc: 'hard cap on consolidated gap-driven planner updates after the initial program', default: '2' },
+    { flag: '--max-actions <n>', desc: 'hard cap on total actions accepted across all planner revisions', default: '100' },
+    { flag: '--no-scout', desc: 'skip the read-only repository and capability reconnaissance before the Workflow Planner creates its first program', default: 'scout runs first' },
+    { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
+    { flag: '--retry-attempts <0..3>', desc: 'bounded retries for mechanical failures only; semantic evidence never auto-repairs', default: '1' },
+    { flag: '--resume <shortId|runId>', desc: 'resume a V2 autonomous run; old autonomous runs fail closed before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
   ],
   safety: [
@@ -651,14 +648,15 @@ const workflowGoalText = rich({
       + 'after this command returns',
     'writes durable workflow state under ~/.bullswarm/workflows/<runId>/ throughout execution '
       + '(state.json, events, attempts)',
-    'dispatches real coding-agent CLI processes per planned step, the same as bullswarm run',
-    'the goal document is validated before anything launches; an invalid goal is rejected and nothing runs',
+    'dispatches real coding-agent CLI processes per generic action, the same as bullswarm run',
+    'the goal, every planner response, worker ownership, and structured evidence are validated before they can become trusted state',
+    'there is no V1 autonomous migration or fallback; explicitly resuming an old run dispatches nothing',
   ],
   examples: [
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd .' },
     { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --strict-orchestrator codex --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
   ],
-  next: 'bullswarm workflow watch <shortId> to follow progress, or bullswarm workflow tui for the interactive browser.',
+  next: 'bullswarm workflow watch <shortId> to follow progress, or bare bullswarm workflow for the interactive workflow home.',
 });
 
 const workflowRunText = rich({
@@ -678,6 +676,7 @@ const workflowRunText = rich({
     'dispatches real coding-agent CLI processes per step (same routing/spend as bullswarm run)',
     'writes durable workflow state under ~/.bullswarm/workflows/<runId>/',
     'validated against live pools before running; an invalid document is rejected and nothing runs',
+    'retired autonomous V1 documents are rejected before dispatch; use workflow goal for autonomous V2',
   ],
   examples: [{ cmd: 'bullswarm workflow run my-workflow.json --input target=src/ --json' }],
   next: 'bullswarm workflow runs show <shortId> to check progress, or bullswarm workflow watch <shortId> to follow it live.',
@@ -706,13 +705,13 @@ const workflowListText = rich({
 
 const workflowCapabilitiesText = rich({
   usage: 'bullswarm workflow capabilities',
-  purpose: 'Report the lanes, step types, workflow engine features, current routing policy, '
-    + 'and live pool/model/meter state available for planning a goal or workflow.',
+  purpose: 'Report the autonomous V2 kernel and separate authored-graph engine, plus current '
+    + 'routing policy and live pool/model/meter state.',
   args: [],
   options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON regardless of this flag' }],
   safety: ['read-only — performs live pool discovery to populate pool/meter state; nothing is written'],
   examples: [{ cmd: 'bullswarm workflow capabilities' }],
-  next: 'bullswarm workflow goal "<goal>" --orchestrator <pool> to prefer one of the reported pools with fallback, or bullswarm strategy show to review model tier assignments.',
+  next: 'bullswarm workflow goal "<goal>" to use autonomous V2, workflow run <file> for a fixed authored graph, or bullswarm strategy show to review model tier assignments.',
 });
 
 const workflowInspectText = rich({
@@ -912,7 +911,8 @@ const workflowRunsListText = rich({
 
 const workflowRunsShowText = rich({
   usage: 'bullswarm workflow runs show <shortId|runId> [--json]',
-  purpose: "Dump one run's durable state.json and report.json (status, timestamps, step summary).",
+  purpose: "Show one run's durable state and status summary. Autonomous V2 reports goal, "
+    + 'requirements, and generic actions; an authored graph reports its step summary.',
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
   options: [{ flag: '--json', desc: 'print the full state/report as JSON', default: 'human-readable summary lines' }],
   safety: ['read-only'],
@@ -922,10 +922,11 @@ const workflowRunsShowText = rich({
 
 const workflowRunsResultText = rich({
   usage: 'bullswarm workflow runs result <shortId|runId> [--json]',
-  purpose: 'Print the stable caller envelope: primary delivery, parallel deliveries[] frontier, '
-    + 'strongest verification verdict, progress, and usage for one run — the intended integration point for scripts and agents.',
+  purpose: 'Print the stable caller envelope. Autonomous V2 returns the kernel-computed goal, '
+    + 'requirement ledger, action outcomes, and unresolved gaps; an authored graph returns its '
+    + 'delivery and verification view. This is the intended integration point for scripts and agents.',
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
-  options: [{ flag: '--json', desc: 'print the full result document as JSON', default: 'human-readable summary (delivery preview truncated to 64KB)' }],
+  options: [{ flag: '--json', desc: 'print the full versioned result document as JSON', default: 'human-readable result summary' }],
   safety: ['read-only'],
   examples: [{ cmd: 'bullswarm workflow runs result ab12cd --json' }],
   next: 'bullswarm workflow runs delete ab12cd --yes once you no longer need the run directory.',

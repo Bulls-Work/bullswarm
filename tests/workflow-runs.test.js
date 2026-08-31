@@ -85,6 +85,33 @@ function historicalFixture(home, { runId, shortId, workflow = 'dated', startedAt
   }));
 }
 
+function autonomousV2Fixture(home, {
+  runId = 'wf-v2-result', shortId = 'v2r234', status = 'completed',
+} = {}) {
+  const runDir = join(home, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  const startedAt = '2026-08-31T01:00:00.000Z';
+  const finishedAt = '2026-08-31T01:02:00.000Z';
+  const state = {
+    schemaVersion: 'bullswarm.workflow.state.v2', runId, shortId,
+    intent: { goal: 'Produce and prove a V2 artifact.' },
+    lifecycle: { status, startedAt, finishedAt, resultFile: join(runDir, 'result.json') },
+    ledger: { requirements: { 'requirement-1': { status: 'passed' } } },
+    actions: [{ id: 'produce', status: 'succeeded' }, { id: 'prove', status: 'succeeded' }],
+  };
+  const result = {
+    schemaVersion: 'bullswarm.workflow.result.v2', runId, shortId,
+    status, verified: true, reason: 'All mandatory requirements have fresh passing evidence.',
+    goal: state.intent.goal,
+    requirements: [{ id: 'requirement-1', status: 'passed', evidence: ['focused check passed'], concerns: [] }],
+    actions: [{ id: 'produce', status: 'succeeded' }, { id: 'prove', status: 'succeeded' }],
+    gaps: { summary: '', requirements: [] },
+  };
+  writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
+  writeFileSync(join(runDir, 'result.json'), JSON.stringify(result));
+  return { runDir, state, result };
+}
+
 // --- I1: shortId is set on every new run -------------------------------
 test('I1: new run gets a 6-char shortId in state.json and report.json', async () => {
   const { home, cleanup } = sandbox();
@@ -571,6 +598,38 @@ test('I10: workflow runs show <id> accepts both shortId and full runId', async (
     assert.equal(typeof result.totalTokens, 'number');
     assert.ok(result.tokenUsage);
     assert.equal(typeof result.totalToolCalls.complete, 'boolean');
+  } finally { cleanup(); }
+});
+
+test('I10: runs list, show, and result expose native autonomous V2 state', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const fixture = autonomousV2Fixture(home);
+    const listed = run(wf('runs', '--all', '--json'), { home });
+    assert.equal(listed.status, 0, listed.stderr);
+    const list = JSON.parse(listed.stdout);
+    assert.equal(list.count, 1);
+    assert.deepEqual(list.runs[0], {
+      runId: 'wf-v2-result', shortId: 'v2r234', workflow: 'autonomous-v2',
+      goal: 'Produce and prove a V2 artifact.', status: 'completed',
+      startedAt: '2026-08-31T01:00:00.000Z', finishedAt: '2026-08-31T01:02:00.000Z',
+      ongoing: false, actionsSucceeded: 2, actionsTotal: 2,
+    });
+
+    const shown = run(wf('runs', 'show', 'v2r234', '--json'), { home });
+    assert.equal(shown.status, 0, shown.stderr);
+    const show = JSON.parse(shown.stdout);
+    assert.equal(show.state.schemaVersion, 'bullswarm.workflow.state.v2');
+    assert.equal(show.report, null);
+    assert.equal(show.ongoing, false);
+
+    const resultJson = run(wf('runs', 'result', 'v2r234', '--json'), { home });
+    assert.equal(resultJson.status, 0, resultJson.stderr);
+    assert.deepEqual(JSON.parse(resultJson.stdout), fixture.result);
+    const resultHuman = run(wf('runs', 'result', 'v2r234'), { home });
+    assert.equal(resultHuman.status, 0, resultHuman.stderr);
+    assert.match(resultHuman.stdout, /# status  completed  result ready/);
+    assert.match(resultHuman.stdout, /# requirements  1\/1 passed/);
   } finally { cleanup(); }
 });
 

@@ -27,6 +27,10 @@ function plannedState() {
     { id: 'write-report', status: 'pending', attempts: 0, programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null },
     { id: 'check-report', status: 'pending', attempts: 0, programRevision: 1, workRevision: 'initial', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [], lastFailure: null },
   ];
+  state.presentation = { stages: [
+    { id: 'r1-implementation', label: 'Implementation', revision: 1, actionIds: ['write-report'], startedAt: null, completedAt: null },
+    { id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['check-report'], startedAt: null, completedAt: null },
+  ] };
   return state;
 }
 

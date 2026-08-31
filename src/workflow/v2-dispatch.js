@@ -59,7 +59,8 @@ function appendDecision(bullswarmDir, record, { loadCoreState, saveCoreState, qu
   saveCoreState(bullswarmDir, state);
 }
 
-function selectedModel(pool, effort) {
+function selectedModel(pool, effort, preferredModel = null) {
+  if (preferredModel && !(pool.strategyExcludedModels ?? []).includes(preferredModel)) return preferredModel;
   const assignment = pool.strategyAssignments?.[effort] ?? null;
   return pool.modelPolicy?.model
     ?? (assignment?.pool === pool.name ? assignment.model : null)
@@ -101,6 +102,8 @@ export async function dispatchV2Action({
   bullswarmDir,
   parentEnv = process.env,
   preferredPool = null,
+  preferredModel = null,
+  strictPool = null,
   avoidPools = [],
   outputValidator = null,
   correctionTask = null,
@@ -123,7 +126,8 @@ export async function dispatchV2Action({
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const effort = action.effort ?? EFFORT_BY_LANE[action.lane] ?? 'low';
-  const candidates = preparePools(pools, action, effort, { avoidPools, now: now() });
+  let candidates = preparePools(pools, action, effort, { avoidPools, now: now() });
+  if (strictPool) candidates = candidates.filter((pool) => pool.name === strictPool);
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
   const effectivePreferredPool = preferredPool ?? configuredAssignment?.pool ?? null;
@@ -147,7 +151,7 @@ export async function dispatchV2Action({
     if (!route.pick) break;
     const pool = route.pick.connector;
     const connector = pool.connector ?? pool;
-    const model = selectedModel(pool, effort);
+    const model = selectedModel(pool, effort, preferredModel);
     const ordinal = attempts.length + 1;
     const files = attemptPaths(paths, ordinal);
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);

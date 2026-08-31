@@ -23,14 +23,17 @@ import {
   createV2ResultEnvelope, evaluateV2Progress, serializeV2ResultEnvelope,
 } from './v2-outcome.js';
 import { dispatchV2Action } from './v2-dispatch.js';
+import { scoutPrompt } from './goal.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
 } from './v2-workspace.js';
+import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const DEFAULTS = Object.freeze({
   concurrency: 4,
   workspaceMode: 'shared',
+  maxAgents: 30,
   maxActions: 100,
   maxExpansionRounds: 2,
   maxMechanicalRetries: 1,
@@ -181,6 +184,15 @@ function reconcileResume(state, at) {
     action.lastFailure = { kind: 'interrupted', message: 'retrying mechanically after durable resume' };
   }
   if (state.planner.status === 'running') state.planner.status = 'pending';
+  if (state.preflight.scout.status === 'running') {
+    state.preflight.scout.status = 'pending';
+    state.preflight.scout.finishedAt = null;
+    state.preflight.scout.lastFailure = { kind: 'interrupted', message: 'retrying preflight after durable resume' };
+    for (const attempt of state.preflight.scout.attempts) if (attempt.status === 'running') {
+      attempt.status = 'interrupted'; attempt.finishedAt = at; attempt.failureKind = 'interrupted';
+      attempt.why = 'runner stopped before the preflight reached a durable terminal state';
+    }
+  }
   if (!TERMINAL.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
 }
 
@@ -215,11 +227,24 @@ export async function runV2AutonomousWorkflow({
     state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
     assertV2Resume(durableGoal, state, { runId: id });
     goalDocument = durableGoal;
+    if (TERMINAL.has(state.lifecycle.status)) {
+      const durableResultPath = state.lifecycle.resultFile ?? join(runDir, 'result.json');
+      if (!existsSync(durableResultPath)) throw new Error(`terminal V2 run ${id} is missing its stable result envelope`);
+      return {
+        runId: id, shortId: state.shortId, runDir, state: clone(state),
+        result: JSON.parse(readFileSync(durableResultPath, 'utf8')),
+      };
+    }
     reconcileResume(state, now());
   } else {
     validateV2GoalDocument(goalDocument);
     writeJsonAtomic(goalPath(runDir), goalDocument);
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
+  }
+
+  let scoutReport = typeof scout === 'string' && scout.trim() ? scout.trim() : null;
+  if (!scoutReport && state.preflight.scout.status === 'succeeded' && state.preflight.scout.outputFile && existsSync(state.preflight.scout.outputFile)) {
+    scoutReport = readFileSync(state.preflight.scout.outputFile, 'utf8');
   }
 
   const persist = () => {
@@ -231,6 +256,28 @@ export async function runV2AutonomousWorkflow({
     persist();
     onEvent?.(event);
     return event;
+  };
+  const startPresentationStage = (actionId) => {
+    const stage = stageForAction(state.presentation, actionId);
+    if (!stage || stage.startedAt) return;
+    stage.startedAt = now();
+    emit('presentation.stage_started', {
+      stageId: stage.id, label: stage.label, revision: stage.revision,
+      actionIds: clone(stage.actionIds),
+    });
+  };
+  const completePresentationStages = () => {
+    for (const stage of state.presentation.stages) {
+      if (!stage.startedAt || stage.completedAt) continue;
+      const status = presentationStageStatus(stage, state.actions);
+      if (!status.terminal) continue;
+      stage.completedAt = now();
+      emit('presentation.stage_completed', {
+        stageId: stage.id, label: stage.label, revision: stage.revision,
+        status: status.successful ? 'completed' : 'completed-with-gaps',
+        completed: status.completed, total: status.total,
+      });
+    }
   };
   const refreshCancellation = () => {
     try {
@@ -257,8 +304,81 @@ export async function runV2AutonomousWorkflow({
   const integrateWorkspace = dependencies.integrateIsolatedWorkspace ?? integrateIsolatedWorkspace;
   const disposeWorkspace = dependencies.disposeIsolatedWorkspace ?? disposeIsolatedWorkspace;
 
+  const runScout = async () => {
+    const durable = state.preflight.scout;
+    if (durable.status === 'skipped') return { ok: true, skipped: true };
+    if (scoutReport) {
+      const outputFile = join(runDir, 'out-preflight-scout.md');
+      writeFileSync(outputFile, scoutReport);
+      Object.assign(durable, { status: 'succeeded', startedAt: durable.startedAt ?? now(), finishedAt: now(), outputFile, lastFailure: null });
+      persist();
+      emit('preflight.scout_finished', { status: 'succeeded', supplied: true, outputFile });
+      return { ok: true };
+    }
+    durable.status = 'running'; durable.startedAt ??= now(); durable.finishedAt = null; durable.lastFailure = null;
+    state.lifecycle.status = 'planning'; persist();
+    emit('preflight.scout_started', { purpose: 'Read-only repository and capability inspection' });
+    let current = null; let lastProgressPersist = 0;
+    const reportValidator = (text) => {
+      const source = String(text ?? '').trim();
+      const missing = ['TREE', 'MANIFEST', 'TEST STATUS', 'UNITS OF WORK', 'SHARED FILES', 'RISKS']
+        .filter((heading) => !new RegExp(`(?:^|\\n)\\s*(?:#+\\s*)?${heading}:`, 'i').test(source));
+      const errors = [...(source.length < 200 ? ['scout report must contain at least 200 characters'] : []), ...missing.map((heading) => `missing ${heading}: heading`)];
+      return { ok: errors.length === 0, errors, value: source };
+    };
+    const result = await dispatch({
+      action: { id: 'preflight-scout', lane: 'analyze', effort: 'low' },
+      taskText: scoutPrompt(state.intent.goal, state.intent.cwd), targetDir: state.intent.cwd,
+      paths: (ordinal) => ({ taskFile: join(runDir, `task-preflight-scout-attempt-${ordinal}.md`), outFile: join(runDir, `out-preflight-scout-attempt-${ordinal}.md`) }),
+      pools, bullswarmDir, parentEnv,
+      preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
+      preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
+      strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
+      maxMechanicalRetries: config.maxMechanicalRetries, shouldCancel: refreshCancellation,
+      outputValidator: reportValidator,
+      correctionTask: (verdict, { originalTask }) => `${originalTask}\n\nYour prior scout report failed deterministic validation:\n${(verdict?.structured?.errors ?? []).map((error) => `- ${error}`).join('\n')}\nReturn a corrected report with every exact heading.`,
+      onAttempt: (stage, record) => {
+        if (stage === 'started') {
+          current = {
+            ordinal: durable.attempts.length + 1, turn: 1, status: 'running', pool: record.pool, model: record.model,
+            startedAt: record.startedAt, finishedAt: null, taskFile: record.taskFile, outputFile: record.outFile,
+          };
+          durable.attempts.push(current);
+          emit('preflight.scout_attempt_started', { ordinal: current.ordinal, pool: current.pool, model: current.model });
+        } else {
+          Object.assign(current, {
+            status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
+            failureKind: record.failureKind ?? null, why: record.why ?? null,
+            usage: clone(record.usage ?? null), wallSec: record.wallSec ?? null,
+          });
+          addUsage(state, record);
+          emit('preflight.scout_attempt_finished', { ordinal: current.ordinal, status: current.status, failureKind: current.failureKind });
+        }
+      },
+      onActivity: ({ at, bytes }) => {
+        if (!current) return; current.lastActivityAt = at;
+        current.outputBytesObserved = Number(current.outputBytesObserved ?? 0) + Number(bytes ?? 0);
+        const time = Date.now(); if (time - lastProgressPersist >= 1000) { lastProgressPersist = time; persist(); }
+      },
+      onAgentEvent: (event) => { if (current) { current.lastEventAt = event.at ?? now(); current.lastAgentEvent = clone(event); } },
+    });
+    durable.finishedAt = now();
+    if (!result.ok) {
+      durable.status = 'failed'; durable.lastFailure = { kind: result.failureKind, message: result.verdict?.why ?? 'preflight scout failed' };
+      persist(); emit('preflight.scout_finished', { status: 'failed', failureKind: result.failureKind, why: result.verdict?.why ?? null });
+      return result;
+    }
+    durable.status = 'succeeded'; durable.outputFile = result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null; durable.lastFailure = null;
+    scoutReport = result.verdict?.structured?.value ?? readFileSync(durable.outputFile, 'utf8');
+    persist(); emit('preflight.scout_finished', { status: 'succeeded', outputFile: durable.outputFile });
+    return result;
+  };
+
   const runPlanner = async (boundary) => {
-    const context = createV2PlannerContext(state, { scout });
+    const context = createV2PlannerContext(state, {
+      scout: scoutReport,
+      steering: state.config.settings.suggestedPlan ? [state.config.settings.suggestedPlan] : [],
+    });
     const prompt = `${buildV2PlannerPrompt(context)}\n\n${buildPlannerPreflight(statePath(runDir), boundary)}`;
     state.planner.status = 'running';
     state.lifecycle.status = 'planning';
@@ -282,6 +402,8 @@ export async function runV2AutonomousWorkflow({
       }),
       pools, bullswarmDir, parentEnv,
       preferredPool: state.config.plannerRouting?.pool ?? state.config.plannerRouting?.preferredPool ?? null,
+      preferredModel: state.config.plannerRouting?.model ?? state.config.plannerRouting?.preferredModel ?? null,
+      strictPool: state.config.plannerRouting?.strictPool ?? state.config.plannerRouting?.pool ?? null,
       currentSession: state.planner.session,
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation,
@@ -355,6 +477,7 @@ export async function runV2AutonomousWorkflow({
   };
 
   const runAction = async (action) => {
+    startPresentationStage(action.id);
     const runtime = actionState(state, action.id);
     runtime.status = 'running';
     runtime.startedAt ??= now();
@@ -403,6 +526,8 @@ export async function runV2AutonomousWorkflow({
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
       pools, bullswarmDir, parentEnv,
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
+      preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
+      strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
       avoidPools: evidence ? ancestorPools(state, action) : [],
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation,
@@ -456,6 +581,7 @@ export async function runV2AutonomousWorkflow({
       persist();
       emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: result.failureKind, why: result.verdict?.why ?? null });
       releaseWorkspace();
+      completePresentationStages();
       return;
     }
     if (before) {
@@ -467,6 +593,7 @@ export async function runV2AutonomousWorkflow({
         persist();
         emit('action.finished', { actionId: action.id, status: 'failed', failureKind: 'ownership', outOfScope: ownership.outOfScope });
         releaseWorkspace();
+        completePresentationStages();
         return;
       }
       if (isolated) {
@@ -484,6 +611,7 @@ export async function runV2AutonomousWorkflow({
           persist();
           emit('action.finished', { actionId: action.id, status: 'failed', failureKind: runtime.lastFailure.kind, paths });
           releaseWorkspace();
+          completePresentationStages();
           return;
         }
         emit('action.workspace_integrated', { actionId: action.id, files: integration.integrated });
@@ -506,6 +634,7 @@ export async function runV2AutonomousWorkflow({
       emit('action.finished', { actionId: action.id, status: 'succeeded', outputFile: runtime.outputFile, artifacts: runtime.artifactIds });
     }
     releaseWorkspace();
+    completePresentationStages();
   };
 
   const finalize = () => {
@@ -524,6 +653,20 @@ export async function runV2AutonomousWorkflow({
 
   for (;;) {
     if (refreshCancellation()) return finalize();
+    if (state.preflight.scout.status === 'pending') {
+      if (state.budget.agents >= config.maxAgents) {
+        limitsExhausted = true;
+        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit before repository preflight`;
+        return finalize();
+      }
+      const scouted = await runScout();
+      if (!scouted.ok) {
+        limitsExhausted = true;
+        terminalReason = `repository preflight could not produce a valid report: ${scouted.verdict?.why ?? scouted.failureKind}`;
+        return finalize();
+      }
+      continue;
+    }
     if (state.program.actions.length) {
       const blockedSchedule = scheduleV2Actions(state.program.actions, state.actions, {
         concurrency: config.concurrency, workspaceMode: schedulerWorkspaceMode,
@@ -534,13 +677,20 @@ export async function runV2AutonomousWorkflow({
           runtime.status = 'blocked';
           runtime.finishedAt = now();
           runtime.lastFailure = { kind: 'dependency', message: blocked.reason };
+          startPresentationStage(blocked.id);
           emit('action.finished', { actionId: blocked.id, status: 'blocked', why: blocked.reason });
+          completePresentationStages();
         }
       }
     }
     const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
     if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
     if (progress.status === 'needs-planner') {
+      if (state.budget.agents >= config.maxAgents) {
+        limitsExhausted = true;
+        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit`;
+        continue;
+      }
       if (progress.boundary === 'gaps' && state.budget.expansions >= config.maxExpansionRounds) {
         limitsExhausted = true;
         terminalReason = `the workflow reached its ${config.maxExpansionRounds} bounded planner expansion round limit`;
@@ -560,11 +710,17 @@ export async function runV2AutonomousWorkflow({
     const schedule = scheduleV2Actions(state.program.actions, state.actions, {
       concurrency: config.concurrency, workspaceMode: schedulerWorkspaceMode,
     });
-    if (!schedule.selected.length) continue;
+    const remainingAgents = Math.max(0, config.maxAgents - state.budget.agents);
+    const selected = schedule.selected.slice(0, remainingAgents);
+    if (!selected.length) {
+      limitsExhausted = true;
+      terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit`;
+      continue;
+    }
     state.lifecycle.status = 'running';
     state.planner.status = 'waiting';
     persist();
-    await Promise.all(schedule.selected.map((id) => runAction(definition(state, id))));
+    await Promise.all(selected.map((id) => runAction(definition(state, id))));
   }
 }
 

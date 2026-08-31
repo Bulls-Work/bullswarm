@@ -8,9 +8,16 @@ import { join } from 'node:path';
 import { listRuns, resolveRunId } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
+import { V2_STATE_SCHEMA_VERSION } from './v2-state.js';
+import { presentationStageStatus } from './v2-presentation.js';
 
 const ESC = '\x1b[';
 const SIDEBAR_WIDTH = 34;
+const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
+const isV2State = (state) => state?.schemaVersion === V2_STATE_SCHEMA_VERSION;
+const stateStatus = (state) => isV2State(state) ? state.lifecycle.status : state?.status;
+const stateStartedAt = (state) => isV2State(state) ? state.lifecycle.startedAt : state?.startedAt;
+const stateFinishedAt = (state) => isV2State(state) ? state.lifecycle.finishedAt : state?.finishedAt;
 
 // Keep navigation wording and bindings in one place. Rendering and input use
 // the same vocabulary so a hint never describes a different action.
@@ -103,6 +110,14 @@ export function requestCancel(bullswarmDir, token) {
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   const state = readJsonForUpdate(statePath, 'workflow state');
+  if (isV2State(state)) {
+    if (V2_TERMINAL.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
+    const requestedAt = new Date().toISOString();
+    state.cancellation = { requested: true, requestedAt, reason: 'operator requested stop' };
+    appendEvent(resolved.runDir, state, 'workflow.cancellation_requested', { requestedAt, reason: state.cancellation.reason });
+    writeJsonAtomic(statePath, state);
+    return { ...resolved, state, alreadyFinished: false };
+  }
   if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
     return { ...resolved, state, alreadyFinished: true };
   }
@@ -125,12 +140,34 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
     })
     .map((r) => {
       const state = r.state ?? {};
+      if (isV2State(state)) {
+        const actions = state.actions ?? [];
+        const runningAttempts = (state.attempts ?? []).filter((attempt) => attempt.status === 'running');
+        const current = actions.find((action) => action.status === 'running') ?? actions.find((action) => ['ready', 'pending'].includes(action.status));
+        const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
+          ?? state.presentation?.stages?.findLast((item) => item.startedAt)
+          ?? null;
+        return {
+          ...r,
+          events: readEvents(r.runDir),
+          status: state.cancellation?.requested ? 'stopping' : state.lifecycle.status,
+          phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
+          stepsOk: actions.filter((action) => action.status === 'succeeded').length,
+          stepsTotal: actions.length,
+          fanout: { total: 0, ok: 0, failed: 0 },
+          activeAgents: runningAttempts,
+          currentPhase: stage,
+          currentStep: current ?? null,
+          usage: state.usage ?? null,
+        };
+      }
       const steps = state.steps ?? [];
       const fanout = Object.values(state.outputs ?? {}).filter((v) => v?.items).reduce((acc, v) => ({
         total: acc.total + (v.total ?? 0), ok: acc.ok + fanoutSucceededCount(v), failed: acc.failed + (v.failed ?? 0),
       }), { total: 0, ok: 0, failed: 0 });
       return {
         ...r,
+        events: readEvents(r.runDir),
         status: state.cancelRequested ? 'stopping' : (state.status ?? 'running'),
         phase: state.currentStep?.phase ?? state.currentPhase?.name ?? steps.at(-1)?.phase ?? 'starting',
         stepsOk: steps.filter((s) => s.ok).length,
@@ -189,9 +226,9 @@ export function renderDashboard({
      if (narrow) {
        const state = selectedRow.state;
        right = renderPanel('Selected workflow', [
-         `${humanWorkflowStatus(state.status, selectedRow.ongoing)} · ${selectedRow.shortId ?? '------'}`,
+         `${humanWorkflowStatus(stateStatus(state), selectedRow.ongoing)} · ${selectedRow.shortId ?? '------'}`,
          `phase · ${humanPhaseName(selectedRow.phase)}`,
-         `${selectedRow.stepsOk ?? 0}/${selectedRow.stepsTotal ?? 0} actions · ${durationText(state.startedAt, state.finishedAt)}`,
+         `${selectedRow.stepsOk ?? 0}/${selectedRow.stepsTotal ?? 0} actions · ${durationText(stateStartedAt(state), stateFinishedAt(state))}`,
        ], rightWidth, bodyHeight);
      } else {
        const model = workflowPanelModel(selectedRow);
@@ -208,7 +245,7 @@ export function renderDashboard({
 }
 
 function isWaitingWorkflow(state) {
-  const value = String(state?.status ?? state?.stage ?? '').toLowerCase();
+  const value = String(stateStatus(state) ?? state?.stage ?? '').toLowerCase();
   return value.includes('waiting') || value === 'paused';
 }
 
@@ -231,10 +268,11 @@ function dashboardRunLines(rows, selected, narrow, width) {
   return rows.map((row, index) => {
     const state = row.state ?? {};
     const selectedRow = index === selected;
+    const durableStatus = stateStatus(state);
     const icon = row.ongoing
-      ? statusIcon(state.status ?? 'running')
-      : workflowStatusIcon(state.status ? state : { ...state, status: 'completed' });
-    const elapsed = durationText(state.startedAt ?? row.report?.startedAt, state.finishedAt ?? row.report?.finishedAt);
+      ? statusIcon(durableStatus ?? 'running')
+      : workflowStatusIcon(isV2State(state) ? { status: durableStatus } : state.status ? state : { ...state, status: 'completed' });
+    const elapsed = durationText(stateStartedAt(state) ?? row.report?.startedAt, stateFinishedAt(state) ?? row.report?.finishedAt);
     const workerAttempts = (state.attempts ?? []).filter((attempt) =>
       attempt.actionId !== state.orchestration?.actionId && attempt.actionId !== 'orchestrator');
     const finished = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
@@ -243,7 +281,7 @@ function dashboardRunLines(rows, selected, narrow, width) {
       : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
     if (row.fanout?.total) progress += ` · ${row.fanout.ok}/${row.fanout.total} items`;
     const concerns = workflowConcernCount(row);
-    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(state.status, row.ongoing);
+    const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(durableStatus, row.ongoing);
     const name = workflowRunLabel(row);
     const phase = humanPhaseName(row.phase ?? state.stage ?? 'starting');
     if (narrow) {
@@ -294,7 +332,7 @@ function filterDashboardRows(rows, filter, query) {
     if (filter === 'active' && !row.ongoing) return false;
     if (!needle) return true;
     const state = row.state ?? {};
-    return [row.shortId, row.runId, state.workflow, state.intent?.goal, row.phase, state.status]
+    return [row.shortId, row.runId, state.workflow, state.intent?.goal, row.phase, stateStatus(state)]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(needle));
   });
@@ -302,6 +340,7 @@ function filterDashboardRows(rows, filter, query) {
 
 export function renderDetails(row, { interactive = true } = {}) {
   const state = row?.state ?? {};
+  if (isV2State(state)) return renderV2Details(row, { interactive });
   const phases = state._doc?.phases ?? [];
   const displayedPhase = state.currentPhase?.name
     ?? state.steps?.at(-1)?.phase
@@ -390,6 +429,42 @@ export function renderDetails(row, { interactive = true } = {}) {
   lines.push('', ' recent events:');
   for (const event of (row?.events ?? []).slice(-8)) lines.push(`   #${event.sequence} ${event.type}`);
   if (!(row?.events ?? []).length) lines.push('   none');
+  if (interactive) lines.push('', ` ${keyHint('out')} · c stop · r refresh · ${keyHint('detach')}`);
+  return lines.join('\n');
+}
+
+function renderV2Details(row, { interactive = true } = {}) {
+  const state = row.state;
+  const lines = [
+    `${ESC}2J${ESC}H`,
+    ` bullswarm · ${row.shortId ?? state.shortId ?? state.runId}`,
+    '',
+    ` status: ${state.lifecycle.status}`,
+    ` goal:   ${state.intent.goal}`,
+    ` dir:    ${row.runDir ?? '—'}`,
+    '',
+    ' presentation stages:',
+  ];
+  for (const stage of state.presentation.stages) {
+    const progress = presentationStageStatus(stage, state.actions);
+    const status = stage.completedAt ? (progress.successful ? 'completed' : 'completed with gaps') : stage.startedAt ? 'running' : 'not started';
+    lines.push(`   ${statusIcon(status)} ${stage.label} · ${progress.completed}/${progress.total} · ${status}`);
+    for (const id of stage.actionIds) {
+      const action = state.actions.find((entry) => entry.id === id);
+      lines.push(`     ${statusIcon(action?.status)} ${id} · ${action?.status ?? 'pending'}`);
+    }
+  }
+  if (!state.presentation.stages.length) lines.push('   planning has not created the first program yet');
+  lines.push('', ' workflow planner:');
+  lines.push(`   ${statusIcon(state.planner.status)} ${state.planner.status} · ${state.planner.turns} checkpoint${state.planner.turns === 1 ? '' : 's'}`);
+  lines.push(`   latest: ${state.planner.lastDecision?.summary ?? 'not available'}`);
+  lines.push('', ' requirements:');
+  for (const requirement of Object.values(state.ledger.requirements)) {
+    lines.push(`   ${statusIcon(requirement.status)} ${requirement.id} · ${requirement.status}`);
+  }
+  lines.push('', ' recent events:');
+  for (const event of (row.events ?? []).slice(-12)) lines.push(`   #${event.sequence} ${event.type}`);
+  if (!(row.events ?? []).length) lines.push('   none');
   if (interactive) lines.push('', ` ${keyHint('out')} · c stop · r refresh · ${keyHint('detach')}`);
   return lines.join('\n');
 }
@@ -511,6 +586,7 @@ export function workflowPanelModel(row, {
   phaseIndex = null, agentIndex = null,
 } = {}) {
   const state = row?.state ?? {};
+  if (isV2State(state)) return workflowPanelModelV2(row, { phaseIndex, agentIndex });
   const ledger = state.actionLedger ?? [];
   const orchestrator = autonomousControlPlane(state);
   const isControlAction = (action) => orchestrator.autonomous
@@ -637,6 +713,57 @@ export function workflowPanelModel(row, {
   };
 }
 
+function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}) {
+  const state = row.state;
+  const actionDefinitions = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
+  const actionStates = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  const stages = state.presentation?.stages ?? [];
+  const currentStageIndex = Math.max(0, stages.findIndex((stage) => stage.actionIds.some((id) => ['running', 'ready'].includes(actionStates.get(id)?.status))));
+  const selectedPhaseIndex = clamp(phaseIndex == null ? currentStageIndex : phaseIndex, 0, Math.max(0, stages.length - 1));
+  const phases = stages.map((stage) => {
+    const progress = presentationStageStatus(stage, state.actions);
+    const actionEntries = stage.actionIds.map((id) => ({ ...actionDefinitions.get(id), ...actionStates.get(id) }));
+    const active = actionEntries.some((action) => action.status === 'running');
+    const failed = actionEntries.some((action) => ['failed', 'blocked', 'cancelled'].includes(action.status));
+    return {
+      name: stage.id, label: stage.label,
+      status: active ? 'active' : stage.completedAt ? (failed ? 'failed' : 'completed') : stage.startedAt ? 'waiting' : 'pending',
+      actions: actionEntries, completed: progress.completed, total: progress.total,
+      blockedActions: actionEntries.filter((action) => action.status === 'blocked').map((action) => ({ id: action.id, kind: 'action', blockedBy: action.dependsOn ?? [] })),
+    };
+  });
+  if (!phases.length) phases.push({ name: 'planning', label: 'Planning', status: state.planner.status === 'running' ? 'active' : 'pending', actions: [], completed: 0, total: 0, blockedActions: [] });
+  const selectedPhase = phases[selectedPhaseIndex] ?? phases[0];
+  const agents = [];
+  for (const action of selectedPhase.actions) {
+    for (const attempt of (state.attempts ?? []).filter((entry) => entry.actionId === action.id)) {
+      agents.push({
+        key: `attempt:${attempt.id}`, action, attempt: { ...attempt, attemptNumber: attempt.ordinal, outFile: attempt.outputFile },
+        active: attempt.status === 'running' ? { ...attempt, stepId: action.id, attempt: attempt.ordinal, outFile: attempt.outputFile } : null,
+        pool: attempt.pool ?? 'unassigned', model: attempt.model ?? 'connector model', status: attempt.status,
+      });
+    }
+  }
+  const activeIndex = Math.max(0, agents.findIndex((agent) => agent.status === 'running'));
+  const selectedAgentIndex = agents.length ? clamp(agentIndex == null ? activeIndex : agentIndex, 0, agents.length - 1) : 0;
+  const plannerAttempts = state.planner?.attempts ?? [];
+  const latestPlanner = plannerAttempts.at(-1) ?? null;
+  const activePlanner = plannerAttempts.findLast((attempt) => attempt.status === 'running') ?? null;
+  const orchestrator = {
+    autonomous: true, actionId: 'workflow-planner', attempts: plannerAttempts,
+    active: activePlanner, latestAttempt: latestPlanner,
+    status: state.planner.status,
+    pool: activePlanner?.pool ?? latestPlanner?.pool ?? state.config?.plannerRouting?.pool ?? state.config?.plannerRouting?.preferredPool ?? 'selecting',
+    model: activePlanner?.model ?? latestPlanner?.model ?? state.config?.plannerRouting?.model ?? state.config?.plannerRouting?.preferredModel ?? 'connector model',
+    latestDecision: state.planner.lastDecision,
+  };
+  return {
+    v2: true, state, events: row.events ?? [], orchestrator, phases,
+    phaseIndex: selectedPhaseIndex, selectedPhase, agents,
+    agentIndex: selectedAgentIndex, selectedAgent: agents[selectedAgentIndex] ?? null,
+  };
+}
+
 export function renderWorkflowTui(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
@@ -649,15 +776,15 @@ export function renderWorkflowTui(row, {
   const narrow = width < 100;
   const model = workflowPanelModel(row, { phaseIndex, agentIndex });
   const state = model.state;
-  const status = row?.status ?? state.status ?? 'starting';
-  const elapsed = durationText(state.startedAt, state.finishedAt);
+  const status = row?.status ?? stateStatus(state) ?? 'starting';
+  const elapsed = durationText(stateStartedAt(state), stateFinishedAt(state));
   const phaseComplete = model.selectedPhase.completed;
   const phaseTotal = model.selectedPhase.total;
   const attempts = state.attempts ?? [];
   const workerAttempts = attempts.filter((attempt) => attempt.actionId !== model.orchestrator.actionId);
   const finishedAgents = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
   const agentProgress = workerAttempts.length ? `${finishedAgents}/${workerAttempts.length} workers · ` : '';
-  const terminalLabel = state.finishedAt ? ` · ${status === 'completed' ? 'done' : status}` : '';
+  const terminalLabel = stateFinishedAt(state) ? ` · ${status === 'completed' ? 'done' : status}` : '';
   const runName = state.workflow ?? row?.shortId ?? state.shortId ?? row?.runId ?? 'workflow';
   const breadcrumbDepth = navigationDepth({ detail: true, focus, orchestratorDetail, workflowVerbose });
   const header = [
@@ -742,7 +869,7 @@ export function renderWorkflowTui(row, {
     ? [
       selectLine(
         `${model.orchestrator.active ? statusIcon('running', spinnerFrame)
-          : state.finishedAt ? workflowStatusIcon(state, spinnerFrame)
+          : stateFinishedAt(state) ? workflowStatusIcon(isV2State(state) ? { status: stateStatus(state) } : state, spinnerFrame)
             : statusIcon(model.orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)}`,
         controlSelected,
         focus === 0 && !orchestratorDetail,
@@ -892,6 +1019,7 @@ function sectionDivider(label, inner) {
 }
 
 function workflowTimelineLines(model, width) {
+  if (model.v2) return workflowTimelineLinesV2(model, width);
   const { state, orchestrator } = model;
   const ledger = state.actionLedger ?? [];
   const events = [];
@@ -1029,6 +1157,61 @@ function workflowTimelineLines(model, width) {
   return { lines, milestoneCount: events.length };
 }
 
+function workflowTimelineLinesV2(model, width) {
+  const { state } = model;
+  const rows = [];
+  const add = (at, label, right = '', detail = null, segment = 'Workflow') => {
+    if (!at) return;
+    rows.push({ at, segment, lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])] });
+  };
+  add(state.lifecycle.startedAt, '● Workflow initiated', '', 'Goal accepted; preparing repository reconnaissance', 'Workflow');
+  const eventByType = new Map();
+  for (const event of model.events) {
+    if (!eventByType.has(event.type)) eventByType.set(event.type, []);
+    eventByType.get(event.type).push(event);
+  }
+  for (const event of eventByType.get('preflight.scout_started') ?? []) add(event.committedAt, '● [Preflight: Scout] started', '', event.payload?.purpose, 'Preflight');
+  for (const event of eventByType.get('preflight.scout_finished') ?? []) {
+    const attempt = state.preflight.scout.attempts.at(-1);
+    const detail = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
+    add(event.committedAt, `${event.payload?.status === 'succeeded' ? '✓' : '×'} [Preflight: Scout] ${event.payload?.status === 'succeeded' ? 'completed' : 'could not complete'}`, durationText(state.preflight.scout.startedAt, state.preflight.scout.finishedAt), detail, 'Preflight');
+  }
+  for (const event of eventByType.get('planner.finished') ?? []) {
+    const turn = Number(event.payload?.turn ?? 1);
+    const label = event.payload?.ok
+      ? turn === 1 ? '[Workflow Planner] plan created' : `[Workflow Planner] plan updated #${turn}`
+      : '[Workflow Planner] planning attempt rejected';
+    const attempt = state.planner.attempts.findLast((item) => item.turn === turn);
+    add(event.committedAt, `${event.payload?.ok ? '◇' : '×'} ${label}`, attempt ? durationText(attempt.startedAt, attempt.finishedAt) : '', event.payload?.summary ?? event.payload?.why, 'Planning');
+  }
+  const stageById = new Map((state.presentation?.stages ?? []).map((stage) => [stage.id, stage]));
+  for (const event of model.events) {
+    if (event.type === 'presentation.stage_started') {
+      add(event.committedAt, `├─ [Phase: ${event.payload.label}] started`, '', null, event.payload.label);
+    }
+    if (event.type === 'action.finished' || event.type === 'evidence.recorded') {
+      const actionId = event.payload?.actionId;
+      const runtime = state.actions.find((action) => action.id === actionId);
+      const stage = (state.presentation?.stages ?? []).find((item) => item.actionIds.includes(actionId));
+      const status = runtime?.status === 'succeeded' ? '✓' : runtime?.status === 'blocked' ? '⊘' : '×';
+      add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work');
+    }
+    if (event.type === 'presentation.stage_completed') {
+      const stage = stageById.get(event.payload?.stageId);
+      const ok = event.payload?.status === 'completed';
+      add(event.committedAt, `└─${ok ? '✓' : '×'} [Phase: ${event.payload.label}] completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
+    }
+  }
+  if (state.lifecycle.finishedAt) {
+    const status = state.lifecycle.status;
+    add(state.lifecycle.finishedAt, `${status === 'completed' ? '✓' : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, 'Workflow');
+  }
+  rows.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+  const lines = rows.flatMap((row) => row.lines.map((line) => ({ text: line, segment: row.segment, at: row.at })));
+  if (!lines.length) lines.push({ text: 'Waiting for the first durable workflow milestone', segment: null });
+  return { lines, milestoneCount: rows.length };
+}
+
 function segmentHeader(name, elapsed, width) {
   if (width < 40) {
     const suffix = ` ── ${elapsed} ──`;
@@ -1061,6 +1244,11 @@ function continuationHeader(segment, elapsed, width, at = null) {
 
 function currentTimelineSegment(model) {
   const { state, orchestrator } = model;
+  if (model.v2) {
+    const activeAction = state.actions.find((action) => action.status === 'running');
+    return state.presentation.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
+      ?? (state.planner.status === 'running' ? 'Planning' : 'Workflow');
+  }
   if (orchestrator.active || (orchestrator.autonomous && !state.currentStep?.phase)) return 'Planner';
   const phase = state.currentStep?.phase ?? state.currentPhase?.name;
   return phase ? phaseLabel(phase, orchestrator) : 'Preflight';
@@ -1111,6 +1299,7 @@ function timelineControlEvent(event, width) {
 }
 
 function workflowLiveLines(model, width, spinnerFrame) {
+  if (model.v2) return workflowLiveLinesV2(model, width, spinnerFrame);
   const { state, orchestrator } = model;
   const activeWorkers = Object.values(state.activeAgents ?? {})
     .filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent))
@@ -1158,6 +1347,39 @@ function workflowLiveLines(model, width, spinnerFrame) {
   return { lines, running, waiting };
 }
 
+function workflowLiveLinesV2(model, width, spinnerFrame) {
+  const { state, orchestrator } = model;
+  const runningAttempts = state.attempts.filter((attempt) => attempt.status === 'running');
+  const lines = [];
+  const plannerRunning = orchestrator.active;
+  const plannerWaiting = !plannerRunning && runningAttempts.length > 0 && !stateFinishedAt(state);
+  let waiting = plannerWaiting ? 1 : 0;
+  if (plannerRunning || plannerWaiting) {
+    const status = plannerRunning ? 'planning' : 'waiting';
+    lines.push(alignRight(`${statusIcon(status, spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`, status, width));
+    lines.push(plannerRunning ? '   Choosing the next bounded program' : `   Waiting for ${runningAttempts.length} worker${runningAttempts.length === 1 ? '' : 's'}`);
+    const event = plannerRunning?.lastAgentEvent;
+    if (event) lines.push(`   ↳ ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`);
+    const stream = streamActivityLine(plannerRunning);
+    if (stream) lines.push(`   ${stream}`);
+    lines.push('');
+  }
+  for (const attempt of runningAttempts) {
+    lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}`, durationText(attempt.startedAt), width));
+    const event = attempt.lastAgentEvent;
+    lines.push(event
+      ? `   ↳ ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
+      : '   ↳ waiting for the first semantic action event');
+    const stream = streamActivityLine(attempt);
+    if (stream) lines.push(`   ${stream}`);
+    lines.push('');
+  }
+  if (!lines.length) lines.push(stateFinishedAt(state)
+    ? `✓ No live agents · workflow ${state.lifecycle.status}`
+    : '⧖ Waiting for the next dispatch');
+  return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0), waiting };
+}
+
 function terminalWorkflowLabel(state) {
   const status = state?.status;
   const { concernCount, bestEffort, concerned } = outcomeQualification(state);
@@ -1174,6 +1396,7 @@ function terminalWorkflowLabel(state) {
 }
 
 function workflowNextLines(model, width) {
+  if (model.v2) return workflowNextLinesV2(model, width);
   const { state, orchestrator } = model;
   if (state.finishedAt) {
     const { concernCount, bestEffort, concerned } = outcomeQualification(state);
@@ -1207,7 +1430,32 @@ function workflowNextLines(model, width) {
   return ['○ Awaiting the next [Workflow Planner] decision'];
 }
 
+function workflowNextLinesV2(model, width) {
+  const { state } = model;
+  if (stateFinishedAt(state)) return [truncate(`✓ Workflow ${state.lifecycle.status === 'completed' ? 'complete' : state.lifecycle.status} - result is ready`, width)];
+  const running = state.attempts.filter((attempt) => attempt.status === 'running');
+  if (running.length) return [truncate(`○ Waiting for ${running.length} worker${running.length === 1 ? '' : 's'}`, width)];
+  if (state.planner.status === 'running') return ['○ Workflow Planner is creating the next bounded program'];
+  if (state.actions.some((action) => ['pending', 'ready'].includes(action.status))) return ['○ Starting the next dependency-ready actions'];
+  return ['○ Workflow Planner will reassess remaining gaps'];
+}
+
 function workflowTechnicalLines(model, width) {
+  if (model.v2) {
+    const { state } = model;
+    return wrapLines([
+      `Schema · ${state.schemaVersion}`,
+      `Status · ${state.lifecycle.status}`,
+      `Started · ${state.lifecycle.startedAt ?? '—'}`,
+      `Usage · ${state.usage.total} known tokens`,
+      '', 'Action program',
+      ...state.actions.map((action) => `${statusIcon(action.status)} ${action.id} · revision ${action.programRevision} · ${action.status}`),
+      '', 'Requirement ledger',
+      ...Object.values(state.ledger.requirements).map((requirement) => `${statusIcon(requirement.status)} ${requirement.id} · ${requirement.status}`),
+      '', 'Recent durable events',
+      ...model.events.slice(-12).map((event) => `#${event.sequence} ${event.type}`),
+    ], width);
+  }
   const { state, orchestrator } = model;
   const lines = [
     `Status · ${state.status ?? 'starting'}`,
@@ -1299,6 +1547,12 @@ function humanStatus(value) {
 
 function plannerDisplayStatus(model) {
   const { orchestrator, state } = model;
+  if (model.v2) {
+    if (stateFinishedAt(state)) return state.lifecycle.status === 'completed' ? 'Completed' : humanStatus(state.lifecycle.status);
+    if (orchestrator.active) return 'Creating or updating plan';
+    if (state.attempts.some((attempt) => attempt.status === 'running')) return 'Waiting for workers';
+    return humanStatus(state.planner.status);
+  }
   if (state.finishedAt && isDeliveredWorkflowStatus(state.status)) {
     const { concernCount, bestEffort, concerned } = outcomeQualification(state);
     const concerns = concernCount ? concernPhrase(concernCount) : concerned ? 'concerns' : '';
@@ -1317,6 +1571,7 @@ function plannerDisplayStatus(model) {
 
 function plannerUsageSummary(model) {
   const checkpoints = model.orchestrator.attempts.length;
+  if (model.v2) return `Checkpoints ${checkpoints} · ${model.state.usage.total || 0} tok`;
   const cost = model.state.usage?.cost?.estimatedUsd ?? model.state.usage?.cost?.knownSubtotalUsd;
   return `Checkpoints ${checkpoints}${Number.isFinite(cost) ? ` · $${cost.toFixed(2)}` : ''}`;
 }
@@ -1327,6 +1582,7 @@ function dimText(value, width) {
 
 function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
   const { orchestrator, state } = model;
+  if (model.v2) return orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose });
   if (!orchestrator.autonomous) {
     return wrapLines(['This workflow has no autonomous orchestrator thread.'], width);
   }
@@ -1439,6 +1695,35 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
   lines.push('', 'Artifacts');
   lines.push(`task: ${active?.taskFile ?? latest?.taskFile ?? '—'}`);
   lines.push(`output: ${active?.outFile ?? latest?.outFile ?? '—'}`);
+  return wrapLines(lines, width);
+}
+
+function orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose = false } = {}) {
+  const { orchestrator, state } = model;
+  const running = state.attempts.filter((attempt) => attempt.status === 'running');
+  const now = orchestrator.active
+    ? 'Creating or updating the bounded action program'
+    : running.length ? `Waiting for ${running.length} worker${running.length === 1 ? '' : 's'}`
+      : stateFinishedAt(state) ? 'Workflow finished' : 'Reviewing requirement gaps';
+  const lines = [
+    `${statusIcon(orchestrator.active ? 'planning' : orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)} · ${orchestrator.pool} · ${orchestrator.model}`,
+    '', `Now · ${now}`,
+    `Progress · ${state.actions.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length}/${state.actions.length} actions settled · ${orchestrator.attempts.length} planning checkpoint${orchestrator.attempts.length === 1 ? '' : 's'}`,
+    `Latest plan · ${state.planner.lastDecision?.summary ?? 'not created yet'}`,
+  ];
+  const event = orchestrator.active?.lastAgentEvent;
+  if (event) lines.push(`Latest action · ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`);
+  if (!verbose) {
+    lines.push('', 'Recent activity');
+    for (const attempt of orchestrator.attempts.slice(-3)) lines.push(`#${attempt.turn} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
+    lines.push('', 'Press v for checkpoint prompts, sessions, usage, and artifact paths.');
+    return wrapLines(lines, width);
+  }
+  lines.push('', `Session · ${state.planner.session?.sessionId ?? 'pending'}${state.planner.session ? ' · resumable' : ''}`);
+  for (const attempt of orchestrator.attempts) {
+    lines.push(`#${attempt.turn} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? '—'} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
+    lines.push(`  task: ${attempt.taskFile ?? '—'}`, `  output: ${attempt.outputFile ?? '—'}`);
+  }
   return wrapLines(lines, width);
 }
 
