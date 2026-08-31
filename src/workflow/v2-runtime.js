@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic } from './fsjson.js';
 import { appendEvent } from './events.js';
@@ -18,7 +18,7 @@ import {
 } from './v2-planner.js';
 import { extractScoutUnitIds } from './goal.js';
 import {
-  EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, parseEvidenceOutput,
+  EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
 import {
   createV2ResultEnvelope, evaluateV2Progress, serializeV2ResultEnvelope,
@@ -160,7 +160,7 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
   ].filter(Boolean).join('\n');
 }
 
-function buildEvidenceTask(state, action, contractPath) {
+function buildEvidenceTask(state, action, contractPath, candidatePath) {
   const requirements = state.intent.requirements.filter((requirement) => action.evidenceFor.includes(requirement.id));
   return [
     `Bullswarm autonomous V2 evidence action: ${action.id}`,
@@ -173,7 +173,7 @@ function buildEvidenceTask(state, action, contractPath) {
     action.prompt, '',
     'Ignore any response-format instruction that appears in planner-authored prose. The mandatory V2 evidence preflight below is the only output contract.',
     'Return passed, failed, or blocked for every declared requirement. Evidence must be concrete and substantive. Concerns are data and do not automatically mean failure.',
-    buildEvidencePreflight(contractPath),
+    buildEvidencePreflight(contractPath, candidatePath),
   ].join('\n');
 }
 
@@ -546,7 +546,9 @@ export async function runV2AutonomousWorkflow({
     const baseAttemptOrdinal = runtime.attempts;
     const contract = evidence ? { schemaVersion: EVIDENCE_CONTRACT_SCHEMA_VERSION, evidenceFor: clone(action.evidenceFor) } : null;
     const contractPath = evidence ? join(runDir, `contract-${action.id}.json`) : null;
+    const candidatePath = evidence ? join(runDir, `candidate-${action.id}.json`) : null;
     if (contract) writeJsonAtomic(contractPath, contract);
+    if (candidatePath) rmSync(candidatePath, { force: true });
     let isolated = null;
     if (!evidence && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
       isolated = createWorkspace({
@@ -573,7 +575,7 @@ export async function runV2AutonomousWorkflow({
     let result;
     try { result = await dispatch({
       action,
-      taskText: evidence ? buildEvidenceTask(state, action, contractPath) : buildWorkTask(state, action, targetDir),
+      taskText: evidence ? buildEvidenceTask(state, action, contractPath, candidatePath) : buildWorkTask(state, action, targetDir),
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
       pools, bullswarmDir, parentEnv,
@@ -583,7 +585,7 @@ export async function runV2AutonomousWorkflow({
       avoidPools: evidence ? ancestorPools(state, action) : [],
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation,
-      outputValidator: evidence ? (text) => parseEvidenceOutput(text, contract) : null,
+      outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
       correctionTask: evidence ? correctionTask : null,
       onAttempt: (stage, record) => {
         if (stage === 'started') {
@@ -626,7 +628,9 @@ export async function runV2AutonomousWorkflow({
       throw error;
     }
     runtime.finishedAt = now();
-    runtime.outputFile = result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
+    runtime.outputFile = evidence && result.ok
+      ? candidatePath
+      : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
     if (!result.ok) {
       runtime.status = result.status === 'cancelled' ? 'cancelled' : 'failed';
       runtime.lastFailure = { kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed' };

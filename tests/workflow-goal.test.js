@@ -28,7 +28,10 @@ function fixture() {
     '  process.stdout.write(JSON.stringify({schemaVersion:"bullswarm.workflow.planner-response.v2",kind:"program",summary:"Create the bounded artifact and inspect it independently.",program:{schemaVersion:"bullswarm.workflow.program.v2",actions:[{id:"goal-work",purpose:"Create done artifact",dependsOn:[],affects:["requirement-1"],ownedFiles:["done.txt"],prompt:"Create done.txt containing exactly autonomous-complete followed by a newline, then read it back.",lane:"build",effort:"low",evidenceFor:[],inputs:[],produces:["done-artifact"]},{id:"goal-evidence",purpose:"Inspect done artifact",dependsOn:["goal-work"],affects:[],ownedFiles:[],prompt:"Read done.txt and compare every byte with the required content.",lane:"analyze",effort:"low",evidenceFor:["requirement-1"],inputs:["done-artifact"],produces:[]}]}}));',
     '} else if (task.includes("autonomous V2 evidence action")) {',
     '  const ok = readFileSync("done.txt", "utf8") === "autonomous-complete\\n";',
-    '  process.stdout.write(JSON.stringify({schemaVersion:"bullswarm.workflow.evidence.v2",requirements:{"requirement-1":{status:ok?"passed":"failed",evidence:[ok?"done.txt contains the exact autonomous-complete line":"done.txt content mismatch"],concerns:[]}}}));',
+    '  const candidate = task.match(/exact durable path: \'([^\']+)\'/)?.[1];',
+    '  if (!candidate) throw new Error("missing durable evidence candidate path");',
+    '  writeFileSync(candidate, JSON.stringify({schemaVersion:"bullswarm.workflow.evidence.v2",requirements:{"requirement-1":{status:ok?"passed":"failed",evidence:[ok?"done.txt contains the exact autonomous-complete line":"done.txt content mismatch"],concerns:[]}}}));',
+    '  process.stdout.write("The durable evidence candidate validated.");',
     '} else {',
     '  writeFileSync("done.txt", "autonomous-complete\\n");',
     '  process.stdout.write("Implemented the bounded goal and verified the durable artifact at done.txt. Exact contents: autonomous-complete. The file was read back successfully and acceptance is satisfied.");',
@@ -79,6 +82,13 @@ test('goal requirements preserve numbered deliverables and explicit completion c
     { id: 'R2', text: 'Exercise read-only classification.' },
     { id: 'R3', text: 'Confirm integration and package dry-run evidence.' },
   ]);
+
+  const decisiveSuffix = 'The same action must use exactly one label everywhere, including q exit and q detach.';
+  const longClause = `${'Preserve this acceptance context without loss. '.repeat(20)}${decisiveSuffix}`;
+  const [longRequirement] = extractGoalRequirements(`1. ${longClause}`);
+  assert.equal(longRequirement.text, longClause);
+  assert.ok(longRequirement.text.length > 600);
+  assert.match(longRequirement.text, /including q exit and q detach\.$/);
 });
 
 test('goal CLI extracts only explicit workspace read-only constraints', () => {

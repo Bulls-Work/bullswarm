@@ -25,9 +25,12 @@ export const PLANNER_EXAMPLES_SECTION = [
   'Rules the validator enforces: action type is run, fanout, or verify; fanout has stepTemplate and either items or itemsFrom; verify.review, when given, is outputs.<id>.outFile; ids are unique across the whole run, finished and failed actions included; dependsOn names existing or proposed actions; lane is analyze|build|chore and effort is low|medium|high; runtime-owned fields are rejected.',
 ].join('\n');
 
-function compactRequirement(text, max = 600) {
-  const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+function compactRequirement(text) {
+  // Requirements are an acceptance contract, not display copy. Truncating
+  // them can remove the decisive clause while leaving an apparently valid
+  // identifier behind, causing both workers and evidence agents to judge a
+  // weaker goal. Display surfaces may truncate a copy; durable intent may not.
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
 
 export function extractGoalRequirements(goal) {
