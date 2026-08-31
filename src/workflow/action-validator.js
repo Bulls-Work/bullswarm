@@ -380,8 +380,10 @@ export function validateActionProgram(program, runtime = {}) {
   else if (actions.length > maxActions) issues.push(`program exceeds maxActions=${maxActions}`);
   if (!Number.isInteger(maxParallel) || maxParallel < 1) issues.push('runtime maxParallel must be a positive integer');
   else if (maxParallelism(actions, byId) > maxParallel) issues.push(`program exceeds maxParallel=${maxParallel}`);
-  for (const requirement of mandatoryRequirementIds) if (!freshEvidenceRequirementIds.has(requirement) && !actions.some((action) => action.evidenceFor.includes(requirement))) {
-    issues.push(`mandatory requirement "${requirement}" has no evidence action`);
+  if (runtime.requireMandatoryEvidence !== false) {
+    for (const requirement of mandatoryRequirementIds) if (!freshEvidenceRequirementIds.has(requirement) && !actions.some((action) => action.evidenceFor.includes(requirement))) {
+      issues.push(`mandatory requirement "${requirement}" has no evidence action`);
+    }
   }
   if (issues.length) throw new ActionValidationError(issues);
   return { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, actions: actions.map(clone) };

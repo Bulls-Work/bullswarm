@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OwnershipValidationError, checkOwnership, compareManifests, normalizeOwnedFiles } from '../src/workflow/ownership.js';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeOwnedFiles } from '../src/workflow/ownership.js';
 
 test('compares manifests and lists created, modified, and deleted exact paths', () => {
   const result = compareManifests({ 'a.js': '1', 'deleted.js': 'x', 'same.js': 'z' }, { 'a.js': '2', 'created.js': '3', 'same.js': 'z' });
@@ -35,4 +38,17 @@ test('returns defensive ownership results', () => {
   result.changed.push('fake.js');
   result.ownedFiles.push('fake.js');
   assert.deepEqual(checkOwnership({ before: {}, after: { 'a.js': '1' }, ownedFiles: ['a.js'] }).changed, ['a.js']);
+});
+
+test('captures a deterministic bounded non-git workspace manifest', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-ownership-'));
+  mkdirSync(join(root, 'nested'));
+  writeFileSync(join(root, 'a.txt'), 'a');
+  writeFileSync(join(root, 'nested', 'b.txt'), 'b');
+  const before = captureWorkspaceManifest(root);
+  writeFileSync(join(root, 'a.txt'), 'changed');
+  const after = captureWorkspaceManifest(root);
+  assert.deepEqual(Object.keys(before), ['a.txt', 'nested/b.txt']);
+  assert.deepEqual(changedManifestPaths(before, after), ['a.txt']);
+  assert.throws(() => captureWorkspaceManifest(root, { maxFiles: 1 }), /exceeds 1 files/);
 });

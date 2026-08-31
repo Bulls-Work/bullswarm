@@ -16,13 +16,24 @@ const ROUTING_KEYS = new Set(['pool', 'model', 'preferredPool', 'preferredModel'
 const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
+const LIFECYCLE_STATUSES = new Set(['queued', 'planning', 'running', 'waiting', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
 const ACTION_STATE_FIELDS = new Set([
-  'id', 'status', 'attempts', 'workRevision', 'startedAt', 'finishedAt',
+  'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',
   'outputFile', 'artifactIds', 'lastFailure',
 ]);
 const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
-  'finishedAt', 'outputFile', 'failure',
+  'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
+  'usage', 'routing', 'continued', 'lastActivityAt', 'lastEventAt',
+  'outputBytesObserved', 'lastAgentEvent', 'wallSec',
+]);
+const PLANNER_SESSION_FIELDS = new Set([
+  'pool', 'model', 'sessionId', 'startedAt', 'lastUsedAt', 'generation',
+]);
+const PLANNER_ATTEMPT_FIELDS = new Set([
+  'ordinal', 'turn', 'status', 'pool', 'model', 'startedAt', 'finishedAt',
+  'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
+  'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -153,23 +164,76 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     runId, shortId, intentId: goalDocument.intentId,
     intent: goalDocument.intent,
     config: goalDocument.config,
-    planner: { status: 'pending', turns: 0, lastDecision: null },
+    lifecycle: { status: 'queued', startedAt: null, finishedAt: null, resultFile: null },
+    planner: { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] },
     program: { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, revision: 0, actions: [] },
     actions: [], attempts: [],
     budget: { agents: 0, seconds: 0, expansions: 0 },
     cancellation: { requested: false, requestedAt: null, reason: null },
     usage: { total: 0, byPool: {} },
+    events: { sequence: 0, last: null },
     ledger,
   });
 }
 
 function validatePlanner(planner) {
   object(planner, 'state.planner');
-  noUnknown(planner, new Set(['status', 'turns', 'lastDecision']), 'state.planner');
+  noUnknown(planner, new Set(['status', 'turns', 'lastDecision', 'session', 'attempts']), 'state.planner');
   if (!PLANNER_STATUSES.has(planner.status)) fail('state.planner.status is invalid');
   nonNegativeInteger(planner.turns, 'state.planner.turns');
   if (planner.lastDecision !== null && !isObject(planner.lastDecision)) fail('state.planner.lastDecision must be null or an object');
   if (planner.turns === 0 && planner.lastDecision !== null) fail('state.planner.lastDecision requires at least one planner turn');
+  if (planner.session !== null) {
+    object(planner.session, 'state.planner.session');
+    noUnknown(planner.session, PLANNER_SESSION_FIELDS, 'state.planner.session');
+    for (const field of ['pool', 'model', 'sessionId']) requiredString(planner.session[field], `state.planner.session.${field}`);
+    timestamp(planner.session.startedAt, 'state.planner.session.startedAt');
+    timestamp(planner.session.lastUsedAt, 'state.planner.session.lastUsedAt');
+    nonNegativeInteger(planner.session.generation, 'state.planner.session.generation');
+    if (planner.session.generation < 1) fail('state.planner.session.generation must be positive');
+  }
+  if (!Array.isArray(planner.attempts)) fail('state.planner.attempts must be an array');
+  for (const [index, attempt] of planner.attempts.entries()) {
+    object(attempt, `state.planner.attempts[${index}]`);
+    noUnknown(attempt, PLANNER_ATTEMPT_FIELDS, `state.planner.attempts[${index}]`);
+    nonNegativeInteger(attempt.ordinal, `state.planner.attempts[${index}].ordinal`);
+    nonNegativeInteger(attempt.turn, `state.planner.attempts[${index}].turn`);
+    if (attempt.ordinal < 1 || attempt.turn < 1) fail(`state.planner.attempts[${index}] ordinal and turn must be positive`);
+    if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.planner.attempts[${index}].status is invalid`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.planner.attempts[${index}].${field}`);
+    for (const field of ['startedAt', 'finishedAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
+    if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.planner.attempts[${index}].usage must be null or an object`);
+    if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.planner.attempts[${index}].continued must be a boolean`);
+    for (const field of ['lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
+    if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.planner.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.planner.attempts[${index}].wallSec must be null or a non-negative finite number`);
+    if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.planner.attempts[${index}].lastAgentEvent must be null or an object`);
+  }
+}
+
+function validateEvents(events) {
+  object(events, 'state.events');
+  noUnknown(events, new Set(['sequence', 'last']), 'state.events');
+  nonNegativeInteger(events.sequence, 'state.events.sequence');
+  if (events.last !== null) {
+    object(events.last, 'state.events.last');
+    noUnknown(events.last, new Set(['sequence', 'type', 'committedAt']), 'state.events.last');
+    nonNegativeInteger(events.last.sequence, 'state.events.last.sequence');
+    if (events.last.sequence !== events.sequence || events.sequence === 0) fail('state.events.last sequence must match state.events.sequence');
+    requiredString(events.last.type, 'state.events.last.type');
+    timestamp(events.last.committedAt, 'state.events.last.committedAt');
+  } else if (events.sequence !== 0) fail('state.events.last is required when sequence is non-zero');
+}
+
+function validateLifecycle(lifecycle) {
+  object(lifecycle, 'state.lifecycle');
+  noUnknown(lifecycle, new Set(['status', 'startedAt', 'finishedAt', 'resultFile']), 'state.lifecycle');
+  if (!LIFECYCLE_STATUSES.has(lifecycle.status)) fail('state.lifecycle.status is invalid');
+  timestamp(lifecycle.startedAt, 'state.lifecycle.startedAt');
+  timestamp(lifecycle.finishedAt, 'state.lifecycle.finishedAt');
+  nullableString(lifecycle.resultFile, 'state.lifecycle.resultFile');
+  if (lifecycle.finishedAt !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.finishedAt requires a terminal status');
+  if (lifecycle.resultFile !== null && !['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status)) fail('state.lifecycle.resultFile requires a terminal status');
 }
 
 function validateProgram(program, state) {
@@ -183,20 +247,36 @@ function validateProgram(program, state) {
     return;
   }
   if (program.revision < 1) fail('a non-empty state.program must have a positive revision');
-  const freshEvidenceRequirementIds = Object.values(state.ledger.requirements)
-    .filter((requirement) => requirement.status === 'passed')
-    .map((requirement) => requirement.id);
+  const revisionById = new Map(state.actions.map((action) => [action.id, action.programRevision]));
+  const knownActions = [];
+  const knownArtifacts = [];
   try {
-    validateActionProgram(
-      { schemaVersion: program.schemaVersion, actions: program.actions },
-      {
+    for (let revision = 1; revision <= program.revision; revision += 1) {
+      const actions = program.actions.filter((action) => revisionById.get(action.id) === revision);
+      if (!actions.length) fail(`state.program revision ${revision} has no actions`);
+      validateActionProgram(
+        { schemaVersion: program.schemaVersion, actions },
+        {
         requirements: state.intent.requirements.map(({ id, mandatory }) => ({ id, mandatory })),
-        freshEvidenceRequirementIds,
+        knownActions,
+        knownArtifacts,
+        freshEvidenceRequirementIds: [],
+        requireMandatoryEvidence: false,
         maxActions: state.config.settings.maxActions ?? 100,
         maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
-      },
-    );
+        },
+      );
+      for (const action of actions) {
+        knownActions.push({
+          id: action.id, dependsOn: clone(action.dependsOn), affects: clone(action.affects),
+          ownedFiles: clone(action.ownedFiles), evidenceFor: clone(action.evidenceFor),
+          produces: clone(action.produces ?? []),
+        });
+        for (const artifact of action.produces ?? []) knownArtifacts.push({ id: artifact, producer: action.id });
+      }
+    }
   } catch (error) {
+    if (error instanceof V2StateValidationError) throw error;
     const detail = Array.isArray(error?.issues) ? error.issues.join('; ') : error.message;
     fail(`state.program is invalid: ${detail}`);
   }
@@ -215,12 +295,15 @@ function validateActionStates(actions, program) {
     ids.add(id);
     if (!ACTION_STATUSES.has(action.status)) fail(`state.actions[${index}].status is invalid`);
     nonNegativeInteger(action.attempts, `state.actions[${index}].attempts`);
+    nonNegativeInteger(action.programRevision, `state.actions[${index}].programRevision`);
+    if (action.programRevision < 1 || action.programRevision > program.revision) fail(`state.actions[${index}].programRevision must reference an existing program revision`);
     if (action.workRevision !== undefined && ((typeof action.workRevision !== 'string' && typeof action.workRevision !== 'number') || action.workRevision === '')) fail(`state.actions[${index}].workRevision must be a string or number`);
     for (const field of ['startedAt', 'finishedAt']) if (action[field] !== undefined) timestamp(action[field], `state.actions[${index}].${field}`);
     if (action.outputFile !== undefined) nullableString(action.outputFile, `state.actions[${index}].outputFile`);
     if (action.artifactIds !== undefined && (!Array.isArray(action.artifactIds) || action.artifactIds.some((item) => typeof item !== 'string' || !ID_RE.test(item)))) fail(`state.actions[${index}].artifactIds must contain valid IDs`);
     if (action.lastFailure !== undefined && action.lastFailure !== null && !isObject(action.lastFailure)) fail(`state.actions[${index}].lastFailure must be null or an object`);
   }
+  for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);
 }
 
 function validateAttempts(attempts, program) {
@@ -237,9 +320,26 @@ function validateAttempts(attempts, program) {
     if (!programIds.has(actionId)) fail(`state.attempts[${index}] references unknown program action ${actionId}`);
     nonNegativeInteger(attempt.ordinal, `state.attempts[${index}].ordinal`);
     if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.attempts[${index}].status is invalid`);
-    for (const field of ['pool', 'model', 'outputFile']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
-    for (const field of ['startedAt', 'finishedAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
+    for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
     if (attempt.failure !== undefined && attempt.failure !== null && !isObject(attempt.failure)) fail(`state.attempts[${index}].failure must be null or an object`);
+    for (const field of ['usage', 'routing']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
+    if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.attempts[${index}].continued must be a boolean`);
+    if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
+    if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
+  }
+}
+
+function validateAttemptConsistency(actions, attempts) {
+  const grouped = new Map(actions.map((action) => [action.id, []]));
+  for (const attempt of attempts) grouped.get(attempt.actionId).push(attempt);
+  for (const action of actions) {
+    const records = grouped.get(action.id).sort((left, right) => left.ordinal - right.ordinal);
+    if (records.length !== action.attempts) fail(`state action ${action.id}.attempts does not match durable attempt records`);
+    for (let index = 0; index < records.length; index += 1) {
+      if (records[index].ordinal !== index + 1) fail(`state action ${action.id} attempt ordinals must be unique and contiguous`);
+    }
   }
 }
 
@@ -247,6 +347,14 @@ function validateCounters(value, name) {
   object(value, name);
   for (const [key, count] of Object.entries(value)) {
     if (!/^[a-z][A-Za-z0-9]*$/.test(key)) fail(`${name}.${key} is not a valid counter name`);
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) fail(`${name}.${key} must be a non-negative finite number`);
+  }
+}
+
+function validatePoolUsage(value, name) {
+  object(value, name);
+  for (const [key, count] of Object.entries(value)) {
+    if (typeof key !== 'string' || !key || key.includes('\0')) fail(`${name} contains an invalid pool name`);
     if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) fail(`${name}.${key} must be a non-negative finite number`);
   }
 }
@@ -267,17 +375,19 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'planner', 'program', 'actions', 'attempts', 'budget', 'cancellation', 'usage', 'ledger']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'planner', 'program', 'actions', 'attempts', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
   if (state.schemaVersion !== V2_STATE_SCHEMA_VERSION) fail(`state schemaVersion must be ${V2_STATE_SCHEMA_VERSION}`);
   requiredString(state.runId, 'state.runId');
   requiredString(state.shortId, 'state.shortId');
   requiredString(state.intentId, 'state.intentId');
   validateGoal({ schemaVersion: V2_GOAL_SCHEMA_VERSION, intentId: state.intentId, intent: state.intent, config: state.config });
+  validateLifecycle(state.lifecycle);
   validatePlanner(state.planner);
   const ledger = validateLedger(state);
-  validateProgram(state.program, { ...state, ledger });
   validateActionStates(state.actions, state.program);
+  validateProgram(state.program, { ...state, ledger });
   validateAttempts(state.attempts, state.program);
+  validateAttemptConsistency(state.actions, state.attempts);
   validateCounters(state.budget, 'state.budget');
   object(state.cancellation, 'state.cancellation');
   noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason']), 'state.cancellation');
@@ -288,7 +398,8 @@ function validateState(state) {
   object(state.usage, 'state.usage');
   noUnknown(state.usage, new Set(['total', 'byPool']), 'state.usage');
   if (typeof state.usage.total !== 'number' || !Number.isFinite(state.usage.total) || state.usage.total < 0) fail('state.usage.total must be a non-negative finite number');
-  validateCounters(state.usage.byPool, 'state.usage.byPool');
+  validatePoolUsage(state.usage.byPool, 'state.usage.byPool');
+  validateEvents(state.events);
   return state;
 }
 

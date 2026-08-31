@@ -21,6 +21,9 @@ test('creates intent-only V2 goal and empty durable state', () => {
   assert.deepEqual(state.program, { schemaVersion: 'bullswarm.workflow.program.v2', revision: 0, actions: [] });
   assert.deepEqual(state.actions, []);
   assert.deepEqual(state.attempts, []);
+  assert.deepEqual(state.lifecycle, { status: 'queued', startedAt: null, finishedAt: null, resultFile: null });
+  assert.deepEqual(state.planner, { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] });
+  assert.deepEqual(state.events, { sequence: 0, last: null });
   assert.equal(state.ledger.requirements['result-versioned'].status, 'pending');
 });
 
@@ -38,7 +41,20 @@ test('round trips and defensively clones all boundaries', () => {
 test('round trips a progressed durable state', () => {
   const goal = createV2GoalDocument(input());
   const state = createV2State(goal, { runId: 'wf-1', shortId: 'abc234' });
-  state.planner = { status: 'waiting', turns: 1, lastDecision: { kind: 'program-created', summary: 'Inspect the result.' } };
+  state.planner = {
+    status: 'waiting', turns: 1,
+    lastDecision: { kind: 'program-created', summary: 'Inspect the result.' },
+    session: {
+      pool: 'relay', model: 'gpt-5.6-luna', sessionId: 'session-1', generation: 1,
+      startedAt: '2026-08-31T00:59:00.000Z', lastUsedAt: '2026-08-31T01:00:00.000Z',
+    },
+    attempts: [{
+      ordinal: 1, turn: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna',
+      startedAt: '2026-08-31T00:59:00.000Z', finishedAt: '2026-08-31T01:00:00.000Z',
+      taskFile: '/tmp/task.json', outputFile: '/tmp/out.json', usage: { totalTokens: 100 }, continued: false,
+    }],
+  };
+  state.lifecycle = { status: 'running', startedAt: '2026-08-31T00:59:00.000Z', finishedAt: null, resultFile: null };
   state.program = {
     schemaVersion: 'bullswarm.workflow.program.v2',
     revision: 1,
@@ -48,10 +64,11 @@ test('round trips a progressed durable state', () => {
       lane: 'analyze', effort: 'low', evidenceFor: ['result-versioned'], inputs: [], produces: [],
     }],
   };
-  state.actions = [{ id: 'inspect-result', status: 'running', attempts: 1, startedAt: '2026-08-31T01:00:00.000Z', artifactIds: [] }];
+  state.actions = [{ id: 'inspect-result', status: 'running', attempts: 1, programRevision: 1, startedAt: '2026-08-31T01:00:00.000Z', artifactIds: [] }];
   state.attempts = [{ id: 'inspect-result-1', actionId: 'inspect-result', ordinal: 1, status: 'running', pool: 'relay', model: 'gpt-5.6-luna', startedAt: '2026-08-31T01:00:00.000Z' }];
   state.budget.agents = 1;
   state.usage = { total: 1234, byPool: { relay: 1234 } };
+  state.events = { sequence: 1, last: { sequence: 1, type: 'action.started', committedAt: '2026-08-31T01:00:00.000Z' } };
   assert.deepEqual(deserializeV2DurableState(serializeV2DurableState(state)), state);
 });
 
@@ -77,4 +94,12 @@ test('rejects schema mismatch and graph-shaped state fields', () => {
   assert.throws(() => serializeV2DurableState({ ...state, schemaVersion: 'bullswarm.workflow.state.v1' }), /schemaVersion/);
   assert.throws(() => serializeV2DurableState({ ...state, program: { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [] } }), /empty state.program/);
   assert.throws(() => serializeV2DurableState({ ...state, actions: [{ id: 'unknown', status: 'running', attempts: 1 }] }), /unknown program action/);
+  assert.throws(() => serializeV2DurableState({ ...state, lifecycle: { status: 'running', startedAt: null, finishedAt: '2026-08-31T01:00:00Z', resultFile: null } }), /terminal status/);
+  assert.throws(() => serializeV2DurableState({ ...state, planner: { ...state.planner, session: { pool: 'relay', model: 'luna', sessionId: '', generation: 0, startedAt: null, lastUsedAt: null } } }), /non-empty string/);
+  assert.throws(() => serializeV2DurableState({ ...state, events: { sequence: 1, last: null } }), /last is required/);
+  const progressed = createV2State(goal, { runId: 'wf-1', shortId: 'abc234' });
+  progressed.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [{ id: 'inspect', purpose: 'Inspect', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Inspect.', lane: 'analyze', effort: 'low', evidenceFor: ['result-versioned'], inputs: [], produces: [] }] };
+  assert.throws(() => serializeV2DurableState(progressed), /missing program action inspect/);
+  progressed.actions = [{ id: 'inspect', status: 'pending', attempts: 1, programRevision: 1 }];
+  assert.throws(() => serializeV2DurableState(progressed), /does not match durable attempt records/);
 });
