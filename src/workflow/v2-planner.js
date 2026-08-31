@@ -91,13 +91,13 @@ export function parseV2PlannerResponse(text, state, options = {}) {
   throw new V2PlannerValidationError(errors.length ? [...new Set(errors)] : ['response did not contain a trailing JSON object']);
 }
 
-export function createV2PlannerContext(state, { scout = null, steering = [], correction = null } = {}) {
+export function createV2PlannerContext(state, { scout = null, steering = [], correction = null, boundary = null } = {}) {
   validateV2DurableState(state);
-  const boundary = state.program.actions.length ? 'gaps' : 'initial';
+  const plannerBoundary = boundary ?? (state.program.actions.length ? 'gaps' : 'initial');
   const actionStates = new Map(state.actions.map((action) => [action.id, action]));
   return {
     schemaVersion: 'bullswarm.workflow.planner-context.v2',
-    boundary,
+    boundary: plannerBoundary,
     intent: clone(state.intent),
     limits: {
       maxActionsRemaining: Math.max(0, Number(state.config.settings.maxActions ?? 100) - state.program.actions.length),
@@ -111,7 +111,7 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
       status: actionStates.get(action.id)?.status ?? 'pending',
     })),
     freshPassedRequirements: Object.values(state.ledger.requirements).filter((requirement) => requirement.status === 'passed').map((requirement) => requirement.id),
-    gaps: boundary === 'gaps' ? consolidateV2Gaps(state) : null,
+    gaps: plannerBoundary === 'gaps' ? consolidateV2Gaps(state) : null,
     scout: scout == null ? null : String(scout),
     steering: Array.isArray(steering) ? steering.map(String) : [],
     correction: correction == null ? null : clone(correction),
@@ -131,6 +131,8 @@ export function buildV2PlannerPrompt(context) {
       : 'Workspace mutation is allowed only through exact ownedFiles declared by the action.',
     context.boundary === 'gaps'
       ? 'This is one consolidated gap boundary. Propose only new actions that close the supplied gaps. If no useful bounded action remains, return kind=exhausted with a concrete reason; this does not declare workflow failure.'
+      : context.boundary === 'steering'
+        ? 'This is a material user-steering boundary. Treat the supplied steering as new requirements for future work, preserve completed history, and propose only the smallest new actions needed to honor it.'
       : 'This is initial planning. Return kind=program with the complete useful program; kind=exhausted is invalid here.',
     'Return only one JSON object with schemaVersion bullswarm.workflow.planner-response.v2.',
     'For kind=program use: {schemaVersion,kind:"program",summary,program:{schemaVersion:"bullswarm.workflow.program.v2",actions:[...]}}.',
@@ -182,7 +184,7 @@ export function plannerCorrectionRequest(error, { attempt, maxCorrections = 1 } 
 
 export function buildPlannerPreflight(statePath, boundary = 'initial', checkerPath = null) {
   if (typeof statePath !== 'string' || !statePath) throw new TypeError('statePath must be a non-empty string');
-  if (!['initial', 'gaps'].includes(boundary)) throw new TypeError('boundary must be initial|gaps');
+  if (!['initial', 'gaps', 'steering'].includes(boundary)) throw new TypeError('boundary must be initial|gaps|steering');
   const checker = checkerPath ?? fileURLToPath(new URL('../../bin/check-v2-plan.js', import.meta.url));
   const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
   const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --state ${shellQuote(statePath)} --boundary ${boundary} --value "$candidate_file"`;

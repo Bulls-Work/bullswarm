@@ -31,10 +31,13 @@ export function queueSteering(bullswarmDir, token, message) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
-  if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
-    throw new Error(`run "${token}" is already terminal (${state.status})`);
+  const v2 = state.schemaVersion === 'bullswarm.workflow.state.v2';
+  const status = v2 ? state.lifecycle?.status : state.status;
+  const finishedAt = v2 ? state.lifecycle?.finishedAt : state.finishedAt;
+  if (finishedAt || isTerminalWorkflowStatus(status)) {
+    throw new Error(`run "${token}" is already terminal (${status})`);
   }
-  const hasDecisionGate = state._doc?.phases?.some((phase) =>
+  const hasDecisionGate = v2 || state._doc?.phases?.some((phase) =>
     phase.steps?.some((step) => step.type === 'decide'));
   if (!hasDecisionGate) throw new Error(`run "${token}" has no orchestration decision gate to receive steering`);
   const entry = {
@@ -55,7 +58,7 @@ export function deliverSteering(state, runDir) {
     ...entry,
     status: 'delivered_to_planner',
     deliveredAt,
-    decisionSequence: (state.decisions?.length ?? 0) + 1,
+    decisionSequence: (state.planner?.turns ?? state.decisions?.length ?? 0) + 1,
   }));
   state.steering.push(...fresh);
   return fresh;

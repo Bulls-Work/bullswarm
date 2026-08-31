@@ -111,6 +111,54 @@ test('preflight scout is deterministically validated, persisted, and supplied to
   assert.equal(result.result.status, 'completed');
 });
 
+test('queued V2 steering is delivered once at the next planner boundary', async () => {
+  const f = setup();
+  const runId = 'wf-steer1-abcdef';
+  let plannerTurns = 0;
+  let steeredPrompt = '';
+  const steeringProgram = {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Honor the queued preference with one bounded read-only action.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+      { id: 'honor-steering', purpose: 'Record steering choice', dependsOn: [], affects: [], ownedFiles: [], prompt: 'Confirm the smaller API choice in the action output.', lane: 'analyze', effort: 'low', evidenceFor: [], inputs: [], produces: ['steering-note'] },
+      { id: 'inspect-steering', purpose: 'Inspect steering choice', dependsOn: ['write-report', 'honor-steering'], affects: [], ownedFiles: [], prompt: 'Independently confirm the steering choice was honored.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report', 'steering-note'], produces: [] },
+    ] },
+  };
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      plannerTurns += 1;
+      if (plannerTurns === 2) steeredPrompt = options.taskText;
+      const value = plannerTurns === 1 ? programResponse() : steeringProgram;
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      const runDir = join(f.bullswarmDir, 'workflows', runId);
+      writeFileSync(join(runDir, 'steering.jsonl'), `${JSON.stringify({
+        id: 'steer-test', message: 'Prefer the smaller public API.',
+        queuedAt: '2026-08-31T01:00:03.000Z',
+        delivery: 'next-not-yet-started-planner-checkpoint',
+      })}\n`);
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'honor-steering') {
+      writeFileSync(files.outFile, 'smaller API selected');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+    writeFileSync(files.outFile, JSON.stringify(evidence));
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId, dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(result.result.status, 'completed');
+  assert.equal(plannerTurns, 2);
+  assert.match(steeredPrompt, /Prefer the smaller public API/);
+  assert.equal(result.state.steering.length, 1);
+  assert.equal(result.state.steering[0].status, 'delivered_to_planner');
+  assert.equal(result.state.steering[0].decisionSequence, 2);
+  assert.equal(readEvents(result.runDir).filter((event) => event.type === 'steering.delivered').length, 1);
+});
+
 test('isolated mode runs file-disjoint writers concurrently and integrates both before evidence', async () => {
   const f = setup({ workspaceMode: 'isolated', concurrency: 2 });
   const parallelProgram = {

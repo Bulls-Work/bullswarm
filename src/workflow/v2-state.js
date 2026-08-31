@@ -39,6 +39,9 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
 ]);
+const STEERING_FIELDS = new Set([
+  'id', 'message', 'queuedAt', 'delivery', 'status', 'deliveredAt', 'decisionSequence',
+]);
 const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 
 export class V2StateValidationError extends TypeError {
@@ -191,7 +194,7 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     planner: { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] },
     program: { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, revision: 0, actions: [] },
     presentation: { stages: [] },
-    actions: [], attempts: [],
+    actions: [], attempts: [], steering: [],
     budget: { agents: 0, seconds: 0, expansions: 0 },
     cancellation: { requested: false, requestedAt: null, reason: null },
     usage: { total: 0, byPool: {} },
@@ -456,7 +459,7 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
   if (state.schemaVersion !== V2_STATE_SCHEMA_VERSION) fail(`state schemaVersion must be ${V2_STATE_SCHEMA_VERSION}`);
   requiredString(state.runId, 'state.runId');
   requiredString(state.shortId, 'state.shortId');
@@ -471,6 +474,22 @@ function validateState(state) {
   validateProgram(state.program, { ...state, ledger });
   validateAttempts(state.attempts, state.program);
   validateAttemptConsistency(state.actions, state.attempts);
+  if (!Array.isArray(state.steering)) fail('state.steering must be an array');
+  const steeringIds = new Set();
+  for (const [index, entry] of state.steering.entries()) {
+    object(entry, `state.steering[${index}]`);
+    noUnknown(entry, STEERING_FIELDS, `state.steering[${index}]`);
+    requiredString(entry.id, `state.steering[${index}].id`);
+    if (steeringIds.has(entry.id)) fail(`duplicate steering id ${entry.id}`);
+    steeringIds.add(entry.id);
+    requiredString(entry.message, `state.steering[${index}].message`);
+    timestamp(entry.queuedAt, `state.steering[${index}].queuedAt`);
+    requiredString(entry.delivery, `state.steering[${index}].delivery`);
+    if (entry.status !== 'delivered_to_planner') fail(`state.steering[${index}].status is invalid`);
+    timestamp(entry.deliveredAt, `state.steering[${index}].deliveredAt`);
+    nonNegativeInteger(entry.decisionSequence, `state.steering[${index}].decisionSequence`);
+    if (entry.decisionSequence < 1) fail(`state.steering[${index}].decisionSequence must be positive`);
+  }
   validateCounters(state.budget, 'state.budget');
   object(state.cancellation, 'state.cancellation');
   noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason']), 'state.cancellation');

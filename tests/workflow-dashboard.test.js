@@ -161,6 +161,15 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
     assert.match(screen, /Waiting for 1 worker/);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
+    const narrowTimeline = renderWorkflowTui(row, { width: 60, height: 26, focus: 0 });
+    const narrowPhases = renderWorkflowTui(row, { width: 60, height: 26, focus: 0, mobileTimeline: false });
+    const narrowAgents = renderWorkflowTui(row, { width: 60, height: 26, focus: 1 });
+    assert.match(narrowTimeline, /Workflow timeline/);
+    assert.doesNotMatch(narrowTimeline, /Phases · 2/);
+    assert.match(narrowPhases, /Phases · 2/);
+    assert.doesNotMatch(narrowPhases, /Workflow timeline/);
+    assert.match(narrowAgents, /Evidence · 0\/1 complete/);
+    assert.doesNotMatch(narrowAgents, /Workflow timeline/);
     const cancelled = requestCancel(home, 'v2d234');
     assert.equal(cancelled.state.cancellation.requested, true);
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -1345,11 +1354,11 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
 test('narrow timeline rendering uses the same segment headers and no phase prefixes', () => {
   // tall enough that the whole timeline fits: nothing here is a scroll artifact
   const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 60, height: 44 });
-   assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implem…']);
+   assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
   const pane = timelinePaneRows(screen);
   assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
   assert.match(segmentRows(screen, 'Discover').join('\n'), /├─✓ discover-a/);
-   assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implem…').elapsed, 'running');
+   assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implement').elapsed, 'running');
   // headers obey the narrow width like every other row
   const overflow = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n').filter((line) => [...line].length > 60);
   assert.deepEqual(overflow, []);

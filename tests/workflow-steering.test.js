@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { queueSteering, readSteering, deliverSteering } from '../src/workflow/steering.js';
+import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 
 function fixture({ terminal = false, decide = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bs-steer-'));
@@ -43,5 +44,31 @@ test('steering refuses terminal and non-orchestrated workflows', () => {
   } finally {
     terminal.cleanup();
     staticRun.cleanup();
+  }
+});
+
+test('V2 steering queues against the Workflow Planner and uses its next turn number', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-steer-v2-'));
+  const runId = 'wf-msteerv2-abcdef';
+  const runDir = join(home, 'workflows', runId);
+  mkdirSync(runDir, { recursive: true });
+  try {
+    const goal = createV2GoalDocument({
+      goal: 'Deliver a report', cwd: home,
+      requirements: [{ id: 'report', text: 'report is correct' }],
+      settings: { scout: false },
+    });
+    const state = createV2State(goal, { runId, shortId: 'v2s234' });
+    state.lifecycle.status = 'running';
+    state.planner.turns = 2;
+    state.planner.status = 'waiting';
+    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    const queued = queueSteering(home, 'v2s234', 'Prefer the smaller public API.');
+    assert.equal(queued.entry.delivery, 'next-not-yet-started-planner-checkpoint');
+    const delivered = deliverSteering(state, runDir);
+    assert.equal(delivered[0].decisionSequence, 3);
+    assert.equal(delivered[0].status, 'delivered_to_planner');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

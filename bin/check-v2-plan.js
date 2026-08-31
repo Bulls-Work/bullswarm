@@ -7,14 +7,14 @@ import { deserializeV2DurableState } from '../src/workflow/v2-state.js';
 function parseArgs(args) {
   if (args.length !== 6 || args[0] !== '--state' || args[2] !== '--boundary' || args[4] !== '--value') return null;
   const [, statePath, , boundary, , valuePath] = args;
-  if (!statePath || !valuePath || !['initial', 'gaps'].includes(boundary)) return null;
+  if (!statePath || !valuePath || !['initial', 'gaps', 'steering'].includes(boundary)) return null;
   if (statePath.startsWith('--') || valuePath.startsWith('--')) return null;
   return { statePath, boundary, valuePath };
 }
 
 const parsed = parseArgs(process.argv.slice(2));
 if (!parsed) {
-  console.error('Usage: check-v2-plan --state <state.json> --boundary <initial|gaps> --value <candidate.json>');
+  console.error('Usage: check-v2-plan --state <state.json> --boundary <initial|gaps|steering> --value <candidate.json>');
   process.exit(2);
 }
 

@@ -213,6 +213,15 @@ export function renderDashboard({
   const listLines = dashboardRunLines(rows, selected, narrow, width);
 
   let body;
+  if (narrow) {
+    const body = renderPanel(
+      `Runs · ${filter}`,
+      listWindow(listLines, selected, bodyHeight - 2, true),
+      width,
+      bodyHeight,
+    );
+    return [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, footer].join('\n');
+  }
   const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
   const rightWidth = Math.max(1, width - leftWidth);
   const left = renderPanel(
@@ -223,17 +232,8 @@ export function renderDashboard({
   );
   let right;
    if (selectedRow?.state && rightWidth >= 3) {
-     if (narrow) {
-       const state = selectedRow.state;
-       right = renderPanel('Selected workflow', [
-         `${humanWorkflowStatus(stateStatus(state), selectedRow.ongoing)} · ${selectedRow.shortId ?? '------'}`,
-         `phase · ${humanPhaseName(selectedRow.phase)}`,
-         `${selectedRow.stepsOk ?? 0}/${selectedRow.stepsTotal ?? 0} actions · ${durationText(stateStartedAt(state), stateFinishedAt(state))}`,
-       ], rightWidth, bodyHeight);
-     } else {
-       const model = workflowPanelModel(selectedRow);
-       right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
-     }
+     const model = workflowPanelModel(selectedRow);
+     right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
   } else {
     const hint = allRows.length && filter === 'active'
       ? ['No active workflows.', '', 'Press a to browse recent runs.']
@@ -841,10 +841,9 @@ export function renderWorkflowTui(row, {
     ));
   });
 
-  // Keep the hierarchy visible in the same fixed-width two-pane shell at
-  // every terminal size; narrow terminals get a compact right preview.
-  // Keep the 34-column hierarchy sidebar on normal terminals. At very narrow
-  // widths, reserve enough room for the timeline's complete segment grammar.
+  // Wide terminals keep the hierarchy and preview visible together. Narrow
+  // terminals show one full-width pane at a time so mobile/SSH text remains
+  // readable and explicit back navigation preserves the same hierarchy.
   const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
   const rightWidth = Math.max(1, width - leftWidth);
   const orchestrationLines = orchestratorDetailLines(
@@ -891,7 +890,21 @@ export function renderWorkflowTui(row, {
     : 'Agent activity';
 
   let body;
-  if (orchestratorDetail) {
+  if (narrow) {
+    if (orchestratorDetail) {
+      body = renderPanel(`Workflow Planner · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, width, bodyHeight);
+    } else if (workflowVerbose) {
+      body = renderPanel('Workflow technical details', technical.slice(scroll, scroll + contentHeight), width, bodyHeight);
+    } else if (focus === 0 && mobileTimeline) {
+      body = renderWorkflowOverviewPanel(model, width, bodyHeight, spinnerFrame, detailScroll);
+    } else if (focus === 0) {
+      body = renderPanel(phaseTitle, visiblePhases, width, bodyHeight);
+    } else if (focus === 1) {
+      body = renderPanel(agentTitle, visibleAgents, width, bodyHeight);
+    } else {
+      body = renderPanel(detailTitle, visibleDetail, width, bodyHeight);
+    }
+  } else if (orchestratorDetail) {
     body = joinPanels(
       renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, bodyHeight),
       renderPanel(`Workflow Planner · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, rightWidth, bodyHeight),
