@@ -59,6 +59,16 @@ run was cancelled without waiting for rejection. Scout and planner guidance
 now permits multiple ordered actions to affect the same requirement and keeps
 independently testable clauses as separate default task boundaries.
 
+The next probe produced the intended seven ordered acceptance slices, but its
+first worker still implemented later breadcrumb and transition work early. The
+planner was no longer the source of the merge: the runtime-generated worker
+task repeated the full parent goal and full affected-requirement prose ahead of
+the bounded action prompt. Work tasks now expose only the action purpose,
+owned files, traceability identifiers, dependencies, and the planner-authored
+slice, with an explicit prohibition on sibling, downstream, or whole-goal work.
+The full requirement text remains available to the kernel-owned evidence
+action, where it belongs.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

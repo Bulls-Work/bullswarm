@@ -130,13 +130,16 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
   ].join('\n') : '';
   return [
     `Bullswarm autonomous V2 action: ${action.id}`,
-    `Goal: ${state.intent.goal}`,
     `Purpose: ${action.purpose}`,
+    'Scope boundary: this is one bounded slice of a larger workflow. Implement only this action purpose and the final action instructions below.',
+    'Do not implement sibling, downstream, or whole-goal work early, even when dependency context or requirement identifiers reveal that such work exists.',
     `Workspace: ${targetDir}`,
     action.ownedFiles.length
       ? `You own exactly these files for mutation: ${action.ownedFiles.join(', ')}. Do not modify any other path.`
       : 'This action is read-only. Do not modify workspace files.',
-    requirements.length ? `Requirements affected:\n${requirements.map((item) => `- ${item.id}: ${item.text}`).join('\n')}` : '',
+    requirements.length
+      ? `Requirement traceability (identifiers only; the kernel-owned evidence stage judges the full requirement text): ${requirements.map((item) => item.id).join(', ')}`
+      : '',
     dependencyArtifacts(state, action).length ? `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}` : '',
     mutationProof,
     '', action.prompt,

@@ -72,6 +72,11 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(result.result.status, 'completed');
   assert.equal(result.result.verified, true);
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
+  assert.match(workTask, /one bounded slice of a larger workflow/i);
+  assert.match(workTask, /Do not implement sibling, downstream, or whole-goal work early/i);
+  assert.match(workTask, /Requirement traceability .*report-correct/i);
+  assert.doesNotMatch(workTask, /Goal: Deliver a correct report/);
+  assert.doesNotMatch(workTask, /report\.md exists and contains READY/);
   assert.match(workTask, /exercise the real production entry point or state transition/i);
   assert.match(workTask, /untouched baseline and observe the expected failure/i);
   assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
