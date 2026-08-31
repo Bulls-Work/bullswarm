@@ -30,7 +30,7 @@ function providerIdFromModel(model) {
 }
 
 function preparePools(pools, action, effort, {
-  avoidPools = [], preferredModel = null, now = Date.now(),
+  avoidPools = [], preferredModel = null, strictPool = null, now = Date.now(),
 } = {}) {
   const available = [];
   for (const pool of pools) {
@@ -51,10 +51,16 @@ function preparePools(pools, action, effort, {
     if (!modelPolicy.eligible) continue;
     available.push({ ...pool, modelPolicy });
   }
-  const preferred = available.filter((pool) => !avoidPools.includes(pool.name));
+  // A strict pin defines the complete dispatch universe. Apply it before the
+  // evidence-independence preference so unrelated eligible pools cannot make
+  // the pinned ancestor disappear and then leave an empty candidate set.
+  const scoped = strictPool
+    ? available.filter((pool) => pool.name === strictPool)
+    : available;
+  const preferred = scoped.filter((pool) => !avoidPools.includes(pool.name));
   // Evidence independence is preferred, never a deadlock: reuse an ancestor
   // pool only when no independent eligible pool exists.
-  return preferred.length ? preferred : available;
+  return preferred.length ? preferred : scoped;
 }
 
 function attemptPaths(base, ordinal) {
@@ -142,9 +148,8 @@ export async function dispatchV2Action({
   const uuid = dependencies.uuid ?? randomUUID;
   const effort = action.effort ?? EFFORT_BY_LANE[action.lane] ?? 'low';
   let candidates = preparePools(pools, action, effort, {
-    avoidPools, preferredModel, now: now(),
+    avoidPools, preferredModel, strictPool, now: now(),
   });
-  if (strictPool) candidates = candidates.filter((pool) => pool.name === strictPool);
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
   const effectivePreferredPool = preferredPool ?? configuredAssignment?.pool ?? null;
