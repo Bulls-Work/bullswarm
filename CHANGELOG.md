@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Workflow timelines now render in phase-segmented sections with continued
+  headers for interleaved phases, grouped Preflight scout/planner milestones,
+  elapsed or running phase state, and consistent desktop, narrow, and scroll
+  continuation behavior without per-line phase prefixes. Phase-completion
+  summary rows are retained, so rows such as `└─✓ completed 4/4` remain visible
+  beneath their phase headers.
+
+- Non-interactive `workflow tui <run-id>` output now includes the same static
+  segmented timeline as the interactive viewer, alongside the historical detail
+  tree, so real command output can be used to inspect and verify the layout.
+
 - Documentation now describes concerns as an attribute of a completed
   outcome — `outcome.concerns` on a delivered result — rather than
   presenting `completed_with_concerns` as its own terminal status to handle

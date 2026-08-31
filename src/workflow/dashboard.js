@@ -787,18 +787,34 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
   const end = Math.max(0, timeline.lines.length - scroll);
   let start = Math.max(0, end - timelineRows);
   if (start > 0) {
+    // Reserve one row for the continuation header while keeping the newest
+    // timestamped milestone in view.
     start = Math.max(0, end - Math.max(0, timelineRows - 1));
-    while (start < end && !/^\d{2}:\d{2}\s/.test(timeline.lines[start])) start += 1;
+    while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
   }
   let visibleTimeline = timeline.lines.slice(start, end);
   if (start > 0) {
     visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
+      const continuation = timeline.lines[start]?.segment;
+    if (continuation) {
+      const priorHeader = timeline.lines.find((line) => line?.header && line.segment === continuation);
+      visibleTimeline.splice(1, 0, continuationHeader(
+          continuation,
+          priorHeader?.elapsed ?? 'running',
+          inner,
+        timeline.lines[start]?.at,
+      ));
+    }
+    // Scrolled views already carry the upward marker and continuation header;
+    // omit inter-segment spacer rows so the viewport retains the latest event.
+    visibleTimeline = visibleTimeline.filter((line) => timelineText(line) !== '');
   }
   if (end < timeline.lines.length && visibleTimeline.length) {
     const marker = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, inner);
     if (visibleTimeline.length >= timelineRows) visibleTimeline[visibleTimeline.length - 1] = marker;
     else visibleTimeline.push(marker);
   }
+  visibleTimeline = visibleTimeline.slice(0, timelineRows);
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);
   const title = ` Workflow timeline · ${timeline.milestoneCount} milestone${timeline.milestoneCount === 1 ? '' : 's'} `;
@@ -824,31 +840,31 @@ function workflowTimelineLines(model, width) {
   const { state, orchestrator } = model;
   const ledger = state.actionLedger ?? [];
   const events = [];
-  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER, group = null) => {
+  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER, segment = null) => {
     if (!at) return;
-    events.push({ at, sequence, group, lines: Array.isArray(lines) ? lines : [lines] });
+    events.push({ at, sequence, segment, lines: Array.isArray(lines) ? lines : [lines] });
   };
   const scout = ledger.find((action) => action.id === 'scout');
   add(state.startedAt, [
     timelineRow(state.startedAt, '● Workflow initiated', '', width),
     timelineDetail(scout ? 'Goal accepted; preparing repository reconnaissance' : 'Execution started', width),
-  ]);
+  ], Number.MAX_SAFE_INTEGER, 'Preflight');
 
   const scoutStartedAt = actionStartedAt(state, scout);
   const scoutFinishedAt = actionFinishedAt(state, scout);
   if (scoutStartedAt) {
     add(scoutStartedAt, [
-      timelineRow(scoutStartedAt, '● [Preflight: Scout] started', '', width),
+       timelineRow(scoutStartedAt, '● Scout started', '', width),
       timelineDetail('Read-only repository and capability inspection', width),
-    ]);
+    ], Number.MAX_SAFE_INTEGER, 'Preflight');
   }
   if (scoutFinishedAt && TERMINAL_ACTIONS.has(effectiveActionStatus(scout, state))) {
     const attempt = latestAttemptForAction(state, scout);
     const metadata = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
     add(scoutFinishedAt, [
-      timelineRow(scoutFinishedAt, `${statusIcon(effectiveActionStatus(scout, state))} [Preflight: Scout] completed`, durationText(scoutStartedAt, scoutFinishedAt), width),
+       timelineRow(scoutFinishedAt, `${statusIcon(effectiveActionStatus(scout, state))} Scout completed`, durationText(scoutStartedAt, scoutFinishedAt), width),
       ...(metadata ? [timelineDetail(metadata, width)] : []),
-    ]);
+    ], Number.MAX_SAFE_INTEGER, 'Preflight');
   }
 
   orchestrator.attempts.forEach((attempt, index) => {
@@ -863,10 +879,11 @@ function workflowTimelineLines(model, width) {
       : decision.decision === 'complete'
         ? 'completion confirmed'
         : acceptedBefore === 0 ? 'plan created' : `plan updated #${acceptedBefore + 1}`;
+    const segment = index === 0 ? 'Preflight' : 'Planner';
     add(attempt.finishedAt, [
       timelineRow(attempt.finishedAt, `◆ [Workflow Planner] ${plannerLabel}`, durationText(attempt.startedAt, attempt.finishedAt), width),
       timelineDetail(summary, width),
-    ], Number.MAX_SAFE_INTEGER, 'execution');
+    ], Number.MAX_SAFE_INTEGER, segment);
   });
 
   const phases = new Map();
@@ -886,13 +903,13 @@ function workflowTimelineLines(model, width) {
       const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
       if (finishedAt) {
         add(finishedAt, [
-          timelineRow(finishedAt, `⊘ [Phase: ${label}] skipped`, `${actions.length} action${actions.length === 1 ? '' : 's'} not run`, width),
+          timelineRow(finishedAt, '⊘ skipped', `${actions.length} action${actions.length === 1 ? '' : 's'} not run`, width),
           timelineDetail('Required earlier work did not pass; the planner chose a recovery path', width),
-        ], Number.MAX_SAFE_INTEGER, 'execution');
+        ], Number.MAX_SAFE_INTEGER, label);
       }
       continue;
     }
-    add(startedAt, timelineRow(startedAt, `├─ [Phase: ${label}] ${realStart ? 'started' : 'blocked'}`, '', width), Number.MAX_SAFE_INTEGER, 'execution');
+    add(startedAt, timelineRow(startedAt, `├─ ${realStart ? 'started' : 'blocked'}`, '', width), Number.MAX_SAFE_INTEGER, label);
     const finished = actions
       .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
       .sort((a, b) => Date.parse(actionFinishedAt(state, a)) - Date.parse(actionFinishedAt(state, b)));
@@ -904,10 +921,10 @@ function workflowTimelineLines(model, width) {
       const blocked = state.outputs?.[action.id]?.dependencyBlocked === true;
       add(actionFinished, timelineRow(
         actionFinished,
-        `${branch}${blocked ? '⊘' : statusIcon(effectiveActionStatus(action, state))} [${label}] ${action.id}`,
+        `${branch}${blocked ? '⊘' : statusIcon(effectiveActionStatus(action, state))} ${action.id}`,
         actionStarted ? durationText(actionStarted, actionFinished) : '',
         width,
-      ), Number.MAX_SAFE_INTEGER, 'execution');
+      ), Number.MAX_SAFE_INTEGER, label);
     });
     if (finished.length === actions.length && actions.length) {
       const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
@@ -915,22 +932,71 @@ function workflowTimelineLines(model, width) {
       const failed = actions.some((action) => state.outputs?.[action.id]?.dependencyBlocked !== true
         && String(effectiveActionStatus(action, state)).startsWith('failed'));
       const outcome = failed ? 'finished with failures' : blocked ? 'incomplete' : 'completed';
-      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : blocked ? '!' : '✓'} [Phase: ${label}] ${outcome}`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, 'execution');
+      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : blocked ? '!' : '✓'} ${outcome}`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, label);
     }
   }
 
   for (const event of model.events) {
     const detail = timelineControlEvent(event, width);
-    if (detail) add(event.committedAt, detail, Number(event.sequence), event.type.startsWith('decision.') ? 'execution' : null);
+    if (detail) add(event.committedAt, detail, Number(event.sequence), event.type.startsWith('decision.') ? 'Planner' : 'Preflight');
   }
 
   events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.sequence - b.sequence);
+  const segments = new Map();
+  for (const event of events) {
+    const name = event.segment ?? 'Workflow';
+    if (!segments.has(name)) segments.set(name, { name, events: [], first: event.at, last: event.at });
+    const segment = segments.get(name);
+    segment.events.push(event);
+    if (Date.parse(event.at) < Date.parse(segment.first)) segment.first = event.at;
+    if (Date.parse(event.at) > Date.parse(segment.last)) segment.last = event.at;
+  }
   const lines = [];
-  events.forEach((event, index) => {
-    if (index && (!event.group || event.group !== events[index - 1].group)) lines.push('');
-    lines.push(...event.lines);
-  });
-  return { lines: lines.length ? lines : ['Waiting for the first durable workflow milestone'], milestoneCount: events.length };
+  let previousSegment = null;
+  const openedSegments = new Set();
+  for (const event of events) {
+    if (event.segment !== previousSegment) {
+      if (lines.length) lines.push('');
+      const segment = segments.get(event.segment ?? 'Workflow');
+      const finishedAt = segment.last;
+      const currentSegment = currentTimelineSegment(model);
+      const running = !state.finishedAt && segment.name === currentSegment;
+      const elapsed = running ? 'running' : durationText(segment.first, finishedAt);
+      lines.push(openedSegments.has(segment.name)
+        ? continuationHeader(segment.name, elapsed, width)
+        : segmentHeader(segment.name, elapsed, width));
+      openedSegments.add(segment.name);
+      previousSegment = event.segment;
+    }
+    lines.push(...event.lines.map((line) => ({ text: line, segment: event.segment, at: event.at })));
+  }
+  if (!lines.length) lines.push({ text: 'Waiting for the first durable workflow milestone', segment: null });
+  return { lines, milestoneCount: events.length };
+}
+
+function segmentHeader(name, elapsed, width) {
+  const text = `── ${name} `;
+  const suffix = ` ${elapsed} ──`;
+  const room = Math.max(0, width - text.length - suffix.length);
+  return { text: truncate(`${text}${'─'.repeat(room)}${suffix}`, width), segment: name, elapsed, header: true };
+}
+
+function continuationHeader(segment, elapsed, width, at = null) {
+  const text = `── ${segment} · continued `;
+  const suffix = ` ${elapsed} ──`;
+  const room = Math.max(0, width - text.length - suffix.length);
+  return { text: truncate(`${text}${'─'.repeat(room)}${suffix}`, width), segment, elapsed, header: true, at };
+}
+
+function currentTimelineSegment(model) {
+  const { state, orchestrator } = model;
+  if (orchestrator.active || (orchestrator.autonomous && !state.currentStep?.phase)) return 'Planner';
+  const phase = state.currentStep?.phase ?? state.currentPhase?.name;
+  return phase ? phaseLabel(phase, orchestrator) : 'Preflight';
+}
+
+function timelineText(value) {
+  return typeof value === 'string' ? value : value?.text ?? '';
 }
 
 function decisionForPlannerAttempt(state, attempt, index, attempts) {
@@ -1494,7 +1560,7 @@ function panelWindow(lines, selectedIndex, itemHeight, height) {
 }
 
 function panelCell(value, width) {
-  const text = String(value ?? '');
+  const text = timelineText(value);
   const plain = text.replace(/\x1b\[[0-9;]*m/g, '');
   const clipped = plain.length > width ? truncate(plain, width) : plain;
   const styled = text.includes('\x1b[') && plain.length <= width ? text : clipped;
@@ -1530,7 +1596,16 @@ export async function runDashboard(bullswarmDir, {
 } = {}) {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
-    const text = renderDetails(detailRow(bullswarmDir, token), { interactive: false }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const row = detailRow(bullswarmDir, token);
+    const details = renderDetails(row, { interactive: false });
+    // A non-TTY run-ID inspection must expose the same segmented timeline as
+    // the interactive viewer; otherwise real command output cannot evidence
+    // the layout that users are being asked to inspect.
+    const timeline = renderWorkflowTui(row, {
+      width: Math.max(80, Number(output.columns) || 120),
+      height: 80,
+    });
+    const text = `${details}\n\n${timeline}`.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     output.write(`${text}\n`);
     return 0;
   }
