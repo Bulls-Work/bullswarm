@@ -79,6 +79,9 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.doesNotMatch(workTask, /report\.md exists and contains READY/);
   assert.match(workTask, /exercise the real production entry point or state transition/i);
   assert.match(workTask, /untouched baseline and observe the expected failure/i);
+  assert.match(workTask, /transition matrix for every affected level and input/i);
+  assert.match(workTask, /distinguishable before\/after fixtures/i);
+  assert.match(workTask, /reread the bounded action instruction clause by clause/i);
   assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
   assert.match(evidenceTask, /mandatory V2 evidence preflight below is the only output contract/i);
   assert.deepEqual(result.state.actions.map((action) => action.status), ['succeeded', 'succeeded']);
