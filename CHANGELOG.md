@@ -4,8 +4,12 @@
 
 - Delegation classification now starts with deterministic signals and, in
   automatic execution, lets an LLM refine the choice between a single delegate
-  and a workflow. `--classify deterministic` bypasses that refinement;
-  `--classify llm` requires it and fails if no usable LLM decision is available.
+  and a workflow. `--dry-run` performs that same bounded low-effort
+  classification request (one analyze-lane, low-effort dispatch) before
+  printing the plan, so the preview matches what a live run would decide — it
+  never dispatches the work itself. `--classify deterministic` bypasses that
+  refinement and remains the instant, no-dispatch preview; `--classify llm`
+  requires the refinement and fails if no usable LLM decision is available.
   An explicit `--mode single|workflow` remains the caller's choice and bypasses
   automatic LLM classification.
 
@@ -24,7 +28,8 @@
   point for arbitrary self-contained tasks: classify the request as one bounded
   delegate or an autonomous workflow, show the reason and conceptual plan, then
   execute the selected engine. Explicit mode and lane overrides remain
-  available, and `--dry-run --json` exposes the decision without dispatching.
+  available, and `--dry-run --json` exposes the decision after its bounded
+  classification request without dispatching the work itself.
 - Workflow decisions persist the suggested conceptual plan alongside the
   original intent, while the packaged skill keeps the common path concise and
   moves operational detail into a focused reference.

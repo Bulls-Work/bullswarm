@@ -92,21 +92,31 @@ test('delegate invocation sends the conceptual plan to workflow goal', () => {
   assert.equal(single.argv[single.argv.indexOf('--effort') + 1], 'low');
 });
 
-test('delegate dry-run explains the choice without executing', async () => {
+test('delegate dry-run explains the deterministic choice without executing work', async () => {
   const out = [];
-  let executed = false;
+  const calls = [];
   const status = await cmdDelegate({
     prompt: 'Explain one module.', mode: 'auto', cwd: '/tmp', 'dry-run': true, json: true, rest: [],
   }, {
-    execute: async () => { executed = true; return { status: 0, stdout: '{}', stderr: '' }; },
+    execute: async (argv) => {
+      calls.push(argv);
+      return {
+        status: 0,
+        stdout: JSON.stringify({ response: '{"mode":"single","reason":"Still bounded."}' }),
+        stderr: '',
+      };
+    },
     writeOut: (value) => out.push(value),
     writeErr: (value) => out.push(value),
   });
   assert.equal(status, 0);
-  assert.equal(executed, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'run');
+  assert.equal(calls[0][calls[0].indexOf('--lane') + 1], 'analyze');
   const envelope = JSON.parse(out.join('\n'));
   assert.equal(envelope.action, 'planned');
   assert.equal(envelope.decision.mode, 'single');
+  assert.equal(envelope.decision.source, 'llm-classifier');
   assert.equal(envelope.execution, undefined);
 });
 
@@ -231,7 +241,7 @@ test('auto mode refines the deterministic guess through one analyze/low classifi
   });
 });
 
-test('classification failures silently fall back to the deterministic decision', async () => {
+test('classification failures visibly fall back to the deterministic decision', async () => {
   const failures = [
     ['timeout with empty output', async () => ({
       status: 1,
@@ -271,7 +281,9 @@ test('classification failures silently fall back to the deterministic decision',
     const envelope = JSON.parse(out.join('\n'));
     assert.equal(envelope.decision.mode, 'single', label);
     assert.equal(envelope.decision.source, 'deterministic-classifier', label);
-    assert.equal(envelope.decision.deterministic, undefined, label);
+    assert.equal(envelope.decision.classifier.attempted, true, label);
+    assert.equal(envelope.decision.classifier.outcome, 'fallback', label);
+    assert.match(envelope.decision.classifier.why, /classification|spawn failed|non-JSON|no delegate pool|timeout/, label);
   }
 });
 
@@ -309,6 +321,24 @@ test('explicit mode never dispatches classification, even with --classify=llm', 
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], mode === 'single' ? 'run' : 'workflow');
   }
+});
+
+test('pinned re-execute with an explicit preview mode never re-classifies', async () => {
+  const preview = classifyTask({ task: 'Explain one module.' });
+  const calls = [];
+  const status = await cmdDelegate({
+    prompt: 'Explain one module.', mode: preview.mode, cwd: '/tmp', json: true, rest: [],
+  }, {
+    execute: async (argv) => {
+      calls.push(argv);
+      return { status: 0, stdout: JSON.stringify({ ok: true, why: 'verified' }), stderr: '' };
+    },
+    writeOut: () => {},
+    writeErr: () => {},
+  });
+  assert.equal(status, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'run');
 });
 
 test('--classify=llm fails clearly when classification cannot succeed', async () => {

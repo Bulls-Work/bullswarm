@@ -419,3 +419,60 @@ Two observations recorded, not fixed: (a) `--dry-run` never consults the LLM, so
 (dry-run preview → pinned re-execute) exercises only the deterministic classifier; (b) the substance gate rejected a
 correct 16-char answer ("bullswarm 0.20.0") from the tiny smoke delegation — legitimately terse outputs still fail the
 40/80-char floors. Installed homes keep the old connector until a setup upgrade copies the new file.
+
+## Run p3jbha — always-LLM classification + cross-agent integration audit (2026-08-31)
+
+Goal (4 numbered requirements): make the LLM the deciding classifier for every auto-mode
+`delegate` call including `--dry-run` (deterministic stays as the pre-pass hint fed into the
+LLM prompt); make LLM fallback visible in the envelope instead of silent; update every doc
+that claimed dry-run was deterministic-only; write a read-only cross-agent integration audit
+for Claude/Codex/Grok. Launched through the **repo binary at 8908ef8** (installed 0.20.0
+predates the LLM classifier) via the canonical flow: `delegate --dry-run` preview → pinned
+`--mode=workflow`. Before launch: `claude-fable-5` added to `strategy exclude-model`
+(recorded no-Fable pref; last run's spillover violation), and three dangling
+`bullswarm.broken-20260830` symlinks removed from all three CLIs' skill dirs.
+
+**Preview accuracy specimen:** the deterministic classifier scored the goal correctly
+(workflow, score 7) but the phrase "read-only cross-agent integration audit" tripped
+`READ_ONLY_LABEL_RE`, so `hasMutationIntent` returned false and the suggested plan dropped
+its Execute phase entirely (Inspect→Verify→Deliver for a mostly-code-edit task). A live
+one-regex misfire — exactly the case for LLM-decided classification.
+
+**Outcome: completed_with_concerns (verified: true), auto-completed.** Wall 1,292 s
+(21m32s), attempt-busy 2,050 s, parallelism 1.59, max 3 concurrent, zero quota wait.
+14 dispatches: 2 planner turns (99 s total = 7.7%) + 12 worker attempts. Diff: 6 files
++72/−25 plus the new 411-line audit doc. Independently re-verified by the operator:
+`npm test` 389/389; live `--dry-run` auto → `source: llm-classifier` in 23.6 s with the
+deterministic sub-object preserved; `--dry-run --classify=deterministic` → 0.12 s, no
+dispatch.
+
+**Routing:** implement/verify work on opencode2 (relay-2/gpt-5.6-luna); docs on
+claude-code/claude-sonnet-5; the audit on claude-code/claude-opus-5 (822 s, the critical
+path). The only "fable" string in the run state is the exclusion entry itself — the
+mitigation held.
+
+**Reliability tally — 3 ok:false verdicts, 1 genuinely earned:**
+1. `verify-integration-audit` round 1: legitimate — the audit really ended with the
+   command appendix and lacked the required recommendations section; repair added §7
+   (five evidence-linked recommendations).
+2. `verify-documentation` round 1: cross-ownership overreach — it rejected R3's docs
+   because R4's `docs/integration-audit-2026-08-31.md` (owned by a *different, still
+   running* action, 822 s) did not exist yet. Under the runtime's lenient acceptance
+   standard, later-scheduled work and other actions' files are concerns, not rejections.
+3. `verify-integration-audit` re-verify after repair: **factually false** — it claimed
+   "no concrete recommendations appear at the end" and cited lines 384–411 as the final
+   section, while the repaired file (mtime 05:01:14Z, before the verifier started at
+   05:01:50Z) held §7 Recommendations at lines 345–383. The verifier anchored on its
+   previous verdict instead of re-reading. This exhausted maxRounds=1, failed the action,
+   blocked `verify-suite`, and forced planner turn 2 — which proposed a fresh
+   `verify-completion` that passed all four requirements with line-level evidence, then
+   auto-completed. Recovery cost ≈ 2 min of wall time.
+
+**Observations recorded, not yet fixed:** (a) re-verify verdict anchoring — the reverify
+prompt could require the verifier to re-read the changed files and address the repair's
+report before repeating a rejection; (b) requirement-coverage entanglement keeps making
+verifiers judge files other actions own (second run in a row); (c) the run's own audit
+deliverable found a real product defect: `integrate status` computes skill-link identity
+against the *invoking checkout's* path, so any other valid Bullswarm install reports
+`conflict`/exit 1 and `integrate install` refuses to repair it — stale skill symlinks are
+sticky until removed by hand (see docs/integration-audit-2026-08-31.md §2, §7).

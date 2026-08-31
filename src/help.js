@@ -234,13 +234,13 @@ const delegateText = rich({
     { flag: '--effort <high|medium|low>', desc: 'single-agent effort-tier override', default: 'derived from the selected lane' },
     { flag: '--timeout <seconds>', desc: 'single-agent hard timeout', default: 'none' },
     { flag: '--no-caller', desc: 'single-agent mode may not fall back to the calling agent', default: 'caller fallback allowed' },
-    { flag: '--dry-run', desc: 'print the decision, plan, and intended command without dispatching an agent', default: 'off' },
+    { flag: '--dry-run', desc: 'print the decision, plan, and intended command without dispatching the work itself; automatic mode still performs one bounded low-effort classification request', default: 'off' },
     { flag: '--json', desc: 'print one machine-readable decision and execution envelope', default: 'human plan followed by execution summary' },
   ],
   safety: [
-    '--dry-run classifies only and does not dispatch a coding agent; like other non-help commands it may self-initialize Bullswarm first',
+    '--dry-run previews the decision and never dispatches the work itself; in automatic mode it still performs one bounded low-effort classification request, the same as a live run — like other non-help commands it may self-initialize Bullswarm first',
     'single mode blocks until one delegate result passes or fails the content gate; workflow mode launches a durable background workflow and returns observation commands',
-    '--classify deterministic and --dry-run use the deterministic decision without dispatching an LLM classifier; --classify llm fails if a usable LLM decision cannot be obtained',
+    '--classify deterministic is the instant no-dispatch preview: it uses the deterministic decision without dispatching an LLM classifier, even under --dry-run; --classify llm fails if a usable LLM decision cannot be obtained',
     'an explicit --mode single or --mode workflow is the caller\'s choice and bypasses automatic LLM classification; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
   ],
   examples: [
