@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- The interactive workflow viewer is now one application shell instead of
+  several screens with their own rules. The workflows list, a run, a phase and
+  an agent are four depths of one hierarchy: every screen carries the same
+  persistent breadcrumb at the top (`Workflows › hdtdxs · timeline-segments ›
+   Verify › verify-renderer`), which drops its deepest segments first when the
+   terminal is too narrow to hold the whole path. All four depths share key
+  bindings generated from a single key-map definition: Up/Down (or k/j) move within the
+   current level,
+  Enter and Right (or l) go one level in, Esc and Left (or h) go one level out,
+  and Tab/Shift+Tab jump to the next or previous workflow, re-entering the
+  sibling at the same depth when the equivalent phase exists. The drill-down
+  layout is uniform too — a left sidebar listing the current level beside a
+  right pane previewing the highlighted item — at every depth and on narrow
+  terminals as well, including the run list, which was a full-width table with
+  no preview pane before.
+
 - Workflow timelines now render in phase-segmented sections with continued
   headers for interleaved phases, grouped Preflight scout/planner milestones,
   elapsed or running phase state, and consistent desktop, narrow, and scroll
