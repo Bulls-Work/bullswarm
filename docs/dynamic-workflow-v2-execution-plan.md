@@ -18,8 +18,8 @@ new deterministic kernel gates pass.
 
 ### Current execution checkpoint
 
-As of 2026-08-31, sequences 0-14 are implemented in the candidate worktree and
-the offline suite passes 493/493. This includes the V2-only goal/state/result
+As of 2026-08-31, sequences 0-15 are implemented or accepted in the candidate
+worktree and the offline suite passes 493/493. This includes the V2-only goal/state/result
 schemas, generic action and evidence contracts, requirement ledger, planner
 validator, dependency scheduler, changed-path ownership, isolated integration,
 mechanical-only retry/fallback, gap consolidation, kernel completion, durable
@@ -30,10 +30,13 @@ The retired autonomous V1 builder, resume-override helpers, and runtime
 migration rewrite have been removed. Old autonomous documents and run IDs fail
 before dispatch. The separately authored fixed-graph engine remains supported.
 
-Sequences 15-17 remain acceptance work: bounded real-Luna component probes,
-the five-run zero-rejection canary streak (including the difficult goal three
-times), independent review/PR/CI, release, installed-binary verification, and
-the final installed canary.
+The bounded real-Luna component probes passed without model rejection or
+schema correction; their timings, token counts, routes, and durable outputs are
+recorded in `docs/experiments/2026-08-31-v2-component-probes.md`.
+
+Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
+streak (including the difficult goal three times), independent review/PR/CI,
+release, installed-binary verification, and the final installed canary.
 
 ## 1. Locked product shape
 
