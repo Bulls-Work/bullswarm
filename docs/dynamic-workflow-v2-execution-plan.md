@@ -116,6 +116,16 @@ pool` without an agent attempt. Strict routing now defines the candidate scope
 first; evidence prefers an independent credential only inside that scope and
 reuses the pinned ancestor when independence would otherwise deadlock.
 
+The replacement hard-case canary then found that a prompt-only instruction to
+interrupt a focused test after 60 seconds cannot help while the coding agent is
+blocked inside its synchronous shell tool. A Luna worker added an interactive
+dashboard regression that kept `node --test` alive far beyond the repository's
+normal full-suite time. V2 work and planning prompts now require Node focused
+tests to run as `node --test-timeout=60000 --test <focused files>` and forbid
+`--test-force-exit`; a broken async test therefore returns a deterministic
+failure to the same worker for diagnosis without imposing a wall-clock limit on
+the overall agent conversation.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
