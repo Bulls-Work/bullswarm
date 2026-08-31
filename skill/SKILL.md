@@ -81,10 +81,13 @@ high-stakes acceptance boundary. In automatic execution, the CLI starts with
 deterministic signals and lets an LLM refine its decision; if that refinement
 is unavailable or unusable, it keeps the deterministic decision. Pass
 `--classify deterministic` to bypass LLM refinement, or `--classify llm` to
-require a usable LLM decision (and fail if none is available). `--dry-run`
-uses only the deterministic decision. The classifier is transparent and
-overridable: an explicit `--mode single|workflow` is the caller's choice and
-bypasses automatic LLM classification.
+require a usable LLM decision (and fail if none is available). In automatic
+mode, `--dry-run` still performs that same bounded low-effort classification
+request before printing the plan — it previews the decision without ever
+dispatching the work itself. `--classify deterministic` remains the instant,
+no-dispatch preview. The classifier is transparent and overridable: an
+explicit `--mode single|workflow` is the caller's choice and bypasses
+automatic LLM classification.
 
 ## Workflow plan boundary
 

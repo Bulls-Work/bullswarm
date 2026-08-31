@@ -232,7 +232,14 @@ async function refineDecision({ task, deterministic, opts, execute }) {
     llm = await requestLlmClassification(task, deterministic, execute);
   } catch (error) {
     if (opts.classify === 'llm') throw new Error(`--classify=llm failed: ${error.message}`);
-    return deterministic; // silent fallback to the deterministic decision
+    return {
+      ...deterministic,
+      classifier: {
+        attempted: true,
+        outcome: 'fallback',
+        why: error.message,
+      },
+    };
   }
   const refined = classifyTask({
     task, mode: llm.mode, lane: opts.lane ?? null, plan: opts.plan ?? null,
@@ -267,9 +274,9 @@ export async function cmdDelegate(opts, {
       lane: opts.lane ?? null,
       plan: opts.plan ?? null,
     });
-    // LLM refinement runs only in auto mode: explicit --mode and --dry-run
-    // never dispatch classification, and --classify=deterministic opts out.
-    if (requestedMode === 'auto' && opts['dry-run'] !== true && opts.classify !== 'deterministic') {
+    // LLM refinement runs in every auto-mode invocation, including dry-run.
+    // Explicit modes and --classify=deterministic remain dispatch-free.
+    if (requestedMode === 'auto' && opts.classify !== 'deterministic') {
       decision = await refineDecision({ task, deterministic: decision, opts, execute });
     }
     const invocation = buildDelegateInvocation(decision, {

@@ -73,7 +73,7 @@ bullswarm pools    # meter state, pace position, quarantine status
 bullswarm strategy refresh --apply --yes  # approve capability-aware tier autopilot
 bullswarm delegate --cwd ~/some-repo --prompt "Explain the parser"            # one agent
 bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and independently verify"  # workflow
-bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # decision + plan only
+bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # bounded classification + decision/plan; no work dispatch
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
 bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser" --json
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo
@@ -101,10 +101,12 @@ signals, then uses an LLM to refine the choice between a single delegate and a
 workflow during execution. If that optional refinement is unavailable or
 unusable, automatic mode uses the deterministic decision.
 
-Use `--classify deterministic` to bypass the LLM refinement. Use
-`--classify llm` when an LLM decision is required: the command fails if it
-cannot obtain a usable one. `--dry-run` reports the deterministic decision
-without dispatching a classifier. An explicit `--mode single` or
+Use `--classify deterministic` to bypass the LLM refinement — this is the
+instant, no-dispatch preview. Use `--classify llm` when an LLM decision is
+required: the command fails if it cannot obtain a usable one. In automatic
+mode, `--dry-run` still performs that same bounded low-effort classification
+request (one analyze-lane, low-effort dispatch) and prints the resulting
+decision — it never dispatches the work itself. An explicit `--mode single` or
 `--mode workflow` is the caller's decision and bypasses automatic LLM
 classification.
 
