@@ -10,6 +10,63 @@ import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 
 const ESC = '\x1b[';
+const SIDEBAR_WIDTH = 34;
+
+// Keep navigation wording and bindings in one place. Rendering and input use
+// the same vocabulary so a hint never describes a different action.
+export const DASHBOARD_KEYS = Object.freeze({
+  up: Object.freeze({ keys: '↑/k', label: 'move up', bindings: Object.freeze(['\x1b[A', 'k']) }),
+  down: Object.freeze({ keys: '↓/j', label: 'move down', bindings: Object.freeze(['\x1b[B', 'j']) }),
+  in: Object.freeze({ keys: 'Enter/→/l', label: 'open', bindings: Object.freeze(['\r', '\n', '\x1b[C', 'l']) }),
+  out: Object.freeze({ keys: 'Esc/←/h/b', label: 'move out', bindings: Object.freeze(['\x1b', '\x1b[D', 'h', 'b']) }),
+  nextWorkflow: Object.freeze({ keys: 'Tab', label: 'next workflow', bindings: Object.freeze(['\t']) }),
+  previousWorkflow: Object.freeze({ keys: 'Shift+Tab', label: 'previous workflow', bindings: Object.freeze(['\x1b[Z']) }),
+  detach: Object.freeze({ keys: 'q', label: 'detach', bindings: Object.freeze(['q', '\x03']) }),
+});
+
+function keyHint(name) {
+  const action = DASHBOARD_KEYS[name];
+  return `${action.keys.split('/')[0]} ${action.label}`;
+}
+
+function keyPressed(name, key) {
+  return DASHBOARD_KEYS[name].bindings?.includes(key) ?? false;
+}
+
+function navigationFooter({ list = false, depth = 0, narrow = false, filterEditing = false } = {}) {
+  if (filterEditing) return 'Filter: {query}█ · Enter apply · Esc clear';
+  if (list) {
+    return narrow
+      ? `${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh`
+      : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh · c stop`;
+  }
+  const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
+  const phaseToggle = depth <= 2 ? ' · t phases · t timeline' : '';
+  return `${keyHint('up')} · ${keyHint('down')}${phaseToggle} · ${keyHint('in')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
+}
+
+function breadcrumbSegments(row, { depth = 0, phase = null, agent = null } = {}) {
+  const state = row?.state ?? {};
+  const run = row ? `${row.shortId ?? row.runId ?? '------'} · ${workflowRunLabel(row)}` : null;
+  const segments = ['Workflows'];
+  if (run) segments.push(run);
+  if (depth >= 2 && phase) segments.push(phase.label ?? phase.name ?? String(phase));
+  if (depth >= 3 && agent) segments.push(agent.action?.id ?? agent.id ?? String(agent));
+  return segments;
+}
+
+function breadcrumbLine(segments, width) {
+  let parts = [...segments];
+  while (parts.length > 1 && ` ${parts.join(' › ')}`.length > width) parts.pop();
+  if (` ${parts.join(' › ')}`.length <= width) return ` ${parts.join(' › ')}`;
+  return truncate(` ${parts.join(' › ')}`, width);
+}
+
+function navigationDepth({ detail = false, focus = 0, orchestratorDetail = false, workflowVerbose = false } = {}) {
+  if (!detail) return 0;
+  if (orchestratorDetail || workflowVerbose) return 2;
+  return Math.min(4, 2 + Math.max(0, Number(focus) || 0));
+}
 
 function compactUsage(usage) {
   if (!usage) return 'usage pending';
@@ -103,16 +160,15 @@ export function renderDashboard({
   const selectedRow = previewRow ?? rows[selected] ?? null;
   const summary = `${active} active · ${waiting} waiting · ${historical} recent`;
   const header = [
+    breadcrumbLine(breadcrumbSegments(null), width),
     truncate(` bullswarm workflows · ${summary}`, width),
     selectedRow
       ? truncate(` ${selectedRow.shortId ?? '------'} · ${workflowRunLabel(selectedRow)}`, width)
       : truncate(` ${filter === 'active' ? 'Active workflows' : 'All workflows'}`, width),
   ];
   const footer = filterEditing
-    ? truncate(` Filter: ${query}█ · Enter apply · Esc clear`, width)
-    : narrow
-      ? truncate(' ↑/↓ select · Enter open · / filter · a active/all · q exit', width)
-      : truncate(' ↑/↓ select · Enter open · / filter · a active/all · r refresh · c stop · q exit', width);
+    ? truncate(navigationFooter({ filterEditing }).replace('{query}', query), width)
+    : truncate(navigationFooter({ list: true, narrow }), width);
   const messageLine = message
     ? truncate(` ${message}`, width)
     : truncate(` Runs · ${filter}${query ? ` · filter “${query}”` : ''} · workflow continues after dashboard exit`, width);
@@ -120,29 +176,34 @@ export function renderDashboard({
   const listLines = dashboardRunLines(rows, selected, narrow, width);
 
   let body;
-  if (narrow) {
-    body = renderPanel(`Runs · ${filter}`, listWindow(listLines, selected, bodyHeight - 2, true), width, bodyHeight);
+  const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
+  const rightWidth = Math.max(1, width - leftWidth);
+  const left = renderPanel(
+    `Runs · ${filter}`,
+    listWindow(listLines, selected, bodyHeight - 2, false),
+    leftWidth,
+    bodyHeight,
+  );
+  let right;
+   if (selectedRow?.state && rightWidth >= 3) {
+     if (narrow) {
+       const state = selectedRow.state;
+       right = renderPanel('Selected workflow', [
+         `${humanWorkflowStatus(state.status, selectedRow.ongoing)} · ${selectedRow.shortId ?? '------'}`,
+         `phase · ${humanPhaseName(selectedRow.phase)}`,
+         `${selectedRow.stepsOk ?? 0}/${selectedRow.stepsTotal ?? 0} actions · ${durationText(state.startedAt, state.finishedAt)}`,
+       ], rightWidth, bodyHeight);
+     } else {
+       const model = workflowPanelModel(selectedRow);
+       right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
+     }
   } else {
-    const leftWidth = Math.max(32, Math.min(46, Math.floor(width * 0.36)));
-    const rightWidth = width - leftWidth;
-    const left = renderPanel(
-      `Runs · ${filter}`,
-      listWindow(listLines, selected, bodyHeight - 2, false),
-      leftWidth,
-      bodyHeight,
-    );
-    let right;
-    if (selectedRow?.state) {
-      const model = workflowPanelModel(selectedRow);
-      right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
-    } else {
-      const hint = allRows.length && filter === 'active'
-        ? ['No active workflows.', '', 'Press a to browse recent runs.']
-        : ['No workflow runs yet.', '', 'Start one with:', 'bullswarm workflow goal "…"'];
-      right = renderPanel('Selected workflow', hint, rightWidth, bodyHeight);
-    }
-    body = joinPanels(left, right);
+    const hint = allRows.length && filter === 'active'
+      ? ['No active workflows.', '', 'Press a to browse recent runs.']
+      : ['No workflow runs yet.', '', 'Start one with:', 'bullswarm workflow goal "…"'];
+    right = renderPanel('Selected workflow', hint, rightWidth, bodyHeight);
   }
+  body = joinPanels(left, right);
   return [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, footer].join('\n');
 }
 
@@ -329,7 +390,7 @@ export function renderDetails(row, { interactive = true } = {}) {
   lines.push('', ' recent events:');
   for (const event of (row?.events ?? []).slice(-8)) lines.push(`   #${event.sequence} ${event.type}`);
   if (!(row?.events ?? []).length) lines.push('   none');
-  if (interactive) lines.push('', ' Press b to go back · c to stop · r to refresh · q to quit');
+  if (interactive) lines.push('', ` ${keyHint('out')} · c stop · r refresh · ${keyHint('detach')}`);
   return lines.join('\n');
 }
 
@@ -598,21 +659,19 @@ export function renderWorkflowTui(row, {
   const agentProgress = workerAttempts.length ? `${finishedAgents}/${workerAttempts.length} workers · ` : '';
   const terminalLabel = state.finishedAt ? ` · ${status === 'completed' ? 'done' : status}` : '';
   const runName = state.workflow ?? row?.shortId ?? state.shortId ?? row?.runId ?? 'workflow';
+  const breadcrumbDepth = navigationDepth({ detail: true, focus, orchestratorDetail, workflowVerbose });
   const header = [
+    breadcrumbLine(breadcrumbSegments(row, {
+      depth: breadcrumbDepth,
+      phase: model.selectedPhase,
+      agent: model.selectedAgent,
+    }), width),
     truncate(` ${truncate(runName, Math.max(1, width - agentProgress.length - elapsed.length - terminalLabel.length - 5))} · ${agentProgress}${elapsed}${terminalLabel}`, width),
     ` ${truncate(state.intent?.goal ?? state.workflow ?? 'workflow', width - 2)}`,
   ];
   const footer = confirmCancel
     ? ' Stop this workflow? y confirm · n/Esc keep running'
-    : orchestratorDetail
-      ? ` ↑/↓ scroll · v ${orchestratorVerbose ? 'overview' : 'technical details'} · Esc back · c stop · q detach`
-      : workflowVerbose
-        ? ' ↑/↓ scroll · v overview · Esc back · c stop · q detach'
-        : narrow
-          ? mobileTimeline && focus === 0
-            ? ' ↑/↓ timeline · t phases · Enter agents · o planner · v technical · q detach'
-            : ' ↑/↓ select · t timeline · Enter inspect · Esc back · o planner · v technical · q detach'
-          : ' ↑/↓ select · PgUp/PgDn timeline · Enter inspect · ←/→ switch · v technical · q detach';
+    : navigationFooter({ depth: breadcrumbDepth, narrow });
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
     : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow && !mobileTimeline ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
@@ -655,10 +714,12 @@ export function renderWorkflowTui(row, {
     ));
   });
 
-  // Two information-rich panes become counterproductive on typical 80-column
-  // SSH/mobile terminals. Keep the drill-down full-width below 100 columns.
-  const leftWidth = narrow ? width : Math.max(24, Math.min(34, Math.floor(width * 0.27)));
-  const rightWidth = narrow ? width : width - leftWidth;
+  // Keep the hierarchy visible in the same fixed-width two-pane shell at
+  // every terminal size; narrow terminals get a compact right preview.
+  // Keep the 34-column hierarchy sidebar on normal terminals. At very narrow
+  // widths, reserve enough room for the timeline's complete segment grammar.
+  const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
+  const rightWidth = Math.max(1, width - leftWidth);
   const orchestrationLines = orchestratorDetailLines(
     model,
     Math.max(20, (orchestratorDetail ? width : rightWidth) - 4),
@@ -704,50 +765,36 @@ export function renderWorkflowTui(row, {
 
   let body;
   if (orchestratorDetail) {
-    body = renderPanel(`Workflow Planner · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, width, bodyHeight);
+    body = joinPanels(
+      renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, bodyHeight),
+      renderPanel(`Workflow Planner · ${orchestratorVerbose ? 'technical details' : 'overview'}`, visibleDetail, rightWidth, bodyHeight),
+    );
   } else if (workflowVerbose) {
     const visibleTechnical = technical.slice(scroll, scroll + contentHeight);
-    if (narrow) body = renderPanel('Workflow technical details', visibleTechnical, width, bodyHeight);
-    else {
-      const left = model.orchestrator.autonomous
-        ? [
-          ...renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, 5),
-          ...renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight - 5),
-        ]
-        : renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight);
-      body = joinPanels(left, renderPanel('Workflow technical details', visibleTechnical, rightWidth, bodyHeight));
-    }
-  } else if (narrow) {
-    const mobile = focus === 0 && mobileTimeline
-      ? null
-      : focus === 0
-      ? {
-        title: model.orchestrator.autonomous
-          ? `Workflow · ${model.phases.length} phase${model.phases.length === 1 ? '' : 's'}`
-          : phaseTitle,
-        lines: narrowWorkflowLines,
-      }
-      : focus === 1
-        ? { title: agentTitle, lines: visibleAgents }
-        : { title: detailTitle, lines: visibleDetail };
-    body = mobile
-      ? renderPanel(mobile.title, mobile.lines, width, bodyHeight)
-      : renderWorkflowOverviewPanel(model, width, bodyHeight, spinnerFrame, detailScroll);
-  } else if (focus < 2) {
     const left = model.orchestrator.autonomous
       ? [
         ...renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, 5),
         ...renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight - 5),
       ]
       : renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight);
+    body = joinPanels(left, renderPanel('Workflow technical details', visibleTechnical, rightWidth, bodyHeight));
+  } else if (focus < 2) {
+    const left = focus === 1
+      ? renderPanel(agentTitle, visibleAgents, leftWidth, bodyHeight)
+      : model.orchestrator.autonomous
+        ? [
+          ...renderPanel('Workflow Planner', orchestrationNavLines, leftWidth, 5),
+          ...renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight - 5),
+        ]
+        : renderPanel(phaseTitle, visiblePhases, leftWidth, bodyHeight);
     body = joinPanels(
-      left,
-      controlSelected
+         left,
+        controlSelected
         ? renderPanel(`Workflow Planner · ${model.orchestrator.status}`, orchestrationLines.slice(0, contentHeight), rightWidth, bodyHeight)
         : focus === 0
           ? renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, detailScroll)
-          : renderPanel(agentTitle, visibleAgents, rightWidth, bodyHeight),
-    );
+          : renderPanel(detailTitle, compactAgentPreviewLines(model, Math.max(20, rightWidth - 4), spinnerFrame), rightWidth, bodyHeight),
+       );
   } else {
     body = joinPanels(
       renderPanel(agentTitle, visibleAgents, leftWidth, bodyHeight),
@@ -792,19 +839,20 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
     start = Math.max(0, end - Math.max(0, timelineRows - 1));
     while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
   }
-  let visibleTimeline = timeline.lines.slice(start, end);
-  if (start > 0) {
-    visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
-      const continuation = timeline.lines[start]?.segment;
-    if (continuation) {
-      const priorHeader = timeline.lines.find((line) => line?.header && line.segment === continuation);
-      visibleTimeline.splice(1, 0, continuationHeader(
-          continuation,
-          priorHeader?.elapsed ?? 'running',
-          inner,
-        timeline.lines[start]?.at,
-      ));
-    }
+   let visibleTimeline = timeline.lines.slice(start, end);
+   if (start > 0) {
+     visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
+     const continuation = visibleTimeline.find((line) => line?.segment)?.segment
+       ?? currentTimelineSegment(model);
+     if (continuation) {
+       const priorHeader = timeline.lines.find((line) => line?.header && line.segment === continuation);
+       visibleTimeline.splice(1, 0, continuationHeader(
+         continuation,
+         priorHeader?.elapsed ?? 'running',
+         inner,
+         visibleTimeline.find((line) => line?.segment === continuation)?.at,
+       ));
+     }
     // Scrolled views already carry the upward marker and continuation header;
     // omit inter-segment spacer rows so the viewport retains the latest event.
     visibleTimeline = visibleTimeline.filter((line) => timelineText(line) !== '');
@@ -814,7 +862,14 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
     if (visibleTimeline.length >= timelineRows) visibleTimeline[visibleTimeline.length - 1] = marker;
     else visibleTimeline.push(marker);
   }
-  visibleTimeline = visibleTimeline.slice(0, timelineRows);
+   if (start > 0 && visibleTimeline.length > timelineRows) {
+     // The continuation marker and header are structural context, not
+     // expendable event rows. Keep both and trim the oldest visible events.
+     visibleTimeline = [visibleTimeline[0], visibleTimeline[1],
+       ...visibleTimeline.slice(-(timelineRows - 2))];
+   } else {
+     visibleTimeline = visibleTimeline.slice(0, timelineRows);
+   }
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);
   const title = ` Workflow timeline · ${timeline.milestoneCount} milestone${timeline.milestoneCount === 1 ? '' : 's'} `;
@@ -975,16 +1030,32 @@ function workflowTimelineLines(model, width) {
 }
 
 function segmentHeader(name, elapsed, width) {
+  if (width < 40) {
+    const suffix = ` ── ${elapsed} ──`;
+    const available = width - suffix.length - 3;
+    const text = available >= String(name).length
+      ? `── ${name}${suffix}`
+      : `── ${truncate(name, Math.max(1, available))}${suffix}`;
+    return { text: truncate(text, width), segment: name, elapsed, header: true };
+  }
   const text = `── ${name} `;
   const suffix = ` ${elapsed} ──`;
   const room = Math.max(0, width - text.length - suffix.length);
+  if (room < 2) return { text: truncate(`── ${name} ──`, width), segment: name, elapsed, header: true };
   return { text: truncate(`${text}${'─'.repeat(room)}${suffix}`, width), segment: name, elapsed, header: true };
 }
 
 function continuationHeader(segment, elapsed, width, at = null) {
+  if (width < 40) {
+    // Keep the segment name readable in the compact pane; the continuation
+    // marker already distinguishes this header from the initial one.
+    const text = `── ${segment} · continued ──`;
+    return { text: truncate(text, width), segment, elapsed, header: true, at };
+  }
   const text = `── ${segment} · continued `;
   const suffix = ` ${elapsed} ──`;
   const room = Math.max(0, width - text.length - suffix.length);
+  if (room < 2) return { text: truncate(`── ${segment} · continued ──`, width), segment, elapsed, header: true, at };
   return { text: truncate(`${text}${'─'.repeat(room)}${suffix}`, width), segment, elapsed, header: true, at };
 }
 
@@ -1158,6 +1229,7 @@ function workflowTechnicalLines(model, width) {
 }
 
 function timelineRow(at, label, right, width) {
+  if (width < 40) return label;
   return alignRight(`${clockText(at)}  ${label}`, right, width);
 }
 
@@ -1167,6 +1239,9 @@ function timelineDetail(text, width) {
 
 function alignRight(left, right, width) {
   const suffix = right ? String(right) : '';
+  // Preserve the actionable event label in the compact preview; dropping a
+  // duration is preferable to turning the action name into an ellipsis.
+  if (width < 30) return truncate(left, width);
   if (!suffix) return truncate(left, width);
   const room = Math.max(1, width - suffix.length - 1);
   const lhs = truncate(left, room);
@@ -1464,6 +1539,31 @@ function agentDetailLines(model, width, spinnerFrame) {
   return wrapLines(lines, width);
 }
 
+function compactAgentPreviewLines(model, width, spinnerFrame) {
+  const agent = model.selectedAgent;
+  if (!agent) return [
+    `${model.selectedPhase.label} · ${model.selectedPhase.completed}/${model.selectedPhase.total} complete`,
+    ...(model.selectedPhase.blockedActions ?? []).map((blocked) =>
+      `⊘ ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.join(', ')}`),
+    ...agentDetailLines(model, width, spinnerFrame),
+  ];
+  const liveActions = agent.active?.lastActions ?? agent.attempt?.lastActions ?? [];
+  const lines = [
+    `${agent.action.id} · ${agent.pool} · ${agent.model} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1} · ${tokenText(agent.attempt?.usage) || 'pending'}`,
+    `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}`,
+    `${agent.pool} · attempt ${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}`,
+    `Tokens · ${tokenText(agent.attempt?.usage) || 'pending'}`,
+    compactUsage(agent.attempt?.usage),
+    '',
+    'Recent steps',
+  ];
+  if (!liveActions.length) lines.push('· waiting for semantic action events');
+  for (const step of liveActions.slice(-4)) {
+    lines.push(`${statusIcon(step.status, spinnerFrame)} ${friendlyActionKind(step.kind)}${step.summary ? ` · ${friendlyActionSummary(step)}` : ''}`);
+  }
+  return wrapLines(lines, width);
+}
+
 function taskPreview(path, limit = 6) {
   if (!path || !existsSync(path)) return [];
   try {
@@ -1724,6 +1824,50 @@ export async function runDashboard(bullswarmDir, {
     selectedRunId = rows[selected]?.runId ?? null;
     paint();
   };
+  const switchWorkflow = (delta) => {
+    const catalog = allRows;
+    if (!catalog.length) return paint();
+    const previousFocus = ui.focus;
+    const previousPhaseIndex = ui.phaseIndex;
+    const currentIndex = Math.max(0, catalog.findIndex((row) => row.runId === selectedRunId));
+    const nextIndex = (currentIndex + delta + catalog.length) % catalog.length;
+    const next = catalog[nextIndex];
+    if (!next) return paint();
+    selectedRunId = next.runId;
+    let visibleIndex = rows.findIndex((row) => row.runId === next.runId);
+    if (visibleIndex < 0 && dashboardFilter === 'active') {
+      dashboardFilter = 'all';
+      rows = filterDashboardRows(allRows, dashboardFilter, query);
+      visibleIndex = rows.findIndex((row) => row.runId === next.runId);
+    }
+    if (visibleIndex >= 0) selected = visibleIndex;
+    if (detail) {
+      const nextRow = detailRow(bullswarmDir, next.runId);
+      const nextModel = workflowPanelModel(nextRow, {
+        phaseIndex: previousPhaseIndex,
+        agentIndex: ui.agentIndex,
+      });
+      ui.followActivePhase = false;
+      ui.followActiveAgent = false;
+      const phaseExists = previousPhaseIndex == null || previousPhaseIndex < nextModel.phases.length;
+      if (previousFocus > 0 && !phaseExists) {
+        ui.focus = 0;
+        ui.phaseIndex = nextModel.phaseIndex;
+        ui.agentIndex = nextModel.agentIndex;
+        ui.detailScroll = 0;
+        message = null;
+        return paint();
+      }
+      ui.phaseIndex = previousFocus === 0 ? nextModel.phaseIndex
+        : clamp(previousPhaseIndex ?? nextModel.phaseIndex, 0, nextModel.phases.length - 1);
+      const agents = workflowPanelModel(nextRow, { phaseIndex: ui.phaseIndex }).agents;
+      ui.agentIndex = ui.focus < 2 ? nextModel.agentIndex
+        : clamp(ui.agentIndex ?? nextModel.agentIndex, 0, Math.max(0, agents.length - 1));
+      ui.detailScroll = 0;
+    }
+    message = null;
+    paint();
+  };
   input.setRawMode?.(true);
   input.resume();
   output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H`);
@@ -1831,7 +1975,7 @@ export async function runDashboard(bullswarmDir, {
         }
         return;
       }
-      if (key === 'q' || key === '\u0003') return finish();
+      if (keyPressed('detach', key)) return finish();
       if (key === 'r') { message = null; return refresh(); }
       if (!detail && key === '/') {
         filterEditing = true;
@@ -1843,7 +1987,8 @@ export async function runDashboard(bullswarmDir, {
         message = dashboardFilter === 'active' ? 'Showing active workflows.' : 'Showing active and recent workflows.';
         return refresh();
       }
-      if (key === '\u001b' || key === 'b') {
+      if (keyPressed('out', key)) {
+        if (!detail) return finish();
         if (ui.orchestratorDetail) {
           ui.orchestratorDetail = false;
           ui.orchestratorVerbose = false;
@@ -1854,20 +1999,51 @@ export async function runDashboard(bullswarmDir, {
           ui.workflowVerbose = false;
           ui.detailScroll = 0;
         } else if (detail && ui.focus > 0) ui.focus -= 1;
-        else if (detail && !token) detail = false;
-        else message = 'At phase level · press q to detach while the workflow keeps running.';
+        else if (detail) detail = false;
         return paint();
       }
-      if (key === '\t' || key === '\u001b[C' || key === 'l') {
-        if (detail) { ui.focus = (ui.focus + 1) % 3; ui.detailScroll = 0; }
+      if (keyPressed('nextWorkflow', key)) return switchWorkflow(1);
+      if (keyPressed('previousWorkflow', key)) return switchWorkflow(-1);
+      if (keyPressed('in', key)) {
+        if (!detail) {
+          selectedRunId = rows[selected]?.runId ?? selectedRunId;
+          if (selectedRunId) {
+            detail = true;
+            ui.followActivePhase = true;
+            ui.followActiveAgent = true;
+          }
+        } else if (ui.orchestratorDetail) {
+          message = 'Planner detail is the deepest level.';
+        } else if (ui.workflowVerbose) {
+          message = 'Technical details are the deepest level.';
+        } else if (ui.focus === 0) {
+          ui.focus = 1;
+          ui.followActiveAgent = true;
+        } else if (ui.focus === 1) {
+          const row = detailRow(bullswarmDir, selectedRunId);
+          if (workflowPanelModel(row, { phaseIndex: ui.phaseIndex }).agents.length) ui.focus = 2;
+          else message = 'No agent has started in this phase yet.';
+        }
+        ui.detailScroll = 0;
         return paint();
       }
       if (key === '\u001b[D' || key === 'h') {
-        if (detail) { ui.focus = (ui.focus + 2) % 3; ui.detailScroll = 0; }
+        if (ui.orchestratorDetail) {
+          ui.orchestratorDetail = false;
+          ui.orchestratorVerbose = false;
+          ui.focus = 0;
+        } else if (ui.workflowVerbose) {
+          ui.workflowVerbose = false;
+        } else if (detail && ui.focus > 0) {
+          ui.focus -= 1;
+        } else if (detail) {
+          detail = false;
+        }
+        ui.detailScroll = 0;
         return paint();
       }
-      if (key === '\u001b[A' || key === 'k') return moveVertical(-1);
-      if (key === '\u001b[B' || key === 'j') return moveVertical(1);
+      if (keyPressed('up', key)) return moveVertical(-1);
+      if (keyPressed('down', key)) return moveVertical(1);
       const timelineScroll = detail && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
       if (key === '\u001b[5~') { ui.detailScroll = timelineScroll ? ui.detailScroll + 8 : Math.max(0, ui.detailScroll - 8); return paint(); }
       if (key === '\u001b[6~') { ui.detailScroll = timelineScroll ? Math.max(0, ui.detailScroll - 8) : ui.detailScroll + 8; return paint(); }

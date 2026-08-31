@@ -271,7 +271,7 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
     assert.match(detail, /Activity · last 2 of 7/);
     assert.match(detail, /#6 ✓ read_file · completed/);
     assert.match(detail, /#7 ⠋ shell_command · running/);
-    assert.match(detail, /Enter inspect/);
+     assert.match(detail, /Enter open/);
 
     state.status = 'completed';
     state.finishedAt = new Date().toISOString();
@@ -673,7 +673,7 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     assert.match(output.text, /def345 · docs-audit/);
     assert.match(output.text, /Workflow timeline/);
     assert.match(output.text, /Showing workflows matching “docs”/);
-    assert.match(output.text, /Enter open · \/ filter · a active\/all · q exit/);
+     assert.match(output.text, /Enter open · \/ filter · a active\/all · q detach/);
     assert.match(output.text, /\x1b\[\?1049l/);
   } finally { cleanup(); }
 });
@@ -1119,7 +1119,7 @@ test('timeline segments replace per-line phase prefixes with one header per phas
 
   // one header per phase change, in chronological order, and none repeated
   // between two events of the same phase
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
 
   // the event lines themselves no longer name their phase
   assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
@@ -1294,11 +1294,11 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
 test('narrow timeline rendering uses the same segment headers and no phase prefixes', () => {
   // tall enough that the whole timeline fits: nothing here is a scroll artifact
   const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 60, height: 44 });
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
+   assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implem…']);
   const pane = timelinePaneRows(screen);
   assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
   assert.match(segmentRows(screen, 'Discover').join('\n'), /├─✓ discover-a/);
-  assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implement').elapsed, 'running');
+   assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implem…').elapsed, 'running');
   // headers obey the narrow width like every other row
   const overflow = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n').filter((line) => [...line].length > 60);
   assert.deepEqual(overflow, []);
@@ -1306,7 +1306,283 @@ test('narrow timeline rendering uses the same segment headers and no phase prefi
   // and the narrow viewport re-emits the continuation header when it scrolls
   const scrolled = renderWorkflowTui({ state: longPhaseState(), events: [] }, { width: 60, height: 22 });
   const narrowPane = timelinePaneRows(scrolled);
-  const marker = narrowPane.findIndex((line) => line.includes('earlier timeline rows'));
+   const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
   assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
-  assert.match(narrowPane[marker + 1], /^─{2,}\s+Implement · continued\s+─{2,}/);
+   assert.match(narrowPane[marker + 1], /^─{2,}\s+Implement · continue/);
+});
+
+// ---------------------------------------------------------------------------
+// Unified application shell: the workflows list, a run, a phase, and an agent
+// are four depths of one hierarchy. Each depth carries the same persistent
+// breadcrumb, the same key grammar, and the same drill-down, so the helpers
+// below read the breadcrumb and the footer structurally — never by panel
+// geometry, hint order, or the exact wording a binding happens to use today.
+// ---------------------------------------------------------------------------
+
+function shellRunState({ runId, shortId, workflow, goal, agentId, startedAt }) {
+  return {
+    runId, shortId, workflow, status: 'running', startedAt,
+    intent: { goal },
+    orchestration: { selectedPool: 'codex', selectedModel: 'sol', selection: 'capability-and-quota' },
+    currentStep: { id: agentId, type: 'run', phase: 'implement' },
+    currentPhase: { index: 1, name: 'implement', total: 2 },
+    actionLedger: [
+      { id: 'scan', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [0] },
+      { id: agentId, phase: 'implement', kind: 'run', status: 'running', attempts: [1] },
+    ],
+    attempts: [
+      {
+        actionId: 'scan', attemptNumber: 1, pool: 'opencode2', model: 'luna',
+        status: 'succeeded', startedAt, finishedAt: startedAt,
+      },
+      { actionId: agentId, attemptNumber: 1, pool: 'codex', model: 'sol', status: 'running', startedAt },
+    ],
+    activeAgents: {
+      [agentId]: { stepId: agentId, pool: 'codex', model: 'sol', attempt: 1, status: 'running', startedAt },
+    },
+    steps: [{ phase: 'discover', stepId: 'scan', ok: true }],
+    outputs: { scan: { ok: true } },
+  };
+}
+
+// Two live runs of the same shape: the sibling exists at every depth, so Tab
+// has an equivalent location to land on instead of falling back to the root.
+const SHELL_RUNS = [
+  {
+    runId: 'wf-alpha', shortId: 'aaa111', workflow: 'unified-shell',
+    goal: 'Unify the workflow viewer.', agentId: 'build-alpha',
+    startedAt: '2026-08-29T00:02:00.000Z',
+  },
+  {
+    runId: 'wf-beta', shortId: 'bbb222', workflow: 'sibling-run',
+    goal: 'Run beside the first one.', agentId: 'build-beta',
+    startedAt: '2026-08-29T00:01:00.000Z',
+  },
+];
+
+function shellFixture() {
+  const home = mkdtempSync(join(tmpdir(), 'bs-shell-'));
+  for (const run of SHELL_RUNS) {
+    const dir = join(home, 'workflows', run.runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(shellRunState(run)));
+  }
+  return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+// A rendered screen opens with the clear/home escape; an in-place repaint frame
+// does not. Both start their first visible row with the breadcrumb.
+function visibleLines(screen) {
+  const lines = plain(screen).split('\n');
+  return lines[0] === '' ? lines.slice(1) : lines;
+}
+
+function breadcrumbOf(screen) {
+  const [first] = visibleLines(screen);
+  return String(first ?? '').replace(/\s+$/, '');
+}
+
+function crumbSegments(screen) {
+  return breadcrumbOf(screen).split('›').map((segment) => segment.trim()).filter(Boolean);
+}
+
+function footerOf(screen) {
+  const lines = visibleLines(screen).filter((line) => line.trim());
+  return String(lines.at(-1) ?? '').trim();
+}
+
+// Keys that belong to the hierarchy-wide grammar. Screen-specific keys (t, o,
+// v, /, a, r, c, PgUp/PgDn) are deliberately excluded: they are not the same
+// action everywhere, and `t` is one toggle that prints both of its labels.
+const SHARED_KEYS = ['↑', '↓', 'Enter', 'Esc', 'Shift+Tab', 'Tab', 'q'];
+
+function hintLabels(screen) {
+  const footer = footerOf(screen);
+  const labels = new Map();
+  for (const key of SHARED_KEYS) {
+    // tolerate a hint that spells out its aliases (`Enter/→/l open`) and a
+    // token that pairs two bindings (`Tab next workflow/Shift+Tab previous …`)
+    const pattern = new RegExp(`(?:^|[\\s·/])${key.replace('+', '\\+')}(?:/\\S+)?\\s+([^·/]+)`, 'g');
+    const found = [...footer.matchAll(pattern)].map((match) => match[1].trim());
+    if (found.length) labels.set(key, found);
+  }
+  return labels;
+}
+
+test('the breadcrumb names the location at list, run, phase, and agent depth', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home);
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    assert.ok(row, 'the fixture run is listed');
+
+    const list = breadcrumbOf(renderDashboard({ rows, selected: 0, width: 200, height: 30 }));
+    const [run, phase, agent] = [0, 1, 2].map((focus) =>
+      breadcrumbOf(renderWorkflowTui(row, { width: 200, height: 30, focus })));
+
+    // the list is the root of the hierarchy and names nothing below itself
+    assert.equal(list, ' Workflows');
+    // one run segment identifies the run the way `runs` does: id · workflow
+    assert.equal(crumbSegments(renderWorkflowTui(row, { width: 200, height: 30 }))[1], 'aaa111 · unified-shell');
+    // the run depth is not an agent location
+    assert.doesNotMatch(run, /build-alpha/);
+    // the phase depth names the phase, the agent depth names the agent
+    assert.ok(phase.includes('implement'), `phase breadcrumb lost its phase: ${phase}`);
+    assert.ok(agent.endsWith('build-alpha'), `agent breadcrumb lost its agent: ${agent}`);
+    // drilling in only ever extends the path it came from
+    assert.ok(run.startsWith(list), `${run} does not extend ${list}`);
+    assert.ok(phase.startsWith(run), `${phase} does not extend ${run}`);
+    assert.ok(agent.startsWith(phase), `${agent} does not extend ${phase}`);
+  } finally { cleanup(); }
+});
+
+test('a breadcrumb wider than the terminal drops its deepest segments first', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const row = dashboardRows(home).find((entry) => entry.runId === 'wf-alpha');
+    const deepest = (width) => renderWorkflowTui(row, { width, height: 30, focus: 2 });
+
+    assert.deepEqual(crumbSegments(deepest(200)),
+      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+    // the agent and its phase go before the run that contains them
+    assert.deepEqual(crumbSegments(deepest(40)), ['Workflows', 'aaa111 · unified-shell']);
+    // and the root survives a terminal too narrow for anything else
+    assert.deepEqual(crumbSegments(deepest(24)), ['Workflows']);
+
+    const full = crumbSegments(deepest(200));
+    for (const width of [24, 32, 40, 60, 80, 200]) {
+      const screen = deepest(width);
+      const segments = crumbSegments(screen);
+      assert.ok(segments.length >= 1, `width ${width} rendered no breadcrumb`);
+      // whatever survives is the shallow prefix of the full path, never a hole
+      assert.deepEqual(segments, full.slice(0, segments.length), `width ${width} truncated out of order`);
+      assert.ok([...breadcrumbOf(screen)].length <= width, `width ${width} breadcrumb overflows`);
+    }
+  } finally { cleanup(); }
+});
+
+test('one shared key reads the same on the list, run, phase, and agent screens', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home);
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const screens = {
+      list: renderDashboard({ rows, selected: 0, width: 200, height: 30 }),
+      run: renderWorkflowTui(row, { width: 200, height: 30, focus: 0 }),
+      phase: renderWorkflowTui(row, { width: 200, height: 30, focus: 1 }),
+      agent: renderWorkflowTui(row, { width: 200, height: 30, focus: 2 }),
+    };
+
+    // every wording a key is given, on every screen that offers it
+    const seen = new Map();
+    for (const [name, screen] of Object.entries(screens)) {
+      for (const [key, found] of hintLabels(screen)) {
+        for (const label of found) seen.set(key, [...(seen.get(key) ?? []), { name, label }]);
+      }
+    }
+
+    // the grammar is genuinely shared, not one hint compared with itself
+    for (const key of ['↑', 'Enter', 'Esc', 'Tab', 'Shift+Tab', 'q']) {
+      assert.ok((seen.get(key) ?? []).length >= 2, `${key} is not part of the shared footer grammar`);
+    }
+
+     // Every shared binding has one label at every hierarchy depth.
+    assert.deepEqual(new Set(seen.get('↑').map(({ label }) => label)), new Set(['move up']));
+    assert.deepEqual(new Set(seen.get('↓').map(({ label }) => label)), new Set(['move down']));
+    assert.deepEqual(new Set(seen.get('Esc').map(({ label }) => label)), new Set(['move out']));
+     assert.deepEqual(new Set(seen.get('Enter').map(({ label }) => label)), new Set(['open']));
+      assert.deepEqual(new Set(seen.get('Shift+Tab').map(({ label }) => label)), new Set(['previous workflow']));
+     assert.deepEqual(new Set(seen.get('Tab').map(({ label }) => label)), new Set(['next workflow']));
+     assert.deepEqual(new Set(seen.get('q').map(({ label }) => label)), new Set(['detach']));
+  } finally { cleanup(); }
+});
+
+// The two navigation moves that only exist in the input loop. Each keypress is
+// delivered synchronously, so the returned repaint frame is exactly the screen
+// that key produced — nothing else can have painted in between.
+const ESC_KEY = String.fromCharCode(27);
+
+function shellSession(home, { columns = 120, rows = 30 } = {}) {
+  const width = columns;
+  const height = rows;
+  class FakeInput extends EventEmitter {
+    isTTY = true;
+    setRawMode() {}
+    resume() {}
+    pause() {}
+  }
+  class FakeOutput extends EventEmitter {
+    isTTY = true;
+    columns = width;
+    rows = height;
+    text = '';
+    write(chunk) { this.text += chunk; }
+  }
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const running = runDashboard(home, { input, output, refreshMs: 60_000 });
+  const press = (key) => {
+    const before = output.text.length;
+    input.emit('data', Buffer.from(key));
+    return output.text.slice(before);
+  };
+  const drillToAgent = () => {
+    press('\r'); // workflows list -> run
+    press('\r'); // run -> phase
+    return press('\r'); // phase -> agent
+  };
+  return { input, output, running, press, drillToAgent, quit: () => { press('q'); return running; } };
+}
+
+test('Tab re-enters the sibling workflow at the depth it was left at', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home);
+    const atAgent = session.drillToAgent();
+    assert.match(atAgent, /Agent activity · r refresh/);
+    assert.deepEqual(crumbSegments(atAgent),
+      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+
+    const sibling = session.press('\t');
+    assert.ok(sibling.length, 'Tab repainted the screen');
+    // same depth, same phase, the sibling workflow's own agent
+    assert.match(sibling, /Agent activity · r refresh/);
+    assert.deepEqual(crumbSegments(sibling),
+      ['Workflows', 'bbb222 · sibling-run', 'implement', 'build-beta']);
+    assert.equal(crumbSegments(sibling).length, crumbSegments(atAgent).length);
+    assert.doesNotMatch(sibling, /build-alpha/);
+
+    // and Shift+Tab comes back the same way, still at agent depth
+    const back = session.press(`${ESC_KEY}[Z`);
+    assert.match(back, /Agent activity · r refresh/);
+    assert.deepEqual(crumbSegments(back),
+      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Esc walks out exactly one level: agent to phase to run to the workflows list', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home);
+    assert.match(session.drillToAgent(), /Agent activity · r refresh/);
+
+    const phase = session.press(ESC_KEY);
+    assert.match(phase, /Agents · r refresh/);
+    assert.doesNotMatch(phase, /Agent activity · r refresh/); // not two levels at once
+    assert.doesNotMatch(phase, /Runs · active/); // and not all the way out
+    assert.match(breadcrumbOf(phase), /^ Workflows › aaa111 · unified-shell/);
+
+    const run = session.press(ESC_KEY);
+    assert.match(run, /Timeline · auto-following newest event/);
+    assert.doesNotMatch(run, /Agents · r refresh/);
+    assert.doesNotMatch(run, /Runs · active/);
+    assert.match(breadcrumbOf(run), /^ Workflows › aaa111 · unified-shell/);
+
+    const list = session.press(ESC_KEY);
+    assert.match(list, /Runs · active/);
+    assert.doesNotMatch(list, /Timeline · auto-following newest event/);
+    assert.equal(breadcrumbOf(list), ' Workflows');
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
 });
