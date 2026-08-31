@@ -125,7 +125,7 @@ export function buildV2PlannerPrompt(context) {
     'Propose the smallest complete bounded action program that can satisfy the supplied requirements. The kernel, not you, decides completion and failure.',
     'Use only generic actions. A work action declares affects and any exact ownedFiles. An evidence action declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
-    'Every mandatory unresolved requirement needs an evidence action. File-disjoint work should be parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
+    'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
     context.intent.constraints?.workspaceMutation === 'forbidden'
       ? 'This goal is deterministically read-only. Every action must have empty ownedFiles and must not modify workspace files; reports belong in the action output artifact.'
       : 'Workspace mutation is allowed only through exact ownedFiles declared by the action.',
