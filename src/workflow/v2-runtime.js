@@ -28,6 +28,7 @@ import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
 } from './v2-workspace.js';
 import { presentationStageStatus, stageForAction } from './v2-presentation.js';
+import { deliverSteering, readSteering } from './steering.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const DEFAULTS = Object.freeze({
@@ -375,9 +376,21 @@ export async function runV2AutonomousWorkflow({
   };
 
   const runPlanner = async (boundary) => {
+    const deliveredSteering = deliverSteering(state, runDir);
+    for (const entry of deliveredSteering) {
+      emit('steering.delivered', {
+        steeringId: entry.id,
+        message: entry.message,
+        decisionSequence: entry.decisionSequence,
+      });
+    }
     const context = createV2PlannerContext(state, {
       scout: scoutReport,
-      steering: state.config.settings.suggestedPlan ? [state.config.settings.suggestedPlan] : [],
+      steering: [
+        ...(state.config.settings.suggestedPlan ? [state.config.settings.suggestedPlan] : []),
+        ...deliveredSteering.map((entry) => entry.message),
+      ],
+      boundary,
     });
     const prompt = `${buildV2PlannerPrompt(context)}\n\n${buildPlannerPreflight(statePath(runDir), boundary)}`;
     state.planner.status = 'running';
@@ -682,6 +695,22 @@ export async function runV2AutonomousWorkflow({
           completePresentationStages();
         }
       }
+    }
+    const deliveredSteeringIds = new Set((state.steering ?? []).map((entry) => entry.id));
+    const hasPendingSteering = readSteering(runDir).some((entry) => !deliveredSteeringIds.has(entry.id));
+    if (hasPendingSteering && state.program.actions.length) {
+      if (state.budget.agents >= config.maxAgents) {
+        limitsExhausted = true;
+        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit before queued steering could be planned`;
+        continue;
+      }
+      const planned = await runPlanner('steering');
+      if (!planned.ok) {
+        if (planned.status === 'cancelled') continue;
+        limitsExhausted = true;
+        terminalReason = `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
+      }
+      continue;
     }
     const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
     if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
