@@ -179,6 +179,48 @@ test('compact heartbeat separates semantic quiet from live agent output', async 
   } finally { f.cleanup(); }
 });
 
+test('legacy completed_with_concerns replay is tolerated without being treated as newly produced', async () => {
+  const f = fixture({
+    status: 'completed_with_concerns', stage: 'delivered_with_concerns',
+    finishedAt: '2026-08-28T01:03:00.000Z', currentStep: undefined, activeAgents: {}, attempts: [],
+  });
+  try {
+    // Simulate a run whose completion event was already committed before this
+    // watcher attached (replay), not one it observes live.
+    appendEvent(f.runDir, f.state, 'run.completed_with_concerns', {});
+    writeFileSync(join(f.runDir, 'state.json'), `${JSON.stringify(f.state)}\n`);
+    let output = '';
+    const code = await runWorkflowWatch(f.home, 'abc234', { output: { write: (text) => { output += text; } } });
+    assert.equal(code, 0);
+    assert.match(output, /completed_with_concerns\/delivered_with_concerns/);
+    assert.match(output, /0 events, 0 actions/);
+  } finally { f.cleanup(); }
+});
+
+test('new completed status is delivered via a live run.completed event', async () => {
+  const f = fixture();
+  try {
+    let output = '';
+    const watching = runWorkflowWatch(f.home, 'abc234', {
+      intervalMs: 10,
+      heartbeatMs: 120,
+      output: { write: (text) => { output += text; } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const state = JSON.parse(readFileSync(join(f.runDir, 'state.json'), 'utf8'));
+    appendEvent(f.runDir, state, 'run.completed', {});
+    state.status = 'completed';
+    state.stage = 'delivered';
+    state.finishedAt = new Date().toISOString();
+    state.activeAgents = {};
+    writeFileSync(join(f.runDir, 'state.json'), `${JSON.stringify(state)}\n`);
+    assert.equal(await watching, 0);
+    assert.match(output, /completed\/delivered/);
+    assert.match(output, /1 events, 0 actions/);
+    assert.match(output, /outcome: completed\n/);
+  } finally { f.cleanup(); }
+});
+
 test('watch waits a bounded grace period for a freshly launched run to write state.json', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-watch-grace-'));
   const runId = 'wf-mgrace-abcdef';

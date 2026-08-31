@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Documentation now describes concerns as an attribute of a completed
+  outcome — `outcome.concerns` on a delivered result — rather than
+  presenting `completed_with_concerns` as its own terminal status to handle
+  separately from `completed`. Run records that carry the
+  `completed_with_concerns` status value, including legacy runs recorded
+  before this framing, remain fully readable: `runs result`, the TUI, and
+  `workflow watch` still read it exactly like `completed` — a delivered
+  result with concerns to review, never a failure.
+
 - Delegation classification now starts with deterministic signals and, in
   automatic execution, lets an LLM refine the choice between a single delegate
   and a workflow. `--dry-run` performs that same bounded low-effort

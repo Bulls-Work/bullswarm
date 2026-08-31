@@ -303,12 +303,14 @@ test('invalid planner proposal gets one corrective turn with the exact validator
   } finally { f.cleanup(); }
 });
 
-test('exhausted planner corrections settle on a qualified outcome instead of a failed run', async () => {
+test('exhausted planner corrections settle on a completed qualified outcome instead of a failed run', async () => {
   const f = fixture();
   try {
     const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_GARBAGE'), pools: f.pools, inputs: {} });
-    assert.equal(result.state.status, 'completed_with_concerns');
-    assert.equal(result.state.outcome.status, 'completed_with_concerns');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outcome.status, 'completed');
+    assert.equal(result.state.outcome.qualification, 'qualified');
+    assert.equal(readEvents(result.runDir).at(-1).type, 'run.completed');
     assert.equal(result.state.outcome.deliveryActionId, 'initial');
     assert.match(result.state.outcome.reason, /could not produce a valid decision after 2 correction turn\(s\): planner response invalid/);
 
@@ -331,7 +333,8 @@ test('planner corrections can be disabled and a bounded budget is honoured', asy
     const result = await runWorkflow({
       bullswarmDir: f.bullswarmDir, doc: adaptiveDoc('FORCE_GARBAGE', { maxPlannerCorrections: 0 }), pools: f.pools, inputs: {},
     });
-    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outcome.qualification, 'qualified');
     assert.match(result.state.outcome.reason, /after 0 correction turn\(s\)/);
     assert.equal(result.state.attempts.filter((attempt) => attempt.actionId === 'planner').length, 1);
     assert.throws(() => validateWorkflow(adaptiveDoc('x', { maxPlannerCorrections: -1 })),
@@ -399,7 +402,7 @@ test('adaptive planner appends a bounded action, executes it, then replans to co
     assert.deepEqual(events.map((event) => event.sequence), events.map((_, index) => index + 1));
     assert.ok(events.some((event) => event.type === 'plan.updated'));
     assert.equal(events.filter((event) => event.type === 'decision.created').length, 2);
-    assert.equal(events.at(-1).type, 'run.completed');
+    assert.ok(events.some((event) => event.type === 'run.completed'));
     assert.equal(result.report.lastEventSequence, events.at(-1).sequence);
 
     const plannerTasks = readdirSync(result.runDir)
@@ -689,7 +692,7 @@ test('an unparseable verify verdict is re-asked once, not sent to the planner', 
   } finally { f.cleanup(); }
 });
 
-test('successful verifier concerns are preserved as a verified qualified completion', async () => {
+test('successful verifier concerns are preserved as a completed qualified outcome', async () => {
   const f = fixture();
   try {
     const result = await runWorkflow({
@@ -697,7 +700,9 @@ test('successful verifier concerns are preserved as a verified qualified complet
       doc: adaptiveDoc('FORCE_SELF_COMPLETE VERDICT_CONCERN', { concurrency: 3, maxActions: 12, maxAgents: 20 }),
       pools: f.pools, inputs: {},
     });
-    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outcome.status, 'completed');
+    assert.equal(result.state.outcome.qualification, 'qualified');
     assert.equal(result.state.outcome.verified, true);
     assert.equal(result.state.outcome.bestEffort, false);
     assert.deepEqual(result.state.outcome.concerns, ['A cosmetic message could be clearer.']);
@@ -718,7 +723,9 @@ test('a self-completing program whose check fails comes back to the planner with
     assert.ok(unmet, 'decision.completion_predicate_unmet emitted');
     assert.deepEqual(unmet.failing, ['final-check']);
     assert.ok(!events.some((event) => event.type === 'decision.auto_completed'));
-    assert.notEqual(result.state.status, 'completed');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outcome.qualification, 'qualified');
+    assert.ok(events.some((event) => event.type === 'run.completed'));
   } finally { f.cleanup(); }
 });
 
@@ -1012,8 +1019,8 @@ test('planner proceed continues to later static work without graph expansion', a
   } finally { f.cleanup(); }
 });
 
-test('planner stop returns a qualified useful outcome while wait_for_approval remains resumable', async () => {
-  for (const [marker, expected] of [['FORCE_STOP', 'completed_with_concerns'], ['FORCE_WAIT', 'waiting_for_approval']]) {
+test('planner stop returns a completed qualified outcome while wait_for_approval remains resumable', async () => {
+  for (const [marker, expected] of [['FORCE_STOP', 'completed'], ['FORCE_WAIT', 'waiting_for_approval']]) {
     const f = fixture();
     try {
       const doc = {
@@ -1026,8 +1033,9 @@ test('planner stop returns a qualified useful outcome while wait_for_approval re
       };
       const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
       assert.equal(result.state.status, expected);
-      if (expected === 'completed_with_concerns') {
+      if (expected === 'completed') {
         assert.equal(result.state.outcome.bestEffort, true);
+        assert.equal(result.state.outcome.qualification, 'qualified');
         assert.equal(result.state.outcome.deliveryActionId, 'initial');
       }
       if (expected === 'waiting_for_approval') {
@@ -1050,7 +1058,9 @@ test('expansion-round target advises convergence but permits essential completio
       ] }],
     };
     const result = await runWorkflow({ bullswarmDir: f.bullswarmDir, doc, pools: f.pools, inputs: {} });
-    assert.equal(result.state.status, 'completed_with_concerns');
+    assert.equal(result.state.status, 'completed');
+    assert.equal(result.state.outcome.status, 'completed');
+    assert.equal(result.state.outcome.qualification, 'qualified');
     assert.equal(result.state.outputs['budget-one'].ok, true);
     assert.equal(result.state.outputs['budget-two'].ok, true);
     assert.equal(result.state.budget.expansionRound, 2);

@@ -476,11 +476,16 @@ rather than discarding the run as a blanket failure. Delegates have no
 implicit wall-clock timeout; set a step's `timeoutSec` (or direct-run
 `--timeout`) only when an operator explicitly wants a hard termination timer.
 
-An autonomous `complete` remains strictly verified. A planner `stop` produces
-`completed_with_concerns` when a useful delivery exists, including unresolved
-verification concerns and the stopping reason; it produces `blocked` only
-when no useful delivery exists. `workflow runs result` treats the qualified
-delivery as ready while reporting `verified:false`.
+An autonomous `complete` remains strictly verified. A planner `stop` still
+delivers a completed outcome when a useful delivery exists: unresolved
+verification concerns and the stopping reason ride along as `outcome.concerns`
+and `outcome.reason`, attributes of that completed outcome rather than a
+separate terminal status. `stop` produces `blocked` only when no useful
+delivery exists. `workflow runs result` treats the completed outcome as ready
+while reporting `verified:false`. The status value `completed_with_concerns`
+still appears on some runs — including legacy ones recorded before this
+framing — and every consumer reads it exactly like `completed`: a delivered
+result with concerns to review, never a failure.
 
 The planner returns versioned JSON. It may propose `needs_more_work` with
 bounded `run`, inline-`fanout`, or `verify` actions. The deterministic runtime

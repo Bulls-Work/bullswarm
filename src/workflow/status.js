@@ -1,6 +1,6 @@
 export const TERMINAL_WORKFLOW_STATUSES = new Set([
   'completed',
-  'completed_with_concerns',
+  'completed_with_concerns', // legacy runs
   'blocked',
   'failed',
   'cancelled',
@@ -13,5 +13,6 @@ export function isTerminalWorkflowStatus(status) {
 }
 
 export function isDeliveredWorkflowStatus(status) {
+  // Keep replaying pre-qualification runs as delivered.
   return status === 'completed' || status === 'completed_with_concerns';
 }

@@ -850,3 +850,158 @@ test('auto-follow starts at a timestamped milestone instead of an orphaned detai
   assert.match(plain, /\[Phase: Phase 7\] completed/);
   assert.doesNotMatch(plain, /newer timeline rows/);
 });
+
+function plain(screen) {
+  return screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+}
+
+// Modeled on the real delivered run wf-mtgr56l1-167281: an audit verification
+// that failed and was superseded by a repair, and a final verification that
+// never dispatched because that verify was still failed when it was scheduled.
+function deliveredRunWithSupersededFailure(overrides = {}) {
+  const startedAt = '2026-08-31T04:42:00.000Z';
+  const finishedAt = '2026-08-31T05:04:00.000Z';
+  const attempt = (actionId, status) => ({
+    actionId, attemptNumber: 1, pool: 'opencode2', model: 'luna', status,
+    startedAt, finishedAt,
+  });
+  return {
+    runId: 'wf-superseded', shortId: 'sup234', workflow: 'goal-delivered',
+    status: 'completed', stage: 'delivered', startedAt, finishedAt,
+    intent: { autonomous: true, goal: 'Deliver after a recovered verification failure.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'opencode2', selectedModel: 'luna' },
+    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
+    outcome: {
+      verified: true, bestEffort: false, concerns: ['One audit gap remains.'],
+      reason: 'Every requirement is independently verified.', deliveryActionId: 'verify-audit-repair-1',
+    },
+    actionLedger: [
+      { id: 'verify-audit', phase: 'g:audit-verification', kind: 'verify', status: 'succeeded', attempts: [0], startedAt, finishedAt },
+      { id: 'verify-audit-repair-1', phase: 'g:audit-verification', kind: 'run', status: 'succeeded', attempts: [1], startedAt, finishedAt },
+      {
+        id: 'verify-suite', phase: 'g:final-verification', kind: 'verify', status: 'failed_terminal',
+        attempts: [], finishedAt, dependsOn: ['verify-implementation', 'verify-audit'],
+        why: 'dynamic actions blocked by failed or unresolved dependencies',
+      },
+      { id: 'verify-completion', phase: 'g:completion-verification', kind: 'verify', status: 'succeeded', attempts: [2], startedAt, finishedAt },
+    ],
+    attempts: [
+      attempt('verify-audit', 'succeeded'),
+      attempt('verify-audit-repair-1', 'succeeded'),
+      attempt('verify-completion', 'succeeded'),
+    ],
+    outputs: {
+      'verify-implementation': { ok: true },
+      'verify-audit': { ok: false },
+      'verify-audit-repair-1': { ok: true },
+      'verify-suite': { ok: false, dependencyBlocked: true },
+      'verify-completion': { ok: true },
+    },
+    activeAgents: {}, _doc: { phases: [] },
+    ...overrides,
+  };
+}
+
+test('a delivered run states concerns and best-effort qualification from the outcome, not the status string', () => {
+  const base = {
+    runId: 'wf-outcome', shortId: 'out234', workflow: 'qualified',
+    startedAt: '2026-08-31T04:00:00.000Z', finishedAt: '2026-08-31T04:30:00.000Z',
+    status: 'completed', stage: 'delivered',
+    intent: { autonomous: true, goal: 'Deliver a qualified result.' },
+    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
+    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
+    actionLedger: [{ id: 'work', phase: 'g:deliver', kind: 'run', status: 'succeeded', attempts: [0] }],
+    attempts: [{ actionId: 'work', attemptNumber: 1, pool: 'codex', model: 'sol', status: 'succeeded' }],
+    outputs: { work: { ok: true } }, activeAgents: {}, _doc: { phases: [] },
+  };
+  // A width wide enough that the terminal sentence is never pane-truncated.
+  const render = (state) => plain(renderWorkflowTui({ state, events: [] }, { width: 160, height: 30 }));
+  const result = (state) => plain(renderWorkflowTui({ state, events: [] }, {
+    width: 160, height: 30, orchestratorDetail: true,
+  }));
+
+  const clean = { ...base, outcome: { verified: true, bestEffort: false, concerns: [] } };
+  assert.match(render(clean), /✓ No agents running · workflow finished\b/);
+  assert.match(render(clean), /Workflow finished · result ready/);
+  assert.match(result(clean), /Result · Verified delivery is ready +│/);
+  assert.doesNotMatch(render(clean), /concern/);
+
+  // `completed` now carries its concerns in the outcome envelope: the count
+  // must stay visible without a `completed_with_concerns` status.
+  const concerned = { ...base, outcome: { verified: true, bestEffort: false, concerns: ['a', 'b', 'c'] } };
+  assert.match(render(concerned), /! No agents running · workflow finished with 3 concerns/);
+  assert.match(render(concerned), /Workflow finished with 3 concerns · review 3 concerns in result/);
+  assert.match(render(concerned), /! Completed with 3 concerns/);
+  assert.match(result(concerned), /Result · Verified delivery is ready · 3 concerns/);
+  assert.match(result(concerned), /Concerns · 3 recorded in the result envelope/);
+
+  const single = { ...base, outcome: { verified: true, bestEffort: false, concerns: ['only one'] } };
+  assert.match(render(single), /workflow finished with 1 concern\b/);
+
+  const bestEffort = { ...base, outcome: { verified: false, bestEffort: true, concerns: ['x', 'y'] } };
+  assert.match(render(bestEffort), /! No agents running · best-effort delivery, unverified — 2 concerns/);
+  assert.match(render(bestEffort), /! Best-effort delivery, unverified — 2 concerns · review 2 concerns in result/);
+  assert.match(render(bestEffort), /! Best-effort, unverified/);
+  assert.match(result(bestEffort), /Result · Best useful delivery is ready, unverified · 2 concerns/);
+
+  // A legacy run dir replays through the same outcome fields.
+  const legacy = { ...concerned, status: 'completed_with_concerns', stage: 'delivered_with_concerns' };
+  assert.equal(
+    render(legacy).replace(/completed_with_concerns/g, 'completed'),
+    render(concerned).replace(/ · done/g, ' · completed'),
+  );
+  // A legacy run dir with no outcome envelope keeps its qualification.
+  const legacyNoOutcome = { ...base, status: 'completed_with_concerns' };
+  assert.match(render(legacyNoOutcome), /! No agents running · workflow finished with concerns/);
+  assert.match(result(legacyNoOutcome), /Result · Best useful delivery is ready with concerns/);
+});
+
+test('a delivered run shows no phase failure marks, and a never-dispatched action names its failed dependency', () => {
+  const state = deliveredRunWithSupersededFailure();
+  const model = workflowPanelModel({ state, events: [] });
+  const audit = model.phases.find((phase) => phase.name === 'g:audit-verification');
+  const final = model.phases.find((phase) => phase.name === 'g:final-verification');
+
+  // Defect A: the audit verification failed and was superseded by its repair
+  // before the run delivered, so the phase list must not keep a ✗.
+  assert.deepEqual(model.phases.filter((phase) => phase.status === 'failed'), []);
+  assert.equal(audit.status, 'completed');
+  assert.equal(audit.completed, 2);
+
+  // Defect B: verify-suite never dispatched, so it is neither complete nor
+  // "not started yet" — it was blocked by the verify that had failed.
+  assert.equal(final.status, 'dependency_blocked');
+  assert.deepEqual([final.completed, final.total], [0, 1]);
+  assert.deepEqual(final.blockedActions, [{ id: 'verify-suite', kind: 'verify', blockedBy: ['verify-audit'] }]);
+
+  const finalIndex = model.phases.indexOf(final);
+  const phases = plain(renderWorkflowTui({ state, events: [] }, { width: 120, height: 30, phaseIndex: finalIndex }));
+  assert.match(phases, /⊘ Final Verification 0\/1/);
+  assert.doesNotMatch(phases, /✗ (Audit|Final) Verification/);
+
+  const agents = plain(renderWorkflowTui({ state, events: [] }, {
+    width: 120, height: 30, phaseIndex: finalIndex, focus: 1,
+  }));
+  assert.match(agents, /Final Verification · 0\/1 complete/);
+  assert.match(agents, /⊘ verify-suite · never dispatched · blocked by verify-audit/);
+  assert.doesNotMatch(agents, /Not started yet/);
+
+  const detail = plain(renderWorkflowTui({ state, events: [] }, {
+    width: 120, height: 30, phaseIndex: finalIndex, focus: 2,
+  }));
+  assert.match(detail, /⊘ verify-suite · verify · never dispatched/);
+  assert.match(detail, /blocked by verify-audit/);
+});
+
+test('a run that did not deliver keeps its phase failure marks, and still never counts a blocked action as complete', () => {
+  const failed = deliveredRunWithSupersededFailure({ status: 'failed', stage: 'failed', outcome: null });
+  const model = workflowPanelModel({ state: failed, events: [] });
+  const audit = model.phases.find((phase) => phase.name === 'g:audit-verification');
+  const final = model.phases.find((phase) => phase.name === 'g:final-verification');
+  assert.equal(audit.status, 'failed');
+  assert.equal(final.status, 'failed');
+  assert.deepEqual([final.completed, final.total], [0, 1]);
+  const screen = plain(renderWorkflowTui({ state: failed, events: [] }, { width: 120, height: 30 }));
+  assert.match(screen, /✗ Audit Verification 2\/2/);
+  assert.match(screen, /✗ Final Verification 0\/1/);
+});
