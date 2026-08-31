@@ -78,6 +78,16 @@ references in mutating action prose to the action's actual workspace before
 dispatch; regression coverage proves the integration path is absent from an
 isolated worker task.
 
+The first fully executed retry reached independent evidence with seven clean
+first-attempt work actions, then failed one mandatory navigation clause: the
+pure helper moved between agents, but the live TUI still scrolled detail text
+instead of changing the selected agent. Its live-input test only searched the
+aggregate terminal output for strings that were already present and therefore
+could not prove the transition. Planner and worker contracts now require an
+explicit level-by-input transition matrix, distinguishable before/after
+fixtures, observable live-state assertions, and a clause-by-clause final
+coverage audit for interactive or state-machine work.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
