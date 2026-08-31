@@ -1,11 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createV2GoalDocument, createV2State, validateV2DurableState } from '../src/workflow/v2-state.js';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
   V2PlannerValidationError, applyV2PlannerResponse, buildV2PlannerPrompt,
-  buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, plannerCorrectionRequest,
+  buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, readPlannerCandidate, plannerCorrectionRequest,
   validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
+
+const CHECK_PLANNER = new URL('../bin/check-v2-plan.js', import.meta.url).pathname;
 
 function state() {
   return createV2State(createV2GoalDocument({
@@ -137,9 +143,46 @@ test('parser accepts only a trailing schema-valid object and corrections are bou
 });
 
 test('planner preflight is deterministic and safely quotes paths', () => {
-  const preflight = buildPlannerPreflight("/tmp/state with '$dollar'.json", 'gaps', '/tmp/check planner.js');
+  const preflight = buildPlannerPreflight("/tmp/state with '$dollar'.json", 'gaps', '/tmp/planner candidate.json', '/tmp/check planner.js');
   assert.match(preflight, /check-v2-plan|check planner/);
   assert.match(preflight, /--boundary gaps/);
-  assert.match(preflight, /candidate_file/);
+  assert.match(preflight, /--value '\/tmp\/planner candidate\.json'/);
+  assert.match(preflight, /do not copy, reproduce, or retype the JSON/i);
   assert.doesNotMatch(preflight, /--state \/tmp\/state with/);
+});
+
+test('runtime consumes an exact durable planner candidate instead of response prose', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-planner-candidate-'));
+  try {
+    const candidatePath = join(dir, 'candidate.json');
+    writeFileSync(candidatePath, JSON.stringify(response()));
+    assert.deepEqual(readPlannerCandidate(candidatePath, state()), { ok: true, errors: [], value: response() });
+    assert.equal(readPlannerCandidate(join(dir, 'missing.json'), state()).ok, false);
+    writeFileSync(candidatePath, '{');
+    assert.equal(readPlannerCandidate(candidatePath, state()).ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('planner checker enforces the exact scout unit handoff used by runtime', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-planner-checker-'));
+  try {
+    const current = state();
+    const scoutPath = join(dir, 'scout.md');
+    const statePath = join(dir, 'state.json');
+    const candidatePath = join(dir, 'candidate.json');
+    writeFileSync(scoutPath, 'Repository facts\n["write-report","missing-scout-unit"]');
+    current.preflight.scout = {
+      status: 'succeeded', startedAt: '2026-09-01T00:00:00Z', finishedAt: '2026-09-01T00:00:01Z',
+      outputFile: scoutPath, attempts: [], lastFailure: null,
+    };
+    writeFileSync(statePath, serializeV2DurableState(current));
+    writeFileSync(candidatePath, JSON.stringify(response()));
+    const checked = spawnSync(process.execPath, [CHECK_PLANNER, '--state', statePath, '--boundary', 'initial', '--value', candidatePath], { encoding: 'utf8' });
+    assert.equal(checked.status, 1);
+    assert.match(checked.stdout, /missing exact scout work actions: missing-scout-unit/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

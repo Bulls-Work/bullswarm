@@ -1,4 +1,5 @@
 import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-validator.js';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState } from './v2-state.js';
@@ -104,6 +105,23 @@ export function parseV2PlannerResponse(text, state, options = {}) {
   throw new V2PlannerValidationError(errors.length ? [...new Set(errors)] : ['response did not contain a trailing JSON object']);
 }
 
+export function readPlannerCandidate(candidatePath, state, options = {}) {
+  if (typeof candidatePath !== 'string' || !candidatePath) {
+    return { ok: false, errors: ['candidatePath must be a non-empty string'] };
+  }
+  try {
+    const candidate = JSON.parse(readFileSync(candidatePath, 'utf8'));
+    return { ok: true, errors: [], value: validateV2PlannerResponse(candidate, state, options) };
+  } catch (error) {
+    return {
+      ok: false,
+      errors: error instanceof V2PlannerValidationError
+        ? [...error.issues]
+        : [`validated planner candidate unavailable: ${error.message}`],
+    };
+  }
+}
+
 export function createV2PlannerContext(state, { scout = null, steering = [], correction = null, boundary = null } = {}) {
   validateV2DurableState(state);
   const plannerBoundary = boundary ?? (state.program.actions.length ? 'gaps' : 'initial');
@@ -204,18 +222,20 @@ export function plannerCorrectionRequest(error, { attempt, maxCorrections = 1 } 
   };
 }
 
-export function buildPlannerPreflight(statePath, boundary = 'initial', checkerPath = null) {
+export function buildPlannerPreflight(statePath, boundary = 'initial', candidatePath, checkerPath = null) {
   if (typeof statePath !== 'string' || !statePath) throw new TypeError('statePath must be a non-empty string');
   if (!['initial', 'gaps', 'steering'].includes(boundary)) throw new TypeError('boundary must be initial|gaps|steering');
+  if (typeof candidatePath !== 'string' || !candidatePath) throw new TypeError('candidatePath must be a non-empty string');
   const checker = checkerPath ?? fileURLToPath(new URL('../../bin/check-v2-plan.js', import.meta.url));
   const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
-  const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --state ${shellQuote(statePath)} --boundary ${boundary} --value "$candidate_file"`;
+  const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --state ${shellQuote(statePath)} --boundary ${boundary} --value ${shellQuote(candidatePath)}`;
   return [
-    'MANDATORY V2 PLANNER PREFLIGHT before replying:',
-    '1. Write only your complete planner response JSON to a temporary file: candidate_file=$(mktemp)',
+    'MANDATORY V2 PLANNER DELIVERY before replying:',
+    `1. Write only your complete planner response JSON to this exact durable path: ${shellQuote(candidatePath)}`,
     `2. Run: ${command}`,
     '3. If it exits non-zero, fix the candidate and rerun until it exits zero.',
-    '4. End your response with the exact validated planner response, then remove the temporary file.',
+    '4. Leave the validated candidate file in place. Bullswarm reads that exact file; do not copy, reproduce, or retype the JSON in your response.',
+    '5. End your response with only a short confirmation that the durable planner candidate validated.',
   ].join('\n');
 }
 

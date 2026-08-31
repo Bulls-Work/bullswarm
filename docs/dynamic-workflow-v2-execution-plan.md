@@ -155,6 +155,16 @@ kernel now names a durable per-action candidate path, requires the agent to
 validate that exact file, and consumes that exact file after dispatch. Model
 response prose is no longer the evidence schema transport.
 
+The next initial planner attempt exposed the same split path for plans: its
+temporary candidate passed the CLI checker, but the checker had not loaded the
+scout's exact unit list, while the runtime validator did. The model then
+retyped malformed JSON and omitted one unit to fit an artificially tight
+canary action cap. Planner turns now use a durable candidate file too, and the
+CLI checker derives the same required scout units as runtime. Canary limits
+must reserve capacity for the scout, planner, every required work unit, and at
+least one evidence action; the difficult fixture therefore uses 12 action and
+16 dispatch slots rather than an impossible 10/12 split.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
