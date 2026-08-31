@@ -144,6 +144,17 @@ of only the requirements listed in `affects`, framed as authoritative
 clause-by-clause acceptance evidence rather than permission to perform sibling
 or downstream work; the full parent goal remains omitted.
 
+The following repetition exposed two deeper transport defects. First,
+`extractGoalRequirements` had compacted every numbered acceptance clause to 600
+characters, so the durable requirement and bounded work task still lost the
+decisive suffix even though the handoff claimed to be exact. V2 requirements
+are now whitespace-normalized but lossless; only presentation code may
+truncate copies. Second, an evidence agent validated a correct temporary JSON
+file and then mangled the JSON while retyping it into its final response. The
+kernel now names a durable per-action candidate path, requires the agent to
+validate that exact file, and consumes that exact file after dispatch. Model
+response prose is no longer the evidence schema transport.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

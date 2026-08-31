@@ -9,6 +9,7 @@ import {
   EVIDENCE_OUTPUT_SCHEMA_VERSION,
   buildEvidencePreflight,
   parseEvidenceOutput,
+  readEvidenceCandidate,
   validateEvidenceContract,
   validateEvidenceOutput,
 } from '../src/workflow/evidence-output.js';
@@ -66,11 +67,26 @@ test('rejects inherited fields at every object boundary', () => {
 });
 
 test('preflight is shell-safe and requires repeated validation', () => {
-  const text = buildEvidencePreflight('/tmp/$HOME/a path/contract.json', "/tmp/check's v2.js");
+  const text = buildEvidencePreflight('/tmp/$HOME/a path/contract.json', '/tmp/$HOME/a path/candidate.json', "/tmp/check's v2.js");
   assert.match(text, /--contract '\/tmp\/\$HOME\/a path\/contract\.json'/);
   assert.match(text, /check'"'"'s v2\.js/);
-  assert.match(text, /--value \"\$candidate_file\"/);
+  assert.match(text, /--value '\/tmp\/\$HOME\/a path\/candidate\.json'/);
   assert.match(text, /rerun until it exits zero/);
+  assert.match(text, /do not copy, reproduce, or retype the JSON/i);
+});
+
+test('runtime consumes the exact durable candidate instead of retyped response text', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-evidence-candidate-'));
+  try {
+    const candidatePath = join(dir, 'candidate.json');
+    writeFileSync(candidatePath, JSON.stringify(value()));
+    assert.deepEqual(readEvidenceCandidate(candidatePath, contract()), { ok: true, errors: [], value: value() });
+    assert.equal(readEvidenceCandidate(join(dir, 'missing.json'), contract()).ok, false);
+    writeFileSync(candidatePath, '{');
+    assert.equal(readEvidenceCandidate(candidatePath, contract()).ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('CLI returns deterministic statuses for valid, invalid, malformed, and usage input', () => {

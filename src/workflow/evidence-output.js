@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // The V2 evidence boundary is deliberately narrower than the ledger's
@@ -155,17 +156,31 @@ export function parseEvidenceOutput(text, contract) {
   return { ok: false, errors: errors.length ? [...new Set(errors)] : ['response did not contain a trailing JSON object'] };
 }
 
-export function buildEvidencePreflight(contractPath, checkerPath = null) {
+export function readEvidenceCandidate(candidatePath, contract) {
+  if (typeof candidatePath !== 'string' || !candidatePath) {
+    return { ok: false, errors: ['candidatePath must be a non-empty string'] };
+  }
+  try {
+    const candidate = JSON.parse(readFileSync(candidatePath, 'utf8'));
+    return validateEvidenceOutput(candidate, contract);
+  } catch (error) {
+    return { ok: false, errors: [`validated evidence candidate unavailable: ${error.message}`] };
+  }
+}
+
+export function buildEvidencePreflight(contractPath, candidatePath, checkerPath = null) {
   if (typeof contractPath !== 'string' || !contractPath) throw new TypeError('contractPath must be a non-empty string');
+  if (typeof candidatePath !== 'string' || !candidatePath) throw new TypeError('candidatePath must be a non-empty string');
   const checker = checkerPath ?? fileURLToPath(new URL('../../bin/check-v2-evidence.js', import.meta.url));
   const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
-  const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --contract ${shellQuote(contractPath)} --value "$candidate_file"`;
+  const command = `${shellQuote(process.execPath)} ${shellQuote(checker)} --contract ${shellQuote(contractPath)} --value ${shellQuote(candidatePath)}`;
   return [
-    'MANDATORY V2 EVIDENCE PREFLIGHT before replying:',
-    '1. Write only your evidence envelope JSON to a temporary file: candidate_file=$(mktemp)',
+    'MANDATORY V2 EVIDENCE DELIVERY before replying:',
+    `1. Write only your evidence envelope JSON to this exact durable path: ${shellQuote(candidatePath)}`,
     `2. Run: ${command}`,
     '3. If it exits non-zero, fix the candidate and rerun until it exits zero.',
-    '4. End your response with the exact validated evidence envelope, then remove the temporary file.',
+    '4. Leave the validated candidate file in place. Bullswarm reads that exact file; do not copy, reproduce, or retype the JSON in your response.',
+    '5. End your response with only a short confirmation that the durable evidence candidate validated.',
   ].join('\n');
 }
 
