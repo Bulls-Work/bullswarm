@@ -73,6 +73,26 @@ test('independent evidence avoids ancestor pool when another is eligible', async
   assert.equal(result.attempts[0].pool, 'luna-2');
 });
 
+test('provider-qualified model pins cannot run under another credential pool label', async () => {
+  const h = harness([good]);
+  const primary = connector('opencode2', {
+    profile: { providerId: 'relay' },
+    spawn: { cmd: ['fake', '--model', 'relay/gpt-5.6-luna'] },
+  });
+  const second = connector('opencode2:relay-2', {
+    profile: { providerId: 'relay-2' },
+    spawn: { cmd: ['fake', '--model', 'relay-2/gpt-5.6-luna'] },
+  });
+  const result = await dispatchV2Action({
+    action: { ...action, lane: 'analyze' }, taskText: 'inspect', targetDir: '/tmp', paths,
+    pools: [primary, second], avoidPools: ['opencode2'],
+    preferredModel: 'relay/gpt-5.6-luna', bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].pool, 'opencode2');
+  assert.equal(result.attempts[0].model, 'relay/gpt-5.6-luna');
+});
+
 test('persisted effort assignment wins while its pool remains eligible', async () => {
   const h = harness([good]);
   const first = connector('luna-1');

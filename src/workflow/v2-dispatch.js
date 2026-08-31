@@ -23,11 +23,26 @@ function classifyFailure(verdict) {
   return 'semantic';
 }
 
-function preparePools(pools, action, effort, { avoidPools = [], now = Date.now() } = {}) {
+function providerIdFromModel(model) {
+  if (typeof model !== 'string') return null;
+  const slash = model.indexOf('/');
+  return slash > 0 ? model.slice(0, slash) : null;
+}
+
+function preparePools(pools, action, effort, {
+  avoidPools = [], preferredModel = null, now = Date.now(),
+} = {}) {
   const available = [];
   for (const pool of pools) {
     if (pool.enabled === false || pool.burstGate === true || isQuarantined(pool, now)) continue;
     const connector = pool.connector ?? pool;
+    // A discovered provider clone represents one concrete credential and its
+    // meter. Retargeting it to another provider-qualified model would make the
+    // pool label, quota attribution, and quarantine target untrue. An exact
+    // model pin may therefore use only the clone for that provider ID.
+    const pinnedProvider = providerIdFromModel(preferredModel);
+    if (pinnedProvider && connector.profile?.providerId
+      && connector.profile.providerId !== pinnedProvider) continue;
     const assignment = pool.strategyAssignments?.[effort] ?? null;
     const modelPolicy = resolveDispatchModel(connector, effort, {
       assignment,
@@ -126,7 +141,9 @@ export async function dispatchV2Action({
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const effort = action.effort ?? EFFORT_BY_LANE[action.lane] ?? 'low';
-  let candidates = preparePools(pools, action, effort, { avoidPools, now: now() });
+  let candidates = preparePools(pools, action, effort, {
+    avoidPools, preferredModel, now: now(),
+  });
   if (strictPool) candidates = candidates.filter((pool) => pool.name === strictPool);
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
