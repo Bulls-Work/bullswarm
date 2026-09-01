@@ -29,6 +29,12 @@ test('creates intent-only V2 goal and empty durable state', () => {
   assert.equal(state.ledger.requirements['result-versioned'].status, 'pending');
 });
 
+test('accepts the documented suggested plan as bounded planner context', () => {
+  const goal = createV2GoalDocument({ ...input(), settings: { concurrency: 2, suggestedPlan: 'Inspect, implement, then verify.' } });
+  assert.equal(goal.config.settings.suggestedPlan, 'Inspect, implement, then verify.');
+  assert.throws(() => createV2GoalDocument({ ...input(), settings: { suggestedPlan: '' } }), /suggestedPlan must be a non-empty string/);
+});
+
 test('round trips and defensively clones all boundaries', () => {
   const source = input(); const goal = createV2GoalDocument(source); source.requirements[0].text = 'changed';
   assert.equal(goal.intent.requirements[0].text, 'Result is versioned');

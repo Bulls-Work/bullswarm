@@ -5,7 +5,80 @@ export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
 
 const TERMINAL_ACTION_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
+const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', ...TERMINAL_ACTION_STATUSES]);
+const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked']);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+
+function resultFail(message) { throw new TypeError(`Invalid V2 result envelope: ${message}`); }
+function resultObject(value, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) resultFail(`${name} must be an object`);
+}
+function resultString(value, name) {
+  if (typeof value !== 'string' || !value) resultFail(`${name} must be a non-empty string`);
+}
+function exactFields(value, allowed, name) {
+  for (const key of Object.keys(value)) if (!allowed.has(key)) resultFail(`${name}.${key} is not allowed`);
+}
+function stringArray(value, name) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !entry)) resultFail(`${name} must be an array of non-empty strings`);
+}
+function revision(value, name) {
+  if ((typeof value !== 'string' && typeof value !== 'number') || value === '') resultFail(`${name} must be a string or number`);
+}
+
+function validateResultEvidence(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set(['sourceAction', 'status', 'evidence', 'concerns', 'eventSequence', 'mechanicalFailure']), name);
+  resultString(value.sourceAction, `${name}.sourceAction`);
+  if (!REQUIREMENT_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
+  stringArray(value.evidence, `${name}.evidence`);
+  stringArray(value.concerns, `${name}.concerns`);
+  if (!Number.isInteger(value.eventSequence) || value.eventSequence < 0) resultFail(`${name}.eventSequence must be a non-negative integer`);
+  if (value.mechanicalFailure !== undefined) resultObject(value.mechanicalFailure, `${name}.mechanicalFailure`);
+}
+
+function validateResultRequirement(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set(['id', 'text', 'mandatory', 'status', 'workRevision', 'evidence']), name);
+  resultString(value.id, `${name}.id`);
+  resultString(value.text, `${name}.text`);
+  if (typeof value.mandatory !== 'boolean') resultFail(`${name}.mandatory must be a boolean`);
+  if (!REQUIREMENT_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
+  revision(value.workRevision, `${name}.workRevision`);
+  if (!Array.isArray(value.evidence)) resultFail(`${name}.evidence must be an array`);
+  value.evidence.forEach((entry, index) => validateResultEvidence(entry, `${name}.evidence[${index}]`));
+}
+
+function validateResultAction(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds']), name);
+  resultString(value.id, `${name}.id`);
+  resultString(value.purpose, `${name}.purpose`);
+  if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
+  if (value.outputFile !== null && (typeof value.outputFile !== 'string' || !value.outputFile)) resultFail(`${name}.outputFile must be null or a non-empty string`);
+  stringArray(value.artifactIds, `${name}.artifactIds`);
+}
+
+function validateGaps(value, result) {
+  resultObject(value, 'gaps');
+  exactFields(value, new Set(['schemaVersion', 'intentId', 'programRevision', 'requirements', 'actions', 'summary']), 'gaps');
+  if (value.schemaVersion !== V2_GAP_SCHEMA_VERSION) resultFail(`gaps.schemaVersion must be ${V2_GAP_SCHEMA_VERSION}`);
+  if (value.intentId !== result.intentId) resultFail('gaps.intentId must match result.intentId');
+  if (!Number.isInteger(value.programRevision) || value.programRevision < 0) resultFail('gaps.programRevision must be a non-negative integer');
+  resultString(value.summary, 'gaps.summary');
+  if (!Array.isArray(value.requirements) || !Array.isArray(value.actions)) resultFail('gaps.requirements and gaps.actions must be arrays');
+  value.requirements.forEach((entry, index) => validateResultRequirement(entry, `gaps.requirements[${index}]`));
+  value.actions.forEach((entry, index) => {
+    resultObject(entry, `gaps.actions[${index}]`);
+    exactFields(entry, new Set(['id', 'purpose', 'status', 'affects', 'evidenceFor', 'failure']), `gaps.actions[${index}]`);
+    resultString(entry.id, `gaps.actions[${index}].id`);
+    resultString(entry.purpose, `gaps.actions[${index}].purpose`);
+    if (!['failed', 'blocked', 'cancelled', 'interrupted'].includes(entry.status)) resultFail(`gaps.actions[${index}].status is invalid`);
+    stringArray(entry.affects, `gaps.actions[${index}].affects`);
+    stringArray(entry.evidenceFor, `gaps.actions[${index}].evidenceFor`);
+    if (entry.failure !== null) resultObject(entry.failure, `gaps.actions[${index}].failure`);
+  });
+}
 
 function stateByAction(state) {
   return new Map(state.actions.map((action) => [action.id, action]));
@@ -159,17 +232,30 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
 }
 
 export function validateV2ResultEnvelope(result) {
-  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('Invalid V2 result envelope: result must be an object');
+  resultObject(result, 'result');
   const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt']);
-  for (const key of Object.keys(result)) if (!allowed.has(key)) throw new TypeError(`Invalid V2 result envelope: ${key} is not allowed`);
-  if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) throw new TypeError(`Invalid V2 result envelope: schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
-  if (!['completed', 'partial', 'cancelled'].includes(result.status)) throw new TypeError('Invalid V2 result envelope: status is invalid');
-  if (result.verified !== (result.status === 'completed')) throw new TypeError('Invalid V2 result envelope: verified does not match status');
-  for (const key of ['runId', 'shortId', 'intentId', 'goal', 'reason', 'finishedAt']) if (typeof result[key] !== 'string' || !result[key]) throw new TypeError(`Invalid V2 result envelope: ${key} must be a non-empty string`);
-  if (!Array.isArray(result.requirements) || !Array.isArray(result.actions)) throw new TypeError('Invalid V2 result envelope: requirements and actions must be arrays');
-  if (result.status === 'completed' && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) throw new TypeError('Invalid V2 result envelope: completed result has an unresolved mandatory requirement');
-  if (result.status === 'completed' && result.gaps !== null) throw new TypeError('Invalid V2 result envelope: completed result must not contain gaps');
-  if (result.status !== 'completed' && (!result.gaps || result.gaps.schemaVersion !== V2_GAP_SCHEMA_VERSION)) throw new TypeError('Invalid V2 result envelope: partial result requires V2 gaps');
+  exactFields(result, allowed, 'result');
+  if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) resultFail(`schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
+  if (!['completed', 'partial', 'cancelled'].includes(result.status)) resultFail('status is invalid');
+  if (result.verified !== (result.status === 'completed')) resultFail('verified does not match status');
+  for (const key of ['runId', 'shortId', 'intentId', 'goal', 'reason', 'finishedAt']) resultString(result[key], key);
+  if (Number.isNaN(Date.parse(result.finishedAt))) resultFail('finishedAt must be an ISO-compatible timestamp');
+  if (!Array.isArray(result.requirements) || !Array.isArray(result.actions)) resultFail('requirements and actions must be arrays');
+  result.requirements.forEach((entry, index) => validateResultRequirement(entry, `requirements[${index}]`));
+  result.actions.forEach((entry, index) => validateResultAction(entry, `actions[${index}]`));
+  if (new Set(result.requirements.map((entry) => entry.id)).size !== result.requirements.length) resultFail('requirement ids must be unique');
+  if (new Set(result.actions.map((entry) => entry.id)).size !== result.actions.length) resultFail('action ids must be unique');
+  resultObject(result.usage, 'usage');
+  exactFields(result.usage, new Set(['total', 'byPool']), 'usage');
+  if (!Number.isFinite(result.usage.total) || result.usage.total < 0) resultFail('usage.total must be non-negative');
+  resultObject(result.usage.byPool, 'usage.byPool');
+  for (const [pool, total] of Object.entries(result.usage.byPool)) {
+    resultString(pool, 'usage.byPool key');
+    if (!Number.isFinite(total) || total < 0) resultFail(`usage.byPool.${pool} must be non-negative`);
+  }
+  if (result.status === 'completed' && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) resultFail('completed result has an unresolved mandatory requirement');
+  if (result.status === 'completed' && result.gaps !== null) resultFail('completed result must not contain gaps');
+  if (result.status !== 'completed') validateGaps(result.gaps, result);
   return true;
 }
 

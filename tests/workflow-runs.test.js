@@ -104,8 +104,8 @@ function autonomousV2Fixture(home, {
     schemaVersion: 'bullswarm.workflow.result.v2', runId, shortId, intentId,
     status, verified: true, reason: 'All mandatory requirements have fresh passing evidence.',
     goal: state.intent.goal,
-    requirements: [{ id: 'requirement-1', status: 'passed', evidence: ['focused check passed'], concerns: [] }],
-    actions: [{ id: 'produce', status: 'succeeded' }, { id: 'prove', status: 'succeeded' }],
+    requirements: [{ id: 'requirement-1', text: 'Artifact is correct.', mandatory: true, status: 'passed', workRevision: 'initial', evidence: [{ sourceAction: 'prove', status: 'passed', evidence: ['focused check passed'], concerns: [], eventSequence: 1 }] }],
+    actions: [{ id: 'produce', purpose: 'Produce artifact', status: 'succeeded', outputFile: null, artifactIds: ['artifact'] }, { id: 'prove', purpose: 'Prove artifact', status: 'succeeded', outputFile: null, artifactIds: [] }],
     gaps: null, usage: { total: 0, byPool: {} }, finishedAt,
   };
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
@@ -631,6 +631,18 @@ test('I10: runs list, show, and result expose native autonomous V2 state', () =>
     assert.equal(resultHuman.status, 0, resultHuman.stderr);
     assert.match(resultHuman.stdout, /# status  completed  result ready/);
     assert.match(resultHuman.stdout, /# requirements  1\/1 passed/);
+  } finally { cleanup(); }
+});
+
+test('I10: runs result rejects a malformed nested V2 result envelope', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const fixture = autonomousV2Fixture(home);
+    fixture.result.requirements[0] = {};
+    writeFileSync(join(fixture.runDir, 'result.json'), JSON.stringify(fixture.result));
+    const result = run(wf('runs', 'result', 'v2r234', '--json'), { home });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /V2 result is invalid.*requirements\[0\]\.id/s);
   } finally { cleanup(); }
 });
 
