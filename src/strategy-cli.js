@@ -60,13 +60,18 @@ function strategyUsage() {
   return helpText(['strategy']);
 }
 
-export async function refreshStrategy(bullswarmDir, { executor, getReadings = getAllMeterReadings } = {}) {
+export async function refreshStrategy(bullswarmDir, {
+  executor, getReadings = getAllMeterReadings, onProgress = () => {},
+} = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir);
+  onProgress('Reading live provider usage');
   const { pools } = await buildPoolsLive(bullswarmDir, Date.now(), {
     getReadings,
   });
+  onProgress('Discovering available models');
   const discoveries = discoverAllModels(connectors, executor ? { executor } : {});
+  onProgress('Comparing capability, quality, budget, and quota');
   const report = buildStrategy({ connectors, pools, state, discoveries });
   state.strategy ??= {};
   state.strategy.lastReport = report;
@@ -148,11 +153,11 @@ export function strategyInventory({ pools, state, report }) {
 }
 
 export async function loadStrategyInventory(bullswarmDir, {
-  force = false, executor, getReadings = getAllMeterReadings,
+  force = false, executor, getReadings = getAllMeterReadings, onProgress = () => {},
 } = {}) {
   let state = loadState(bullswarmDir);
   const report = force || !state.strategy?.lastReport
-    ? await refreshStrategy(bullswarmDir, { executor, getReadings })
+    ? await refreshStrategy(bullswarmDir, { executor, getReadings, onProgress })
     : state.strategy.lastReport;
   state = loadState(bullswarmDir);
   const { pools } = buildPools(bullswarmDir);
@@ -284,7 +289,7 @@ export async function cmdStrategy(args, {
       if (!input.isTTY || !output.isTTY) throw new Error('strategy tui requires an interactive terminal');
       return await startStrategyDashboard({
         bullswarmDir, input, output,
-        loadInventory: ({ force }) => loadStrategyInventory(bullswarmDir, { force }),
+        loadInventory: ({ force, onProgress }) => loadStrategyInventory(bullswarmDir, { force, onProgress }),
       });
     }
     if (sub === 'inventory' || sub === 'routes') {

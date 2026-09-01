@@ -6,6 +6,22 @@ const CLEAR = '\x1b[2J\x1b[H';
 const ALT_ON = '\x1b[?1049h\x1b[?25l';
 const ALT_OFF = '\x1b[?25h\x1b[?1049l';
 
+export function inputKeys(value) {
+  const text = String(value ?? '');
+  const keys = [];
+  for (let index = 0; index < text.length;) {
+    const sequence = text.slice(index, index + 3);
+    if (/^\x1b\[[ABCD]$/.test(sequence)) {
+      keys.push(sequence);
+      index += 3;
+    } else {
+      keys.push(text[index]);
+      index += 1;
+    }
+  }
+  return keys;
+}
+
 function clip(value, width) {
   const text = String(value ?? '');
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
@@ -14,10 +30,6 @@ function clip(value, width) {
 function pad(value, width) {
   const text = clip(value, width);
   return text + ' '.repeat(Math.max(0, width - text.length));
-}
-
-function tierMark(model, tier) {
-  return model.tiers.includes(tier) ? tier[0].toUpperCase() : '·';
 }
 
 function providerLines(inventory, selected, width) {
@@ -29,13 +41,35 @@ function providerLines(inventory, selected, width) {
   });
 }
 
-function modelLines(provider, selected, width) {
-  return provider.models.map((model, index) => {
+function effectiveModelTiers(model) {
+  return model.disabled ? [] : model.effectiveTiers;
+}
+
+function modelEnabled(model) {
+  return effectiveModelTiers(model).length > 0;
+}
+
+export function visibleModels(provider, query = '') {
+  const needle = String(query).trim().toLowerCase();
+  return [...(provider?.models ?? [])]
+    .filter((model) => !needle || model.id.toLowerCase().includes(needle))
+    .sort((a, b) => Number(modelEnabled(b)) - Number(modelEnabled(a)) || a.id.localeCompare(b.id));
+}
+
+function tierCell(model, tier, selected) {
+  const enabled = effectiveModelTiers(model).includes(tier);
+  const label = `${enabled ? '✓' : ' '} ${tier[0].toUpperCase()}${tier.slice(1)}`;
+  return selected ? `⟦${label}⟧` : `[${label}]`;
+}
+
+function modelLines(models, selected, selectedTier, width) {
+  const tierWidth = 32;
+  return models.map((model, index) => {
     const marker = index === selected ? '›' : ' ';
-    const tiers = model.disabled ? 'OFF' : STRATEGY_TIERS.map((tier) => tierMark(model, tier)).join('');
-    const automatic = model.effectiveTiers.filter((tier) => !model.tiers.includes(tier));
-    const current = automatic.length ? `auto:${automatic.map((tier) => tier[0].toUpperCase()).join('')}` : '';
-    return `${marker} [${tiers}] ${pad(model.id, Math.max(10, width - 22))} ${current}`.trimEnd();
+    const cells = STRATEGY_TIERS.map((tier, tierIndex) => tierCell(
+      model, tier, index === selected && tierIndex === selectedTier,
+    )).join(' ');
+    return `${marker} ${pad(model.id, Math.max(8, width - tierWidth))} ${cells}`;
   });
 }
 
@@ -57,7 +91,7 @@ function selectedWindow(lines, selected, count) {
 
 export function renderStrategyDashboard(inventory, {
   view = 'providers', providerIndex = 0, modelIndex = 0, width = 100, height = 30, message = '',
-  title = 'Bullswarm strategy',
+  title = 'Bullswarm strategy', tierIndex = 0, search = '',
 } = {}) {
   const narrow = width < 78;
   const provider = inventory.providers[providerIndex] ?? null;
@@ -66,15 +100,16 @@ export function renderStrategyDashboard(inventory, {
     '',
   ];
   const bodyHeight = Math.max(4, height - 11);
+  const models = visibleModels(provider, search);
   if (narrow) {
     if (view === 'providers') {
       lines.push('Providers · Space toggle · Enter/→ models');
       lines.push(...selectedWindow(providerLines(inventory, providerIndex, width), providerIndex, bodyHeight - 1));
     } else {
       lines.push(`Models · ${provider?.name ?? 'none'} · ${provider?.enabled ? 'provider on' : 'provider off'}`);
-      lines.push('H/M/L toggle tiers · X turns model off');
-      const models = provider?.models.length ? modelLines(provider, modelIndex, width) : ['  No models detected.'];
-      lines.push(...selectedWindow(models, modelIndex, bodyHeight - 2));
+      lines.push(`Search: ${search || 'type to filter'} · ${models.length}/${provider?.models.length ?? 0} models`);
+      const rows = models.length ? modelLines(models, modelIndex, tierIndex, width) : ['  No matching models.'];
+      lines.push(...selectedWindow(rows, modelIndex, bodyHeight - 2));
     }
   } else {
     const leftWidth = Math.min(40, Math.floor(width * 0.38));
@@ -83,10 +118,10 @@ export function renderStrategyDashboard(inventory, {
       `Providers${view === 'providers' ? ' · focused' : ''}`,
       ...selectedWindow(providerLines(inventory, providerIndex, leftWidth), providerIndex, bodyHeight - 1),
     ];
-    const models = provider?.models.length ? modelLines(provider, modelIndex, rightWidth) : ['  No models detected.'];
+    const rows = models.length ? modelLines(models, modelIndex, tierIndex, rightWidth) : ['  No matching models.'];
     const right = [
-      `Models · ${provider?.name ?? 'none'}${view === 'models' ? ' · focused' : ''}`,
-      ...selectedWindow(models, modelIndex, bodyHeight - 1),
+      `Models · ${provider?.name ?? 'none'}${view === 'models' ? ' · focused' : ''} · Search: ${search || 'type to filter'}`,
+      ...selectedWindow(rows, modelIndex, bodyHeight - 1),
     ];
     for (let i = 0; i < bodyHeight; i++) {
       lines.push(`${pad(left[i] ?? '', leftWidth)} │ ${clip(right[i] ?? '', rightWidth)}`);
@@ -95,9 +130,43 @@ export function renderStrategyDashboard(inventory, {
   lines.push('', 'Effective choices now');
   lines.push(...routeLines(inventory));
   lines.push('', message || (view === 'providers'
-    ? '↑/↓ select · Space enable/disable · Enter/→ models · R refresh · Q quit'
-    : '↑/↓ select · H/M/L assign · X off · Esc/← providers · R refresh · Q quit'));
+    ? '↑/↓ select · Space enable/disable · Enter/→ models · Ctrl+R refresh · Q quit'
+    : '↑/↓ model · ←/→ tier · Enter toggle · type search · Backspace · Esc providers · Ctrl+R refresh'));
   return lines.slice(0, Math.max(8, height)).map((line) => clip(line, width)).join('\n');
+}
+
+export function renderSetupChoice({ selected = 0, width = 100, height = 30, title = 'Bullswarm setup' } = {}) {
+  const choices = [
+    ['Analyze and recommend', 'Inspect live usage and available models, then suggest efficient defaults.'],
+    ['Configure manually', 'Open the model matrix without replacing your current choices.'],
+  ];
+  const lines = [title, '', 'How would you like to configure routing?', ''];
+  for (const [index, [label, detail]] of choices.entries()) {
+    lines.push(`${index === selected ? '›' : ' '} ${label}${index === 0 ? ' (recommended)' : ''}`);
+    lines.push(`    ${detail}`, '');
+  }
+  lines.push('↑/↓ choose · Enter continue · Q quit');
+  return lines.slice(0, height).map((line) => clip(line, width)).join('\n');
+}
+
+export function renderAnalysisProgress({
+  title = 'Bullswarm setup', label = 'Preparing setup', heading = 'Analyzing providers and models…',
+  startedAt = Date.now(), width = 100, height = 30,
+} = {}) {
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const lines = [
+    title,
+    '',
+    heading,
+    '',
+    `● ${label}`,
+    `  ${seconds}s elapsed · this may take a moment while provider CLIs respond`,
+    '',
+    heading.startsWith('Analyzing')
+      ? 'Bullswarm will show the model matrix when analysis is complete.'
+      : 'Bullswarm will show the model matrix when your settings are ready.',
+  ];
+  return lines.slice(0, height).map((line) => clip(line, width)).join('\n');
 }
 
 function persistProvider(bullswarmDir, pool, enabled) {
@@ -139,53 +208,117 @@ function persistModel(bullswarmDir, inventory, pool, model, tiers, changedTier =
 
 export async function startStrategyDashboard({
   bullswarmDir, loadInventory, input = process.stdin, output = process.stdout,
-  title = 'Bullswarm strategy',
+  title = 'Bullswarm strategy', promptForAnalysis = false,
 } = {}) {
-  output.write(`${ALT_ON}${CLEAR}${title}\n\nDiscovering providers, models, and live usage…`);
+  output.write(ALT_ON);
   input.setRawMode?.(true);
   input.resume?.();
-  let inventory;
-  try {
-    inventory = await loadInventory({ force: true });
-  } catch (error) {
-    input.setRawMode?.(false);
-    input.pause?.();
-    output.write(ALT_OFF);
-    throw error;
-  }
+  let inventory = null;
+  let screen = promptForAnalysis ? 'choice' : 'loading';
+  let choiceIndex = 0;
   let view = 'providers';
   let providerIndex = 0;
   let modelIndex = 0;
+  let tierIndex = 0;
+  let search = '';
   let message = '';
-  const render = () => output.write(`${CLEAR}${renderStrategyDashboard(inventory, {
-    view, providerIndex, modelIndex, width: output.columns ?? 100, height: output.rows ?? 30, message, title,
+  let busy = false;
+  let progressLabel = 'Preparing setup';
+  let progressHeading = 'Analyzing providers and models…';
+  let progressStartedAt = Date.now();
+  let progressTimer = null;
+  const dimensions = () => ({ width: output.columns ?? 100, height: output.rows ?? 30 });
+  const renderChoice = () => output.write(`${CLEAR}${renderSetupChoice({
+    selected: choiceIndex, title, ...dimensions(),
   })}`);
-  const update = async (refresh = false) => {
-    inventory = await loadInventory({ force: refresh });
+  const renderProgress = () => output.write(`${CLEAR}${renderAnalysisProgress({
+    title, label: progressLabel, heading: progressHeading, startedAt: progressStartedAt, ...dimensions(),
+  })}`);
+  const render = () => output.write(`${CLEAR}${renderStrategyDashboard(inventory, {
+    view, providerIndex, modelIndex, tierIndex, search, message, title, ...dimensions(),
+  })}`);
+  const update = async (refresh = false, showProgress = false) => {
+    const selectedId = visibleModels(inventory?.providers?.[providerIndex], search)[modelIndex]?.id ?? null;
+    if (showProgress) {
+      screen = 'loading';
+      progressStartedAt = Date.now();
+      renderProgress();
+    }
+    inventory = await loadInventory({
+      force: refresh,
+      onProgress: (label) => {
+        progressLabel = label;
+        if (showProgress) renderProgress();
+      },
+    });
     providerIndex = Math.min(providerIndex, Math.max(0, inventory.providers.length - 1));
-    modelIndex = Math.min(modelIndex, Math.max(0, (inventory.providers[providerIndex]?.models.length ?? 1) - 1));
+    const models = visibleModels(inventory.providers[providerIndex], search);
+    const preservedIndex = selectedId ? models.findIndex((model) => model.id === selectedId) : -1;
+    modelIndex = preservedIndex >= 0 ? preservedIndex : Math.min(modelIndex, Math.max(0, models.length - 1));
+    screen = 'dashboard';
     render();
   };
-  render();
-  return await new Promise((resolve) => {
-    const finish = () => {
+  return await new Promise((resolve, reject) => {
+    const finish = (error = null) => {
+      if (progressTimer) clearInterval(progressTimer);
       input.off?.('data', onData);
       input.setRawMode?.(false);
       input.pause?.();
       output.write(ALT_OFF);
-      resolve(0);
+      if (error) reject(error);
+      else resolve(0);
     };
-    const onData = async (chunk) => {
-      const key = String(chunk);
-      if (key === 'q' || key === 'Q' || key === '\x03') return finish();
+    const beginLoad = async (force, label, analyze = true) => {
+      if (busy) return;
+      busy = true;
+      screen = 'loading';
+      progressStartedAt = Date.now();
+      progressLabel = label;
+      progressHeading = analyze ? 'Analyzing providers and models…' : 'Loading provider and model settings…';
+      renderProgress();
+      progressTimer = setInterval(renderProgress, 1000);
+      try {
+        await update(force, true);
+      } catch (error) {
+        finish(error);
+      } finally {
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = null;
+        busy = false;
+      }
+    };
+    const handleKey = async (key) => {
+      if (key === '\x03') return finish();
       const down = key === '\x1b[B';
       const up = key === '\x1b[A';
-      const right = key === '\x1b[C' || key === '\r' || key === '\n';
-      const left = key === '\x1b[D' || key === ESC;
+      const right = key === '\x1b[C';
+      const left = key === '\x1b[D';
+      const enter = key === '\r' || key === '\n';
+      if (screen === 'choice') {
+        if (key === 'q' || key === 'Q') return finish();
+        if (down) choiceIndex = Math.min(1, choiceIndex + 1);
+        if (up) choiceIndex = Math.max(0, choiceIndex - 1);
+        if (enter || right) {
+          void beginLoad(
+            choiceIndex === 0,
+            choiceIndex === 0
+              ? 'Starting provider and model analysis'
+              : 'Loading current choices for manual configuration',
+            choiceIndex === 0,
+          );
+          return;
+        }
+        renderChoice();
+        return;
+      }
+      if (screen === 'loading' || !inventory) return;
       if (view === 'providers') {
+        if (key === 'q' || key === 'Q') return finish();
         if (down) providerIndex = Math.min(inventory.providers.length - 1, providerIndex + 1);
         if (up) providerIndex = Math.max(0, providerIndex - 1);
-        if (right && inventory.providers[providerIndex]) { view = 'models'; modelIndex = 0; }
+        if ((right || enter) && inventory.providers[providerIndex]) {
+          view = 'models'; modelIndex = 0; tierIndex = 0; search = '';
+        }
         if (key === ' ') {
           const provider = inventory.providers[providerIndex];
           if (provider) {
@@ -197,27 +330,46 @@ export async function startStrategyDashboard({
         }
       } else {
         const provider = inventory.providers[providerIndex];
-        const model = provider?.models[modelIndex];
-        if (down) modelIndex = Math.min((provider?.models.length ?? 1) - 1, modelIndex + 1);
+        const models = visibleModels(provider, search);
+        const model = models[modelIndex];
+        if (down) modelIndex = Math.min(Math.max(0, models.length - 1), modelIndex + 1);
         if (up) modelIndex = Math.max(0, modelIndex - 1);
-        if (left) view = 'providers';
-        const tier = ({ h: 'high', H: 'high', m: 'medium', M: 'medium', l: 'low', L: 'low' })[key];
-        if (model && (tier || key === 'x' || key === 'X')) {
-          const tiers = key === 'x' || key === 'X'
-            ? []
-            : model.tiers.includes(tier) ? model.tiers.filter((entry) => entry !== tier) : [...model.tiers, tier];
-          persistModel(bullswarmDir, inventory, provider.name, model.id, tiers, tier, key === 'x' || key === 'X');
+        if (left) tierIndex = Math.max(0, tierIndex - 1);
+        if (right) tierIndex = Math.min(STRATEGY_TIERS.length - 1, tierIndex + 1);
+        if (key === ESC) {
+          if (search) { search = ''; modelIndex = 0; }
+          else view = 'providers';
+        }
+        if (key === '\x7f' || key === '\b') {
+          search = search.slice(0, -1);
+          modelIndex = 0;
+        } else if (/^[a-zA-Z0-9._:/~-]$/.test(key)) {
+          search += key;
+          modelIndex = 0;
+        }
+        if (model && (enter || key === ' ')) {
+          const tier = STRATEGY_TIERS[tierIndex];
+          const current = effectiveModelTiers(model);
+          const tiers = current.includes(tier)
+            ? current.filter((entry) => entry !== tier)
+            : [...current, tier];
+          persistModel(bullswarmDir, inventory, provider.name, model.id, tiers, tier, tiers.length === 0);
           message = `${model.id}: ${tiers.length ? tiers.join(', ') : 'off'}`;
           await update();
           return;
         }
       }
-      if (key === 'r' || key === 'R') {
-        message = 'Refreshing providers, models, and meters…'; render();
-        await update(true); message = 'Live discovery refreshed'; render(); return;
+      if (key === '\x12') {
+        await beginLoad(true, 'Refreshing providers, models, and live usage');
+        message = 'Live analysis refreshed'; render(); return;
       }
       render();
     };
+    const onData = async (chunk) => {
+      for (const key of inputKeys(chunk)) await handleKey(key);
+    };
     input.on('data', onData);
+    if (screen === 'choice') renderChoice();
+    else void beginLoad(true, 'Starting provider and model analysis');
   });
 }
