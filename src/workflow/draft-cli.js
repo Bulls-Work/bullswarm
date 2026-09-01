@@ -6,7 +6,7 @@
 //   bullswarm workflow draft list
 //   bullswarm workflow draft phase add <name> <phase>
 //   bullswarm workflow draft phase remove <name> <phase>
-//   bullswarm workflow draft step add <name> <phase> <step-id> [--type run|fanout|verify]
+//   bullswarm workflow draft step add <name> <phase> <step-id> [--type run|fanout|verify|decide]
 //                                                  [--lane ...] [--prompt ...]
 //                                                  [--task-file ...] [--add-dir ...]
 //                                                  [--pool ...] [--items-from ...]
