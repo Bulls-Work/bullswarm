@@ -202,6 +202,21 @@ acceptance prompts. The suite passes 507/507 at commit `f9c6718`, and the clean
 streak restarted from that exact revision with three parallel Luna-only hard
 repetitions: `j4yp52`, `fcpins`, and `ib22vs`.
 
+Those repetitions subsequently proved the engine path with three terminal
+Luna-only runs, zero rejected or interrupted attempts, fresh passing evidence
+for every requirement, and independent full-suite results of 514/514,
+516/516, and 515/515. A later exact-candidate repetition then exposed a defect
+in the historical canary specification rather than in its implementation: it
+required the sidebar to remain exactly 34 columns at every terminal width,
+including 20 columns, while the locked mobile product shape below requires
+narrow terminals to use one pane at a time. Independent evidence correctly
+rejected that impossible conjunction, and the other identical paid runs were
+cancelled immediately. The canonical difficult fixture now expresses the
+approved behavior explicitly: the sidebar is 34 columns whenever the wide
+two-pane shell is active; narrow/mobile terminals switch to the one-pane
+navigation model without horizontal overflow. The acceptance streak restarts
+from the candidate revision containing this clarified fixture record.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.
@@ -705,6 +720,12 @@ Use the same routing policy and fresh disposable worktrees for:
 - structured-output producer/consumer flow;
 - quota/auth replacement between Luna pools; and
 - the historical TUI/workflow goal that produced repeated verifier rejection.
+
+The historical TUI fixture must use the locked responsive contract from
+section 4.1: a 34-column sidebar in wide two-pane mode and one pane at a time
+on narrow/mobile terminals. It must not revive the earlier contradictory
+requirement that a 34-column sidebar fit inside terminals narrower than 34
+columns.
 
 Success target:
 
