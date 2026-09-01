@@ -1185,10 +1185,28 @@ function workflowTimelineLines(model, width) {
 }
 
 function groupedTimeline(events, model, width, workflowFinishedAt) {
-  events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)
-    || Number(a.sequence ?? Number.MAX_SAFE_INTEGER) - Number(b.sequence ?? Number.MAX_SAFE_INTEGER));
+  const chronological = (a, b) => Date.parse(a.at) - Date.parse(b.at)
+    || Number(a.sequence ?? Number.MAX_SAFE_INTEGER) - Number(b.sequence ?? Number.MAX_SAFE_INTEGER);
+  events.sort(chronological);
+  // Phase blocks are a navigable program, so present adjacent phase activity in
+  // the declared order even when parallel workers finish out of order. Planner
+  // checkpoints remain chronological boundaries between separate programs.
+  const phaseRank = new Map(model.phases.map((phase, index) => [phase.label, index]));
+  const orderedEvents = [];
+  for (let index = 0; index < events.length;) {
+    if (!phaseRank.has(events[index].segment)) {
+      orderedEvents.push(events[index]);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < events.length && phaseRank.has(events[end].segment)) end += 1;
+    orderedEvents.push(...events.slice(index, end).sort((a, b) =>
+      phaseRank.get(a.segment) - phaseRank.get(b.segment) || chronological(a, b)));
+    index = end;
+  }
   const segments = new Map();
-  for (const event of events) {
+  for (const event of orderedEvents) {
     const name = event.segment ?? 'Workflow';
     const firstAt = event.startedAt ?? event.at;
     if (!segments.has(name)) segments.set(name, { name, events: [], first: firstAt, last: event.at });
@@ -1200,7 +1218,7 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
   const lines = [];
   let previousSegment = null;
   const openedSegments = new Set();
-  for (const event of events) {
+  for (const event of orderedEvents) {
     if (event.segment !== previousSegment) {
       if (lines.length) lines.push('');
       const segment = segments.get(event.segment ?? 'Workflow');
@@ -1220,7 +1238,7 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
     lines.push(...event.lines.map((line) => ({ text: line, segment: event.segment, at: event.at })));
   }
   if (!lines.length) lines.push({ text: 'Waiting for the first durable workflow milestone', segment: null });
-  return { lines, milestoneCount: events.length };
+  return { lines, milestoneCount: orderedEvents.length };
 }
 
 function timelineSegmentDisplayName(name, model) {

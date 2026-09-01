@@ -1454,7 +1454,7 @@ test('timeline segments replace per-line phase prefixes with one header per phas
   assert.match(rendered, /○ \[Phase: Verify\] · verify-all/);
 });
 
-test('a phase re-opened after another phase renders a continued segment header', () => {
+test('parallel phase events stay grouped in declared phase-number order', () => {
   const state = {
     runId: 'wf-interleaved', shortId: 'int234', workflow: 'interleaved', status: 'completed',
     startedAt: iso(0), finishedAt: iso(270),
@@ -1476,20 +1476,17 @@ test('a phase re-opened after another phase renders a continued segment header',
   };
   const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 40 });
 
-  // Implement opens, Verify runs inside it, Implement re-opens as `· continued`
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Implement', 'Verify', 'Implement · continued']);
-  // the first appearance of a phase is never marked continued
-  assert.equal(segmentLabels(screen).filter((label) => label.startsWith('Implement')).length, 2);
-  assert.deepEqual(segmentRows(screen, 'Implement · continued').map(normalizeRow), [
+  // Worker completion times interleave, but the human-facing phase program is
+  // stable: Phase 1 is a single block before Phase 2.
+  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Implement', 'Verify']);
+  assert.deepEqual(segmentRows(screen, 'Implement').map(normalizeRow), [
+    'HH:MM ├─ started',
+    'HH:MM │ ├─✓ implement-a 1m00s',
     'HH:MM │ └─✓ implement-b 30s',
     'HH:MM └─✓ completed 2/2',
   ]);
-
-  // chronological order is preserved across the interleave
-  const stamps = timelinePaneRows(screen)
-    .map((line) => /^(\d{2}:\d{2})\s/.exec(line)?.[1])
-    .filter(Boolean);
-  assert.deepEqual(stamps, [...stamps].sort());
+  assert.match(screen, /── Phase 1 · Implement/);
+  assert.match(screen, /── Phase 2 · Verify/);
   assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
 });
 
