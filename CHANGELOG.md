@@ -1,6 +1,31 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.22.0 — autonomous Dynamic Workflow V2
+
+- Autonomous goals now run on the V2 kernel: agents propose bounded programs
+  and requirement-scoped evidence, while Bullswarm deterministically owns
+  proposal validation, scheduling, workspace ownership, retries, the evidence
+  ledger, completion, and the stable result envelope. Retired autonomous V1
+  runs are intentionally not migrated; authored graph workflows remain a
+  separate supported engine.
+
+- Worker and evidence contracts now use durable candidate files plus local
+  schema validators, preventing malformed agent output from entering workflow
+  state. Public V2 results are atomically published, recoverable after an
+  interrupted terminal write, deeply validated when read, and expose only a
+  stable failure summary shape.
+
+- The interactive workflow application now combines the workflow list and
+  responsive run browser. Its main view presents a phase-aware timeline,
+  Workflow Planner milestones, live workers with their latest streamed event,
+  and a concise next action; technical prompts, sessions, usage, and artifact
+  paths remain available on demand. Narrow/mobile terminals use the same
+  hierarchy without requiring a separate command surface.
+
+- `bullswarm run --heartbeat` and the default workflow watch provide compact,
+  interval-based progress instead of streaming raw agent output. Rich help and
+  the packaged agent skill document how to inspect, watch, browse, and obtain a
+  stable terminal result.
 
 - Autonomous V2 `maxAgents`, `maxActions`, and `maxExpansionRounds` are now
   soft planning targets instead of hard termination or proposal-rejection
