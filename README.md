@@ -252,11 +252,12 @@ per provider — the first as the primary `opencode2` pool, each additional one
 as its own `opencode2:<id>` pool — which is what the `--worker-model
 relay/gpt-5.6-luna` example above locks onto.
 
-`--max-agents`, `--max-actions`, and `--max-expansion-rounds` are hard spending
-and growth safeguards. `--concurrency` bounds simultaneous dependency-ready
-dispatches. There is no default wall-clock timeout: fresh semantic/transport
-heartbeats allow a useful worker to continue, while silence is inspected
-rather than blindly killed.
+`--max-agents`, `--max-actions`, and `--max-expansion-rounds` are soft V2
+planning targets: they guide the planner toward a small program but do not
+hard-stop useful work. `--concurrency` is the actual bound on simultaneous
+dependency-ready dispatches. There is no default wall-clock timeout: fresh
+semantic/transport heartbeats allow a useful worker to continue, while silence
+is inspected rather than blindly killed.
 Interactive setup also records a worktree-isolation
 preference (`agent-decides`, `off`, or `required`); Bullswarm communicates that
 policy to the V2 kernel. Unless explicitly set to `off`, mutating autonomous
