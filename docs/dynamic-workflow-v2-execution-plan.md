@@ -19,7 +19,7 @@ new deterministic kernel gates pass.
 ### Current execution checkpoint
 
 As of 2026-09-01, sequences 0-15 are implemented or accepted in the candidate
-worktree and the offline suite passes 506/506. This includes the V2-only goal/state/result
+worktree and the offline suite passes 507/507. This includes the V2-only goal/state/result
 schemas, generic action and evidence contracts, requirement ledger, planner
 validator, dependency scheduler, changed-path ownership, isolated integration,
 mechanical-only retry/fallback, gap consolidation, kernel completion, durable
@@ -188,6 +188,19 @@ direct ownership of a bounded acceptance slice, not incidental test/file
 association. Requirement prose is explicit context for the named purpose and
 prompt, never an ownership expansion; sibling clauses requiring another file
 must remain with their own scout unit. The streak remains 0/5.
+
+A later read-only reliability canary found a deterministic cancellation
+durability mismatch: the dashboard persisted `source` and `requesterPid`, but
+the V2 state validator rejected those fields on reload or resume. The schema
+now accepts and validates that provenance, and a round-trip/resume regression
+guards it. The same canary also clarified that ordinary work output and
+evidence transport are intentionally different: non-evidence workers deliver
+their full result in the captured final response, while evidence workers write
+the kernel-provided candidate JSON so exact schema validation does not depend
+on the model retyping its verdict. Those rules must not be conflated in future
+acceptance prompts. The suite passes 507/507 at commit `f9c6718`, and the clean
+streak restarted from that exact revision with three parallel Luna-only hard
+repetitions: `j4yp52`, `fcpins`, and `ib22vs`.
 
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
