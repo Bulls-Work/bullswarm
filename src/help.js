@@ -410,13 +410,13 @@ const strategyText = rich({
     { cmd: 'bullswarm strategy', note: 'browse and configure interactively' },
     { cmd: 'bullswarm strategy inventory --json', note: 'inspect everything from another agent' },
   ],
-  next: 'Use Space and H/M/L in the TUI, or inventory --json plus configure --file for an agent.',
+  next: 'Use arrows and Enter in the TUI, or inventory --json plus configure --file for an agent.',
 });
 
 const strategyTuiText = rich({
   usage: 'bullswarm strategy tui',
   purpose: 'Open the full-screen provider and model strategy control center.', args: [], options: [],
-  safety: ['Space and H/M/L/X persist routing choices immediately; Q exits without affecting running work'],
+  safety: ['Provider Space toggles and model-tier Enter toggles persist immediately; Ctrl+C exits without affecting running work'],
   examples: [{ cmd: 'bullswarm strategy tui' }], next: 'Use bullswarm strategy routes --json to inspect the effective result.',
 });
 const strategyInventoryText = rich({

@@ -376,7 +376,8 @@ async function cmdSetup(opts) {
     return startStrategyDashboard({
       bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
       title: 'Bullswarm setup',
-      loadInventory: ({ force }) => loadStrategyInventory(getBullswarmDir(), { force }),
+      promptForAnalysis: true,
+      loadInventory: ({ force, onProgress }) => loadStrategyInventory(getBullswarmDir(), { force, onProgress }),
     });
   }
   return runWizard(getBullswarmDir(), opts);

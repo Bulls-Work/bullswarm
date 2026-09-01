@@ -153,12 +153,16 @@ bullswarm strategy exclude-model claude-fable-5
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
 ```
 
-The TUI lists every detected provider/account separately so its toggle matches
-its own quota meter. Enter drills into that provider's full detected model
-list. `H`, `M`, and `L` independently add or remove the selected model from
-those effort tiers; `X` disables only that model. The effective-route panel is
-recomputed from the same policy and live surplus used by real dispatch.
-Provider and model edits affect new direct runs and workflow dispatches.
+Setup first asks whether to analyze live usage and recommend routes or open the
+current configuration for manual editing. Analysis shows its current stage
+while provider CLIs respond. The TUI lists every detected provider/account
+separately so its toggle matches its own quota meter. Enter drills into that
+provider's detected models. In the model matrix, `Up`/`Down` selects a model,
+`Left`/`Right` selects High, Medium, or Low, and `Enter` toggles the assignment.
+Type to filter model names; assigned models sort above unassigned or disabled
+models. The effective-route panel is recomputed from the same policy and live
+surplus used by real dispatch. Provider and model edits affect new direct runs
+and workflow dispatches.
 
 An external AI agent should first read `strategy inventory --json`, then use
 the validated `set-provider` / `set-model` commands or write one JSON document

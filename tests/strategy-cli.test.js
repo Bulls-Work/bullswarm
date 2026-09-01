@@ -8,7 +8,9 @@ import { loadState, saveState } from '../src/lib/state.js';
 import {
   refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy, strategyInventory,
 } from '../src/strategy-cli.js';
-import { renderStrategyDashboard } from '../src/strategy-dashboard.js';
+import {
+  inputKeys, renderAnalysisProgress, renderSetupChoice, renderStrategyDashboard, visibleModels,
+} from '../src/strategy-dashboard.js';
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-strategy-cli-'));
@@ -25,14 +27,21 @@ function fixture() {
 test('strategy refresh persists honest discovery and tier suggestions', async () => {
   const f = fixture();
   try {
+    const progress = [];
     const report = await refreshStrategy(f.dir, {
       executor: (command) => command.includes('grok') ? '* grok-4.6 (default)\n' : 'gpt-5.6-luna  low\n',
       getReadings: async () => ({}),
+      onProgress: (label) => progress.push(label),
     });
     assert.equal(report.schemaVersion, 'bullswarm.strategy.v1');
     assert.ok(report.discoveries.grok.models.some((model) => model.id === 'grok-4.6'));
     assert.equal(loadState(f.dir).strategy.lastReport.capturedAt, report.capturedAt);
     assert.match(report.caveats.join(' '), /does not invent/i);
+    assert.deepEqual(progress, [
+      'Reading live provider usage',
+      'Discovering available models',
+      'Comparing capability, quality, budget, and quota',
+    ]);
   } finally { f.cleanup(); }
 });
 
@@ -198,4 +207,45 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.match(screen, /Providers/);
   assert.match(screen, /Effective choices now/);
   assert.match(screen, /worker\/smart/);
+});
+
+test('setup choice and analysis progress explain the interactive decision', () => {
+  const choice = renderSetupChoice({ selected: 0, width: 80, height: 20 });
+  assert.match(choice, /Analyze and recommend \(recommended\)/);
+  assert.match(choice, /Configure manually/);
+  const progress = renderAnalysisProgress({
+    label: 'Discovering available models', startedAt: Date.now() - 2_000, width: 80, height: 20,
+  });
+  assert.match(progress, /Analyzing providers and models/);
+  assert.match(progress, /Discovering available models/);
+  assert.match(progress, /2s elapsed/);
+});
+
+test('model matrix filters by typing and sorts assigned models before disabled models', () => {
+  const provider = { models: [
+    { id: 'legacy-disabled', tiers: [], effectiveTiers: [], disabled: true },
+    { id: 'gpt-5.6-luna', tiers: ['low'], effectiveTiers: ['low'], disabled: false },
+    { id: 'gpt-5.6-sol', tiers: ['high'], effectiveTiers: ['high'], disabled: false },
+  ] };
+  assert.deepEqual(visibleModels(provider).map((model) => model.id), [
+    'gpt-5.6-luna', 'gpt-5.6-sol', 'legacy-disabled',
+  ]);
+  assert.deepEqual(visibleModels(provider, 'sol').map((model) => model.id), ['gpt-5.6-sol']);
+
+  const inventory = {
+    providers: [{ name: 'codex', enabled: true, usedPct: 10, models: provider.models }],
+    routes: {},
+  };
+  const screen = renderStrategyDashboard(inventory, {
+    view: 'models', providerIndex: 0, modelIndex: 1, tierIndex: 0, search: 'gpt', width: 110, height: 30,
+  });
+  assert.match(screen, /Search: gpt/);
+  assert.match(screen, /High/);
+  assert.match(screen, /Medium/);
+  assert.match(screen, /Low/);
+  assert.match(screen, /⟦✓ High⟧/);
+});
+
+test('raw terminal input preserves arrows and splits batched search typing', () => {
+  assert.deepEqual(inputKeys(`opus\x1b[C\r`), ['o', 'p', 'u', 's', '\x1b[C', '\r']);
 });
