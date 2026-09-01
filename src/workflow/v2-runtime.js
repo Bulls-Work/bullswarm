@@ -158,6 +158,10 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
     mutationProof,
     '', scopedPrompt,
     '',
+    'Output transport (mandatory): Bullswarm captures your final response verbatim as this action\'s durable output artifact.',
+    '- Do not create, overwrite, or point to a file under the Bullswarm run directory as your deliverable. Those task/output paths are kernel-owned transport and may be replaced after your process exits.',
+    '- For a read-only analysis or report action, put the complete substantive report in the final response itself, not a progress recap, short summary, or path to another file.',
+    '- A separate workspace artifact is valid only when it is explicitly listed in ownedFiles; still describe its concrete contents and validation in the final response.',
     'Finish with a concise, substantive delivery summary containing the concrete work or findings and exact validation performed.',
   ].filter(Boolean).join('\n');
 }

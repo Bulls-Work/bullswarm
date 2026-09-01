@@ -107,6 +107,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.match(workTask, /every applicable level, mode, and supported width/i);
   assert.match(workTask, /authoritative acceptance text outranks existing implementation and tests/i);
   assert.match(workTask, /do not preserve the contradiction merely because the baseline is green/i);
+  assert.match(workTask, /captures your final response verbatim as this action's durable output artifact/i);
+  assert.match(workTask, /Do not create, overwrite, or point to a file under the Bullswarm run directory/i);
+  assert.match(workTask, /complete substantive report in the final response itself/i);
+  assert.match(workTask, /separate workspace artifact is valid only when it is explicitly listed in ownedFiles/i);
   assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
   assert.match(evidenceTask, /mandatory V2 evidence preflight below is the only output contract/i);
   assert.match(evidenceTask, /Bullswarm reads that exact file/i);
@@ -284,6 +288,13 @@ test('schema-valid semantic evidence failure is consolidated once and never auto
   assert.deepEqual(result.state.attempts.map((attempt) => attempt.actionId), ['write-report', 'inspect-report']);
   assert.equal(result.state.planner.attempts.length, 2);
   assert.equal(result.state.program.revision, 1, 'no repair program was invented');
+  assert.equal(result.state.cancellation.requested, false, 'semantic evidence must never impersonate operator cancellation');
+  assert.equal(result.state.cancellation.requestedAt, null);
+  assert.equal(
+    readEvents(result.runDir).some((event) => event.type === 'workflow.cancellation_requested'),
+    false,
+    'semantic evidence failure must not emit an operator cancellation event',
+  );
 });
 
 test('repeatedly invalid planner output stops before any worker dispatch', async () => {

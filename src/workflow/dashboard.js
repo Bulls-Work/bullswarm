@@ -104,7 +104,7 @@ function tokenText(usage) {
   return total >= 1000 ? `${(total / 1000).toFixed(1)}k tok` : `${total} tok`;
 }
 
-export function requestCancel(bullswarmDir, token) {
+export function requestCancel(bullswarmDir, token, { source = 'api', requesterPid = process.pid } = {}) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
@@ -113,8 +113,19 @@ export function requestCancel(bullswarmDir, token) {
   if (isV2State(state)) {
     if (V2_TERMINAL.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
     const requestedAt = new Date().toISOString();
-    state.cancellation = { requested: true, requestedAt, reason: 'operator requested stop' };
-    appendEvent(resolved.runDir, state, 'workflow.cancellation_requested', { requestedAt, reason: state.cancellation.reason });
+    state.cancellation = {
+      requested: true,
+      requestedAt,
+      reason: 'operator requested stop',
+      source,
+      requesterPid,
+    };
+    appendEvent(resolved.runDir, state, 'workflow.cancellation_requested', {
+      requestedAt,
+      reason: state.cancellation.reason,
+      source,
+      requesterPid,
+    });
     writeJsonAtomic(statePath, state);
     return { ...resolved, state, alreadyFinished: false };
   }
@@ -2232,7 +2243,7 @@ export async function runDashboard(bullswarmDir, {
       const target = detail ? selectedRunId : rows[selected]?.runId;
       if (!target) { message = 'No workflow selected.'; return paint(); }
       try {
-        const result = requestCancel(bullswarmDir, target);
+        const result = requestCancel(bullswarmDir, target, { source: 'interactive-tui' });
         message = result.alreadyFinished
           ? 'That workflow has already finished.'
           : `Stop requested for ${result.shortId ?? result.runId}.`;
@@ -2425,7 +2436,7 @@ export async function runDashboard(bullswarmDir, {
 
 export function dashboardJson(bullswarmDir, { all = false, token = null, cancel = false } = {}) {
   if (cancel) {
-    const result = requestCancel(bullswarmDir, token);
+    const result = requestCancel(bullswarmDir, token, { source: 'cli' });
     return { action: 'cancel', ...result };
   }
   if (token) {

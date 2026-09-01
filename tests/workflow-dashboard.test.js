@@ -170,8 +170,14 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.doesNotMatch(narrowPhases, /Workflow timeline/);
     assert.match(narrowAgents, /Evidence · 0\/1 complete/);
     assert.doesNotMatch(narrowAgents, /Workflow timeline/);
-    const cancelled = requestCancel(home, 'v2d234');
+    const cancelled = requestCancel(home, 'v2d234', { source: 'test', requesterPid: 1234 });
     assert.equal(cancelled.state.cancellation.requested, true);
+    assert.equal(cancelled.state.cancellation.source, 'test');
+    assert.equal(cancelled.state.cancellation.requesterPid, 1234);
+    const cancellationEvent = readEvents(join(home, 'workflows', 'wf-v2dash-abcdef'))
+      .find((event) => event.type === 'workflow.cancellation_requested');
+    assert.equal(cancellationEvent.payload.source, 'test');
+    assert.equal(cancellationEvent.payload.requesterPid, 1234);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
