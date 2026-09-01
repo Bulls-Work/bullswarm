@@ -15,7 +15,8 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
-import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
+import { cmdStrategy, loadStrategyInventory, maybeRefreshStrategy } from './strategy-cli.js';
+import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
@@ -33,6 +34,7 @@ export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
   'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
+  'wizard',
 ]);
 
 export function parseArgs(argv) {
@@ -369,6 +371,13 @@ async function cmdSetup(opts) {
       if (integration) console.log('agent integration: installed (inspect with bullswarm integrate status)');
     }
     return 0;
+  }
+  if (!opts.json && !opts.wizard && !opts.integrate) {
+    return startStrategyDashboard({
+      bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
+      title: 'Bullswarm setup',
+      loadInventory: ({ force }) => loadStrategyInventory(getBullswarmDir(), { force }),
+    });
   }
   return runWizard(getBullswarmDir(), opts);
 }
