@@ -190,6 +190,28 @@ test('CLI exact model locks are preserved on every planner and worker attempt', 
   } finally { f.cleanup(); }
 });
 
+test('CLI suggested plan is validated, persisted, and supplied to the planner', () => {
+  const f = fixture();
+  try {
+    const suggestedPlan = 'Inspect the fixture, create the bounded artifact, then verify exact bytes.';
+    const result = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt using bounded planner context.',
+      '--cwd', f.target, '--foreground', '--json', '--suggested-plan', suggestedPlan,
+      '--strict-orchestrator', 'goal-agent', '--orchestrator-model', 'planner-sol',
+      '--worker-pool', 'goal-agent', '--worker-model', 'worker-luna',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    const runDir = join(f.home, 'workflows', report.runId);
+    const goal = JSON.parse(readFileSync(join(runDir, 'goal.json'), 'utf8'));
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    assert.equal(goal.config.settings.suggestedPlan, suggestedPlan);
+    assert.equal(state.config.settings.suggestedPlan, suggestedPlan);
+    const plannerTask = readFileSync(state.planner.attempts[0].taskFile, 'utf8');
+    assert.match(plannerTask, new RegExp(suggestedPlan.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally { f.cleanup(); }
+});
+
 test('goal watching is explicit and incompatible launch modes do not auto-watch', () => {
   assert.equal(shouldAutoWatchGoal({}), false);
   assert.equal(shouldAutoWatchGoal({ watch: true }), true);
