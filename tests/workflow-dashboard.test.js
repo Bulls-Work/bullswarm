@@ -95,8 +95,8 @@ function timelineSegments(screen) {
   const segments = [];
   for (const line of timelinePaneRows(screen)) {
     const header = /^─{2,}\s+(.+?)\s+─{2,}\s+(\S+)\s+─+$/.exec(line);
-    if (header) segments.push({ label: header[1], elapsed: header[2], rows: [] });
-    else if (/^─{2,}/.test(line)) segments.push({ label: line.replace(/─+/g, ' ').trim(), elapsed: null, rows: [] });
+    if (header) segments.push({ label: header[1].replace(/^Phase \d+ · /, ''), elapsed: header[2], rows: [] });
+    else if (/^─{2,}/.test(line)) segments.push({ label: line.replace(/─+/g, ' ').trim().replace(/^Phase \d+ · /, ''), elapsed: null, rows: [] });
     else if (segments.length && line.trim()) segments[segments.length - 1].rows.push(line);
   }
   return segments;
@@ -173,10 +173,10 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     const row = dashboardRows(home)[0];
     const screen = renderWorkflowTui(row, { width: 120, height: 30 });
     assert.match(screen, /\[Workflow Planner\] plan created/);
-    assert.match(screen, /── Implementation/);
+    assert.match(screen, /── Phase 1 · Implementation/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
-    assert.match(screen, /── Evidence/);
+    assert.match(screen, /── Phase 2 · Evidence/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
     assert.match(screen, /check-result · relay-2 · gpt-5\.6-luna/);
     assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
@@ -974,6 +974,9 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
     Object.assign(state, {
       startedAt: iso(0), finishedAt: iso(120), status: 'completed',
+      intent: { ...state.intent, autonomous: true },
+      orchestration: { ...state.orchestration, mode: 'autonomous' },
+      decisions: [{ gateId: 'orchestrator', decision: 'complete', reason: 'All phases passed.' }],
       actionLedger: [
         { id: 'discover-files', phase: 'discover', kind: 'run', status: 'succeeded', startedAt: iso(10), finishedAt: iso(40), attempts: [0] },
         { id: 'verify-files', phase: 'verify', kind: 'run', status: 'succeeded', startedAt: iso(50), finishedAt: iso(110), attempts: [1] },
@@ -981,6 +984,7 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
       attempts: [
         { actionId: 'discover-files', status: 'succeeded', pool: 'luna', startedAt: iso(10), finishedAt: iso(40) },
         { actionId: 'verify-files', status: 'succeeded', pool: 'luna', startedAt: iso(50), finishedAt: iso(110) },
+        { actionId: 'orchestrator', status: 'succeeded', pool: 'luna', startedAt: iso(1), finishedAt: iso(5) },
       ],
       outputs: { 'discover-files': { ok: true }, 'verify-files': { ok: true } },
       steps: [
@@ -1007,7 +1011,14 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
     const timelineText = output.text;
     let frameStart = output.text.length;
-    input.emit('data', Buffer.from('\x1b[A')); // previous phase
+    input.emit('data', Buffer.from('\x1b[B')); // first target: Preflight
+    const preflightText = output.text.slice(frameStart);
+    frameStart = output.text.length;
+    input.emit('data', Buffer.from('\x1b[C')); // Preflight opens Workflow Planner
+    const plannerText = output.text.slice(frameStart);
+    input.emit('data', Buffer.from('\x1b')); // planner -> selected Preflight
+    frameStart = output.text.length;
+    input.emit('data', Buffer.from('\x1b[B')); // next target: Phase 1
     const focusedTimeline = output.text.slice(frameStart);
     frameStart = output.text.length;
     input.emit('data', Buffer.from('\x1b[C')); // open selected phase's agents
@@ -1022,8 +1033,11 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     assert.match(timelineText, /↑ previous phase · ↓ next phase/);
     assert.match(timelineText, /Enter agents/);
     assert.doesNotMatch(timelineText, /t phases · t timeline/);
-    assert.match(focusedTimeline, /\x1b\[7m── discover/);
-    assert.match(agentsText, /discover · 1\/1 complete/);
+    assert.match(preflightText, /\x1b\[7m── Preflight/);
+    assert.match(preflightText, /Enter planner/);
+    assert.match(plannerText, /Workflow Planner · overview/);
+    assert.match(focusedTimeline, /\x1b\[7m── Phase 1 · Discover/);
+    assert.match(agentsText, /Discover · 1\/1 complete/);
     const visibleWidths = timelineText
       .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
       .split('\n')
@@ -1418,7 +1432,7 @@ test('timeline segments replace per-line phase prefixes with one header per phas
     'HH:MM └─✓ completed 2/2',
   ]);
   // four Discover events, one Discover header: no header between same-phase events
-  assert.equal(pane.filter((line) => /^─{2,}\s+Discover\s/.test(line)).length, 1);
+  assert.equal(pane.filter((line) => /^─{2,}\s+Phase 1 · Discover\s/.test(line)).length, 1);
 
   // the running phase keeps its started row and reports no completion
   const implement = segmentRows(screen, 'Implement');
@@ -1568,7 +1582,7 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
   const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
   assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
   // the scrolled-into segment is re-announced before its first visible event
-  assert.match(pane[marker + 1], /^─{2,}\s+Implement · continued\s+─{2,}/);
+  assert.match(pane[marker + 1], /^─{2,}\s+Phase 1 · Implement · continued\s+─{2,}/);
   assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
   assert.deepEqual(segmentLabels(short), ['Implement · continued']);
   assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
@@ -1591,7 +1605,7 @@ test('narrow timeline rendering uses the same segment headers and no phase prefi
   const narrowPane = timelinePaneRows(scrolled);
    const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
   assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
-   assert.match(narrowPane[marker + 1], /^─{2,}\s+Implement · continue/);
+   assert.match(narrowPane[marker + 1], /^─{2,}\s+Phase 1 · Implement · continue/);
 });
 
 // ---------------------------------------------------------------------------
