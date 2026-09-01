@@ -19,7 +19,7 @@ new deterministic kernel gates pass.
 ### Current execution checkpoint
 
 As of 2026-09-01, sequences 0-15 are implemented or accepted in the candidate
-worktree and the offline suite passes 500/500. This includes the V2-only goal/state/result
+worktree and the offline suite passes 506/506. This includes the V2-only goal/state/result
 schemas, generic action and evidence contracts, requirement ledger, planner
 validator, dependency scheduler, changed-path ownership, isolated integration,
 mechanical-only retry/fallback, gap consolidation, kernel completion, durable
