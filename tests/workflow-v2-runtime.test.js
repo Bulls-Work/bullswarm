@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
+import { writeJsonAtomic } from '../src/workflow/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 
@@ -422,4 +423,46 @@ test('durable cancellation resumes directly to a stable cancelled result without
   assert.equal(result.result.verified, false);
   assert.equal(result.state.lifecycle.status, 'cancelled');
   assert.ok(existsSync(join(runDir, 'result.json')));
+});
+
+test('resume reconciles an atomically published result after a crash before terminal state persistence', async () => {
+  const f = setup();
+  const runId = 'wf-crash1-abcdef';
+  const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  let injected = false;
+  await assert.rejects(() => runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId,
+    dependencies: {
+      dispatchV2Action: dispatch,
+      writeResultAtomic(path, value) {
+        writeJsonAtomic(path, value);
+        if (!injected) { injected = true; throw new Error('simulated crash after result publication'); }
+      },
+    },
+  }), /simulated crash/);
+
+  const runDir = join(f.bullswarmDir, 'workflows', runId);
+  assert.ok(existsSync(join(runDir, 'result.json')));
+  assert.notEqual(deserializeV2DurableState(readFileSync(join(runDir, 'state.json'), 'utf8')).lifecycle.status, 'completed');
+
+  const noDispatch = fakeDispatch(async () => { throw new Error('reconciliation must not dispatch'); });
+  const resumed = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, resumeRunId: runId, pools: [],
+    dependencies: { dispatchV2Action: noDispatch },
+  });
+  assert.equal(noDispatch.calls(), 0);
+  assert.equal(resumed.result.status, 'completed');
+  assert.equal(resumed.state.lifecycle.status, 'completed');
+  assert.equal(resumed.state.lifecycle.resultFile, join(runDir, 'result.json'));
+  assert.equal(readEvents(runDir).at(-1).payload.recovered, true);
 });

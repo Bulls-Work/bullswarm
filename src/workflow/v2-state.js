@@ -43,6 +43,10 @@ const STEERING_FIELDS = new Set([
   'id', 'message', 'queuedAt', 'delivery', 'status', 'deliveredAt', 'decisionSequence',
 ]);
 const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
+const GOAL_SETTING_FIELDS = new Set([
+  'concurrency', 'workspaceMode', 'maxAgents', 'maxActions',
+  'maxExpansionRounds', 'maxMechanicalRetries', 'maxManifestFiles', 'scout',
+]);
 
 export class V2StateValidationError extends TypeError {
   constructor(message) {
@@ -81,6 +85,29 @@ function noUnknown(value, allowed, name) {
 function nonNegativeInteger(value, name) {
   if (!Number.isInteger(value) || value < 0) fail(`${name} must be a non-negative integer`);
   return value;
+}
+
+function positiveInteger(value, name) {
+  if (!Number.isInteger(value) || value < 1) fail(`${name} must be a positive integer`);
+  return value;
+}
+
+function goalSettings(value) {
+  object(value, 'goalDocument.config.settings');
+  noUnknown(value, GOAL_SETTING_FIELDS, 'goalDocument.config.settings');
+  for (const key of ['concurrency', 'maxAgents', 'maxActions', 'maxExpansionRounds', 'maxManifestFiles']) {
+    if (value[key] !== undefined) positiveInteger(value[key], `goalDocument.config.settings.${key}`);
+  }
+  if (value.maxMechanicalRetries !== undefined) {
+    nonNegativeInteger(value.maxMechanicalRetries, 'goalDocument.config.settings.maxMechanicalRetries');
+  }
+  if (value.workspaceMode !== undefined && !['shared', 'isolated'].includes(value.workspaceMode)) {
+    fail('goalDocument.config.settings.workspaceMode must be shared or isolated');
+  }
+  if (value.scout !== undefined && typeof value.scout !== 'boolean') {
+    fail('goalDocument.config.settings.scout must be a boolean');
+  }
+  return clone(value);
 }
 
 function nullableString(value, name) {
@@ -151,8 +178,7 @@ function validateGoal(goal) {
   intentConstraints(goal.intent.constraints);
   object(goal.config, 'goalDocument.config');
   noUnknown(goal.config, new Set(['settings', 'plannerRouting', 'workerRouting']), 'goalDocument.config');
-  object(goal.config.settings, 'goalDocument.config.settings');
-  for (const key of Object.keys(goal.config.settings)) if (key.startsWith('engine') || LEGACY_FIELDS.has(key) || key === 'actions') fail(`goalDocument.config.settings.${key} is a legacy field`);
+  goalSettings(goal.config.settings);
   routing(goal.config.plannerRouting, 'goalDocument.config.plannerRouting');
   routing(goal.config.workerRouting, 'goalDocument.config.workerRouting');
   if (goal.intentId !== stableId({ ...goal.intent, requirements })) fail('goalDocument.intentId does not match its normalized intent');
@@ -173,7 +199,7 @@ export function createV2GoalDocument({ goal, cwd, requirements, constraints = nu
     schemaVersion: V2_GOAL_SCHEMA_VERSION,
     intentId: stableId(intent),
     intent,
-    config: { settings: clone(settings), plannerRouting: routing(plannerRouting, 'plannerRouting'), workerRouting: routing(workerRouting, 'workerRouting') },
+    config: { settings: goalSettings(settings), plannerRouting: routing(plannerRouting, 'plannerRouting'), workerRouting: routing(workerRouting, 'workerRouting') },
   };
   validateGoal(document);
   return clone(document);

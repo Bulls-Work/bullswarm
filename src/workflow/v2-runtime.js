@@ -21,7 +21,7 @@ import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
 import {
-  createV2ResultEnvelope, evaluateV2Progress, serializeV2ResultEnvelope,
+  createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress,
 } from './v2-outcome.js';
 import { dispatchV2Action } from './v2-dispatch.js';
 import { scoutPrompt } from './goal.js';
@@ -242,6 +242,7 @@ export async function runV2AutonomousWorkflow({
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const dispatch = dependencies.dispatchV2Action ?? dispatchV2Action;
   const captureManifest = dependencies.captureWorkspaceManifest ?? captureWorkspaceManifest;
+  const writeResultAtomic = dependencies.writeResultAtomic ?? writeJsonAtomic;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const runsRoot = join(bullswarmDir, 'workflows');
   mkdirSync(runsRoot, { recursive: true });
@@ -259,12 +260,31 @@ export async function runV2AutonomousWorkflow({
     state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
     assertV2Resume(durableGoal, state, { runId: id });
     goalDocument = durableGoal;
+    const durableResultPath = state.lifecycle.resultFile ?? join(runDir, 'result.json');
+    if (existsSync(durableResultPath)) {
+      const published = deserializeV2ResultEnvelope(readFileSync(durableResultPath, 'utf8'));
+      if (published.runId !== id || published.shortId !== state.shortId || published.intentId !== state.intentId) {
+        throw new Error(`stable V2 result for ${id} does not match its durable state`);
+      }
+      if (!TERMINAL.has(state.lifecycle.status)) {
+        state.lifecycle.status = published.status;
+        state.lifecycle.finishedAt = published.finishedAt;
+        state.lifecycle.resultFile = durableResultPath;
+        state.planner.status = state.planner.status === 'running' ? 'waiting' : state.planner.status;
+        appendEvent(runDir, state, 'workflow.finished', {
+          status: published.status, verified: published.verified, resultFile: durableResultPath,
+          reason: published.reason, recovered: true,
+        });
+        serializeV2DurableState(state);
+        writeJsonAtomic(statePath(runDir), state);
+        return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: published };
+      }
+    }
     if (TERMINAL.has(state.lifecycle.status)) {
-      const durableResultPath = state.lifecycle.resultFile ?? join(runDir, 'result.json');
       if (!existsSync(durableResultPath)) throw new Error(`terminal V2 run ${id} is missing its stable result envelope`);
       return {
         runId: id, shortId: state.shortId, runDir, state: clone(state),
-        result: JSON.parse(readFileSync(durableResultPath, 'utf8')),
+        result: deserializeV2ResultEnvelope(readFileSync(durableResultPath, 'utf8')),
       };
     }
     reconcileResume(state, now());
@@ -696,7 +716,7 @@ export async function runV2AutonomousWorkflow({
     const finishedAt = now();
     const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason });
     const resultPath = join(runDir, 'result.json');
-    writeFileSync(resultPath, `${serializeV2ResultEnvelope(result)}\n`);
+    writeResultAtomic(resultPath, result);
     state.lifecycle.status = result.status;
     state.lifecycle.finishedAt = finishedAt;
     state.lifecycle.resultFile = resultPath;

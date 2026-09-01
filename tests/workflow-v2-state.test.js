@@ -95,6 +95,15 @@ test('rejects malformed, legacy, mismatched, and old-run data before mutation', 
   const before = JSON.stringify(state);
   assert.throws(() => createV2GoalDocument({ ...input(), requirements: [{ id: 'r1', text: 'x' }, { id: 'r1', text: 'y' }] }), /duplicate requirement/);
   assert.throws(() => createV2GoalDocument({ ...input(), requirements: [{ id: 'R1', text: 'x' }] }), /lowercase kebab-case/);
+  for (const [key, value] of [
+    ['concurrency', 0], ['maxAgents', 0], ['maxActions', 1.5],
+    ['maxExpansionRounds', -1], ['maxManifestFiles', 0], ['maxMechanicalRetries', -1],
+  ]) {
+    assert.throws(() => createV2GoalDocument({ ...input(), settings: { [key]: value } }), new RegExp(key));
+  }
+  assert.throws(() => createV2GoalDocument({ ...input(), settings: { workspaceMode: 'bogus' } }), /workspaceMode must be shared or isolated/);
+  assert.throws(() => createV2GoalDocument({ ...input(), settings: { scout: 'yes' } }), /scout must be a boolean/);
+  assert.throws(() => createV2GoalDocument({ ...input(), settings: { surprise: true } }), /surprise is not allowed/);
   assert.throws(() => serializeV2GoalDocument({ ...goal, phases: [] }), /legacy autonomous field/);
   assert.throws(() => serializeV2DurableState({ ...state, repair: {} }), /legacy autonomous field/);
   assert.throws(() => deserializeV2DurableState(JSON.stringify({ ...state, ledger: { schemaVersion: 'bad' } })), /Invalid requirement ledger/);
