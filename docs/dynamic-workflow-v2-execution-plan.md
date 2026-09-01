@@ -217,9 +217,26 @@ two-pane shell is active; narrow/mobile terminals switch to the one-pane
 navigation model without horizontal overflow. The acceptance streak restarts
 from the candidate revision containing this clarified fixture record.
 
-Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
-streak (including the difficult goal three times), independent review/PR/CI,
-release, installed-binary verification, and the final installed canary.
+Sequence 16 is now accepted on the runtime candidate. Five consecutive
+Luna-only runs completed with zero rejected or interrupted attempts, zero
+schema corrections, one planner turn each, and fresh passing evidence for
+every mandatory requirement: the corrected difficult TUI goal three times
+(`av7c3i`, `hrbg7a`, `kh8dbi`), a read-only help/documentation audit
+(`czxpx2`), and a small structured producer/consumer fixture (`8bmxpi`). The
+three difficult runs independently passed 514/514, 516/516, and 516/516 tests;
+the structured fixture passed its 12 focused checks and 522/522 tests. The
+read-only audit left its worktree clean and surfaced four documentation/help
+polish items, which were fixed separately and verified by the affected help,
+dashboard, and full 510-test suites without repeating the expensive TUI goal.
+
+This is the standing evaluation rule: debug with deterministic component
+tests or the smallest model-in-the-loop fixture that isolates the boundary;
+use a representative end-to-end canary only as integration proof. A runtime,
+planner, scheduler, evidence, routing, or TUI behavior change invalidates its
+affected canary evidence. A later documentation/help-only correction does not
+restart unrelated paid canaries when its exhaustive help sweep and full suite
+pass. Sequence 17 remains: independent review/PR/CI, release,
+installed-binary verification, and the final installed canary.
 
 ## 1. Locked product shape
 
@@ -738,6 +755,11 @@ Success target:
 - on the first rejection, cancel the workflow, diagnose, patch, and restart the
   streak after deterministic regression coverage is added.
 
+Do not diagnose by repeatedly launching the historical fixture. First isolate
+the failing boundary with a Layer A test or the smallest Layer B probe. Repeat
+the full fixture only after that boundary passes, and do not repeat unrelated
+paid canaries for a tail change confined to prose/help rendering and its tests.
+
 Track per run: wall time, planner time/turns, worker count, peak concurrency,
 tokens/cost by pool, mechanical retries, semantic failures, schema corrections,
 requirements passed/blocked, and external acceptance result.
@@ -771,7 +793,10 @@ process exit.
    remain green; old autonomous resume fails before dispatch.
 3. The V2 autonomous engine remains unreleased until component probes pass.
 4. The five-run zero-rejection streak and three hard-case repetitions pass on
-   the exact candidate revision.
+   the exact workflow-runtime candidate revision. Any later change to runtime,
+   planning, scheduling, evidence, routing, or TUI behavior restarts the
+   affected canary evidence; documentation/help-only tail corrections require
+   the exhaustive help sweep and full offline suite instead.
 5. A separate agent reviews the PR from code and evidence, not from this plan.
 6. Release through the repository release command and trusted publishing.
 7. Verify the npm registry version, the actual PATH-resolved `bullswarm`
