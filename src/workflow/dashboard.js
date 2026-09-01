@@ -40,7 +40,9 @@ function keyPressed(name, key) {
   return DASHBOARD_KEYS[name].bindings?.includes(key) ?? false;
 }
 
-function navigationFooter({ list = false, depth = 0, narrow = false, filterEditing = false } = {}) {
+function navigationFooter({
+  list = false, depth = 0, narrow = false, filterEditing = false, mobileTimeline = true,
+} = {}) {
   if (filterEditing) return 'Filter: {query}█ · Enter apply · Esc clear';
   if (list) {
     return narrow
@@ -48,7 +50,9 @@ function navigationFooter({ list = false, depth = 0, narrow = false, filterEditi
       : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh · c stop`;
   }
   const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
-  const phaseToggle = depth <= 2 ? ' · t phases · t timeline' : '';
+  const phaseToggle = narrow && depth <= 2
+    ? ` · t ${mobileTimeline ? 'phases' : 'timeline'}`
+    : '';
   return `${keyHint('up')} · ${keyHint('down')}${phaseToggle} · ${keyHint('in')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
 }
 
@@ -809,7 +813,7 @@ export function renderWorkflowTui(row, {
   ];
   const footer = confirmCancel
     ? ' Stop this workflow? y confirm · n/Esc keep running'
-    : navigationFooter({ depth: breadcrumbDepth, narrow });
+    : navigationFooter({ depth: breadcrumbDepth, narrow, mobileTimeline });
   const rawMessageLine = message
     ? ` ${truncate(message, width - 2)}`
     : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow && !mobileTimeline ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
@@ -1148,14 +1152,20 @@ function workflowTimelineLines(model, width) {
     if (detail) add(event.committedAt, detail, Number(event.sequence), event.type.startsWith('decision.') ? 'Planner' : 'Preflight');
   }
 
-  events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.sequence - b.sequence);
+  return groupedTimeline(events, model, width, state.finishedAt);
+}
+
+function groupedTimeline(events, model, width, workflowFinishedAt) {
+  events.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)
+    || Number(a.sequence ?? Number.MAX_SAFE_INTEGER) - Number(b.sequence ?? Number.MAX_SAFE_INTEGER));
   const segments = new Map();
   for (const event of events) {
     const name = event.segment ?? 'Workflow';
-    if (!segments.has(name)) segments.set(name, { name, events: [], first: event.at, last: event.at });
+    const firstAt = event.startedAt ?? event.at;
+    if (!segments.has(name)) segments.set(name, { name, events: [], first: firstAt, last: event.at });
     const segment = segments.get(name);
     segment.events.push(event);
-    if (Date.parse(event.at) < Date.parse(segment.first)) segment.first = event.at;
+    if (Date.parse(firstAt) < Date.parse(segment.first)) segment.first = firstAt;
     if (Date.parse(event.at) > Date.parse(segment.last)) segment.last = event.at;
   }
   const lines = [];
@@ -1165,10 +1175,10 @@ function workflowTimelineLines(model, width) {
     if (event.segment !== previousSegment) {
       if (lines.length) lines.push('');
       const segment = segments.get(event.segment ?? 'Workflow');
-      const finishedAt = segment.last;
+      const segmentFinishedAt = segment.last;
       const currentSegment = currentTimelineSegment(model);
-      const running = !state.finishedAt && segment.name === currentSegment;
-      const elapsed = running ? 'running' : durationText(segment.first, finishedAt);
+      const running = !workflowFinishedAt && segment.name === currentSegment;
+      const elapsed = running ? 'running' : durationText(segment.first, segmentFinishedAt);
       lines.push(openedSegments.has(segment.name)
         ? continuationHeader(segment.name, elapsed, width)
         : segmentHeader(segment.name, elapsed, width));
@@ -1184,21 +1194,24 @@ function workflowTimelineLines(model, width) {
 function workflowTimelineLinesV2(model, width) {
   const { state } = model;
   const rows = [];
-  const add = (at, label, right = '', detail = null, segment = 'Workflow') => {
+  const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null) => {
     if (!at) return;
-    rows.push({ at, segment, lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])] });
+    rows.push({
+      at, startedAt, segment,
+      lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])],
+    });
   };
-  add(state.lifecycle.startedAt, '● Workflow initiated', '', 'Goal accepted; preparing repository reconnaissance', 'Workflow');
+  add(state.lifecycle.startedAt, '● Workflow initiated', '', 'Goal accepted; preparing repository reconnaissance', 'Preflight');
   const eventByType = new Map();
   for (const event of model.events) {
     if (!eventByType.has(event.type)) eventByType.set(event.type, []);
     eventByType.get(event.type).push(event);
   }
-  for (const event of eventByType.get('preflight.scout_started') ?? []) add(event.committedAt, '● [Preflight: Scout] started', '', event.payload?.purpose, 'Preflight');
+  for (const event of eventByType.get('preflight.scout_started') ?? []) add(event.committedAt, '● Scout started', '', event.payload?.purpose, 'Preflight');
   for (const event of eventByType.get('preflight.scout_finished') ?? []) {
     const attempt = state.preflight.scout.attempts.at(-1);
     const detail = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
-    add(event.committedAt, `${event.payload?.status === 'succeeded' ? '✓' : '×'} [Preflight: Scout] ${event.payload?.status === 'succeeded' ? 'completed' : 'could not complete'}`, durationText(state.preflight.scout.startedAt, state.preflight.scout.finishedAt), detail, 'Preflight');
+    add(event.committedAt, `${event.payload?.status === 'succeeded' ? '✓' : '×'} Scout ${event.payload?.status === 'succeeded' ? 'completed' : 'could not complete'}`, durationText(state.preflight.scout.startedAt, state.preflight.scout.finishedAt), detail, 'Preflight');
   }
   for (const event of eventByType.get('planner.finished') ?? []) {
     const turn = Number(event.payload?.turn ?? 1);
@@ -1206,12 +1219,19 @@ function workflowTimelineLinesV2(model, width) {
       ? turn === 1 ? '[Workflow Planner] plan created' : `[Workflow Planner] plan updated #${turn}`
       : '[Workflow Planner] planning attempt rejected';
     const attempt = state.planner.attempts.findLast((item) => item.turn === turn);
-    add(event.committedAt, `${event.payload?.ok ? '◇' : '×'} ${label}`, attempt ? durationText(attempt.startedAt, attempt.finishedAt) : '', event.payload?.summary ?? event.payload?.why, 'Planning');
+    add(
+      event.committedAt,
+      `${event.payload?.ok ? '◇' : '×'} ${label}`,
+      attempt ? durationText(attempt.startedAt, attempt.finishedAt) : '',
+      event.payload?.summary ?? event.payload?.why,
+      turn === 1 ? 'Preflight' : 'Planner',
+      attempt?.startedAt,
+    );
   }
   const stageById = new Map((state.presentation?.stages ?? []).map((stage) => [stage.id, stage]));
   for (const event of model.events) {
     if (event.type === 'presentation.stage_started') {
-      add(event.committedAt, `├─ [Phase: ${event.payload.label}] started`, '', null, event.payload.label);
+      add(event.committedAt, '├─ started', '', null, event.payload.label);
     }
     if (event.type === 'action.finished' || event.type === 'evidence.recorded') {
       const actionId = event.payload?.actionId;
@@ -1223,17 +1243,15 @@ function workflowTimelineLinesV2(model, width) {
     if (event.type === 'presentation.stage_completed') {
       const stage = stageById.get(event.payload?.stageId);
       const ok = event.payload?.status === 'completed';
-      add(event.committedAt, `└─${ok ? '✓' : '×'} [Phase: ${event.payload.label}] completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
+      add(event.committedAt, `└─${ok ? '✓' : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
     }
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
-    add(state.lifecycle.finishedAt, `${status === 'completed' ? '✓' : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, 'Workflow');
+    const finalSegment = state.presentation?.stages?.findLast((stage) => stage.startedAt)?.label ?? 'Workflow';
+    add(state.lifecycle.finishedAt, `${status === 'completed' ? '✓' : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, finalSegment);
   }
-  rows.sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
-  const lines = rows.flatMap((row) => row.lines.map((line) => ({ text: line, segment: row.segment, at: row.at })));
-  if (!lines.length) lines.push({ text: 'Waiting for the first durable workflow milestone', segment: null });
-  return { lines, milestoneCount: rows.length };
+  return groupedTimeline(rows, model, width, state.lifecycle.finishedAt);
 }
 
 function segmentHeader(name, elapsed, width) {
@@ -1271,7 +1289,10 @@ function currentTimelineSegment(model) {
   if (model.v2) {
     const activeAction = state.actions.find((action) => action.status === 'running');
     return state.presentation.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
-      ?? (state.planner.status === 'running' ? 'Planning' : 'Workflow');
+      ?? (state.preflight?.scout?.status === 'running' ? 'Preflight'
+        : state.planner.status === 'running'
+          ? (state.actions.length ? 'Planner' : 'Preflight')
+          : 'Workflow');
   }
   if (orchestrator.active || (orchestrator.autonomous && !state.currentStep?.phase)) return 'Planner';
   const phase = state.currentStep?.phase ?? state.currentPhase?.name;
@@ -2069,6 +2090,12 @@ export async function runDashboard(bullswarmDir, {
     lastPaintedFrame = frame;
     output.write(frame);
   };
+  // Several mobile terminals auto-wrap when the final column is painted.
+  // Leave one narrow-screen column unused so the right border remains stable.
+  const frameWidth = () => {
+    const columns = Math.max(20, Number(output.columns) || 120);
+    return columns < 100 ? Math.max(20, columns - 1) : columns;
+  };
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
     if (detail && selectedRunId) {
@@ -2084,7 +2111,7 @@ export async function runDashboard(bullswarmDir, {
       ui.phaseIndex = model.phaseIndex;
       ui.agentIndex = model.agentIndex;
       writeFrame(renderWorkflowTui(row, {
-        width: output.columns,
+        width: frameWidth(),
         height: output.rows,
         ...ui,
         message,
@@ -2104,7 +2131,7 @@ export async function runDashboard(bullswarmDir, {
       allRows,
       selected,
       message,
-      width: output.columns,
+      width: frameWidth(),
       height: output.rows,
       filter: dashboardFilter,
       query,
@@ -2121,7 +2148,7 @@ export async function runDashboard(bullswarmDir, {
       message = `display error: ${err.message}`;
       try {
         writeFrame(renderDashboard({
-          rows, allRows, selected, message, width: output.columns, height: output.rows,
+          rows, allRows, selected, message, width: frameWidth(), height: output.rows,
           filter: dashboardFilter, query, filterEditing, spinnerFrame: ui.spinnerFrame,
         }));
       } catch { /* keep the loop alive */ }
