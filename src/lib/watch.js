@@ -97,10 +97,14 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let fatalForceKillTimer = null;
     let forceKillTimer = null;
     let detectedModel = null;
+    let providerFailureType = null;
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
       onEvent: opts.onAgentEvent,
       onProgress: (event) => {
         if (event.model) detectedModel = event.model;
+        if ((connector.eventStream?.failureTypes ?? []).includes(event.providerType)) {
+          providerFailureType = event.providerType;
+        }
         opts.onAgentProgress?.(event);
       },
     });
@@ -167,6 +171,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
+        providerFailureType,
         spawnError: true,
       });
     });
@@ -181,6 +186,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
+        providerFailureType,
       });
     });
   });
@@ -271,6 +277,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
+  } else if (obs.providerFailureType) {
+    verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
   } else if (authHit) {
     verdict = { ok: false, why: `auth/throttle signature: "${authHit}"`, quarantineHint: true };
   } else if (typeof opts.outputValidator === 'function') {
@@ -337,6 +345,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       signal: obs.signal,
       timedOut: obs.timedOut,
       cancelled: obs.cancelled,
+      providerFailureType: obs.providerFailureType,
       wallSec,
       outBytes: output.length,
       usage,
