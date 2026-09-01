@@ -173,8 +173,11 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     const row = dashboardRows(home)[0];
     const screen = renderWorkflowTui(row, { width: 120, height: 30 });
     assert.match(screen, /\[Workflow Planner\] plan created/);
-    assert.match(screen, /\[Phase: Implementation\] started/);
-    assert.match(screen, /\[Phase: Implementation\] completed/);
+    assert.match(screen, /── Implementation/);
+    assert.match(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
+    assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
+    assert.match(screen, /── Evidence/);
+    assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
     assert.match(screen, /check-result · relay-2 · gpt-5\.6-luna/);
     assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
     assert.match(screen, /Waiting for 1 worker/);
@@ -990,8 +993,16 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     assert.equal(await running, 0);
     assert.match(timelineText, /Workflow timeline/);
     assert.match(timelineText, /t phases/);
+    assert.doesNotMatch(timelineText, /t phases · t timeline/);
+    const visibleWidths = timelineText
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+      .split('\n')
+      .filter((line) => line.includes('│') || line.includes('┐') || line.includes('┘'))
+      .map((line) => line.length);
+    assert.ok(visibleWidths.every((lineWidth) => lineWidth <= output.columns - 1), 'mobile frames reserve the terminal wrap column');
     assert.match(phasesText, /Phases · 1/);
     assert.match(phasesText, /t timeline/);
+    assert.doesNotMatch(phasesText, /t phases · t timeline/);
   } finally { cleanup(); }
 });
 
