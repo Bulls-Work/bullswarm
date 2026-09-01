@@ -492,11 +492,21 @@ function validateState(state) {
   }
   validateCounters(state.budget, 'state.budget');
   object(state.cancellation, 'state.cancellation');
-  noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason']), 'state.cancellation');
+  noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason', 'source', 'requesterPid']), 'state.cancellation');
   if (typeof state.cancellation.requested !== 'boolean') fail('state.cancellation.requested must be a boolean');
   timestamp(state.cancellation.requestedAt, 'state.cancellation.requestedAt');
   nullableString(state.cancellation.reason, 'state.cancellation.reason');
-  if (!state.cancellation.requested && (state.cancellation.requestedAt !== null || state.cancellation.reason !== null)) fail('state.cancellation metadata requires requested=true');
+  if (state.cancellation.source !== undefined) requiredString(state.cancellation.source, 'state.cancellation.source');
+  if (state.cancellation.requesterPid !== undefined) {
+    nonNegativeInteger(state.cancellation.requesterPid, 'state.cancellation.requesterPid');
+    if (state.cancellation.requesterPid < 1) fail('state.cancellation.requesterPid must be positive');
+  }
+  if (!state.cancellation.requested && (
+    state.cancellation.requestedAt !== null
+    || state.cancellation.reason !== null
+    || state.cancellation.source !== undefined
+    || state.cancellation.requesterPid !== undefined
+  )) fail('state.cancellation metadata requires requested=true');
   object(state.usage, 'state.usage');
   noUnknown(state.usage, new Set(['total', 'byPool']), 'state.usage');
   if (typeof state.usage.total !== 'number' || !Number.isFinite(state.usage.total) || state.usage.total < 0) fail('state.usage.total must be a non-negative finite number');

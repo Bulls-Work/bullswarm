@@ -40,6 +40,21 @@ test('round trips and defensively clones all boundaries', () => {
   assert.equal(state.intent.goal, 'Implement the result envelope');
 });
 
+test('round trips explicit cancellation provenance for resume and audit', () => {
+  const goal = createV2GoalDocument(input());
+  const state = createV2State(goal, { runId: 'wf-1', shortId: 'abc234' });
+  state.cancellation = {
+    requested: true,
+    requestedAt: '2026-09-01T00:00:00.000Z',
+    reason: 'operator requested stop',
+    source: 'cli',
+    requesterPid: 1234,
+  };
+  const restored = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(restored.cancellation, state.cancellation);
+  assert.doesNotThrow(() => assertV2Resume(goal, restored, { runId: 'wf-1', shortId: 'abc234' }));
+});
+
 test('round trips a progressed durable state', () => {
   const goal = createV2GoalDocument(input());
   const state = createV2State(goal, { runId: 'wf-1', shortId: 'abc234' });
