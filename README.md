@@ -70,9 +70,10 @@ re-delegating and creating recursive swarms.
 
 ```bash
 bullswarm          # first run: interactive setup wizard
-bullswarm setup    # re-run or repair
+bullswarm setup    # interactive provider/model configuration
+bullswarm setup --wizard  # broader worktree + integration questionnaire
 bullswarm pools    # meter state, pace position, quarantine status
-bullswarm strategy  # interactive provider/model routing control center
+bullswarm strategy  # explicit alias for the same routing control center
 bullswarm delegate --cwd ~/some-repo --prompt "Explain the parser"            # one agent
 bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and independently verify"  # workflow
 bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # bounded classification + decision/plan; no work dispatch
@@ -132,7 +133,8 @@ Bullswarm can inventory the models exposed by installed agent CLIs and combine
 connector-declared, dated pricing/benchmark metadata with live quota surplus:
 
 ```bash
-bullswarm strategy                         # TTY: interactive control center
+bullswarm setup                            # TTY: interactive control center
+bullswarm strategy                         # explicit routing-focused alias
 bullswarm strategy inventory --json        # agent-readable detection + policy + routes
 bullswarm strategy routes --json           # compact effective choices
 bullswarm strategy set-provider codex off --yes

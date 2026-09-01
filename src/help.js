@@ -91,13 +91,14 @@ const top = rich({
 // --- setup --------------------------------------------------------------------
 
 const setupText = rich({
-  usage: 'bullswarm setup [--yes] [--strategy] [--integrate] [--agents <list>] [--json]',
+  usage: 'bullswarm setup [--wizard] [--yes] [--strategy] [--integrate] [--agents <list>] [--json]',
   purpose: 'Discover installed agent CLIs (codex, claude, grok, ...) and initialize local '
-    + 'routing state. Without --yes on a TTY, opens the interactive wizard instead of '
-    + 'applying discovered defaults automatically.',
+    + 'routing state. Bare setup on a TTY opens the provider/model control center; agents '
+    + 'and CI retain deterministic non-interactive setup.',
   args: [],
   options: [
-    { flag: '--yes', desc: 'skip the interactive wizard and initialize with discovered defaults', default: 'prompts on a TTY' },
+    { flag: '--wizard', desc: 'open the comprehensive question-based wizard for worktree and integration settings', default: 'off; bare setup opens the provider/model control center' },
+    { flag: '--yes', desc: 'skip interactive setup and initialize with discovered defaults', default: 'interactive control center on a TTY' },
     { flag: '--strategy', desc: 'discover models, apply the recommended effort-tier routes, and enable strategy autopilot; requires --yes', default: 'off' },
     { flag: '--integrate', desc: 'also install agent integration (skill symlink + awareness block); requires --yes', default: 'off' },
     { flag: '--agents <list>', desc: 'comma-separated agent list for --integrate (codex, claude, grok)', default: 'all three' },
@@ -109,6 +110,8 @@ const setupText = rich({
     'a non-TTY caller (the common case for an agent) auto-applies discovered defaults without prompting, even without --yes',
   ],
   examples: [
+    { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively' },
+    { cmd: 'bullswarm setup --wizard', note: 'use the broader question-based configuration flow' },
     { cmd: 'bullswarm setup --yes --integrate --agents claude,codex', note: 'non-interactive initialization plus agent integration; safe in CI or from an agent' },
   ],
   next: 'bullswarm doctor to confirm readiness, then bullswarm run or bullswarm workflow goal to dispatch work.',

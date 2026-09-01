@@ -57,11 +57,12 @@ function selectedWindow(lines, selected, count) {
 
 export function renderStrategyDashboard(inventory, {
   view = 'providers', providerIndex = 0, modelIndex = 0, width = 100, height = 30, message = '',
+  title = 'Bullswarm strategy',
 } = {}) {
   const narrow = width < 78;
   const provider = inventory.providers[providerIndex] ?? null;
   const lines = [
-    `Bullswarm strategy · ${inventory.providers.filter((p) => p.enabled).length}/${inventory.providers.length} providers on · live routing preview`,
+    `${title} · ${inventory.providers.filter((p) => p.enabled).length}/${inventory.providers.length} providers on · live routing preview`,
     '',
   ];
   const bodyHeight = Math.max(4, height - 11);
@@ -138,8 +139,9 @@ function persistModel(bullswarmDir, inventory, pool, model, tiers, changedTier =
 
 export async function startStrategyDashboard({
   bullswarmDir, loadInventory, input = process.stdin, output = process.stdout,
+  title = 'Bullswarm strategy',
 } = {}) {
-  output.write(`${ALT_ON}${CLEAR}Bullswarm strategy\n\nDiscovering providers, models, and live usage…`);
+  output.write(`${ALT_ON}${CLEAR}${title}\n\nDiscovering providers, models, and live usage…`);
   input.setRawMode?.(true);
   input.resume?.();
   let inventory;
@@ -156,7 +158,7 @@ export async function startStrategyDashboard({
   let modelIndex = 0;
   let message = '';
   const render = () => output.write(`${CLEAR}${renderStrategyDashboard(inventory, {
-    view, providerIndex, modelIndex, width: output.columns ?? 100, height: output.rows ?? 30, message,
+    view, providerIndex, modelIndex, width: output.columns ?? 100, height: output.rows ?? 30, message, title,
   })}`);
   const update = async (refresh = false) => {
     inventory = await loadInventory({ force: refresh });
