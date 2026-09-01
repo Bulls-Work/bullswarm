@@ -88,9 +88,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
   assert.match(workTask, /one bounded slice of a larger workflow/i);
   assert.match(workTask, /Do not implement sibling, downstream, or whole-goal work early/i);
-  assert.match(workTask, /Authoritative acceptance text for this bounded action/i);
+  assert.match(workTask, /Authoritative requirement context for this bounded acceptance slice/i);
   assert.match(workTask, /report-correct: report\.md exists and contains READY/i);
-  assert.match(workTask, /does not authorize sibling, downstream, or whole-goal work/i);
+  assert.match(workTask, /Other clauses remain sibling work/i);
+  assert.match(workTask, /Exact ownedFiles are an absolute mutation boundary/i);
   assert.doesNotMatch(workTask, /Goal: Deliver a correct report/);
   assert.match(workTask, /exercise the real production entry point or state transition/i);
   assert.match(workTask, /untouched baseline and observe the expected failure/i);
@@ -100,7 +101,8 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.match(workTask, /Do not use `--test-force-exit`/);
   assert.match(workTask, /longer than 60 seconds or twice the baseline/i);
   assert.match(workTask, /inspect open handles or unresolved async work/i);
-  assert.match(workTask, /reread the bounded action instruction clause by clause/i);
+  assert.match(workTask, /reread the action purpose and final instructions clause by clause/i);
+  assert.match(workTask, /leave sibling clauses to their named actions/i);
   assert.match(workTask, /universal, negative, and boundary qualifiers as separate mandatory checks/i);
   assert.match(workTask, /every applicable level, mode, and supported width/i);
   assert.match(workTask, /authoritative acceptance text outranks existing implementation and tests/i);

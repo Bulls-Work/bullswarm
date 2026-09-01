@@ -116,6 +116,9 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /Every exact ID in context\.scoutUnits is a kernel-required work action/i);
   assert.match(prompt, /Goal requirements outrank the current implementation/i);
   assert.match(prompt, /narrow\/mobile/i);
+  assert.match(prompt, /affects means the action directly owns and delivers a bounded acceptance slice/i);
+  assert.match(prompt, /merely editing a supporting test/i);
+  assert.match(prompt, /Requirement context never expands ownedFiles/i);
   assert.match(prompt, /final acceptance unit must remain a mutation-capable action/i);
   assert.match(prompt, /Do not turn that unit into tests-only regression work/i);
   assert.deepEqual(initial.scoutUnits, ['write-report']);
