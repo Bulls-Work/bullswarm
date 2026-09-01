@@ -13,6 +13,7 @@
     "format": "jsonl",
     "args": ["--format", "json"],
     "silenceThresholdSec": 600,
+    "failureTypes": ["error"],
     "rules": [
       { "rootMatch": { "path": "type", "equals": "tool_use" }, "idPaths": ["part.callID", "part.id"], "kindPaths": ["part.tool"], "summaryPaths": ["part.state.input.command", "part.state.input.file_path", "part.state.input.path", "part.state.title"], "statusPath": "part.state.status" },
       { "rootMatch": { "path": "type", "equals": "text" }, "idPaths": ["part.id"], "kind": "response", "summaryPaths": ["part.text"], "status": "completed" }

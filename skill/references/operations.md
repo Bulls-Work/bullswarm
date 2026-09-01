@@ -48,6 +48,10 @@ Resume an interrupted autonomous run with:
 bullswarm workflow goal --resume <shortId> --json
 ```
 
+Autonomous resume is V2-only. An old autonomous run ID fails before dispatch;
+there is no migration or fallback executor. Fixed authored workflows and drafts
+remain a separate product surface.
+
 ## Fixed graphs, fan-out, and adversarial verification
 
 Use `workflow draft` only when exact phases and dependencies are user-authored
@@ -81,13 +85,11 @@ and exclusions. Never weaken those controls in a prompt.
   for QA.
 - Silence is evidence to inspect, not automatic proof of a hang. Check the TUI
   or JSON activity and stall fields before cancellation.
-- Malformed planner decisions receive bounded correction turns, then one
-  orchestrator escalation, before a truthful qualified outcome.
-- Concerns are an attribute of a completed outcome, not a distinct terminal
-  status to branch on. A ready, verified result can still carry
-  `outcome.concerns`; read them, do not equate their presence with total
-  failure. The status value `completed_with_concerns` still appears in some
-  run records, including legacy runs written before this framing — every
-  consumer (`runs result`, the TUI, `workflow watch`) reads it the same way
-  it reads `completed`, so older runs stay fully readable.
+- A malformed V2 planner program receives one compact deterministic correction
+  request. Repeated invalidity ends planning before worker budget is spent.
+- Schema-invalid evidence receives a bounded correction in the same physical
+  agent conversation. Schema-valid semantic failure updates the requirement
+  ledger and never starts an automatic repair loop.
+- Concerns remain evidence data. A passed requirement with concerns remains
+  passed unless its requirement contract explicitly says otherwise.
 - Use cancellation only for a genuinely hung or no-longer-authorized run.

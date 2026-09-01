@@ -37,9 +37,12 @@ function compactTokens(value) {
 }
 
 export function timingBreakdown(state) {
-  const attempts = (state.attempts ?? []).map((attempt) => ({
+  const sourceAttempts = state.schemaVersion === 'bullswarm.workflow.state.v2'
+    ? [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])]
+    : (state.attempts ?? []);
+  const attempts = sourceAttempts.map((attempt) => ({
     actionId: attempt.actionId,
-    attemptNumber: attempt.attemptNumber,
+    attemptNumber: attempt.attemptNumber ?? attempt.ordinal,
     pool: attempt.pool ?? null,
     model: attempt.model ?? null,
     status: attempt.status,
@@ -55,7 +58,7 @@ export function timingBreakdown(state) {
     byPool[key].tokens += attempt.tokens ?? 0;
   }
   return {
-    workflowElapsedSec: secondsBetween(state.startedAt, state.finishedAt),
+    workflowElapsedSec: secondsBetween(state.lifecycle?.startedAt ?? state.startedAt, state.lifecycle?.finishedAt ?? state.finishedAt),
     attempts,
     byPool,
   };
@@ -66,6 +69,16 @@ export function timingBreakdown(state) {
 // distinct from quietForSec, which counts durable workflow events (has
 // anything semantically happened?). null when no agent is running.
 export function transportQuietSeconds(state, now = new Date()) {
+  if (state.schemaVersion === 'bullswarm.workflow.state.v2') {
+    const attempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])]
+      .filter((attempt) => attempt.status === 'running');
+    if (!attempts.length) return null;
+    const latest = Math.max(...attempts.map((attempt) => Math.max(
+      Date.parse(attempt.lastActivityAt ?? '') || 0, Date.parse(attempt.lastEventAt ?? '') || 0,
+      Date.parse(attempt.startedAt ?? '') || 0,
+    )));
+    return latest ? Math.max(0, Math.floor((now.getTime() - latest) / 1000)) : null;
+  }
   const running = Object.values(state.activeAgents ?? {}).filter((agent) =>
     !agent.finishedAt && (agent.status ?? 'running') === 'running');
   if (!running.length) return null;
@@ -79,6 +92,36 @@ export function transportQuietSeconds(state, now = new Date()) {
 }
 
 export function watchSnapshot(runDir, state, now = new Date()) {
+  if (state.schemaVersion === 'bullswarm.workflow.state.v2') {
+    const lifecycle = state.lifecycle ?? {};
+    const allAttempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])];
+    const activeAttempts = allAttempts.filter((attempt) => attempt.status === 'running');
+    const actionById = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
+    const agents = activeAttempts.map((attempt) => ({
+      stepId: attempt.actionId ?? (state.planner?.attempts?.includes(attempt) ? 'workflow-planner' : 'preflight-scout'),
+      pool: attempt.pool ?? null, model: attempt.model ?? null, status: attempt.status,
+      elapsedSec: secondsBetween(attempt.startedAt, attempt.finishedAt ?? now.toISOString()),
+      silentForSec: null, stall: null, outputBytesObserved: attempt.outputBytesObserved ?? 0,
+      lastActions: attempt.lastAgentEvent ? [{ kind: attempt.lastAgentEvent.kind ?? attempt.lastAgentEvent.type ?? 'agent', status: 'running', summary: attempt.lastAgentEvent.summary ?? null }] : [],
+    }));
+    const runningAction = (state.actions ?? []).find((action) => ['running', 'waiting'].includes(action.status));
+    const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status);
+    const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
+    return {
+      at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
+      status: lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
+      phase: null, step: runningAction?.id ?? (state.planner?.status === 'running' ? 'workflow-planner' : null),
+      elapsedSec, eventSequence: state.events?.sequence ?? 0,
+      dispatchesUsed: state.budget?.agents ?? 0, dispatchTarget: state.config?.settings?.maxAgents ?? null,
+      expansionRound: state.budget?.expansions ?? 0, expansionLimit: state.config?.settings?.maxExpansionRounds ?? 0,
+      tokens: state.usage?.total ?? null, pendingSteering: 0, deliveredSteering: 0,
+      quietForSec: 0, transportQuietForSec: transportQuietSeconds(state, now), agents,
+      runningCount: (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
+      waitingCount: (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
+      latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
+      terminal, timing: terminal ? timingBreakdown(state) : null,
+    };
+  }
   const delivered = new Set((state.steering ?? []).map((entry) => entry.id));
   const queuedSteering = readSteering(runDir).filter((entry) => !delivered.has(entry.id));
   const elapsedSec = secondsBetween(state.startedAt, state.finishedAt ?? now.toISOString());
@@ -162,6 +205,16 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
   const location = [snapshot.phase, snapshot.step].filter(Boolean).join('/') || 'starting';
   if (!verbose) {
     const actions = events.filter((event) => event.type === 'attempt.agent_action').length;
+    if (snapshot.runningCount !== undefined) {
+      const state = snapshot.terminal
+        ? snapshot.status === 'completed' ? 'workflow complete; result ready' : `workflow ended ${snapshot.status}; result ready`
+        : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;
+      return `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
+        `${events.length} new events` +
+        (snapshot.latestAction ? ` · latest: ${snapshot.latestAction}` : '') +
+        ` · quiet ${formatDuration(snapshot.quietForSec)}` +
+        (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
+    }
     const line = `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ` +
       `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${events.length} events, ${actions} actions · ` +
       `quiet ${formatDuration(snapshot.quietForSec)}` +
@@ -236,14 +289,14 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime.
-        priorSequence = state.eventSequence ?? 0;
+        priorSequence = state.events?.sequence ?? state.eventSequence ?? 0;
         // Semantic quiet counts durable marks only (events, action starts and
         // finishes). Raw child output is surfaced separately as transport
         // liveness so a thinking agent and a dead one look different.
         lastActivityAt = Math.max(
-          Date.parse(state.lastEvent?.committedAt ?? '') || 0,
-          Date.parse(state.finishedAt ?? '') || 0,
-          ...Object.values(state.attempts ?? []).map((attempt) => Math.max(
+          Date.parse(state.events?.last?.committedAt ?? state.lastEvent?.committedAt ?? '') || 0,
+          Date.parse(state.lifecycle?.finishedAt ?? state.finishedAt ?? '') || 0,
+          ...[...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])].map((attempt) => Math.max(
             Date.parse(attempt.startedAt ?? '') || 0,
             Date.parse(attempt.finishedAt ?? '') || 0,
           )),
@@ -251,7 +304,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
             Date.parse(agent.lastActionAt ?? '') || 0,
             Date.parse(agent.startedAt ?? '') || 0,
           )),
-          Date.parse(state.startedAt ?? '') || Date.now(),
+          Date.parse(state.lifecycle?.startedAt ?? state.startedAt ?? '') || Date.now(),
         );
       }
       const newEvents = readEvents(resolved.runDir, { after: priorSequence });
@@ -261,7 +314,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           lastActivityAt,
           ...newEvents.map((event) => Date.parse(event.committedAt ?? '') || Date.now()),
         );
-        priorSequence = newEvents.at(-1)?.sequence ?? state.eventSequence ?? priorSequence;
+        priorSequence = newEvents.at(-1)?.sequence ?? state.events?.sequence ?? state.eventSequence ?? priorSequence;
       }
       snapshot.quietForSec = Math.max(0, Math.floor((Date.now() - lastActivityAt) / 1000));
       const fingerprint = snapshotFingerprint(snapshot);

@@ -17,7 +17,9 @@ import { cmdRuns } from './runs-cli.js';
 import { resolveRunId, reconcileInterruptedRuns } from './short-id.js';
 import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
 import { readEvents } from './events.js';
-import { buildGoalWorkflow } from './goal.js';
+import { extractGoalRequirements } from './goal.js';
+import { createV2GoalDocument, validateV2GoalDocument } from './v2-state.js';
+import { runV2AutonomousWorkflow } from './v2-runtime.js';
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
@@ -159,14 +161,38 @@ function goalSettings(opts) {
     'max-agents': 'maxAgents',
     'max-expansion-rounds': 'maxExpansionRounds',
     'max-actions': 'maxActions',
-    'max-items-per-expansion': 'maxItemsPerExpansion',
-    'max-workflow-seconds': 'maxWorkflowSeconds',
     concurrency: 'concurrency',
-    'retry-attempts': 'retryAttempts',
+    'retry-attempts': 'maxMechanicalRetries',
   };
-  return Object.fromEntries(Object.entries(mappings)
+  const settings = Object.fromEntries(Object.entries(mappings)
     .filter(([flag]) => opts[flag] != null)
-    .map(([flag, setting]) => [setting, opts[flag]]));
+    .map(([flag, setting]) => {
+      const value = Number(opts[flag]);
+      if (!Number.isInteger(value) || value < (flag === 'retry-attempts' ? 0 : 1)) throw new Error(`--${flag} must be a ${flag === 'retry-attempts' ? 'non-negative' : 'positive'} integer`);
+      return [setting, value];
+    }));
+  return settings;
+}
+
+function compactV2Requirements(goal) {
+  return extractGoalRequirements(goal).map((requirement, index) => ({
+    id: `requirement-${index + 1}`, text: requirement.text, mandatory: true,
+  }));
+}
+
+export function extractV2GoalConstraints(goal) {
+  const source = String(goal ?? '');
+  const explicitReadOnly = /^\s*read[- ]only(?:\s|:|$)/i.test(source)
+    || /\b(?:do not|must not|never)\s+(?:modify|edit|write(?:\s+to)?|change)\s+(?:any\s+)?(?:repository|repo|workspace)\s+files?\b/i.test(source);
+  return explicitReadOnly ? { workspaceMutation: 'forbidden' } : null;
+}
+
+function v2Routing({ pool = null, model = null, strict = false } = {}) {
+  const routing = {};
+  if (pool) routing[strict ? 'pool' : 'preferredPool'] = pool;
+  if (model) routing.preferredModel = model;
+  if (strict && pool) routing.strictPool = pool;
+  return Object.keys(routing).length ? routing : null;
 }
 
 function goalUsage() {
@@ -174,17 +200,14 @@ function goalUsage() {
 }
 
 async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId }) {
-  const tui = new WorkflowTui({ quiet: opts.quiet, json: opts.json });
-  const result = await runWorkflow({
-    bullswarmDir: BULLSWARM_DIR(),
-    doc,
-    pools,
-    runId,
-    resumeRunId,
-    onEvent: opts.json ? undefined : (event) => tui.handle(event),
+  const result = await runV2AutonomousWorkflow({
+    bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools, runId, resumeRunId,
   });
-  if (opts.json) console.log(JSON.stringify(result.report, null, 2));
-  return isDeliveredWorkflowStatus(result.report.status) ? 0 : 1;
+  if (opts.json) console.log(JSON.stringify(result.result, null, 2));
+  else if (!opts.quiet) {
+    console.log(`workflow ${result.shortId ?? result.runId} ${result.result.status}; result: bullswarm workflow runs result ${result.shortId ?? result.runId} --json`);
+  }
+  return result.result.status === 'completed' ? 0 : 1;
 }
 
 async function launchDetachedGoal(doc, opts) {
@@ -195,7 +218,7 @@ async function launchDetachedGoal(doc, opts) {
   const stdoutPath = join(goalDir, 'stdout.log');
   const stderrPath = join(goalDir, 'stderr.log');
   writeFileSync(requestPath, `${JSON.stringify({
-    schemaVersion: 'bullswarm.goal.request.v1',
+    schemaVersion: 'bullswarm.goal.request.v2',
     runId,
     document: doc,
   }, null, 2)}\n`);
@@ -221,7 +244,7 @@ async function launchDetachedGoal(doc, opts) {
     closeSync(stderrFd);
   }
   writeFileSync(join(goalDir, 'launcher.json'), `${JSON.stringify({
-    schemaVersion: 'bullswarm.goal.launcher.v1',
+    schemaVersion: 'bullswarm.goal.launcher.v2',
     runId,
     pid: child.pid,
     launchedAt: new Date().toISOString(),
@@ -245,11 +268,11 @@ async function launchDetachedGoal(doc, opts) {
     action: 'goal-launched',
     runId,
     shortId: state?.shortId ?? null,
-    status: state?.status ?? 'starting',
+    status: state?.lifecycle?.status ?? 'starting',
     pid: child.pid,
     goal: doc.intent.goal,
     cwd: doc.intent.cwd,
-    requestedOrchestrator: doc.intent.requestedOrchestrator,
+    requestedOrchestrator: doc.config?.plannerRouting?.preferredPool ?? doc.config?.plannerRouting?.pool ?? 'auto',
     observe: {
       watch: `bullswarm workflow watch ${state?.shortId ?? runId}`,
       summary: `bullswarm workflow runs show ${state?.shortId ?? runId}`,
@@ -302,88 +325,6 @@ export function shouldAutoWatchGoal(opts) {
     opts.json !== true && opts.resume == null && opts.request == null;
 }
 
-export function applyResumeOrchestratorOverride(doc, requested, strictRequested = null) {
-  if (!requested && !strictRequested) return doc;
-  if (requested && strictRequested) {
-    throw new Error('--orchestrator and --strict-orchestrator are mutually exclusive');
-  }
-  const strict = Boolean(strictRequested);
-  const selected = strictRequested ?? requested;
-  const pool = selected === 'auto' ? null : selected;
-  doc.intent ??= {};
-  doc.orchestration ??= {};
-  doc.intent.requestedOrchestrator = pool ?? 'auto';
-  doc.orchestration.requestedPool = pool;
-  doc.orchestration.strictPool = strict ? pool : null;
-  doc.orchestration.selection = pool
-    ? (strict ? 'user-strict-for-testing' : 'user-preferred-with-fallback')
-    : 'capability-strategy-and-quota';
-  for (const phase of doc.phases ?? []) {
-    for (const step of phase.steps ?? []) {
-      if (step.type !== 'decide') continue;
-      delete step.pool;
-      delete step.preferredPool;
-      if (pool) step[strict ? 'pool' : 'preferredPool'] = pool;
-    }
-  }
-  return doc;
-}
-
-export function applyResumeModelOverrides(doc, {
-  orchestratorModel = null,
-  workerPool = null,
-  workerModel = null,
-} = {}) {
-  const normalize = (value) => value === 'auto' ? null : value;
-  const plannerModel = normalize(orchestratorModel);
-  const workers = normalize(workerPool);
-  const workerModelLock = normalize(workerModel);
-  if (orchestratorModel == null && workerPool == null && workerModel == null) return doc;
-  doc.intent ??= {};
-  doc.orchestration ??= {};
-  if (orchestratorModel != null) {
-    doc.intent.requestedOrchestratorModel = plannerModel ?? 'auto';
-    doc.orchestration.requestedModel = plannerModel;
-  }
-  if (workerPool != null) {
-    doc.intent.requestedWorkerPool = workers ?? 'auto';
-    doc.orchestration.workerPool = workers;
-  }
-  if (workerModel != null) {
-    doc.intent.requestedWorkerModel = workerModelLock ?? 'auto';
-    doc.orchestration.workerModel = workerModelLock;
-  }
-  for (const phase of doc.phases ?? []) {
-    for (const step of phase.steps ?? []) {
-      if (step.type === 'decide') {
-        step.actionDefaults ??= {};
-        if (orchestratorModel != null) {
-          if (plannerModel) step.model = plannerModel;
-          else delete step.model;
-        }
-        if (workerPool != null) {
-          if (workers) step.actionDefaults.pool = workers;
-          else delete step.actionDefaults.pool;
-        }
-        if (workerModel != null) {
-          if (workerModelLock) step.actionDefaults.model = workerModelLock;
-          else delete step.actionDefaults.model;
-        }
-        continue;
-      }
-      if (workerPool != null) {
-        if (workers) step.pool = workers;
-        else delete step.pool;
-      }
-      if (workerModel != null) {
-        if (workerModelLock) step.model = workerModelLock;
-        else delete step.model;
-      }
-    }
-  }
-  return doc;
-}
-
 async function wfGoal(opts) {
   if (opts.help) {
     console.log(goalUsage());
@@ -408,31 +349,23 @@ async function wfGoal(opts) {
       return 1;
     }
     resumeRunId = resolvedRun.runId;
-    const workflowPath = join(resolvedRun.runDir, 'workflow.json');
-    const statePath = join(resolvedRun.runDir, 'state.json');
+    const durableGoalPath = join(resolvedRun.runDir, 'goal.json');
     try {
-      doc = existsSync(workflowPath)
-        ? JSON.parse(readFileSync(workflowPath, 'utf8'))
-        : readJsonForUpdate(statePath, 'workflow state')._doc;
+      if (!existsSync(durableGoalPath)) throw new Error('unsupported V1 autonomous run; start a new V2 goal');
+      doc = JSON.parse(readFileSync(durableGoalPath, 'utf8'));
+      validateV2GoalDocument(doc);
     } catch (err) {
-      console.error(`✗ cannot load durable workflow for ${resumeRunId}: ${err.message}`);
+      console.error(`✗ cannot resume ${resumeRunId}: ${err.message}`);
       return 1;
     }
-    try {
-      applyResumeOrchestratorOverride(doc, opts.orchestrator, opts['strict-orchestrator']);
-      applyResumeModelOverrides(doc, {
-        orchestratorModel: opts['orchestrator-model'],
-        workerPool: opts['worker-pool'],
-        workerModel: opts['worker-model'],
-      });
-    } catch (err) {
-      console.error(`✗ invalid goal options: ${err.message}`);
+    if (opts.orchestrator || opts['strict-orchestrator'] || opts['orchestrator-model'] || opts['worker-pool'] || opts['worker-model']) {
+      console.error('✗ V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal');
       return 2;
     }
   } else if (opts.request) {
     try {
       const request = JSON.parse(readFileSync(resolve(opts.request), 'utf8'));
-      if (request.schemaVersion !== 'bullswarm.goal.request.v1' || !request.document) {
+      if (request.schemaVersion !== 'bullswarm.goal.request.v2' || !request.document) {
         throw new Error('invalid goal request schema');
       }
       if (request.runId !== opts['run-id']) throw new Error('goal request runId mismatch');
@@ -448,8 +381,7 @@ async function wfGoal(opts) {
       return 2;
     }
     const requestedOrchestrator = opts['strict-orchestrator'] ?? opts.orchestrator;
-    const orchestrator = requestedOrchestrator && requestedOrchestrator !== 'auto'
-      ? requestedOrchestrator : null;
+    const orchestrator = requestedOrchestrator && requestedOrchestrator !== 'auto' ? requestedOrchestrator : null;
     const workerPool = opts['worker-pool'] && opts['worker-pool'] !== 'auto'
       ? opts['worker-pool'] : null;
     const workerModel = opts['worker-model'] && opts['worker-model'] !== 'auto'
@@ -457,18 +389,17 @@ async function wfGoal(opts) {
     const orchestratorModel = opts['orchestrator-model'] && opts['orchestrator-model'] !== 'auto'
       ? opts['orchestrator-model'] : null;
     try {
-      doc = buildGoalWorkflow({
-        goal,
-        suggestedPlan: opts['suggested-plan'] ?? null,
-        cwd: opts.cwd ?? process.cwd(),
-        orchestrator,
-        strictOrchestrator: Boolean(opts['strict-orchestrator']),
-        orchestratorModel,
-        workerPool,
-        workerModel,
-        settings: goalSettings(opts),
-        scout: !opts.noScout,
-        worktreeIsolation: loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides',
+      const isolationPolicy = loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides';
+      doc = createV2GoalDocument({
+        goal, cwd: resolve(opts.cwd ?? process.cwd()), requirements: compactV2Requirements(goal),
+        constraints: extractV2GoalConstraints(goal),
+        settings: {
+          ...goalSettings(opts), scout: !opts.noScout,
+          workspaceMode: isolationPolicy === 'off' ? 'shared' : 'isolated',
+          ...(opts['suggested-plan'] ? { suggestedPlan: String(opts['suggested-plan']).trim() } : {}),
+        },
+        plannerRouting: v2Routing({ pool: orchestrator, model: orchestratorModel, strict: Boolean(opts['strict-orchestrator']) }),
+        workerRouting: v2Routing({ pool: workerPool, model: workerModel, strict: Boolean(workerPool) }),
       });
     } catch (err) {
       console.error(`✗ invalid goal options: ${err.message}`);
@@ -482,15 +413,11 @@ async function wfGoal(opts) {
     return 1;
   }
 
-  try {
-    validateWorkflow(doc, { poolNames: names });
-  } catch (err) {
-    if (err instanceof WorkflowValidationError) {
-      console.error('✗ autonomous workflow invalid (nothing ran):');
-      for (const issue of err.issues) console.error(`  - ${issue}`);
-      return 1;
-    }
-    throw err;
+  try { validateV2GoalDocument(doc); }
+  catch (err) { console.error(`✗ autonomous V2 goal invalid (nothing ran): ${err.message}`); return 1; }
+  for (const [label, routing] of [['planner', doc.config.plannerRouting], ['worker', doc.config.workerRouting]]) {
+    const pool = routing?.pool ?? routing?.preferredPool ?? routing?.strictPool;
+    if (pool && !names.includes(pool)) { console.error(`✗ requested ${label} pool "${pool}" is not available`); return 1; }
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {
@@ -516,24 +443,46 @@ async function wfCapabilities(opts) {
   const coreState = loadState(BULLSWARM_DIR());
   const result = {
     lanes: ['analyze', 'build', 'chore'],
-    stepTypes: ['run', 'fanout', 'verify', 'decide'],
-    workflowFeatures: {
-      sequentialPhases: true,
-      dynamicFanout: true,
-      dynamicGraphExpansion: true,
-      autonomousGoalBootstrap: true,
-      detachedGoalRunner: true,
-      boundedObservePlanExecute: true,
-      durableOrderedEvents: true,
-      firstClassAttempts: true,
-      capabilityAwareRouting: true,
-      boundedRetries: true,
-      maxRetryAttempts: 3,
-      resume: true,
-      cooperativeCancellation: true,
-      cooperativeSignalInterruption: true,
-      staleOwnerReconciliation: true,
-      adversarialVerification: true,
+    engines: {
+      autonomousV2: {
+        command: 'bullswarm workflow goal',
+        goalSchema: 'bullswarm.workflow.goal.v2',
+        stateSchema: 'bullswarm.workflow.state.v2',
+        resultSchema: 'bullswarm.workflow.result.v2',
+        actionModel: 'generic work and evidence actions',
+        completionAuthority: 'kernel requirement ledger',
+        features: {
+          plannerCreatesBoundedProgram: true,
+          plannerCannotDeclareCompletion: true,
+          dependencyReadyConcurrency: true,
+          enforcedFileOwnership: true,
+          requirementEvidenceAndInvalidation: true,
+          deterministicOutputPreflight: true,
+          mechanicalRetriesOnly: true,
+          semanticRepairLoops: false,
+          detachedRunner: true,
+          durableOrderedEvents: true,
+          resumable: true,
+          cooperativeCancellation: true,
+          presentationStagesDerivedFromActions: true,
+          advisoryPlanningTargets: true,
+        },
+        defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2 },
+        compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false },
+      },
+      authoredGraphs: {
+        command: 'bullswarm workflow run',
+        documentSchema: 'bullswarm.workflow.v1',
+        stepTypes: ['run', 'fanout', 'verify', 'decide'],
+        features: {
+          sequentialPhases: true,
+          dynamicFanout: true,
+          authoredGraphExpansion: true,
+          adversarialVerifyStep: true,
+          resumable: true,
+          staleOwnerReconciliation: true,
+        },
+      },
     },
     routing: {
       automatic: true,
@@ -545,7 +494,8 @@ async function wfCapabilities(opts) {
     },
     worktreeIsolation: {
       policy: coreState.config?.worktreeIsolation ?? 'agent-decides',
-      enforcement: 'optional agent execution-style preference; Bullswarm does not impose repository topology',
+      autonomousV2: 'mutating actions use isolated worktrees unless policy is off; shared writers are serialized and changed-path ownership is enforced before integration',
+      authoredGraphs: 'configuration remains an agent execution-style preference for the fixed-graph engine',
     },
     pools: pools.map((p) => ({
       name: p.name,
@@ -714,8 +664,7 @@ function parseFlags(argv) {
     'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'orchestrator-model',
     'worker-pool', 'worker-model', 'request', 'run-id',
     'suggested-plan',
-    'max-agents', 'max-expansion-rounds', 'max-actions',
-    'max-items-per-expansion', 'max-workflow-seconds', 'concurrency',
+    'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'message',
   ]);
   for (let i = 0; i < argv.length; i++) {
@@ -821,6 +770,12 @@ async function wfRun(opts) {
   if (resumeRunId) {
     const resolved = resolveRunId(BULLSWARM_DIR(), resumeRunId);
     if (resolved) {
+      const resumeState = JSON.parse(readFileSync(join(resolved.runDir, 'state.json'), 'utf8'));
+      if (resumeState?.schemaVersion !== 'bullswarm.workflow.state.v2'
+          && resumeState?.intent?.autonomous === true) {
+        console.error(`✗ cannot resume ${resolved.runId}: unsupported V1 autonomous run; start a new V2 goal`);
+        return 1;
+      }
       resumeRunId = resolved.runId;
     } else if (resumeRunId.startsWith('wf-')) {
       // already a runId, leave as-is (loadWorkflow will surface ENOENT)
@@ -835,6 +790,13 @@ async function wfRun(opts) {
     ({ doc, path } = loadWorkflow(target, workflowDirs()));
   } catch (err) {
     console.error(`✗ ${err.message}`);
+    return 1;
+  }
+
+  if (doc?.schemaVersion === 'bullswarm.workflow.v1'
+      && doc?.intent?.autonomous === true
+      && doc?.orchestration?.mode === 'autonomous') {
+    console.error('✗ retired autonomous V1 workflow documents cannot run; start a new goal with bullswarm workflow goal "<goal>"');
     return 1;
   }
 
