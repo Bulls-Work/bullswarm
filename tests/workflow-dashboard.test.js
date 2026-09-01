@@ -49,6 +49,24 @@ function addHistoricalRun(home) {
   writeFileSync(join(dir, 'report.json'), JSON.stringify({ status: 'completed_with_concerns' }));
 }
 
+function addV2HistoricalRun(home) {
+  const dir = join(home, 'workflows', 'wf-v2-newer');
+  mkdirSync(dir, { recursive: true });
+  const goal = createV2GoalDocument({
+    goal: 'Newer V2 dashboard run.',
+    cwd: home,
+    requirements: [{ id: 'inspect', text: 'Inspect the workflow.', mandatory: true }],
+  });
+  const state = createV2State(goal, { runId: 'wf-v2-newer', shortId: 'v2n456' });
+  state.lifecycle = {
+    status: 'completed',
+    startedAt: '2026-08-30T02:00:00.000Z',
+    finishedAt: '2026-08-30T02:05:00.000Z',
+    resultFile: null,
+  };
+  writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+}
+
 // ---------------------------------------------------------------------------
 // Timeline redesign: the overview timeline groups events under phase segment
 // headers shaped `── Implement ──────── 2m10s ──` instead of prefixing every
@@ -210,6 +228,164 @@ test('unified dashboard lists active before recent runs and renders a selected-r
     assert.match(mobile, /Enter open · \/ filter · a active\/all/);
     const plain = mobile.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     assert.equal(Math.max(...plain.split('\n').map((line) => line.length)) <= 60, true);
+  } finally { cleanup(); }
+});
+
+test('all-runs ordering uses the V2 lifecycle start time and keeps the initial list layout', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    addHistoricalRun(home);
+    addV2HistoricalRun(home);
+    const all = dashboardRows(home, { all: true });
+    assert.deepEqual(all.map((row) => row.shortId), ['abc234', 'v2n456', 'def345']);
+
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 60;
+      rows = 26;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = cmdWorkflow([], { bullswarmDir: home, input, output });
+    assert.match(output.text, /Runs · active/);
+    assert.match(output.text, /abc234 · audit-files/);
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+  } finally { cleanup(); }
+});
+
+test('direct V2 run IDs initially select the unified list shell before drilldown', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    addV2HistoricalRun(home);
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 120;
+      rows = 30;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = runDashboard(home, { token: 'v2n456', input, output, refreshMs: 60_000 });
+    assert.match(output.text, /Runs · all/);
+    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
+    assert.match(output.text, /Workflow timeline/);
+    input.emit('data', Buffer.from('\r'));
+    assert.match(output.text, /Phases ·/);
+    input.emit('data', Buffer.from('\u001b'));
+    assert.match(output.text, /Runs · all/);
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+  } finally { cleanup(); }
+});
+
+test('recent-list V2 selection opens the unified overview before phase drilldown', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    addHistoricalRun(home);
+    addV2HistoricalRun(home);
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns = 120;
+      rows = 30;
+      text = '';
+      write(chunk) { this.text += chunk; }
+    }
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = cmdWorkflow([], { bullswarmDir: home, input, output });
+
+    input.emit('data', Buffer.from('a')); // active -> all
+    input.emit('data', Buffer.from('\u001b[B')); // active run -> newer V2 run
+    assert.match(output.text, /Runs · all/);
+    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
+    input.emit('data', Buffer.from('\r'));
+    assert.match(output.text, /Phases ·/);
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+  } finally { cleanup(); }
+});
+
+test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty active fallback', async () => {
+  const { home, cleanup } = fixture();
+  try {
+    addV2HistoricalRun(home);
+
+    class FakeInput extends EventEmitter {
+      isTTY = true;
+      setRawMode() {}
+      resume() {}
+      pause() {}
+    }
+    class FakeOutput extends EventEmitter {
+      isTTY = true;
+      columns;
+      rows = 30;
+      text = '';
+      constructor(columns) { super(); this.columns = columns; }
+      write(chunk) { this.text += chunk; }
+    }
+    const session = (columns, token = 'v2n456') => {
+      const input = new FakeInput();
+      const output = new FakeOutput(columns);
+      const running = runDashboard(home, { token, input, output, refreshMs: 60_000 });
+      const press = (key) => {
+        const before = output.text.length;
+        input.emit('data', Buffer.from(key));
+        return output.text.slice(before);
+      };
+      return { press, quit: () => { press('q'); return running; } };
+    };
+
+    // Desktop: list -> phase/agent detail -> planner -> technical planner.
+    const desktop = session(120);
+    assert.match(desktop.press('\r'), /Phases ·/);
+    assert.match(desktop.press('o'), /Workflow Planner · overview/);
+    assert.match(desktop.press('v'), /Workflow Planner · technical details/);
+    assert.equal(await desktop.quit(), 0);
+
+    // Mobile: the selected run opens on the timeline, then t exposes phases.
+    const mobile = session(80);
+    assert.match(mobile.press('\r'), /Workflow timeline/);
+    assert.match(mobile.press('t'), /Phases ·/);
+    assert.doesNotMatch(mobile.press('t'), /Phases ·/);
+    assert.match(mobile.press('t'), /Phases ·/);
+    assert.equal(await mobile.quit(), 0);
+
+    // Bare active view: no active rows show the explicit recent-runs escape.
+    const emptyHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-empty-'));
+    addV2HistoricalRun(emptyHome);
+    const input = new FakeInput();
+    const output = new FakeOutput(120);
+    const running = runDashboard(emptyHome, { input, output, refreshMs: 60_000 });
+    assert.match(output.text, /Press a to browse recent runs\./);
+    input.emit('data', Buffer.from('a'));
+    assert.match(output.text, /Runs · all/);
+    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
+    input.emit('data', Buffer.from('q'));
+    assert.equal(await running, 0);
+    rmSync(emptyHome, { recursive: true, force: true });
   } finally { cleanup(); }
 });
 
