@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  Prompter,
   suggestRoutingTable,
   applyIntegrationBlock,
   integrationBlockPresent,
@@ -37,6 +38,11 @@ test('auto setup never enables the packaged echo test fixture', () => {
     assert.equal(state.pools.echo.enabled, false);
     assert.equal(state.config.testFixturesMigrated, true);
   } finally { cleanup(); }
+});
+
+test('setup prompt cleanup is safe after per-question readline cleanup', () => {
+  const prompt = new Prompter();
+  assert.doesNotThrow(() => prompt.close());
 });
 
 test('existing installs migrate an accidentally enabled echo fixture once', () => {

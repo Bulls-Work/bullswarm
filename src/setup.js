@@ -30,7 +30,7 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 // (readline/promises question() drops lines when stdin is a pipe: the second
 // question re-arms after buffered data was already consumed. Preload pipes;
 // readline only per-question on a real TTY.)
-class Prompter {
+export class Prompter {
   #lines = [];
   #preloaded = false;
 
@@ -56,6 +56,10 @@ class Prompter {
     }
     return this.#lines.shift() ?? '';
   }
+
+  // Each TTY question owns and closes its own readline interface. Keep a
+  // no-op finalizer so wizard cleanup is safe for both TTY and piped input.
+  close() {}
 }
 
 // --- discovery ---------------------------------------------------------------
