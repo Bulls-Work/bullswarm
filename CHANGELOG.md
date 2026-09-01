@@ -1,5 +1,17 @@
 # bullswarm changelog
 
+## 0.22.1 — unified workflow dashboard navigation
+
+- The workflow dashboard now keeps V2 runs in the unified list and timeline
+  shell on both desktop and narrow terminals, with stable mobile borders and
+  the same phase-segmented timeline for current and historical runs.
+
+- Timeline phases are numbered and presented in declared program order, so
+  parallel workers finishing out of order cannot place Phase 2 above Phase 1.
+  Preflight is selectable and opens the Workflow Planner; Up and Down move
+  through Preflight, Phase 1, Phase 2, and later phases, while Enter or Right
+  opens the selected planner or phase agents.
+
 ## 0.22.0 — autonomous Dynamic Workflow V2
 
 - Autonomous goals now run on the V2 kernel: agents propose bounded programs
