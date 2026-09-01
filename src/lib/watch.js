@@ -97,10 +97,14 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let fatalForceKillTimer = null;
     let forceKillTimer = null;
     let detectedModel = null;
+    let providerFailureType = null;
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
       onEvent: opts.onAgentEvent,
       onProgress: (event) => {
         if (event.model) detectedModel = event.model;
+        if ((connector.eventStream?.failureTypes ?? []).includes(event.providerType)) {
+          providerFailureType = event.providerType;
+        }
         opts.onAgentProgress?.(event);
       },
     });
@@ -167,6 +171,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
+        providerFailureType,
         spawnError: true,
       });
     });
@@ -181,6 +186,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
+        providerFailureType,
       });
     });
   });
@@ -264,14 +270,39 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const authHit = obs.fatalSignature ?? matchLikelyAuthFailure(connector, output.slice(0, 2000));
 
   let verdict;
+  let structured = null;
   if (obs.cancelled) {
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
   } else if (obs.timedOut) {
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
+  } else if (obs.providerFailureType) {
+    verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
   } else if (authHit) {
     verdict = { ok: false, why: `auth/throttle signature: "${authHit}"`, quarantineHint: true };
+  } else if (typeof opts.outputValidator === 'function') {
+    try {
+      const checked = opts.outputValidator(output);
+      if (!checked || typeof checked.ok !== 'boolean') throw new TypeError('outputValidator must return {ok, errors?, value?}');
+      structured = {
+        ok: checked.ok,
+        errors: Array.isArray(checked.errors) ? checked.errors.map(String) : [],
+        ...(checked.value !== undefined ? { value: checked.value } : {}),
+      };
+      verdict = checked.ok && obs.exitCode === 0
+        ? { ok: true, why: 'structured output validated' }
+        : {
+            ok: false,
+            why: checked.ok
+              ? 'structured output validated but process exited non-zero'
+              : `structured output invalid: ${structured.errors.join('; ') || 'validator rejected it'}`,
+            failureKind: checked.ok ? 'process' : 'schema',
+          };
+    } catch (error) {
+      structured = { ok: false, errors: [error.message] };
+      verdict = { ok: false, why: `structured output invalid: ${error.message}`, failureKind: 'schema' };
+    }
   } else {
     const j = judgeContent(output, {
       exitCode: obs.exitCode,
@@ -291,6 +322,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   const usableDespite =
     !verdict.ok &&
+    typeof opts.outputValidator !== 'function' &&
     !obs.spawnError &&
     !obs.timedOut &&
     !authHit &&
@@ -306,12 +338,14 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     keepOnClaude: false,
     pick: { pool: connector.name, model: selectedModel, command: connector.spawn.cmd },
     contentUsableDespiteExit: usableDespite,
+    ...(structured ? { structured } : {}),
     meta: {
       pool: connector.name,
       exitCode: obs.exitCode,
       signal: obs.signal,
       timedOut: obs.timedOut,
       cancelled: obs.cancelled,
+      providerFailureType: obs.providerFailureType,
       wallSec,
       outBytes: output.length,
       usage,

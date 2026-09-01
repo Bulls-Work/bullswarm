@@ -1,5 +1,21 @@
 # bullswarm changelog
 
+## Unreleased
+
+- Autonomous V2 `maxAgents`, `maxActions`, and `maxExpansionRounds` are now
+  soft planning targets instead of hard termination or proposal-rejection
+  limits. The planner sees usage and remaining-target signals and is urged to
+  consolidate optional work, while the kernel continues the smallest essential
+  program past a target. `concurrency` remains an execution bound on
+  simultaneous work, not on the total program size.
+
+- OpenCode event-stream failures are now classified as transient provider
+  interruptions before structured-output validation runs. A recoverable
+  transport or schema attempt is recorded as `interrupted` while Bullswarm
+  performs its bounded mechanical retry; only an unrecovered final attempt is
+  recorded as `failed`, keeping provider instability distinct from agent work
+  rejection.
+
 ## 0.21.0 — unified TUI shell and LLM-first delegation
 
 - The interactive workflow viewer is now one application shell instead of

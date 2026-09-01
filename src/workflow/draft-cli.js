@@ -6,13 +6,13 @@
 //   bullswarm workflow draft list
 //   bullswarm workflow draft phase add <name> <phase>
 //   bullswarm workflow draft phase remove <name> <phase>
-//   bullswarm workflow draft step add <name> <phase> <step-id> [--type run|fanout|verify]
+//   bullswarm workflow draft step add <name> <phase> <step-id> [--type run|fanout|verify|decide]
 //                                                  [--lane ...] [--prompt ...]
 //                                                  [--task-file ...] [--add-dir ...]
 //                                                  [--pool ...] [--items-from ...]
 //                                                  [--review ...] [--concurrency N]
 //                                                  [--timeout N] [--on-error ...]
-//                                                  [--step-template k=v] (repeatable)
+//                                                  [--step-template k=v]
 //   bullswarm workflow draft step remove <name> <phase> <step-id>
 //   bullswarm workflow draft step set <name> <phase> <step-id> <field> [--value ...]
 //   bullswarm workflow draft set <name> <field> [--value ...]

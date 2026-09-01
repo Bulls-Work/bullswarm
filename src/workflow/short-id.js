@@ -126,7 +126,8 @@ export function listRuns(bullswarmDir) {
     if (!statSync(dir).isDirectory()) continue;
     if (!name.startsWith('wf-')) continue;
     const sf = join(dir, 'state.json');
-    const rf = join(dir, 'report.json');
+    const resultFile = join(dir, 'result.json');
+    const rf = existsSync(resultFile) ? resultFile : join(dir, 'report.json');
     let state = null, report = null;
     if (existsSync(sf)) {
       try { state = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* corrupt */ }
@@ -188,7 +189,7 @@ export function isProcessAlive(pid) {
 export function reconcileInterruptedRun(runDir, state, {
   now = Date.now(), processAlive = isProcessAlive,
 } = {}) {
-  if (!state || state.finishedAt || !ACTIVE_STATUSES.has(state.status)) return state;
+  if (!state || state.schemaVersion === 'bullswarm.workflow.state.v2' || state.finishedAt || !ACTIVE_STATUSES.has(state.status)) return state;
   if (state.status === 'waiting_for_approval' || state.status === 'paused') return state;
   const statePath = join(runDir, 'state.json');
   let modifiedAt = 0;
@@ -258,6 +259,9 @@ export function reconcileInterruptedRuns(bullswarmDir, opts = {}) {
 }
 
 export function isOngoing(runDir, state) {
+  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
+    return !['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status);
+  }
   if (state && state.status && state.finishedAt) return false;
   try {
     const sf = join(runDir, 'state.json');

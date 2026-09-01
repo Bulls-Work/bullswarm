@@ -50,7 +50,7 @@ test('help remains contextual when operands precede the flag', () => {
 test('help command syntax and aliases resolve without executing commands', () => {
   assert.match(helpForArgs(['help']), /Commands:/);
   assert.match(helpForArgs(['help', 'workflow', 'watch']), /workflow watch <runId>/);
-  assert.match(helpForArgs(['runs', 'delete', '--help']), /workflow runs delete/);
+  assert.match(helpForArgs(['runs', 'delete', '--help']), /^Usage: bullswarm runs delete/);
   assert.match(helpForArgs(['--version', '--help']), /^Usage: bullswarm version/);
   assert.equal(helpForArgs(['workflow', 'list']), null);
 });
@@ -70,7 +70,7 @@ test('help stays contextual with operands, flags, and quoted text ahead of --hel
 // nested subcommand" (src/help.js's collectPaths() walk of the HELP tree).
 // This is a floor, not an exact count, so adding a command doesn't break
 // this test — but a large drop (a subtree silently unwired from HELP) would.
-// The exact count at the time this test was written was 68 (verified via
+// The exact count at the time this test was written was 69 (verified via
 // `HELP_PATHS.length` — see tests-and-docs.md for the derivation).
 test('HELP_PATHS enumerates the full routed command tree', () => {
   assert.ok(
@@ -139,16 +139,20 @@ test('every routed leaf renders the full 7-section richness bar, not just a Usag
 // identically to `workflow runs`. Walk every alias path exhaustively
 // (rather than spot-checking one) so a future alias leaf that's added to
 // one side but not the other is caught.
-test('every "runs" alias path resolves to identical text as its "workflow runs" counterpart', () => {
+test('every "runs" alias path mirrors canonical help while showing alias syntax', () => {
   const aliasPaths = HELP_PATHS.filter((p) => p[0] === 'runs');
   assert.ok(aliasPaths.length >= 5, 'expected the runs/list/show/result/delete alias subtree');
   for (const path of aliasPaths) {
     const canonical = ['workflow', ...path];
+    const aliasText = helpForArgs([...path, '--help']);
+    const canonicalText = helpForArgs([...canonical, '--help']);
     assert.equal(
-      helpForArgs([...path, '--help']),
-      helpForArgs([...canonical, '--help']),
-      `${path.join(' ')} must resolve to the same text as ${canonical.join(' ')}`,
+      aliasText.replaceAll('bullswarm runs', 'bullswarm workflow runs'),
+      canonicalText,
+      `${path.join(' ')} must mirror ${canonical.join(' ')} after syntax normalization`,
     );
+    assert.match(aliasText, /Usage: bullswarm runs/);
+    assert.doesNotMatch(aliasText, /Usage: bullswarm workflow runs/);
   }
 });
 

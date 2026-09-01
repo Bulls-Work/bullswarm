@@ -3,11 +3,6 @@
 // Users provide intent, not a workflow graph. Bullswarm supplies the bounded
 // orchestration contract and lets the selected planner expand the durable plan.
 
-import { resolve } from 'node:path';
-
-const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
-const MODEL_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:/~-]*$/;
-
 export const PLANNER_RULES_SECTION = [
   '1. Compile the whole program in one decision: the runtime runs every proposed action and consults you only at a finished-or-blocked boundary, so deferred work costs a round trip.',
   '2. Each worker sees only its prompt. Include the exact goal, cwd, exactly one owner per file (including affected tests), a no-other-files boundary, expected artifact, acceptance command and report format. Avoid and/or ownership. Bullswarm captures the final response; never tell a worker to write a Bullswarm outFile or workflow path.',
@@ -30,9 +25,12 @@ export const PLANNER_EXAMPLES_SECTION = [
   'Rules the validator enforces: action type is run, fanout, or verify; fanout has stepTemplate and either items or itemsFrom; verify.review, when given, is outputs.<id>.outFile; ids are unique across the whole run, finished and failed actions included; dependsOn names existing or proposed actions; lane is analyze|build|chore and effort is low|medium|high; runtime-owned fields are rejected.',
 ].join('\n');
 
-function compactRequirement(text, max = 600) {
-  const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
-  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+function compactRequirement(text) {
+  // Requirements are an acceptance contract, not display copy. Truncating
+  // them can remove the decisive clause while leaving an apparently valid
+  // identifier behind, causing both workers and evidence agents to judge a
+  // weaker goal. Display surfaces may truncate a copy; durable intent may not.
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
 
 export function extractGoalRequirements(goal) {
@@ -75,6 +73,21 @@ export function extractGoalRequirements(goal) {
   return requirements.length ? requirements : [{ id: 'R1', text: compactRequirement(text) }];
 }
 
+export function extractScoutUnitIds(report) {
+  const source = String(report ?? '').trim();
+  for (let index = source.lastIndexOf('['); index >= 0; index = source.lastIndexOf('[', index - 1)) {
+    try {
+      const parsed = JSON.parse(source.slice(index));
+      if (!Array.isArray(parsed) || !parsed.length) continue;
+      const units = parsed.map((unit) => String(unit).trim());
+      if (units.some((unit) => !/^[a-z0-9][a-z0-9-]*$/.test(unit))) continue;
+      if (new Set(units).size !== units.length) continue;
+      return units;
+    } catch { /* try an earlier trailing array opener */ }
+  }
+  return [];
+}
+
 export const AUTONOMOUS_ORCHESTRATOR_PROMPT = [
   'You are the autonomous orchestrator for the user goal in the durable workflow context.',
   'This is a control-plane decision thread. Compile the goal into a complete workflow program, own decomposition through independent verification, and use only the supplied context. Do not invoke Bullswarm, run shell commands, call tools, modify files, or ask the user to steer routine execution.',
@@ -104,161 +117,10 @@ export function scoutPrompt(goal, cwd) {
     'TREE: the directory tree to depth 3 (skip node_modules, .git, build output), one entry per line.',
     'MANIFEST: package/build manifest facts that matter (name, language/runtime, test command, lint/format command, module system).',
     'TEST STATUS: run the test command once and report the exact pass/fail counts and any failing test names.',
-    'UNITS OF WORK: one bullet per independent item the goal implies (module, file, finding, page). For each: the exact files it owns, the exact focused command that proves it is done, and anything already present.',
-    'SHARED FILES: files that more than one unit would touch (indexes, barrels, README tables, config) and therefore must be edited by one action after the others.',
+    'UNITS OF WORK: one bullet per coherent, independently observable acceptance slice the goal implies (behavior, transition, module, finding, page). If one numbered requirement contains several independently testable clauses or state transitions, split those clauses into separate ordered slices even though they share one requirement and the same files; avoid an umbrella unit named after the whole requirement. For each: quote the decisive acceptance qualifiers it owns (especially every, always, any depth, same, narrow/mobile, negative constraints, and fallback behavior), name the exact production and test files it may need to change, the exact focused command that proves it is done, anything already present, and semantic dependencies. Existing implementation or tests that contradict the goal are migration work, not acceptance authority: state the conflict explicitly and assign a mutation-capable owner that can change both production behavior and its tests. Explicitly identify tests that specify behavior introduced by another unit: each focused regression belongs with that behavior implementation, while later cross-cutting acceptance may depend on the integrated earlier slices.',
+    'When a requirement spans several ordered slices, add one final cross-cutting acceptance slice after them. That slice must own the relevant production files as well as tests, must exercise every decisive qualifier across the integrated result, and must be authorized to close discovered behavior gaps. A tests-only regression slice is not a valid final owner for cross-cutting behavior.',
+    'SHARED FILES: files that more than one slice would touch. Shared ownership forbids parallel mutation, but it does not require one monolithic action: if the slices are independently testable, recommend a small ordered sequence that reuses the same owned files and builds on the integrated prior slice.',
     'RISKS: anything that constrains the plan (files that must not change, flaky tests, missing tools, ambiguous requirements).',
     'Finally, END your output with a JSON array of the unit-of-work names in UNITS OF WORK, e.g. ["csv","duration"]. Nothing after the array.',
   ].join('\n');
-}
-
-function positiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
-  if (value == null) return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new Error(`expected an integer from ${min} to ${max}, got "${value}"`);
-  }
-  return parsed;
-}
-
-export function buildGoalWorkflow({
-  goal,
-  suggestedPlan = null,
-  cwd = process.cwd(),
-  orchestrator = null,
-  strictOrchestrator = false,
-  orchestratorModel = null,
-  workerPool = null,
-  workerModel = null,
-  name = null,
-  settings = {},
-  scout = true,
-  worktreeIsolation = 'agent-decides',
-} = {}) {
-  if (typeof goal !== 'string' || !goal.trim()) {
-    throw new Error('goal text is required');
-  }
-  if (suggestedPlan != null && (typeof suggestedPlan !== 'string' || !suggestedPlan.trim())) {
-    throw new Error('suggestedPlan must be a non-empty string when provided');
-  }
-  if (orchestrator != null && (typeof orchestrator !== 'string' || !NAME_RE.test(orchestrator))) {
-    throw new Error(`invalid orchestrator pool "${orchestrator}"`);
-  }
-  if (typeof strictOrchestrator !== 'boolean') {
-    throw new Error('strictOrchestrator must be a boolean');
-  }
-  if (workerPool != null && (typeof workerPool !== 'string' || !NAME_RE.test(workerPool))) {
-    throw new Error(`invalid worker pool "${workerPool}"`);
-  }
-  for (const [label, model] of [['orchestrator', orchestratorModel], ['worker', workerModel]]) {
-    if (model != null && (typeof model !== 'string' || !MODEL_RE.test(model))) {
-      throw new Error(`invalid ${label} model "${model}"`);
-    }
-  }
-
-  const targetDir = resolve(cwd);
-  const workflowName = name ?? `goal-${Date.now().toString(36)}`;
-  if (!NAME_RE.test(workflowName)) throw new Error(`invalid generated workflow name "${workflowName}"`);
-
-  const maxAgents = positiveInt(settings.maxAgents, 30, { max: 500 });
-  const maxExpansionRounds = positiveInt(settings.maxExpansionRounds, 8, { max: 50 });
-  const maxActions = positiveInt(settings.maxActions, 40, { max: 1000 });
-  const maxItemsPerExpansion = positiveInt(settings.maxItemsPerExpansion, 24, { max: 100 });
-  const maxWorkflowSeconds = positiveInt(settings.maxWorkflowSeconds, 3600, { max: 86_400 });
-  const concurrency = positiveInt(settings.concurrency, 8, { max: 16 });
-  const retryAttempts = positiveInt(settings.retryAttempts, 1, { min: 0, max: 3 });
-  if (!['agent-decides', 'off', 'required'].includes(worktreeIsolation)) {
-    throw new Error(`invalid worktree isolation policy "${worktreeIsolation}"`);
-  }
-  const worktreeInstruction = worktreeIsolation === 'required'
-    ? 'Worktree isolation policy: required when the selected agent supports it.'
-    : worktreeIsolation === 'off'
-      ? 'Worktree isolation policy: disabled; work in the supplied directory.'
-      : 'Worktree isolation policy: agent decides whether isolation is useful; do not introduce a worktree for routine sequential work.';
-
-  return {
-    schemaVersion: 'bullswarm.workflow.v1',
-    name: workflowName,
-    mode: 'adaptive',
-    description: 'Autonomous goal-driven workflow generated by Bullswarm.',
-    intent: {
-      goal: goal.trim(),
-      requirements: extractGoalRequirements(goal),
-      ...(suggestedPlan ? { suggestedPlan: suggestedPlan.trim() } : {}),
-      cwd: targetDir,
-      autonomous: true,
-      requestedOrchestrator: orchestrator ?? 'auto',
-      requestedOrchestratorModel: orchestratorModel ?? 'auto',
-      requestedWorkerPool: workerPool ?? 'auto',
-      requestedWorkerModel: workerModel ?? 'auto',
-      worktreeIsolation,
-    },
-    orchestration: {
-      mode: 'autonomous',
-      requestedPool: orchestrator ?? null,
-      requestedModel: orchestratorModel ?? null,
-      workerPool: workerPool ?? null,
-      workerModel: workerModel ?? null,
-      strictPool: orchestrator && strictOrchestrator ? orchestrator : null,
-      selection: orchestrator
-        ? (strictOrchestrator ? 'user-strict-for-testing' : 'user-preferred-with-fallback')
-        : 'capability-strategy-and-quota',
-      completionPolicy: {
-        requireSuccessfulWorker: true,
-        requireSuccessfulVerification: true,
-      },
-    },
-    // The goal is user text. It is declared as an input and inserted into
-    // prompts at render time ({{inputs.goal}}), so anything in it that looks
-    // like a template ref — a goal about templates quoting
-    // `{{outputs.x.data.field}}`, say — is inserted verbatim, never resolved.
-    inputs: {
-      goal: {
-        description: 'The user goal, verbatim.',
-        required: true,
-        default: goal.trim(),
-      },
-    },
-    settings: {
-      concurrency,
-      retryAttempts,
-      escalateOnFail: true,
-      maxAgents,
-      warnAtAgents: Math.min(20, maxAgents),
-      maxExpansionRounds,
-      maxActions,
-      maxItemsPerExpansion,
-      maxWorkflowSeconds,
-    },
-    phases: [{
-      name: 'autonomous-delivery',
-      steps: [...(scout === true ? [{
-        id: 'scout',
-        type: 'run',
-        lane: 'analyze',
-        ...(workerPool ? { pool: workerPool } : {}),
-        ...(workerModel ? { model: workerModel } : {}),
-        addDir: targetDir,
-        prompt: scoutPrompt('{{inputs.goal}}', targetDir),
-      }] : []), {
-        id: 'orchestrator',
-        type: 'decide',
-        ...(orchestrator
-          ? (strictOrchestrator ? { pool: orchestrator } : { preferredPool: orchestrator })
-          : {}),
-        ...(orchestratorModel ? { model: orchestratorModel } : {}),
-        lane: 'analyze',
-        requiresCapabilities: ['strong-analysis', 'workflow-planning'],
-        addDir: targetDir,
-        actionDefaults: {
-          ...(workerPool ? { pool: workerPool } : {}),
-          ...(workerModel ? { model: workerModel } : {}),
-          lane: 'build',
-          requiresCapabilities: ['code-reading', 'file-editing'],
-          addDir: targetDir,
-        },
-        prompt: `${AUTONOMOUS_ORCHESTRATOR_PROMPT}\n\n${worktreeInstruction}`,
-        onError: 'fail',
-      }],
-    }],
-  };
 }

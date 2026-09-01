@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
 import { buildWorkflowResult } from './result.js';
+import { deserializeV2ResultEnvelope } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
@@ -141,6 +142,13 @@ function runsList(opts) {
     return 0;
   }
   for (const r of filtered) {
+    if (r.state?.schemaVersion === 'bullswarm.workflow.state.v2') {
+      const status = r.state.lifecycle?.status ?? (r.ongoing ? 'running' : 'unknown');
+      const completed = r.state.actions?.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length ?? 0;
+      const total = r.state.actions?.length ?? 0;
+      console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${(r.state.intent?.goal ?? '?').slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
+      continue;
+    }
     const wf = r.state?.workflow ?? '?';
     const status = r.state?.status ?? (r.ongoing ? 'running' : 'unknown');
     const age = humanAge(runStartedAt(r));
@@ -170,6 +178,17 @@ function runsShow(idToken, opts) {
     jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, state, report }, opts);
     return 0;
   }
+  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
+    console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
+    console.log(`# dir  ${runDir}`);
+    console.log(`# goal  ${state.intent?.goal ?? '?'}`);
+    console.log(`# status  ${state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : '(terminal)'}`);
+    console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
+    console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
+    console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
+    console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
+    return 0;
+  }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
   console.log(`# dir  ${runDir}`);
   console.log(`# workflow  ${state?.workflow ?? '?'}`);
@@ -195,6 +214,24 @@ function runsResult(idToken, opts) {
   const state = readJsonSafe(statePath);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
+  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
+    const stablePath = join(runDir, 'result.json');
+    if (!existsSync(stablePath)) return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
+    let stable;
+    try { stable = deserializeV2ResultEnvelope(readFileSync(stablePath, 'utf8')); }
+    catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
+    if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
+      return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
+    }
+    if (opts.json) { jsonOut(stable, opts); return 0; }
+    console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
+    console.log(`# status  ${stable.status}  result ready`);
+    console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
+    console.log(`# outcome  ${stable.reason}`);
+    console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
+    if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+    return stable.status === 'completed' ? 0 : 1;
+  }
   const result = buildWorkflowResult({
     state, report, runId, shortId: resolved.shortId, ongoing,
   });
@@ -269,6 +306,12 @@ function runsDelete(idToken, opts, rest) {
 }
 
 function summarize(r) {
+  if (r.state?.schemaVersion === 'bullswarm.workflow.state.v2') return {
+    runId: r.runId, shortId: r.shortId, workflow: 'autonomous-v2', goal: r.state.intent?.goal ?? null,
+    status: r.state.lifecycle?.status ?? null, startedAt: runStartedAt(r), finishedAt: r.state.lifecycle?.finishedAt ?? null,
+    ongoing: r.ongoing, actionsSucceeded: r.state.actions?.filter((action) => action.status === 'succeeded').length ?? 0,
+    actionsTotal: r.state.actions?.length ?? 0,
+  };
   return {
     runId: r.runId,
     shortId: r.shortId,
@@ -285,7 +328,7 @@ function summarize(r) {
 }
 
 function runStartedAt(run) {
-  return run.state?.startedAt ?? run.report?.startedAt ?? null;
+  return run.state?.lifecycle?.startedAt ?? run.state?.startedAt ?? run.report?.startedAt ?? null;
 }
 
 function resolveInitiatedRange(opts, nowMs = Date.now()) {
