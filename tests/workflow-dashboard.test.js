@@ -970,6 +970,25 @@ test('interactive TUI repaints spinner frames in place without clearing the scre
 test('narrow interactive TUI opens on the timeline and t toggles the phase browser', async () => {
   const { home, cleanup } = fixture();
   try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    Object.assign(state, {
+      startedAt: iso(0), finishedAt: iso(120), status: 'completed',
+      actionLedger: [
+        { id: 'discover-files', phase: 'discover', kind: 'run', status: 'succeeded', startedAt: iso(10), finishedAt: iso(40), attempts: [0] },
+        { id: 'verify-files', phase: 'verify', kind: 'run', status: 'succeeded', startedAt: iso(50), finishedAt: iso(110), attempts: [1] },
+      ],
+      attempts: [
+        { actionId: 'discover-files', status: 'succeeded', pool: 'luna', startedAt: iso(10), finishedAt: iso(40) },
+        { actionId: 'verify-files', status: 'succeeded', pool: 'luna', startedAt: iso(50), finishedAt: iso(110) },
+      ],
+      outputs: { 'discover-files': { ok: true }, 'verify-files': { ok: true } },
+      steps: [
+        { phase: 'discover', stepId: 'discover-files', ok: true },
+        { phase: 'verify', stepId: 'verify-files', ok: true },
+      ],
+    });
+    writeFileSync(statePath, JSON.stringify(state));
     class FakeInput extends EventEmitter {
       isTTY = true;
       setRawMode() {}
@@ -987,20 +1006,31 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     const output = new FakeOutput();
     const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
     const timelineText = output.text;
+    let frameStart = output.text.length;
+    input.emit('data', Buffer.from('\x1b[A')); // previous phase
+    const focusedTimeline = output.text.slice(frameStart);
+    frameStart = output.text.length;
+    input.emit('data', Buffer.from('\x1b[C')); // open selected phase's agents
+    const agentsText = output.text.slice(frameStart);
+    input.emit('data', Buffer.from('\x1b')); // agents -> timeline
     input.emit('data', Buffer.from('t'));
     const phasesText = output.text;
     input.emit('data', Buffer.from('q'));
     assert.equal(await running, 0);
     assert.match(timelineText, /Workflow timeline/);
     assert.match(timelineText, /t phases/);
+    assert.match(timelineText, /↑ previous phase · ↓ next phase/);
+    assert.match(timelineText, /Enter agents/);
     assert.doesNotMatch(timelineText, /t phases · t timeline/);
+    assert.match(focusedTimeline, /\x1b\[7m── discover/);
+    assert.match(agentsText, /discover · 1\/1 complete/);
     const visibleWidths = timelineText
       .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
       .split('\n')
       .filter((line) => line.includes('│') || line.includes('┐') || line.includes('┘'))
       .map((line) => line.length);
     assert.ok(visibleWidths.every((lineWidth) => lineWidth <= output.columns - 1), 'mobile frames reserve the terminal wrap column');
-    assert.match(phasesText, /Phases · 1/);
+    assert.match(phasesText, /Phases · 2/);
     assert.match(phasesText, /t timeline/);
     assert.doesNotMatch(phasesText, /t phases · t timeline/);
   } finally { cleanup(); }

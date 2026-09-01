@@ -50,10 +50,13 @@ function navigationFooter({
       : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh · c stop`;
   }
   const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
+  const phaseNavigation = narrow && depth <= 2 && mobileTimeline;
   const phaseToggle = narrow && depth <= 2
     ? ` · t ${mobileTimeline ? 'phases' : 'timeline'}`
     : '';
-  return `${keyHint('up')} · ${keyHint('down')}${phaseToggle} · ${keyHint('in')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
+  const movement = phaseNavigation ? '↑ previous phase · ↓ next phase' : `${keyHint('up')} · ${keyHint('down')}`;
+  const open = phaseNavigation ? 'Enter agents' : keyHint('in');
+  return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
 }
 
 function breadcrumbSegments(row, { depth = 0, phase = null, agent = null } = {}) {
@@ -783,7 +786,7 @@ export function renderWorkflowTui(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
   controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
-  workflowVerbose = false, mobileTimeline = true,
+  workflowVerbose = false, mobileTimeline = true, timelinePhaseFocus = false,
   spinnerFrame = 0,
 } = {}) {
   width = Math.max(20, Number(width) || 120);
@@ -911,7 +914,10 @@ export function renderWorkflowTui(row, {
     } else if (workflowVerbose) {
       body = renderPanel('Workflow technical details', technical.slice(scroll, scroll + contentHeight), width, bodyHeight);
     } else if (focus === 0 && mobileTimeline) {
-      body = renderWorkflowOverviewPanel(model, width, bodyHeight, spinnerFrame, detailScroll);
+      body = renderWorkflowOverviewPanel(
+        model, width, bodyHeight, spinnerFrame, detailScroll,
+        timelinePhaseFocus ? model.selectedPhase.label : null,
+      );
     } else if (focus === 0) {
       body = renderPanel(phaseTitle, visiblePhases, width, bodyHeight);
     } else if (focus === 1) {
@@ -975,7 +981,7 @@ function joinPanels(left, right) {
   return left.map((line, index) => `${line}${right[index] ?? ''}`);
 }
 
-function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0) {
+function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0, selectedTimelineSegment = null) {
   const inner = Math.max(1, width - 2);
   const timeline = workflowTimelineLines(model, inner);
   const live = workflowLiveLines(model, inner, spinnerFrame);
@@ -985,17 +991,24 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
   const liveRows = Math.min(live.lines.length, Math.max(2, Math.floor(contentRows * 0.42)));
   const timelineRows = Math.max(1, contentRows - liveRows - nextRows);
   const maxTimelineScroll = Math.max(0, timeline.lines.length - timelineRows);
+  const selectedHeader = selectedTimelineSegment
+    ? timeline.lines.findIndex((line) => line?.header && line.segment === selectedTimelineSegment)
+    : -1;
   const scroll = clamp(timelineScroll, 0, maxTimelineScroll);
-  const end = Math.max(0, timeline.lines.length - scroll);
-  let start = Math.max(0, end - timelineRows);
-  if (start > 0) {
+  const end = selectedHeader >= 0
+    ? Math.min(timeline.lines.length, selectedHeader + timelineRows)
+    : Math.max(0, timeline.lines.length - scroll);
+  let start = selectedHeader >= 0
+    ? selectedHeader
+    : Math.max(0, end - timelineRows);
+  if (start > 0 && selectedHeader < 0) {
     // Reserve one row for the continuation header while keeping the newest
     // timestamped milestone in view.
     start = Math.max(0, end - Math.max(0, timelineRows - 1));
     while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
   }
    let visibleTimeline = timeline.lines.slice(start, end);
-   if (start > 0) {
+   if (start > 0 && selectedHeader < 0) {
      visibleTimeline.unshift(dimText(`↑ ${start} earlier timeline rows`, inner));
      const continuation = visibleTimeline.find((line) => line?.segment)?.segment
        ?? currentTimelineSegment(model);
@@ -1017,7 +1030,7 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
     if (visibleTimeline.length >= timelineRows) visibleTimeline[visibleTimeline.length - 1] = marker;
     else visibleTimeline.push(marker);
   }
-   if (start > 0 && visibleTimeline.length > timelineRows) {
+   if (start > 0 && selectedHeader < 0 && visibleTimeline.length > timelineRows) {
      // The continuation marker and header are structural context, not
      // expendable event rows. Keep both and trim the oldest visible events.
      visibleTimeline = [visibleTimeline[0], visibleTimeline[1],
@@ -1025,6 +1038,11 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
    } else {
      visibleTimeline = visibleTimeline.slice(0, timelineRows);
    }
+  if (selectedTimelineSegment) {
+    visibleTimeline = visibleTimeline.map((line) => line?.header && line.segment === selectedTimelineSegment
+      ? { ...line, text: `\x1b[7m${timelineText(line)}\x1b[0m` }
+      : line);
+  }
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);
   const title = ` Workflow timeline · ${timeline.milestoneCount} milestone${timeline.milestoneCount === 1 ? '' : 's'} `;
@@ -2069,6 +2087,7 @@ export async function runDashboard(bullswarmDir, {
     orchestratorVerbose: false,
     workflowVerbose: false,
     mobileTimeline: true,
+    timelinePhaseFocus: false,
     spinnerFrame: 0,
   };
   // Clearing the entire alternate screen for every spinner frame produces a
@@ -2206,6 +2225,7 @@ export async function runDashboard(bullswarmDir, {
       ui.agentIndex = ui.focus < 2 ? nextModel.agentIndex
         : clamp(ui.agentIndex ?? nextModel.agentIndex, 0, Math.max(0, agents.length - 1));
       ui.detailScroll = 0;
+      ui.timelinePhaseFocus = false;
     }
     message = null;
     paint();
@@ -2240,8 +2260,25 @@ export async function runDashboard(bullswarmDir, {
       const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
       const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
       if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
-        if (narrowTimeline) ui.detailScroll = Math.max(0, ui.detailScroll - delta);
-        else ui.detailScroll = Math.max(0, ui.detailScroll + delta);
+        if (narrowTimeline) {
+          const visibleSegments = new Set(workflowTimelineLines(model, Math.max(20, frameWidth() - 2)).lines
+            .filter((line) => line?.header)
+            .map((line) => line.segment));
+          const navigable = model.phases
+            .map((phase, index) => ({ phase, index }))
+            .filter(({ phase }) => visibleSegments.has(phase.label))
+            .map(({ index }) => index);
+          if (navigable.length) {
+            const current = navigable.indexOf(model.phaseIndex);
+            const base = current >= 0 ? current : (delta < 0 ? navigable.length : -1);
+            ui.followActivePhase = false;
+            ui.phaseIndex = navigable[clamp(base + delta, 0, navigable.length - 1)];
+            ui.agentIndex = null;
+            ui.followActiveAgent = true;
+            ui.timelinePhaseFocus = true;
+            ui.detailScroll = 0;
+          }
+        } else ui.detailScroll = Math.max(0, ui.detailScroll + delta);
         return paint();
       }
       if (ui.focus === 0) {
@@ -2340,7 +2377,10 @@ export async function runDashboard(bullswarmDir, {
         } else if (ui.workflowVerbose) {
           ui.workflowVerbose = false;
           ui.detailScroll = 0;
-        } else if (detail && ui.focus > 0) ui.focus -= 1;
+        } else if (detail && ui.focus > 0) {
+          ui.focus -= 1;
+          if (ui.focus === 0 && output.columns < 100 && ui.mobileTimeline) ui.timelinePhaseFocus = true;
+        }
         else if (detail) detail = false;
         return paint();
       }
@@ -2353,6 +2393,7 @@ export async function runDashboard(bullswarmDir, {
             detail = true;
             ui.followActivePhase = true;
             ui.followActiveAgent = true;
+            ui.timelinePhaseFocus = false;
           }
         } else if (ui.orchestratorDetail) {
           message = 'Planner detail is the deepest level.';
@@ -2378,6 +2419,7 @@ export async function runDashboard(bullswarmDir, {
           ui.workflowVerbose = false;
         } else if (detail && ui.focus > 0) {
           ui.focus -= 1;
+          if (ui.focus === 0 && output.columns < 100 && ui.mobileTimeline) ui.timelinePhaseFocus = true;
         } else if (detail) {
           detail = false;
         }
@@ -2387,8 +2429,8 @@ export async function runDashboard(bullswarmDir, {
       if (keyPressed('up', key)) return moveVertical(-1);
       if (keyPressed('down', key)) return moveVertical(1);
       const timelineScroll = detail && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
-      if (key === '\u001b[5~') { ui.detailScroll = timelineScroll ? ui.detailScroll + 8 : Math.max(0, ui.detailScroll - 8); return paint(); }
-      if (key === '\u001b[6~') { ui.detailScroll = timelineScroll ? Math.max(0, ui.detailScroll - 8) : ui.detailScroll + 8; return paint(); }
+      if (key === '\u001b[5~') { if (timelineScroll) ui.timelinePhaseFocus = false; ui.detailScroll = timelineScroll ? ui.detailScroll + 8 : Math.max(0, ui.detailScroll - 8); return paint(); }
+      if (key === '\u001b[6~') { if (timelineScroll) ui.timelinePhaseFocus = false; ui.detailScroll = timelineScroll ? Math.max(0, ui.detailScroll - 8) : ui.detailScroll + 8; return paint(); }
       if (key === 'o' && detail) {
         const row = detailRow(bullswarmDir, selectedRunId);
         const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
@@ -2404,6 +2446,7 @@ export async function runDashboard(bullswarmDir, {
       }
       if (key === 't' && detail && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
         ui.mobileTimeline = !ui.mobileTimeline;
+        ui.timelinePhaseFocus = ui.mobileTimeline;
         ui.focus = 0;
         ui.controlSelected = false;
         ui.detailScroll = 0;
