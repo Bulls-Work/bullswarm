@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
 import { buildWorkflowResult } from './result.js';
+import { deserializeV2ResultEnvelope } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
@@ -214,8 +215,14 @@ function runsResult(idToken, opts) {
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
   if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    const stable = readJsonSafe(join(runDir, 'result.json'));
-    if (!stable) return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
+    const stablePath = join(runDir, 'result.json');
+    if (!existsSync(stablePath)) return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
+    let stable;
+    try { stable = deserializeV2ResultEnvelope(readFileSync(stablePath, 'utf8')); }
+    catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
+    if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
+      return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
+    }
     if (opts.json) { jsonOut(stable, opts); return 0; }
     console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
     console.log(`# status  ${stable.status}  result ready`);

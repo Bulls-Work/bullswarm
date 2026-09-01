@@ -92,20 +92,21 @@ function autonomousV2Fixture(home, {
   mkdirSync(runDir, { recursive: true });
   const startedAt = '2026-08-31T01:00:00.000Z';
   const finishedAt = '2026-08-31T01:02:00.000Z';
+  const intentId = 'intent-v2-result';
   const state = {
-    schemaVersion: 'bullswarm.workflow.state.v2', runId, shortId,
+    schemaVersion: 'bullswarm.workflow.state.v2', runId, shortId, intentId,
     intent: { goal: 'Produce and prove a V2 artifact.' },
     lifecycle: { status, startedAt, finishedAt, resultFile: join(runDir, 'result.json') },
     ledger: { requirements: { 'requirement-1': { status: 'passed' } } },
     actions: [{ id: 'produce', status: 'succeeded' }, { id: 'prove', status: 'succeeded' }],
   };
   const result = {
-    schemaVersion: 'bullswarm.workflow.result.v2', runId, shortId,
+    schemaVersion: 'bullswarm.workflow.result.v2', runId, shortId, intentId,
     status, verified: true, reason: 'All mandatory requirements have fresh passing evidence.',
     goal: state.intent.goal,
     requirements: [{ id: 'requirement-1', status: 'passed', evidence: ['focused check passed'], concerns: [] }],
     actions: [{ id: 'produce', status: 'succeeded' }, { id: 'prove', status: 'succeeded' }],
-    gaps: { summary: '', requirements: [] },
+    gaps: null, usage: { total: 0, byPool: {} }, finishedAt,
   };
   writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
   writeFileSync(join(runDir, 'result.json'), JSON.stringify(result));
