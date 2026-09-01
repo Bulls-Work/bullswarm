@@ -404,7 +404,7 @@ const strategyText = rich({
   ],
   safety: [
     'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription all mutate ~/.bullswarm/state.json',
-    'refresh (and a cold show) perform live discovery calls against every installed agent CLI',
+    'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
     { cmd: 'bullswarm strategy', note: 'browse and configure interactively' },
@@ -415,8 +415,8 @@ const strategyText = rich({
 
 const strategyTuiText = rich({
   usage: 'bullswarm strategy tui',
-  purpose: 'Open the full-screen provider and model strategy control center.', args: [], options: [],
-  safety: ['Provider Space toggles and model-tier Enter toggles persist immediately; Ctrl+C exits without affecting running work'],
+  purpose: 'Open the full-screen provider and model strategy control center. Analysis previews one OpenRouter-backed default per provider/tier before Y applies it.', args: [], options: [],
+  safety: ['Provider Space toggles and model-tier Enter toggles persist immediately; select Finish setup or press F to exit'],
   examples: [{ cmd: 'bullswarm strategy tui' }], next: 'Use bullswarm strategy routes --json to inspect the effective result.',
 });
 const strategyInventoryText = rich({

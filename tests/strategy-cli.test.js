@@ -9,7 +9,8 @@ import {
   refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy, strategyInventory,
 } from '../src/strategy-cli.js';
 import {
-  inputKeys, renderAnalysisProgress, renderSetupChoice, renderStrategyDashboard, visibleModels,
+  inputKeys, recommendationLines, renderAnalysisProgress, renderRecommendationReview,
+  renderSetupChoice, renderStrategyDashboard, visibleModels,
 } from '../src/strategy-dashboard.js';
 
 function fixture() {
@@ -37,8 +38,8 @@ test('strategy refresh persists honest discovery and tier suggestions', async ()
     assert.ok(report.discoveries.grok.models.some((model) => model.id === 'grok-4.6'));
     assert.equal(loadState(f.dir).strategy.lastReport.capturedAt, report.capturedAt);
     assert.match(report.caveats.join(' '), /does not invent/i);
-    assert.deepEqual(progress, [
-      'Reading live provider usage',
+    assert.match(progress[0], /^\[0\/\d+\] Preparing provider usage checks$/);
+    assert.deepEqual(progress.slice(1), [
       'Discovering available models',
       'Comparing capability, quality, budget, and quota',
     ]);
@@ -121,10 +122,36 @@ test('strategy auto-refresh skips fresh reports and refreshes stale approved rep
     saveState(f.dir, state);
     const refreshed = await maybeRefreshStrategy(f.dir, {
       executor: () => { discoveries += 1; return ''; }, getReadings: async () => ({}),
+      openRouterCatalog: { models: {}, cache: 'test' },
     });
     assert.ok(refreshed?.report);
     assert.ok(discoveries > 0);
     assert.equal(loadState(f.dir).strategy.policy.autoApplyRecommendations, true);
+  } finally { f.cleanup(); }
+});
+
+test('applying recommendations persists no more than one model per provider tier', async () => {
+  const f = fixture();
+  try {
+    const report = await refreshStrategy(f.dir, {
+      executor: () => '', getReadings: async () => ({}),
+      useOpenRouter: true,
+      openRouterCatalog: {
+        models: {
+          'openai/gpt-5.6-sol': { id: 'openai/gpt-5.6-sol', ranks: { coding: 1 }, pricing: {} },
+          'openai/gpt-5.6-terra': { id: 'openai/gpt-5.6-terra', ranks: { coding: 2 }, pricing: {} },
+          'openai/gpt-5.6-luna': { id: 'openai/gpt-5.6-luna', ranks: { coding: 3 }, pricing: {} },
+        },
+        cache: 'test',
+      },
+    });
+    applyStrategyRecommendations(f.dir, report);
+    const strategy = loadState(f.dir).strategy;
+    for (const models of Object.values(strategy.modelTiers ?? {})) {
+      for (const tier of ['high', 'medium', 'low']) {
+        assert.ok(Object.values(models).filter((tiers) => tiers.includes(tier)).length <= 1);
+      }
+    }
   } finally { f.cleanup(); }
 });
 
@@ -207,6 +234,7 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.match(screen, /Providers/);
   assert.match(screen, /Effective choices now/);
   assert.match(screen, /worker\/smart/);
+  assert.match(screen, /Finish setup/);
 });
 
 test('setup choice and analysis progress explain the interactive decision', () => {
@@ -219,6 +247,7 @@ test('setup choice and analysis progress explain the interactive decision', () =
   assert.match(progress, /Analyzing providers and models/);
   assert.match(progress, /Discovering available models/);
   assert.match(progress, /2s elapsed/);
+  assert.match(progress, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 });
 
 test('model matrix filters by typing and sorts assigned models before disabled models', () => {
@@ -243,7 +272,26 @@ test('model matrix filters by typing and sorts assigned models before disabled m
   assert.match(screen, /High/);
   assert.match(screen, /Medium/);
   assert.match(screen, /Low/);
-  assert.match(screen, /⟦✓ High⟧/);
+  assert.match(screen, /\x1b\[7m\[✓ High\]\x1b\[27m/);
+});
+
+test('analysis review lists one recommendation per tier and asks before applying', () => {
+  const candidate = (model, ranks, pricing) => ({ model, openRouter: { ranks, pricing } });
+  const inventory = {
+    providers: [{ name: 'claude-code', enabled: true }],
+    recommendations: { 'claude-code': {
+      high: { recommended: { model: 'claude-opus-5' }, candidates: [candidate('claude-opus-5', { agentic: 1, coding: 2 }, { inputUsdPerMillion: 5, outputUsdPerMillion: 25 })] },
+      medium: { recommended: { model: 'claude-sonnet-5' }, candidates: [candidate('claude-sonnet-5', { agentic: 3, coding: 3 }, { inputUsdPerMillion: 2, outputUsdPerMillion: 10 })] },
+      low: { recommended: { model: 'claude-haiku-4-5' }, candidates: [candidate('claude-haiku-4-5', { coding: 15 }, { inputUsdPerMillion: 1, outputUsdPerMillion: 5 })] },
+    } },
+    openRouter: { error: null },
+  };
+  assert.equal(recommendationLines(inventory).filter((line) => /^  [HML]  /.test(line)).length, 3);
+  const screen = renderRecommendationReview(inventory, { width: 100, height: 30 });
+  assert.match(screen, /one model per provider and tier/);
+  assert.match(screen, /claude-opus-5/);
+  assert.match(screen, /agentic #1 · coding #2/);
+  assert.match(screen, /Apply these defaults\?  Y yes · N keep current choices/);
 });
 
 test('raw terminal input preserves arrows and splits batched search typing', () => {

@@ -15,7 +15,9 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
-import { cmdStrategy, loadStrategyInventory, maybeRefreshStrategy } from './strategy-cli.js';
+import {
+  applyStrategyRecommendations, cmdStrategy, loadStrategyInventory, maybeRefreshStrategy,
+} from './strategy-cli.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
@@ -352,7 +354,7 @@ async function cmdSetup(opts) {
     let strategy = null;
     if (opts.yes && opts.strategy) {
       const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
-      const report = await refreshStrategy(getBullswarmDir());
+      const report = await refreshStrategy(getBullswarmDir(), { useOpenRouter: true });
       strategy = applyStrategyRecommendations(getBullswarmDir(), report);
     }
     let integration = null;
@@ -377,7 +379,13 @@ async function cmdSetup(opts) {
       bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
       title: 'Bullswarm setup',
       promptForAnalysis: true,
-      loadInventory: ({ force, onProgress }) => loadStrategyInventory(getBullswarmDir(), { force, onProgress }),
+      loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(getBullswarmDir(), {
+        force, onProgress, useOpenRouter: analyze,
+      }),
+      applyRecommendations: () => {
+        const report = loadState(getBullswarmDir()).strategy?.lastReport;
+        if (report) applyStrategyRecommendations(getBullswarmDir(), report);
+      },
     });
   }
   return runWizard(getBullswarmDir(), opts);

@@ -154,15 +154,27 @@ bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
 ```
 
 Setup first asks whether to analyze live usage and recommend routes or open the
-current configuration for manual editing. Analysis shows its current stage
-while provider CLIs respond. The TUI lists every detected provider/account
-separately so its toggle matches its own quota meter. Enter drills into that
-provider's detected models. In the model matrix, `Up`/`Down` selects a model,
-`Left`/`Right` selects High, Medium, or Low, and `Enter` toggles the assignment.
+current configuration for manual editing. Analysis shows a spinner plus
+per-provider usage progress, then presents the proposed defaults before making
+any routing change. Press `Y` to apply them or `N` to retain the current policy.
+The analysis selects at most one default model for each provider and effort
+tier. It uses OpenRouter's programming-category agentic, coding, and
+intelligence ranks as quality signals and its per-token API pricing as the
+budget signal; popularity is only a weak adoption tie-breaker. The sources are
+OpenRouter's [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+and [rankings](https://openrouter.ai/rankings). OpenRouter data is cached under
+`~/.bullswarm/cache/`, and unavailable data falls back to the connector's dated
+metadata instead of blocking setup.
+
+The TUI lists every detected provider/account separately so its toggle matches
+its own quota meter. Enter drills into that provider's detected models. In the
+model matrix, `Up`/`Down` selects a model, `Left`/`Right` moves a visibly
+highlighted cell across High, Medium, and Low, and `Enter` toggles that cell.
 Type to filter model names; assigned models sort above unassigned or disabled
-models. The effective-route panel is recomputed from the same policy and live
-surplus used by real dispatch. Provider and model edits affect new direct runs
-and workflow dispatches.
+models. Select `Finish setup` and press `Enter`, or press `F` directly, to leave
+the control center. The effective-route panel is recomputed from the same policy
+and live surplus used by real dispatch. Provider and model edits affect new
+direct runs and workflow dispatches.
 
 An external AI agent should first read `strategy inventory --json`, then use
 the validated `set-provider` / `set-model` commands or write one JSON document

@@ -115,12 +115,14 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
 /**
  * Async variant that fetches live readings for pools with readers.
  */
-export async function buildPoolsLive(bullswarmDir, now = Date.now(), { force = false, getReadings } = {}) {
+export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
+  force = false, getReadings, onProviderProgress,
+} = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir);
   const names = Object.keys(connectors);
   const readings = getReadings
-    ? await getReadings(names, { force, nowMs: now })
+    ? await getReadings(names, { force, nowMs: now, onProgress: onProviderProgress })
     : {};
   return buildPools(bullswarmDir, now, readings);
 }
