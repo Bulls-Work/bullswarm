@@ -165,6 +165,19 @@ must reserve capacity for the scout, planner, every required work unit, and at
 least one evidence action; the difficult fixture therefore uses 12 action and
 16 dispatch slots rather than an impossible 10/12 split.
 
+The first full repetition on that candidate completed all ten work units on
+their first attempt, then evidence rejected one cross-cutting layout clause.
+The scout had correctly warned that narrow run/phase/agent views still
+collapsed to one pane and contradicted the goal's `always` qualifier, but it
+made the final integration unit tests-only. The planner then preserved the
+contradictory mobile tests instead of assigning a production owner to migrate
+them. Scout, planner, and worker contracts now treat universal, negative, and
+boundary qualifiers as separate mandatory checks; current tests never outrank
+the goal; and a requirement spread over several slices must end in a
+mutation-capable cross-cutting acceptance unit that owns production code and
+tests and may close integrated gaps. The zero-rejection streak remains reset
+until this correction passes the difficult canary from a fresh worktree.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

@@ -101,6 +101,10 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.match(workTask, /longer than 60 seconds or twice the baseline/i);
   assert.match(workTask, /inspect open handles or unresolved async work/i);
   assert.match(workTask, /reread the bounded action instruction clause by clause/i);
+  assert.match(workTask, /universal, negative, and boundary qualifiers as separate mandatory checks/i);
+  assert.match(workTask, /every applicable level, mode, and supported width/i);
+  assert.match(workTask, /authoritative acceptance text outranks existing implementation and tests/i);
+  assert.match(workTask, /do not preserve the contradiction merely because the baseline is green/i);
   assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
   assert.match(evidenceTask, /mandatory V2 evidence preflight below is the only output contract/i);
   assert.match(evidenceTask, /Bullswarm reads that exact file/i);
