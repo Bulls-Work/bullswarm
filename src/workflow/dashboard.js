@@ -146,8 +146,8 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
     .filter((r) => all || r.ongoing)
     .sort((a, b) => {
       if (a.ongoing !== b.ongoing) return a.ongoing ? -1 : 1;
-      return String(b.state?.startedAt ?? b.report?.startedAt ?? '')
-        .localeCompare(String(a.state?.startedAt ?? a.report?.startedAt ?? ''));
+      return String(stateStartedAt(b.state) ?? b.report?.startedAt ?? '')
+        .localeCompare(String(stateStartedAt(a.state) ?? a.report?.startedAt ?? ''));
     })
     .map((r) => {
       const state = r.state ?? {};
@@ -2019,15 +2019,21 @@ export async function runDashboard(bullswarmDir, {
     return 0;
   }
   let selected = 0;
-  let detail = Boolean(token);
+  const directRow = token ? detailRow(bullswarmDir, token) : null;
+  const directV2 = isV2State(directRow?.state);
+  let detail = Boolean(token) && !directV2;
   let message = null;
   let lastGoodRow = null;
-  let dashboardFilter = 'active';
+  let dashboardFilter = directV2 ? 'all' : 'active';
   let query = '';
   let filterEditing = false;
   let allRows = dashboardRows(bullswarmDir, { all: true });
   let rows = filterDashboardRows(allRows, dashboardFilter, query);
-  let selectedRunId = token ? detailRow(bullswarmDir, token).runId : (rows[selected]?.runId ?? null);
+  if (directV2) {
+    const directIndex = rows.findIndex((row) => row.runId === directRow.runId);
+    if (directIndex >= 0) selected = directIndex;
+  }
+  let selectedRunId = token ? directRow.runId : (rows[selected]?.runId ?? null);
   let lastPaintedFrame = null;
   const ui = {
     focus: 0,
