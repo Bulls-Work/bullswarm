@@ -12,7 +12,7 @@
 //                                                  [--pool ...] [--items-from ...]
 //                                                  [--review ...] [--concurrency N]
 //                                                  [--timeout N] [--on-error ...]
-//                                                  [--step-template k=v] (repeatable)
+//                                                  [--step-template k=v]
 //   bullswarm workflow draft step remove <name> <phase> <step-id>
 //   bullswarm workflow draft step set <name> <phase> <step-id> <field> [--value ...]
 //   bullswarm workflow draft set <name> <field> [--value ...]

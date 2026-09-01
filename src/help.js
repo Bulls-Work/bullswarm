@@ -733,7 +733,7 @@ const workflowTuiText = rich({
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
     { flag: '--json', desc: "print a JSON snapshot instead of opening the interactive browser (list of ongoing runs, or one run's state/report/events when a runId is given)", default: "opens the interactive browser on a TTY; without a TTY, a given runId instead prints one static text detail tree" },
-    { flag: '--all', desc: 'with --json and no runId, include historical (finished) runs, not just ongoing ones', default: 'ongoing only' },
+    { flag: '--all', desc: 'print the JSON run list including historical (finished) runs; implies --json and cannot be combined with a runId', default: 'ongoing only' },
     { flag: '--show <runId>', desc: 'equivalent to passing <runId> positionally; forces the --json code path for that one run', default: 'none' },
     { flag: '--cancel <runId>', desc: 'request cooperative cancellation of that run instead of viewing it', default: 'none' },
   ],
@@ -1255,8 +1255,9 @@ const HELP = {
   },
 };
 
-// Top-level `runs` is a documented alias and gets the same nested help.
-HELP.runs = HELP.workflow.runs;
+// Top-level `runs` is a documented alias. Keep its content aligned while
+// rendering the syntax the caller actually invoked.
+HELP.runs = aliasRunsHelp(HELP.workflow.runs);
 
 export const HELP_PATHS = Object.freeze(collectPaths(HELP));
 
@@ -1309,6 +1310,15 @@ function runsHelp() {
     result: { _text: workflowRunsResultText },
     delete: { _text: workflowRunsDeleteText },
   };
+}
+
+function aliasRunsHelp(node) {
+  return Object.fromEntries(Object.entries(node).map(([key, value]) => [
+    key,
+    key === '_text'
+      ? value.replaceAll('bullswarm workflow runs', 'bullswarm runs')
+      : aliasRunsHelp(value),
+  ]));
 }
 
 function draftHelp() {
