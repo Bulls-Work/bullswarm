@@ -1077,7 +1077,7 @@ const workflowDraftStepAddText = rich({
     { flag: '--type <run|fanout|verify|decide>', desc: 'the step type', default: 'run' },
     { flag: '--lane <lane>', desc: 'routing lane (analyze|build|chore) for run/fanout steps' },
     { flag: '--pool <pool>', desc: 'pin a specific pool instead of routing by lane' },
-    { flag: '--prompt <text>', desc: 'the task prompt; JSON-decoded when it starts with [, {, ", or \'' },
+    { flag: '--prompt <text>', desc: 'the literal task prompt text' },
     { flag: '--task-file <path>', desc: 'read the prompt from a file instead of --prompt' },
     { flag: '--add-dir <dir>', desc: 'working directory the delegate operates in' },
     { flag: '--items-from <path>', desc: 'fanout steps only — inputs.<name> or outputs.<priorStepId> supplying the array to fan out over', default: 'required for fanout' },

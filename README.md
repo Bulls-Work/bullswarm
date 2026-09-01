@@ -95,6 +95,9 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `strategy` | Discover models, record subscription value, recommend or assign high/medium/low effort routes |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
+| `runs` | Short alias for `workflow runs`, including list, show, result, delete, and cleanup operations. |
+| `version` / `--version` | Print the installed Bullswarm version. |
+| `release` | Run the guarded local version-bump, commit, and tag workflow used before CI publishes to npm. |
 
 ### Delegate classification
 

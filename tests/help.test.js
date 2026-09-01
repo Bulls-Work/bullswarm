@@ -70,7 +70,7 @@ test('help stays contextual with operands, flags, and quoted text ahead of --hel
 // nested subcommand" (src/help.js's collectPaths() walk of the HELP tree).
 // This is a floor, not an exact count, so adding a command doesn't break
 // this test — but a large drop (a subtree silently unwired from HELP) would.
-// The exact count at the time this test was written was 68 (verified via
+// The exact count at the time this test was written was 69 (verified via
 // `HELP_PATHS.length` — see tests-and-docs.md for the derivation).
 test('HELP_PATHS enumerates the full routed command tree', () => {
   assert.ok(
