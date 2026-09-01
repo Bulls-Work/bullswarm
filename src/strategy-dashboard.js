@@ -5,6 +5,9 @@ const ESC = '\x1b';
 const CLEAR = '\x1b[2J\x1b[H';
 const ALT_ON = '\x1b[?1049h\x1b[?25l';
 const ALT_OFF = '\x1b[?25h\x1b[?1049l';
+const INVERSE_ON = '\x1b[7m';
+const INVERSE_OFF = '\x1b[27m';
+const ANSI = /^\x1b\[[0-9;]*m/;
 
 export function inputKeys(value) {
   const text = String(value ?? '');
@@ -24,21 +27,41 @@ export function inputKeys(value) {
 
 function clip(value, width) {
   const text = String(value ?? '');
-  return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
+  if (visibleLength(text) <= width) return text;
+  let output = '';
+  let visible = 0;
+  for (let index = 0; index < text.length && visible < Math.max(0, width - 1);) {
+    const escape = text.slice(index).match(ANSI)?.[0];
+    if (escape) {
+      output += escape;
+      index += escape.length;
+    } else {
+      output += text[index++];
+      visible += 1;
+    }
+  }
+  return `${output}${text.includes(INVERSE_ON) ? INVERSE_OFF : ''}…`;
 }
 
 function pad(value, width) {
   const text = clip(value, width);
-  return text + ' '.repeat(Math.max(0, width - text.length));
+  return text + ' '.repeat(Math.max(0, width - visibleLength(text)));
+}
+
+function visibleLength(value) {
+  return String(value ?? '').replace(/\x1b\[[0-9;]*m/g, '').length;
 }
 
 function providerLines(inventory, selected, width) {
-  return inventory.providers.map((provider, index) => {
+  const lines = inventory.providers.map((provider, index) => {
     const marker = index === selected ? '›' : ' ';
     const enabled = provider.enabled ? '●' : '○';
     const meter = provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`;
     return `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 25))} ${pad(meter, 10)} ${provider.models.length} models`;
   });
+  const selectedFinish = selected === inventory.providers.length;
+  lines.push(`${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}✓ Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
+  return lines;
 }
 
 function effectiveModelTiers(model) {
@@ -59,15 +82,16 @@ export function visibleModels(provider, query = '') {
 function tierCell(model, tier, selected) {
   const enabled = effectiveModelTiers(model).includes(tier);
   const label = `${enabled ? '✓' : ' '} ${tier[0].toUpperCase()}${tier.slice(1)}`;
-  return selected ? `⟦${label}⟧` : `[${label}]`;
+  const cell = `[${label}]`;
+  return selected ? `${INVERSE_ON}${cell}${INVERSE_OFF}` : cell;
 }
 
-function modelLines(models, selected, selectedTier, width) {
+function modelLines(models, selected, selectedTier, width, focused = true) {
   const tierWidth = 32;
   return models.map((model, index) => {
     const marker = index === selected ? '›' : ' ';
     const cells = STRATEGY_TIERS.map((tier, tierIndex) => tierCell(
-      model, tier, index === selected && tierIndex === selectedTier,
+      model, tier, focused && index === selected && tierIndex === selectedTier,
     )).join(' ');
     return `${marker} ${pad(model.id, Math.max(8, width - tierWidth))} ${cells}`;
   });
@@ -108,7 +132,7 @@ export function renderStrategyDashboard(inventory, {
     } else {
       lines.push(`Models · ${provider?.name ?? 'none'} · ${provider?.enabled ? 'provider on' : 'provider off'}`);
       lines.push(`Search: ${search || 'type to filter'} · ${models.length}/${provider?.models.length ?? 0} models`);
-      const rows = models.length ? modelLines(models, modelIndex, tierIndex, width) : ['  No matching models.'];
+      const rows = models.length ? modelLines(models, modelIndex, tierIndex, width, view === 'models') : ['  No matching models.'];
       lines.push(...selectedWindow(rows, modelIndex, bodyHeight - 2));
     }
   } else {
@@ -118,10 +142,12 @@ export function renderStrategyDashboard(inventory, {
       `Providers${view === 'providers' ? ' · focused' : ''}`,
       ...selectedWindow(providerLines(inventory, providerIndex, leftWidth), providerIndex, bodyHeight - 1),
     ];
-    const rows = models.length ? modelLines(models, modelIndex, tierIndex, rightWidth) : ['  No matching models.'];
+    const rows = models.length ? modelLines(models, modelIndex, tierIndex, rightWidth, view === 'models') : ['  No matching models.'];
     const right = [
-      `Models · ${provider?.name ?? 'none'}${view === 'models' ? ' · focused' : ''} · Search: ${search || 'type to filter'}`,
-      ...selectedWindow(rows, modelIndex, bodyHeight - 1),
+      provider
+        ? `Models · ${provider.name}${view === 'models' ? ' · focused' : ''} · Search: ${search || 'type to filter'}`
+        : 'Setup ready · press Enter to finish',
+      ...(provider ? selectedWindow(rows, modelIndex, bodyHeight - 1) : []),
     ];
     for (let i = 0; i < bodyHeight; i++) {
       lines.push(`${pad(left[i] ?? '', leftWidth)} │ ${clip(right[i] ?? '', rightWidth)}`);
@@ -130,8 +156,8 @@ export function renderStrategyDashboard(inventory, {
   lines.push('', 'Effective choices now');
   lines.push(...routeLines(inventory));
   lines.push('', message || (view === 'providers'
-    ? '↑/↓ select · Space enable/disable · Enter/→ models · Ctrl+R refresh · Q quit'
-    : '↑/↓ model · ←/→ tier · Enter toggle · type search · Backspace · Esc providers · Ctrl+R refresh'));
+    ? '↑/↓ select · Space enable/disable · Enter/→ open · F finish · Ctrl+R refresh'
+    : '↑/↓ model · ←/→ tier · Enter toggle · type search · Backspace · Esc providers · F finish'));
   return lines.slice(0, Math.max(8, height)).map((line) => clip(line, width)).join('\n');
 }
 
@@ -154,17 +180,85 @@ export function renderAnalysisProgress({
   startedAt = Date.now(), width = 100, height = 30,
 } = {}) {
   const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][seconds % 10];
   const lines = [
     title,
     '',
     heading,
     '',
-    `● ${label}`,
+    `${spinner} ${label}`,
     `  ${seconds}s elapsed · this may take a moment while provider CLIs respond`,
     '',
     heading.startsWith('Analyzing')
       ? 'Bullswarm will show the model matrix when analysis is complete.'
       : 'Bullswarm will show the model matrix when your settings are ready.',
+  ];
+  return lines.slice(0, height).map((line) => clip(line, width)).join('\n');
+}
+
+function recommendationReason(candidate) {
+  const external = candidate?.openRouter;
+  if (!external) return 'local provider capability and cost profile';
+  const ranks = external.ranks ?? {};
+  const rankParts = [
+    Number.isFinite(Number(ranks.agentic)) ? `agentic #${ranks.agentic}` : null,
+    Number.isFinite(Number(ranks.coding)) ? `coding #${ranks.coding}` : null,
+    Number.isFinite(Number(ranks.intelligence)) ? `intelligence #${ranks.intelligence}` : null,
+  ].filter(Boolean);
+  const input = external.pricing?.inputUsdPerMillion;
+  const output = external.pricing?.outputUsdPerMillion;
+  const price = Number.isFinite(Number(input)) && Number.isFinite(Number(output))
+    ? `$${input}/$${output} per 1M input/output tokens` : null;
+  return [...rankParts, price].filter(Boolean).join(' · ') || 'listed in OpenRouter programming models';
+}
+
+export function recommendationLines(inventory) {
+  const providers = inventory.providers.filter((provider) => provider.enabled);
+  const lines = [];
+  for (const provider of providers) {
+    const suggestions = inventory.recommendations?.[provider.name] ?? {};
+    const choices = STRATEGY_TIERS.map((tier) => {
+      const recommendation = suggestions[tier]?.recommended;
+      if (!recommendation) return null;
+      const candidate = suggestions[tier]?.candidates?.find((entry) => entry.model === recommendation.model);
+      return {
+        tier,
+        model: recommendation.model,
+        reason: recommendationReason(candidate),
+      };
+    }).filter(Boolean);
+    if (!choices.length) continue;
+    lines.push(`${provider.name}`);
+    for (const choice of choices) {
+      lines.push(`  ${choice.tier[0].toUpperCase()}  ${choice.model}`);
+      lines.push(`     ${choice.reason}`);
+    }
+  }
+  return lines;
+}
+
+export function renderRecommendationReview(inventory, {
+  title = 'Bullswarm setup', width = 100, height = 30, offset = 0,
+} = {}) {
+  const source = inventory.openRouter?.error
+    ? `OpenRouter unavailable (${inventory.openRouter.error}); local metadata was used.`
+    : 'Quality uses OpenRouter agentic, coding, and intelligence ranks; API price guides budget.';
+  const details = recommendationLines(inventory);
+  const bodyHeight = Math.max(3, height - 9);
+  const start = Math.max(0, Math.min(offset, Math.max(0, details.length - bodyHeight)));
+  const shown = details.slice(start, start + bodyHeight);
+  const lines = [
+    title,
+    '',
+    'Recommended defaults · one model per provider and tier',
+    source,
+    'Popularity is only a weak tie-breaker, not a quality score.',
+    '',
+    ...(start > 0 ? [`↑ ${start} earlier lines`] : []),
+    ...shown,
+    ...(start + bodyHeight < details.length ? [`↓ ${details.length - start - bodyHeight} more lines`] : []),
+    '',
+    'Apply these defaults?  Y yes · N keep current choices · ↑/↓ scroll · Q quit',
   ];
   return lines.slice(0, height).map((line) => clip(line, width)).join('\n');
 }
@@ -208,7 +302,7 @@ function persistModel(bullswarmDir, inventory, pool, model, tiers, changedTier =
 
 export async function startStrategyDashboard({
   bullswarmDir, loadInventory, input = process.stdin, output = process.stdout,
-  title = 'Bullswarm strategy', promptForAnalysis = false,
+  title = 'Bullswarm strategy', promptForAnalysis = false, applyRecommendations = null,
 } = {}) {
   output.write(ALT_ON);
   input.setRawMode?.(true);
@@ -221,6 +315,7 @@ export async function startStrategyDashboard({
   let modelIndex = 0;
   let tierIndex = 0;
   let search = '';
+  let recommendationOffset = 0;
   let message = '';
   let busy = false;
   let progressLabel = 'Preparing setup';
@@ -234,10 +329,13 @@ export async function startStrategyDashboard({
   const renderProgress = () => output.write(`${CLEAR}${renderAnalysisProgress({
     title, label: progressLabel, heading: progressHeading, startedAt: progressStartedAt, ...dimensions(),
   })}`);
+  const renderRecommendations = () => output.write(`${CLEAR}${renderRecommendationReview(inventory, {
+    title, offset: recommendationOffset, ...dimensions(),
+  })}`);
   const render = () => output.write(`${CLEAR}${renderStrategyDashboard(inventory, {
     view, providerIndex, modelIndex, tierIndex, search, message, title, ...dimensions(),
   })}`);
-  const update = async (refresh = false, showProgress = false) => {
+  const update = async (refresh = false, showProgress = false, analyze = false, renderAfter = true) => {
     const selectedId = visibleModels(inventory?.providers?.[providerIndex], search)[modelIndex]?.id ?? null;
     if (showProgress) {
       screen = 'loading';
@@ -246,6 +344,7 @@ export async function startStrategyDashboard({
     }
     inventory = await loadInventory({
       force: refresh,
+      analyze,
       onProgress: (label) => {
         progressLabel = label;
         if (showProgress) renderProgress();
@@ -255,8 +354,10 @@ export async function startStrategyDashboard({
     const models = visibleModels(inventory.providers[providerIndex], search);
     const preservedIndex = selectedId ? models.findIndex((model) => model.id === selectedId) : -1;
     modelIndex = preservedIndex >= 0 ? preservedIndex : Math.min(modelIndex, Math.max(0, models.length - 1));
-    screen = 'dashboard';
-    render();
+    if (renderAfter) {
+      screen = 'dashboard';
+      render();
+    }
   };
   return await new Promise((resolve, reject) => {
     const finish = (error = null) => {
@@ -278,7 +379,12 @@ export async function startStrategyDashboard({
       renderProgress();
       progressTimer = setInterval(renderProgress, 1000);
       try {
-        await update(force, true);
+        await update(force, true, analyze, !analyze);
+        if (analyze) {
+          screen = 'recommendations';
+          recommendationOffset = 0;
+          renderRecommendations();
+        }
       } catch (error) {
         finish(error);
       } finally {
@@ -311,13 +417,46 @@ export async function startStrategyDashboard({
         renderChoice();
         return;
       }
+      if (screen === 'recommendations') {
+        if (key === 'q' || key === 'Q') return finish();
+        const details = recommendationLines(inventory);
+        const bodyHeight = Math.max(3, (output.rows ?? 30) - 9);
+        if (down) recommendationOffset = Math.min(Math.max(0, details.length - bodyHeight), recommendationOffset + 1);
+        if (up) recommendationOffset = Math.max(0, recommendationOffset - 1);
+        if (key === 'y' || key === 'Y') {
+          if (typeof applyRecommendations === 'function') {
+            screen = 'loading';
+            progressHeading = 'Applying recommended defaults…';
+            progressLabel = 'Saving one recommended model per provider and tier';
+            progressStartedAt = Date.now();
+            renderProgress();
+            await applyRecommendations();
+            await update(false, false, false, true);
+            message = 'Recommended defaults applied; adjust any model with arrows and Enter';
+            render();
+          }
+          return;
+        }
+        if (key === 'n' || key === 'N') {
+          screen = 'dashboard';
+          message = 'Recommendations not applied; current choices kept';
+          render();
+          return;
+        }
+        renderRecommendations();
+        return;
+      }
       if (screen === 'loading' || !inventory) return;
+      if (key === 'f' || key === 'F') return finish();
       if (view === 'providers') {
         if (key === 'q' || key === 'Q') return finish();
-        if (down) providerIndex = Math.min(inventory.providers.length - 1, providerIndex + 1);
+        if (down) providerIndex = Math.min(inventory.providers.length, providerIndex + 1);
         if (up) providerIndex = Math.max(0, providerIndex - 1);
-        if ((right || enter) && inventory.providers[providerIndex]) {
-          view = 'models'; modelIndex = 0; tierIndex = 0; search = '';
+        if (right || enter) {
+          if (providerIndex === inventory.providers.length) return finish();
+          if (inventory.providers[providerIndex]) {
+            view = 'models'; modelIndex = 0; tierIndex = 0; search = '';
+          }
         }
         if (key === ' ') {
           const provider = inventory.providers[providerIndex];

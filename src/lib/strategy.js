@@ -4,6 +4,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { modelProfile } from './usage.js';
+import { openRouterMetadata } from './openrouter-models.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -241,13 +242,64 @@ function candidateScore(candidate, tier) {
   // Core never invents or scrapes benchmark comparisons. A connector may
   // declare a dated score from a comparable harness; otherwise use its coarse
   // quality rank as the explicit fallback.
-  const quality = candidate.model.benchmarkScore ?? candidate.model.qualityRank ?? 0;
+  const quality = candidate.model.recommendationScore
+    ?? candidate.model.benchmarkScore ?? candidate.model.qualityRank ?? 0;
   const pace = Number.isFinite(candidate.pool.pace) ? candidate.pool.pace : 0;
   const costRank = Number(candidate.pool.costRank ?? 5);
   const freeBonus = candidate.model.free ? 1 : 0;
   if (tier === 'high') return quality * 100 + pace - costRank;
   if (tier === 'medium') return quality * 50 + pace * 2 - costRank * 5 + freeBonus * 10;
   return freeBonus * 200 - costRank * 20 + quality * 10 + pace;
+}
+
+function openRouterQuality(metadata) {
+  const ranks = metadata?.ranks ?? {};
+  const score = (rank, weight) => Number.isFinite(Number(rank))
+    ? Math.max(0, 101 - Number(rank)) * weight : 0;
+  return score(ranks.agentic, 5)
+    + score(ranks.coding, 4)
+    + score(ranks.intelligence, 2)
+    + score(ranks.popularity, 0.25);
+}
+
+function apiPrice(metadata) {
+  const input = Number(metadata?.pricing?.inputUsdPerMillion);
+  const output = Number(metadata?.pricing?.outputUsdPerMillion);
+  if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
+  return (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0);
+}
+
+function recommendationScore(model, tier) {
+  const external = model.openRouter ?? null;
+  const externalQuality = openRouterQuality(external);
+  const quality = Number(model.benchmarkScore ?? model.qualityRank ?? 0);
+  const price = apiPrice(external);
+  const knownExternally = external ? 1 : 0;
+  if (tier === 'high') return knownExternally * 1_000_000 + externalQuality * 1_000 + quality * 10;
+  if (tier === 'medium') return knownExternally * 1_000_000 + externalQuality * 500 + quality * 20 - (price ?? 0) * 5;
+  return Number(model.free) * 2_000_000 + knownExternally * 1_000_000
+    + externalQuality * 50 + quality * 20 - (price ?? 0) * 100;
+}
+
+function enrichDiscoveries(discoveries, openRouterCatalog) {
+  return Object.fromEntries(Object.entries(discoveries ?? {}).map(([pool, discovery]) => [pool, {
+    ...discovery,
+    models: (discovery.models ?? []).map((model) => {
+      const external = openRouterMetadata(openRouterCatalog, model.id);
+      const tier = model.tier;
+      return {
+        ...model,
+        openRouter: external ? {
+          id: external.id,
+          ranks: external.ranks,
+          pricing: external.pricing,
+          pricingSource: external.pricingSource,
+          created: external.created,
+        } : null,
+        recommendationScore: recommendationScore({ ...model, openRouter: external }, tier),
+      };
+    }),
+  }]));
 }
 
 export const TIER_CONTEXTS = {
@@ -275,17 +327,42 @@ function supportsContext(pool, context) {
     && context.capabilities.every((capability) => capabilities.includes(capability));
 }
 
-export function buildStrategy({ connectors, pools, state, discoveries }) {
+export function buildStrategy({ connectors, pools, state, discoveries, openRouterCatalog = null }) {
+  const rankedDiscoveries = enrichDiscoveries(discoveries, openRouterCatalog);
   const subscriptions = pools.map((pool) => subscriptionView(pool, state));
   const tiers = ['high', 'medium', 'low'];
   const suggestions = {};
+  const providerSuggestions = {};
+  for (const pool of pools) {
+    providerSuggestions[pool.name] = {};
+    const disabled = new Set([
+      ...normalizeExcludedModels(state.strategy?.excludedModels),
+      ...disabledModelsForPool(state.strategy, pool.name),
+    ]);
+    for (const tier of tiers) {
+      const context = TIER_CONTEXTS[tier];
+      if (pool.enabled === false || pool.quarantine || pool.burstGate || !supportsContext(pool, context)) continue;
+      const candidates = (rankedDiscoveries[pool.name]?.models ?? [])
+        .filter((model) => model.tier === tier && !disabled.has(model.id.toLowerCase()))
+        .sort((a, b) => b.recommendationScore - a.recommendationScore || a.id.localeCompare(b.id));
+      providerSuggestions[pool.name][tier] = {
+        recommended: candidates[0] ? { model: candidates[0].id } : null,
+        candidates: candidates.map((model) => ({
+          model: model.id,
+          score: Math.round(model.recommendationScore * 10) / 10,
+          qualityRank: model.qualityRank,
+          openRouter: model.openRouter,
+        })),
+      };
+    }
+  }
   for (const tier of tiers) {
     const context = TIER_CONTEXTS[tier];
     const candidates = [];
     for (const pool of pools) {
       if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
       if (!supportsContext(pool, context)) continue;
-      const discovery = discoveries[pool.name];
+      const discovery = rankedDiscoveries[pool.name];
       for (const model of discovery?.models ?? []) {
         if (model.tier !== tier) continue;
         if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
@@ -321,12 +398,22 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
     schemaVersion: 'bullswarm.strategy.v1',
     capturedAt: new Date().toISOString(),
     subscriptions,
-    discoveries,
+    discoveries: rankedDiscoveries,
     suggestions,
+    providerSuggestions,
+    openRouter: openRouterCatalog ? {
+      capturedAt: openRouterCatalog.capturedAt,
+      source: openRouterCatalog.source,
+      rankingsSource: openRouterCatalog.rankingsSource,
+      rankingLicense: openRouterCatalog.rankingLicense ?? null,
+      cache: openRouterCatalog.cache,
+      error: openRouterCatalog.error ?? null,
+    } : null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
       'Benchmark and pricing fields are used only when connector metadata provides a dated source.',
+      'OpenRouter popularity is an adoption signal only; agentic, coding, and intelligence ranks drive quality recommendations.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],

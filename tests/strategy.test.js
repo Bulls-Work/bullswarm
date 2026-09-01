@@ -159,3 +159,64 @@ test('explicit model allow-list selects its strongest model and blocks unselecte
   }), { eligible: true, model: 'strong', source: 'tier-selection' });
   assert.equal(resolveDispatchModel(connector, 'high', { allowedModels: [] }).eligible, false);
 });
+
+test('OpenRouter signals select one current Claude default for every provider tier', () => {
+  const connector = {
+    name: 'claude-code', lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+  };
+  const report = buildStrategy({
+    connectors: { 'claude-code': connector },
+    pools: [{ name: 'claude-code', connector, enabled: true, pace: 0, costRank: 4 }],
+    state: {},
+    discoveries: { 'claude-code': { models: [
+      { id: 'claude-fable-5', tier: 'high', qualityRank: 6 },
+      { id: 'claude-opus-5', tier: 'high', qualityRank: 5 },
+      { id: 'claude-sonnet-5', tier: 'medium', qualityRank: 4 },
+      { id: 'claude-haiku-4-5', tier: 'low', qualityRank: 3 },
+    ] } },
+    openRouterCatalog: { models: {
+      'anthropic/claude-opus-5': {
+        id: 'anthropic/claude-opus-5', ranks: { agentic: 1, coding: 2, intelligence: 1 },
+        pricing: { inputUsdPerMillion: 5, outputUsdPerMillion: 25 },
+      },
+      'anthropic/claude-sonnet-5': {
+        id: 'anthropic/claude-sonnet-5', ranks: { agentic: 3, coding: 3, intelligence: 4 },
+        pricing: { inputUsdPerMillion: 2, outputUsdPerMillion: 10 },
+      },
+      'anthropic/claude-haiku-4-5': {
+        id: 'anthropic/claude-haiku-4-5', ranks: { agentic: 15, coding: 14, intelligence: 18 },
+        pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 5 },
+      },
+    } },
+  });
+
+  assert.deepEqual(report.providerSuggestions['claude-code'].high.recommended, { model: 'claude-opus-5' });
+  assert.deepEqual(report.providerSuggestions['claude-code'].medium.recommended, { model: 'claude-sonnet-5' });
+  assert.deepEqual(report.providerSuggestions['claude-code'].low.recommended, { model: 'claude-haiku-4-5' });
+  for (const tier of ['high', 'medium', 'low']) {
+    assert.deepEqual(Object.keys(report.providerSuggestions['claude-code'][tier].recommended), ['model']);
+  }
+});
+
+test('OpenRouter ranking favors current GPT generation over a stale local quality rank', () => {
+  const connector = {
+    name: 'codex', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
+  };
+  const report = buildStrategy({
+    connectors: { codex: connector },
+    pools: [{ name: 'codex', connector, enabled: true, pace: 0, costRank: 2 }],
+    state: {},
+    discoveries: { codex: { models: [
+      { id: 'gpt-5.5', tier: 'high', qualityRank: 99 },
+      { id: 'gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+    ] } },
+    openRouterCatalog: { models: {
+      'openai/gpt-5.6-sol': {
+        id: 'openai/gpt-5.6-sol', ranks: { agentic: 2, coding: 1, intelligence: 2 },
+        pricing: { inputUsdPerMillion: 4, outputUsdPerMillion: 20 },
+      },
+    } },
+  });
+  assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'gpt-5.6-sol' });
+});

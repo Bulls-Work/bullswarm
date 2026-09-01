@@ -412,7 +412,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
   ).trim().toLowerCase();
   if (strategyAnswer === 'y' || strategyAnswer === 'yes') {
     const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
-    const report = await refreshStrategy(bullswarmDir);
+    const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
     const applied = applyStrategyRecommendations(bullswarmDir, report);
     console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}`).join(', ')}`);
   } else {

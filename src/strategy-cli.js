@@ -9,6 +9,7 @@ import {
 import { pickPool } from './lib/route.js';
 import { helpText, usageLine } from './help.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
+import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 
 function parseFlags(argv) {
   const flags = { rest: [] };
@@ -60,19 +61,47 @@ function strategyUsage() {
   return helpText(['strategy']);
 }
 
+function providerLabel(name) {
+  const base = String(name ?? '').split(':')[0];
+  const labels = {
+    'claude-code': 'Claude',
+    codex: 'Codex',
+    'command-code': 'Command Code',
+    grok: 'Grok',
+    echo: 'Echo',
+    opencode2: 'OpenCode',
+  };
+  const suffix = String(name ?? '').includes(':') ? ` (${String(name).split(':').slice(1).join(':')})` : '';
+  return `${labels[base] ?? base}${suffix}`;
+}
+
 export async function refreshStrategy(bullswarmDir, {
   executor, getReadings = getAllMeterReadings, onProgress = () => {},
+  useOpenRouter = false, openRouterCatalog = null, openRouterLoader = loadOpenRouterCatalog,
 } = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir);
-  onProgress('Reading live provider usage');
+  const providerCount = Object.keys(connectors).length;
+  onProgress(`[0/${providerCount}] Preparing provider usage checks`);
   const { pools } = await buildPoolsLive(bullswarmDir, Date.now(), {
     getReadings,
+    onProviderProgress: ({ stage, pool, index, completed, total }) => {
+      onProgress(stage === 'start'
+        ? `[${index}/${total}] Checking usage for ${providerLabel(pool)}`
+        : `[${completed}/${total}] Usage checked for ${providerLabel(pool)}`);
+    },
   });
   onProgress('Discovering available models');
   const discoveries = discoverAllModels(connectors, executor ? { executor } : {});
+  let externalCatalog = openRouterCatalog;
+  if (useOpenRouter && !externalCatalog) {
+    onProgress('Reading OpenRouter coding, agentic, and pricing data');
+    externalCatalog = await openRouterLoader({ bullswarmDir, force: true });
+  }
   onProgress('Comparing capability, quality, budget, and quota');
-  const report = buildStrategy({ connectors, pools, state, discoveries });
+  const report = buildStrategy({
+    connectors, pools, state, discoveries, openRouterCatalog: externalCatalog,
+  });
   state.strategy ??= {};
   state.strategy.lastReport = report;
   state.strategy.lastRefreshedAt = report.capturedAt;
@@ -148,16 +177,21 @@ export function strategyInventory({ pools, state, report }) {
     configuredTiers: state.strategy?.configuredTiers ?? [],
     providers,
     routes,
+    recommendations: report.providerSuggestions ?? {},
+    openRouter: report.openRouter ?? null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
   };
 }
 
 export async function loadStrategyInventory(bullswarmDir, {
   force = false, executor, getReadings = getAllMeterReadings, onProgress = () => {},
+  useOpenRouter = false, openRouterCatalog = null, openRouterLoader = loadOpenRouterCatalog,
 } = {}) {
   let state = loadState(bullswarmDir);
   const report = force || !state.strategy?.lastReport
-    ? await refreshStrategy(bullswarmDir, { executor, getReadings, onProgress })
+    ? await refreshStrategy(bullswarmDir, {
+      executor, getReadings, onProgress, useOpenRouter, openRouterCatalog, openRouterLoader,
+    })
     : state.strategy.lastReport;
   state = loadState(bullswarmDir);
   const { pools } = buildPools(bullswarmDir);
@@ -229,6 +263,16 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
     state.strategy.assignments[tier] = { ...recommended };
     applied[tier] = { ...recommended };
   }
+  state.strategy.modelTiers = {};
+  state.strategy.configuredTiers = [...STRATEGY_TIERS];
+  for (const [pool, tiers] of Object.entries(report?.providerSuggestions ?? {})) {
+    for (const tier of STRATEGY_TIERS) {
+      const model = tiers?.[tier]?.recommended?.model ?? null;
+      if (!model) continue;
+      const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
+      setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+    }
+  }
   state.strategy.policy = {
     ...(state.strategy.policy ?? {}),
     autoApplyRecommendations: enableAutoRefresh,
@@ -257,7 +301,7 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
     const captured = Date.parse(state.strategy?.lastRefreshedAt ?? '');
     const stale = !Number.isFinite(captured) || (Date.now() - captured) >= hours * 3600_000;
     if (!stale) return null;
-    const report = await refreshStrategy(bullswarmDir, opts);
+    const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true, ...opts });
     return {
       report,
       ...applyStrategyRecommendations(bullswarmDir, report, { refreshHours: hours }),
@@ -289,11 +333,19 @@ export async function cmdStrategy(args, {
       if (!input.isTTY || !output.isTTY) throw new Error('strategy tui requires an interactive terminal');
       return await startStrategyDashboard({
         bullswarmDir, input, output,
-        loadInventory: ({ force, onProgress }) => loadStrategyInventory(bullswarmDir, { force, onProgress }),
+        loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(bullswarmDir, {
+          force, onProgress, useOpenRouter: analyze,
+        }),
+        applyRecommendations: () => {
+          const report = loadState(bullswarmDir).strategy?.lastReport;
+          if (report) applyStrategyRecommendations(bullswarmDir, report);
+        },
       });
     }
     if (sub === 'inventory' || sub === 'routes') {
-      const inventory = await loadStrategyInventory(bullswarmDir, { force: opts.refresh === true });
+      const inventory = await loadStrategyInventory(bullswarmDir, {
+        force: opts.refresh === true, useOpenRouter: opts.refresh === true,
+      });
       const value = sub === 'routes' ? { capturedAt: inventory.capturedAt, routes: inventory.routes } : inventory;
       console.log(opts.json ? JSON.stringify(value, null, 2) : JSON.stringify(value, null, 2));
       return 0;
@@ -381,7 +433,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'refresh' || sub === 'recommend') {
       if (opts.apply && opts.yes !== true) throw new Error('--apply changes routing; pass --yes to approve');
-      const report = await refreshStrategy(bullswarmDir);
+      const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const applied = opts.apply
         ? applyStrategyRecommendations(bullswarmDir, report, {
           refreshHours: refreshHoursValue(opts['refresh-hours']),
@@ -391,7 +443,7 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
-      const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir);
+      const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       console.log(opts.json ? JSON.stringify(report, null, 2) : render(report));
       return 0;
     }
@@ -455,7 +507,7 @@ export async function cmdStrategy(args, {
     if (sub === 'apply') {
       if (opts.yes !== true) throw new Error('strategy apply changes routing; pass --yes to approve');
       const state = loadState(bullswarmDir);
-      const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir);
+      const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
       const result = applyStrategyRecommendations(bullswarmDir, report, {
         refreshHours: refreshHoursValue(opts['refresh-hours']),
       });
