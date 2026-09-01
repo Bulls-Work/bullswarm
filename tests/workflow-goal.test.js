@@ -106,6 +106,10 @@ test('scout treats shared files as ordered acceptance slices instead of a forced
   assert.match(prompt, /each focused regression belongs with that behavior implementation/i);
   assert.match(prompt, /one numbered requirement contains several independently testable clauses/i);
   assert.match(prompt, /avoid an umbrella unit named after the whole requirement/i);
+  assert.match(prompt, /quote the decisive acceptance qualifiers it owns/i);
+  assert.match(prompt, /existing implementation or tests that contradict the goal are migration work/i);
+  assert.match(prompt, /final cross-cutting acceptance slice/i);
+  assert.match(prompt, /tests-only regression slice is not a valid final owner/i);
   assert.match(prompt, /does not require one monolithic action/i);
   assert.match(prompt, /small ordered sequence that reuses the same owned files/i);
 });

@@ -134,6 +134,8 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
     '- Never invoke a Node focused test as a raw `node --test` command. Use `node --test-timeout=60000 --test <focused files>` so an unresolved async or interactive loop deterministically returns a failing test result to this same agent instead of trapping its shell tool. Do not use `--test-force-exit`, which would hide leaked handles.',
     '- Treat a focused test that greatly exceeds its observed baseline as a defect, not useful waiting. If it runs longer than 60 seconds or twice the baseline (whichever is greater) without progress, interrupt it, inspect open handles or unresolved async work, fix the cause, and rerun before finishing.',
     '- Before finishing, reread the bounded action instruction clause by clause and name the exact production-path assertion that proves each clause. Add missing coverage before claiming success.',
+    '- Treat universal, negative, and boundary qualifiers as separate mandatory checks: every, always, any depth, same, narrow/mobile, must not, and fallback behavior. Exercise every applicable level, mode, and supported width named or implied by those words.',
+    '- The authoritative acceptance text outranks existing implementation and tests. When an owned test asserts behavior that contradicts the requirement, update the production behavior and the test; do not preserve the contradiction merely because the baseline is green.',
     '- A green suite is necessary but not sufficient: inspect the final diff for vacuous assertions, skipped coverage, and requirement wording that the implementation did not actually satisfy.',
   ].join('\n') : '';
   return [
