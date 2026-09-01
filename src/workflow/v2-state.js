@@ -46,6 +46,7 @@ const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 const GOAL_SETTING_FIELDS = new Set([
   'concurrency', 'workspaceMode', 'maxAgents', 'maxActions',
   'maxExpansionRounds', 'maxMechanicalRetries', 'maxManifestFiles', 'scout',
+  'suggestedPlan',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -106,6 +107,9 @@ function goalSettings(value) {
   }
   if (value.scout !== undefined && typeof value.scout !== 'boolean') {
     fail('goalDocument.config.settings.scout must be a boolean');
+  }
+  if (value.suggestedPlan !== undefined) {
+    requiredString(value.suggestedPlan, 'goalDocument.config.settings.suggestedPlan');
   }
   return clone(value);
 }

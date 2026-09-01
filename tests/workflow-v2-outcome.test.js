@@ -66,6 +66,31 @@ test('kernel alone derives verified completion from fresh requirement evidence',
   assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
 });
 
+test('result validation rejects malformed nested requirements, actions, gaps, and usage', () => {
+  const state = plannedState();
+  state.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: [] },
+  ];
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report matches'], concerns: [] } } });
+  const valid = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
+  const mutate = (fn) => { const value = structuredClone(valid); fn(value); return value; };
+  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.requirements[0] = {}; })), /requirements\[0\]\.id/);
+  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.actions[0].status = 'mystery'; })), /actions\[0\]\.status/);
+  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.usage.total = -1; })), /usage\.total/);
+
+  const partialState = plannedState();
+  partialState.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] },
+    { id: 'check-report', status: 'failed', attempts: 0, programRevision: 1, lastFailure: { kind: 'semantic' } },
+  ];
+  const partial = createV2ResultEnvelope(partialState, { plannerExhausted: true, finishedAt: '2026-08-31T01:10:00Z' });
+  partial.gaps = { schemaVersion: 'bullswarm.workflow.gaps.v2' };
+  assert.throws(() => serializeV2ResultEnvelope(partial), /gaps\.intentId/);
+});
+
 test('partial result preserves useful delivery and explicit unresolved evidence', () => {
   const state = plannedState();
   state.actions = [{ id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] }, { id: 'check-report', status: 'failed', attempts: 0, programRevision: 1, lastFailure: { kind: 'semantic' } }];
