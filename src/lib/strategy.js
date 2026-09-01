@@ -21,6 +21,53 @@ export function isModelExcluded(model, excludedModels = []) {
   return excluded.has(String(model).trim().toLowerCase());
 }
 
+export const STRATEGY_TIERS = Object.freeze(['high', 'medium', 'low']);
+
+export function normalizeModelTiers(value = {}) {
+  const normalized = {};
+  for (const [pool, models] of Object.entries(value ?? {})) {
+    if (!models || typeof models !== 'object') continue;
+    const poolModels = {};
+    for (const [model, tiers] of Object.entries(models)) {
+      const selected = STRATEGY_TIERS.filter((tier) => (Array.isArray(tiers) ? tiers : [tiers]).includes(tier));
+      if (selected.length) poolModels[model] = selected;
+    }
+    if (Object.keys(poolModels).length) normalized[pool] = poolModels;
+  }
+  return normalized;
+}
+
+export function selectedModelsForTier(strategy = {}, pool, tier) {
+  if (!(strategy.configuredTiers ?? []).includes(tier)) return null;
+  const models = normalizeModelTiers(strategy.modelTiers)[pool] ?? {};
+  return Object.entries(models)
+    .filter(([, tiers]) => tiers.includes(tier))
+    .map(([model]) => model);
+}
+
+export function setModelTierSelection(strategy, pool, model, tiers) {
+  const selected = STRATEGY_TIERS.filter((tier) => (Array.isArray(tiers) ? tiers : [tiers]).includes(tier));
+  strategy.modelTiers = normalizeModelTiers(strategy.modelTiers);
+  strategy.modelTiers[pool] ??= {};
+  if (selected.length) strategy.modelTiers[pool][model] = selected;
+  else delete strategy.modelTiers[pool][model];
+  if (!Object.keys(strategy.modelTiers[pool]).length) delete strategy.modelTiers[pool];
+  return selected;
+}
+
+export function disabledModelsForPool(strategy = {}, pool) {
+  return normalizeExcludedModels(strategy.disabledModels?.[pool] ?? []);
+}
+
+export function setModelDisabled(strategy, pool, model, disabled) {
+  strategy.disabledModels ??= {};
+  const current = new Set(normalizeExcludedModels(strategy.disabledModels[pool]));
+  if (disabled) current.add(String(model).trim().toLowerCase());
+  else current.delete(String(model).trim().toLowerCase());
+  if (current.size) strategy.disabledModels[pool] = [...current];
+  else delete strategy.disabledModels[pool];
+}
+
 function configuredModel(connector) {
   if (connector.model) return connector.model;
   const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
@@ -36,8 +83,31 @@ function configuredModel(connector) {
 export function resolveDispatchModel(connector, tier, {
   assignment = null,
   excludedModels = [],
+  allowedModels = null,
 } = {}) {
   const excluded = normalizeExcludedModels(excludedModels);
+  if (Array.isArray(allowedModels)) {
+    const allowed = unique(allowedModels).filter((model) => !isModelExcluded(model, excluded));
+    if (!allowed.length) return {
+      eligible: false, model: null, source: 'tier-selection-empty',
+      reason: `no enabled model is assigned to ${tier}`,
+    };
+    const configured = configuredModel(connector);
+    const candidates = allowed
+      .map((model) => ({ model, profile: modelProfile(connector, model) }))
+      .sort((a, b) => Number(b.profile?.qualityRank ?? 0) - Number(a.profile?.qualityRank ?? 0)
+        || a.model.localeCompare(b.model));
+    if (connector.modelSelection?.flag && candidates[0]) {
+      return { eligible: true, model: candidates[0].model, source: 'tier-selection' };
+    }
+    if (configured && allowed.includes(configured)) {
+      return { eligible: true, model: configured, source: 'tier-selection-configured' };
+    }
+    return {
+      eligible: false, model: null, source: 'tier-selection-unsupported',
+      reason: `connector ${connector.name} cannot select an assigned ${tier} model`,
+    };
+  }
   if (assignment?.pool === connector.name && !isModelExcluded(assignment.model, excluded)) {
     return { eligible: true, model: assignment.model, source: 'assignment' };
   }
@@ -264,8 +334,26 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
 }
 
 export function discoverAllModels(connectors, opts = {}) {
+  const outputs = new Map();
+  const baseExecutor = opts.executor ?? defaultExecutor;
+  const memoizedExecutor = (command, args, execOpts) => {
+    const key = JSON.stringify([command, args, execOpts?.timeoutMs]);
+    if (outputs.has(key)) {
+      const cached = outputs.get(key);
+      if (cached.error) throw cached.error;
+      return cached.output;
+    }
+    try {
+      const output = baseExecutor(command, args, execOpts);
+      outputs.set(key, { output });
+      return output;
+    } catch (error) {
+      outputs.set(key, { error });
+      throw error;
+    }
+  };
   return Object.fromEntries(Object.values(connectors).map((connector) => [
     connector.name,
-    discoverConnectorModels(connector, opts),
+    discoverConnectorModels(connector, { executor: memoizedExecutor }),
   ]));
 }

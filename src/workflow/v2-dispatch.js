@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, saveState } from '../lib/state.js';
-import { resolveDispatchModel } from '../lib/strategy.js';
+import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { watchOnce } from '../lib/watch.js';
 
 const EFFORT_BY_LANE = Object.freeze({ analyze: 'high', build: 'medium', chore: 'low' });
@@ -47,7 +47,14 @@ function preparePools(pools, action, effort, {
     const assignment = pool.strategyAssignments?.[effort] ?? null;
     const modelPolicy = resolveDispatchModel(connector, effort, {
       assignment,
-      excludedModels: pool.strategyExcludedModels ?? [],
+      excludedModels: [
+        ...(pool.strategyExcludedModels ?? []),
+        ...disabledModelsForPool({ disabledModels: pool.strategyDisabledModels }, pool.name),
+      ],
+      allowedModels: selectedModelsForTier({
+        modelTiers: pool.strategyModelTiers,
+        configuredTiers: pool.strategyConfiguredTiers,
+      }, pool.name, effort),
     });
     if (!modelPolicy.eligible) continue;
     available.push({ ...pool, modelPolicy });

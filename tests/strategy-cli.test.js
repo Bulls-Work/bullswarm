@@ -6,8 +6,9 @@ import { tmpdir } from 'node:os';
 import { autoSetup } from '../src/setup.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
-  refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy,
+  refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy, strategyInventory,
 } from '../src/strategy-cli.js';
+import { renderStrategyDashboard } from '../src/strategy-dashboard.js';
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-strategy-cli-'));
@@ -130,4 +131,71 @@ test('strategy argument errors use usage exit code 2', async () => {
     console.error = originalError;
     f.cleanup();
   }
+});
+
+test('agent-facing model configuration is multi-select and clears legacy tier pins', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const state = loadState(f.dir);
+    state.strategy = {
+      assignments: { high: { pool: 'codex', model: 'old' } },
+      lastReport: {
+        capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {},
+        discoveries: { codex: { models: [{ id: 'gpt-5.6-sol', tier: 'high', qualityRank: 6 }] } },
+      },
+    };
+    saveState(f.dir, state);
+    assert.equal(await cmdStrategy([
+      'set-model', 'codex', 'gpt-5.6-sol', '--tiers', 'high,medium', '--yes',
+    ], { bullswarmDir: f.dir }), 0);
+    const saved = loadState(f.dir);
+    assert.deepEqual(saved.strategy.modelTiers.codex['gpt-5.6-sol'], ['high', 'medium']);
+    assert.deepEqual(saved.strategy.configuredTiers, ['high', 'medium']);
+    assert.equal(saved.strategy.assignments.high, undefined);
+  } finally { console.log = originalLog; f.cleanup(); }
+});
+
+test('turning one model off does not convert automatic tiers into empty allow-lists', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const state = loadState(f.dir);
+    state.strategy = {
+      lastReport: {
+        capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {},
+        discoveries: { codex: { models: [{ id: 'gpt-5.6-sol', tier: 'high', qualityRank: 6 }] } },
+      },
+    };
+    saveState(f.dir, state);
+    assert.equal(await cmdStrategy([
+      'set-model', 'codex', 'gpt-5.6-sol', '--tiers', 'off', '--yes',
+    ], { bullswarmDir: f.dir }), 0);
+    const saved = loadState(f.dir);
+    assert.deepEqual(saved.strategy.configuredTiers ?? [], []);
+    assert.deepEqual(saved.strategy.disabledModels.codex, ['gpt-5.6-sol']);
+  } finally { console.log = originalLog; f.cleanup(); }
+});
+
+test('strategy inventory and dashboard show provider toggles, tier matrix, and effective routes', () => {
+  const connector = {
+    name: 'worker', modelSelection: { flag: '--model' }, lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+    modelProfiles: [{ match: 'smart', tier: 'high', qualityRank: 5 }],
+  };
+  const state = { strategy: { configuredTiers: ['high'], modelTiers: { worker: { smart: ['high'] } } } };
+  const pool = { name: 'worker', connector, enabled: true, lanes: connector.lanes, capabilities: connector.capabilities, pace: 12, usedPct: 20 };
+  const report = {
+    capturedAt: new Date().toISOString(),
+    discoveries: { worker: { models: [{ id: 'smart', tier: 'high', qualityRank: 5 }] } },
+    suggestions: { high: { requirements: { lane: 'analyze', capabilities: ['strong-analysis', 'workflow-planning'] } } },
+  };
+  const inventory = strategyInventory({ pools: [pool], state, report });
+  assert.equal(inventory.routes.high.model, 'smart');
+  const screen = renderStrategyDashboard(inventory, { width: 60, height: 30 });
+  assert.match(screen, /Providers/);
+  assert.match(screen, /Effective choices now/);
+  assert.match(screen, /worker\/smart/);
 });

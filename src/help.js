@@ -374,11 +374,18 @@ const doctorText = rich({
 // --- strategy -----------------------------------------------------------------
 
 const strategyText = rich({
-  usage: 'bullswarm strategy <command> [options]',
-  purpose: 'Discover which models each installed agent CLI can currently use, recommend a '
-    + 'high/medium/low effort-tier assignment per pool, and manage explicit overrides.',
+  usage: 'bullswarm strategy [command] [options]',
+  purpose: 'Open the provider/model strategy control center on a terminal. Toggle whole providers, '
+    + 'assign each detected model to any combination of high/medium/low effort, and preview the live route.',
   argsTitle: 'Commands',
   args: [
+    { name: 'tui', desc: 'open the interactive strategy control center (default on a TTY)' },
+    { name: 'inventory', desc: 'machine-readable providers, models, selections, meters, and effective routes' },
+    { name: 'routes', desc: 'print only the currently effective high/medium/low choices' },
+    { name: 'set-provider', desc: 'enable or disable one provider pool non-interactively' },
+    { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
+    { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
+    { name: 'configure', desc: 'atomically apply an agent-authored JSON strategy file' },
     { name: 'refresh', desc: 'discover models and recommend tiers (recommend is an alias)' },
     { name: 'apply', desc: 'approve the last discovered recommendations' },
     { name: 'show', desc: 'print the last captured strategy report' },
@@ -397,9 +404,54 @@ const strategyText = rich({
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI',
   ],
   examples: [
-    { cmd: 'bullswarm strategy refresh', note: 'discover models and print tier recommendations without changing routing' },
+    { cmd: 'bullswarm strategy', note: 'browse and configure interactively' },
+    { cmd: 'bullswarm strategy inventory --json', note: 'inspect everything from another agent' },
   ],
-  next: 'bullswarm strategy show to review, then bullswarm strategy apply --yes to approve.',
+  next: 'Use Space and H/M/L in the TUI, or inventory --json plus configure --file for an agent.',
+});
+
+const strategyTuiText = rich({
+  usage: 'bullswarm strategy tui',
+  purpose: 'Open the full-screen provider and model strategy control center.', args: [], options: [],
+  safety: ['Space and H/M/L/X persist routing choices immediately; Q exits without affecting running work'],
+  examples: [{ cmd: 'bullswarm strategy tui' }], next: 'Use bullswarm strategy routes --json to inspect the effective result.',
+});
+const strategyInventoryText = rich({
+  usage: 'bullswarm strategy inventory [--json] [--refresh]',
+  purpose: 'Return detected provider pools, models, selections, live meters, and effective routes for an agentic caller.', args: [],
+  options: [{ flag: '--json', desc: 'machine-readable inventory' }, { flag: '--refresh', desc: 'rerun model discovery and meters' }],
+  safety: ['read-only apart from refreshing the cached discovery report'], examples: [{ cmd: 'bullswarm strategy inventory --json --refresh' }],
+  next: 'Use set-provider, set-model, or configure --file to change the policy.',
+});
+const strategyRoutesText = rich({
+  usage: 'bullswarm strategy routes [--json] [--refresh]', purpose: 'Show the live effective choice for high/analyze, medium/build, and low/chore.',
+  args: [], options: [{ flag: '--json', desc: 'machine-readable routes' }, { flag: '--refresh', desc: 'refresh meters first' }],
+  safety: ['read-only apart from refreshing cached discovery'], examples: [{ cmd: 'bullswarm strategy routes --json' }], next: 'Run bullswarm strategy to adjust the choices.',
+});
+const strategySetProviderText = rich({
+  usage: 'bullswarm strategy set-provider <pool> <on|off> --yes', purpose: 'Enable or disable one detected provider/account as a whole.',
+  args: [{ name: '<pool>', desc: 'exact pool name from strategy inventory' }, { name: '<on|off>', desc: 'new state' }],
+  options: [{ flag: '--yes', desc: 'required approval' }], safety: ['changes routing immediately for new dispatches'],
+  examples: [{ cmd: 'bullswarm strategy set-provider opencode2:relay-2 off --yes' }], next: 'Use strategy routes --json to confirm.',
+});
+const strategySetModelText = rich({
+  usage: 'bullswarm strategy set-model <pool> <model> --tiers <high,medium,low|off> --yes', purpose: 'Assign one model to one or more effort tiers.',
+  args: [{ name: '<pool>', desc: 'exact pool name' }, { name: '<model>', desc: 'exact detected model ID' }],
+  options: [{ flag: '--tiers <list|off>', desc: 'comma-separated multi-selection or off' }, { flag: '--yes', desc: 'required approval' }],
+  safety: ['a configured tier becomes an allow-list; leaving it with no enabled models makes that tier unavailable'],
+  examples: [{ cmd: 'bullswarm strategy set-model opencode2 relay/gpt-5.6-luna --tiers high,medium,low --yes' }], next: 'Use strategy routes --json to confirm.',
+});
+const strategyConfigureText = rich({
+  usage: 'bullswarm strategy configure --file <json> --yes', purpose: 'Atomically apply provider toggles and model tier combinations from an agent-authored JSON file.',
+  args: [], options: [{ flag: '--file <json>', desc: 'object with providers and models maps' }, { flag: '--yes', desc: 'required approval' }],
+  safety: ['validates the complete document before saving routing state'],
+  examples: [{ cmd: 'bullswarm strategy configure --file strategy.json --yes' }], next: 'Use strategy inventory --json to verify the applied state.',
+});
+const strategyResetTierText = rich({
+  usage: 'bullswarm strategy reset-tier <high|medium|low> --yes', purpose: 'Remove the explicit model allow-list for one effort tier and return it to automatic routing.',
+  args: [{ name: '<high|medium|low>', desc: 'tier to restore' }], options: [{ flag: '--yes', desc: 'required approval' }],
+  safety: ['removes that tier from every model selection and clears its legacy pin'],
+  examples: [{ cmd: 'bullswarm strategy reset-tier low --yes' }], next: 'Use strategy routes --json to confirm the automatic route.',
 });
 
 const strategyRefreshText = rich({
@@ -1214,6 +1266,13 @@ const HELP = {
   release: { _text: releaseText },
   strategy: {
     _text: strategyText,
+    tui: { _text: strategyTuiText },
+    inventory: { _text: strategyInventoryText },
+    routes: { _text: strategyRoutesText },
+    'set-provider': { _text: strategySetProviderText },
+    'set-model': { _text: strategySetModelText },
+    'reset-tier': { _text: strategyResetTierText },
+    configure: { _text: strategyConfigureText },
     refresh: { _text: strategyRefreshText },
     recommend: { _text: strategyRecommendText },
     apply: { _text: strategyApplyText },
