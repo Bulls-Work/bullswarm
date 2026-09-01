@@ -26,6 +26,21 @@ function revision(value, name) {
   if ((typeof value !== 'string' && typeof value !== 'number') || value === '') resultFail(`${name} must be a string or number`);
 }
 
+function failureSummary(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set(['kind', 'message']), name);
+  resultString(value.kind, `${name}.kind`);
+  if (value.message !== undefined) resultString(value.message, `${name}.message`);
+}
+
+function publicFailure(value) {
+  if (!value) return null;
+  return {
+    kind: value.kind,
+    ...(value.message ? { message: value.message } : {}),
+  };
+}
+
 function validateResultEvidence(value, name) {
   resultObject(value, name);
   exactFields(value, new Set(['sourceAction', 'status', 'evidence', 'concerns', 'eventSequence', 'mechanicalFailure']), name);
@@ -34,7 +49,7 @@ function validateResultEvidence(value, name) {
   stringArray(value.evidence, `${name}.evidence`);
   stringArray(value.concerns, `${name}.concerns`);
   if (!Number.isInteger(value.eventSequence) || value.eventSequence < 0) resultFail(`${name}.eventSequence must be a non-negative integer`);
-  if (value.mechanicalFailure !== undefined) resultObject(value.mechanicalFailure, `${name}.mechanicalFailure`);
+  if (value.mechanicalFailure !== undefined) failureSummary(value.mechanicalFailure, `${name}.mechanicalFailure`);
 }
 
 function validateResultRequirement(value, name) {
@@ -76,7 +91,7 @@ function validateGaps(value, result) {
     if (!['failed', 'blocked', 'cancelled', 'interrupted'].includes(entry.status)) resultFail(`gaps.actions[${index}].status is invalid`);
     stringArray(entry.affects, `gaps.actions[${index}].affects`);
     stringArray(entry.evidenceFor, `gaps.actions[${index}].evidenceFor`);
-    if (entry.failure !== null) resultObject(entry.failure, `gaps.actions[${index}].failure`);
+    if (entry.failure !== null) failureSummary(entry.failure, `gaps.actions[${index}].failure`);
   });
 }
 
@@ -95,7 +110,7 @@ function currentEvidence(ledger, requirement) {
       evidence: clone(record.evidence),
       concerns: clone(record.concerns),
       eventSequence: record.eventSequence,
-      ...(record.mechanicalFailure ? { mechanicalFailure: clone(record.mechanicalFailure) } : {}),
+      ...(record.mechanicalFailure ? { mechanicalFailure: publicFailure(record.mechanicalFailure) } : {}),
     }));
 }
 
@@ -126,7 +141,7 @@ export function consolidateV2Gaps(state) {
         status,
         affects: clone(definition.affects),
         evidenceFor: clone(definition.evidenceFor),
-        failure: clone(runtime?.lastFailure ?? null),
+        failure: publicFailure(runtime?.lastFailure),
       };
     })
     .filter(Boolean);

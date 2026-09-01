@@ -80,6 +80,9 @@ test('result validation rejects malformed nested requirements, actions, gaps, an
   assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.requirements[0] = {}; })), /requirements\[0\]\.id/);
   assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.actions[0].status = 'mystery'; })), /actions\[0\]\.status/);
   assert.throws(() => serializeV2ResultEnvelope(mutate((value) => { value.usage.total = -1; })), /usage\.total/);
+  assert.throws(() => serializeV2ResultEnvelope(mutate((value) => {
+    value.requirements[0].evidence[0].mechanicalFailure = { unexpected: [] };
+  })), /mechanicalFailure\.unexpected is not allowed/);
 
   const partialState = plannedState();
   partialState.actions = [
@@ -87,6 +90,9 @@ test('result validation rejects malformed nested requirements, actions, gaps, an
     { id: 'check-report', status: 'failed', attempts: 0, programRevision: 1, lastFailure: { kind: 'semantic' } },
   ];
   const partial = createV2ResultEnvelope(partialState, { plannerExhausted: true, finishedAt: '2026-08-31T01:10:00Z' });
+  partial.gaps.actions[0].failure = { unexpected: [] };
+  assert.throws(() => serializeV2ResultEnvelope(partial), /failure\.unexpected is not allowed/);
+  partial.gaps.actions[0].failure = { kind: 'semantic' };
   partial.gaps = { schemaVersion: 'bullswarm.workflow.gaps.v2' };
   assert.throws(() => serializeV2ResultEnvelope(partial), /gaps\.intentId/);
 });
