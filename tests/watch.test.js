@@ -92,6 +92,37 @@ test('event-stream connector extracts final content and emits normalized actions
   }
 });
 
+test('connector-declared event-stream errors outrank a missing structured candidate', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'text', part: { text: 'I am preparing the durable candidate.' } },
+      { type: 'error', error: { message: 'stream disconnected before completion' } },
+    ];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        failureTypes: ['error'],
+        output: [{ match: { path: 'type', equals: 'text' }, path: 'part.text', mode: 'concat' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Write and validate the candidate.', ctx.dir, ctx.paths, {
+      outputValidator: () => ({ ok: false, errors: ['candidate file missing'] }),
+    });
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'provider');
+    assert.equal(verdict.meta.providerFailureType, 'error');
+    assert.match(verdict.why, /provider stream reported error/);
+    assert.doesNotMatch(verdict.why, /candidate file missing/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('event-stream tool output mentioning auth signatures does not kill a healthy agent', async () => {
   const ctx = makeCtx();
   try {

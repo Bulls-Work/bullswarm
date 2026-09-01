@@ -34,12 +34,14 @@ test('failure classification does not invent a process crash when exit metadata 
   assert.equal(classifyV2DispatchFailure({ ok: false, why: 'content rejected' }), 'semantic');
   assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'schema' }), 'schema');
   assert.equal(classifyV2DispatchFailure({ ok: false, meta: { exitCode: 2 } }), 'process');
+  assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'provider' }), 'provider');
 });
 
 test('auth failure quarantines and immediately replaces the pool', async () => {
   const h = harness([{ ok: false, why: 'quota', quarantineHint: true, meta: { exitCode: 1 } }, good]);
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
   assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].status, 'interrupted');
   assert.equal(result.attempts[1].wallSec, 1);
   assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-2']);
   assert.ok(h.core.pools['luna-1'].quarantine);
@@ -62,6 +64,7 @@ test('schema correction is bounded and resumes one physical planner session', as
   ]);
   const result = await dispatchV2Action({ action, taskText: 'plan', targetDir: '/tmp', paths, pools: [pool], bullswarmDir: '/tmp/bs', outputValidator: () => ({ ok: true }), correctionTask: () => 'correct it', currentSession: null, dependencies: h.dependencies });
   assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].status, 'interrupted');
   assert.deepEqual(seen, [{ sessionId: 'session-fixed', resume: false }, { sessionId: 'session-fixed', resume: true }]);
   assert.equal(result.attempts.length, 2);
   assert.equal(result.session.sessionId, 'session-fixed');

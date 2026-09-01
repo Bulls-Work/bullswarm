@@ -16,6 +16,7 @@ function classifyFailure(verdict) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
   if (verdict?.quarantineHint) return 'auth';
+  if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
   if (verdict?.failureKind === 'process' || (verdict?.meta?.exitCode != null && verdict.meta.exitCode !== 0)) return 'process';
   if (verdict?.meta?.signal) return 'interrupted';
@@ -201,9 +202,22 @@ export async function dispatchV2Action({
     });
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict);
+    const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
+    const canCorrectSchema = kind === 'schema' && !correctionUsed && typeof correctionTask === 'function';
+    const canRetryMechanically = MECHANICAL_KINDS.has(kind)
+      && kind !== 'schema'
+      && (remainingAfterAttempt.length > 0
+        || (retriesUsed < maxMechanicalRetries && candidates.length === 1 && kind !== 'auth'));
+    const willRecover = canCorrectSchema || canRetryMechanically;
     Object.assign(record, {
       finishedAt,
-      status: verdict.ok ? 'succeeded' : kind === 'cancelled' ? 'cancelled' : 'failed',
+      status: verdict.ok
+        ? 'succeeded'
+        : kind === 'cancelled'
+          ? 'cancelled'
+          : willRecover
+            ? 'interrupted'
+            : 'failed',
       failureKind: kind,
       why: verdict.why ?? null,
       usage: clone(verdict.meta?.usage ?? null),
@@ -235,7 +249,7 @@ export async function dispatchV2Action({
 
     const index = remaining.findIndex((candidate) => candidate.name === pool.name);
     if (index >= 0) remaining.splice(index, 1);
-    if (kind === 'schema' && !correctionUsed && typeof correctionTask === 'function') {
+    if (canCorrectSchema) {
       correctionUsed = true;
       nextTask = correctionTask(verdict, { originalTask: taskText, attempt: ordinal });
       // Schema correction continues the same physical conversation when the
