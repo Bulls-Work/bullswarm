@@ -348,6 +348,8 @@ function validateProgram(program, state) {
         requireMandatoryEvidence: false,
         maxActions: state.config.settings.maxActions ?? 100,
         maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
+        enforceMaxActions: false,
+        enforceMaxParallel: false,
         },
       );
       for (const action of actions) {

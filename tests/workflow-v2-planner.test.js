@@ -39,6 +39,28 @@ test('accepts a complete generic program and applies it without mutating prior s
   assert.equal(validateV2DurableState(next), true);
 });
 
+test('V2 planning targets never reject an essential wider or longer program', () => {
+  const targetState = createV2State(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp/repo',
+    settings: { concurrency: 1, maxActions: 1, maxAgents: 1, maxExpansionRounds: 1 },
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+  }), { runId: 'wf-target-abcdef', shortId: 'tgt234' });
+  const accepted = validateV2PlannerResponse(response(), targetState);
+  const next = applyV2PlannerResponse(targetState, accepted);
+  assert.equal(next.program.actions.length, 2);
+  assert.equal(validateV2DurableState(next), true);
+  const context = createV2PlannerContext(next);
+  assert.deepEqual(context.targets, {
+    advisoryOnly: true,
+    actions: 1, actionsUsed: 2, actionsRemaining: -1,
+    agents: 1, agentsUsed: 0, agentsRemaining: 1,
+    expansionRounds: 1, expansionRoundsUsed: 0, expansionRoundsRemaining: 1,
+  });
+  assert.equal(context.execution.concurrency, 1);
+  assert.ok(!('limits' in context));
+  assert.match(buildV2PlannerPrompt(context), /advisory planning targets, never execution ceilings/i);
+});
+
 test('later program revisions can supersede earlier evidence without invalidating history', () => {
   const first = applyV2PlannerResponse(state(), response());
   const expansion = {

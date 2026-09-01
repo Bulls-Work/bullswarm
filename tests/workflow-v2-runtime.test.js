@@ -313,17 +313,66 @@ test('repeatedly invalid planner output stops before any worker dispatch', async
   assert.match(result.result.reason, /schema-invalid/);
 });
 
-test('hard agent cap stops before another paid dispatch and returns an explicit partial result', async () => {
+test('agent target guides planning but never stops essential dispatches', async () => {
   const f = setup({ maxAgents: 1 });
   const dispatch = fakeDispatch(async (options, _calls, files) => {
-    assert.equal(options.action.id, 'workflow-planner');
-    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    if (options.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
   });
   const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-budget1-abcdef', dependencies: { dispatchV2Action: dispatch } });
-  assert.equal(dispatch.calls(), 1);
-  assert.equal(result.result.status, 'partial');
-  assert.match(result.result.reason, /1-agent dispatch limit/);
-  assert.deepEqual(result.state.actions.map((action) => action.status), ['pending', 'pending']);
+  assert.equal(dispatch.calls(), 3);
+  assert.equal(result.state.budget.agents, 3);
+  assert.equal(result.result.status, 'completed');
+  assert.deepEqual(result.state.actions.map((action) => action.status), ['succeeded', 'succeeded']);
+});
+
+test('expansion target never prevents essential gap closure', async () => {
+  const f = setup({ maxExpansionRounds: 1, maxActions: 2 });
+  const revisions = [
+    programResponse(),
+    {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Revise and recheck once.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'revise-report', purpose: 'Revise report', dependsOn: ['write-report'], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Revise report.md.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['revised-report'] },
+        { id: 'recheck-report', purpose: 'Recheck report', dependsOn: ['revise-report'], affects: [], ownedFiles: [], prompt: 'Recheck report.md.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['revised-report'], produces: [] },
+      ] },
+    },
+    {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Finish and independently confirm the remaining gap.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'finish-report', purpose: 'Finish report', dependsOn: ['revise-report'], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Finish report.md.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['finished-report'] },
+        { id: 'final-check', purpose: 'Check final report', dependsOn: ['finish-report'], affects: [], ownedFiles: [], prompt: 'Check report.md.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['finished-report'], produces: [] },
+      ] },
+    },
+  ];
+  let plannerTurn = 0;
+  let evidenceTurn = 0;
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      const value = revisions[plannerTurn++];
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (!options.action.evidenceFor.length) {
+      writeFileSync(join(f.workspace, 'report.md'), options.action.id === 'finish-report' ? 'READY\n' : 'NOT READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    evidenceTurn += 1;
+    const status = evidenceTurn === 3 ? 'passed' : 'failed';
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status, evidence: [`check ${evidenceTurn}`], concerns: status === 'passed' ? [] : ['still incomplete'] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-softexp-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  assert.equal(result.result.status, 'completed');
+  assert.equal(result.state.budget.expansions, 2);
+  assert.equal(result.state.program.actions.length, 6);
+  assert.equal(result.state.ledger.requirements['report-correct'].status, 'passed');
 });
 
 test('resume mechanically requeues an interrupted V2 action and rejects old run shapes', async () => {

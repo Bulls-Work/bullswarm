@@ -396,9 +396,9 @@ export function validateActionProgram(program, runtime = {}) {
   const maxActions = runtime.maxActions ?? runtime.limits?.maxActions ?? 100;
   const maxParallel = runtime.maxParallel ?? runtime.limits?.maxParallel ?? 100;
   if (!Number.isInteger(maxActions) || maxActions < 0) issues.push('runtime maxActions must be a non-negative integer');
-  else if (actions.length > maxActions) issues.push(`program exceeds maxActions=${maxActions}`);
+  else if (runtime.enforceMaxActions !== false && actions.length > maxActions) issues.push(`program exceeds maxActions=${maxActions}`);
   if (!Number.isInteger(maxParallel) || maxParallel < 1) issues.push('runtime maxParallel must be a positive integer');
-  else if (maxParallelism(actions, byId) > maxParallel) issues.push(`program exceeds maxParallel=${maxParallel}`);
+  else if (runtime.enforceMaxParallel !== false && maxParallelism(actions, byId) > maxParallel) issues.push(`program exceeds maxParallel=${maxParallel}`);
   if (runtime.requireMandatoryEvidence !== false) {
     for (const requirement of mandatoryRequirementIds) if (!freshEvidenceRequirementIds.has(requirement) && !actions.some((action) => action.evidenceFor.includes(requirement))) {
       issues.push(`mandatory requirement "${requirement}" has no evidence action`);

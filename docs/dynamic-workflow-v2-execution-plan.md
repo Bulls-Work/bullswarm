@@ -243,7 +243,7 @@ User goal
                                   |
                   +---------------+---------------+
                   |                               |
-          all requirements pass          gaps remain and budget allows
+          all requirements pass          verified gaps still remain
                   |                               |
                   v                               v
           stable result envelope          planner gets one gap summary
@@ -409,9 +409,11 @@ These are code-enforced rules, not prompt advice:
 11. `complete` means all mandatory requirements have fresh passing evidence,
     no required action is still runnable, and the stable result envelope was
     written.
-12. When budget or expansion limits end useful work, the workflow returns the
-    best evidence-backed outcome with explicit unresolved gaps. It does not
-    convert partial delivery into a meaningless blanket failure.
+12. Agent, action, and expansion values are advisory planning targets, not
+    execution ceilings. The planner should consolidate optional work near a
+    target, while the kernel continues the smallest essential program past it.
+    Only explicit cancellation, an invalid or unsafe program, genuine provider
+    failure, or semantic exhaustion can end unfinished useful work.
 
 For clarity, `complete` is a process conclusion: every required mechanical
 check passed and every required semantic judgment has valid, fresh,
