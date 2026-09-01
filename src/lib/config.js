@@ -73,6 +73,9 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       },
       strategyAssignments: state.strategy?.assignments ?? {},
       strategyExcludedModels: state.strategy?.excludedModels ?? [],
+      strategyModelTiers: state.strategy?.modelTiers ?? {},
+      strategyConfiguredTiers: state.strategy?.configuredTiers ?? [],
+      strategyDisabledModels: state.strategy?.disabledModels ?? {},
     };
     pools.push(pool);
   }

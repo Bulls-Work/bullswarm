@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDiscoveredModels, discoverConnectorModels, buildStrategy, resolveDispatchModel,
+  parseDiscoveredModels, discoverConnectorModels, discoverAllModels, buildStrategy, resolveDispatchModel,
+  selectedModelsForTier, setModelTierSelection,
 } from '../src/lib/strategy.js';
 
 test('connector-declared parsing handles columns, bullets, and plain lines', () => {
@@ -28,6 +29,17 @@ test('model discovery merges live, fallback, and configured models with profiles
   assert.equal(result.source, 'cli');
   assert.deepEqual(result.models.map((m) => m.id), ['live-model', 'fallback-model', 'configured-model']);
   assert.equal(result.models[0].tier, 'high');
+});
+
+test('model discovery executes an identical provider command only once across account clones', () => {
+  let calls = 0;
+  const connector = (name) => ({ name, modelDiscovery: { cmd: ['agent', 'models'] } });
+  const result = discoverAllModels({ a: connector('a'), b: connector('b') }, {
+    executor: () => { calls += 1; return 'provider/model\n'; },
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(result.a.models.map((model) => model.id), ['provider/model']);
+  assert.deepEqual(result.b.models.map((model) => model.id), ['provider/model']);
 });
 
 test('strategy keeps unknown subscription values null and ranks each tier deterministically', () => {
@@ -123,4 +135,27 @@ test('strategy recommendations omit persistently excluded models', () => {
   });
   assert.deepEqual(report.excludedModels, ['premium']);
   assert.deepEqual(report.suggestions.high.recommended, { pool: 'planner', model: 'standard' });
+});
+
+test('multi-tier model selections are normalized and become an explicit allow-list', () => {
+  const strategy = {};
+  assert.deepEqual(setModelTierSelection(strategy, 'pool-a', 'model-a', ['low', 'high', 'bogus']), ['high', 'low']);
+  strategy.configuredTiers = ['high'];
+  assert.deepEqual(selectedModelsForTier(strategy, 'pool-a', 'high'), ['model-a']);
+  assert.equal(selectedModelsForTier(strategy, 'pool-a', 'low'), null);
+  assert.deepEqual(selectedModelsForTier(strategy, 'pool-b', 'high'), []);
+});
+
+test('explicit model allow-list selects its strongest model and blocks unselected pools', () => {
+  const connector = {
+    name: 'pool-a', modelSelection: { flag: '--model' },
+    modelProfiles: [
+      { match: 'strong', tier: 'high', qualityRank: 5 },
+      { match: 'cheap', tier: 'low', qualityRank: 2 },
+    ],
+  };
+  assert.deepEqual(resolveDispatchModel(connector, 'high', {
+    allowedModels: ['cheap', 'strong'],
+  }), { eligible: true, model: 'strong', source: 'tier-selection' });
+  assert.equal(resolveDispatchModel(connector, 'high', { allowedModels: [] }).eligible, false);
 });

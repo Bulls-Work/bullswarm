@@ -18,7 +18,7 @@ import { cmdWorkflow } from './workflow/cli.js';
 import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
-import { resolveDispatchModel } from './lib/strategy.js';
+import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { cmdDelegate } from './delegate.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
 
@@ -164,7 +164,11 @@ async function cmdRun(opts) {
     ...pool,
     modelPolicy: resolveDispatchModel(pool.connector ?? pool, effortTier, {
       assignment,
-      excludedModels: state.strategy?.excludedModels ?? [],
+      excludedModels: [
+        ...(state.strategy?.excludedModels ?? []),
+        ...disabledModelsForPool(state.strategy, pool.name),
+      ],
+      allowedModels: selectedModelsForTier(state.strategy, pool.name, effortTier),
     }),
   })).filter((pool) => pool.modelPolicy.eligible);
 
@@ -452,7 +456,11 @@ export async function main(argv) {
     && argv[0] === 'workflow'
     && process.stdin.isTTY
     && process.stdout.isTTY;
-  const help = bareWorkflowDashboard ? null : helpForArgs(argv);
+  const bareStrategyDashboard = argv.length === 1
+    && argv[0] === 'strategy'
+    && process.stdin.isTTY
+    && process.stdout.isTTY;
+  const help = bareWorkflowDashboard || bareStrategyDashboard ? null : helpForArgs(argv);
   if (help) {
     console.log(help);
     return 0;
@@ -488,7 +496,9 @@ export async function main(argv) {
     case 'runs':
       return cmdWorkflow(['runs', ...rest]);
     case 'strategy':
-      return cmdStrategy(rest, { bullswarmDir: getBullswarmDir() });
+      return cmdStrategy(bareStrategyDashboard ? ['tui'] : rest, {
+        bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
+      });
     case 'integrate':
       return cmdIntegrate(opts);
     case 'version':
