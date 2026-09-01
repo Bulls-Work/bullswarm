@@ -44,8 +44,10 @@ function runtimeFromState(state) {
     knownArtifacts,
     freshEvidenceRequirementIds,
     workspaceMutation: state.intent.constraints?.workspaceMutation ?? 'allowed',
-    maxActions: Math.max(0, Number(state.config.settings.maxActions ?? 100) - state.program.actions.length),
+    maxActions: Number(state.config.settings.maxActions ?? 100),
     maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
+    enforceMaxActions: false,
+    enforceMaxParallel: false,
   };
 }
 
@@ -130,10 +132,20 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
     schemaVersion: 'bullswarm.workflow.planner-context.v2',
     boundary: plannerBoundary,
     intent: clone(state.intent),
-    limits: {
-      maxActionsRemaining: Math.max(0, Number(state.config.settings.maxActions ?? 100) - state.program.actions.length),
-      maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 1,
-      expansionRoundsRemaining: Math.max(0, Number(state.config.settings.maxExpansionRounds ?? 1) - Number(state.budget.expansions ?? 0)),
+    targets: {
+      advisoryOnly: true,
+      actions: Number(state.config.settings.maxActions ?? 100),
+      actionsUsed: state.program.actions.length,
+      actionsRemaining: Number(state.config.settings.maxActions ?? 100) - state.program.actions.length,
+      agents: Number(state.config.settings.maxAgents ?? 30),
+      agentsUsed: Number(state.budget.agents ?? 0),
+      agentsRemaining: Number(state.config.settings.maxAgents ?? 30) - Number(state.budget.agents ?? 0),
+      expansionRounds: Number(state.config.settings.maxExpansionRounds ?? 2),
+      expansionRoundsUsed: Number(state.budget.expansions ?? 0),
+      expansionRoundsRemaining: Number(state.config.settings.maxExpansionRounds ?? 2) - Number(state.budget.expansions ?? 0),
+    },
+    execution: {
+      concurrency: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 1,
     },
     knownActions: state.program.actions.map((action) => ({
       id: action.id, purpose: action.purpose, dependsOn: clone(action.dependsOn),
@@ -155,6 +167,8 @@ export function buildV2PlannerPrompt(context) {
   return [
     'You are the single logical Workflow Planner for Bullswarm autonomous V2.',
     'Propose the smallest complete bounded action program that can satisfy the supplied requirements. The kernel, not you, decides completion and failure.',
+    'The numeric values in context.targets are advisory planning targets, never execution ceilings. Prefer to stay within them by consolidating optional work, but exceed them whenever the smallest essential program needs more actions, agent dispatches, or gap rounds. Reaching or crossing a target is not a reason to return exhausted.',
+    'context.execution.concurrency limits only how many dependency-ready actions run at once. It does not limit the total number of independent actions in the program; the scheduler will batch wider programs safely.',
     'Use only generic actions. A work action declares affects and any exact ownedFiles. affects means the action directly owns and delivers a bounded acceptance slice of that requirement; merely editing a supporting test or sharing a file does not make an action affect every requirement associated with that file. An evidence action declares evidenceFor, has empty affects/ownedFiles, and independently inspects the work it judges.',
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',

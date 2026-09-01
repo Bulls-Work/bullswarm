@@ -465,6 +465,7 @@ async function wfCapabilities(opts) {
           resumable: true,
           cooperativeCancellation: true,
           presentationStagesDerivedFromActions: true,
+          advisoryPlanningTargets: true,
         },
         defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2 },
         compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false },

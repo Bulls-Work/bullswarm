@@ -709,11 +709,6 @@ export async function runV2AutonomousWorkflow({
   for (;;) {
     if (refreshCancellation()) return finalize();
     if (state.preflight.scout.status === 'pending') {
-      if (state.budget.agents >= config.maxAgents) {
-        limitsExhausted = true;
-        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit before repository preflight`;
-        return finalize();
-      }
       const scouted = await runScout();
       if (!scouted.ok) {
         limitsExhausted = true;
@@ -741,11 +736,6 @@ export async function runV2AutonomousWorkflow({
     const deliveredSteeringIds = new Set((state.steering ?? []).map((entry) => entry.id));
     const hasPendingSteering = readSteering(runDir).some((entry) => !deliveredSteeringIds.has(entry.id));
     if (hasPendingSteering && state.program.actions.length) {
-      if (state.budget.agents >= config.maxAgents) {
-        limitsExhausted = true;
-        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit before queued steering could be planned`;
-        continue;
-      }
       const planned = await runPlanner('steering');
       if (!planned.ok) {
         if (planned.status === 'cancelled') continue;
@@ -757,16 +747,6 @@ export async function runV2AutonomousWorkflow({
     const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
     if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
     if (progress.status === 'needs-planner') {
-      if (state.budget.agents >= config.maxAgents) {
-        limitsExhausted = true;
-        terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit`;
-        continue;
-      }
-      if (progress.boundary === 'gaps' && state.budget.expansions >= config.maxExpansionRounds) {
-        limitsExhausted = true;
-        terminalReason = `the workflow reached its ${config.maxExpansionRounds} bounded planner expansion round limit`;
-        continue;
-      }
       const planned = await runPlanner(progress.boundary);
       if (!planned.ok) {
         if (planned.status === 'cancelled') continue;
@@ -781,11 +761,10 @@ export async function runV2AutonomousWorkflow({
     const schedule = scheduleV2Actions(state.program.actions, state.actions, {
       concurrency: config.concurrency, workspaceMode: schedulerWorkspaceMode,
     });
-    const remainingAgents = Math.max(0, config.maxAgents - state.budget.agents);
-    const selected = schedule.selected.slice(0, remainingAgents);
+    const selected = schedule.selected;
     if (!selected.length) {
       limitsExhausted = true;
-      terminalReason = `the workflow reached its ${config.maxAgents}-agent dispatch limit`;
+      terminalReason = 'the workflow has unfinished work but no dependency-ready action can run';
       continue;
     }
     state.lifecycle.status = 'running';

@@ -182,6 +182,12 @@ bullswarm workflow goal \
   --cwd ~/some-repo --watch
 ```
 
+`--max-agents`, `--max-actions`, and `--max-expansion-rounds` are soft V2
+planning targets. They encourage the Workflow Planner to consolidate optional
+work, but the kernel never stops or rejects essential work merely because a
+target was reached. `--concurrency` still bounds simultaneous dispatches so
+the scheduler can batch a wider useful program safely.
+
 Bullswarm first runs optional read-only reconnaissance, then invokes one
 logical, resumable Workflow Planner conversation. The planner proposes a
 complete bounded program of generic actions. Work actions produce artifacts;
