@@ -178,6 +178,17 @@ mutation-capable cross-cutting acceptance unit that owns production code and
 tests and may close integrated gaps. The zero-rejection streak remains reset
 until this correction passes the difficult canary from a fresh worktree.
 
+The immediate replacement stopped earlier on the corrected uniform-layout
+slice, but for a different mechanical reason: the planner listed the broad
+tests-and-changelog requirement in `affects` merely because the action edited
+dashboard tests. Runtime therefore supplied the unrelated changelog clause
+while exact ownership correctly forbade `CHANGELOG.md`; the worker followed
+the clause and was rejected for out-of-scope mutation. `affects` now means
+direct ownership of a bounded acceptance slice, not incidental test/file
+association. Requirement prose is explicit context for the named purpose and
+prompt, never an ownership expansion; sibling clauses requiring another file
+must remain with their own scout unit. The streak remains 0/5.
+
 Sequences 16-17 remain acceptance work: the five-run zero-rejection canary
 streak (including the difficult goal three times), independent review/PR/CI,
 release, installed-binary verification, and the final installed canary.

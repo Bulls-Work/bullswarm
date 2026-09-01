@@ -129,11 +129,11 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
     'Behavioral acceptance discipline:',
     '- For new or changed behavior, exercise the real production entry point or state transition. Do not satisfy acceptance with a disconnected helper, a no-op assertion, or a test-only implementation path.',
     '- Before implementing, run the focused regression against the untouched baseline and observe the expected failure. If the behavior already exists, capture concrete baseline proof instead of adding a redundant test.',
-    '- After implementing, map every affected requirement to an exact production path and assertion, run the focused checks, then run the goal\'s full acceptance command when one is supplied.',
+    '- After implementing, map every acceptance clause explicitly owned by this action to an exact production path and assertion, run the focused checks, then run the goal\'s full acceptance command when one is supplied.',
     '- For interactive or state-machine behavior, build a transition matrix for every affected level and input. Use distinguishable before/after fixtures and assert the observable state or selected item after each real input; merely finding text that was already rendered does not prove a transition.',
     '- Never invoke a Node focused test as a raw `node --test` command. Use `node --test-timeout=60000 --test <focused files>` so an unresolved async or interactive loop deterministically returns a failing test result to this same agent instead of trapping its shell tool. Do not use `--test-force-exit`, which would hide leaked handles.',
     '- Treat a focused test that greatly exceeds its observed baseline as a defect, not useful waiting. If it runs longer than 60 seconds or twice the baseline (whichever is greater) without progress, interrupt it, inspect open handles or unresolved async work, fix the cause, and rerun before finishing.',
-    '- Before finishing, reread the bounded action instruction clause by clause and name the exact production-path assertion that proves each clause. Add missing coverage before claiming success.',
+    '- Before finishing, reread the action purpose and final instructions clause by clause and name the exact production-path assertion that proves each owned clause. Add missing coverage before claiming success; leave sibling clauses to their named actions.',
     '- Treat universal, negative, and boundary qualifiers as separate mandatory checks: every, always, any depth, same, narrow/mobile, must not, and fallback behavior. Exercise every applicable level, mode, and supported width named or implied by those words.',
     '- The authoritative acceptance text outranks existing implementation and tests. When an owned test asserts behavior that contradicts the requirement, update the production behavior and the test; do not preserve the contradiction merely because the baseline is green.',
     '- A green suite is necessary but not sufficient: inspect the final diff for vacuous assertions, skipped coverage, and requirement wording that the implementation did not actually satisfy.',
@@ -149,9 +149,9 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
       : 'This action is read-only. Do not modify workspace files.',
     requirements.length
       ? [
-        'Authoritative acceptance text for this bounded action:',
+        'Authoritative requirement context for this bounded acceptance slice:',
         ...requirements.map((item) => `- ${item.id}: ${item.text}`),
-        'Use this text clause by clause to test the action purpose. It does not authorize sibling, downstream, or whole-goal work outside this action.',
+        'Use the exact qualifiers from this context to test only the clauses explicitly claimed by the action purpose and final instructions. Other clauses remain sibling work. If a clause requires an unowned file or a different purpose, do not implement it. Exact ownedFiles are an absolute mutation boundary and this context never expands them.',
       ].join('\n')
       : '',
     dependencyArtifacts(state, action).length ? `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}` : '',
