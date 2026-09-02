@@ -240,6 +240,28 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.match(screen, /Finish setup/);
 });
 
+test('strategy setup sorts providers and hides disabled test fixtures', () => {
+  const pool = (name, extra = {}) => ({
+    name, connector: { name, lanes: [], capabilities: [] }, enabled: true,
+    lanes: [], capabilities: [], pace: 0, ...extra,
+  });
+  const inventory = strategyInventory({
+    pools: [
+      pool('opencode2:relay-2'),
+      pool('echo', { enabled: false, testFixture: true }),
+      pool('claude-code:wati'),
+      pool('claude-code'),
+    ],
+    state: {},
+    report: { capturedAt: new Date().toISOString(), discoveries: {}, suggestions: {} },
+  });
+  assert.deepEqual(inventory.providers.map((provider) => provider.name), [
+    'claude-code', 'claude-code:wati', 'opencode2:relay-2',
+  ]);
+  const screen = renderStrategyDashboard(inventory, { width: 70, height: 30 });
+  assert.doesNotMatch(screen, /echo/);
+});
+
 test('setup choice and analysis progress explain the interactive decision', () => {
   const choice = renderSetupChoice({ selected: 0, width: 80, height: 20 });
   assert.match(choice, /Analyze and recommend \(recommended\)/);

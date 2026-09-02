@@ -131,16 +131,19 @@ function modelsForPool(pool, discovery, state) {
 }
 
 export function strategyInventory({ pools, state, report }) {
-  const providers = pools.map((pool) => ({
-    name: pool.name,
-    enabled: pool.enabled !== false,
-    usedPct: pool.usedPct ?? null,
-    surplus: pool.pace ?? null,
-    meterSource: pool.meterSource,
-    lanes: pool.lanes ?? [],
-    capabilities: pool.capabilities ?? [],
-    models: modelsForPool(pool, report.discoveries?.[pool.name], state),
-  }));
+  const providers = pools
+    .filter((pool) => !(pool.testFixture === true && pool.enabled === false))
+    .map((pool) => ({
+      name: pool.name,
+      enabled: pool.enabled !== false,
+      usedPct: pool.usedPct ?? null,
+      surplus: pool.pace ?? null,
+      meterSource: pool.meterSource,
+      lanes: pool.lanes ?? [],
+      capabilities: pool.capabilities ?? [],
+      models: modelsForPool(pool, report.discoveries?.[pool.name], state),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const routes = {};
   for (const tier of STRATEGY_TIERS) {
     const context = report.suggestions?.[tier]?.requirements ?? { lane: ({ high: 'analyze', medium: 'build', low: 'chore' })[tier], capabilities: [] };
