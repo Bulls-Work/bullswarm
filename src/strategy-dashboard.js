@@ -53,11 +53,22 @@ function visibleLength(value) {
 }
 
 function providerLines(inventory, selected, width) {
-  const lines = inventory.providers.map((provider, index) => {
+  const lines = inventory.providers.flatMap((provider, index) => {
     const marker = index === selected ? '›' : ' ';
     const enabled = provider.enabled ? '●' : '○';
     const meter = provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`;
-    return `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 25))} ${pad(meter, 10)} ${provider.models.length} models`;
+    const cellWidth = Math.max(7, Math.floor((width - 10) / STRATEGY_TIERS.length));
+    const selections = STRATEGY_TIERS.map((tier) => {
+      const models = provider.models
+        .filter((model) => effectiveModelTiers(model).includes(tier))
+        .map((model) => model.id.split('/').at(-1));
+      const choice = models.length > 1 ? `${models[0]} +${models.length - 1}` : (models[0] ?? '—');
+      return pad(`${tier[0].toUpperCase()} ${choice}`, cellWidth);
+    }).join(' · ');
+    return [
+      `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 25))} ${pad(meter, 10)} ${provider.models.length} models`,
+      `    ${selections}`,
+    ];
   });
   const selectedFinish = selected === inventory.providers.length;
   lines.push(`${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}✓ Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
@@ -128,7 +139,11 @@ export function renderStrategyDashboard(inventory, {
   if (narrow) {
     if (view === 'providers') {
       lines.push('Providers · Space toggle · Enter/→ models');
-      lines.push(...selectedWindow(providerLines(inventory, providerIndex, width), providerIndex, bodyHeight - 1));
+      lines.push(...selectedWindow(
+        providerLines(inventory, providerIndex, width),
+        Math.min(providerIndex * 2, inventory.providers.length * 2),
+        bodyHeight - 1,
+      ));
     } else {
       lines.push(`Models · ${provider?.name ?? 'none'} · ${provider?.enabled ? 'provider on' : 'provider off'}`);
       lines.push(`Search: ${search || 'type to filter'} · ${models.length}/${provider?.models.length ?? 0} models`);
@@ -140,7 +155,11 @@ export function renderStrategyDashboard(inventory, {
     const rightWidth = width - leftWidth - 3;
     const left = [
       `Providers${view === 'providers' ? ' · focused' : ''}`,
-      ...selectedWindow(providerLines(inventory, providerIndex, leftWidth), providerIndex, bodyHeight - 1),
+      ...selectedWindow(
+        providerLines(inventory, providerIndex, leftWidth),
+        Math.min(providerIndex * 2, inventory.providers.length * 2),
+        bodyHeight - 1,
+      ),
     ];
     const rows = models.length ? modelLines(models, modelIndex, tierIndex, rightWidth, view === 'models') : ['  No matching models.'];
     const right = [

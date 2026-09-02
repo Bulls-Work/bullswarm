@@ -232,6 +232,9 @@ test('strategy inventory and dashboard show provider toggles, tier matrix, and e
   assert.equal(inventory.routes.high.model, 'smart');
   const screen = renderStrategyDashboard(inventory, { width: 60, height: 30 });
   assert.match(screen, /Providers/);
+  assert.match(screen, /H smart/);
+  assert.match(screen, /M —/);
+  assert.match(screen, /L —/);
   assert.match(screen, /Effective choices now/);
   assert.match(screen, /worker\/smart/);
   assert.match(screen, /Finish setup/);
