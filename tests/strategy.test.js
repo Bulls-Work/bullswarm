@@ -21,7 +21,7 @@ test('model discovery merges live, fallback, and configured models with profiles
     model: 'configured-model',
     modelDiscovery: { cmd: ['fixture', 'models'], parse: 'lines' },
     knownModels: ['fallback-model'],
-    modelProfiles: [{ match: 'live-model', tier: 'high', qualityRank: 5 }],
+    modelProfiles: [{ match: 'live-model', tier: 'high', qualityRank: 5, autoRecommend: false }],
   };
   const result = discoverConnectorModels(connector, {
     executor: () => 'live-model\n',
@@ -29,6 +29,7 @@ test('model discovery merges live, fallback, and configured models with profiles
   assert.equal(result.source, 'cli');
   assert.deepEqual(result.models.map((m) => m.id), ['live-model', 'fallback-model', 'configured-model']);
   assert.equal(result.models[0].tier, 'high');
+  assert.equal(result.models[0].autoRecommend, false);
 });
 
 test('model discovery executes an identical provider command only once across account clones', () => {
@@ -170,14 +171,18 @@ test('OpenRouter signals select one current Claude default for every provider ti
     pools: [{ name: 'claude-code', connector, enabled: true, pace: 0, costRank: 4 }],
     state: {},
     discoveries: { 'claude-code': { models: [
-      { id: 'claude-fable-5', tier: 'high', qualityRank: 6 },
+      { id: 'claude-fable-5', tier: 'high', qualityRank: 6, autoRecommend: false },
       { id: 'claude-opus-5', tier: 'high', qualityRank: 5 },
       { id: 'claude-sonnet-5', tier: 'medium', qualityRank: 4 },
       { id: 'claude-haiku-4-5', tier: 'low', qualityRank: 3 },
     ] } },
     openRouterCatalog: { models: {
+      'anthropic/claude-fable-5': {
+        id: 'anthropic/claude-fable-5', ranks: { agentic: 1, coding: 1, intelligence: 1 },
+        pricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 50 },
+      },
       'anthropic/claude-opus-5': {
-        id: 'anthropic/claude-opus-5', ranks: { agentic: 1, coding: 2, intelligence: 1 },
+        id: 'anthropic/claude-opus-5', ranks: { agentic: 2, coding: 2, intelligence: 2 },
         pricing: { inputUsdPerMillion: 5, outputUsdPerMillion: 25 },
       },
       'anthropic/claude-sonnet-5': {
@@ -192,6 +197,11 @@ test('OpenRouter signals select one current Claude default for every provider ti
   });
 
   assert.deepEqual(report.providerSuggestions['claude-code'].high.recommended, { model: 'claude-opus-5' });
+  assert.equal(report.providerSuggestions['claude-code'].high.candidates.some((entry) => entry.model === 'claude-fable-5'), false);
+  assert.equal(report.discoveries['claude-code'].models.some((entry) => entry.id === 'claude-fable-5'), true);
+  assert.deepEqual(resolveDispatchModel({ ...connector, modelSelection: { flag: '--model' } }, 'high', {
+    assignment: { pool: 'claude-code', model: 'claude-fable-5' },
+  }), { eligible: true, model: 'claude-fable-5', source: 'assignment' });
   assert.deepEqual(report.providerSuggestions['claude-code'].medium.recommended, { model: 'claude-sonnet-5' });
   assert.deepEqual(report.providerSuggestions['claude-code'].low.recommended, { model: 'claude-haiku-4-5' });
   for (const tier of ['high', 'medium', 'low']) {
@@ -241,4 +251,31 @@ test('an unbenchmarked OpenRouter listing does not masquerade as quality evidenc
     } },
   });
   assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'proven-model' });
+});
+
+test('account-cloned providers recommend only models belonging to that account', () => {
+  const connector = (name, providerId) => ({
+    name, profile: { providerId }, lanes: ['analyze'],
+    capabilities: ['strong-analysis', 'workflow-planning'],
+  });
+  const primary = connector('opencode2', 'relay');
+  const second = connector('opencode2:relay-2', 'relay-2');
+  const models = [
+    { id: 'relay/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+    { id: 'relay-2/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+  ];
+  const report = buildStrategy({
+    connectors: { opencode2: primary, 'opencode2:relay-2': second },
+    pools: [
+      { name: 'opencode2', connector: primary, enabled: true, pace: 0, costRank: 1 },
+      { name: 'opencode2:relay-2', connector: second, enabled: true, pace: 0, costRank: 1 },
+    ],
+    state: {},
+    discoveries: {
+      opencode2: { models },
+      'opencode2:relay-2': { models },
+    },
+  });
+  assert.deepEqual(report.providerSuggestions.opencode2.high.recommended, { model: 'relay/gpt-5.6-sol' });
+  assert.deepEqual(report.providerSuggestions['opencode2:relay-2'].high.recommended, { model: 'relay-2/gpt-5.6-sol' });
 });

@@ -127,6 +127,28 @@ test('connector metadata upgrades additive provider concurrency preferences', ()
   } finally { cleanup(); }
 });
 
+test('connector metadata upgrades expensive-model recommendation guards idempotently', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
+      name: 'opencode2',
+      capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      modelProfiles: [
+        { match: '(?:fable|opus|gpt-5\\.6-sol)', tier: 'high', qualityRank: 5 },
+      ],
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    assert.equal(installed.modelProfiles[0].match, '(?:^|/)claude-fable-');
+    assert.equal(installed.modelProfiles[0].autoRecommend, false);
+    assert.equal(installed.modelProfiles[1].match, 'gpt-5\\.6-sol$');
+    assert.equal(installed.modelProfiles[1].autoRecommend, true);
+    assert.deepEqual(upgradeConnectorMetadata(d), []);
+  } finally { cleanup(); }
+});
+
 test('integration block: approval required, idempotent markers', () => {
   const { d, cleanup } = tmp();
   try {

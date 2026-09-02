@@ -220,6 +220,23 @@ export function upgradeConnectorMetadata(bullswarmDir) {
         installed.eventStream.modelPaths = packaged.eventStream.modelPaths;
         changed = true;
       }
+      // Packaged recommendation opt-outs are safety defaults, not routing
+      // assignments. Prepend them so an existing broader profile cannot make
+      // an unusually expensive model family an automatic default. The model
+      // remains discoverable and explicitly selectable by the user.
+      const recommendationGuards = (packaged.modelProfiles ?? [])
+        .filter((profile) => typeof profile.autoRecommend === 'boolean');
+      if (recommendationGuards.length) {
+        installed.modelProfiles = Array.isArray(installed.modelProfiles) ? installed.modelProfiles : [];
+        const missing = recommendationGuards.filter((guard) => !installed.modelProfiles.some((profile) => (
+          profile.autoRecommend === guard.autoRecommend
+          && ((guard.id && profile.id === guard.id) || (guard.match && profile.match === guard.match))
+        )));
+        if (missing.length) {
+          installed.modelProfiles = [...missing, ...installed.modelProfiles];
+          changed = true;
+        }
+      }
       for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
         if (installed[field] == null && packaged[field] != null) {
           installed[field] = packaged[field];

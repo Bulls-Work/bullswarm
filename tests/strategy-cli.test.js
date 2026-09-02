@@ -292,6 +292,12 @@ test('analysis review lists one recommendation per tier and asks before applying
   assert.match(screen, /claude-opus-5/);
   assert.match(screen, /agentic #1 · coding #2/);
   assert.match(screen, /Apply these defaults\?  Y yes · N keep current choices/);
+  const cached = renderRecommendationReview({
+    ...inventory,
+    openRouter: { error: 'release asset not published yet' },
+  }, { width: 100, height: 30 });
+  assert.match(cached, /Using cached benchmark data; latest refresh unavailable/);
+  assert.doesNotMatch(cached, /local metadata was used/);
 });
 
 test('raw terminal input preserves arrows and splits batched search typing', () => {

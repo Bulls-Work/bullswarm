@@ -244,8 +244,16 @@ export function recommendationLines(inventory) {
 export function renderRecommendationReview(inventory, {
   title = 'Bullswarm setup', width = 100, height = 30, offset = 0,
 } = {}) {
+  const hasBenchmarkData = Object.values(inventory.recommendations ?? {}).some((tiers) => (
+    Object.values(tiers ?? {}).some((suggestion) => (suggestion?.candidates ?? []).some((candidate) => (
+      candidate.openRouter && (Object.keys(candidate.openRouter.indices ?? {}).length
+        || Object.keys(candidate.openRouter.ranks ?? {}).length)
+    )))
+  ));
   const source = inventory.openRouter?.error
-    ? `Benchmark datapack unavailable (${inventory.openRouter.error}); local metadata was used.`
+    ? hasBenchmarkData
+      ? `Using cached benchmark data; latest refresh unavailable (${inventory.openRouter.error}).`
+      : `Benchmark datapack unavailable (${inventory.openRouter.error}); local metadata was used.`
     : 'Quality uses OpenRouter agentic, coding, and intelligence indices; API price guides budget.';
   const details = recommendationLines(inventory);
   const bodyHeight = Math.max(3, height - 9);
