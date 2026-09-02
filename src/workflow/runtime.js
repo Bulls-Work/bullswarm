@@ -36,7 +36,7 @@ import { DECISION_SCHEMA_VERSION, parseDecisionText } from './decision.js';
 import { aggregateUsage } from '../lib/usage.js';
 import { classifyAgentProgress, recordAgentAction } from '../lib/agent-events.js';
 import { deliverSteering } from './steering.js';
-import { isModelExcluded, resolveDispatchModel } from '../lib/strategy.js';
+import { disabledModelsForPool, isModelExcluded, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { getMeterReading } from '../meters/registry.js';
 import { validateAgainstSchema } from './schema.js';
 import { AUTONOMOUS_ORCHESTRATOR_PROMPT } from './goal.js';
@@ -821,10 +821,17 @@ export class WorkflowRuntime {
     ).map((pool) => {
       const assignment = pool.strategyAssignments?.[effortTier] ?? null;
       const connector = pool.connector ?? pool;
-      const excludedModels = pool.strategyExcludedModels ?? [];
+      const excludedModels = [
+        ...(pool.strategyExcludedModels ?? []),
+        ...disabledModelsForPool({ disabledModels: pool.strategyDisabledModels }, pool.name),
+      ];
       let modelPolicy = resolveDispatchModel(connector, effortTier, {
         assignment,
         excludedModels,
+        allowedModels: selectedModelsForTier({
+          modelTiers: pool.strategyModelTiers,
+          configuredTiers: pool.strategyConfiguredTiers,
+        }, pool.name, effortTier),
       });
       if (step.model != null) {
         const requested = String(step.model).trim();

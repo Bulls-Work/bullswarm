@@ -56,7 +56,7 @@
     { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
     { "match": "^gpt-5\\.6-terra$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 12 }, "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra", "pricingUpdatedAt": "2026-08-27" },
     { "match": "^gpt-5\\.6-luna$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "outputUsdPerMillion": 1.2 }, "pricingSource": "https://developers.openai.com/api/docs/models", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^claude-fable-5$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
+    { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
     { "match": "^claude-opus-", "tier": "high", "qualityRank": 5 },
     { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
     { "match": "^claude-haiku-", "tier": "low", "qualityRank": 3 },

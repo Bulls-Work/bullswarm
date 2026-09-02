@@ -124,6 +124,24 @@ test('persisted effort assignment wins while its pool remains eligible', async (
   assert.equal(result.attempts[0].pool, 'luna-2');
 });
 
+test('workflow dispatch honors the interactive strategy model allow-list', async () => {
+  const h = harness([good]);
+  const blocked = connector('luna-1', {
+    strategyAssignments: {}, strategyConfiguredTiers: ['low'], strategyModelTiers: {},
+  });
+  const selected = connector('luna-2', {
+    strategyAssignments: {}, strategyConfiguredTiers: ['low'],
+    strategyModelTiers: { 'luna-2': { 'gpt-5.6-luna': ['low'] } },
+  });
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [blocked, selected], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].pool, 'luna-2');
+  assert.equal(result.attempts[0].model, 'gpt-5.6-luna');
+});
+
 test('burst-gated pools are not waited on or dispatched', async () => {
   const h = harness([]);
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1', { burstGate: true })], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });

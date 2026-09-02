@@ -5,3 +5,4 @@ node_modules/
 bullswarm-*.tgz
 .commandcode/
 .relay-api-key*
+.openrouter-api-key

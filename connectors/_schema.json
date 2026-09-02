@@ -68,6 +68,7 @@
     "pricing": {"inputUsdPerMillion": null, "cacheReadUsdPerMillion": null, "outputUsdPerMillion": null},
     "pricingSource": "optional dated primary source",
     "pricingUpdatedAt": "YYYY-MM-DD",
+    "autoRecommend": true,
     "free": false
   }],
   "modelSelection": {"flag": "--model", "mode": "replace-or-append"},

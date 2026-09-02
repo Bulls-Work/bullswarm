@@ -30,7 +30,7 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 // (readline/promises question() drops lines when stdin is a pipe: the second
 // question re-arms after buffered data was already consumed. Preload pipes;
 // readline only per-question on a real TTY.)
-class Prompter {
+export class Prompter {
   #lines = [];
   #preloaded = false;
 
@@ -56,6 +56,10 @@ class Prompter {
     }
     return this.#lines.shift() ?? '';
   }
+
+  // Each TTY question owns and closes its own readline interface. Keep a
+  // no-op finalizer so wizard cleanup is safe for both TTY and piped input.
+  close() {}
 }
 
 // --- discovery ---------------------------------------------------------------
@@ -215,6 +219,23 @@ export function upgradeConnectorMetadata(bullswarmDir) {
         // user-edited rules, args, or output mappings.
         installed.eventStream.modelPaths = packaged.eventStream.modelPaths;
         changed = true;
+      }
+      // Packaged recommendation opt-outs are safety defaults, not routing
+      // assignments. Prepend them so an existing broader profile cannot make
+      // an unusually expensive model family an automatic default. The model
+      // remains discoverable and explicitly selectable by the user.
+      const recommendationGuards = (packaged.modelProfiles ?? [])
+        .filter((profile) => typeof profile.autoRecommend === 'boolean');
+      if (recommendationGuards.length) {
+        installed.modelProfiles = Array.isArray(installed.modelProfiles) ? installed.modelProfiles : [];
+        const missing = recommendationGuards.filter((guard) => !installed.modelProfiles.some((profile) => (
+          profile.autoRecommend === guard.autoRecommend
+          && ((guard.id && profile.id === guard.id) || (guard.match && profile.match === guard.match))
+        )));
+        if (missing.length) {
+          installed.modelProfiles = [...missing, ...installed.modelProfiles];
+          changed = true;
+        }
       }
       for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
         if (installed[field] == null && packaged[field] != null) {
@@ -408,7 +429,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
   ).trim().toLowerCase();
   if (strategyAnswer === 'y' || strategyAnswer === 'yes') {
     const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
-    const report = await refreshStrategy(bullswarmDir);
+    const report = await refreshStrategy(bullswarmDir, { useOpenRouter: true });
     const applied = applyStrategyRecommendations(bullswarmDir, report);
     console.log(`  strategy tiers applied: ${Object.entries(applied.applied).map(([tier, value]) => `${tier}=${value.pool}/${value.model}`).join(', ')}`);
   } else {

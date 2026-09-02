@@ -1,0 +1,43 @@
+name: Refresh OpenRouter benchmark datapack
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openrouter-benchmark-datapack
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch and validate benchmark data
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node scripts/refresh-openrouter-benchmarks.mjs
+
+      - name: Test the generated datapack
+        run: node --test tests/openrouter-models.test.js
+
+      - name: Publish the public rolling datapack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view benchmark-data-latest >/dev/null 2>&1; then
+            gh release create benchmark-data-latest \
+              --target main \
+              --title "Latest benchmark datapack" \
+              --notes "Automatically refreshed public model benchmark data for Bullswarm setup."
+          fi
+          gh release upload benchmark-data-latest data/openrouter-benchmarks.json --clobber

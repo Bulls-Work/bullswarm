@@ -4,6 +4,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { modelProfile } from './usage.js';
+import { openRouterMetadata } from './openrouter-models.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -21,6 +22,53 @@ export function isModelExcluded(model, excludedModels = []) {
   return excluded.has(String(model).trim().toLowerCase());
 }
 
+export const STRATEGY_TIERS = Object.freeze(['high', 'medium', 'low']);
+
+export function normalizeModelTiers(value = {}) {
+  const normalized = {};
+  for (const [pool, models] of Object.entries(value ?? {})) {
+    if (!models || typeof models !== 'object') continue;
+    const poolModels = {};
+    for (const [model, tiers] of Object.entries(models)) {
+      const selected = STRATEGY_TIERS.filter((tier) => (Array.isArray(tiers) ? tiers : [tiers]).includes(tier));
+      if (selected.length) poolModels[model] = selected;
+    }
+    if (Object.keys(poolModels).length) normalized[pool] = poolModels;
+  }
+  return normalized;
+}
+
+export function selectedModelsForTier(strategy = {}, pool, tier) {
+  if (!(strategy.configuredTiers ?? []).includes(tier)) return null;
+  const models = normalizeModelTiers(strategy.modelTiers)[pool] ?? {};
+  return Object.entries(models)
+    .filter(([, tiers]) => tiers.includes(tier))
+    .map(([model]) => model);
+}
+
+export function setModelTierSelection(strategy, pool, model, tiers) {
+  const selected = STRATEGY_TIERS.filter((tier) => (Array.isArray(tiers) ? tiers : [tiers]).includes(tier));
+  strategy.modelTiers = normalizeModelTiers(strategy.modelTiers);
+  strategy.modelTiers[pool] ??= {};
+  if (selected.length) strategy.modelTiers[pool][model] = selected;
+  else delete strategy.modelTiers[pool][model];
+  if (!Object.keys(strategy.modelTiers[pool]).length) delete strategy.modelTiers[pool];
+  return selected;
+}
+
+export function disabledModelsForPool(strategy = {}, pool) {
+  return normalizeExcludedModels(strategy.disabledModels?.[pool] ?? []);
+}
+
+export function setModelDisabled(strategy, pool, model, disabled) {
+  strategy.disabledModels ??= {};
+  const current = new Set(normalizeExcludedModels(strategy.disabledModels[pool]));
+  if (disabled) current.add(String(model).trim().toLowerCase());
+  else current.delete(String(model).trim().toLowerCase());
+  if (current.size) strategy.disabledModels[pool] = [...current];
+  else delete strategy.disabledModels[pool];
+}
+
 function configuredModel(connector) {
   if (connector.model) return connector.model;
   const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
@@ -36,8 +84,31 @@ function configuredModel(connector) {
 export function resolveDispatchModel(connector, tier, {
   assignment = null,
   excludedModels = [],
+  allowedModels = null,
 } = {}) {
   const excluded = normalizeExcludedModels(excludedModels);
+  if (Array.isArray(allowedModels)) {
+    const allowed = unique(allowedModels).filter((model) => !isModelExcluded(model, excluded));
+    if (!allowed.length) return {
+      eligible: false, model: null, source: 'tier-selection-empty',
+      reason: `no enabled model is assigned to ${tier}`,
+    };
+    const configured = configuredModel(connector);
+    const candidates = allowed
+      .map((model) => ({ model, profile: modelProfile(connector, model) }))
+      .sort((a, b) => Number(b.profile?.qualityRank ?? 0) - Number(a.profile?.qualityRank ?? 0)
+        || a.model.localeCompare(b.model));
+    if (connector.modelSelection?.flag && candidates[0]) {
+      return { eligible: true, model: candidates[0].model, source: 'tier-selection' };
+    }
+    if (configured && allowed.includes(configured)) {
+      return { eligible: true, model: configured, source: 'tier-selection-configured' };
+    }
+    return {
+      eligible: false, model: null, source: 'tier-selection-unsupported',
+      reason: `connector ${connector.name} cannot select an assigned ${tier} model`,
+    };
+  }
   if (assignment?.pool === connector.name && !isModelExcluded(assignment.model, excluded)) {
     return { eligible: true, model: assignment.model, source: 'assignment' };
   }
@@ -124,6 +195,7 @@ export function discoverConnectorModels(connector, { executor = defaultExecutor 
       pricing: profile?.pricing ?? null,
       pricingSource: profile?.pricingSource ?? null,
       pricingUpdatedAt: profile?.pricingUpdatedAt ?? null,
+      autoRecommend: profile?.autoRecommend !== false,
       free: profile?.free === true || /(?:^|[/:-])free(?:$|[/:-])/i.test(id),
       configured: id === configured,
     };
@@ -171,13 +243,83 @@ function candidateScore(candidate, tier) {
   // Core never invents or scrapes benchmark comparisons. A connector may
   // declare a dated score from a comparable harness; otherwise use its coarse
   // quality rank as the explicit fallback.
-  const quality = candidate.model.benchmarkScore ?? candidate.model.qualityRank ?? 0;
+  const quality = candidate.model.recommendationScore
+    ?? candidate.model.benchmarkScore ?? candidate.model.qualityRank ?? 0;
   const pace = Number.isFinite(candidate.pool.pace) ? candidate.pool.pace : 0;
   const costRank = Number(candidate.pool.costRank ?? 5);
   const freeBonus = candidate.model.free ? 1 : 0;
   if (tier === 'high') return quality * 100 + pace - costRank;
   if (tier === 'medium') return quality * 50 + pace * 2 - costRank * 5 + freeBonus * 10;
   return freeBonus * 200 - costRank * 20 + quality * 10 + pace;
+}
+
+function openRouterQuality(metadata) {
+  const indices = metadata?.indices ?? {};
+  if (['agentic', 'coding', 'intelligence'].some((dimension) => Number.isFinite(Number(indices[dimension])))) {
+    return Number(indices.agentic ?? 0) * 5
+      + Number(indices.coding ?? 0) * 4
+      + Number(indices.intelligence ?? 0) * 2;
+  }
+  const ranks = metadata?.ranks ?? {};
+  const score = (rank, weight) => Number.isFinite(Number(rank))
+    ? Math.max(0, 101 - Number(rank)) * weight : 0;
+  return score(ranks.agentic, 5)
+    + score(ranks.coding, 4)
+    + score(ranks.intelligence, 2)
+    + score(ranks.popularity, 0.25);
+}
+
+function apiPrice(metadata) {
+  const input = Number(metadata?.pricing?.inputUsdPerMillion);
+  const output = Number(metadata?.pricing?.outputUsdPerMillion);
+  if (!Number.isFinite(input) && !Number.isFinite(output)) return null;
+  return (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0);
+}
+
+function recommendationScore(model, tier) {
+  const external = model.openRouter ?? null;
+  const externalQuality = openRouterQuality(external);
+  const quality = Number(model.benchmarkScore ?? model.qualityRank ?? 0);
+  const price = apiPrice(external);
+  // Presence in OpenRouter is availability evidence, not quality evidence.
+  // Only an actual benchmark index/rank may outrank connector-owned quality.
+  const benchmarkedExternally = externalQuality > 0 ? 1 : 0;
+  if (tier === 'high') return benchmarkedExternally * 1_000_000 + externalQuality * 1_000 + quality * 10;
+  if (tier === 'medium') return benchmarkedExternally * 1_000_000 + externalQuality * 500 + quality * 20 - (price ?? 0) * 5;
+  return Number(model.free) * 2_000_000 + benchmarkedExternally * 1_000_000
+    + externalQuality * 50 + quality * 20 - (price ?? 0) * 100;
+}
+
+function enrichDiscoveries(discoveries, openRouterCatalog) {
+  return Object.fromEntries(Object.entries(discoveries ?? {}).map(([pool, discovery]) => [pool, {
+    ...discovery,
+    models: (discovery.models ?? []).map((model) => {
+      const external = openRouterMetadata(openRouterCatalog, model.id);
+      const tier = model.tier;
+      return {
+        ...model,
+        openRouter: external ? {
+          id: external.id,
+          indices: external.indices,
+          ranks: external.ranks,
+          pricing: external.pricing,
+          pricingSource: external.pricingSource,
+          created: external.created,
+        } : null,
+        recommendationScore: recommendationScore({ ...model, openRouter: external }, tier),
+      };
+    }),
+  }]));
+}
+
+function recommendationModels(pool, discovery) {
+  const models = discovery?.models ?? [];
+  const connector = pool.connector ?? pool;
+  const providerId = connector.profile?.providerId ?? null;
+  if (!providerId) return models;
+  const prefix = `${providerId}/`;
+  const configured = configuredModel(connector);
+  return models.filter((model) => model.id.startsWith(prefix) || model.id === configured);
 }
 
 export const TIER_CONTEXTS = {
@@ -205,19 +347,47 @@ function supportsContext(pool, context) {
     && context.capabilities.every((capability) => capabilities.includes(capability));
 }
 
-export function buildStrategy({ connectors, pools, state, discoveries }) {
+export function buildStrategy({ connectors, pools, state, discoveries, openRouterCatalog = null }) {
+  const rankedDiscoveries = enrichDiscoveries(discoveries, openRouterCatalog);
   const subscriptions = pools.map((pool) => subscriptionView(pool, state));
   const tiers = ['high', 'medium', 'low'];
   const suggestions = {};
+  const providerSuggestions = {};
+  for (const pool of pools) {
+    providerSuggestions[pool.name] = {};
+    const disabled = new Set([
+      ...normalizeExcludedModels(state.strategy?.excludedModels),
+      ...disabledModelsForPool(state.strategy, pool.name),
+    ]);
+    for (const tier of tiers) {
+      const context = TIER_CONTEXTS[tier];
+      if (pool.enabled === false || pool.quarantine || pool.burstGate || !supportsContext(pool, context)) continue;
+      const candidates = recommendationModels(pool, rankedDiscoveries[pool.name])
+        .filter((model) => model.tier === tier
+          && model.autoRecommend !== false
+          && !disabled.has(model.id.toLowerCase()))
+        .sort((a, b) => b.recommendationScore - a.recommendationScore || a.id.localeCompare(b.id));
+      providerSuggestions[pool.name][tier] = {
+        recommended: candidates[0] ? { model: candidates[0].id } : null,
+        candidates: candidates.map((model) => ({
+          model: model.id,
+          score: Math.round(model.recommendationScore * 10) / 10,
+          qualityRank: model.qualityRank,
+          openRouter: model.openRouter,
+        })),
+      };
+    }
+  }
   for (const tier of tiers) {
     const context = TIER_CONTEXTS[tier];
     const candidates = [];
     for (const pool of pools) {
       if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
       if (!supportsContext(pool, context)) continue;
-      const discovery = discoveries[pool.name];
-      for (const model of discovery?.models ?? []) {
+      const discovery = rankedDiscoveries[pool.name];
+      for (const model of recommendationModels(pool, discovery)) {
         if (model.tier !== tier) continue;
+        if (model.autoRecommend === false) continue;
         if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
         candidates.push({ pool, model, score: 0 });
       }
@@ -251,12 +421,22 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
     schemaVersion: 'bullswarm.strategy.v1',
     capturedAt: new Date().toISOString(),
     subscriptions,
-    discoveries,
+    discoveries: rankedDiscoveries,
     suggestions,
+    providerSuggestions,
+    openRouter: openRouterCatalog ? {
+      capturedAt: openRouterCatalog.capturedAt,
+      source: openRouterCatalog.source,
+      benchmarksSource: openRouterCatalog.upstream?.benchmarks ?? null,
+      rankingsSource: openRouterCatalog.upstream?.rankings ?? null,
+      cache: openRouterCatalog.cache,
+      error: openRouterCatalog.error ?? null,
+    } : null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
-      'Benchmark and pricing fields are used only when connector metadata provides a dated source.',
+      'Benchmark and pricing fields come from the dated Bullswarm datapack or connector metadata.',
+      'OpenRouter agentic, coding, and intelligence indices drive external quality comparisons.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],
@@ -264,8 +444,26 @@ export function buildStrategy({ connectors, pools, state, discoveries }) {
 }
 
 export function discoverAllModels(connectors, opts = {}) {
+  const outputs = new Map();
+  const baseExecutor = opts.executor ?? defaultExecutor;
+  const memoizedExecutor = (command, args, execOpts) => {
+    const key = JSON.stringify([command, args, execOpts?.timeoutMs]);
+    if (outputs.has(key)) {
+      const cached = outputs.get(key);
+      if (cached.error) throw cached.error;
+      return cached.output;
+    }
+    try {
+      const output = baseExecutor(command, args, execOpts);
+      outputs.set(key, { output });
+      return output;
+    } catch (error) {
+      outputs.set(key, { error });
+      throw error;
+    }
+  };
   return Object.fromEntries(Object.values(connectors).map((connector) => [
     connector.name,
-    discoverConnectorModels(connector, opts),
+    discoverConnectorModels(connector, { executor: memoizedExecutor }),
   ]));
 }

@@ -110,12 +110,17 @@ export async function getMeterReading(pool, opts = {}) {
 /** Best-effort reading for all pools that have readers; never throws. */
 export async function getAllMeterReadings(poolNames, opts = {}) {
   const out = {};
+  let completed = 0;
   await Promise.all(
-    poolNames.map(async (p) => {
+    poolNames.map(async (p, index) => {
+      opts.onProgress?.({ stage: 'start', pool: p, index: index + 1, total: poolNames.length });
       try {
         out[p] = await getMeterReading(p, opts);
       } catch (err) {
         out[p] = { snapshot: null, source: 'error', error: err, pacing: null, burstGate: false, windows: {} };
+      } finally {
+        completed += 1;
+        opts.onProgress?.({ stage: 'complete', pool: p, completed, total: poolNames.length });
       }
     }),
   );
