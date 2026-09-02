@@ -2,17 +2,15 @@ import {
   existsSync, mkdirSync, readFileSync, renameSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const OPENROUTER_MODELS_SOURCE = 'https://openrouter.ai/api/v1/models';
+export const OPENROUTER_BENCHMARKS_API = 'https://openrouter.ai/api/v1/benchmarks';
+export const OPENROUTER_MODELS_API = 'https://openrouter.ai/api/v1/models';
+export const OPENROUTER_DATAPACK_URL = 'https://github.com/cowcow02/bullswarm/releases/download/benchmark-data-latest/openrouter-benchmarks.json';
 export const OPENROUTER_RANKINGS_SOURCE = 'https://openrouter.ai/rankings';
-const CACHE_SCHEMA = 'bullswarm.openrouter.models.v1';
+export const OPENROUTER_DATAPACK_SCHEMA = 'bullswarm.openrouter.benchmarks.v1';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
-const SORTS = Object.freeze({
-  agentic: 'agentic-high-to-low',
-  coding: 'coding-high-to-low',
-  intelligence: 'intelligence-high-to-low',
-  popularity: 'most-popular',
-});
+const BUNDLED_DATAPACK = fileURLToPath(new URL('../../data/openrouter-benchmarks.json', import.meta.url));
 
 function finite(value) {
   const parsed = Number(value);
@@ -24,48 +22,121 @@ function perMillion(value) {
   return parsed == null ? null : Math.round(parsed * 1e12) / 1e6;
 }
 
-function pricing(model) {
+function pricing(value = {}) {
   return {
-    inputUsdPerMillion: perMillion(model.pricing?.prompt),
-    cacheReadUsdPerMillion: perMillion(model.pricing?.input_cache_read),
-    cacheWriteUsdPerMillion: perMillion(model.pricing?.input_cache_write),
-    outputUsdPerMillion: perMillion(model.pricing?.completion),
+    inputUsdPerMillion: perMillion(value.prompt),
+    cacheReadUsdPerMillion: perMillion(value.input_cache_read),
+    cacheWriteUsdPerMillion: perMillion(value.input_cache_write),
+    outputUsdPerMillion: perMillion(value.completion),
   };
 }
 
-function readCache(cacheFile, now, ttlMs) {
-  if (!cacheFile || !existsSync(cacheFile)) return null;
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function validateOpenRouterDatapack(value) {
+  if (!object(value)) throw new Error('OpenRouter datapack must be an object');
+  if (value.schemaVersion !== OPENROUTER_DATAPACK_SCHEMA) throw new Error('unsupported OpenRouter datapack schema');
+  if (!Number.isFinite(Date.parse(value.capturedAt ?? ''))) throw new Error('OpenRouter datapack capturedAt is invalid');
+  if (!object(value.models)) throw new Error('OpenRouter datapack models must be an object');
+  if (!Array.isArray(value.benchmarkRecords)) throw new Error('OpenRouter datapack benchmarkRecords must be an array');
+  for (const [id, model] of Object.entries(value.models)) {
+    if (!object(model) || model.id !== id) throw new Error(`OpenRouter datapack model ${id} is invalid`);
+    for (const score of Object.values(model.indices ?? {})) {
+      if (score != null && !Number.isFinite(Number(score))) throw new Error(`OpenRouter datapack model ${id} has an invalid index`);
+    }
+    for (const rank of Object.values(model.ranks ?? {})) {
+      if (!Number.isInteger(rank) || rank < 1) throw new Error(`OpenRouter datapack model ${id} has an invalid rank`);
+    }
+  }
+  return value;
+}
+
+export function buildOpenRouterDatapack({ benchmarks, models, capturedAt = new Date().toISOString() }) {
+  if (!Array.isArray(benchmarks?.data)) throw new Error('OpenRouter benchmarks response has no data array');
+  if (!Array.isArray(models?.data)) throw new Error('OpenRouter models response has no data array');
+  const byId = {};
+  for (const model of models.data) {
+    const id = String(model.id ?? '').trim().toLowerCase();
+    if (!id) continue;
+    byId[id] = {
+      id,
+      name: model.name ?? model.id,
+      created: finite(model.created),
+      indices: {},
+      ranks: {},
+      pricing: pricing(model.pricing),
+      pricingSource: OPENROUTER_MODELS_API,
+    };
+  }
+  for (const record of benchmarks.data) {
+    const id = String(record.model_permaslug ?? '').trim().toLowerCase();
+    if (!id) continue;
+    byId[id] ??= {
+      id,
+      name: record.display_name ?? id,
+      created: null,
+      indices: {},
+      ranks: {},
+      pricing: pricing(record.pricing),
+      pricingSource: OPENROUTER_BENCHMARKS_API,
+    };
+    if (record.source === 'artificial-analysis') {
+      byId[id].indices = {
+        agentic: finite(record.agentic_index),
+        coding: finite(record.coding_index),
+        intelligence: finite(record.intelligence_index),
+      };
+    }
+  }
+  for (const dimension of ['agentic', 'coding', 'intelligence']) {
+    Object.values(byId)
+      .filter((model) => model.indices[dimension] != null)
+      .sort((a, b) => b.indices[dimension] - a.indices[dimension] || a.id.localeCompare(b.id))
+      .forEach((model, index) => { model.ranks[dimension] = index + 1; });
+  }
+  return validateOpenRouterDatapack({
+    schemaVersion: OPENROUTER_DATAPACK_SCHEMA,
+    capturedAt,
+    upstream: {
+      benchmarks: OPENROUTER_BENCHMARKS_API,
+      models: OPENROUTER_MODELS_API,
+      rankings: OPENROUTER_RANKINGS_SOURCE,
+      benchmarkMeta: benchmarks.meta ?? null,
+    },
+    models: Object.fromEntries(Object.entries(byId).sort(([a], [b]) => a.localeCompare(b))),
+    benchmarkRecords: benchmarks.data,
+  });
+}
+
+function readDatapack(file) {
+  if (!file || !existsSync(file)) return null;
   try {
-    const value = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    const captured = Date.parse(value.capturedAt ?? '');
-    if (value.schemaVersion !== CACHE_SCHEMA || !Number.isFinite(captured) || now - captured > ttlMs) return null;
-    return { ...value, cache: 'fresh' };
+    return validateOpenRouterDatapack(JSON.parse(readFileSync(file, 'utf8')));
   } catch {
     return null;
   }
 }
 
-function writeCache(cacheFile, value) {
-  if (!cacheFile) return;
-  mkdirSync(dirname(cacheFile), { recursive: true });
-  const temporary = `${cacheFile}.tmp-${process.pid}`;
+function writeDatapack(file, value) {
+  if (!file) return;
+  mkdirSync(dirname(file), { recursive: true });
+  const temporary = `${file}.tmp-${process.pid}`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  renameSync(temporary, cacheFile);
+  renameSync(temporary, file);
 }
 
-async function fetchRanking(fetchImpl, sort, timeoutMs) {
+async function fetchDatapack(fetchImpl, url, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${OPENROUTER_MODELS_SOURCE}?category=programming&sort=${encodeURIComponent(sort)}`;
     const response = await fetchImpl(url, {
       headers: { Accept: 'application/json' },
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`OpenRouter ${sort} returned HTTP ${response.status}`);
-    const body = await response.json();
-    if (!Array.isArray(body.data)) throw new Error(`OpenRouter ${sort} returned no model list`);
-    return body.data;
+    if (!response.ok) throw new Error(`Bullswarm benchmark datapack returned HTTP ${response.status}`);
+    return validateOpenRouterDatapack(await response.json());
   } finally {
     clearTimeout(timer);
   }
@@ -73,59 +144,54 @@ async function fetchRanking(fetchImpl, sort, timeoutMs) {
 
 export async function loadOpenRouterCatalog({
   bullswarmDir,
-  cacheFile = bullswarmDir ? join(bullswarmDir, 'cache', 'openrouter-models.json') : null,
+  cacheFile = bullswarmDir ? join(bullswarmDir, 'cache', 'openrouter-benchmarks.json') : null,
+  bundledFile = BUNDLED_DATAPACK,
+  url = OPENROUTER_DATAPACK_URL,
   fetchImpl = globalThis.fetch,
   force = false,
   now = Date.now(),
   ttlMs = DEFAULT_TTL_MS,
   timeoutMs = 8_000,
 } = {}) {
-  const cached = !force ? readCache(cacheFile, now, ttlMs) : null;
-  if (cached) return cached;
-  if (typeof fetchImpl !== 'function') return {
-    schemaVersion: CACHE_SCHEMA, capturedAt: new Date(now).toISOString(), source: OPENROUTER_MODELS_SOURCE,
-    rankingsSource: OPENROUTER_RANKINGS_SOURCE, models: {}, error: 'fetch is unavailable', cache: 'miss',
-  };
-  try {
-    const entries = await Promise.all(Object.entries(SORTS).map(async ([dimension, sort]) => [
-      dimension, await fetchRanking(fetchImpl, sort, timeoutMs),
-    ]));
-    const models = {};
-    for (const [dimension, ranked] of entries) {
-      ranked.forEach((model, index) => {
-        const id = String(model.id ?? '').toLowerCase();
-        if (!id) return;
-        models[id] ??= {
-          id,
-          name: model.name ?? model.id,
-          created: finite(model.created),
-          pricing: pricing(model),
-          pricingSource: OPENROUTER_MODELS_SOURCE,
-          ranks: {},
-        };
-        models[id].ranks[dimension] = index + 1;
-      });
-    }
-    const value = {
-      schemaVersion: CACHE_SCHEMA,
-      capturedAt: new Date(now).toISOString(),
-      source: OPENROUTER_MODELS_SOURCE,
-      rankingsSource: OPENROUTER_RANKINGS_SOURCE,
-      rankingLicense: 'CC BY 4.0',
-      models,
-      error: null,
-      cache: 'refreshed',
-    };
-    writeCache(cacheFile, value);
-    return value;
-  } catch (error) {
-    const stale = readCache(cacheFile, now, Number.POSITIVE_INFINITY);
-    if (stale) return { ...stale, cache: 'stale', error: error.message };
-    return {
-      schemaVersion: CACHE_SCHEMA, capturedAt: new Date(now).toISOString(), source: OPENROUTER_MODELS_SOURCE,
-      rankingsSource: OPENROUTER_RANKINGS_SOURCE, models: {}, error: error.message, cache: 'miss',
-    };
+  const cached = readDatapack(cacheFile);
+  const captured = Date.parse(cached?.capturedAt ?? '');
+  if (!force && cached && Number.isFinite(captured) && now - captured <= ttlMs) {
+    return { ...cached, cache: 'fresh', source: url, error: null };
   }
+  if (typeof fetchImpl === 'function') {
+    try {
+      const remote = await fetchDatapack(fetchImpl, url, timeoutMs);
+      writeDatapack(cacheFile, remote);
+      return { ...remote, cache: 'refreshed', source: url, error: null };
+    } catch (error) {
+      if (cached) return { ...cached, cache: 'stale', source: url, error: error.message };
+      const bundled = readDatapack(bundledFile);
+      if (bundled) return { ...bundled, cache: 'bundled', source: bundledFile, error: error.message };
+      return {
+        schemaVersion: OPENROUTER_DATAPACK_SCHEMA,
+        capturedAt: new Date(now).toISOString(),
+        upstream: null,
+        models: {},
+        benchmarkRecords: [],
+        cache: 'miss',
+        source: url,
+        error: error.message,
+      };
+    }
+  }
+  const fallback = cached ?? readDatapack(bundledFile);
+  return fallback
+    ? { ...fallback, cache: cached ? 'stale' : 'bundled', source: cached ? url : bundledFile, error: 'fetch is unavailable' }
+    : {
+      schemaVersion: OPENROUTER_DATAPACK_SCHEMA,
+      capturedAt: new Date(now).toISOString(),
+      upstream: null,
+      models: {},
+      benchmarkRecords: [],
+      cache: 'miss',
+      source: url,
+      error: 'fetch is unavailable',
+    };
 }
 
 export function openRouterModelKey(modelId) {

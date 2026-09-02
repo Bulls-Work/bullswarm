@@ -33,6 +33,19 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Bundle the latest public benchmark datapack when available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view benchmark-data-latest >/dev/null 2>&1; then
+            gh release download benchmark-data-latest \
+              --pattern openrouter-benchmarks.json \
+              --dir data \
+              --clobber
+          else
+            echo "No benchmark datapack release exists yet; connector metadata remains the offline fallback."
+          fi
+
       # OIDC trusted publishing needs npm >= 11.5.1; pin npm 11 explicitly.
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@11

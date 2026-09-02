@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "source": "artificial-analysis",
+      "model_permaslug": "anthropic/claude-opus-5",
+      "display_name": "Claude Opus 5",
+      "agentic_index": 74,
+      "coding_index": 78,
+      "intelligence_index": 81
+    },
+    {
+      "source": "openrouter",
+      "model_permaslug": "anthropic/claude-opus-5",
+      "benchmark_type": "gpqa_diamond",
+      "accuracy": 0.8,
+      "total_tasks": 300
+    }
+  ],
+  "meta": {
+    "as_of": "2026-09-02T00:00:00Z",
+    "version": "v1"
+  }
+}

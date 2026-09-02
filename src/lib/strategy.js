@@ -253,6 +253,12 @@ function candidateScore(candidate, tier) {
 }
 
 function openRouterQuality(metadata) {
+  const indices = metadata?.indices ?? {};
+  if (['agentic', 'coding', 'intelligence'].some((dimension) => Number.isFinite(Number(indices[dimension])))) {
+    return Number(indices.agentic ?? 0) * 5
+      + Number(indices.coding ?? 0) * 4
+      + Number(indices.intelligence ?? 0) * 2;
+  }
   const ranks = metadata?.ranks ?? {};
   const score = (rank, weight) => Number.isFinite(Number(rank))
     ? Math.max(0, 101 - Number(rank)) * weight : 0;
@@ -291,6 +297,7 @@ function enrichDiscoveries(discoveries, openRouterCatalog) {
         ...model,
         openRouter: external ? {
           id: external.id,
+          indices: external.indices,
           ranks: external.ranks,
           pricing: external.pricing,
           pricingSource: external.pricingSource,
@@ -404,16 +411,16 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     openRouter: openRouterCatalog ? {
       capturedAt: openRouterCatalog.capturedAt,
       source: openRouterCatalog.source,
-      rankingsSource: openRouterCatalog.rankingsSource,
-      rankingLicense: openRouterCatalog.rankingLicense ?? null,
+      benchmarksSource: openRouterCatalog.upstream?.benchmarks ?? null,
+      rankingsSource: openRouterCatalog.upstream?.rankings ?? null,
       cache: openRouterCatalog.cache,
       error: openRouterCatalog.error ?? null,
     } : null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
     caveats: [
       'Model availability comes from local CLI discovery plus connector fallbacks.',
-      'Benchmark and pricing fields are used only when connector metadata provides a dated source.',
-      'OpenRouter popularity is an adoption signal only; agentic, coding, and intelligence ranks drive quality recommendations.',
+      'Benchmark and pricing fields come from the dated Bullswarm datapack or connector metadata.',
+      'OpenRouter agentic, coding, and intelligence indices drive external quality comparisons.',
       'API-equivalent prices may not match subscription quota debits.',
       'Unknown license value, token counters, pricing, or benchmarks remain null; Bullswarm does not invent them.',
     ],
