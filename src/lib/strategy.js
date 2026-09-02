@@ -280,10 +280,12 @@ function recommendationScore(model, tier) {
   const externalQuality = openRouterQuality(external);
   const quality = Number(model.benchmarkScore ?? model.qualityRank ?? 0);
   const price = apiPrice(external);
-  const knownExternally = external ? 1 : 0;
-  if (tier === 'high') return knownExternally * 1_000_000 + externalQuality * 1_000 + quality * 10;
-  if (tier === 'medium') return knownExternally * 1_000_000 + externalQuality * 500 + quality * 20 - (price ?? 0) * 5;
-  return Number(model.free) * 2_000_000 + knownExternally * 1_000_000
+  // Presence in OpenRouter is availability evidence, not quality evidence.
+  // Only an actual benchmark index/rank may outrank connector-owned quality.
+  const benchmarkedExternally = externalQuality > 0 ? 1 : 0;
+  if (tier === 'high') return benchmarkedExternally * 1_000_000 + externalQuality * 1_000 + quality * 10;
+  if (tier === 'medium') return benchmarkedExternally * 1_000_000 + externalQuality * 500 + quality * 20 - (price ?? 0) * 5;
+  return Number(model.free) * 2_000_000 + benchmarkedExternally * 1_000_000
     + externalQuality * 50 + quality * 20 - (price ?? 0) * 100;
 }
 

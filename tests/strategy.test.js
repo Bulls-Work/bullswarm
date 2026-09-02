@@ -220,3 +220,25 @@ test('OpenRouter ranking favors current GPT generation over a stale local qualit
   });
   assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'gpt-5.6-sol' });
 });
+
+test('an unbenchmarked OpenRouter listing does not masquerade as quality evidence', () => {
+  const connector = {
+    name: 'codex', lanes: ['analyze'], capabilities: ['strong-analysis', 'workflow-planning'],
+  };
+  const report = buildStrategy({
+    connectors: { codex: connector },
+    pools: [{ name: 'codex', connector, enabled: true, pace: 0, costRank: 2 }],
+    state: {},
+    discoveries: { codex: { models: [
+      { id: 'proven-model', tier: 'high', qualityRank: 8 },
+      { id: 'gpt-listed-only', tier: 'high', qualityRank: 2 },
+    ] } },
+    openRouterCatalog: { models: {
+      'openai/gpt-listed-only': {
+        id: 'openai/gpt-listed-only', indices: {}, ranks: {},
+        pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      },
+    } },
+  });
+  assert.deepEqual(report.providerSuggestions.codex.high.recommended, { model: 'proven-model' });
+});

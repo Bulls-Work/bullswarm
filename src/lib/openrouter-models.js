@@ -23,11 +23,12 @@ function perMillion(value) {
 }
 
 function pricing(value = {}) {
+  const safe = object(value) ? value : {};
   return {
-    inputUsdPerMillion: perMillion(value.prompt),
-    cacheReadUsdPerMillion: perMillion(value.input_cache_read),
-    cacheWriteUsdPerMillion: perMillion(value.input_cache_write),
-    outputUsdPerMillion: perMillion(value.completion),
+    inputUsdPerMillion: perMillion(safe.prompt),
+    cacheReadUsdPerMillion: perMillion(safe.input_cache_read),
+    cacheWriteUsdPerMillion: perMillion(safe.input_cache_write),
+    outputUsdPerMillion: perMillion(safe.completion),
   };
 }
 
@@ -71,8 +72,15 @@ export function buildOpenRouterDatapack({ benchmarks, models, capturedAt = new D
     };
   }
   for (const record of benchmarks.data) {
-    const id = String(record.model_permaslug ?? '').trim().toLowerCase();
-    if (!id) continue;
+    const permaslug = String(record.model_permaslug ?? '').trim().toLowerCase();
+    if (!permaslug) continue;
+    // Benchmark rows identify dated model variants (for example
+    // anthropic/claude-opus-5-20260723), while the models endpoint and local
+    // CLIs expose the stable ID. Attach a variant to the longest matching
+    // stable ID so newer families cannot be mistaken for a shorter prefix.
+    const id = byId[permaslug] ? permaslug : Object.keys(byId)
+      .filter((candidate) => permaslug.startsWith(`${candidate}-`))
+      .sort((a, b) => b.length - a.length || a.localeCompare(b))[0] ?? permaslug;
     byId[id] ??= {
       id,
       name: record.display_name ?? id,
@@ -83,11 +91,14 @@ export function buildOpenRouterDatapack({ benchmarks, models, capturedAt = new D
       pricingSource: OPENROUTER_BENCHMARKS_API,
     };
     if (record.source === 'artificial-analysis') {
-      byId[id].indices = {
+      const indices = {
         agentic: finite(record.agentic_index),
         coding: finite(record.coding_index),
         intelligence: finite(record.intelligence_index),
       };
+      const total = Object.values(indices).reduce((sum, value) => sum + (value ?? 0), 0);
+      const currentTotal = Object.values(byId[id].indices).reduce((sum, value) => sum + (value ?? 0), 0);
+      if (total > currentTotal) byId[id].indices = indices;
     }
   }
   for (const dimension of ['agentic', 'coding', 'intelligence']) {
