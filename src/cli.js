@@ -15,10 +15,13 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
-import { cmdStrategy, maybeRefreshStrategy } from './strategy-cli.js';
+import {
+  applyStrategyRecommendations, cmdStrategy, loadStrategyInventory, maybeRefreshStrategy,
+} from './strategy-cli.js';
+import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
-import { resolveDispatchModel } from './lib/strategy.js';
+import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { cmdDelegate } from './delegate.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
 
@@ -33,6 +36,7 @@ export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
   'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
+  'wizard',
 ]);
 
 export function parseArgs(argv) {
@@ -164,7 +168,11 @@ async function cmdRun(opts) {
     ...pool,
     modelPolicy: resolveDispatchModel(pool.connector ?? pool, effortTier, {
       assignment,
-      excludedModels: state.strategy?.excludedModels ?? [],
+      excludedModels: [
+        ...(state.strategy?.excludedModels ?? []),
+        ...disabledModelsForPool(state.strategy, pool.name),
+      ],
+      allowedModels: selectedModelsForTier(state.strategy, pool.name, effortTier),
     }),
   })).filter((pool) => pool.modelPolicy.eligible);
 
@@ -346,7 +354,7 @@ async function cmdSetup(opts) {
     let strategy = null;
     if (opts.yes && opts.strategy) {
       const { refreshStrategy, applyStrategyRecommendations } = await import('./strategy-cli.js');
-      const report = await refreshStrategy(getBullswarmDir());
+      const report = await refreshStrategy(getBullswarmDir(), { useOpenRouter: true });
       strategy = applyStrategyRecommendations(getBullswarmDir(), report);
     }
     let integration = null;
@@ -365,6 +373,20 @@ async function cmdSetup(opts) {
       if (integration) console.log('agent integration: installed (inspect with bullswarm integrate status)');
     }
     return 0;
+  }
+  if (!opts.json && !opts.wizard && !opts.integrate) {
+    return startStrategyDashboard({
+      bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
+      title: 'Bullswarm setup',
+      promptForAnalysis: true,
+      loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(getBullswarmDir(), {
+        force, onProgress, useOpenRouter: analyze,
+      }),
+      applyRecommendations: () => {
+        const report = loadState(getBullswarmDir()).strategy?.lastReport;
+        if (report) applyStrategyRecommendations(getBullswarmDir(), report);
+      },
+    });
   }
   return runWizard(getBullswarmDir(), opts);
 }
@@ -452,7 +474,11 @@ export async function main(argv) {
     && argv[0] === 'workflow'
     && process.stdin.isTTY
     && process.stdout.isTTY;
-  const help = bareWorkflowDashboard ? null : helpForArgs(argv);
+  const bareStrategyDashboard = argv.length === 1
+    && argv[0] === 'strategy'
+    && process.stdin.isTTY
+    && process.stdout.isTTY;
+  const help = bareWorkflowDashboard || bareStrategyDashboard ? null : helpForArgs(argv);
   if (help) {
     console.log(help);
     return 0;
@@ -488,7 +514,9 @@ export async function main(argv) {
     case 'runs':
       return cmdWorkflow(['runs', ...rest]);
     case 'strategy':
-      return cmdStrategy(rest, { bullswarmDir: getBullswarmDir() });
+      return cmdStrategy(bareStrategyDashboard ? ['tui'] : rest, {
+        bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
+      });
     case 'integrate':
       return cmdIntegrate(opts);
     case 'version':

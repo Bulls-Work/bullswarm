@@ -70,9 +70,10 @@ re-delegating and creating recursive swarms.
 
 ```bash
 bullswarm          # first run: interactive setup wizard
-bullswarm setup    # re-run or repair
+bullswarm setup    # interactive provider/model configuration
+bullswarm setup --wizard  # broader worktree + integration questionnaire
 bullswarm pools    # meter state, pace position, quarantine status
-bullswarm strategy refresh --apply --yes  # approve capability-aware tier autopilot
+bullswarm strategy  # explicit alias for the same routing control center
 bullswarm delegate --cwd ~/some-repo --prompt "Explain the parser"            # one agent
 bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and independently verify"  # workflow
 bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # bounded classification + decision/plan; no work dispatch
@@ -92,7 +93,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
-| `strategy` | Discover models, record subscription value, recommend or assign high/medium/low effort routes |
+| `strategy` | Interactive provider/model control center with live high/medium/low route previews and an agent-facing JSON API |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
 | `runs` | Short alias for `workflow runs`, including list, show, result, delete, and cleanup operations. |
@@ -132,6 +133,15 @@ Bullswarm can inventory the models exposed by installed agent CLIs and combine
 connector-declared, dated pricing/benchmark metadata with live quota surplus:
 
 ```bash
+bullswarm setup                            # TTY: interactive control center
+bullswarm strategy                         # explicit routing-focused alias
+bullswarm strategy inventory --json        # agent-readable detection + policy + routes
+bullswarm strategy routes --json           # compact effective choices
+bullswarm strategy set-provider codex off --yes
+bullswarm strategy set-model opencode2 relay/gpt-5.6-luna \
+  --tiers high,medium,low --yes
+bullswarm strategy configure --file strategy.json --yes  # atomic agent-authored policy
+bullswarm strategy reset-tier low --yes     # restore one tier to automatic
 bullswarm strategy refresh
 bullswarm strategy show --json
 bullswarm strategy apply --yes --refresh-hours 24
@@ -141,6 +151,51 @@ bullswarm strategy set-subscription command-code \
 bullswarm strategy assign high --pool claude-code --model claude-opus-4-6
 bullswarm strategy exclude-model claude-fable-5
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
+```
+
+Setup first asks whether to analyze live usage and recommend routes or open the
+current configuration for manual editing. Analysis shows a spinner plus
+per-provider usage progress, then presents the proposed defaults before making
+any routing change. Press `Y` to apply them or `N` to retain the current policy.
+The analysis selects at most one default model for each provider and effort
+tier. It uses OpenRouter's agentic, coding, and intelligence indices as quality
+signals and API-equivalent pricing as the budget signal. A repository-owned
+GitHub Actions job calls the authenticated OpenRouter APIs once per day and
+replaces a public, validated `openrouter-benchmarks.json` asset on the rolling
+`benchmark-data-latest` GitHub Release. Installed CLIs download only that public
+file and never need or receive an OpenRouter key.
+The sources are OpenRouter's [benchmarks API](https://openrouter.ai/docs/api/api-reference/benchmarks/list-benchmarks)
+and [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
+The CLI caches the datapack under `~/.bullswarm/cache/`; network failure falls
+back to a stale or bundled datapack, then connector metadata, without blocking
+setup.
+
+The TUI lists every detected provider/account separately so its toggle matches
+its own quota meter. Enter drills into that provider's detected models. In the
+model matrix, `Up`/`Down` selects a model, `Left`/`Right` moves a visibly
+highlighted cell across High, Medium, and Low, and `Enter` toggles that cell.
+Type to filter model names; assigned models sort above unassigned or disabled
+models. Select `Finish setup` and press `Enter`, or press `F` directly, to leave
+the control center. The effective-route panel is recomputed from the same policy
+and live surplus used by real dispatch. Provider and model edits affect new
+direct runs and workflow dispatches.
+
+An external AI agent should first read `strategy inventory --json`, then use
+the validated `set-provider` / `set-model` commands or write one JSON document
+for `strategy configure --file`. Unknown pools and models are rejected before
+state is saved. Existing automatic choices are preserved when a human begins
+curating a tier; a model-level `off` never empties unrelated tiers.
+
+```json
+{
+  "providers": { "codex": false, "opencode2": true },
+  "models": {
+    "opencode2": {
+      "relay/gpt-5.6-sol": ["high"],
+      "relay/gpt-5.6-luna": ["medium", "low"]
+    }
+  }
+}
 ```
 
 Interactive setup asks whether to enable strategy autopilot; non-interactive

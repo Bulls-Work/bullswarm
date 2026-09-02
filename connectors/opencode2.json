@@ -33,7 +33,9 @@
   "modelDiscovery": { "cmd": ["opencode", "models"], "parse": "lines", "includePattern": "^[^\\s]+/[^\\s]+$", "timeoutMs": 20000, "maxModels": 250 },
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
   "modelProfiles": [
-    { "match": "(?:fable|opus|gpt-5\\.6-sol|gpt-5\\.5$)", "tier": "high", "qualityRank": 5 },
+    { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false },
+    { "match": "gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "autoRecommend": true },
+    { "match": "(?:opus|gpt-5\\.5$)", "tier": "high", "qualityRank": 5 },
     { "match": "(?:sonnet|terra|gpt-5\\.4$|deepseek-v4)", "tier": "medium", "qualityRank": 4 },
     { "match": "(?:haiku|luna|(?:^|[/.-])mini(?:$|[/.-])|flash|free)", "tier": "low", "qualityRank": 2 }
   ],

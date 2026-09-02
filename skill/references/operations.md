@@ -70,12 +70,17 @@ Inspect current capability and quota evidence with:
 ```bash
 bullswarm workflow capabilities --json
 bullswarm pools --json
-bullswarm strategy show --json
+bullswarm strategy inventory --json
+bullswarm strategy routes --json
 ```
 
 Automatic routing chooses the most-behind capable eligible pool, honors burst
 gates and quarantine, and applies only explicitly approved model assignments
-and exclusions. Never weaken those controls in a prompt.
+and exclusions. Humans can use bare `bullswarm strategy` to toggle providers
+and multi-select high/medium/low per model. Agents should consume the inventory
+and apply validated changes with `strategy set-provider`, `strategy set-model`,
+or one atomic `strategy configure --file <json> --yes`. Never weaken those
+controls in a prompt.
 
 ## Recovery and stopping rules
 
