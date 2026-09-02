@@ -256,6 +256,17 @@ updates the requirement ledger from schema-valid evidence. Only real
 consolidated gaps re-enter the planner. There are no formal reviewer or repair
 roles and no automatic semantic repair/reverify loop.
 
+Lane and effort are separate decisions for every proposed action. `analyze` is
+read-only investigation, judgment, or evidence; `build` is contextual product,
+test, or documentation mutation; `chore` is deterministic mechanical mutation.
+The kernel rejects evidence outside `analyze`, file ownership inside `analyze`,
+and any `chore` above low effort. Low is for fixed-procedure checks and edits,
+medium is the default for ordinary bounded work, and high is reserved for
+architecture, ambiguous tradeoffs, cross-cutting integration, or genuinely
+adversarial acceptance judgment. Merely being an analysis/evidence action or
+part of a difficult goal never promotes an action to high. The selected effort
+then resolves through the High/Medium/Low routes configured by `bullswarm setup`.
+
 The planner does not author phases or declare success/failure. The kernel
 derives stable presentation stages for the TUI and computes the final V2
 result. Old autonomous run directories are not migrated or resumed;

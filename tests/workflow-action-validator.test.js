@@ -123,3 +123,30 @@ test('rejects planner-owned output contracts in evidence prompts before dispatch
     2,
   );
 });
+
+test('enforces structural lane and effort invariants before dispatch', () => {
+  assert.throws(
+    () => validateActionProgram(program([work({ lane: 'analyze' }), evidence()])),
+    (error) => error.issues.some((issue) => issue.includes('analyze actions must not own workspace files')),
+  );
+  assert.throws(
+    () => validateActionProgram(program([work(), evidence({ lane: 'build' })])),
+    (error) => error.issues.some((issue) => issue.includes('evidence actions must use lane analyze')),
+  );
+  assert.throws(
+    () => validateActionProgram(program([work({ lane: 'chore', effort: 'medium' }), evidence()])),
+    (error) => error.issues.some((issue) => issue.includes('chore actions are deterministic mechanical work and must use low effort')),
+  );
+  assert.equal(
+    validateActionProgram(program([work({ lane: 'chore', effort: 'low' }), evidence()]), { mandatoryRequirements: ['result'] }).actions[0].lane,
+    'chore',
+  );
+});
+
+test('can replay a historical program without retroactively applying routing policy', () => {
+  const historical = validateActionProgram(
+    program([work({ lane: 'chore', effort: 'medium' }), evidence()]),
+    { mandatoryRequirements: ['result'], enforceRoutingPolicy: false },
+  );
+  assert.equal(historical.actions[0].effort, 'medium');
+});

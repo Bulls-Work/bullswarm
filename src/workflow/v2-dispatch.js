@@ -4,8 +4,8 @@ import { pickPool, isQuarantined } from '../lib/route.js';
 import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, saveState } from '../lib/state.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { watchOnce } from '../lib/watch.js';
+import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
-const EFFORT_BY_LANE = Object.freeze({ analyze: 'high', build: 'medium', chore: 'low' });
 const MECHANICAL_KINDS = new Set(['auth', 'provider', 'process', 'interrupted', 'schema']);
 
 function clone(value) {
@@ -154,7 +154,7 @@ export async function dispatchV2Action({
   const saveCoreState = dependencies.saveState ?? saveState;
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
-  const effort = action.effort ?? EFFORT_BY_LANE[action.lane] ?? 'low';
+  const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   let candidates = preparePools(pools, action, effort, {
     avoidPools, preferredModel, strictPool, now: now(),
   });
