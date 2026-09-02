@@ -95,7 +95,7 @@ export async function refreshStrategy(bullswarmDir, {
   const discoveries = discoverAllModels(connectors, executor ? { executor } : {});
   let externalCatalog = openRouterCatalog;
   if (useOpenRouter && !externalCatalog) {
-    onProgress('Reading OpenRouter coding, agentic, and pricing data');
+    onProgress('Downloading the public Bullswarm benchmark datapack');
     externalCatalog = await openRouterLoader({ bullswarmDir, force: true });
   }
   onProgress('Comparing capability, quality, budget, and quota');

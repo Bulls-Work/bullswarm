@@ -158,13 +158,17 @@ current configuration for manual editing. Analysis shows a spinner plus
 per-provider usage progress, then presents the proposed defaults before making
 any routing change. Press `Y` to apply them or `N` to retain the current policy.
 The analysis selects at most one default model for each provider and effort
-tier. It uses OpenRouter's programming-category agentic, coding, and
-intelligence ranks as quality signals and its per-token API pricing as the
-budget signal; popularity is only a weak adoption tie-breaker. The sources are
-OpenRouter's [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
-and [rankings](https://openrouter.ai/rankings). OpenRouter data is cached under
-`~/.bullswarm/cache/`, and unavailable data falls back to the connector's dated
-metadata instead of blocking setup.
+tier. It uses OpenRouter's agentic, coding, and intelligence indices as quality
+signals and API-equivalent pricing as the budget signal. A repository-owned
+GitHub Actions job calls the authenticated OpenRouter APIs once per day and
+replaces a public, validated `openrouter-benchmarks.json` asset on the rolling
+`benchmark-data-latest` GitHub Release. Installed CLIs download only that public
+file and never need or receive an OpenRouter key.
+The sources are OpenRouter's [benchmarks API](https://openrouter.ai/docs/api/api-reference/benchmarks/list-benchmarks)
+and [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
+The CLI caches the datapack under `~/.bullswarm/cache/`; network failure falls
+back to a stale or bundled datapack, then connector metadata, without blocking
+setup.
 
 The TUI lists every detected provider/account separately so its toggle matches
 its own quota meter. Enter drills into that provider's detected models. In the

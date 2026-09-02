@@ -199,17 +199,21 @@ export function renderAnalysisProgress({
 function recommendationReason(candidate) {
   const external = candidate?.openRouter;
   if (!external) return 'local provider capability and cost profile';
+  const indices = external.indices ?? {};
   const ranks = external.ranks ?? {};
-  const rankParts = [
-    Number.isFinite(Number(ranks.agentic)) ? `agentic #${ranks.agentic}` : null,
-    Number.isFinite(Number(ranks.coding)) ? `coding #${ranks.coding}` : null,
-    Number.isFinite(Number(ranks.intelligence)) ? `intelligence #${ranks.intelligence}` : null,
+  const qualityParts = [
+    Number.isFinite(Number(indices.agentic)) ? `agentic ${indices.agentic}`
+      : Number.isFinite(Number(ranks.agentic)) ? `agentic #${ranks.agentic}` : null,
+    Number.isFinite(Number(indices.coding)) ? `coding ${indices.coding}`
+      : Number.isFinite(Number(ranks.coding)) ? `coding #${ranks.coding}` : null,
+    Number.isFinite(Number(indices.intelligence)) ? `intelligence ${indices.intelligence}`
+      : Number.isFinite(Number(ranks.intelligence)) ? `intelligence #${ranks.intelligence}` : null,
   ].filter(Boolean);
   const input = external.pricing?.inputUsdPerMillion;
   const output = external.pricing?.outputUsdPerMillion;
   const price = Number.isFinite(Number(input)) && Number.isFinite(Number(output))
     ? `$${input}/$${output} per 1M input/output tokens` : null;
-  return [...rankParts, price].filter(Boolean).join(' · ') || 'listed in OpenRouter programming models';
+  return [...qualityParts, price].filter(Boolean).join(' · ') || 'listed in the Bullswarm benchmark datapack';
 }
 
 export function recommendationLines(inventory) {
@@ -241,8 +245,8 @@ export function renderRecommendationReview(inventory, {
   title = 'Bullswarm setup', width = 100, height = 30, offset = 0,
 } = {}) {
   const source = inventory.openRouter?.error
-    ? `OpenRouter unavailable (${inventory.openRouter.error}); local metadata was used.`
-    : 'Quality uses OpenRouter agentic, coding, and intelligence ranks; API price guides budget.';
+    ? `Benchmark datapack unavailable (${inventory.openRouter.error}); local metadata was used.`
+    : 'Quality uses OpenRouter agentic, coding, and intelligence indices; API price guides budget.';
   const details = recommendationLines(inventory);
   const bodyHeight = Math.max(3, height - 9);
   const start = Math.max(0, Math.min(offset, Math.max(0, details.length - bodyHeight)));
@@ -252,7 +256,7 @@ export function renderRecommendationReview(inventory, {
     '',
     'Recommended defaults · one model per provider and tier',
     source,
-    'Popularity is only a weak tie-breaker, not a quality score.',
+    `Datapack captured ${inventory.openRouter?.capturedAt ?? 'at an unknown time'}; the CLI uses no OpenRouter key.`,
     '',
     ...(start > 0 ? [`↑ ${start} earlier lines`] : []),
     ...shown,
