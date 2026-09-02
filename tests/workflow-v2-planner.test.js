@@ -145,6 +145,13 @@ test('context and prompt contain compact gaps and forbid planner authority', () 
   assert.match(prompt, /Do not turn that unit into tests-only regression work/i);
   assert.deepEqual(initial.scoutUnits, ['write-report']);
   assert.match(prompt, /kernel exclusively supplies and validates the evidence output contract/i);
+  assert.match(prompt, /Choose lane from the action itself/i);
+  assert.match(prompt, /Medium is the default/i);
+  assert.match(prompt, /High is exceptional/i);
+  assert.match(prompt, /Do not choose high merely because an action uses analyze/i);
+  assert.match(prompt, /exact file comparison or formatting update = low/i);
+  assert.match(prompt, /ordinary scoped feature plus focused test = medium/i);
+  assert.match(prompt, /choosing an architecture across subsystems = high/i);
   assert.match(prompt, /reviewer, verify, repair/);
   assert.ok(!prompt.includes('actionLedger'));
 });

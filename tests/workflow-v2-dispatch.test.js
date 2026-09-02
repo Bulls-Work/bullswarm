@@ -124,6 +124,17 @@ test('persisted effort assignment wins while its pool remains eligible', async (
   assert.equal(result.attempts[0].pool, 'luna-2');
 });
 
+test('defensive analyze fallback is medium rather than silently escalating to high', async () => {
+  const h = harness([good]);
+  const result = await dispatchV2Action({
+    action: { id: 'inspect-work', lane: 'analyze' },
+    taskText: 'inspect it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].routing.effort, 'medium');
+});
+
 test('workflow dispatch honors the interactive strategy model allow-list', async () => {
   const h = harness([good]);
   const blocked = connector('luna-1', {

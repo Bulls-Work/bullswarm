@@ -5,6 +5,11 @@ export const ACTION_PROGRAM_SCHEMA_VERSION = 'bullswarm.workflow.program.v2';
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const LANES = new Set(['analyze', 'build', 'chore']);
 const EFFORTS = new Set(['high', 'medium', 'low']);
+export const DEFAULT_EFFORT_BY_LANE = Object.freeze({
+  analyze: 'medium',
+  build: 'medium',
+  chore: 'low',
+});
 const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
@@ -241,6 +246,7 @@ function maxParallelism(actions, byId) {
  */
 export function validateActionProgram(program, runtime = {}) {
   const issues = [];
+  const enforceRoutingPolicy = runtime.enforceRoutingPolicy !== false;
   if (!isObject(program)) throw new ActionValidationError(['program must be an object']);
   for (const key of Object.keys(program)) if (!PROGRAM_FIELDS.has(key)) issues.push(`program.${key} is not allowed`);
   if (program.schemaVersion !== ACTION_PROGRAM_SCHEMA_VERSION) {
@@ -284,6 +290,15 @@ export function validateActionProgram(program, runtime = {}) {
     const ownedFiles = normalizeOwnedFiles(action.ownedFiles, `${at}.ownedFiles`, issues);
     if (!LANES.has(action.lane)) issues.push(`${at}.lane must be analyze|build|chore`);
     if (!EFFORTS.has(action.effort)) issues.push(`${at}.effort must be high|medium|low`);
+    if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze') {
+      issues.push(`${at} evidence actions must use lane analyze`);
+    }
+    if (enforceRoutingPolicy && ownedFiles.length && action.lane === 'analyze') {
+      issues.push(`${at} analyze actions must not own workspace files; use build or chore for mutations`);
+    }
+    if (enforceRoutingPolicy && action.lane === 'chore' && action.effort !== 'low') {
+      issues.push(`${at} chore actions are deterministic mechanical work and must use low effort`);
+    }
     if (evidenceFor.length && (affects.length || ownedFiles.length)) {
       issues.push(`${at} evidence actions must have empty affects and ownedFiles`);
     }

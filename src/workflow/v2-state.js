@@ -380,6 +380,10 @@ function validateProgram(program, state) {
         maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
         enforceMaxActions: false,
         enforceMaxParallel: false,
+        // Durable runs predate the current routing policy. Replay their exact
+        // accepted program; strict lane/effort policy applies to new planner
+        // candidates before dispatch, not historical display or resume.
+        enforceRoutingPolicy: false,
         },
       );
       for (const action of actions) {
