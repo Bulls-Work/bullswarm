@@ -195,6 +195,7 @@ export function discoverConnectorModels(connector, { executor = defaultExecutor 
       pricing: profile?.pricing ?? null,
       pricingSource: profile?.pricingSource ?? null,
       pricingUpdatedAt: profile?.pricingUpdatedAt ?? null,
+      autoRecommend: profile?.autoRecommend !== false,
       free: profile?.free === true || /(?:^|[/:-])free(?:$|[/:-])/i.test(id),
       configured: id === configured,
     };
@@ -311,6 +312,16 @@ function enrichDiscoveries(discoveries, openRouterCatalog) {
   }]));
 }
 
+function recommendationModels(pool, discovery) {
+  const models = discovery?.models ?? [];
+  const connector = pool.connector ?? pool;
+  const providerId = connector.profile?.providerId ?? null;
+  if (!providerId) return models;
+  const prefix = `${providerId}/`;
+  const configured = configuredModel(connector);
+  return models.filter((model) => model.id.startsWith(prefix) || model.id === configured);
+}
+
 export const TIER_CONTEXTS = {
   high: {
     lane: 'analyze',
@@ -351,8 +362,10 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
     for (const tier of tiers) {
       const context = TIER_CONTEXTS[tier];
       if (pool.enabled === false || pool.quarantine || pool.burstGate || !supportsContext(pool, context)) continue;
-      const candidates = (rankedDiscoveries[pool.name]?.models ?? [])
-        .filter((model) => model.tier === tier && !disabled.has(model.id.toLowerCase()))
+      const candidates = recommendationModels(pool, rankedDiscoveries[pool.name])
+        .filter((model) => model.tier === tier
+          && model.autoRecommend !== false
+          && !disabled.has(model.id.toLowerCase()))
         .sort((a, b) => b.recommendationScore - a.recommendationScore || a.id.localeCompare(b.id));
       providerSuggestions[pool.name][tier] = {
         recommended: candidates[0] ? { model: candidates[0].id } : null,
@@ -372,8 +385,9 @@ export function buildStrategy({ connectors, pools, state, discoveries, openRoute
       if (pool.enabled === false || pool.quarantine || pool.burstGate) continue;
       if (!supportsContext(pool, context)) continue;
       const discovery = rankedDiscoveries[pool.name];
-      for (const model of discovery?.models ?? []) {
+      for (const model of recommendationModels(pool, discovery)) {
         if (model.tier !== tier) continue;
+        if (model.autoRecommend === false) continue;
         if (isModelExcluded(model.id, state.strategy?.excludedModels)) continue;
         candidates.push({ pool, model, score: 0 });
       }
