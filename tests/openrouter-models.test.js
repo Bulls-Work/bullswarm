@@ -18,16 +18,20 @@ function upstream() {
     benchmarks: {
       data: [
         {
-          source: 'artificial-analysis', model_permaslug: 'anthropic/claude-opus-5',
+          source: 'artificial-analysis', model_permaslug: 'anthropic/claude-opus-5-20260723',
           display_name: 'Claude Opus 5', agentic_index: 74, coding_index: 78, intelligence_index: 81,
         },
         {
-          source: 'artificial-analysis', model_permaslug: 'openai/gpt-5.6-sol',
+          source: 'artificial-analysis', model_permaslug: 'openai/gpt-5.6-sol-20260709',
           display_name: 'GPT-5.6 Sol', agentic_index: 72, coding_index: 82, intelligence_index: 79,
         },
         {
           source: 'openrouter', model_permaslug: 'openai/gpt-5.6-sol',
           benchmark_type: 'gpqa_diamond', accuracy: 0.8, total_tasks: 300,
+        },
+        {
+          source: 'openrouter', model_permaslug: 'example/no-listed-price',
+          display_name: 'No Listed Price', pricing: null,
         },
       ],
       meta: { as_of: '2026-09-02T00:00:00Z', version: 'v1' },
@@ -68,7 +72,13 @@ test('datapack combines benchmark indices, derived ranks, pricing, and all publi
     agentic: 1, coding: 2, intelligence: 1,
   });
   assert.equal(catalog.models['openai/gpt-5.6-sol'].ranks.coding, 1);
-  assert.equal(catalog.benchmarkRecords.length, 3);
+  assert.deepEqual(catalog.models['example/no-listed-price'].pricing, {
+    inputUsdPerMillion: null,
+    cacheReadUsdPerMillion: null,
+    cacheWriteUsdPerMillion: null,
+    outputUsdPerMillion: null,
+  });
+  assert.equal(catalog.benchmarkRecords.length, 4);
   assert.equal(validateOpenRouterDatapack(catalog), catalog);
 });
 
