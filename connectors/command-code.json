@@ -50,7 +50,7 @@
     "chore"
   ],
   "capabilities": ["code-reading", "file-editing"],
-  "modelDiscovery": { "cmd": ["command-code", "--list-models"], "parse": "columns", "ignorePattern": "^(Available|Open Source|Anthropic|OpenAI|Google|Sakana|Meta|xAI|Pass|Docs)", "timeoutMs": 20000, "maxModels": 150 },
+  "modelDiscovery": { "cmd": ["command-code", "--list-models"], "parse": "columns", "ignorePattern": "^(Available|Open Source$|Anthropic$|OpenAI$|Google$|Sakana$|Meta$|xAI$|Pass|cmd|Docs)", "timeoutMs": 20000, "maxModels": 150 },
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
   "modelProfiles": [
     { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
