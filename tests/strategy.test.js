@@ -9,6 +9,9 @@ test('connector-declared parsing handles columns, bullets, and plain lines', () 
   assert.deepEqual(parseDiscoveredModels('Header\nfoo/bar  description\ngpt-5  text\n', {
     parse: 'columns', ignorePattern: '^Header$',
   }), ['foo/bar', 'gpt-5']);
+  assert.deepEqual(parseDiscoveredModels('Meta\nmeta/muse-spark-1.3  multimodal\nGoogle\ngoogle/gemini-3.8-flash  fast\n', {
+    parse: 'columns', ignorePattern: '^(Available|Open Source$|Anthropic$|OpenAI$|Google$|Sakana$|Meta$|xAI$|Pass|cmd|Docs)',
+  }), ['meta/muse-spark-1.3', 'google/gemini-3.8-flash']);
   assert.deepEqual(parseDiscoveredModels('* grok-4.6 (default)\n- grok-4.5\nnoise', {
     parse: 'bullets',
   }), ['grok-4.6', 'grok-4.5']);
