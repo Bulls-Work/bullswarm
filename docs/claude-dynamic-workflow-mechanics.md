@@ -387,7 +387,12 @@ them.
 - **Retry policy in the graph.** Claude writes repair loops as code. A per-
   action `retryPolicy` proposed by the planner would remove one planner turn per
   transient failure; not yet built.
-- **Identical control plane.** bullswarm's orchestrator remains an LLM per
-  checkpoint because the user supplies only a goal. The convergence target is
-  therefore "few planning turns, full width between them", measured as
-  `plannerSec / wallSec` and `maxConcurrentAttempts` in the experiment report.
+- **Identical control plane — adopted 2026-09-06 as caller-planner mode.**
+  Until 0.23.x bullswarm's orchestrator was always a dispatched LLM process
+  because the user supplies only a goal. 0.24.0 adds the second shape Claude
+  Code uses: the *calling* agent authors the program (`workflow goal
+  --program`, `workflow plan contract|show|submit`) and the kernel executes it,
+  pausing durably at a real boundary instead of dispatching a planner. The
+  dispatched planner remains the default for callers that cannot hold the
+  repository in context. Measured comparison:
+  `docs/experiments/2026-09-06-caller-planner-evaluation.md`.

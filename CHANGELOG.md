@@ -1,5 +1,71 @@
 # bullswarm changelog
 
+## 0.24.0 — the calling agent can be the Workflow Planner
+
+- `bullswarm workflow goal --program <file.json>` (or `--planner caller`)
+  makes the invoking agent the Workflow Planner. The kernel validates the
+  caller-authored V2 program against the exact requirement ledger before
+  anything launches, executes it with zero planner and (by default) zero scout
+  dispatches, and keeps every kernel-owned guarantee: quota routing, isolated
+  worktrees and changed-path ownership, independent evidence, the requirement
+  ledger, completion, and the stable result envelope. This is Bullswarm's
+  equivalent of Claude Code's `Workflow` tool: the frontier model writes the
+  program once and is consulted again only at a real planning boundary.
+
+- New `bullswarm workflow plan` surface: `plan contract "<goal>"` prints the
+  requirement IDs the kernel will derive, the planning rules, the generic action
+  fields, the validation it enforces, and a worked example; `plan show <run>`
+  prints the durable planner request a paused run left behind (boundary,
+  context, consolidated gaps, known actions); `plan submit <run> --program
+  <file>` (or `--exhausted --reason <text>`) validates the response against the
+  exact durable state, records it as the next program revision with the same
+  counters a dispatched planner turn would produce (planner turn, expansion
+  round, program revision) plus a `planner.finished` event tagged
+  `source: "caller"` (no `planner.started` and no planner attempt is recorded,
+  because nothing was dispatched), and relaunches the kernel.
+
+- Caller-planner pauses are authoritative and lossless. A resume without a
+  submission re-pauses on the same boundary and turn, even when steering was
+  queued meanwhile: the request is refreshed to list the pending steering
+  (`pendingSteering`), `plan show` does the same refresh, and a submission
+  marks exactly the listed steering delivered; steering queued after that stays
+  pending and opens a steering boundary after the resume. A cancellation
+  requested while paused refuses every submission and `plan show`, `watch`, and
+  the TUI point at the one `workflow goal --resume` that finalizes the
+  cancelled result; finalizing always clears the pause record, and the state
+  validator rejects a terminal run that still claims to be waiting. A caller
+  program supplied at launch is kept in the run directory until applied, so an
+  interruption during an opt-in scout does not lose it. Bare value flags
+  (`--program` with no file) are usage errors instead of a silent
+  dispatched-mode launch, and `plan submit` checks the goal directory before
+  touching state.
+
+- Caller-planner runs pause durably instead of dispatching: at a planning
+  boundary the kernel writes `planner-request-turn-N.json`, records
+  `planner.awaiting` in state, emits `planner.awaiting_caller`, sets the run to
+  `waiting`, and exits. `workflow watch` ends at that pause (exit 0) and prints
+  the `plan show` command; `runs result` and the TUI Next line explain the
+  pause; resuming without a submission re-pauses on the same request. An
+  invalid initial program supplied through `--program` at launch is rejected
+  synchronously; one that fails only against live state pauses with a
+  correction request instead of dispatching anything.
+
+- The dispatched planner prompt and the caller-facing contract now render from
+  one shared rulebook (`v2PlannerContractRules`), so the two planning modes
+  cannot drift. A durable `exhausted` planner decision now survives resume: the
+  kernel finalizes the partial result instead of reopening the boundary.
+
+- `workflow capabilities` reports `plannerModes` and the `callerPlanner`
+  feature; the `bullswarm` skill and operations reference document the
+  caller-planner loop for frontier agents.
+
+- Fixed: a one-line goal with inline numbered clauses (`"1. Fix the parser.
+  2. Update the docs."`) produced a single requirement; only the
+  newline-separated form split. Both forms now yield one requirement per
+  clause, so `plan contract` advertises the IDs the run will enforce. Inline
+  markers are honored only when the list starts at 1, so prose such as
+  "version 2. Then" is not split.
+
 ## 0.22.1 — unified workflow dashboard navigation
 
 - The workflow dashboard now keeps V2 runs in the unified list and timeline

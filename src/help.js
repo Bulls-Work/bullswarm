@@ -633,6 +633,7 @@ const workflowText = rich({
   argsTitle: 'Commands',
   args: [
     { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal through planning, generic actions, evidence, and kernel completion' },
+    { name: 'plan ...', desc: 'act as the Workflow Planner yourself: read the planning contract, inspect a paused run\'s request, and submit a program' },
     { name: 'run <file-or-name>', desc: 'run an existing workflow file or saved draft' },
     { name: 'draft ...', desc: 'incrementally build a fixed workflow graph' },
     { name: 'validate <file-or-name>', desc: 'validate without executing' },
@@ -657,10 +658,12 @@ const workflowText = rich({
       + '~/.bullswarm/workflows/<runId>/; validate/inspect/list/capabilities/tui/watch/events are '
       + 'read-only (tui --cancel, steer, approval, and "runs delete" are the exceptions — see '
       + 'their own --help)',
+    'plan contract and plan show are read-only; plan submit writes the accepted program into the run and relaunches its kernel',
   ],
   examples: [
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
     { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd .', note: 'autonomous goal, launched independently' },
+    { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Verify it." --cwd . --program plan.json', note: 'caller-planner goal: you author the program, the kernel routes, verifies, and completes' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
   ],
   next: "bullswarm workflow <command> --help for that command's full arguments, options, and defaults.",
@@ -668,11 +671,13 @@ const workflowText = rich({
 
 const workflowGoalText = rich({
   usage: 'bullswarm workflow goal "<goal>" [--cwd <dir>] [--watch|--foreground] [--json] '
-    + '[--resume <shortId|runId>] [planning options]',
+    + '[--resume <shortId|runId>] [--planner dispatched|caller] [--program <file.json>] [planning options]',
   purpose: 'Run an autonomous V2 goal end to end. One resumable Workflow Planner proposes a '
     + 'bounded generic action program; the kernel validates and schedules it, agents produce work '
     + 'or requirement-scoped evidence, and the kernel alone computes the stable result. Launches '
-    + 'independently by default so the caller is not blocked.',
+    + 'independently by default so the caller is not blocked. With --program (or --planner caller) the '
+    + 'calling agent is the Workflow Planner: no planner process is dispatched, the kernel executes the '
+    + 'caller-authored program and pauses durably at any later planning boundary for `workflow plan submit`.',
   args: [
     { name: '"<goal>"', desc: 'the goal text, as one argument; not used (and not required) with --resume or the internal --request relaunch mode' },
   ],
@@ -687,6 +692,10 @@ const workflowGoalText = rich({
     { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--suggested-plan <text>', desc: 'persist a caller-imagined conceptual execution shape in intent for the planner to consider; it does not author or bypass the validated graph', default: 'none' },
+    { flag: '--planner <dispatched|caller>', desc: 'dispatched routes a Workflow Planner agent at every planning boundary; caller makes the invoking agent the planner: the kernel pauses with a durable planner request instead of dispatching, and never spends a planner turn', default: 'dispatched (caller when --program is given)' },
+    { flag: '--program <file.json>', desc: 'caller-authored initial program: a bullswarm.workflow.planner-response.v2 envelope or a bare bullswarm.workflow.program.v2 document; validated against the exact requirement ledger before anything launches, then executed without a planner or scout dispatch', default: 'none' },
+    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
+    { flag: '--scout', desc: 'in caller mode with --program, still run the kernel scout first (its units become advisory context, never a rejection rule)', default: 'off when --program is given; on otherwise' },
     { flag: '--max-agents <n>', desc: 'soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
     { flag: '--max-expansion-rounds <n>', desc: 'soft planning target for consolidated gap-driven planner updates; essential gap closure may exceed it', default: '2' },
     { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
@@ -710,8 +719,112 @@ const workflowGoalText = rich({
   examples: [
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd .' },
     { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --strict-orchestrator codex --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
+    { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch', note: 'you are the planner: author plan.json from `workflow plan contract`, then the kernel routes, owns, verifies, and completes' },
   ],
-  next: 'bullswarm workflow watch <shortId> to follow progress, or bare bullswarm workflow for the interactive workflow home.',
+  next: 'bullswarm workflow watch <shortId> to follow progress, bullswarm workflow plan show <shortId> when a caller-planner run pauses, or bare bullswarm workflow for the interactive workflow home.',
+});
+
+// --- workflow plan ---------------------------------------------------------
+// The caller-as-planner surface. A capable calling agent (Claude Code, Codex,
+// any frontier model with the repository in context) authors the V2 program
+// directly instead of paying for a dispatched scout and planner. The kernel
+// keeps everything it owns: validation, routing, ownership, evidence, ledger,
+// completion, and the stable result envelope.
+
+const workflowPlanText = rich({
+  usage: 'bullswarm workflow plan <contract|show|submit> [options]',
+  purpose: 'Act as the Workflow Planner yourself. contract prints the exact planning contract '
+    + '(requirement IDs, rules, program schema, example) for a goal before any run exists; show prints '
+    + 'the durable planner request a paused caller-planner run left behind (context, gaps, rules); submit '
+    + 'validates a caller-authored program (or an exhausted decision) against that exact run state and '
+    + 'relaunches the kernel. Pair with workflow goal --program for the initial program.',
+  argsTitle: 'Commands',
+  args: [
+    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema, and example' },
+    { name: 'show <runId>', desc: 'print the pending planner request of a paused caller-planner run' },
+    { name: 'submit <runId>', desc: 'submit the next program (or --exhausted) to a paused caller-planner run and relaunch it' },
+  ],
+  options: [],
+  safety: [
+    'contract and show are read-only',
+    'submit validates before writing; a rejected program leaves the run state unchanged and exits 2',
+    'submit relaunches the paused kernel as a detached process by default (same as workflow goal)',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json' },
+    { cmd: 'bullswarm workflow plan show ab12cd --json' },
+    { cmd: 'bullswarm workflow plan submit ab12cd --program plan-2.json' },
+  ],
+  next: 'bullswarm workflow goal "<goal>" --program <file.json> to launch with your initial program; bullswarm workflow watch <runId> after a submit.',
+});
+
+const workflowPlanContractText = rich({
+  usage: 'bullswarm workflow plan contract "<goal>" [--cwd <dir>] [--json]',
+  purpose: 'Print everything a caller planner needs to author a valid initial program for a goal: '
+    + 'the requirement IDs the kernel will derive from the goal text (numbered clauses become '
+    + 'requirement-1..n), read-only constraints, the planning rules, the generic action fields, the '
+    + 'validation the kernel enforces, the response envelope, and one worked example.',
+  args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; numbering clauses 1. 2. 3. yields one requirement per clause' }],
+  options: [
+    { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },
+    { flag: '--json', desc: 'accepted for consistency; the contract is always printed as JSON', default: 'JSON' },
+    { flag: '--max-agents <n>', desc: 'advisory dispatch target recorded in the contract settings', default: '30' },
+    { flag: '--max-actions <n>', desc: 'advisory action target recorded in the contract settings', default: '100' },
+    { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
+    { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
+    { flag: '--retry-attempts <0..3>', desc: 'mechanical retry allowance recorded in the contract settings', default: '1' },
+  ],
+  safety: [
+    'read-only — derives the contract from the goal text and local state; nothing is launched, dispatched, or written',
+    'rejects launch-only and dispatched-planner flags (--program, --planner dispatched, --orchestrator*) so the contract cannot silently describe a different run',
+  ],
+  examples: [{ cmd: 'bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json' }],
+  next: 'author plan.json, then bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json',
+});
+
+const workflowPlanShowText = rich({
+  usage: 'bullswarm workflow plan show <runId> [--json]',
+  purpose: 'Print the durable planner request that a paused caller-planner run left for you: the '
+    + 'boundary (initial, gaps, or steering), the planner context (intent, known actions and their status, '
+    + 'consolidated gaps with evidence and concerns, scout report, pending steering), the rules, and the exact submit '
+    + 'command. Exits 1 when the run is not waiting for a submission (including once it is terminal).',
+  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId' }],
+  options: [{ flag: '--json', desc: 'print the full request document', default: 'compact human summary' }],
+  safety: [
+    'never changes run state; when steering was queued after the pause it rewrites the request document so it lists every pending instruction (requestRefreshed: true)',
+    'after a cancellation request it prints the finalize command instead of a submit command',
+  ],
+  examples: [{ cmd: 'bullswarm workflow plan show ab12cd --json' }],
+  next: 'bullswarm workflow plan submit <runId> --program <file.json> (or, at a gaps boundary, --exhausted --reason <text>)',
+});
+
+const workflowPlanSubmitText = rich({
+  usage: 'bullswarm workflow plan submit <runId> (--program <file.json> | --exhausted --reason <text>) [--summary <text>] [--foreground [--json] | --watch | --json]',
+  purpose: 'Submit your planner response to a paused caller-planner run. The program is validated against '
+    + 'the exact durable state and boundary the kernel recorded (same validator as a dispatched planner), '
+    + 'accepted as the next program revision, and the kernel is relaunched. --exhausted records that no '
+    + 'useful bounded action remains, so the kernel finalizes a partial result with its gaps.',
+  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a run whose plan show reports awaiting' }],
+  options: [
+    { flag: '--program <file.json>', desc: 'planner response envelope or bare program document with the new actions only (known actions are already in the run)', default: 'none' },
+    { flag: '--exhausted', desc: 'declare that no further useful bounded action exists; valid only at a gaps boundary (the initial boundary needs a program, steering needs an update)', default: 'off' },
+    { flag: '--reason <text>', desc: 'required with --exhausted: the concrete reason', default: 'none' },
+    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
+    { flag: '--foreground', desc: 'resume the kernel attached to this terminal instead of detaching; combines with --json', default: 'off (detaches)' },
+    { flag: '--watch', desc: 'detach, then follow human-readable low-noise progress until the run is terminal or pauses again; cannot combine with --foreground or --json', default: 'off' },
+    { flag: '--json', desc: 'print the acceptance and relaunch document (or, with --foreground, the final result) as JSON', default: 'human summary plus operating commands' },
+  ],
+  safety: [
+    'validates before writing: a rejected program exits 2 and leaves the run untouched; a run with a pending cancellation refuses every submission (resume it once to finalize)',
+    'steering listed in the request (plan show) is marked delivered by the submission; steering queued after that stays pending and opens a steering boundary after the resume',
+    'writes the accepted candidate and a planner.finished event into the run directory, then spawns `bullswarm workflow goal --resume <runId>` detached (or runs it in the foreground)',
+    'dispatches real coding-agent CLI processes for the new actions, the same as workflow goal',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow plan submit ab12cd --program plan-2.json --watch' },
+    { cmd: 'bullswarm workflow plan submit ab12cd --exhausted --reason "the remaining gap needs a credential the workspace does not have"' },
+  ],
+  next: 'bullswarm workflow watch <runId>, then bullswarm workflow runs result <runId> --json when terminal.',
 });
 
 const workflowRunText = rich({
@@ -1294,6 +1407,12 @@ const HELP = {
   workflow: {
     _text: workflowText,
     goal: { _text: workflowGoalText },
+    plan: {
+      _text: workflowPlanText,
+      contract: { _text: workflowPlanContractText },
+      show: { _text: workflowPlanShowText },
+      submit: { _text: workflowPlanSubmitText },
+    },
     run: { _text: workflowRunText },
     validate: { _text: workflowValidateText },
     list: { _text: workflowListText },

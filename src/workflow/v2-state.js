@@ -28,6 +28,11 @@ const ATTEMPT_FIELDS = new Set([
   'usage', 'routing', 'continued', 'lastActivityAt', 'lastEventAt',
   'outputBytesObserved', 'lastAgentEvent', 'wallSec',
 ]);
+const PLANNER_BOUNDARIES = new Set(['initial', 'gaps', 'steering']);
+const PLANNER_MODES = new Set(['dispatched', 'caller']);
+const PLANNER_AWAITING_FIELDS = new Set([
+  'boundary', 'turn', 'requestPath', 'candidatePath', 'since', 'correction',
+]);
 const PLANNER_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'startedAt', 'lastUsedAt', 'generation',
 ]);
@@ -46,7 +51,7 @@ const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 const GOAL_SETTING_FIELDS = new Set([
   'concurrency', 'workspaceMode', 'maxAgents', 'maxActions',
   'maxExpansionRounds', 'maxMechanicalRetries', 'maxManifestFiles', 'scout',
-  'suggestedPlan',
+  'suggestedPlan', 'plannerMode',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -110,6 +115,9 @@ function goalSettings(value) {
   }
   if (value.suggestedPlan !== undefined) {
     requiredString(value.suggestedPlan, 'goalDocument.config.settings.suggestedPlan');
+  }
+  if (value.plannerMode !== undefined && !PLANNER_MODES.has(value.plannerMode)) {
+    fail('goalDocument.config.settings.plannerMode must be dispatched or caller');
   }
   return clone(value);
 }
@@ -221,7 +229,7 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     config: goalDocument.config,
     lifecycle: { status: 'queued', startedAt: null, finishedAt: null, resultFile: null },
     preflight: { scout: { status: goalDocument.config.settings.scout === false ? 'skipped' : 'pending', startedAt: null, finishedAt: null, outputFile: null, attempts: [], lastFailure: null } },
-    planner: { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [] },
+    planner: { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [], awaiting: null },
     program: { schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION, revision: 0, actions: [] },
     presentation: { stages: [] },
     actions: [], attempts: [], steering: [],
@@ -235,7 +243,7 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
 
 function validatePlanner(planner) {
   object(planner, 'state.planner');
-  noUnknown(planner, new Set(['status', 'turns', 'lastDecision', 'session', 'attempts']), 'state.planner');
+  noUnknown(planner, new Set(['status', 'turns', 'lastDecision', 'session', 'attempts', 'awaiting']), 'state.planner');
   if (!PLANNER_STATUSES.has(planner.status)) fail('state.planner.status is invalid');
   nonNegativeInteger(planner.turns, 'state.planner.turns');
   if (planner.lastDecision !== null && !isObject(planner.lastDecision)) fail('state.planner.lastDecision must be null or an object');
@@ -248,6 +256,24 @@ function validatePlanner(planner) {
     timestamp(planner.session.lastUsedAt, 'state.planner.session.lastUsedAt');
     nonNegativeInteger(planner.session.generation, 'state.planner.session.generation');
     if (planner.session.generation < 1) fail('state.planner.session.generation must be positive');
+  }
+  if (planner.awaiting !== undefined && planner.awaiting !== null) {
+    object(planner.awaiting, 'state.planner.awaiting');
+    noUnknown(planner.awaiting, PLANNER_AWAITING_FIELDS, 'state.planner.awaiting');
+    if (!PLANNER_BOUNDARIES.has(planner.awaiting.boundary)) fail('state.planner.awaiting.boundary must be initial|gaps|steering');
+    positiveInteger(planner.awaiting.turn, 'state.planner.awaiting.turn');
+    if (planner.awaiting.turn !== planner.turns + 1) fail('state.planner.awaiting.turn must be the next planner turn');
+    requiredString(planner.awaiting.requestPath, 'state.planner.awaiting.requestPath');
+    requiredString(planner.awaiting.candidatePath, 'state.planner.awaiting.candidatePath');
+    timestamp(planner.awaiting.since, 'state.planner.awaiting.since');
+    if (planner.awaiting.since === null) fail('state.planner.awaiting.since is required');
+    if (planner.awaiting.correction !== undefined && planner.awaiting.correction !== null) {
+      object(planner.awaiting.correction, 'state.planner.awaiting.correction');
+      noUnknown(planner.awaiting.correction, new Set(['issues', 'attempt']), 'state.planner.awaiting.correction');
+      if (!Array.isArray(planner.awaiting.correction.issues) || planner.awaiting.correction.issues.some((issue) => typeof issue !== 'string' || !issue)) fail('state.planner.awaiting.correction.issues must be an array of non-empty strings');
+      positiveInteger(planner.awaiting.correction.attempt, 'state.planner.awaiting.correction.attempt');
+    }
+    if (planner.status !== 'waiting') fail('state.planner.awaiting requires planner status waiting');
   }
   if (!Array.isArray(planner.attempts)) fail('state.planner.attempts must be an array');
   for (const [index, attempt] of planner.attempts.entries()) {
@@ -502,6 +528,9 @@ function validateState(state) {
   requiredString(state.intentId, 'state.intentId');
   validateGoal({ schemaVersion: V2_GOAL_SCHEMA_VERSION, intentId: state.intentId, intent: state.intent, config: state.config });
   validateLifecycle(state.lifecycle);
+  if (state.planner?.awaiting != null && (['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle.status) || state.lifecycle.resultFile !== null)) {
+    fail('state.planner.awaiting must be null once the workflow is terminal');
+  }
   validatePreflight(state.preflight);
   validatePlanner(state.planner);
   validatePresentation(state.presentation, state.program);
@@ -551,6 +580,10 @@ function validateState(state) {
   return state;
 }
 
+export const V2_PLANNER_MODES = Object.freeze([...PLANNER_MODES]);
+export function v2PlannerMode(stateOrGoal) {
+  return stateOrGoal?.config?.settings?.plannerMode ?? 'dispatched';
+}
 export function validateV2GoalDocument(document) { validateGoal(document); return true; }
 export function validateV2DurableState(state) { validateState(state); return true; }
 export function serializeV2GoalDocument(document) { validateGoal(document); return JSON.stringify(document); }

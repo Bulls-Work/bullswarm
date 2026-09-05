@@ -92,6 +92,21 @@ test('goal requirements preserve numbered deliverables and explicit completion c
   assert.equal(longRequirement.text, longClause);
   assert.ok(longRequirement.text.length > 600);
   assert.match(longRequirement.text, /including q exit and q detach\.$/);
+
+  // The documented one-line form ("1. A. 2. B.") is one numbered line to the
+  // line pass; it must still yield one requirement per clause, exactly like
+  // the newline-separated form, or plan contract advertises the wrong IDs.
+  assert.deepEqual(extractGoalRequirements('1. Fix the parser. 2. Update the docs.'), [
+    { id: 'R1', text: 'Fix the parser.' },
+    { id: 'R2', text: 'Update the docs.' },
+  ]);
+  assert.deepEqual(extractGoalRequirements('1. Add a --version flag to bin/demo.js. 2. Document it in README.md. 3. Add a test.').map((r) => r.text), [
+    'Add a --version flag to bin/demo.js.', 'Document it in README.md.', 'Add a test.',
+  ]);
+  assert.deepEqual(extractGoalRequirements('1) One 2) Two 3) Three').map((r) => r.text), ['One', 'Two', 'Three']);
+  // A prose goal that merely mentions a number is not a list.
+  assert.deepEqual(extractGoalRequirements('Ship version 2. Then rest.'), [{ id: 'R1', text: 'Ship version 2. Then rest.' }]);
+  assert.deepEqual(extractGoalRequirements('1. Bump to version 2 and keep tests green.'), [{ id: 'R1', text: 'Bump to version 2 and keep tests green.' }]);
 });
 
 test('goal CLI extracts only explicit workspace read-only constraints', () => {

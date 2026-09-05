@@ -50,11 +50,22 @@ export function queueSteering(bullswarmDir, token, message) {
   return { ...resolved, entry, state };
 }
 
-export function deliverSteering(state, runDir) {
+// Undelivered steering entries, without consuming them. A caller-planner
+// request surfaces these so the caller sees them before authoring; they are
+// marked delivered only when a program is actually submitted against that
+// request, so a submission never silently swallows guidance the caller was
+// not shown.
+export function peekSteering(state, runDir) {
+  const known = new Set((state.steering ?? []).map((entry) => entry.id));
+  return readSteering(runDir).filter((entry) => !known.has(entry.id));
+}
+
+export function deliverSteering(state, runDir, { ids = null } = {}) {
   state.steering ??= [];
   const known = new Set(state.steering.map((entry) => entry.id));
   const deliveredAt = new Date().toISOString();
-  const fresh = readSteering(runDir).filter((entry) => !known.has(entry.id)).map((entry) => ({
+  const only = ids == null ? null : new Set(ids);
+  const fresh = readSteering(runDir).filter((entry) => !known.has(entry.id) && (only == null || only.has(entry.id))).map((entry) => ({
     ...entry,
     status: 'delivered_to_planner',
     deliveredAt,

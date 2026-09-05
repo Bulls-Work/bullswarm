@@ -52,6 +52,51 @@ Autonomous resume is V2-only. An old autonomous run ID fails before dispatch;
 there is no migration or fallback executor. Fixed authored workflows and drafts
 remain a separate product surface.
 
+## Caller-planner runs
+
+```bash
+bullswarm workflow plan contract "<goal>" --cwd=<abs-dir> --json   # requirement IDs, rules, schema, example
+bullswarm workflow goal "<goal>" --cwd=<abs-dir> --program plan.json --json
+bullswarm workflow plan show <shortId> --json                       # pending request: boundary, gaps, known actions
+bullswarm workflow plan submit <shortId> --program plan-2.json      # new actions only; relaunches detached
+bullswarm workflow plan submit <shortId> --exhausted --reason "<why>"
+```
+
+A caller-planner run records `plannerMode: caller` in its goal document, never
+dispatches a planner or (by default) a scout, and pauses durably with
+`lifecycle.status = waiting` plus a `planner-request-turn-N.json` file in the
+run directory whenever a planning boundary is reached. `watch` exits 0 at that
+pause and prints the `plan show` command; `runs result` reports the pause until
+a program or an exhausted decision is submitted. The submitted program passes
+the same validator as a dispatched planner response against the exact durable
+state; scout units are advisory in this mode. Resume (`workflow goal --resume`)
+of a paused run without a submission re-pauses on the same request.
+
+Pause hygiene, all kernel-enforced:
+
+- The pause is authoritative. A resume keeps the recorded boundary and turn
+  even when steering was queued meanwhile; the request is refreshed to list the
+  pending steering (`pendingSteering`, also merged into `context.steering`).
+  `plan show` performs the same refresh (`requestRefreshed: true`) without
+  changing run state. A submission marks exactly the listed steering
+  delivered (`steering.delivered` events tagged `source: caller`); steering
+  queued after the request was shown stays pending and opens a `steering`
+  boundary after the resume. A steering boundary needs at least one new action
+  (`--exhausted` is valid only at a `gaps` boundary and is only advertised
+  there).
+- `workflow tui --cancel <id>` on a paused run records the request and reports
+  `pausedForCaller: true` with the finalize command; `plan submit` then refuses
+  every submission, `plan show` and `watch` print
+  `bullswarm workflow goal --resume <id> --json`, and that one resume records
+  the cancelled result. Finalizing always clears `planner.awaiting`; a terminal
+  state that still claims to be waiting is rejected by the state validator.
+- A `--program` supplied at launch is kept as `initial-planner-response.json`
+  in the run directory until applied, so an interruption during an opt-in
+  `--scout` does not lose it.
+- Bare value flags (`--program` with no file, `--planner` with no mode) are
+  usage errors (exit 2); nothing launches in a different mode. `plan submit`
+  checks the goal directory before touching state.
+
 ## Fixed graphs, fan-out, and adversarial verification
 
 Use `workflow draft` only when exact phases and dependencies are user-authored
