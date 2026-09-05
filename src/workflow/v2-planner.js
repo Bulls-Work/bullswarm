@@ -2,7 +2,7 @@ import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-v
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
-import { validateV2DurableState } from './v2-state.js';
+import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
 import { deriveV2PresentationStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
 
@@ -162,10 +162,13 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
   };
 }
 
-export function buildV2PlannerPrompt(context) {
-  if (!plain(context) || context.schemaVersion !== 'bullswarm.workflow.planner-context.v2') throw new TypeError('invalid V2 planner context');
+// One source of truth for the planning contract. The dispatched planner
+// prompt, the caller-facing `workflow plan contract`, and every durable
+// planner request render these same lines, so an external planner (a frontier
+// agent driving Bullswarm directly) and a dispatched planner obey one rulebook.
+export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary = 'initial', plannerMode = 'dispatched' } = {}) {
+  if (!['dispatched', 'caller'].includes(plannerMode)) throw new TypeError('plannerMode must be dispatched or caller');
   return [
-    'You are the single logical Workflow Planner for Bullswarm autonomous V2.',
     'Propose the smallest complete bounded action program that can satisfy the supplied requirements. The kernel, not you, decides completion and failure.',
     'The numeric values in context.targets are advisory planning targets, never execution ceilings. Prefer to stay within them by consolidating optional work, but exceed them whenever the smallest essential program needs more actions, agent dispatches, or gap rounds. Reaching or crossing a target is not a reason to return exhausted.',
     'context.execution.concurrency limits only how many dependency-ready actions run at once. It does not limit the total number of independent actions in the program; the scheduler will batch wider programs safely.',
@@ -181,25 +184,188 @@ export function buildV2PlannerPrompt(context) {
     'When a focused test baseline is known, action prompts must treat execution beyond 60 seconds or twice that baseline (whichever is greater) without progress as an open-handle or unresolved-async defect to interrupt and diagnose, never as an unbounded wait.',
     'Bound actions by coherent acceptance slices, not merely by shared files. When a goal has several independently testable cross-cutting behaviors in the same files, prefer a small ordered sequence whose actions reuse those exact ownedFiles and each deliver one behavior plus its focused regression. Do not collapse an entire multi-requirement feature into one monolithic worker just because its files overlap, and do not split one behavior from its own test.',
     'Treat the scout\'s independently testable units as the default action boundaries. A single long requirement may be affected by several ordered actions, each closing one observable clause; multiple actions may therefore list the same requirement in affects. Do not merge scout units merely because they share a requirement ID or owned files. Merge only when the combined change is genuinely trivial for one bounded worker.',
-    'Every exact ID in context.scoutUnits is a kernel-required work action. Use each ID unchanged on one non-evidence action and order shared-file units with dependencies. Do not rename, omit, or absorb one scout unit into another action; the response is rejected before dispatch if any unit is missing.',
+    plannerMode === 'caller'
+      ? 'context.scoutUnits (present only when a kernel scout ran) lists the scout\'s independently testable units as advisory default action boundaries. A caller planner is not required to reuse those IDs and the response is never rejected for a missing unit; still cover every clause a unit names with some action, or leave it explicitly to a later program revision.'
+      : 'Every exact ID in context.scoutUnits is a kernel-required work action. Use each ID unchanged on one non-evidence action and order shared-file units with dependencies. Do not rename, omit, or absorb one scout unit into another action; the response is rejected before dispatch if any unit is missing.',
     'Goal requirements outrank the current implementation, current tests, and descriptive scout prose. Preserve exact universal and negative qualifiers such as every, always, any depth, same, narrow/mobile, must not, and fallback behavior in the responsible action prompts. If an existing test asserts contradictory behavior, the action must own and update both production code and that test; never instruct a worker to preserve the contradiction.',
     'A requirement may contain several sibling clauses assigned to different actions. List it in affects only when the action prompt names the exact clause it owns. Requirement context never expands ownedFiles: if another clause requires an unowned file or a different purpose, leave it to its own scout unit instead of asking this action to satisfy it.',
     'When several ordered work actions jointly affect one cross-cutting behavior, the scout\'s final acceptance unit must remain a mutation-capable action after those slices. Give it the relevant production files plus tests, require it to exercise every decisive qualifier over the integrated result, and authorize it to close any gap it finds. Do not turn that unit into tests-only regression work.',
     'For evidence actions, the prompt describes only what to inspect and which concrete checks to run. Never prescribe a response JSON, object, schema, envelope, format, or fields such as ok/concerns/summary; the V2 kernel exclusively supplies and validates the evidence output contract.',
-    context.intent.constraints?.workspaceMutation === 'forbidden'
+    workspaceMutation === 'forbidden'
       ? 'This goal is deterministically read-only. Every action must have empty ownedFiles and must not modify workspace files; reports belong in the action output artifact.'
       : 'Workspace mutation is allowed only through exact ownedFiles declared by the action.',
-    context.boundary === 'gaps'
+    boundary === 'gaps'
       ? 'This is one consolidated gap boundary. Propose only new actions that close the supplied gaps. If no useful bounded action remains, return kind=exhausted with a concrete reason; this does not declare workflow failure.'
-      : context.boundary === 'steering'
+      : boundary === 'steering'
         ? 'This is a material user-steering boundary. Treat the supplied steering as new requirements for future work, preserve completed history, and propose only the smallest new actions needed to honor it.'
-      : 'This is initial planning. Return kind=program with the complete useful program; kind=exhausted is invalid here.',
+        : 'This is initial planning. Return kind=program with the complete useful program; kind=exhausted is invalid here.',
+  ];
+}
+
+export const V2_PLANNER_RESPONSE_SHAPE = Object.freeze({
+  program: '{schemaVersion:"bullswarm.workflow.planner-response.v2",kind:"program",summary,program:{schemaVersion:"bullswarm.workflow.program.v2",actions:[...]}}',
+  exhausted: '{schemaVersion:"bullswarm.workflow.planner-response.v2",kind:"exhausted",summary,reason}',
+});
+
+export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
+  id: 'unique lowercase kebab-case ID',
+  purpose: 'one-line human purpose',
+  dependsOn: 'action IDs whose data or exact-file ordering this action requires (empty array when independent)',
+  affects: 'requirement IDs this work action directly owns a bounded acceptance slice of (empty for evidence actions)',
+  ownedFiles: 'exact relative paths this action may mutate (empty for read-only or evidence actions)',
+  prompt: 'self-contained worker instructions: exact scope, files, commands, and acceptance evidence',
+  lane: 'analyze | build | chore',
+  effort: 'high | medium | low',
+  evidenceFor: 'requirement IDs this evidence action independently judges (empty for work actions)',
+  inputs: 'optional artifact IDs consumed, each produced by a dependency ancestor',
+  produces: 'optional artifact IDs this action produces for later actions',
+});
+
+export const V2_PROGRAM_EXAMPLE = Object.freeze({
+  schemaVersion: 'bullswarm.workflow.planner-response.v2',
+  kind: 'program',
+  summary: 'Fix the parser, then independently inspect the fix.',
+  program: {
+    schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
+    actions: [
+      {
+        id: 'fix-parser', purpose: 'Fix the parser defect with a focused regression test',
+        dependsOn: [], affects: ['requirement-1'], ownedFiles: ['src/parser.js', 'tests/parser.test.js'],
+        prompt: 'In <cwd>, fix the trailing-comma defect in src/parser.js. Add a focused regression in tests/parser.test.js that fails on the untouched baseline and passes after the fix. Run `node --test-timeout=60000 --test tests/parser.test.js`.',
+        lane: 'build', effort: 'medium', evidenceFor: [], inputs: [], produces: ['parser-fix'],
+      },
+      {
+        id: 'check-parser', purpose: 'Independently judge the parser requirement',
+        dependsOn: ['fix-parser'], affects: [], ownedFiles: [],
+        prompt: 'Inspect src/parser.js and tests/parser.test.js in <cwd>; run `node --test-timeout=60000 --test tests/parser.test.js` and confirm the regression exercises the production entry point.',
+        lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['parser-fix'], produces: [],
+      },
+    ],
+  },
+});
+
+export function buildV2PlannerPrompt(context) {
+  if (!plain(context) || context.schemaVersion !== 'bullswarm.workflow.planner-context.v2') throw new TypeError('invalid V2 planner context');
+  return [
+    'You are the single logical Workflow Planner for Bullswarm autonomous V2.',
+    ...v2PlannerContractRules({
+      workspaceMutation: context.intent.constraints?.workspaceMutation ?? 'allowed',
+      boundary: context.boundary,
+    }),
     'Return only one JSON object with schemaVersion bullswarm.workflow.planner-response.v2.',
-    'For kind=program use: {schemaVersion,kind:"program",summary,program:{schemaVersion:"bullswarm.workflow.program.v2",actions:[...]}}.',
-    'For an exhausted gap boundary use: {schemaVersion,kind:"exhausted",summary,reason}.',
+    `For kind=program use: ${V2_PLANNER_RESPONSE_SHAPE.program}.`,
+    `For an exhausted gap boundary use: ${V2_PLANNER_RESPONSE_SHAPE.exhausted}.`,
     '',
     JSON.stringify(context),
   ].join('\n');
+}
+
+export const V2_PLANNER_REQUEST_SCHEMA_VERSION = 'bullswarm.workflow.planner-request.v2';
+export const V2_PLANNER_CONTRACT_SCHEMA_VERSION = 'bullswarm.workflow.planner-contract.v2';
+
+// The caller-facing planning contract for a goal that has not started yet.
+// A frontier agent reads this once, authors the initial program itself, and
+// launches `workflow goal --program <file>`; no scout or planner dispatch is
+// spent on work the caller already has in context.
+export function buildV2PlannerContract(goalDocument, { launchCommand = null } = {}) {
+  validateV2GoalDocument(goalDocument);
+  const workspaceMutation = goalDocument.intent.constraints?.workspaceMutation ?? 'allowed';
+  return {
+    schemaVersion: V2_PLANNER_CONTRACT_SCHEMA_VERSION,
+    goal: goalDocument.intent.goal,
+    cwd: goalDocument.intent.cwd,
+    intentId: goalDocument.intentId,
+    requirements: clone(goalDocument.intent.requirements),
+    constraints: { workspaceMutation },
+    settings: clone(goalDocument.config.settings),
+    rules: v2PlannerContractRules({ workspaceMutation, boundary: 'initial', plannerMode: 'caller' }),
+    program: {
+      schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
+      actionFields: { ...V2_PROGRAM_ACTION_FIELDS },
+      validation: [
+        'every requirement listed above that is mandatory needs at least one evidence action whose evidenceFor names it',
+        'evidence actions must depend (transitively) on every work action that affects the requirement they judge',
+        'two work actions with overlapping ownedFiles must be transitively ordered by dependsOn',
+        'a work dependency must be justified by a consumed artifact or an overlapping owned path',
+        'IDs are kebab-case and unique; no cycles; no pool, model, verify, repair, phase, fanout, or timeout fields',
+        'kernel-owned routing chooses pools and models from lane and effort; the program never names providers',
+      ],
+      responseShape: V2_PLANNER_RESPONSE_SHAPE.program,
+      bareProgramAccepted: 'a file containing only {schemaVersion:"bullswarm.workflow.program.v2",actions:[...]} is wrapped automatically; use --summary to name it',
+      example: clone(V2_PROGRAM_EXAMPLE),
+    },
+    evidence: {
+      note: 'Evidence agents receive a kernel-owned output contract; the program prompt only describes what to inspect. The requirement ledger, completion, and the stable result envelope are computed by the kernel.',
+      resultSchema: 'bullswarm.workflow.result.v2',
+    },
+    plannerMode: 'caller',
+    launch: launchCommand ? { command: launchCommand } : null,
+  };
+}
+
+// The durable request a paused run leaves for its caller planner. It carries
+// the exact context a dispatched planner would have received, the rules, and
+// the precise submit step, so any agent can resume the run from a cold start.
+export function createV2PlannerRequest(state, context, { turn, requestPath, candidatePath, correction = null, submitCommand = null, pendingSteering = [] } = {}) {
+  if (!plain(context) || context.schemaVersion !== 'bullswarm.workflow.planner-context.v2') throw new TypeError('invalid V2 planner context');
+  if (!Number.isInteger(turn) || turn < 1) throw new TypeError('turn must be a positive integer');
+  if (!Array.isArray(pendingSteering)) throw new TypeError('pendingSteering must be an array');
+  return {
+    schemaVersion: V2_PLANNER_REQUEST_SCHEMA_VERSION,
+    runId: state.runId,
+    shortId: state.shortId,
+    intentId: state.intentId,
+    turn,
+    boundary: context.boundary,
+    plannerMode: 'caller',
+    rules: v2PlannerContractRules({
+      workspaceMutation: context.intent.constraints?.workspaceMutation ?? 'allowed',
+      boundary: context.boundary,
+      plannerMode: 'caller',
+    }),
+    responseShape: { ...V2_PLANNER_RESPONSE_SHAPE },
+    actionFields: { ...V2_PROGRAM_ACTION_FIELDS },
+    scoutUnitsAdvisory: true,
+    context,
+    // Steering queued for this run that no planner turn has consumed yet.
+    // Submitting against this request marks exactly these entries delivered.
+    pendingSteering: clone(pendingSteering),
+    correction: correction ? clone(correction) : null,
+    candidatePath,
+    requestPath,
+    submit: submitCommand ? { command: submitCommand } : null,
+  };
+}
+
+// Accept a caller-authored planner response in either the full planner
+// response envelope or as a bare program document.
+export function normalizeCallerPlannerResponse(input, { summary = null, exhaustedReason = null } = {}) {
+  if (!plain(input)) throw new V2PlannerValidationError(['planner response must be a JSON object']);
+  if (input.schemaVersion === V2_PLANNER_RESPONSE_SCHEMA_VERSION) {
+    if (substantive(summary) && !substantive(input.summary)) return { ...clone(input), summary: summary.trim() };
+    return clone(input);
+  }
+  if (input.schemaVersion === ACTION_PROGRAM_SCHEMA_VERSION) {
+    const actions = Array.isArray(input.actions) ? input.actions : [];
+    const derived = actions.map((action) => action?.purpose).filter(substantive).slice(0, 3).join('; ');
+    return {
+      schemaVersion: V2_PLANNER_RESPONSE_SCHEMA_VERSION,
+      kind: 'program',
+      summary: substantive(summary) ? summary.trim() : (derived || `Caller-authored program with ${actions.length} action(s)`),
+      program: clone(input),
+    };
+  }
+  if (input.kind === 'exhausted' || substantive(exhaustedReason)) {
+    return {
+      schemaVersion: V2_PLANNER_RESPONSE_SCHEMA_VERSION,
+      kind: 'exhausted',
+      summary: substantive(summary) ? summary.trim() : (substantive(input.summary) ? input.summary.trim() : 'Caller planner reported no further useful bounded action.'),
+      reason: substantive(exhaustedReason) ? exhaustedReason.trim() : input.reason,
+    };
+  }
+  throw new V2PlannerValidationError([
+    `planner response schemaVersion must be "${V2_PLANNER_RESPONSE_SCHEMA_VERSION}" or a bare "${ACTION_PROGRAM_SCHEMA_VERSION}" program`,
+  ]);
 }
 
 export function applyV2PlannerResponse(state, response, options = {}) {

@@ -109,6 +109,65 @@ Optimize for convergence:
 - stop with a useful verified result and disclosed non-blocking concerns rather
   than expanding for optional polish.
 
+## You are the planner (frontier agents)
+
+If you are a capable agent that already has the repository in context, do not
+pay for a dispatched scout and Workflow Planner: author the V2 program yourself
+and let the kernel do only what it is better at (quota routing, file ownership,
+independent evidence, the requirement ledger, completion, the stable result).
+This is Bullswarm's equivalent of Claude Code's `Workflow` tool: you write the
+program once, the kernel executes it, and you are consulted again only at a
+real planning boundary.
+
+1. Read the contract for the exact goal text you will launch:
+
+   ```bash
+   bullswarm workflow plan contract "<goal>" --cwd=<abs-dir> --json
+   ```
+
+   It returns the requirement IDs the kernel derives (numbered clauses become
+   `requirement-1..n`; a trailing "Finish with ..." line becomes the last
+   requirement), the read-only constraint, the planning rules, the action
+   fields, the validation the kernel enforces, and a worked example. Number
+   the goal's deliverables; prose collapses to one requirement.
+2. Scout inline with your own tools (list files, run the tests) and write the
+   program to a file: file-disjoint work actions in parallel, ordered only by
+   real data or same-file dependencies, self-contained prompts with the exact
+   workspace path and focused acceptance command, and at least one evidence
+   action per mandatory requirement that depends on every action affecting it.
+   Never name pools or models; lane and effort pick the tier.
+3. Launch with your program. Validation happens before anything runs; an
+   invalid program exits 2 with the issues and dispatches nothing:
+
+   ```bash
+   bullswarm workflow goal "<goal>" --cwd=<abs-dir> --program plan.json --json
+   bullswarm workflow watch <shortId>
+   ```
+
+4. `watch` ends either at a terminal result or when the run pauses for you.
+   A pause means the kernel consolidated real gaps (failed or blocked
+   requirements, failed actions) and will not guess: read them and decide.
+
+   ```bash
+   bullswarm workflow plan show <shortId> --json
+   bullswarm workflow plan submit <shortId> --program plan-2.json --watch
+   bullswarm workflow plan submit <shortId> --exhausted --reason "<why>"
+   ```
+
+   A submitted program contains only new actions (known actions are already in
+   the run; reuse their IDs in `dependsOn`). A rejected submission exits 2 and
+   leaves the run unchanged. `--exhausted` finalizes a partial result with the
+   gaps disclosed.
+5. Obtain the terminal envelope with `bullswarm workflow runs result <shortId>
+   --json`; the same lenient acceptance applies (concerns are data, not
+   failures).
+
+Use `--planner caller` without `--program` when you want the kernel's scout to
+run first and pause at the initial boundary so you plan against its survey;
+its unit list is advisory for a caller planner, never a rejection rule. Keep the
+default dispatched planner for callers that cannot hold the repository in
+context or that must not block on a conversation.
+
 ## Direct modes and advanced operation
 
 Use the common `delegate` interface by default. Reach for the underlying
@@ -117,6 +176,8 @@ fixed graph:
 
 - `bullswarm run` — one bounded task;
 - `bullswarm workflow goal` — an autonomous goal;
+- `bullswarm workflow goal --program` / `workflow plan` — an autonomous goal
+  whose planner is the calling agent (section above);
 - `bullswarm workflow draft` — a fixed graph whose exact structure is the
   contract.
 

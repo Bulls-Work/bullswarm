@@ -333,6 +333,39 @@ writers and still enforces the changed-path boundary.
 
 ## Building a workflow from the shell
 
+### You are the planner: `--program` and `workflow plan`
+
+A capable calling agent (Claude Code, Codex, or any frontier model with the
+repository in context) can be the Workflow Planner itself instead of paying for
+a dispatched scout and planner. The kernel keeps everything it owns — proposal
+validation, quota routing, isolated worktrees and changed-path ownership,
+independent evidence, the requirement ledger, completion, and the stable result
+envelope — while the caller supplies the program, exactly the division of
+labour Claude Code's `Workflow` tool uses between the authoring model and its
+harness.
+
+```bash
+bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
+#   → requirement IDs (requirement-1..n), rules, action fields, validation, example
+bullswarm workflow goal "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --watch
+#   → validated before launch; executes with zero planner/scout dispatches
+bullswarm workflow plan show <shortId> --json      # when the run pauses at a gap boundary
+bullswarm workflow plan submit <shortId> --program plan-2.json --watch
+bullswarm workflow plan submit <shortId> --exhausted --reason "<why no bounded action remains>"
+```
+
+`--program` accepts the planner response envelope or a bare
+`bullswarm.workflow.program.v2` document. An invalid program exits 2 with the
+validator's issues and nothing is launched. When the kernel reaches a planning
+boundary it does not guess: it writes `planner-request-turn-N.json` (the same
+context a dispatched planner would receive, plus the consolidated gaps), sets
+the run to `waiting`, exits, and `watch` prints the `plan show` command. A
+submitted program contains only new actions and is validated against the exact
+durable state at that boundary; `--exhausted` finalizes a partial result with
+its gaps disclosed. `--planner caller` without `--program` runs the kernel
+scout first and pauses at the initial boundary so the caller plans against a
+real survey; scout units are advisory for a caller planner.
+
 Use an explicit draft when the graph itself is a durable contract and should
 not be planner-defined. `bullswarm workflow draft ...` lets you assemble it one
 mutation at a time. No upfront JSON required. Drafts persist under

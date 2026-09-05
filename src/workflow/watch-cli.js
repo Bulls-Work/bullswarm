@@ -106,6 +106,11 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     }));
     const runningAction = (state.actions ?? []).find((action) => ['running', 'waiting'].includes(action.status));
     const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status);
+    // A terminal run is never waiting for its caller planner, whatever a stale
+    // request record says; cancellation is surfaced so the watcher knows why a
+    // paused run needs one resume to finalize.
+    const awaitingPlanner = !terminal && state.planner?.awaiting ? { boundary: state.planner.awaiting.boundary, turn: state.planner.awaiting.turn } : null;
+    const cancellationRequested = Boolean(state.cancellation?.requested) && !terminal;
     const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
     return {
       at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
@@ -119,6 +124,8 @@ export function watchSnapshot(runDir, state, now = new Date()) {
       runningCount: (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
       waitingCount: (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
       latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
+      awaitingPlanner,
+      cancellationRequested,
       terminal, timing: terminal ? timingBreakdown(state) : null,
     };
   }
@@ -208,8 +215,10 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
     if (snapshot.runningCount !== undefined) {
       const state = snapshot.terminal
         ? snapshot.status === 'completed' ? 'workflow complete; result ready' : `workflow ended ${snapshot.status}; result ready`
-        : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;
-      return `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
+        : snapshot.awaitingPlanner
+          ? `waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary, turn ${snapshot.awaitingPlanner.turn})`
+          : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;
+      return `${snapshot.terminal || snapshot.awaitingPlanner ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
         `${events.length} new events` +
         (snapshot.latestAction ? ` · latest: ${snapshot.latestAction}` : '') +
         ` · quiet ${formatDuration(snapshot.quietForSec)}` +
@@ -342,6 +351,19 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json\n`);
         }
         return isDeliveredWorkflowStatus(snapshot.status) || once ? 0 : 1;
+      }
+      if (snapshot.awaitingPlanner) {
+        // A caller-planner run has paused durably; the runtime process has
+        // exited and nothing will change until the caller submits a program
+        // (or, after a cancellation request, resumes it once to finalize).
+        if (!jsonl) {
+          const token = snapshot.shortId ?? snapshot.runId;
+          output.write(`outcome: waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary)\n`);
+          output.write(snapshot.cancellationRequested
+            ? `next: cancellation requested; bullswarm workflow goal --resume ${token} --json finalizes it\n`
+            : `next: bullswarm workflow plan show ${token} --json\n`);
+        }
+        return 0;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, Math.max(100, intervalMs)));

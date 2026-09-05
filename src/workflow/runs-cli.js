@@ -216,7 +216,10 @@ function runsResult(idToken, opts) {
   const ongoing = isOngoing(runDir, state);
   if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
     const stablePath = join(runDir, 'result.json');
-    if (!existsSync(stablePath)) return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
+    if (!existsSync(stablePath)) {
+      if (state.planner?.awaiting) return err(`workflow ${resolved.shortId ?? runId} is waiting for its caller planner (${state.planner.awaiting.boundary} boundary); next: bullswarm workflow plan show ${resolved.shortId ?? runId} --json`);
+      return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
+    }
     let stable;
     try { stable = deserializeV2ResultEnvelope(readFileSync(stablePath, 'utf8')); }
     catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }

@@ -50,8 +50,15 @@ export function extractGoalRequirements(goal) {
     }
   }
   if (current) numbered.push(current);
-  if (!numbered.length) {
-    const markers = [...text.matchAll(/(?:^|\s)(\d+)[.)]\s+/g)];
+  // A single line that carries several inline markers ("1. Fix the parser.
+  // 2. Update the docs.") is one numbered line to the pass above; split it on
+  // the inline markers so the documented one-line form yields one requirement
+  // per clause, exactly like the newline-separated form.
+  // Inline markers count only when they form a list that starts at 1, so a
+  // prose goal mentioning "version 2. Then ..." is not split on the number.
+  const markers = [...text.matchAll(/(?:^|\s)(\d+)[.)]\s+/g)];
+  if (numbered.length <= 1 && markers.length > numbered.length && markers[0]?.[1] === '1') {
+    numbered.length = 0;
     for (let index = 0; index < markers.length; index += 1) {
       const marker = markers[index];
       const start = marker.index + marker[0].length;
