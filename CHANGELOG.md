@@ -59,6 +59,17 @@
   feature; the `bullswarm` skill and operations reference document the
   caller-planner loop for frontier agents.
 
+- Fixed (ledger): evidence records now carry the ledger-wide `workspaceRevision`
+  they inspected, and semantic evidence recorded on a newer workspace
+  supersedes older evidence for the same requirement (`stale: true`,
+  `staleReason: "workspace-superseded"`). Before, a cross-cutting requirement
+  such as "the full suite passes 19/19" kept its first failed verdict alive
+  forever, because no work action listed it in `affects`; a later passing
+  verdict then conflicted with it and the requirement stayed `blocked` on every
+  gap round. Same-workspace disagreement between two verifiers still blocks,
+  and a mechanical (pending) record never supersedes a judgment. Found live
+  while driving a caller-planner run.
+
 - Fixed: a one-line goal with inline numbered clauses (`"1. Fix the parser.
   2. Update the docs."`) produced a single requirement; only the
   newline-separated form split. Both forms now yield one requirement per
