@@ -156,3 +156,81 @@ test('multi-requirement evidence is atomic when a later entry is invalid', () =>
   assert.deepEqual(ledger.evidence, []);
   assert.equal(ledger.requirements.quality.status, 'pending');
 });
+
+// --- workspace supersession: cross-cutting requirements ------------------
+// A requirement such as "the full suite passes" is changed by work attributed
+// to other requirements, so its own inspectedRevision never moves. Evidence
+// recorded on a newer workspace must supersede older evidence instead of
+// conflicting with it forever.
+
+const crossCutting = () => createLedger([{ id: 'quality' }, { id: 'other' }], { workRevision: 'r1' });
+
+test('evidence on a newer workspace supersedes older conflicting evidence for a cross-cutting requirement', () => {
+  let ledger = crossCutting();
+  ledger = applyEvidence(ledger, action(), { requirements: { quality: pass({ status: 'failed' }) } });
+  assert.equal(ledger.requirements.quality.status, 'failed');
+  assert.equal(ledger.evidence[0].workspaceRevision, 'r1');
+  // Work on another requirement moves the workspace; quality itself is untouched.
+  ledger = invalidateRequirements(ledger, ['other'], 'r2');
+  assert.equal(ledger.workRevision, 'r2');
+  assert.equal(ledger.requirements.quality.workRevision, 'r1');
+  assert.equal(ledger.requirements.quality.status, 'failed');
+  ledger = applyEvidence(ledger, action({ actionId: 'check-2', eventSequence: 3 }), { requirements: { quality: pass() } });
+  assert.equal(ledger.requirements.quality.status, 'passed');
+  assert.equal(ledger.evidence[0].stale, true);
+  assert.equal(ledger.evidence[0].staleReason, 'workspace-superseded');
+  assert.equal(ledger.evidence[1].stale, false);
+  assert.equal(ledger.evidence[1].workspaceRevision, 'r2');
+  assert.deepEqual(ledger.requirements.quality.evidence, ledger.evidence.filter((record) => record.requirementId === 'quality'));
+  const serialized = serializeLedger(ledger);
+  assert.equal(serializeLedger(deserializeLedger(serialized)), serialized);
+});
+
+test('a newer-workspace failure supersedes an older pass, so regressions are detected', () => {
+  let ledger = crossCutting();
+  ledger = applyEvidence(ledger, action(), { requirements: { quality: pass() } });
+  ledger = invalidateRequirements(ledger, ['other'], 'r2');
+  assert.equal(ledger.requirements.quality.status, 'passed', 'no re-verification is forced by unrelated work alone');
+  ledger = applyEvidence(ledger, action({ actionId: 'check-2', eventSequence: 3 }), { requirements: { quality: pass({ status: 'failed' }) } });
+  assert.equal(ledger.requirements.quality.status, 'failed');
+  assert.equal(ledger.evidence[0].stale, true);
+});
+
+test('same-workspace disagreement between sources still blocks after a supersession', () => {
+  let ledger = crossCutting();
+  ledger = applyEvidence(ledger, action(), { requirements: { quality: pass({ status: 'failed' }) } });
+  ledger = invalidateRequirements(ledger, ['other'], 'r2');
+  ledger = applyEvidence(ledger, action({ actionId: 'check-2', eventSequence: 3 }), { requirements: { quality: pass() } });
+  ledger = applyEvidence(ledger, action({ actionId: 'check-3', eventSequence: 4 }), { requirements: { quality: pass({ status: 'failed' }) } });
+  assert.equal(ledger.requirements.quality.status, 'blocked');
+  assert.equal(ledger.evidence[1].stale, false);
+  assert.equal(ledger.evidence[2].stale, false);
+});
+
+test('mechanical pending evidence on a newer workspace never supersedes a semantic judgment', () => {
+  let ledger = crossCutting();
+  ledger = applyEvidence(ledger, action(), { requirements: { quality: pass() } });
+  ledger = invalidateRequirements(ledger, ['other'], 'r2');
+  ledger = applyEvidence(ledger, action({ actionId: 'check-2', eventSequence: 3 }), { requirements: { quality: { status: 'pending', evidence: [], concerns: [], mechanicalFailure: { kind: 'timeout' } } } });
+  assert.equal(ledger.requirements.quality.status, 'passed');
+  assert.equal(ledger.evidence[0].stale, false);
+});
+
+test('legacy records without a workspace revision are superseded by current-workspace evidence', () => {
+  const legacy = crossCutting();
+  legacy.workRevision = 'r2';
+  legacy.requirements.other.workRevision = 'r2';
+  const base = { inspectedRevision: 'r1', schemaVersion: LEDGER_SCHEMA_VERSION, requirementId: 'quality', concerns: [], stale: false };
+  legacy.evidence.push(
+    { ...base, sourceAction: 'check-1', eventSequence: 1, status: 'failed', evidence: ['1 test failed'] },
+    { ...base, sourceAction: 'check-2', eventSequence: 2, status: 'passed', evidence: ['all tests passed'] },
+  );
+  legacy.requirements.quality.evidence = [...legacy.evidence];
+  legacy.requirements.quality.status = 'blocked';
+  let ledger = deserializeLedger(serializeLedger(legacy));
+  assert.equal(ledger.requirements.quality.status, 'blocked');
+  ledger = applyEvidence(ledger, action({ actionId: 'check-3', eventSequence: 3 }), { requirements: { quality: pass() } });
+  assert.equal(ledger.requirements.quality.status, 'passed');
+  assert.deepEqual(ledger.evidence.map((record) => record.stale), [true, true, false]);
+  assert.throws(() => deserializeLedger(JSON.stringify({ ...ledger, evidence: ledger.evidence.map((record, index) => (index === 2 ? { ...record, staleReason: 'workspace-superseded' } : record)) })), /staleReason requires a stale record/);
+});

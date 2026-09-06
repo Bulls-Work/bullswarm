@@ -100,10 +100,11 @@ function actionRevision(action, requirementId) {
   return revision(action.inspectedRevision ?? action.workRevision, 'inspectedRevision');
 }
 
-function evidenceRecord(action, requirementId, result) {
+function evidenceRecord(action, requirementId, result, { workspaceRevision = null } = {}) {
   object(action, 'evidence action');
   const actionId = nonEmptyString(action.actionId ?? action.sourceAction, 'source action');
   const inspectedRevision = actionRevision(action, requirementId);
+  if (workspaceRevision !== null) revision(workspaceRevision, 'workspaceRevision');
   const eventSequence = sequence(action.eventSequence);
   const schemaVersion = action.schemaVersion ?? LEDGER_SCHEMA_VERSION;
   nonEmptyString(schemaVersion, 'schemaVersion');
@@ -117,6 +118,14 @@ function evidenceRecord(action, requirementId, result) {
   return {
     sourceAction: actionId,
     inspectedRevision,
+    // The ledger-wide work revision when this evidence was recorded: which
+    // workspace the evidence action actually inspected. inspectedRevision is
+    // per requirement and only moves when a work action *affecting* that
+    // requirement succeeds; a cross-cutting requirement ("the full suite
+    // passes") can be changed by work attributed to other requirements, and
+    // this field lets newer evidence on a newer workspace supersede older
+    // evidence instead of conflicting with it forever.
+    ...(workspaceRevision !== null ? { workspaceRevision } : {}),
     eventSequence,
     schemaVersion,
     requirementId,
@@ -126,6 +135,23 @@ function evidenceRecord(action, requirementId, result) {
     stale: false,
     ...(result.mechanicalFailure !== undefined ? { mechanicalFailure: mechanicalFailure(result.mechanicalFailure) } : {}),
   };
+}
+
+// Semantic evidence (passed/failed) recorded on a newer workspace supersedes
+// every earlier record for the same requirement that inspected a different
+// (or, for records written before this field existed, unknown) workspace.
+// Records on the same workspace are left alone, so two verifiers judging one
+// workspace still conflict into `blocked`, and a mechanical (pending) record
+// never supersedes a real judgment.
+function supersedeOlderWorkspaceRecords(next, record) {
+  if (record.status === REQUIREMENT_STATUSES.PENDING || record.workspaceRevision === undefined) return;
+  for (const existing of next.evidence) {
+    if (existing.requirementId !== record.requirementId || existing.stale || existing === record) continue;
+    if (existing.workspaceRevision === record.workspaceRevision) continue;
+    existing.stale = true;
+    existing.staleReason = 'workspace-superseded';
+  }
+  next.requirements[record.requirementId].evidence = next.evidence.filter((entry) => entry.requirementId === record.requirementId);
 }
 
 function freshRecords(ledger, id) {
@@ -168,7 +194,7 @@ export function applyEvidence(ledger, action, envelope) {
   for (const [id, result] of Object.entries(results)) {
     if (!declared.has(id)) fail(`evidence for ${id} was not declared by evidenceFor`);
     if (!ledger.requirements[id]) fail(`unknown requirement ${id}`);
-    records.push(evidenceRecord(action, id, result));
+    records.push(evidenceRecord(action, id, result, { workspaceRevision: ledger.workRevision }));
   }
   for (const id of declared) if (!(id in results)) fail(`evidence for ${id} was not provided`);
   const lastSequence = ledger.evidence.reduce((max, record) => Math.max(max, record.eventSequence), -1);
@@ -177,7 +203,7 @@ export function applyEvidence(ledger, action, envelope) {
   for (const record of records) {
     const { requirementId: id } = record;
     next.evidence.push(record);
-    next.requirements[id].evidence.push(record);
+    supersedeOlderWorkspaceRecords(next, record);
     next.requirements[id].status = resolveRequirement(next, id);
   }
   return next;
@@ -231,6 +257,11 @@ function validateStoredLedger(ledger) {
       if (record.status !== REQUIREMENT_STATUSES.PENDING) fail(`mechanicalFailure requires pending status for ${record.requirementId}`);
     }
     if (typeof record.stale !== 'boolean') fail(`invalid stale flag for ${record.requirementId}`);
+    if (record.workspaceRevision !== undefined) revision(record.workspaceRevision, `evidence workspaceRevision for ${record.requirementId}`);
+    if (record.staleReason !== undefined) {
+      nonEmptyString(record.staleReason, `evidence staleReason for ${record.requirementId}`);
+      if (record.stale !== true) fail(`staleReason requires a stale record for ${record.requirementId}`);
+    }
     if (record.currentRevision !== undefined) fail('evidence currentRevision is redundant');
     const key = `${record.sourceAction}\u0000${record.inspectedRevision}\u0000${record.eventSequence}\u0000${record.requirementId}`;
     if (seen.has(key)) fail(`duplicate evidence record for ${record.requirementId}`);

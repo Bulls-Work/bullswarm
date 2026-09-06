@@ -210,6 +210,23 @@ suite 569/569):
 | Rulebook told a caller planner that scout units are kernel-required | rulebook parameterized by planner mode; caller wording says advisory |
 | Unapplied `--program` lost if the kernel died during `--scout` | kept as `initial-planner-response.json` in the run dir until applied |
 
+### Found live during the demo run (`b49rua`)
+
+Driving a three-turn caller-planner run by hand exposed a ledger rule the
+benchmark had not: the cross-cutting requirement "full `npm test` passes
+19/19" failed on turn 1 (one bug deliberately left), then passed on turn 2, and
+the kernel reported it `blocked`, not `passed`. Both evidence records carried
+the same per-requirement `inspectedRevision` because no work action listed
+that requirement in `affects`, so the ledger saw same-revision conflicting
+evidence. The workspace *had* changed between them (global work revision
+`work-1-7-fix-semver` → `work-2-27-fix-intervals`). Fix: evidence records now
+carry the ledger-wide `workspaceRevision`, and semantic evidence on a newer
+workspace supersedes older evidence for the same requirement
+(`staleReason: "workspace-superseded"`); same-workspace disagreement still
+blocks; pending mechanical records never supersede. Legacy records without the
+field are superseded by the first current-workspace judgment, which is how the
+paused demo run completed on turn 3 with one evidence-only action.
+
 Refuted by the review and left as designed: the double-submit race (the
 compare-and-swap re-read in `submitCallerPlannerResponse` holds), the framing
 that steering is "invisible" to a caller planner, and the severity of the
