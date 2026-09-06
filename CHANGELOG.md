@@ -45,6 +45,16 @@ behaviour, or pass the program you authored with `--program <file.json>`.
   an orchestrated run on the caller's behalf. `--orchestrator auto|<pool>`
   passes through for callers that do not want to plan.
 
+- **Requirement granularity is surfaced, never forced.** When a goal collapses
+  to a single requirement, `plan contract` adds an `advice.requirements` line
+  and `delegate` adds the same text to its `handoff` (printed as
+  `Requirements ·`): one requirement means one pass/fail verdict for the whole
+  goal, and any gap reopens all of it, so numbering distinct deliverables
+  (`1. ... 2. ...`) buys a tracked requirement, a separate verdict, and gap
+  rounds scoped to the part that failed. A goal that already splits into
+  several requirements never carries the advice, and the text says explicitly
+  not to invent clauses to split a genuinely holistic outcome.
+
 - New `bullswarm workflow plan` surface: `plan contract "<goal>"` prints the
   requirement IDs the kernel will derive, the planning rules, the generic action
   fields, the validation it enforces, and a worked example; `plan show <run>`
