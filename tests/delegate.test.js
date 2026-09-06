@@ -73,16 +73,30 @@ test('explicit mode and lane overrides are transparent and validated', () => {
   assert.equal(inferLane('Convert this table to CSV.'), 'chore');
 });
 
-test('delegate invocation sends the conceptual plan to workflow goal', () => {
+test('workflow-shaped work returns the planning contract; --orchestrator dispatches a planner instead', () => {
   const decision = classifyTask({
     task: 'Implement, document, and independently verify the new API.',
     mode: 'workflow',
     plan: 'Discover; implement; verify; deliver.',
   });
-  const invocation = buildDelegateInvocation(decision, { task: 'Do the work.', cwd: '/tmp' });
+  // Default: the calling agent is the planner, so delegate hands back the
+  // contract and the exact launch line rather than spending a planner turn.
+  const contract = buildDelegateInvocation(decision, { task: 'Do the work.', cwd: '/tmp' });
+  assert.equal(contract.verb, 'plan');
+  assert.deepEqual(contract.argv.slice(0, 3), ['workflow', 'plan', 'contract']);
+  assert.ok(!contract.argv.includes('--suggested-plan'));
+  assert.match(contract.handoff.launch, /workflow goal <task> --cwd \/tmp --program plan\.json --json/);
+  assert.match(contract.handoff.orchestrator, /--orchestrator auto/);
+
+  const invocation = buildDelegateInvocation(decision, { task: 'Do the work.', cwd: '/tmp', orchestrator: 'auto' });
   assert.equal(invocation.verb, 'workflow');
   assert.deepEqual(invocation.argv.slice(0, 2), ['workflow', 'goal']);
+  assert.equal(invocation.argv[invocation.argv.indexOf('--orchestrator') + 1], 'auto');
   assert.equal(invocation.argv[invocation.argv.indexOf('--suggested-plan') + 1], decision.suggestedPlan);
+  const pinned = buildDelegateInvocation(decision, { task: 'x', cwd: '/tmp', orchestrator: 'codex' });
+  assert.equal(pinned.argv[pinned.argv.indexOf('--orchestrator') + 1], 'codex');
+  assert.equal(pinned.argv[pinned.argv.indexOf('--suggested-plan') + 1], decision.suggestedPlan);
+  assert.throws(() => buildDelegateInvocation(decision, { task: 'x', cwd: '/tmp', orchestrator: true }), /--orchestrator requires auto or a pool name/);
 
   const single = buildDelegateInvocation(classifyTask({ task: 'Review this diff.' }), {
     task: 'Review this diff.', cwd: '/tmp', effort: 'low', timeout: 30, noCaller: true,
@@ -142,15 +156,16 @@ test('delegate rejects malformed values before dispatch', async () => {
   }
 });
 
-test('delegate execution returns one composable envelope for both engines', async () => {
-  for (const [mode, childResult] of [
-    ['single', { ok: true, why: 'verified', outFile: '/tmp/out.md' }],
-    ['workflow', { action: 'goal-launched', shortId: 'abc234', observe: { watch: 'bullswarm workflow watch abc234' } }],
+test('delegate execution returns one composable envelope for every engine', async () => {
+  for (const [label, opts, childResult, expectedVerb] of [
+    ['single', { mode: 'single' }, { ok: true, why: 'verified', outFile: '/tmp/out.md' }, 'run'],
+    ['workflow-contract', { mode: 'workflow' }, { action: 'plan-contract', requirements: [{ id: 'requirement-1', text: 'x' }] }, 'workflow'],
+    ['workflow-orchestrated', { mode: 'workflow', orchestrator: 'auto' }, { action: 'goal-launched', shortId: 'abc234', observe: { watch: 'bullswarm workflow watch abc234' } }, 'workflow'],
   ]) {
     const out = [];
     let argv = null;
     const status = await cmdDelegate({
-      prompt: 'Complete the bounded request.', mode, cwd: '/tmp', json: true, rest: [],
+      prompt: 'Complete the bounded request.', cwd: '/tmp', json: true, rest: [], ...opts,
     }, {
       execute: async (value) => {
         argv = value;
@@ -159,11 +174,22 @@ test('delegate execution returns one composable envelope for both engines', asyn
       writeOut: (value) => out.push(value),
       writeErr: (value) => out.push(value),
     });
-    assert.equal(status, 0);
+    assert.equal(status, 0, label);
     const envelope = JSON.parse(out.join('\n'));
-    assert.equal(envelope.decision.mode, mode);
-    assert.deepEqual(envelope.execution, childResult);
-    assert.equal(argv[0], mode === 'single' ? 'run' : 'workflow');
+    assert.equal(envelope.decision.mode, opts.mode, label);
+    assert.deepEqual(envelope.execution, childResult, label);
+    assert.equal(argv[0], expectedVerb, label);
+    if (label === 'workflow-contract') {
+      assert.equal(envelope.action, 'plan-required');
+      assert.equal(envelope.invocation.verb, 'plan');
+      assert.match(envelope.handoff.launch, /--program plan\.json/);
+      assert.deepEqual(argv.slice(0, 3), ['workflow', 'plan', 'contract']);
+    }
+    if (label === 'workflow-orchestrated') {
+      assert.equal(envelope.action, 'execute');
+      assert.equal(envelope.handoff, undefined);
+      assert.deepEqual(argv.slice(0, 2), ['workflow', 'goal']);
+    }
   }
 });
 
