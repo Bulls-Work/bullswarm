@@ -227,6 +227,29 @@ blocks; pending mechanical records never supersede. Legacy records without the
 field are superseded by the first current-workspace judgment, which is how the
 paused demo run completed on turn 3 with one evidence-only action.
 
+### Found in the acceptance matrix: silent requirement granularity
+
+The kernel derives requirements from the goal text, so a goal written as prose
+("fix X, document Y and verify Z") became exactly one requirement: one pass/fail
+verdict for all three deliverables, and a gap round that reopens all of them
+even when only Z failed. Numbering the clauses gives one tracked requirement
+each, but nothing anywhere told the caller that, and the caller is the only
+party that can change it because `delegate` hands the task text back verbatim.
+Measured on the same text: prose → 1 requirement; `"1. ... 2. ... 3. ... 4. ..."`
+→ 4 requirements.
+
+Fix: `plan contract` emits `advice.requirements` and the `delegate` handoff
+carries the same sentence (printed as `Requirements ·`) when, and only when, the
+goal collapsed to one requirement. It states the consequence, names the
+numbering that avoids it, and says explicitly not to invent clauses to split a
+genuinely holistic outcome. Deliberately advice and not a rule: "make the parser
+faster" is correctly one requirement, and rejecting single-requirement goals
+would make the tool less flexible, not more precise. Verified end to end on the
+released build with run `z77mza`: the prose form printed the advice, the
+numbered form produced two requirements and no advice, and the numbered run
+completed with both requirements `passed` (1m37s, 3 dispatches, 0 planner,
+2,702 tokens).
+
 Refuted by the review and left as designed: the double-submit race (the
 compare-and-swap re-read in `submitCallerPlannerResponse` holds), the framing
 that steering is "invisible" to a caller planner, and the severity of the
