@@ -17,7 +17,7 @@ import { cmdRuns } from './runs-cli.js';
 import { resolveRunId, reconcileInterruptedRuns } from './short-id.js';
 import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
 import { readEvents } from './events.js';
-import { extractGoalRequirements } from './goal.js';
+import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { createV2GoalDocument, createV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './v2-runtime.js';
 import { requestCancel } from './dashboard.js';
@@ -816,7 +816,18 @@ function planContract(opts) {
   const { goal, doc } = built;
   const next = goalNextCommands(goal, doc.intent.cwd);
   const contract = buildV2PlannerContract(doc, { launchCommand: next.launch });
-  console.log(JSON.stringify({ action: 'plan-contract', ...contract, next: { validate: next.validate, launch: next.launch, scout: next.scout } }, null, 2));
+  // Advice, never a rule, and only when it applies: a goal that collapsed to a
+  // single requirement gets one verdict for the whole thing, and any gap
+  // reopens all of it. A holistic outcome is legitimately one requirement.
+  const advice = contract.requirements.length === 1
+    ? { advice: { requirements: REQUIREMENT_GRANULARITY_HINT } }
+    : {};
+  console.log(JSON.stringify({
+    action: 'plan-contract',
+    ...contract,
+    ...advice,
+    next: { validate: next.validate, launch: next.launch, scout: next.scout },
+  }, null, 2));
   return 0;
 }
 

@@ -133,6 +133,14 @@ for that branch, and it carries a `handoff: {launch, orchestrator}` object.
 `invocation.verb` is `"plan"`, so a caller can branch on the verb without
 parsing the display string.
 
+**Deviation 3 (added after the acceptance matrix).** When the goal collapses to
+one requirement, the handoff gains a `requirements` field and `plan contract`
+gains `advice.requirements`, both carrying the same sentence: one requirement is
+one verdict for the whole goal, numbering distinct deliverables buys per-part
+verdicts and per-part gap rounds, and a holistic outcome should stay one
+sentence. It is advice keyed on the requirement count, so a goal that already
+splits into several requirements never sees it.
+
 ## `workflow capabilities`
 
 `defaults.plannerMode: "caller"`; `plannerModes.dispatched` reads "explicit

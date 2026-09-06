@@ -33,6 +33,15 @@ function compactRequirement(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
 
+// Advice for a caller whose goal collapsed to a single requirement. Numbering
+// is never required: a goal with distinct deliverables is tracked and repaired
+// per clause, while a genuinely holistic outcome ("make the parser faster") is
+// correctly one requirement and must not be split into invented parts.
+export const REQUIREMENT_GRANULARITY_HINT =
+  'This goal is tracked as one requirement, so the result reports one pass/fail for the whole thing and any gap reopens all of it. '
+  + 'If it has distinct deliverables, number them ("1. ... 2. ...") to get one tracked requirement each, with separate verdicts and gap rounds scoped to the part that failed. '
+  + 'Leave a single holistic outcome as one sentence; do not invent clauses to split it.';
+
 export function extractGoalRequirements(goal) {
   const text = String(goal ?? '').trim();
   if (!text) return [];

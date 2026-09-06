@@ -7,6 +7,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
+import { REQUIREMENT_GRANULARITY_HINT, extractGoalRequirements } from './workflow/goal.js';
+
 const BIN = fileURLToPath(new URL('../bin/bullswarm.js', import.meta.url));
 const MODES = new Set(['auto', 'single', 'workflow']);
 const LANES = new Set(['analyze', 'build', 'chore']);
@@ -159,6 +161,12 @@ export function buildDelegateInvocation(decision, {
       handoff: {
         launch: `bullswarm workflow goal <task> --cwd ${targetDir} --program plan.json --json`,
         orchestrator: `bullswarm delegate --mode workflow --orchestrator auto --cwd ${targetDir} --prompt <task>`,
+        // Advice, never a rule, and only when it applies: the task is handed
+        // back verbatim, so a multi-part goal written as prose collapses to one
+        // requirement and one verdict. An already-numbered goal never sees it.
+        ...(extractGoalRequirements(task).length === 1
+          ? { requirements: REQUIREMENT_GRANULARITY_HINT }
+          : {}),
       },
     };
   }
@@ -397,6 +405,7 @@ function printExecution(envelope, writeOut, writeErr) {
     const requirements = Array.isArray(result.requirements) ? result.requirements.length : 0;
     writeOut(`Planning contract · ${requirements} requirement${requirements === 1 ? '' : 's'} · author plan.json from it (use --json for the full contract)`);
     if (envelope.handoff?.launch) writeOut(`Launch · ${envelope.handoff.launch}`);
+    if (envelope.handoff?.requirements) writeOut(`Requirements · ${envelope.handoff.requirements}`);
     if (envelope.handoff?.orchestrator) writeOut(`Or delegate planning · ${envelope.handoff.orchestrator}`);
     return;
   }

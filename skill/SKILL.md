@@ -138,7 +138,10 @@ error with nothing launched. Every refusal names the next commands.
    `requirement-1..n`; a trailing "Finish with ..." line becomes the last
    requirement), the read-only constraint, the planning rules, the action
    fields, the validation the kernel enforces, and a worked example. Number
-   the goal's deliverables; prose collapses to one requirement.
+   the goal's deliverables; prose collapses to one requirement, which means one
+   pass/fail verdict for the whole goal and a gap round that reopens all of it.
+   When that happens the contract says so under `advice.requirements`. Leave a
+   genuinely holistic outcome as one sentence rather than inventing clauses.
 2. Scout inline with your own tools (list files, run the tests) and write the
    program to a file: file-disjoint work actions in parallel, ordered only by
    real data or same-file dependencies, self-contained prompts with the exact

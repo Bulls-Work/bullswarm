@@ -436,6 +436,16 @@ test('CLI: plan contract exposes requirement IDs, rules, and the example without
     assert.ok(contract.rules.length >= 20);
     assert.equal(contract.program.schemaVersion, 'bullswarm.workflow.program.v2');
     assert.match(contract.launch.command, /--program plan\.json --json$/);
+    // One requirement means one verdict for the whole goal, so the contract
+    // says so and explains what numbering buys. It is advice: a goal that
+    // already splits into several requirements never carries it.
+    assert.match(contract.advice.requirements, /tracked as one requirement/);
+    assert.match(contract.advice.requirements, /do not invent clauses to split it/);
+    const split = cli(f, ['workflow', 'plan', 'contract', '1. Create done.txt. 2. Keep the suite green.', '--cwd', f.target, '--json']);
+    assert.equal(split.status, 0, split.stderr);
+    const splitContract = JSON.parse(split.stdout);
+    assert.equal(splitContract.requirements.length, 2);
+    assert.equal('advice' in splitContract, false);
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'contract must not create a run');
   } finally { f.cleanup(); }
 });

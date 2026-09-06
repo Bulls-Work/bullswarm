@@ -408,3 +408,48 @@ test('delegate rejects malformed --classify values before dispatch', async () =>
     assert.match(errors.join('\n'), message);
   }
 });
+
+test('the planning handoff nudges requirement granularity only when the goal collapsed to one requirement', async () => {
+  const decision = classifyTask({ task: 'Implement, document, and verify the new API.', mode: 'workflow' });
+
+  // Prose hands the goal back verbatim, so the kernel tracks one requirement
+  // and reports one verdict for the whole thing: say so, and say why numbering
+  // helps. Advice, never a rule.
+  const prose = buildDelegateInvocation(decision, {
+    task: 'Make the slug helper handle unicode, add a regression test and keep the suite green.',
+    cwd: '/tmp',
+  });
+  assert.match(prose.handoff.requirements, /tracked as one requirement/);
+  assert.match(prose.handoff.requirements, /number them/);
+  assert.match(prose.handoff.requirements, /do not invent clauses to split it/);
+
+  // A caller that already made the granularity call is never nagged.
+  const numbered = buildDelegateInvocation(decision, {
+    task: '1. Make the slug helper handle unicode. 2. Add a regression test. 3. Keep the suite green.',
+    cwd: '/tmp',
+  });
+  assert.equal('requirements' in numbered.handoff, false);
+  assert.match(numbered.handoff.launch, /--program plan\.json --json/);
+
+  // The human form prints the same advice between the launch line and the
+  // orchestrator escape hatch.
+  const lines = [];
+  const status = await cmdDelegate({
+    prompt: 'Make the slug helper handle unicode, add a regression test and keep the suite green.',
+    mode: 'workflow', cwd: '/tmp', rest: [],
+  }, {
+    execute: async () => ({
+      status: 0,
+      stdout: JSON.stringify({ action: 'plan-contract', requirements: [{ id: 'requirement-1', text: 'x' }] }),
+      stderr: '',
+    }),
+    writeOut: (value) => lines.push(value),
+    writeErr: (value) => lines.push(value),
+  });
+  assert.equal(status, 0);
+  const printed = lines.join('\n');
+  assert.match(printed, /Planning contract · 1 requirement ·/);
+  assert.match(printed, /\nRequirements · This goal is tracked as one requirement/);
+  assert.ok(printed.indexOf('Requirements ·') > printed.indexOf('Launch ·'));
+  assert.ok(printed.indexOf('Requirements ·') < printed.indexOf('Or delegate planning ·'));
+});
