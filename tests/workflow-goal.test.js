@@ -187,7 +187,7 @@ test('CLI exact model locks are preserved on every planner and worker attempt', 
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt with exact route locks.',
       '--cwd', f.target, '--foreground', '--json',
-      '--strict-orchestrator', 'goal-agent', '--orchestrator-model', 'planner-sol',
+      '--orchestrator', 'goal-agent', '--orchestrator-strict', '--orchestrator-model', 'planner-sol',
       '--worker-pool', 'goal-agent', '--worker-model', 'worker-luna',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -212,7 +212,7 @@ test('CLI suggested plan is validated, persisted, and supplied to the planner', 
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt using bounded planner context.',
       '--cwd', f.target, '--foreground', '--json', '--suggested-plan', suggestedPlan,
-      '--strict-orchestrator', 'goal-agent', '--orchestrator-model', 'planner-sol',
+      '--orchestrator', 'goal-agent', '--orchestrator-strict', '--orchestrator-model', 'planner-sol',
       '--worker-pool', 'goal-agent', '--worker-model', 'worker-luna',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -241,7 +241,7 @@ test('--watch prints the operating handoff and follows the independent run to te
   try {
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt while the caller watches.',
-      '--cwd', f.target, '--watch', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--orchestrator', 'auto', '--watch', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, /workflow [a-z2-9]{6} continues independently; next commands:/);
@@ -258,7 +258,7 @@ test('--no-scout deterministically skips preflight without weakening evidence co
   try {
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt without repository reconnaissance.',
-      '--cwd', f.target, '--foreground', '--json', '--no-scout', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--orchestrator', 'auto', '--foreground', '--json', '--no-scout', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -276,7 +276,7 @@ test('one foreground CLI goal autonomously plans, routes, executes, verifies, an
   try {
     const result = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt without asking for a workflow document.',
-      '--cwd', f.target, '--foreground', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--orchestrator', 'auto', '--foreground', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -304,7 +304,7 @@ test('kernel completion requires fresh requirement-scoped evidence', () => {
   try {
     const result = cli(f, [
       'workflow', 'goal', 'PREMATURE_COMPLETION then create and verify done.txt.',
-      '--cwd', f.target, '--foreground', '--json', '--max-agents', '8', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--orchestrator', 'auto', '--foreground', '--json', '--max-agents', '8', '--max-expansion-rounds', '2',
     ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout);
@@ -320,7 +320,7 @@ test('detached CLI goal survives the initiating CLI and remains observable', asy
   try {
     const launchResult = cli(f, [
       'workflow', 'goal', 'Create and verify done.txt in a detached autonomous run.',
-      '--cwd', f.target, '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
+      '--cwd', f.target, '--orchestrator', 'auto', '--json', '--max-agents', '6', '--max-expansion-rounds', '2',
     ]);
     assert.equal(launchResult.status, 0, launchResult.stderr || launchResult.stdout);
     const launch = JSON.parse(launchResult.stdout);

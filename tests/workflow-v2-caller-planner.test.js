@@ -372,6 +372,8 @@ function cliFixture() {
     'const task = readFileSync(process.argv[2], "utf8");',
     'if (task.includes("single logical Workflow Planner for Bullswarm autonomous V2")) {',
     '  process.stderr.write("PLANNER DISPATCHED IN CALLER MODE"); process.exit(9);',
+    '} else if (task.includes("read-only SCOUT")) {',
+    '  process.stdout.write(["TREE:\\n- target/", "MANIFEST:\\n- fixture repository", "TEST STATUS:\\n- no test command required", "UNITS OF WORK:\\n- create-done: create done.txt and inspect it", "SHARED FILES:\\n- none", "RISKS:\\n- exact byte content must match", "The target is a bounded disposable fixture. ".repeat(8), "[\\\"create-done\\\"]"].join("\\n"));',
     '} else if (task.includes("autonomous V2 evidence action")) {',
     '  const ok = existsSync("done.txt") && readFileSync("done.txt", "utf8") === "caller-complete\\n";',
     '  const candidate = task.match(/exact durable path: \'([^\']+)\'/)?.[1];',
@@ -433,7 +435,7 @@ test('CLI: plan contract exposes requirement IDs, rules, and the example without
     assert.equal(contract.settings.scout, false);
     assert.ok(contract.rules.length >= 20);
     assert.equal(contract.program.schemaVersion, 'bullswarm.workflow.program.v2');
-    assert.match(contract.launch.command, /--program <file.json>/);
+    assert.match(contract.launch.command, /--program plan\.json --json$/);
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'contract must not create a run');
   } finally { f.cleanup(); }
 });
@@ -476,18 +478,24 @@ test('CLI: an invalid --program is rejected synchronously and nothing is launche
     writeFileSync(programPath, JSON.stringify(bad));
     const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /caller program invalid \(nothing ran\)/);
-    assert.match(result.stderr, /analyze actions must not own workspace files/);
+    const refusal = JSON.parse(result.stdout);
+    assert.equal(refusal.error, 'program-invalid');
+    assert.match(refusal.message, /caller program invalid \(nothing ran\)/);
+    assert.ok(refusal.issues.some((issue) => /analyze actions must not own workspace files/.test(issue)), refusal.issues.join('; '));
+    const human = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath]);
+    assert.equal(human.status, 2);
+    assert.match(human.stderr, /caller program invalid \(nothing ran\)/);
+    assert.match(human.stderr, /analyze actions must not own workspace files/);
     assert.equal(existsSync(join(f.home, 'workflows')), false);
     assert.equal(existsSync(join(f.home, 'goals')), false);
     const conflict = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--orchestrator', 'caller-agent', '--json']);
     assert.equal(conflict.status, 2);
-    assert.match(conflict.stderr, /dispatches no Workflow Planner process/);
+    assert.match(conflict.stderr, /--program and --orchestrator are mutually exclusive/);
     const foreign = join(f.root, 'foreign.json');
     writeFileSync(foreign, JSON.stringify({ schemaVersion: 'bullswarm.workflow.v1', phases: [] }));
     const rejected = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', foreign, '--json']);
     assert.equal(rejected.status, 2);
-    assert.match(rejected.stderr, /schemaVersion must be/);
+    assert.ok(JSON.parse(rejected.stdout).issues.some((issue) => /schemaVersion must be/.test(issue)), rejected.stdout);
   } finally { f.cleanup(); }
 });
 
@@ -800,7 +808,7 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
     assert.match(bareResume.stderr, /--resume requires a value/);
     const dispatchedContract = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--planner', 'dispatched']);
     assert.equal(dispatchedContract.status, 2);
-    assert.match(dispatchedContract.stderr, /--planner dispatched does not apply/);
+    assert.match(dispatchedContract.stderr, /--planner was removed/);
     const routedContract = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--orchestrator', 'caller-agent']);
     assert.equal(routedContract.status, 2);
     const missingCwd = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', join(f.root, 'missing')]);
@@ -818,7 +826,7 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
 test('CLI: the exhausted hint appears only at a gaps boundary, and plan show reports a finished run as not waiting', () => {
   const f = cliFixture();
   try {
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--planner', 'caller', '--no-scout', '--foreground', '--json']);
+    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const awaiting = JSON.parse(launched.stdout);
     assert.equal(awaiting.boundary, 'initial');
@@ -888,7 +896,7 @@ test('CLI: cancelling a paused run refuses submissions, points at the finalizing
     const cancelDoc = JSON.parse(cancel.stdout);
     assert.equal(cancelDoc.action, 'cancel');
     assert.equal(cancelDoc.pausedForCaller, true);
-    assert.match(cancelDoc.finalize, /workflow goal --resume/);
+    assert.match(cancelDoc.finalize, /workflow cancel/);
     const fixPath = join(f.root, 'plan-2.json');
     writeFileSync(fixPath, JSON.stringify(cliProgram()));
     const refused = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--json']);
@@ -899,13 +907,13 @@ test('CLI: cancelling a paused run refuses submissions, points at the finalizing
     const request = JSON.parse(show.stdout);
     assert.equal(request.cancellation.requested, true);
     assert.equal(request.submit, null);
-    assert.match(request.finalize, /workflow goal --resume/);
+    assert.match(request.finalize, /workflow cancel/);
     const human = cli(f, ['workflow', 'plan', 'show', token]);
     assert.match(human.stdout, /cancel\s+requested/);
-    assert.match(human.stdout, /finalize\s+bullswarm workflow goal --resume/);
+    assert.match(human.stdout, /finalize\s+bullswarm workflow cancel/);
     const watchPaused = cli(f, ['workflow', 'watch', token]);
     assert.equal(watchPaused.status, 0, watchPaused.stderr);
-    assert.match(watchPaused.stdout, /next: cancellation requested; bullswarm workflow goal --resume .* finalizes it/);
+    assert.match(watchPaused.stdout, /next: cancellation requested; bullswarm workflow cancel .* finalizes it/);
     const finalized = cli(f, ['workflow', 'goal', '--resume', token, '--json']);
     assert.equal(finalized.status, 1, finalized.stderr || finalized.stdout);
     const result = JSON.parse(finalized.stdout);
@@ -977,5 +985,234 @@ test('CLI: steering queued while paused shows in plan show and is consumed by a 
     const events = readEvents(join(f.home, 'workflows', runId));
     assert.equal(events.filter((event) => event.type === 'steering.delivered').length, 1);
     assert.equal(events.filter((event) => event.type === 'planner.awaiting_caller').length, 1);
+  } finally { f.cleanup(); }
+});
+
+// --- caller-first CLI: the program is required, and every refusal guides ------
+
+test('CLI: workflow goal without a program refuses, launches nothing, and names every next command', () => {
+  const f = cliFixture();
+  try {
+    const human = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target]);
+    assert.equal(human.status, 2, human.stdout);
+    assert.match(human.stderr, /needs a program: you are the Workflow Planner/);
+    for (const fragment of ['plan contract', 'plan validate', '--program plan.json', '--scout', '--orchestrator auto']) {
+      assert.ok(human.stderr.includes(fragment), `guidance must name ${fragment}: ${human.stderr}`);
+    }
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'nothing may be launched');
+    assert.equal(existsSync(join(f.home, 'goals')), false, 'no launch request may be written');
+
+    const json = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--json']);
+    assert.equal(json.status, 2);
+    const doc = JSON.parse(json.stdout);
+    assert.equal(doc.error, 'program-required');
+    assert.deepEqual(Object.keys(doc.next).sort(), ['contract', 'launch', 'orchestrator', 'scout', 'validate']);
+    assert.match(doc.next.contract, /^bullswarm workflow plan contract /);
+    assert.match(doc.next.launch, /--program plan\.json --json$/);
+    assert.match(doc.next.orchestrator, /--orchestrator auto$/);
+
+    // The refusal's own contract command must run and describe this goal.
+    const contractArgs = ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--json'];
+    const contract = cli(f, contractArgs);
+    assert.equal(contract.status, 0, contract.stderr);
+    assert.equal(JSON.parse(contract.stdout).requirements.length, 1);
+  } finally { f.cleanup(); }
+});
+
+test('CLI: an invalid program is refused the same way by plan validate and by goal', () => {
+  const f = cliFixture();
+  try {
+    const badPath = join(f.root, 'bad.json');
+    // Work action with no evidence action for the requirement it affects.
+    writeFileSync(badPath, JSON.stringify({
+      schemaVersion: 'bullswarm.workflow.program.v2',
+      actions: [{ id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] }],
+    }));
+    const validated = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', badPath, '--json']);
+    assert.equal(validated.status, 2, validated.stdout);
+    const refusal = JSON.parse(validated.stdout);
+    assert.equal(refusal.error, 'program-invalid');
+    assert.ok(refusal.issues.length >= 1);
+    assert.deepEqual(Object.keys(refusal.next).sort(), ['contract', 'validate']);
+    assert.equal(existsSync(join(f.home, 'workflows')), false);
+
+    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', badPath, '--json']);
+    assert.equal(launched.status, 2);
+    assert.deepEqual(JSON.parse(launched.stdout).issues, refusal.issues, 'validate and goal must agree exactly');
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'an invalid program launches nothing');
+  } finally { f.cleanup(); }
+});
+
+test('CLI: plan validate accepts a good program without creating a run', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'plan.json');
+    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    const json = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const doc = JSON.parse(json.stdout);
+    assert.equal(doc.action, 'plan-valid');
+    assert.deepEqual(doc.program.actions.map((a) => a.id), ['create-done', 'check-create-done']);
+    assert.deepEqual(doc.program.actions[1].evidenceFor, ['requirement-1']);
+    assert.match(doc.next.launch, /--program plan\.json --json$/);
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validation must not create a run');
+
+    const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /program valid against the contract: 2 actions for 1 requirement \(nothing launched\)/);
+    assert.match(human.stdout, /launch\s+bullswarm workflow goal/);
+
+    const missingProgram = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target]);
+    assert.equal(missingProgram.status, 2);
+    assert.match(missingProgram.stderr, /usage: bullswarm workflow plan validate/);
+  } finally { f.cleanup(); }
+});
+
+test('CLI: --scout alone surveys first and pauses at the initial boundary for the caller', () => {
+  const f = cliFixture();
+  try {
+    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
+    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+    const awaiting = JSON.parse(launched.stdout);
+    assert.equal(awaiting.action, 'planner-awaiting');
+    assert.equal(awaiting.boundary, 'initial');
+    assert.equal(awaiting.plannerMode, 'caller');
+    const state = JSON.parse(readFileSync(join(f.home, 'workflows', awaiting.runId, 'state.json'), 'utf8'));
+    assert.equal(state.preflight.scout.status, 'succeeded', 'the kernel scout must have run');
+    assert.equal(state.planner.attempts.length, 0, 'no planner process may be dispatched');
+    const request = JSON.parse(readFileSync(awaiting.requestPath, 'utf8'));
+    assert.equal(request.scoutUnitsAdvisory, true);
+    assert.ok(request.context.scout.includes('UNITS OF WORK'));
+  } finally { f.cleanup(); }
+});
+
+test('CLI: planning flags are rejected in the combinations that would plan behind the caller', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'plan.json');
+    writeFileSync(programPath, JSON.stringify(cliProgram()));
+    const cases = [
+      [['--program', programPath, '--orchestrator', 'auto'], /--program and --orchestrator are mutually exclusive/],
+      [['--planner', 'caller', '--program', programPath], /--planner was removed/],
+      [['--program', programPath, '--suggested-plan', 'do it'], /--suggested-plan.*only with --orchestrator/],
+      [['--program', programPath, '--no-scout'], /--no-scout.*only with --orchestrator/],
+      [['--program', programPath, '--orchestrator-model', 'worker-luna'], /--orchestrator-model.*only with --orchestrator/],
+      [['--orchestrator', 'auto', '--orchestrator-strict'], /--orchestrator-strict needs a named pool/],
+      [['--orchestrator', 'caller-agent', '--strict-orchestrator', 'caller-agent'], /mutually exclusive/],
+    ];
+    for (const [args, pattern] of cases) {
+      const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, ...args]);
+      assert.equal(result.status, 2, `${args.join(' ')}: ${result.stdout}`);
+      assert.match(result.stderr, pattern);
+    }
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'no rejected combination may launch');
+    // The deprecated alias still works on its own.
+    const contract = cli(f, ['workflow', 'plan', 'contract', GOAL, '--cwd', f.target, '--orchestrator', 'auto']);
+    assert.equal(contract.status, 2);
+    assert.match(contract.stderr, /--orchestrator.*do not apply/);
+  } finally { f.cleanup(); }
+});
+
+test('CLI: workflow cancel finalizes a paused caller run and is idempotent afterwards', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'plan.json');
+    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
+    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+    const { shortId: token, runId } = JSON.parse(launched.stdout);
+
+    const cancelled = cli(f, ['workflow', 'cancel', token, '--json']);
+    assert.equal(cancelled.status, 0, cancelled.stderr);
+    const doc = JSON.parse(cancelled.stdout);
+    assert.equal(doc.action, 'cancel');
+    assert.equal(doc.finalized, true);
+    assert.equal(doc.status, 'cancelled');
+    const state = JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8'));
+    assert.equal(state.lifecycle.status, 'cancelled');
+    assert.equal(state.planner.awaiting, null);
+    const result = cli(f, ['workflow', 'runs', 'result', token, '--json']);
+    assert.equal(JSON.parse(result.stdout).status, 'cancelled');
+
+    const again = cli(f, ['workflow', 'cancel', token, '--json']);
+    assert.equal(again.status, 0);
+    assert.equal(JSON.parse(again.stdout).alreadyFinished, true);
+    const submit = cli(f, ['workflow', 'plan', 'submit', token, '--program', programPath, '--json']);
+    assert.equal(submit.status, 1);
+    assert.match(submit.stderr, /already terminal/);
+  } finally { f.cleanup(); }
+});
+
+test('CLI: workflow resume is the verb form of goal --resume and refuses planning flags', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'plan.json');
+    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
+    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+    const { shortId: token, runId } = JSON.parse(launched.stdout);
+
+    for (const args of [['--program', programPath], ['--orchestrator', 'auto'], ['--scout']]) {
+      const refused = cli(f, ['workflow', 'resume', token, ...args]);
+      assert.equal(refused.status, 2, `${args.join(' ')}: ${refused.stdout}`);
+      assert.match(refused.stderr, /keeps its durable planner mode/);
+    }
+    const missing = cli(f, ['workflow', 'resume', 'zzzzzz', '--json']);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /no run found/);
+
+    // Resuming a paused run re-pauses on the same request, changing nothing.
+    const resumed = cli(f, ['workflow', 'resume', token, '--foreground', '--json']);
+    assert.equal(resumed.status, 0, resumed.stderr || resumed.stdout);
+    const awaiting = JSON.parse(resumed.stdout);
+    assert.equal(awaiting.action, 'planner-awaiting');
+    assert.equal(awaiting.turn, 2);
+    const state = JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8'));
+    assert.equal(state.planner.turns, 1);
+    assert.equal(state.attempts.length, 2, 'no new dispatch may happen on a re-pause');
+  } finally { f.cleanup(); }
+});
+
+test('CLI: capabilities and launch instructions advertise the caller-first contract', () => {
+  const f = cliFixture();
+  try {
+    const capabilities = JSON.parse(cli(f, ['workflow', 'capabilities']).stdout).engines.autonomousV2;
+    assert.equal(capabilities.defaults.plannerMode, 'caller');
+    assert.equal(capabilities.features.programRequired, true);
+    assert.match(capabilities.plannerModes.caller, /^default:/);
+    assert.match(capabilities.plannerModes.dispatched, /^explicit --orchestrator/);
+
+    const programPath = join(f.root, 'plan.json');
+    writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
+    const launch = JSON.parse(cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--json']).stdout);
+    assert.match(launch.observe.cancel, /workflow cancel .* --json/);
+    assert.match(launch.observe.steer, /workflow steer /);
+    assert.ok(launch.instructions.cancel, 'the launch handoff must name the cancel verb');
+  } finally { f.cleanup(); }
+});
+
+test('CLI: refusal guidance is copy-pasteable — shell-safe quoting, and a placeholder for a long goal', () => {
+  const f = cliFixture();
+  try {
+    // A goal containing an apostrophe must round-trip through a real shell,
+    // so the printed command reproduces the same requirement text.
+    const quoted = cli(f, ['workflow', 'goal', "Fix the parser's bug", '--cwd', f.target, '--json']);
+    assert.equal(quoted.status, 2);
+    const command = JSON.parse(quoted.stdout).next.contract;
+    assert.ok(command.includes(`'Fix the parser'\\''s bug'`), command);
+    const viaShell = spawnSync('/bin/sh', ['-c', command.replace(/^bullswarm/, `${process.execPath} ${BIN}`)], {
+      cwd: REPO, env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_DEPTH: '0' }, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(viaShell.status, 0, viaShell.stderr);
+    assert.equal(JSON.parse(viaShell.stdout).requirements[0].text, "Fix the parser's bug");
+
+    // A multi-line goal is not inlined: JSON escapes would not survive shell
+    // double quotes, and the guidance would bury the commands.
+    const long = cli(f, ['workflow', 'goal', '1. First thing.\n2. Second thing.', '--cwd', f.target, '--json']);
+    assert.equal(long.status, 2);
+    for (const value of Object.values(JSON.parse(long.stdout).next)) {
+      assert.ok(value.includes('"<goal>"'), value);
+      assert.ok(!value.includes('\\n'), `a multi-line goal must not be inlined: ${value}`);
+    }
   } finally { f.cleanup(); }
 });

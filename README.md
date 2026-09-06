@@ -79,7 +79,9 @@ bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and
 bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # bounded classification + decision/plan; no work dispatch
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
 bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser" --json
-bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo
+bullswarm workflow plan contract "Fix the failing tests and verify the change" --cwd ~/some-repo --json  # you are the planner
+bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --program plan.json
+bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --orchestrator auto  # dispatch a planner agent
 bullswarm health   # re-judge saved outputs; catch gate failures
 ```
 
@@ -89,7 +91,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 |---|---|
 | `setup` | Discover installed agent CLIs, show quota state, toggle pools, suggest a routing table, write config. Approval-gated, idempotent. |
 | `integrate` | Register or remove the canonical Bullswarm skill and global awareness rules for Codex, Claude, and Grok. |
-| `delegate` | Explain and execute the smallest reliable shape: one content-verified agent or an autonomous verified workflow. |
+| `delegate` | Explain and execute the smallest reliable shape: one content-verified agent, or the planning contract for an autonomous workflow you author (`--orchestrator` dispatches a planner agent instead). |
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, quarantine status |
@@ -226,19 +228,31 @@ phase/step/attempt tree.
 
 ## One-command autonomous goals
 
-For normal multi-step work, give Bullswarm the goal—not a JSON graph:
+For normal multi-step work, give Bullswarm the goal and the program you authored
+for it—not a JSON graph of phases:
 
 ```bash
-# Default: starts independently, prints observation/result commands, and returns.
-bullswarm workflow goal \
-  "Fix the failing tests with the smallest correct change and verify them" \
-  --cwd ~/some-repo
+# 1. What the kernel will enforce: requirement IDs, rules, action schema, example.
+bullswarm workflow plan contract \
+  "1. Fix the failing tests with the smallest correct change. 2. Verify them." \
+  --cwd ~/some-repo --json
 
-# Follow low-noise semantic progress immediately after launch.
+# 2. Launch with your program. Starts independently, prints observation
+#    commands, and returns. Add --watch to follow low-noise progress.
+bullswarm workflow goal \
+  "1. Fix the failing tests with the smallest correct change. 2. Verify them." \
+  --cwd ~/some-repo --program plan.json --watch
+
+# Don't want to plan? Ask for a Workflow Planner agent explicitly.
 bullswarm workflow goal \
   "Audit and repair the parser, then run its acceptance tests" \
-  --cwd ~/some-repo --watch
+  --cwd ~/some-repo --orchestrator auto --watch
 ```
+
+`workflow goal` needs a program: with neither `--program`, `--scout`, nor
+`--orchestrator` it exits 2, launches nothing, and prints the commands above.
+That is deliberate — the kernel never plans on the caller's behalf unless the
+caller asks for it by name.
 
 `--max-agents`, `--max-actions`, and `--max-expansion-rounds` are soft V2
 planning targets. They encourage the Workflow Planner to consolidate optional
@@ -286,24 +300,29 @@ bullswarm workflow events --json <shortId> --after 0
 bullswarm workflow action show --json <shortId> <actionId>
 ```
 
-Resume a process-interrupted autonomous run from its persisted workflow:
+Manage a run with first-class verbs:
 
 ```bash
-bullswarm workflow goal --resume <shortId> --json
+bullswarm workflow steer  <shortId> --message "<guidance>"   # next planning boundary
+bullswarm workflow cancel <shortId> --json                   # a paused run is finalized here
+bullswarm workflow resume <shortId> --watch                  # verb form of goal --resume
 ```
 
 `--orchestrator <pool>` expresses a preference and immediately falls back to
-another eligible pool if that provider is quota-gated or unavailable. Ordinary
-use can leave selection on `auto`. For controlled provider QA only,
-`--strict-orchestrator <pool>` requires that exact pool and fails if it is not
-available. Controlled comparisons can additionally pin the exact planner
+another eligible pool if that provider is quota-gated or unavailable; plain
+`--orchestrator auto` leaves selection to the kernel. For controlled provider
+QA only, add `--orchestrator-strict` to require that exact pool and fail if it
+is not available. Controlled comparisons can additionally pin the exact planner
 and worker routes without changing global strategy:
 
 ```bash
 bullswarm workflow goal "Implement and verify the change" --cwd . \
-  --strict-orchestrator codex --orchestrator-model gpt-5.6-sol \
+  --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol \
   --worker-pool opencode2 --worker-model relay/gpt-5.6-luna
 ```
+
+These pins, plus `--suggested-plan` and `--no-scout`, apply only with
+`--orchestrator`. When you are the planner, the plan is the program.
 
 The worker lock covers scout, work actions, and evidence actions. A pool that cannot guarantee
 the requested model is ineligible rather than silently substituting another
@@ -335,18 +354,20 @@ writers and still enforces the changed-path boundary.
 
 ### You are the planner: `--program` and `workflow plan`
 
-A capable calling agent (Claude Code, Codex, or any frontier model with the
-repository in context) can be the Workflow Planner itself instead of paying for
-a dispatched scout and planner. The kernel keeps everything it owns — proposal
-validation, quota routing, isolated worktrees and changed-path ownership,
-independent evidence, the requirement ledger, completion, and the stable result
-envelope — while the caller supplies the program, exactly the division of
-labour Claude Code's `Workflow` tool uses between the authoring model and its
-harness.
+This is the default. The calling agent (Claude Code, Codex, or any frontier
+model with the repository in context) is the Workflow Planner, instead of the
+kernel paying for a dispatched scout and planner that cannot see the
+conversation. The kernel keeps everything it owns — proposal validation, quota
+routing, isolated worktrees and changed-path ownership, independent evidence,
+the requirement ledger, completion, and the stable result envelope — while the
+caller supplies the program, exactly the division of labour Claude Code's
+`Workflow` tool uses between the authoring model and its harness.
 
 ```bash
 bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
 #   → requirement IDs (requirement-1..n), rules, action fields, validation, example
+bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json
+#   → dry run against that contract; exit 0 valid, exit 2 with the issues; nothing launches
 bullswarm workflow goal "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --watch
 #   → validated before launch; executes with zero planner/scout dispatches
 bullswarm workflow plan show <shortId> --json      # when the run pauses at a gap boundary
@@ -354,17 +375,22 @@ bullswarm workflow plan submit <shortId> --program plan-2.json --watch
 bullswarm workflow plan submit <shortId> --exhausted --reason "<why no bounded action remains>"
 ```
 
+Exit codes are a contract: **0** done or paused durably for you (nothing is
+running), **1** the run ended without completing, **2** usage or validation
+error with nothing launched. Every refusal names the commands that come next.
+
 `--program` accepts the planner response envelope or a bare
 `bullswarm.workflow.program.v2` document. An invalid program exits 2 with the
 validator's issues and nothing is launched. When the kernel reaches a planning
 boundary it does not guess: it writes `planner-request-turn-N.json` (the same
-context a dispatched planner would receive, plus the consolidated gaps), sets
-the run to `waiting`, exits, and `watch` prints the `plan show` command. A
-submitted program contains only new actions and is validated against the exact
-durable state at that boundary; `--exhausted` finalizes a partial result with
-its gaps disclosed. `--planner caller` without `--program` runs the kernel
-scout first and pauses at the initial boundary so the caller plans against a
-real survey; scout units are advisory for a caller planner.
+context a dispatched planner would receive, plus the consolidated gaps and any
+queued steering), sets the run to `waiting`, exits, and `watch` prints the
+`plan show` command. A submitted program contains only new actions and is
+validated against the exact durable state at that boundary; `--exhausted`
+finalizes a partial result with its gaps disclosed. `--scout` without
+`--program` runs the kernel scout first and pauses at the initial boundary so
+the caller plans against a real survey; scout units are advisory for a caller
+planner.
 
 Use an explicit draft when the graph itself is a durable contract and should
 not be planner-defined. `bullswarm workflow draft ...` lets you assemble it one

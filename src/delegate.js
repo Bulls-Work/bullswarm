@@ -129,9 +129,12 @@ function workflowPhases(text, { readOnly }) {
 }
 
 export function buildDelegateInvocation(decision, {
-  task, cwd = process.cwd(), effort = null, timeout = null, noCaller = false,
+  task, cwd = process.cwd(), effort = null, timeout = null, noCaller = false, orchestrator = null,
 } = {}) {
   const targetDir = resolve(cwd);
+  if (orchestrator !== null && (typeof orchestrator !== 'string' || !orchestrator.trim())) {
+    throw new Error('--orchestrator requires auto or a pool name');
+  }
   if (decision.mode === 'single') {
     return {
       verb: 'run',
@@ -144,13 +147,28 @@ export function buildDelegateInvocation(decision, {
       display: `bullswarm run --lane ${decision.lane} --add-dir ${targetDir} --prompt <task> --json`,
     };
   }
+  // Workflow-shaped work: the calling agent is the Workflow Planner unless it
+  // asked for a dispatched one. Without --orchestrator, delegate hands back
+  // the planning contract plus the exact launch line instead of spending a
+  // planner turn on the caller's behalf.
+  if (orchestrator === null) {
+    return {
+      verb: 'plan',
+      argv: ['workflow', 'plan', 'contract', task, '--cwd', targetDir, '--json'],
+      display: `bullswarm workflow plan contract <task> --cwd ${targetDir} --json`,
+      handoff: {
+        launch: `bullswarm workflow goal <task> --cwd ${targetDir} --program plan.json --json`,
+        orchestrator: `bullswarm delegate --mode workflow --orchestrator auto --cwd ${targetDir} --prompt <task>`,
+      },
+    };
+  }
   return {
     verb: 'workflow',
     argv: [
-      'workflow', 'goal', task, '--cwd', targetDir,
+      'workflow', 'goal', task, '--cwd', targetDir, '--orchestrator', orchestrator,
       '--suggested-plan', decision.suggestedPlan, '--json',
     ],
-    display: `bullswarm workflow goal <task> --cwd ${targetDir} --suggested-plan <plan> --json`,
+    display: `bullswarm workflow goal <task> --cwd ${targetDir} --orchestrator ${orchestrator} --suggested-plan <plan> --json`,
   };
 }
 
@@ -285,14 +303,16 @@ export async function cmdDelegate(opts, {
       effort: opts.effort ?? null,
       timeout: opts.timeout ?? null,
       noCaller: opts['no-caller'] === true,
+      orchestrator: opts.orchestrator ?? null,
     });
     const envelope = {
       schemaVersion: 'bullswarm.delegate.v1',
-      action: opts['dry-run'] ? 'planned' : 'execute',
+      action: opts['dry-run'] ? 'planned' : invocation.verb === 'plan' ? 'plan-required' : 'execute',
       task,
       cwd: resolve(opts.cwd ?? process.cwd()),
       decision,
       invocation: { verb: invocation.verb, display: invocation.display },
+      ...(invocation.handoff ? { handoff: invocation.handoff } : {}),
     };
     if (opts['dry-run']) {
       emitEnvelope(envelope, opts, writeOut);
@@ -360,7 +380,10 @@ function emitEnvelope(envelope, opts, writeOut) {
 
 function printDecision(envelope, writeOut) {
   const decision = envelope.decision;
-  writeOut(`Bullswarm decision · ${decision.mode === 'single' ? 'single bounded agent' : 'autonomous workflow'} · confidence ${decision.confidence}`);
+  const shape = decision.mode === 'single'
+    ? 'single bounded agent'
+    : envelope.invocation.verb === 'plan' ? 'autonomous workflow, you are the planner' : 'autonomous workflow with a dispatched planner';
+  writeOut(`Bullswarm decision · ${shape} · confidence ${decision.confidence}`);
   writeOut(`Why · ${decision.reason}`);
   writeOut('Plan');
   decision.phases.forEach((phase, index) => writeOut(`  ${index + 1}. ${phase.name} · ${phase.objective}`));
@@ -370,6 +393,13 @@ function printDecision(envelope, writeOut) {
 function printExecution(envelope, writeOut, writeErr) {
   if (envelope.stderr) writeErr(envelope.stderr);
   const result = envelope.execution ?? {};
+  if (envelope.invocation.verb === 'plan') {
+    const requirements = Array.isArray(result.requirements) ? result.requirements.length : 0;
+    writeOut(`Planning contract · ${requirements} requirement${requirements === 1 ? '' : 's'} · author plan.json from it (use --json for the full contract)`);
+    if (envelope.handoff?.launch) writeOut(`Launch · ${envelope.handoff.launch}`);
+    if (envelope.handoff?.orchestrator) writeOut(`Or delegate planning · ${envelope.handoff.orchestrator}`);
+    return;
+  }
   if (envelope.decision.mode === 'workflow') {
     writeOut(`Workflow launched · ${result.shortId ?? result.runId ?? 'unknown run'}`);
     if (result.observe?.watch) writeOut(`Watch · ${result.observe.watch}`);

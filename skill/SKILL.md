@@ -48,9 +48,14 @@ bounded delegation.
      the task in the current agent even if `execution.ok` is also true. Otherwise,
      when `execution.ok` is true, read `execution.outFile` and use its content.
      Report concrete failures; do not pretend delegation succeeded.
-   - Workflow mode: report the short ID and observation commands. Use the
-     low-noise watch when the user asked to wait for completion, and obtain the
-     terminal contract with `bullswarm workflow runs result <id> --json`.
+   - Workflow mode: `delegate` returns the planning **contract**
+     (`action: "plan-required"`), because you are the Workflow Planner. Author
+     the program from it and launch with `workflow goal --program` — the loop
+     in "You are the planner" below. Add `--orchestrator auto` only when you
+     want a planner agent dispatched instead. Once a run exists, report the
+     short ID and observation commands, watch when the user asked to wait, and
+     obtain the terminal contract with
+     `bullswarm workflow runs result <id> --json`.
 
 Every command self-initializes. Use `bullswarm doctor --json` only when a
 dispatch reports a readiness problem; it is not required before every task.
@@ -109,15 +114,19 @@ Optimize for convergence:
 - stop with a useful verified result and disclosed non-blocking concerns rather
   than expanding for optional polish.
 
-## You are the planner (frontier agents)
+## You are the planner (this is the default)
 
-If you are a capable agent that already has the repository in context, do not
-pay for a dispatched scout and Workflow Planner: author the V2 program yourself
-and let the kernel do only what it is better at (quota routing, file ownership,
-independent evidence, the requirement ledger, completion, the stable result).
-This is Bullswarm's equivalent of Claude Code's `Workflow` tool: you write the
-program once, the kernel executes it, and you are consulted again only at a
-real planning boundary.
+`workflow goal` needs a program: you are the Workflow Planner unless you
+explicitly ask for a dispatched one. Author the V2 program yourself and let the
+kernel do only what it is better at (quota routing, file ownership, independent
+evidence, the requirement ledger, completion, the stable result). This is
+Bullswarm's equivalent of Claude Code's `Workflow` tool: you write the program
+once, the kernel executes it, and you are consulted again only at a real
+planning boundary.
+
+Exit codes are a contract: **0** done or paused durably for you (nothing is
+running), **1** the run ended without completing, **2** usage or validation
+error with nothing launched. Every refusal names the next commands.
 
 1. Read the contract for the exact goal text you will launch:
 
@@ -136,10 +145,12 @@ real planning boundary.
    workspace path and focused acceptance command, and at least one evidence
    action per mandatory requirement that depends on every action affecting it.
    Never name pools or models; lane and effort pick the tier.
-3. Launch with your program. Validation happens before anything runs; an
-   invalid program exits 2 with the issues and dispatches nothing:
+3. Optionally dry-run the file against the contract, then launch. Both use the
+   same validator; an invalid program exits 2 with the issues, launches
+   nothing, and points back at `plan contract`/`plan validate`:
 
    ```bash
+   bullswarm workflow plan validate "<goal>" --cwd=<abs-dir> --program plan.json --json
    bullswarm workflow goal "<goal>" --cwd=<abs-dir> --program plan.json --json
    bullswarm workflow watch <shortId>
    ```
@@ -162,11 +173,21 @@ real planning boundary.
    --json`; the same lenient acceptance applies (concerns are data, not
    failures).
 
-Use `--planner caller` without `--program` when you want the kernel's scout to
-run first and pause at the initial boundary so you plan against its survey;
-its unit list is advisory for a caller planner, never a rejection rule. Keep the
-default dispatched planner for callers that cannot hold the repository in
-context or that must not block on a conversation.
+Manage a live run with `bullswarm workflow steer <id> --message "<guidance>"`
+(surfaced in the next request you read, and consumed by the program you
+submit), `bullswarm workflow cancel <id>` (a paused run is finalized
+immediately), and `bullswarm workflow resume <id>` (idempotent at a pause).
+
+Two other ways to start, both explicit:
+
+- `--scout` with no program: the kernel surveys the repository first and pauses
+  at the initial boundary so you plan against its survey. Its unit list is
+  advisory for a caller planner, never a rejection rule.
+- `--orchestrator auto|<pool>`: dispatch a Workflow Planner agent instead of
+  planning yourself. Use it for callers that cannot hold the repository in
+  context or must not block on a conversation; `--suggested-plan`,
+  `--no-scout`, `--orchestrator-model`, and `--orchestrator-strict` apply only
+  to this mode.
 
 ## Direct modes and advanced operation
 
@@ -175,9 +196,10 @@ commands only when the user explicitly chooses the execution shape or needs a
 fixed graph:
 
 - `bullswarm run` — one bounded task;
-- `bullswarm workflow goal` — an autonomous goal;
 - `bullswarm workflow goal --program` / `workflow plan` — an autonomous goal
-  whose planner is the calling agent (section above);
+  whose planner is you (section above); this is the default shape;
+- `bullswarm workflow goal --orchestrator auto` — an autonomous goal whose
+  planner is a dispatched agent;
 - `bullswarm workflow draft` — a fixed graph whose exact structure is the
   contract.
 

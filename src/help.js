@@ -233,7 +233,8 @@ const delegateText = rich({
     { flag: '--task-file <file>', desc: 'read the task from a file' },
     { flag: '--prompt <text>', desc: 'pass the task inline as one flag value' },
     { flag: '--lane <analyze|build|chore>', desc: 'single-agent lane override; ignored for workflow mode', default: 'inferred from the task' },
-    { flag: '--plan <text>', desc: 'caller-supplied conceptual plan; persisted as workflow guidance without replacing planner ownership', default: 'generated from the classification' },
+    { flag: '--plan <text>', desc: 'caller-supplied conceptual plan; with --orchestrator it is persisted as guidance for the dispatched planner, and it never replaces the validated graph', default: 'generated from the classification' },
+    { flag: '--orchestrator <auto|pool>', desc: 'for workflow-shaped work, dispatch a Workflow Planner agent instead of returning the planning contract to you; auto lets the kernel route it', default: 'off (you author the program from the returned contract)' },
     { flag: '--effort <high|medium|low>', desc: 'single-agent effort-tier override', default: 'derived from the selected lane' },
     { flag: '--timeout <seconds>', desc: 'single-agent hard timeout', default: 'none' },
     { flag: '--no-caller', desc: 'single-agent mode may not fall back to the calling agent', default: 'caller fallback allowed' },
@@ -242,7 +243,7 @@ const delegateText = rich({
   ],
   safety: [
     '--dry-run previews the decision and never dispatches the work itself; in automatic mode it still performs one bounded low-effort classification request, the same as a live run — like other non-help commands it may self-initialize Bullswarm first',
-    'single mode blocks until one delegate result passes or fails the content gate; workflow mode launches a durable background workflow and returns observation commands',
+    'single mode blocks until one delegate result passes or fails the content gate; workflow mode returns the planning contract for you to author a program (nothing is dispatched), or with --orchestrator launches a durable background workflow and returns observation commands',
     '--classify deterministic is the instant no-dispatch preview: it uses the deterministic decision without dispatching an LLM classifier, even under --dry-run; --classify llm fails if a usable LLM decision cannot be obtained',
     'an explicit --mode single or --mode workflow is the caller\'s choice and bypasses automatic LLM classification; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
   ],
@@ -632,8 +633,10 @@ const workflowText = rich({
     + 'full-screen workflow home.',
   argsTitle: 'Commands',
   args: [
-    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal through planning, generic actions, evidence, and kernel completion' },
-    { name: 'plan ...', desc: 'act as the Workflow Planner yourself: read the planning contract, inspect a paused run\'s request, and submit a program' },
+    { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal from your program (--program), a kernel scout that pauses for it (--scout), or an explicitly dispatched Workflow Planner (--orchestrator)' },
+    { name: 'plan ...', desc: 'you are the Workflow Planner: read the planning contract, validate a program, inspect a paused run\'s request, and submit the next program' },
+    { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run paused for its caller planner is finalized immediately' },
+    { name: 'resume <runId>', desc: 'resume an interrupted or paused V2 run with its durable planner mode and routing' },
     { name: 'run <file-or-name>', desc: 'run an existing workflow file or saved draft' },
     { name: 'draft ...', desc: 'incrementally build a fixed workflow graph' },
     { name: 'validate <file-or-name>', desc: 'validate without executing' },
@@ -670,14 +673,16 @@ const workflowText = rich({
 });
 
 const workflowGoalText = rich({
-  usage: 'bullswarm workflow goal "<goal>" [--cwd <dir>] [--watch|--foreground] [--json] '
-    + '[--resume <shortId|runId>] [--planner dispatched|caller] [--program <file.json>] [planning options]',
-  purpose: 'Run an autonomous V2 goal end to end. One resumable Workflow Planner proposes a '
-    + 'bounded generic action program; the kernel validates and schedules it, agents produce work '
-    + 'or requirement-scoped evidence, and the kernel alone computes the stable result. Launches '
-    + 'independently by default so the caller is not blocked. With --program (or --planner caller) the '
-    + 'calling agent is the Workflow Planner: no planner process is dispatched, the kernel executes the '
-    + 'caller-authored program and pauses durably at any later planning boundary for `workflow plan submit`.',
+  usage: 'bullswarm workflow goal "<goal>" (--program <file.json> [--scout] | --scout | --orchestrator auto|<pool>) '
+    + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options]  ·  bullswarm workflow goal --resume <shortId|runId>',
+  purpose: 'Run an autonomous V2 goal end to end. You are the Workflow Planner: pass the program you '
+    + 'authored (--program, from `workflow plan contract`) and the kernel validates it against the exact '
+    + 'requirement ledger, schedules it, routes agents that produce work or requirement-scoped evidence, '
+    + 'and alone computes the stable result, pausing durably at any later planning boundary for '
+    + '`workflow plan submit`. Without a program the command refuses (exit 2, nothing launched) and prints '
+    + 'the next commands; --scout alone has the kernel survey the repository first and then pause for your '
+    + 'program; --orchestrator explicitly dispatches a Workflow Planner agent instead of planning yourself. '
+    + 'Launches independently by default so the caller is not blocked.',
   args: [
     { name: '"<goal>"', desc: 'the goal text, as one argument; not used (and not required) with --resume or the internal --request relaunch mode' },
   ],
@@ -686,20 +691,20 @@ const workflowGoalText = rich({
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
-    { flag: '--orchestrator <pool|auto>', desc: 'prefer this Workflow Planner pool for a new goal, falling back immediately when it is quota-gated, ineligible, or unavailable', default: 'auto (capability- and quota-based selection)' },
-    { flag: '--strict-orchestrator <pool>', desc: 'require exactly this Workflow Planner pool for controlled provider QA; fails if it is unavailable rather than silently substituting; mutually exclusive with --orchestrator', default: 'off' },
-    { flag: '--orchestrator-model <model|auto>', desc: 'pin the exact model used by the autonomous planner; only pools that can guarantee this model remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--program <file.json>', desc: 'your program: a bullswarm.workflow.planner-response.v2 envelope or a bare bullswarm.workflow.program.v2 document; validated against the exact requirement ledger before anything launches (exit 2 with the issues and nothing launched when invalid), then executed with zero planner or scout dispatches', default: 'required unless --scout or --orchestrator is given' },
+    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
+    { flag: '--scout', desc: 'with --program: run the kernel scout first and hand its units to you as advisory context; alone: survey the repository, then pause at the initial boundary for your program', default: 'off' },
+    { flag: '--orchestrator <auto|pool>', desc: 'dispatch a Workflow Planner agent at every planning boundary instead of planning yourself: auto lets the kernel route it, a pool name prefers that pool and falls back when it is quota-gated or unavailable', default: 'off (you are the planner)' },
+    { flag: '--orchestrator-model <model|auto>', desc: 'with --orchestrator: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--orchestrator-strict', desc: 'with --orchestrator <pool>: require exactly that pool for controlled provider QA; fails if it is unavailable rather than silently substituting', default: 'off' },
+    { flag: '--strict-orchestrator <pool>', desc: 'deprecated alias for --orchestrator <pool> --orchestrator-strict', default: 'off' },
+    { flag: '--suggested-plan <text>', desc: 'with --orchestrator: persist a caller-imagined conceptual execution shape for the dispatched planner to consider; when you are the planner, the plan is the program', default: 'none' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
-    { flag: '--suggested-plan <text>', desc: 'persist a caller-imagined conceptual execution shape in intent for the planner to consider; it does not author or bypass the validated graph', default: 'none' },
-    { flag: '--planner <dispatched|caller>', desc: 'dispatched routes a Workflow Planner agent at every planning boundary; caller makes the invoking agent the planner: the kernel pauses with a durable planner request instead of dispatching, and never spends a planner turn', default: 'dispatched (caller when --program is given)' },
-    { flag: '--program <file.json>', desc: 'caller-authored initial program: a bullswarm.workflow.planner-response.v2 envelope or a bare bullswarm.workflow.program.v2 document; validated against the exact requirement ledger before anything launches, then executed without a planner or scout dispatch', default: 'none' },
-    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare --program document', default: 'derived from the action purposes' },
-    { flag: '--scout', desc: 'in caller mode with --program, still run the kernel scout first (its units become advisory context, never a rejection rule)', default: 'off when --program is given; on otherwise' },
     { flag: '--max-agents <n>', desc: 'soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
     { flag: '--max-expansion-rounds <n>', desc: 'soft planning target for consolidated gap-driven planner updates; essential gap closure may exceed it', default: '2' },
     { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
-    { flag: '--no-scout', desc: 'skip the read-only repository and capability reconnaissance before the Workflow Planner creates its first program', default: 'scout runs first' },
+    { flag: '--no-scout', desc: 'with --orchestrator: skip the read-only repository reconnaissance before the dispatched planner creates its first program', default: 'the scout runs first for a dispatched planner' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'bounded retries for mechanical failures only; semantic evidence never auto-repairs', default: '1' },
     { flag: '--resume <shortId|runId>', desc: 'resume a V2 autonomous run; old autonomous runs fail closed before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
@@ -717,9 +722,10 @@ const workflowGoalText = rich({
     'there is no V1 autonomous migration or fallback; explicitly resuming an old run dispatches nothing',
   ],
   examples: [
-    { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd .' },
-    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --strict-orchestrator codex --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch', note: 'you are the planner: author plan.json from `workflow plan contract`, then the kernel routes, owns, verifies, and completes' },
+    { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --scout', note: 'kernel surveys first, then pauses at the initial boundary for your program' },
+    { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd . --orchestrator auto', note: 'dispatch a Workflow Planner agent instead of planning yourself' },
+    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
   ],
   next: 'bullswarm workflow watch <shortId> to follow progress, bullswarm workflow plan show <shortId> when a caller-planner run pauses, or bare bullswarm workflow for the interactive workflow home.',
 });
@@ -732,30 +738,86 @@ const workflowGoalText = rich({
 // completion, and the stable result envelope.
 
 const workflowPlanText = rich({
-  usage: 'bullswarm workflow plan <contract|show|submit> [options]',
-  purpose: 'Act as the Workflow Planner yourself. contract prints the exact planning contract '
-    + '(requirement IDs, rules, program schema, example) for a goal before any run exists; show prints '
-    + 'the durable planner request a paused caller-planner run left behind (context, gaps, rules); submit '
-    + 'validates a caller-authored program (or an exhausted decision) against that exact run state and '
-    + 'relaunches the kernel. Pair with workflow goal --program for the initial program.',
+  usage: 'bullswarm workflow plan <contract|validate|show|submit> [options]',
+  purpose: 'You are the Workflow Planner. contract prints the exact planning contract (requirement IDs, '
+    + 'rules, program schema, example) for a goal before any run exists; validate checks a program against '
+    + 'that contract without launching; show prints the durable planner request a paused run left behind '
+    + '(context, gaps, pending steering, rules); submit validates the next program (or an exhausted decision) '
+    + 'against that exact run state and relaunches the kernel. Launch the initial program with workflow goal --program.',
   argsTitle: 'Commands',
   args: [
-    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema, and example' },
+    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema, example, and the launch line' },
+    { name: 'validate "<goal>" --program <file>', desc: 'dry-run a program against the contract: exit 0 with the accepted actions, or exit 2 with the validator issues; nothing is launched' },
     { name: 'show <runId>', desc: 'print the pending planner request of a paused caller-planner run' },
-    { name: 'submit <runId>', desc: 'submit the next program (or --exhausted) to a paused caller-planner run and relaunch it' },
+    { name: 'submit <runId>', desc: 'submit the next program (or --exhausted at a gaps boundary) to a paused run and relaunch it' },
   ],
   options: [],
   safety: [
-    'contract and show are read-only',
+    'contract, validate, and show never change run state (show may rewrite the request document to list steering queued since the pause)',
     'submit validates before writing; a rejected program leaves the run state unchanged and exits 2',
     'submit relaunches the paused kernel as a detached process by default (same as workflow goal)',
   ],
   examples: [
     { cmd: 'bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json' },
+    { cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' },
     { cmd: 'bullswarm workflow plan show ab12cd --json' },
     { cmd: 'bullswarm workflow plan submit ab12cd --program plan-2.json' },
   ],
   next: 'bullswarm workflow goal "<goal>" --program <file.json> to launch with your initial program; bullswarm workflow watch <runId> after a submit.',
+});
+
+const workflowPlanValidateText = rich({
+  usage: 'bullswarm workflow plan validate "<goal>" --program <file.json> [--cwd <dir>] [--summary <text>] [--json]',
+  purpose: 'Check a program you authored against the exact contract a launch would enforce, without '
+    + 'creating a run: the same requirement ledger, the same validator, and the same preview state as '
+    + 'workflow goal --program. Exit 0 prints the accepted actions and the launch line; exit 2 prints '
+    + 'every validator issue so you can fix the file and re-run.',
+  args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal' }],
+  options: [
+    { flag: '--program <file.json>', desc: 'planner response envelope or bare bullswarm.workflow.program.v2 document', default: 'required' },
+    { flag: '--cwd <dir>', desc: 'working directory the goal will execute in (must exist)', default: 'current directory' },
+    { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
+    { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
+  ],
+  safety: ['read-only — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)'],
+  examples: [{ cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' }],
+  next: 'bullswarm workflow goal "<same goal>" --cwd <dir> --program plan.json once it validates.',
+});
+
+const workflowCancelText = rich({
+  usage: 'bullswarm workflow cancel <runId> [--json]',
+  purpose: 'Stop a run. A running kernel is asked to stop cooperatively and does so at its next safe '
+    + 'checkpoint (active workers are never killed mid-write). A caller-planner run that is paused at a '
+    + 'planning boundary has no kernel alive, so cancel finalizes it here and now: the cancelled result '
+    + 'envelope is written, the pause record is cleared, and no program can be submitted afterwards.',
+  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId' }],
+  options: [{ flag: '--json', desc: 'print {action: "cancel", finalized, status, result|next} as JSON', default: 'one human line' }],
+  safety: [
+    'writes the cancellation request into state.json and an event; for a paused caller-planner run it also writes result.json (status cancelled) without dispatching anything',
+    'idempotent: an already-terminal run reports alreadyFinished and exits 0',
+  ],
+  examples: [{ cmd: 'bullswarm workflow cancel ab12cd --json' }],
+  next: 'bullswarm workflow watch <runId> for a running kernel, or bullswarm workflow runs result <runId> --json once finalized.',
+});
+
+const workflowResumeText = rich({
+  usage: 'bullswarm workflow resume <runId> [--foreground|--watch] [--json]',
+  purpose: 'Resume a V2 run with its durable planner mode and routing: an interrupted kernel continues '
+    + 'where its state says, a paused caller-planner run re-pauses on the same request (refreshed with any '
+    + 'steering queued meanwhile), and a run with a pending cancellation records the cancelled result. '
+    + 'Detaches by default like workflow goal; this is the verb form of workflow goal --resume.',
+  args: [{ name: '<runId>', desc: 'shortId (6 chars) or full wf-... runId of a V2 run' }],
+  options: [
+    { flag: '--foreground', desc: 'run the kernel attached to this terminal; combines with --json to print the result or pause document', default: 'off (detaches)' },
+    { flag: '--watch', desc: 'detach, then follow human-readable progress until terminal or paused; cannot combine with --foreground or --json', default: 'off' },
+    { flag: '--json', desc: 'print the relaunch document (or, with --foreground, the final result or pause document) as JSON', default: 'human launch instructions' },
+  ],
+  safety: [
+    'planner mode, routing pins, and settings are durable; --program, --orchestrator, --scout, and --suggested-plan are rejected here (use workflow plan submit for a caller program)',
+    'dispatches real coding-agent CLI processes for any unfinished actions, the same as workflow goal',
+  ],
+  examples: [{ cmd: 'bullswarm workflow resume ab12cd --watch' }],
+  next: 'bullswarm workflow watch <runId>, then bullswarm workflow runs result <runId> --json when terminal.',
 });
 
 const workflowPlanContractText = rich({
@@ -1410,6 +1472,7 @@ const HELP = {
     plan: {
       _text: workflowPlanText,
       contract: { _text: workflowPlanContractText },
+      validate: { _text: workflowPlanValidateText },
       show: { _text: workflowPlanShowText },
       submit: { _text: workflowPlanSubmitText },
     },
@@ -1422,6 +1485,8 @@ const HELP = {
     watch: { _text: workflowWatchText },
     events: { _text: workflowEventsText },
     steer: { _text: workflowSteerText },
+    cancel: { _text: workflowCancelText },
+    resume: { _text: workflowResumeText },
     action: {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },

@@ -1,16 +1,49 @@
 # bullswarm changelog
 
-## 0.24.0 — the calling agent can be the Workflow Planner
+## 0.24.0 — the calling agent is the Workflow Planner
 
-- `bullswarm workflow goal --program <file.json>` (or `--planner caller`)
-  makes the invoking agent the Workflow Planner. The kernel validates the
-  caller-authored V2 program against the exact requirement ledger before
-  anything launches, executes it with zero planner and (by default) zero scout
-  dispatches, and keeps every kernel-owned guarantee: quota routing, isolated
-  worktrees and changed-path ownership, independent evidence, the requirement
-  ledger, completion, and the stable result envelope. This is Bullswarm's
-  equivalent of Claude Code's `Workflow` tool: the frontier model writes the
-  program once and is consulted again only at a real planning boundary.
+**BREAKING.** `bullswarm workflow goal` now needs a program. Add
+`--orchestrator auto` to any existing invocation to keep the previous
+behaviour, or pass the program you authored with `--program <file.json>`.
+
+- **Caller-first by default.** `workflow goal "<goal>"` with no
+  `--program`, `--scout`, or `--orchestrator` exits 2, launches nothing, and
+  prints the commands that come next (`{"error": "program-required", "next":
+  {contract, validate, launch, scout, orchestrator}}` under `--json`). The
+  kernel never plans on the caller's behalf unless the caller asks for it by
+  name. Exit codes are a contract: 0 done or paused durably for the caller
+  (nothing running), 1 the run ended without completing, 2 usage or validation
+  error with nothing launched.
+
+- `bullswarm workflow goal --program <file.json>` makes the invoking agent the
+  Workflow Planner. The kernel validates the caller-authored V2 program against
+  the exact requirement ledger before anything launches, executes it with zero
+  planner and (by default) zero scout dispatches, and keeps every kernel-owned
+  guarantee: quota routing, isolated worktrees and changed-path ownership,
+  independent evidence, the requirement ledger, completion, and the stable
+  result envelope. This is Bullswarm's equivalent of Claude Code's `Workflow`
+  tool: the frontier model writes the program once and is consulted again only
+  at a real planning boundary. `--scout` alone has the kernel survey the
+  repository first and pause at the initial boundary for the caller's program.
+
+- **Flag surface.** `--planner dispatched|caller` is removed; the presence of
+  `--orchestrator auto|<pool>` is the switch. `--strict-orchestrator <pool>`
+  becomes `--orchestrator <pool> --orchestrator-strict` and remains as a
+  deprecated alias for one release. `--suggested-plan`, `--no-scout`,
+  `--orchestrator-model`, and `--orchestrator-strict` are rejected without
+  `--orchestrator`: when the caller is the planner, the plan is the program.
+
+- **New commands.** `workflow plan validate "<goal>" --program <file>` dry-runs
+  a program against the contract (same validator, same preview state, no run
+  created) and exits 0 with the accepted actions or 2 with the issues.
+  `workflow cancel <runId>` is a first-class verb that finalizes a run paused
+  for its caller planner inline, and `workflow resume <runId>` is the verb form
+  of `goal --resume`; `goal --resume` and `tui --cancel` remain as aliases.
+
+- **`delegate`.** For workflow-shaped work it now returns the planning contract
+  (`action: "plan-required"`) plus the exact launch line, instead of launching
+  an orchestrated run on the caller's behalf. `--orchestrator auto|<pool>`
+  passes through for callers that do not want to plan.
 
 - New `bullswarm workflow plan` surface: `plan contract "<goal>"` prints the
   requirement IDs the kernel will derive, the planning rules, the generic action

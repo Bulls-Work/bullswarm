@@ -1538,7 +1538,7 @@ function workflowNextLinesV2(model, width) {
   if (state.planner.status === 'running') return ['○ Workflow Planner is creating the next bounded program'];
   if (state.planner.awaiting) {
     const token = state.shortId ?? state.runId;
-    if (state.cancellation?.requested) return [truncate(`⧖ Cancellation requested while paused · bullswarm workflow goal --resume ${token} finalizes it`, width)];
+    if (state.cancellation?.requested) return [truncate(`⧖ Cancellation requested while paused · bullswarm workflow cancel ${token} finalizes it`, width)];
     return [truncate(`⧖ Waiting for the caller planner (${state.planner.awaiting.boundary}) · bullswarm workflow plan show ${token}`, width)];
   }
   if (state.actions.some((action) => ['pending', 'ready'].includes(action.status))) return ['○ Starting the next dependency-ready actions'];
@@ -2581,8 +2581,8 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
       ...result,
       ...(pausedForCaller ? {
         pausedForCaller: true,
-        finalize: `bullswarm workflow goal --resume ${id} --json`,
-        note: 'the run is paused for its caller planner and no kernel is alive; resume it once to record the cancelled result',
+        finalize: `bullswarm workflow cancel ${id} --json`,
+        note: 'the run is paused for its caller planner and no kernel is alive; workflow cancel finalizes it and records the cancelled result',
       } : {}),
     };
   }
