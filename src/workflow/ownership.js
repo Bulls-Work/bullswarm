@@ -118,11 +118,19 @@ function gitFiles(root) {
   }
 }
 
+// Dependency trees are never workflow output. An isolated workspace omits the
+// source node_modules from its copy and then symlinks it back in, so counting
+// it as workspace content makes the kernel fail an action for a path bullswarm
+// created itself. A repository whose .gitignore says `node_modules/` does not
+// ignore that symlink either -- the trailing slash matches directories only.
+const IGNORED_TREES = new Set(['node_modules']);
+const isIgnoredTree = (relativePath) => IGNORED_TREES.has(relativePath.split('/')[0]);
+
 function walkFiles(root) {
   const result = [];
   const walk = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (entry.name === '.git') continue;
+      if (entry.name === '.git' || IGNORED_TREES.has(entry.name)) continue;
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) walk(absolute);
       else if (entry.isFile() || entry.isSymbolicLink()) result.push(relative(root, absolute).split(sep).join('/'));
@@ -137,7 +145,7 @@ export function captureWorkspaceManifest(root, { maxFiles = 50_000 } = {}) {
   if (typeof root !== 'string' || !root) throw new OwnershipValidationError('workspace root must be a non-empty path');
   if (!Number.isInteger(maxFiles) || maxFiles < 1) throw new OwnershipValidationError('maxFiles must be a positive integer');
   const absoluteRoot = resolve(root);
-  const files = gitFiles(absoluteRoot) ?? walkFiles(absoluteRoot);
+  const files = (gitFiles(absoluteRoot) ?? walkFiles(absoluteRoot)).filter((file) => !isIgnoredTree(file));
   if (files.length > maxFiles) throw new OwnershipValidationError(`workspace manifest exceeds ${maxFiles} files`);
   const manifest = {};
   for (const file of files) {
