@@ -442,7 +442,17 @@ export async function runV2AutonomousWorkflow({
     scoutReport = readFileSync(state.preflight.scout.outputFile, 'utf8');
   }
 
+  // Liveness. Without this a kernel that dies mid-run leaves state.json saying
+  // "running" forever, and every reader — watch, runs list, the TUI — reports
+  // progress that cannot happen. persist() is already called on every event and
+  // on the progress tick, so stamping it here is the heartbeat.
+  const runnerStartedAt = now();
   const persist = () => {
+    state.runner = {
+      pid: process.pid,
+      startedAt: state.runner?.startedAt ?? runnerStartedAt,
+      lastHeartbeatAt: now(),
+    };
     serializeV2DurableState(state);
     writeJsonAtomic(statePath(runDir), state);
   };

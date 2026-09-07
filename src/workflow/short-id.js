@@ -258,9 +258,50 @@ export function reconcileInterruptedRuns(bullswarmDir, opts = {}) {
   return changed;
 }
 
+// Statuses that claim a kernel process is doing something right now. `waiting`
+// is excluded on purpose: a caller-planner pause is durable and ownerless by
+// design, so no process is expected to be alive there.
+const V2_NEEDS_RUNNER = new Set(['queued', 'planning', 'running', 'ready-to-finalize']);
+const RUNNER_GRACE_MS = 120_000;
+const LEGACY_SILENCE_MS = 600_000;
+
+// Whether a V2 run's kernel is still alive. A run whose process died keeps
+// saying "running" in state.json forever, so every reader has to ask.
+export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isProcessAlive, runDir = null } = {}) {
+  if (state?.schemaVersion !== 'bullswarm.workflow.state.v2') return { checked: false, alive: true, reason: null };
+  const status = state.lifecycle?.status;
+  if (!V2_NEEDS_RUNNER.has(status)) return { checked: false, alive: true, reason: null };
+  const pid = state.runner?.pid ?? null;
+  const beat = Date.parse(state.runner?.lastHeartbeatAt ?? '');
+  // Runs started before kernels recorded a heartbeat carry no pid to check. A
+  // live V2 kernel rewrites state.json on every event and about once a second
+  // while an agent streams, so a long silence is the only evidence available.
+  // The threshold is deliberately generous: being wrong here would call a
+  // working run dead.
+  if (pid == null || !Number.isFinite(beat)) {
+    if (!runDir) return { checked: false, alive: true, reason: null };
+    let modifiedAt = 0;
+    try { modifiedAt = statSync(join(runDir, 'state.json')).mtimeMs; } catch { return { checked: false, alive: true, reason: null }; }
+    const silentMs = now - modifiedAt;
+    if (silentMs < LEGACY_SILENCE_MS) return { checked: false, alive: true, reason: null };
+    return {
+      checked: true,
+      alive: false,
+      reason: `no heartbeat recorded and the run has not been written for ${Math.round(silentMs / 60000)}m; the kernel is not running`,
+    };
+  }
+  if (processAlive(pid)) {
+    if (now - beat < RUNNER_GRACE_MS) return { checked: true, alive: true, reason: null };
+    return { checked: true, alive: false, reason: `runner process ${pid} has not updated the run for ${Math.round((now - beat) / 1000)}s` };
+  }
+  return { checked: true, alive: false, reason: `runner process ${pid} is gone; the run stopped before reaching a result` };
+}
+
 export function isOngoing(runDir, state) {
   if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    return !['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status);
+    if (['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status)) return false;
+    // A run whose kernel died is not ongoing, whatever state.json still claims.
+    return v2RunnerLiveness(state, { runDir }).alive;
   }
   if (state && state.status && state.finishedAt) return false;
   try {

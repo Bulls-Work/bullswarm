@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from './fsjson.js';
 import { fanoutSucceededCount } from './runner.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId } from './short-id.js';
+import { listRuns, resolveRunId, v2RunnerLiveness } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 import { V2_STATE_SCHEMA_VERSION } from './v2-state.js';
@@ -15,6 +15,7 @@ const ESC = '\x1b[';
 const SIDEBAR_WIDTH = 34;
 const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const isV2State = (state) => state?.schemaVersion === V2_STATE_SCHEMA_VERSION;
+
 const stateStatus = (state) => isV2State(state) ? state.lifecycle.status : state?.status;
 const stateStartedAt = (state) => isV2State(state) ? state.lifecycle.startedAt : state?.startedAt;
 const stateFinishedAt = (state) => isV2State(state) ? state.lifecycle.finishedAt : state?.finishedAt;
@@ -166,10 +167,13 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
         const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
           ?? state.presentation?.stages?.findLast((item) => item.startedAt)
           ?? null;
+        const liveness = v2RunnerLiveness(state, { runDir: r.runDir });
         return {
           ...r,
           events: readEvents(r.runDir),
-          status: state.cancellation?.requested ? 'stopping' : state.lifecycle.status,
+          liveness,
+          status: state.cancellation?.requested ? 'stopping'
+            : liveness.alive ? state.lifecycle.status : 'interrupted',
           phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
           stepsOk: actions.filter((action) => action.status === 'succeeded').length,
           stepsTotal: actions.length,
@@ -765,6 +769,7 @@ function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}
   }
   const activeIndex = Math.max(0, agents.findIndex((agent) => agent.status === 'running'));
   const selectedAgentIndex = agents.length ? clamp(agentIndex == null ? activeIndex : agentIndex, 0, agents.length - 1) : 0;
+  const callerPlanned = (state.config?.settings?.plannerMode ?? 'caller') === 'caller';
   const plannerAttempts = state.planner?.attempts ?? [];
   const latestPlanner = plannerAttempts.at(-1) ?? null;
   const activePlanner = plannerAttempts.findLast((attempt) => attempt.status === 'running') ?? null;
@@ -772,8 +777,12 @@ function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}
     autonomous: true, actionId: 'workflow-planner', attempts: plannerAttempts,
     active: activePlanner, latestAttempt: latestPlanner,
     status: state.planner.status,
-    pool: activePlanner?.pool ?? latestPlanner?.pool ?? state.config?.plannerRouting?.pool ?? state.config?.plannerRouting?.preferredPool ?? 'selecting',
-    model: activePlanner?.model ?? latestPlanner?.model ?? state.config?.plannerRouting?.model ?? state.config?.plannerRouting?.preferredModel ?? 'connector model',
+    // In caller mode no planner agent is ever dispatched, so "selecting ·
+    // connector model" would describe a process that cannot exist.
+    pool: activePlanner?.pool ?? latestPlanner?.pool ?? state.config?.plannerRouting?.pool ?? state.config?.plannerRouting?.preferredPool
+      ?? (callerPlanned ? 'caller' : 'selecting'),
+    model: activePlanner?.model ?? latestPlanner?.model ?? state.config?.plannerRouting?.model ?? state.config?.plannerRouting?.preferredModel
+      ?? (callerPlanned ? 'you are the planner' : 'connector model'),
     latestDecision: state.planner.lastDecision,
   };
   return {
@@ -1474,9 +1483,16 @@ function workflowLiveLinesV2(model, width, spinnerFrame) {
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
   }
-  if (!lines.length) lines.push(stateFinishedAt(state)
-    ? `✓ No live agents · workflow ${state.lifecycle.status}`
-    : '⧖ Waiting for the next dispatch');
+  if (!lines.length) {
+    const liveness = v2RunnerLiveness(state);
+    lines.push(stateFinishedAt(state)
+      ? `✓ No live agents · workflow ${state.lifecycle.status}`
+      : liveness.alive ? '⧖ Waiting for the next dispatch'
+      : `✗ Kernel not running · ${liveness.reason}`);
+    if (!stateFinishedAt(state) && !liveness.alive) {
+      lines.push(`  resume it · bullswarm workflow resume ${state.shortId ?? state.runId}`);
+    }
+  }
   return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0), waiting };
 }
 
@@ -1856,6 +1872,17 @@ function friendlyActionKind(kind) {
   })[kind] ?? String(kind ?? 'Action').replaceAll('_', ' ');
 }
 
+// The role shown between an action's id and its status. Authored drafts carry an
+// explicit `kind` (run, fanout, verify, bash); V2 program actions never do, so
+// derive their role the way the kernel defines it — an action that judges a
+// requirement is evidence, anything else with a program definition is work.
+function actionRoleLabel(action) {
+  if (action.kind) return action.kind;
+  if (Array.isArray(action.evidenceFor) && action.evidenceFor.length) return 'evidence';
+  if (action.lane || action.prompt) return 'work';
+  return 'action';
+}
+
 function friendlyActionSummary(action) {
   const summary = String(action.summary ?? '').replace(/\s+/g, ' ').trim();
   if (action.kind === 'response' && /workflow\.decision|"decision"|needs_more_work/.test(summary)) {
@@ -1871,8 +1898,8 @@ function agentDetailLines(model, width, spinnerFrame) {
     for (const action of model.selectedPhase.actions) {
       const blocked = (model.selectedPhase.blockedActions ?? []).find((entry) => entry.id === action.id);
       lines.push(blocked
-        ? `⊘ ${action.id} · ${action.kind} · never dispatched`
-        : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${action.kind} · ${action.status}`);
+        ? `⊘ ${action.id} · ${actionRoleLabel(action)} · never dispatched`
+        : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${actionRoleLabel(action)} · ${action.status}`);
       if (blocked) {
         lines.push(`  blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`);
       }
@@ -1887,7 +1914,7 @@ function agentDetailLines(model, width, spinnerFrame) {
     `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}`,
     `${agent.pool} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? active?.effort ?? 'auto'}`,
     '',
-    `Step · ${action.id} · ${action.kind ?? 'run'}`,
+    `Step · ${action.id} · ${actionRoleLabel(action)}`,
   ];
   if (routing?.reason) lines.push(`Route: ${routing.reason}`);
   if (attempt?.startedAt ?? active?.startedAt) lines.push(`Started: ${attempt?.startedAt ?? active.startedAt}`);

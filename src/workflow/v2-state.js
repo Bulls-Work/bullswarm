@@ -521,7 +521,15 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner']), 'state');
+  // Optional: written by a live kernel so readers can tell a running run from
+  // one whose process died. Absent on a state no kernel has owned yet.
+  if (state.runner !== undefined && state.runner !== null) {
+    noUnknown(state.runner, new Set(['pid', 'startedAt', 'lastHeartbeatAt']), 'state.runner');
+    if (state.runner.pid !== null && !Number.isInteger(state.runner.pid)) fail('state.runner.pid must be an integer or null');
+    timestamp(state.runner.startedAt, 'state.runner.startedAt');
+    timestamp(state.runner.lastHeartbeatAt, 'state.runner.lastHeartbeatAt');
+  }
   if (state.schemaVersion !== V2_STATE_SCHEMA_VERSION) fail(`state schemaVersion must be ${V2_STATE_SCHEMA_VERSION}`);
   requiredString(state.runId, 'state.runId');
   requiredString(state.shortId, 'state.shortId');
