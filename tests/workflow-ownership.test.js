@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeOwnedFiles } from '../src/workflow/ownership.js';
+import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeManifest, normalizeOwnedFiles } from '../src/workflow/ownership.js';
 
 test('compares manifests and lists created, modified, and deleted exact paths', () => {
   const result = compareManifests({ 'a.js': '1', 'deleted.js': 'x', 'same.js': 'z' }, { 'a.js': '2', 'created.js': '3', 'same.js': 'z' });
@@ -51,4 +51,37 @@ test('captures a deterministic bounded non-git workspace manifest', () => {
   assert.deepEqual(Object.keys(before), ['a.txt', 'nested/b.txt']);
   assert.deepEqual(changedManifestPaths(before, after), ['a.txt']);
   assert.throws(() => captureWorkspaceManifest(root, { maxFiles: 1 }), /exceeds 1 files/);
+});
+
+test('real filenames may contain glob metacharacters; author-supplied globs still cannot', () => {
+  // Regression: every file discovered on disk was validated with the rule
+  // written for author-supplied patterns, which rejects "[" and "]". A Next.js
+  // repository names dynamic routes app/[space]/page.tsx, so capturing its
+  // manifest threw and the kernel died on the first dispatch with
+  // "workspace file must name one exact file, not a directory or glob".
+  // Observed live: kipwise has 64 such files and every workflow run there died.
+  const nextish = {
+    'src/app/(app)/[space]/[...path]/page.tsx': 'a',
+    'src/app/api/[[...route]]/route.ts': 'b',
+    'src/app/normal.ts': 'c',
+  };
+  const normalized = normalizeManifest(nextish);
+  assert.deepEqual(Object.keys(normalized).sort(), Object.keys(nextish).sort());
+
+  // Ownership of such a file is exactly what a planner needs to declare.
+  assert.deepEqual(
+    normalizeOwnedFiles(['src/app/(app)/[space]/page.tsx']),
+    ['src/app/(app)/[space]/page.tsx'],
+  );
+
+  // A hand-written glob is still refused: it would never match a real path.
+  for (const bad of ['src/**/*.ts', 'src/app/?.ts', 'src/app/']) {
+    assert.throws(() => normalizeOwnedFiles([bad]), /must name one exact file, not a directory or glob/, bad);
+  }
+
+  // Every other safety rule survives on both paths.
+  for (const bad of ['/etc/passwd', '../escape.ts', 'a/../b.ts', 'a//b.ts', 'C:\\win.ts']) {
+    assert.throws(() => normalizeOwnedFiles([bad]), /ownership invalid/, bad);
+    assert.throws(() => normalizeManifest({ [bad]: 'd' }), /ownership invalid/, bad);
+  }
 });

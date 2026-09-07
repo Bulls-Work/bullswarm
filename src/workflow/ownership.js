@@ -17,12 +17,14 @@ export class OwnershipValidationError extends TypeError {
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
-function path(value, name) {
+// Shared safety rules for any relative path we accept: no absolute or Windows
+// paths, no NUL or backslash, no empty/./.. segments, and never a directory.
+function relativeFilePath(value, name) {
   if (typeof value !== 'string' || !value) throw new OwnershipValidationError(`${name} must be a non-empty relative file path`);
   if (value.includes('\0') || value.includes('\\') || value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) {
     throw new OwnershipValidationError(`${name} must be a relative path`);
   }
-  if (value.endsWith('/') || value.includes('*') || value.includes('?') || value.includes('[') || value.includes(']')) {
+  if (value.endsWith('/')) {
     throw new OwnershipValidationError(`${name} must name one exact file, not a directory or glob`);
   }
   const parts = value.split('/');
@@ -30,6 +32,24 @@ function path(value, name) {
     throw new OwnershipValidationError(`${name} must be an unambiguous canonical relative path`);
   }
   return value;
+}
+
+// Author-supplied ownership. `*` and `?` in a hand-written path are a glob the
+// kernel would never match, so reject them early with a clear message. Square
+// brackets are NOT rejected: `app/[space]/page.tsx` is an ordinary filename in
+// every Next.js repository, and refusing it made those repos unusable.
+function path(value, name) {
+  relativeFilePath(value, name);
+  if (value.includes('*') || value.includes('?')) {
+    throw new OwnershipValidationError(`${name} must name one exact file, not a directory or glob`);
+  }
+  return value;
+}
+
+// Paths discovered on disk. Every character legal in a POSIX filename is legal
+// here — the name is evidence of what exists, not a pattern to interpret.
+function discoveredPath(value, name) {
+  return relativeFilePath(value, name);
 }
 
 export function normalizeOwnedFiles(ownedFiles, name = 'ownedFiles') {
@@ -47,7 +67,7 @@ export function normalizeManifest(manifest, name = 'manifest') {
   if (!isObject(manifest)) throw new OwnershipValidationError(`${name} must be a path-to-digest object`);
   const entries = [];
   for (const [rawPath, digest] of Object.entries(manifest)) {
-    const file = path(rawPath, `${name} path`);
+    const file = discoveredPath(rawPath, `${name} path`);
     if (typeof digest !== 'string' || !digest) throw new OwnershipValidationError(`${name}[${file}] digest must be a non-empty string`);
     entries.push([file, digest]);
   }
@@ -121,7 +141,7 @@ export function captureWorkspaceManifest(root, { maxFiles = 50_000 } = {}) {
   if (files.length > maxFiles) throw new OwnershipValidationError(`workspace manifest exceeds ${maxFiles} files`);
   const manifest = {};
   for (const file of files) {
-    const normalized = path(file, 'workspace file');
+    const normalized = discoveredPath(file, 'workspace file');
     try { manifest[normalized] = digestFile(join(absoluteRoot, normalized)); }
     catch (error) {
       if (error?.code !== 'ENOENT') throw error;
