@@ -44,7 +44,7 @@ bounded delegation.
    file or contains text that is awkward to quote safely.
 5. Judge the returned evidence, not the process exit alone.
 
-   - Single mode: if `execution.keepOnClaude`/`keepOnCaller` is true, complete
+   - Single mode: if `execution.keepOnClaude` is true, complete
      the task in the current agent even if `execution.ok` is also true. Otherwise,
      when `execution.ok` is true, read `execution.outFile` and use its content.
      Report concrete failures; do not pretend delegation succeeded.
