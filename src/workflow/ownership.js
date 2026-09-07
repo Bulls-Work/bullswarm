@@ -124,7 +124,12 @@ function gitFiles(root) {
 // created itself. A repository whose .gitignore says `node_modules/` does not
 // ignore that symlink either -- the trailing slash matches directories only.
 const IGNORED_TREES = new Set(['node_modules']);
-const isIgnoredTree = (relativePath) => IGNORED_TREES.has(relativePath.split('/')[0]);
+// At ANY depth. A monorepo has one dependency tree per workspace package
+// (src/apps/web/node_modules, src/apps/collab/node_modules, ...), and a package
+// manager may materialise each as a directory or as a symlink. Only the
+// directory form matches a `node_modules/` ignore rule, so the symlink form
+// reaches the manifest and gets billed to whichever action happened to run.
+const isIgnoredTree = (relativePath) => relativePath.split('/').some((segment) => IGNORED_TREES.has(segment));
 
 function walkFiles(root) {
   const result = [];
