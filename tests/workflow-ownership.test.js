@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeManifest, normalizeOwnedFiles } from '../src/workflow/ownership.js';
@@ -84,4 +84,36 @@ test('real filenames may contain glob metacharacters; author-supplied globs stil
     assert.throws(() => normalizeOwnedFiles([bad]), /ownership invalid/, bad);
     assert.throws(() => normalizeManifest({ [bad]: 'd' }), /ownership invalid/, bad);
   }
+});
+
+test('a node_modules symlink injected into an isolated workspace is not the agent\'s change', () => {
+  // Regression: createIsolatedWorkspace omits the source node_modules from its
+  // copy and then symlinks it back in. A repository whose .gitignore says
+  // "node_modules/" does not ignore that symlink -- the trailing slash matches
+  // directories only -- so git ls-files reported it as an untracked file, it
+  // entered the manifest as a created path, and the kernel failed the action
+  // with "out-of-scope mutation: node_modules". Observed live on run q6mr9s:
+  // 26 minutes of verified work discarded for a path bullswarm created itself.
+  const root = mkdtempSync(join(tmpdir(), 'bs-nm-'));
+  writeFileSync(join(root, '.gitignore'), 'node_modules/\n');
+  writeFileSync(join(root, 'a.txt'), 'x');
+  mkdirSync(join(root, 'node_modules', 'left-pad'), { recursive: true });
+  writeFileSync(join(root, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1;');
+
+  const manifest = captureWorkspaceManifest(root);
+  assert.deepEqual(Object.keys(manifest).sort(), ['.gitignore', 'a.txt']);
+
+  // The same holds for the symlink form, which is what the kernel creates and
+  // what git refuses to ignore.
+  const linked = mkdtempSync(join(tmpdir(), 'bs-nm-link-'));
+  writeFileSync(join(linked, 'a.txt'), 'x');
+  symlinkSync(join(root, 'node_modules'), join(linked, 'node_modules'), 'dir');
+  assert.deepEqual(Object.keys(captureWorkspaceManifest(linked)).sort(), ['a.txt']);
+
+  // And an action is therefore never blamed for it.
+  const before = { 'a.txt': 'h1' };
+  const after = { 'a.txt': 'h2', 'node_modules': 'h3' };
+  assert.equal(checkOwnership({ before, after, ownedFiles: ['a.txt'] }).ok, false,
+    'compareManifests itself stays strict; the exclusion belongs to capture');
+  assert.deepEqual(Object.keys(captureWorkspaceManifest(linked)), ['a.txt']);
 });
