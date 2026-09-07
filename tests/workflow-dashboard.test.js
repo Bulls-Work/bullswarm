@@ -1880,3 +1880,98 @@ test('Esc walks out exactly one level: agent to phase to run to the workflows li
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
+
+test('V2 planned steps name each action work or evidence, never undefined', () => {
+  // Regression: the planned-steps list printed `action.kind`, a field only
+  // authored drafts carry. Every V2 run rendered "<id> · undefined · <status>"
+  // for every step that had no agent yet. Observed live on run zx9vni.
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-role-'));
+  try {
+    const runId = 'wf-role-abcdef';
+    const dir = join(home, 'workflows', runId);
+    mkdirSync(dir, { recursive: true });
+    const goal = createV2GoalDocument({
+      goal: 'Close the UI gaps and prove the suite is green', cwd: '/tmp/repo',
+      requirements: [{ id: 'requirement-1', text: 'The UI gaps are closed' }],
+      settings: { scout: false, concurrency: 2 },
+    });
+    let state = createV2State(goal, { runId, shortId: 'role12' });
+    state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Fix, then verify.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'shell-and-visual-system', purpose: 'Close the shell gaps', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['src/shell.js'], prompt: 'Fix it.', lane: 'build', effort: 'high', evidenceFor: [], inputs: [], produces: ['shell'] },
+        { id: 'space-and-spaces', purpose: 'Close the Space gaps', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['src/space.js'], prompt: 'Fix it.', lane: 'build', effort: 'high', evidenceFor: [], inputs: [], produces: ['space'] },
+        { id: 'verify-surfaces', purpose: 'Verify the surfaces', dependsOn: ['shell-and-visual-system', 'space-and-spaces'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['shell', 'space'], produces: [] },
+      ] },
+    });
+    // One action running, no attempt recorded yet: exactly the state that shows
+    // the planned-steps list because no agent can be selected.
+    state.presentation.stages[0].startedAt = iso(2);
+    Object.assign(state.actions[0], { status: 'running', startedAt: iso(2), attempts: 1 });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+
+    const row = dashboardRows(home)[0];
+    const agentPane = renderWorkflowTui(row, { width: 120, height: 30, focus: 1 });
+    assert.match(agentPane, /No agent selected\./);
+    assert.match(agentPane, /Planned steps in this phase:/);
+    assert.doesNotMatch(agentPane, /undefined/);
+    assert.match(agentPane, /shell-and-visual-system · work · running/);
+    assert.match(agentPane, /space-and-spaces · work · pending/);
+
+    // The evidence stage names its actions by the role the kernel gives them.
+    const evidencePane = renderWorkflowTui(row, { width: 120, height: 30, focus: 1, phaseIndex: 1 });
+    assert.doesNotMatch(evidencePane, /undefined/);
+    assert.match(evidencePane, /verify-surfaces · evidence · pending/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a V2 run whose kernel died is not reported as running', async () => {
+  // Regression: V2 states recorded no runner pid or heartbeat, and
+  // reconcileInterruptedRun skipped V2 entirely, so a kernel that died left
+  // state.json saying "running" forever. Observed live on run zx9vni, which
+  // showed "running · 0/6 actions" for 17 minutes with no process alive.
+  const { v2RunnerLiveness } = await import('../src/workflow/short-id.js');
+  const at = (ms) => new Date(ms).toISOString();
+  const now = 1_000_000_000_000;
+  const v2 = (status, runner) => ({
+    schemaVersion: 'bullswarm.workflow.state.v2', lifecycle: { status }, runner,
+  });
+
+  const live = v2('running', { pid: 4242, startedAt: at(now - 60_000), lastHeartbeatAt: at(now - 1_000) });
+  assert.equal(v2RunnerLiveness(live, { now, processAlive: () => true }).alive, true);
+
+  // The exact shape of the reported failure: process gone, state still active.
+  const dead = v2RunnerLiveness(live, { now, processAlive: () => false });
+  assert.equal(dead.alive, false);
+  assert.match(dead.reason, /runner process 4242 is gone/);
+
+  // Alive pid but a heartbeat that stopped advancing is also not running.
+  const wedged = v2RunnerLiveness(
+    v2('running', { pid: 4242, startedAt: at(now - 600_000), lastHeartbeatAt: at(now - 300_000) }),
+    { now, processAlive: () => true },
+  );
+  assert.equal(wedged.alive, false);
+  assert.match(wedged.reason, /has not updated the run/);
+
+  // A caller-planner pause is ownerless by design and must never be flagged.
+  assert.equal(v2RunnerLiveness(v2('waiting', null), { now, processAlive: () => false }).alive, true);
+  for (const status of ['completed', 'partial', 'cancelled', 'failed']) {
+    assert.equal(v2RunnerLiveness(v2(status, null), { now, processAlive: () => false }).alive, true);
+  }
+
+  // No runner record and no run directory: no evidence, so no accusation.
+  assert.equal(v2RunnerLiveness(v2('running', null), { now, processAlive: () => false }).alive, true);
+
+  // A run directory whose state.json went silent for longer than the legacy
+  // window is the only signal available for pre-heartbeat runs.
+  const home = mkdtempSync(join(tmpdir(), 'bs-liveness-'));
+  try {
+    writeFileSync(join(home, 'state.json'), '{}');
+    const fresh = v2RunnerLiveness(v2('running', null), { now: Date.now(), processAlive: () => false, runDir: home });
+    assert.equal(fresh.alive, true, 'a just-written state is not stale');
+    const stale = v2RunnerLiveness(v2('running', null), { now: Date.now() + 3_600_000, processAlive: () => false, runDir: home });
+    assert.equal(stale.alive, false);
+    assert.match(stale.reason, /no heartbeat recorded/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
