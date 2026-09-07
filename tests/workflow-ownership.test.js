@@ -116,4 +116,16 @@ test('a node_modules symlink injected into an isolated workspace is not the agen
   assert.equal(checkOwnership({ before, after, ownedFiles: ['a.txt'] }).ok, false,
     'compareManifests itself stays strict; the exclusion belongs to capture');
   assert.deepEqual(Object.keys(captureWorkspaceManifest(linked)), ['a.txt']);
+
+  // A monorepo has one dependency tree per workspace package. The first fix
+  // only skipped a top-level node_modules, so run mi34ca still died on
+  // "out-of-scope mutation: src/apps/collab/node_modules, src/apps/web/node_modules".
+  const mono = mkdtempSync(join(tmpdir(), 'bs-nm-mono-'));
+  mkdirSync(join(mono, 'src', 'apps', 'web'), { recursive: true });
+  mkdirSync(join(mono, 'src', 'apps', 'collab'), { recursive: true });
+  writeFileSync(join(mono, 'src', 'apps', 'web', 'page.tsx'), 'x');
+  for (const at of [[mono], [mono, 'src', 'apps', 'web'], [mono, 'src', 'apps', 'collab']]) {
+    symlinkSync(join(root, 'node_modules'), join(...at, 'node_modules'), 'dir');
+  }
+  assert.deepEqual(Object.keys(captureWorkspaceManifest(mono)), ['src/apps/web/page.tsx']);
 });
