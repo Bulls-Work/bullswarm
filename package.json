@@ -28,7 +28,8 @@
   ],
   "scripts": {
     "test": "node --test \"tests/*.test.js\"",
-    "refresh:benchmarks": "node scripts/refresh-openrouter-benchmarks.mjs",
+    "refresh:openrouter": "node scripts/refresh-openrouter-benchmarks.mjs",
+    "refresh:epoch": "node scripts/refresh-epoch-benchmarks.mjs",
     "prepublishOnly": "npm test"
   },
   "repository": {
