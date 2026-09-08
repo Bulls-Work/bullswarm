@@ -103,3 +103,31 @@ machine can still stop; recovery skips durable successes and replays unfinished
 actions, so external side effects are not exactly-once. Provider failures and
 bad plans remain possible. The simplification removes unnecessary engine
 failure paths rather than promising infallibility.
+
+
+## Live provider acceptance (2026-09-08)
+
+Run `ggtegs` (`wf-mts0h1pp-1228a7`) used the installed CLI in a disposable
+calculator repository. Its exact six-action graph completed in 4m10s:
+
+- Three Grok 4.6 builders overlapped in one shared tree and each added a focused
+  test file outside its advisory source-file territory.
+- One Grok integrator started after all builders finished, combined their
+  modules, wrote usage documentation, and passed the 13-test suite.
+- Two Claude Sonnet 5 reviewers overlapped after integration and returned
+  passing evidence. There were six attempts, one submitted program, no planner
+  dispatches, and no additional planning pause.
+- Local inspection confirmed the files, preserved user note, and passing tests.
+  Durable action timestamps confirmed the concurrency and dependency order.
+
+The result reported `completed` and `verified: true`, but independent caller
+probes found an implementation bug missed by both reviewers: inherited operation
+names such as `constructor`, `toString`, and `valueOf` threw TypeError instead of
+RangeError. This is a model-output limitation, not evidence that the workflow
+kernel failed. Passing evidence verdicts are not a correctness guarantee.
+The explicit repair run `nx5dyi` (`wf-mts0mwt1-4b4a74`) completed with passing
+independent evidence. Its regression first reproduced the failure, then the
+repair passed all 18 tests. Caller probes also confirmed inherited names,
+coerced arrays/objects, symbols, null, and undefined now throw RangeError.
+Resuming the original completed run returned its existing result with exactly
+six attempts and no worker replay.
