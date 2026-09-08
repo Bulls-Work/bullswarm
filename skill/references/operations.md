@@ -3,19 +3,6 @@
 Read this reference only after the common `/bullswarm` decision when the task
 needs direct commands, workflow operation, or recovery.
 
-## Direct single-agent execution
-
-```bash
-bullswarm run --lane <analyze|build|chore> \
-  --add-dir <abs-dir> --prompt '<task>' --json
-```
-
-The result is usable only when `ok:true`. Read `outFile`; do not infer the
-answer from an exit code. `keepOnClaude` means no eligible delegate beat the
-caller, so finish in the current session. Lanes describe work, not providers:
-`analyze` for reading/judgment, `build` for edits, and `chore` for cheap
-mechanical work.
-
 ## Autonomous workflow execution
 
 `workflow goal` needs a program: the calling agent is the Workflow Planner
@@ -70,31 +57,23 @@ or fallback executor. Fixed authored workflows and drafts remain a separate
 product surface. `bullswarm workflow goal --resume <shortId>` and
 `bullswarm workflow tui --cancel <shortId>` remain as aliases.
 
-## Caller-planner runs (the default)
+## Submitting work at a planning pause
+
+Use these commands when `watch` reports a caller-planner pause:
 
 ```bash
-bullswarm workflow plan contract "<goal>" --cwd=<abs-dir> --json   # requirement IDs, rules, schema, example
-bullswarm workflow plan validate "<goal>" --cwd=<abs-dir> --program plan.json --json  # dry run; nothing launches
-bullswarm workflow goal "<goal>" --cwd=<abs-dir> --program plan.json --json
-bullswarm workflow plan show <shortId> --json                       # pending request: boundary, gaps, known actions
-bullswarm workflow plan submit <shortId> --program plan-2.json      # new actions only; relaunches detached
-bullswarm workflow plan submit <shortId> --exhausted --reason "<why>"   # gaps boundary only
+bullswarm workflow plan show <shortId> --json
+bullswarm workflow plan submit <shortId> --program plan-2.json --watch
 ```
 
-A caller-planner run records `plannerMode: caller` in its goal document, never
-dispatches a planner or (by default) a scout, and pauses durably with
-`lifecycle.status = waiting` plus a `planner-request-turn-N.json` file in the
-run directory whenever a planning boundary is reached. `watch` exits 0 at that
-pause and prints the `plan show` command; `runs result` reports the pause until
-a program or an exhausted decision is submitted. The submitted program passes
-the same validator as a dispatched planner response against the exact durable
-state; scout units are advisory in this mode. Resume (`workflow resume`) of a
-paused run without a submission re-pauses on the same request.
+Read the current request and author only new actions; existing action IDs can
+be dependencies. New shared programs pause for opt-in scouting or explicit
+steering, not negative evidence. A submission is validated before modifying the
+run. Resuming without a submission preserves the pause.
 
-`plan validate` is the dry run: the same requirement ledger, validator, and
-preview state a launch uses, with no run created. Exit 0 prints the accepted
-actions and the launch line; exit 2 prints the same issues `workflow goal`
-would print, as `{"error": "program-invalid", "issues": [...]}` under `--json`.
+Older saved runs can also pause for requirement gaps and accept
+`plan submit <shortId> --exhausted --reason '<why>'` there. Do not use
+`--exhausted` for a new program or a steering request.
 
 Pause hygiene, all kernel-enforced:
 
@@ -121,6 +100,18 @@ Pause hygiene, all kernel-enforced:
 - Bare value flags (`--program` with no file, `--orchestrator` with no pool)
   are usage errors (exit 2); nothing launches in a different mode. `plan submit`
   checks the goal directory before touching state.
+
+## Workspace and concurrency options
+
+New programs share the target tree. Add `--concurrency=3` at launch when a
+specific fan-out cap is useful; it does not bypass overlap serialization or
+the sole-integrator rule.
+
+Choose strict per-worker worktrees explicitly with `--isolation`, using it for
+both `plan contract`/`plan validate` and `workflow goal`. In this mode writers
+must list exact files in `ownedFiles`; undeclared files can fail the action and
+are not integrated. An unrestricted writer with `ownedFiles: []` is invalid.
+Existing runs preserve their saved mode on resume.
 
 ## Fixed graphs, fan-out, and adversarial verification
 
