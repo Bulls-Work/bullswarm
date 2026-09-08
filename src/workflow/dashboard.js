@@ -1009,7 +1009,7 @@ function joinPanels(left, right) {
 
 function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0, selectedTimelineSegment = null) {
   const inner = Math.max(1, width - 2);
-  const timeline = workflowTimelineLines(model, inner);
+  const timeline = workflowTimelineLines(model, inner, spinnerFrame);
   const live = workflowLiveLines(model, inner, spinnerFrame);
   const next = workflowNextLines(model, inner);
   const contentRows = Math.max(3, height - 4); // outer border + two section dividers
@@ -1092,8 +1092,8 @@ function sectionDivider(label, inner) {
   return `├${text}${'─'.repeat(Math.max(0, inner - text.length))}┤`;
 }
 
-function workflowTimelineLines(model, width) {
-  if (model.v2) return workflowTimelineLinesV2(model, width);
+function workflowTimelineLines(model, width, spinnerFrame = 0) {
+  if (model.v2) return workflowTimelineLinesV2(model, width, spinnerFrame);
   const { state, orchestrator } = model;
   const ledger = state.actionLedger ?? [];
   const events = [];
@@ -1256,7 +1256,7 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
     lines.push(...event.lines.map((line) => ({ text: line, segment: event.segment, at: event.at })));
   }
   if (!lines.length) lines.push({ text: 'Waiting for the first durable workflow milestone', segment: null });
-  return { lines, milestoneCount: orderedEvents.length };
+  return { lines, milestoneCount: orderedEvents.filter((event) => !event.live).length };
 }
 
 function timelineSegmentDisplayName(name, model) {
@@ -1264,13 +1264,13 @@ function timelineSegmentDisplayName(name, model) {
   return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
 }
 
-function workflowTimelineLinesV2(model, width) {
+function workflowTimelineLinesV2(model, width, spinnerFrame = 0) {
   const { state } = model;
   const rows = [];
-  const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null) => {
+  const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
     if (!at) return;
     rows.push({
-      at, startedAt, segment,
+      at, startedAt, segment, ...extra,
       lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])],
     });
   };
@@ -1323,6 +1323,18 @@ function workflowTimelineLinesV2(model, width) {
       const stage = stageById.get(event.payload?.stageId);
       const ok = event.payload?.status === 'completed';
       add(event.committedAt, `└─${ok ? '✓' : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
+    }
+  }
+  // A worker that is still running has no durable finish event yet, so the
+  // timeline would otherwise show only its level's "started" row while the
+  // Live pane reports the same worker with a ticking elapsed time. Present it
+  // under its level with the spinner and the same live duration. It is not a
+  // milestone, so it does not count toward the pane title.
+  if (!state.lifecycle.finishedAt) {
+    for (const runtime of state.actions) {
+      if (runtime.status !== 'running' || !runtime.startedAt) continue;
+      const stage = model.stages.find((item) => item.actionIds.includes(runtime.id));
+      add(runtime.startedAt, `│  ├─${statusIcon('running', spinnerFrame)} ${runtime.id}`, durationText(runtime.startedAt), null, stage?.label ?? 'Work', null, { live: true });
     }
   }
   if (model.dependencyGroups) for (const stage of model.stages) {
@@ -1990,8 +2002,13 @@ function compactAgentPreviewLines(model, width, spinnerFrame) {
     ...agentDetailLines(model, width, spinnerFrame),
   ];
   const liveActions = agent.active?.lastActions ?? agent.attempt?.lastActions ?? [];
+  // Token usage only arrives when an attempt finishes, so a running worker
+  // used to read "#1 · pending" here; its elapsed time is what is known now.
+  const startedAt = agent.attempt?.startedAt ?? agent.active?.startedAt;
+  const elapsed = startedAt ? durationText(startedAt, agent.attempt?.finishedAt) : '';
+  const tokens = tokenText(agent.attempt?.usage);
   const lines = [
-    `${agent.action.id} · ${agent.pool} · ${agent.model} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1} · ${tokenText(agent.attempt?.usage) || 'pending'}`,
+    `${agent.action.id} · ${agent.pool} · ${agent.model} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}${elapsed ? ` · ${elapsed}` : ''}${tokens ? ` · ${tokens}` : ''}`,
     `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}`,
     `${agent.pool} · attempt ${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}`,
     `Tokens · ${tokenText(agent.attempt?.usage) || 'pending'}`,

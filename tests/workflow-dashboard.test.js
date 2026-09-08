@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -507,7 +507,7 @@ test('full-screen workflow view models phase, agent, and selected-agent steps', 
 
     const agents = renderWorkflowTui(row, { width: 120, height: 30, focus: 1 });
     assert.match(agents, /review · 0\/1 complete/);
-    assert.match(agents, /fan · grok · grok-4\.6 · #1 · 52 tok/);
+    assert.match(agents, /fan · grok · grok-4\.6 · #1 · \d+s · 52 tok/);
 
     const detail = renderWorkflowTui(row, { width: 120, height: 30, focus: 2 });
     assert.match(detail, /fan · grok/);
@@ -2005,4 +2005,92 @@ test('program dashboard projects saved categories into dependency levels with ov
     assert.match(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false }), /Dependency levels/);
   }
   assert.equal(JSON.stringify(state), before);
+});
+
+// A running worker has no durable finish event, so the timeline used to show
+// only its level's "├─ started" row for the whole time it ran while the Live
+// pane counted its elapsed time. The level must list the worker with the
+// spinner and the same live duration, without counting it as a milestone.
+test('V2 timeline lists a running worker under its level with a spinner and live elapsed time', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-v2-live-'));
+  try {
+    const runId = 'wf-v2live-abcdef';
+    const dir = join(home, 'workflows', runId);
+    mkdirSync(dir, { recursive: true });
+    const goal = createV2GoalDocument({
+      goal: 'Implement and prove a result envelope', cwd: '/tmp/repo',
+      requirements: [{ id: 'result-correct', text: 'The result envelope is correct' }],
+      settings: { scout: false, concurrency: 2 },
+    });
+    let state = createV2State(goal, { runId, shortId: 'v2l234' });
+    state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Implement then collect independent evidence.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'implement-result', purpose: 'Implement result envelope', dependsOn: [], affects: ['result-correct'], ownedFiles: ['src/result.js'], prompt: 'Implement it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['result'] },
+        { id: 'check-result', purpose: 'Collect independent evidence', dependsOn: ['implement-result'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['result-correct'], inputs: ['result'], produces: [] },
+      ] },
+    });
+    state.presentation.stages[0].startedAt = iso(2);
+    state.presentation.stages[0].completedAt = iso(5);
+    Object.assign(state.actions[0], { status: 'succeeded', startedAt: iso(2), finishedAt: iso(5), attempts: 1 });
+    state.attempts.push({ id: 'implement-result-1', actionId: 'implement-result', ordinal: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(2), finishedAt: iso(5) });
+    // appendEvent stamps committedAt with the wall clock; this fixture needs the
+    // durable history to predate the worker that is still running, as it does
+    // in a real run, so events are written with explicit timestamps.
+    let sequence = 0;
+    const emit = (type, committedAt, payload) => {
+      sequence += 1;
+      appendFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ sequence, type, schemaVersion: 1, payload, committedAt })}\n`);
+      state.events.sequence = sequence;
+    };
+    emit('workflow.started', iso(0), {});
+    emit('planner.finished', iso(1), { turn: 1, ok: true, summary: 'Implement then collect independent evidence.' });
+    emit('presentation.stage_started', iso(2), { stageId: 'r1-implementation', label: 'Implementation' });
+    emit('action.finished', iso(5), { actionId: 'implement-result', status: 'succeeded' });
+    emit('presentation.stage_completed', iso(5), { stageId: 'r1-implementation', label: 'Implementation', status: 'completed', completed: 1, total: 1 });
+    // the evidence level has started but its worker has not been dispatched yet
+    state.presentation.stages[1].startedAt = iso(6);
+    emit('presentation.stage_started', iso(6), { stageId: 'r1-evidence', label: 'Evidence' });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const before = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
+    const milestones = /Workflow timeline · (\d+) milestones?/.exec(before)[1];
+    assert.match(segmentRows(before, 'Evidence').join('\n'), /├─ started/);
+    assert.doesNotMatch(segmentRows(before, 'Evidence').join('\n'), /check-result/);
+
+    // the worker starts 65 seconds ago and is still running
+    const startedAt = new Date(Date.now() - 65_000).toISOString();
+    Object.assign(state.actions[1], { status: 'running', startedAt, attempts: 1 });
+    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay-2', model: 'gpt-5.6-luna', startedAt, finishedAt: null, lastActivityAt: startedAt, outputBytesObserved: 42 });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const running = renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 0 });
+    const evidence = segmentRows(running, 'Evidence').map(normalizeRow);
+    assert.equal(evidence[0], 'HH:MM ├─ started');
+    assert.match(evidence[1], /^HH:MM │ ├─⠋ check-result 1m0[5-9]s$/, evidence.join('\n'));
+    // the spinner animates with the frame counter like the Live pane
+    assert.match(segmentRows(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 3 }), 'Evidence').join('\n'), /├─⠸ check-result/);
+    // a live row is not a durable milestone
+    assert.equal(/Workflow timeline · (\d+) milestones?/.exec(running)[1], milestones);
+    // the level header still reads running rather than a finished duration
+    assert.equal(timelineSegments(running).find((segment) => segment.label === 'Evidence').elapsed, 'running');
+
+    // the agent pane leads with the elapsed time; token usage only exists once the attempt finishes
+    const agents = renderWorkflowTui(row, { width: 130, height: 22, focus: 1, spinnerFrame: 0 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    assert.match(agents, /check-result · relay-2 · gpt-5\.6-luna · #1 · 1m0[5-9]s/);
+    assert.doesNotMatch(agents, /#1 · pending/);
+    assert.match(agents, /Tokens · pending/);
+
+    // once the worker finishes, its durable row replaces the live one
+    const finishedAt = new Date().toISOString();
+    Object.assign(state.actions[1], { status: 'succeeded', finishedAt });
+    state.attempts[1] = { ...state.attempts[1], status: 'succeeded', finishedAt, usage: { tokens: { totalKnown: 1200 } } };
+    emit('evidence.recorded', finishedAt, { actionId: 'check-result', requirements: ['result-correct'], statuses: { 'result-correct': 'passed' } });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const done = renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 120, height: 30 });
+    const doneRows = segmentRows(done, 'Evidence').map(normalizeRow);
+    assert.equal(doneRows.filter((line) => line.includes('check-result')).length, 1, doneRows.join('\n'));
+    assert.match(doneRows.join('\n'), /├─✓ check-result 1m0[5-9]s/);
+    assert.match(renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 130, height: 22, focus: 1, phaseIndex: 1 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), /#1 · 1m0[5-9]s · 1\.2k tok/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
