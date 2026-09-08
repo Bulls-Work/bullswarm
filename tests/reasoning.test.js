@@ -41,9 +41,11 @@ test('packaged connectors declare reasoning from their real CLIs', () => {
   });
   assert.deepEqual(codex.reasoning, {
     args: ['-c', 'model_reasoning_effort={level}'],
-    levels: ['low', 'medium', 'high', 'xhigh'],
+    levels: ['low', 'medium', 'high', 'xhigh', 'max'],
     defaults: { high: 'high', medium: 'medium', low: 'low' },
   });
+  // command-code 1.44.0 lists the same five levels in its own rejection message.
+  assert.deepEqual(commandCode.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(grok.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.equal(grok.reasoning.flag, '--reasoning-effort');
   assert.equal(commandCode.reasoning.flag, '--effort');
@@ -181,17 +183,27 @@ test('a model the connector marks as skipped gets no level', () => {
   }).applied, 'xhigh');
 });
 
+// A connector whose CLI stops at high (the shape codex and command-code had
+// before their 2026-09-09 probes showed both accept xhigh and max).
+const narrow = { name: 'narrow', reasoning: { flag: '--effort', levels: ['low', 'medium', 'high'], defaults: { high: 'high', medium: 'medium', low: 'low' } } };
+
 test('a request the connector cannot express is clamped, never dropped', () => {
-  // codex accepts low..xhigh: max clamps down to the strongest it has.
+  // narrow accepts low..high: max clamps down to the strongest it has.
   assert.deepEqual(
-    resolveReasoningLevel({ connector: codex, tier: 'high', runOverride: 'max' }),
-    { requested: 'max', applied: 'xhigh', source: 'run', clamped: true },
+    resolveReasoningLevel({ connector: narrow, tier: 'high', runOverride: 'max' }),
+    { requested: 'max', applied: 'high', source: 'run', clamped: true },
   );
-  // command-code accepts low, medium, high: xhigh clamps down to high.
+  // xhigh clamps down to high the same way.
   assert.deepEqual(
-    resolveReasoningLevel({ connector: commandCode, tier: 'high', runOverride: 'xhigh' }),
+    resolveReasoningLevel({ connector: narrow, tier: 'high', runOverride: 'xhigh' }),
     { requested: 'xhigh', applied: 'high', source: 'run', clamped: true },
   );
+  // codex and command-code now express max directly.
+  assert.deepEqual(
+    resolveReasoningLevel({ connector: codex, tier: 'high', runOverride: 'max' }),
+    { requested: 'max', applied: 'max', source: 'run', clamped: false },
+  );
+  assert.equal(resolveReasoningLevel({ connector: commandCode, tier: 'low', runOverride: 'max' }).applied, 'max');
   // A supported request is not a clamp.
   assert.deepEqual(
     resolveReasoningLevel({ connector: codex, tier: 'low', runOverride: 'low' }),
@@ -251,8 +263,8 @@ test('the reported record accepts a resolved object or a bare level', () => {
   assert.deepEqual(reasoningRecord(null), { requested: null, applied: null, source: 'none', clamped: false });
   assert.deepEqual(reasoningRecord('xhigh'), { requested: 'xhigh', applied: 'xhigh', source: 'run', clamped: false });
   assert.deepEqual(
-    reasoningRecord(resolveReasoningLevel({ connector: codex, tier: 'high', runOverride: 'max' })),
-    { requested: 'max', applied: 'xhigh', source: 'run', clamped: true },
+    reasoningRecord(resolveReasoningLevel({ connector: narrow, tier: 'high', runOverride: 'max' })),
+    { requested: 'max', applied: 'high', source: 'run', clamped: true },
   );
   // An unrecognized source is not passed through as if it were real.
   assert.equal(reasoningRecord({ applied: 'high', source: 'made-up' }).source, 'none');
