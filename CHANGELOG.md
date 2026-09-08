@@ -1,5 +1,39 @@
 # bullswarm changelog
 
+## 0.25.0 — shared programs that finish with the graph
+
+- New goal workflows share the target worktree by default. File territories
+  guide scheduling; newly created files and edits survive worker failure or
+  cancellation. Use `--isolation` for strict per-worker worktrees and exact-file
+  ownership. Saved older runs keep their original execution policy.
+- Independent actions run concurrently, and dependents start as soon as their
+  own inputs finish. An unrestricted integrator (`build`, empty `ownedFiles`)
+  runs alone after its writers and can reconcile shared files.
+- Programs finish when their graph finishes, without automatic gap-planning
+  rounds. `completed` describes execution; `verified` separately records
+  passing requirement evidence. Negative evidence stays visible, and further
+  repairs use explicitly authored programs.
+- Unexpected worker errors become action failures; independent branches keep
+  running. Quiet workers retain a kernel heartbeat, dead kernels are identified
+  in the TUI, and resume preserves durable successes and published results.
+- Cancellation intent survives concurrent kernel writes. Resume uses a kernel
+  lease and tracks delegate process groups; SIGTERM/SIGINT produce a resumable
+  interruption, and surviving delegates are drained before replacement work.
+  Durable completion receipts recover both successful worker output and partial
+  isolated integration without replaying the worker.
+- Failed/interrupted isolated workspaces are retained, conflicting user edits
+  block integration, and submodule file trees no longer break manifest capture.
+- Program dashboards show dependency levels instead of keyword-inferred phases,
+  including for saved runs. Independent levels can overlap as actions become ready.
+- Plain dependencies no longer need artificial artifact declarations. Evidence
+  prompts can inspect product JSON/output formats without being mistaken for
+  instructions to replace the kernel's verdict format.
+- The agent skill now presents one short choose → plan → launch → inspect flow,
+  with advanced operations in a separate reference. It distinguishes a planning
+  contract from a launch and passing evidence from guaranteed correctness.
+- Isolated ownership checks exclude dependency trees at every depth and handle
+  literal filenames containing glob metacharacters.
+
 ## 0.24.0 — the calling agent is the Workflow Planner
 
 **BREAKING.** `bullswarm workflow goal` now needs a program. Add
