@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { autoSetup } from '../src/setup.js';
@@ -327,4 +327,192 @@ test('analysis review lists one recommendation per tier and asks before applying
 
 test('raw terminal input preserves arrows and splits batched search typing', () => {
   assert.deepEqual(inputKeys(`opus\x1b[C\r`), ['o', 'p', 'u', 's', '\x1b[C', '\r']);
+});
+
+// --- reasoning depth ---------------------------------------------------------
+// Reasoning is the second dimension of a dispatch: the effort tier picks WHICH
+// model, reasoning picks HOW DEEPLY it thinks. Every mutation is agent-facing
+// (no TUI) and, like the other routing mutations, requires --yes.
+
+function reasoningPool(name, block, extra = {}) {
+  const connector = {
+    name,
+    modelSelection: { flag: '--model' },
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'workflow-planning', 'code-reading', 'file-editing'],
+    modelProfiles: [{ match: 'smart', tier: 'high', qualityRank: 5 }],
+    ...(block ? { reasoning: block } : {}),
+  };
+  return {
+    name, connector, enabled: true, lanes: connector.lanes,
+    capabilities: connector.capabilities, pace: 0, usedPct: 0, ...extra,
+  };
+}
+
+test('set-reasoning persists tier and pool levels, and reset-reasoning removes them', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'xhigh', '--yes']), 0);
+    assert.equal(await run(['set-reasoning', '--tier', 'low', '--level', 'default', '--yes']), 0);
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'high', '--pool', 'codex', '--yes']), 0);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning, {
+      tiers: { high: 'xhigh', low: 'default' },
+      pools: { codex: { high: 'high' } },
+    });
+
+    assert.equal(await run(['reset-reasoning', '--pool', 'codex', '--yes']), 0);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning.pools, {});
+
+    assert.equal(await run(['reset-reasoning', '--tier', 'high', '--yes']), 0);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning, { tiers: { low: 'default' }, pools: {} });
+
+    assert.equal(await run(['reset-reasoning', '--yes']), 0);
+    assert.equal(loadState(f.dir).strategy.reasoning, undefined);
+  } finally { console.log = originalLog; f.cleanup(); }
+});
+
+test('a tier reset also clears that tier from every per-pool reasoning override', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'max', '--pool', 'codex', '--yes']), 0);
+    assert.equal(await run(['set-reasoning', '--tier', 'low', '--level', 'low', '--pool', 'codex', '--yes']), 0);
+    assert.equal(await run(['reset-reasoning', '--tier', 'high', '--yes']), 0);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning.pools, { codex: { low: 'low' } });
+  } finally { console.log = originalLog; f.cleanup(); }
+});
+
+test('reasoning argument errors exit 2 and never write a partial policy', async () => {
+  const f = fixture();
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'xhigh']), 2, '--yes is required');
+    assert.equal(await run(['set-reasoning', '--tier', 'huge', '--level', 'xhigh', '--yes']), 2);
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'extreme', '--yes']), 2);
+    assert.equal(await run(['set-reasoning', '--level', 'xhigh', '--yes']), 2, '--tier is required');
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--yes']), 2, '--level is required');
+    assert.equal(await run(['set-reasoning', '--tier', 'high', '--level', 'xhigh', '--pool', 'missing-pool', '--yes']), 2);
+    assert.equal(await run(['reset-reasoning', '--tier', 'huge', '--yes']), 2);
+    assert.equal(await run(['reset-reasoning', '--pool', 'missing-pool', '--yes']), 2);
+    assert.equal(await run(['reset-reasoning']), 2, '--yes is required');
+    assert.equal(loadState(f.dir).strategy?.reasoning, undefined);
+  } finally { console.error = originalError; f.cleanup(); }
+});
+
+test('strategy configure applies a reasoning section atomically with the rest', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    // Seed a report so configure reads the cached inventory instead of
+    // executing every installed agent CLI's discovery command.
+    const seeded = loadState(f.dir);
+    seeded.strategy = {
+      lastReport: {
+        capturedAt: new Date().toISOString(), subscriptions: [], suggestions: {},
+        discoveries: { codex: { models: [{ id: 'gpt-5.6-sol', tier: 'high', qualityRank: 6 }] } },
+      },
+    };
+    saveState(f.dir, seeded);
+    const file = join(f.dir, 'strategy.json');
+
+    // One bad level rejects the whole document: the provider toggle in the
+    // same file must not survive either.
+    writeFileSync(file, JSON.stringify({
+      providers: { codex: false },
+      reasoning: { tiers: { high: 'xhigh' }, pools: { codex: { low: 'ludicrous' } } },
+    }));
+    assert.equal(await cmdStrategy(['configure', '--file', file, '--yes'], { bullswarmDir: f.dir }), 2);
+    let state = loadState(f.dir);
+    assert.equal(state.strategy.reasoning, undefined, 'nothing written');
+    assert.equal(state.pools.codex.enabled, true, 'the provider toggle was not applied either');
+
+    writeFileSync(file, JSON.stringify({
+      reasoning: { tiers: { high: 'xhigh', medium: 'default' }, pools: { codex: { low: 'high' } } },
+    }));
+    assert.equal(await cmdStrategy(['configure', '--file', file, '--yes'], { bullswarmDir: f.dir }), 0);
+    assert.deepEqual(loadState(f.dir).strategy.reasoning, {
+      tiers: { high: 'xhigh', medium: 'default' },
+      pools: { codex: { low: 'high' } },
+    });
+
+    // null removes one level without disturbing the others.
+    writeFileSync(file, JSON.stringify({ reasoning: { tiers: { high: null } } }));
+    assert.equal(await cmdStrategy(['configure', '--file', file, '--yes'], { bullswarmDir: f.dir }), 0);
+    state = loadState(f.dir);
+    assert.deepEqual(state.strategy.reasoning.tiers, { medium: 'default' });
+    assert.deepEqual(state.strategy.reasoning.pools, { codex: { low: 'high' } });
+
+    writeFileSync(file, JSON.stringify({ reasoning: { pools: { 'missing-pool': { low: 'high' } } } }));
+    assert.equal(await cmdStrategy(['configure', '--file', file, '--yes'], { bullswarmDir: f.dir }), 2);
+  } finally { console.log = originalLog; console.error = originalError; f.cleanup(); }
+});
+
+test('inventory reports configured reasoning plus the effective level and source per pool', () => {
+  const pools = [
+    reasoningPool('deep', {
+      flag: '--effort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaults: { high: 'xhigh', medium: 'high', low: 'medium' },
+    }, { pace: 12 }),
+    reasoningPool('narrow', {
+      args: ['-c', 'model_reasoning_effort={level}'],
+      levels: ['low', 'medium', 'high'],
+      defaults: { high: 'high', medium: 'medium', low: 'low' },
+    }),
+    reasoningPool('flat', null),
+  ];
+  const state = { strategy: { reasoning: { tiers: { medium: 'max' }, pools: { deep: { high: 'low' } } } } };
+  const report = {
+    capturedAt: new Date().toISOString(),
+    discoveries: {},
+    suggestions: { high: { requirements: { lane: 'analyze', capabilities: ['strong-analysis', 'workflow-planning'] } } },
+  };
+  const inventory = strategyInventory({ pools, state, report });
+
+  assert.deepEqual(inventory.reasoning.tiers, { medium: 'max' });
+  assert.deepEqual(inventory.reasoning.pools, { deep: { high: 'low' } });
+  // Per-pool override beats the tier default, which beats the connector default.
+  assert.deepEqual(inventory.reasoning.effective.deep, {
+    high: { level: 'low', source: 'strategy-pool' },
+    medium: { level: 'max', source: 'strategy-tier' },
+    low: { level: 'medium', source: 'connector' },
+  });
+  // A CLI that stops at "high" is clamped down to it, never sent "max".
+  assert.deepEqual(inventory.reasoning.effective.narrow.medium, { level: 'high', source: 'strategy-tier' });
+  assert.deepEqual(inventory.reasoning.effective.narrow.low, { level: 'low', source: 'connector' });
+  // A connector with no reasoning block reports no level at all.
+  assert.deepEqual(inventory.reasoning.effective.flat, {
+    high: { level: null, source: 'unsupported' },
+    medium: { level: null, source: 'unsupported' },
+    low: { level: null, source: 'unsupported' },
+  });
+
+  // The routed pool carries the depth it would actually be dispatched with.
+  assert.equal(inventory.routes.high.pool, 'deep');
+  assert.deepEqual(inventory.routes.high.reasoning, { level: 'low', source: 'strategy-pool' });
+  const screen = renderStrategyDashboard(inventory, { width: 100, height: 30 });
+  assert.match(screen, /High\s+analyze\s+→ deep\/.*· reasoning low/);
+});
+
+test('a pool with no reasoning support adds no reasoning note to the dashboard route', () => {
+  const inventory = strategyInventory({
+    pools: [reasoningPool('flat', null, { pace: 3 })],
+    state: {},
+    report: {
+      capturedAt: new Date().toISOString(), discoveries: {},
+      suggestions: { high: { requirements: { lane: 'analyze', capabilities: ['strong-analysis', 'workflow-planning'] } } },
+    },
+  });
+  assert.deepEqual(inventory.routes.high.reasoning, { level: null, source: 'unsupported' });
+  assert.doesNotMatch(renderStrategyDashboard(inventory, { width: 100, height: 30 }), /reasoning/);
 });

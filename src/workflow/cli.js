@@ -18,6 +18,7 @@ import { cmdRuns } from './runs-cli.js';
 import { resolveRunId, reconcileInterruptedRuns } from './short-id.js';
 import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
 import { readEvents } from './events.js';
+import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { createV2GoalDocument, createV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './v2-runtime.js';
@@ -199,12 +200,27 @@ export function extractV2GoalConstraints(goal) {
   return explicitReadOnly ? { workspaceMutation: 'forbidden' } : null;
 }
 
-function v2Routing({ pool = null, model = null, strict = false } = {}) {
+function v2Routing({ pool = null, model = null, strict = false, reasoning = null } = {}) {
   const routing = {};
   if (pool) routing[strict ? 'pool' : 'preferredPool'] = pool;
   if (model) routing.preferredModel = model;
   if (strict && pool) routing.strictPool = pool;
+  // Run-wide reasoning depth. It outranks the configured strategy and the
+  // connector default, and a per-action `reasoning` field outranks it.
+  if (reasoning) routing.reasoning = reasoning;
   return Object.keys(routing).length ? routing : null;
+}
+
+// A run-wide reasoning flag is a usage error when it is not on the common
+// scale: silently ignoring a typo would let a controlled provider QA run think
+// at a level the caller did not ask for.
+function reasoningFlag(opts, flag) {
+  const value = opts[flag];
+  if (value === undefined) return null;
+  if (typeof value !== 'string' || !isReasoningLevel(value)) {
+    throw new Error(`--${flag} must be ${[...REASONING_LEVELS, 'default'].join('|')}`);
+  }
+  return value;
 }
 
 function goalUsage() {
@@ -434,6 +450,12 @@ async function launchDetachedGoal(doc, opts, { initialPlannerResponse = null } =
     cwd: doc.intent.cwd,
     plannerMode: callerPlanner ? 'caller' : 'dispatched',
     requestedOrchestrator: callerPlanner ? 'caller' : (doc.config?.plannerRouting?.preferredPool ?? doc.config?.plannerRouting?.pool ?? 'auto'),
+    // Run-wide reasoning depth, echoed so the caller can see what its
+    // per-action `reasoning` fields will be overriding. null = not overridden.
+    reasoning: {
+      worker: doc.config?.workerRouting?.reasoning ?? null,
+      planner: doc.config?.plannerRouting?.reasoning ?? null,
+    },
     observe: goalObserveCommands(token, { callerPlanner }),
     logs: { stdout: stdoutPath, stderr: stderrPath },
   };
@@ -504,6 +526,8 @@ function buildNewGoalDocument(goal, opts, planning) {
   const callerPlanner = planning.mode === 'caller';
   const workerPool = opts['worker-pool'] && opts['worker-pool'] !== 'auto' ? opts['worker-pool'] : null;
   const workerModel = opts['worker-model'] && opts['worker-model'] !== 'auto' ? opts['worker-model'] : null;
+  const workerReasoning = reasoningFlag(opts, 'worker-reasoning');
+  const plannerReasoning = reasoningFlag(opts, 'planner-reasoning');
   if (opts.isolation !== undefined && typeof opts.isolation !== 'boolean') throw new Error('--isolation is a boolean flag');
   // Caller planner: the caller has done its own reconnaissance, so the kernel
   // scout is opt-in (--scout with a program adds advisory context; --scout
@@ -520,8 +544,8 @@ function buildNewGoalDocument(goal, opts, planning) {
       ...(opts['suggested-plan'] ? { suggestedPlan: String(opts['suggested-plan']).trim() } : {}),
       ...(callerPlanner ? { plannerMode: 'caller' } : {}),
     },
-    plannerRouting: callerPlanner ? null : v2Routing({ pool: planning.pool ?? null, model: planning.model ?? null, strict: Boolean(planning.strict) }),
-    workerRouting: v2Routing({ pool: workerPool, model: workerModel, strict: Boolean(workerPool) }),
+    plannerRouting: callerPlanner ? null : v2Routing({ pool: planning.pool ?? null, model: planning.model ?? null, strict: Boolean(planning.strict), reasoning: plannerReasoning }),
+    workerRouting: v2Routing({ pool: workerPool, model: workerModel, strict: Boolean(workerPool), reasoning: workerReasoning }),
   });
 }
 
@@ -544,6 +568,9 @@ function resolvePlanning(opts) {
     const dispatchedOnly = [
       ['orchestrator-model', '--orchestrator-model'], ['orchestrator-strict', '--orchestrator-strict'],
       ['suggested-plan', '--suggested-plan'], ['noScout', '--no-scout'],
+      // Caller-planner mode never sets plannerRouting, so a planner reasoning
+      // level would be accepted and then dropped without a trace.
+      ['planner-reasoning', '--planner-reasoning'],
     ].filter(([key]) => opts[key] !== undefined && opts[key] !== false).map(([, flag]) => flag);
     if (dispatchedOnly.length) {
       throw new Error(`${dispatchedOnly.join(', ')} appl${dispatchedOnly.length === 1 ? 'ies' : 'y'} only with --orchestrator (a dispatched Workflow Planner); when you are the planner, the plan is the program`);
@@ -569,6 +596,9 @@ function contractFlagError(opts, { allowProgram = false } = {}) {
     return 'the planning commands describe a caller-authored program; --orchestrator, --orchestrator-model, --orchestrator-strict, and --strict-orchestrator do not apply';
   }
   if (opts['suggested-plan'] !== undefined) return '--suggested-plan applies only to a dispatched planner; when you are the planner, the plan is the program';
+  // --worker-reasoning is echoed back in the contract; --planner-reasoning has
+  // nothing to describe here, so it is refused rather than silently dropped.
+  if (opts['planner-reasoning'] !== undefined) return '--planner-reasoning applies only to a dispatched planner; use --worker-reasoning for the run-wide worker level';
   if (!allowProgram && opts.program !== undefined) return 'this command takes the goal text only; pass --program to workflow plan validate or workflow goal';
   if (opts.resume !== undefined || opts.request !== undefined) return '--resume and --request do not apply to the planning commands';
   return null;
@@ -699,7 +729,8 @@ async function wfGoal(opts) {
       console.error(`✗ cannot resume ${resumeRunId}: ${err.message}`);
       return 1;
     }
-    if (opts.orchestrator || opts['strict-orchestrator'] || opts['orchestrator-model'] || opts['worker-pool'] || opts['worker-model']) {
+    if (opts.orchestrator || opts['strict-orchestrator'] || opts['orchestrator-model'] || opts['worker-pool'] || opts['worker-model']
+      || opts['worker-reasoning'] || opts['planner-reasoning']) {
       console.error('✗ V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal');
       return 2;
     }
@@ -866,7 +897,9 @@ function planValidate(opts) {
     program: {
       summary: accepted.summary,
       actions: accepted.program.actions.map((action) => ({
-        id: action.id, lane: action.lane, effort: action.effort, dependsOn: action.dependsOn,
+        id: action.id, lane: action.lane, effort: action.effort,
+        ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+        dependsOn: action.dependsOn,
         affects: action.affects, evidenceFor: action.evidenceFor, ownedFiles: action.ownedFiles,
       })),
     },
@@ -875,7 +908,7 @@ function planValidate(opts) {
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
     console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
     console.log(`  launch   ${next.launch}`);
   }
   return 0;
@@ -1414,7 +1447,7 @@ function parseFlags(argv) {
   const out = { inputs: {}, rest: [] };
   const valueFlags = new Set([
     'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'orchestrator-model',
-    'worker-pool', 'worker-model', 'request', 'run-id',
+    'worker-pool', 'worker-model', 'worker-reasoning', 'planner-reasoning', 'request', 'run-id',
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',

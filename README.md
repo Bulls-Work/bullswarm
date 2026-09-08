@@ -149,6 +149,9 @@ bullswarm strategy set-model opencode2 relay/gpt-5.6-luna \
   --tiers high,medium,low --yes
 bullswarm strategy configure --file strategy.json --yes  # atomic agent-authored policy
 bullswarm strategy reset-tier low --yes     # restore one tier to automatic
+bullswarm strategy set-reasoning --tier high --level xhigh --yes
+bullswarm strategy set-reasoning --tier high --level high --pool codex --yes
+bullswarm strategy reset-reasoning --tier high --yes  # back to connector defaults
 bullswarm strategy refresh
 bullswarm strategy show --json
 bullswarm strategy apply --yes --refresh-hours 24
@@ -302,6 +305,16 @@ adversarial acceptance judgment. Merely being an analysis/evidence action or
 part of a difficult goal never promotes an action to high. The selected effort
 then resolves through the High/Medium/Low routes configured by `bullswarm setup`.
 
+Reasoning depth is a third, independent decision. An action may carry an
+optional `reasoning` field — `low`, `medium`, `high`, `xhigh`, `max`, or
+`default` — that sets how hard the picked model thinks on that one action and
+outranks every configured level for it. `default` passes nothing and lets the
+worker CLI's own setting decide. Omitting the field keeps the configured level.
+It never changes the pool, model, or effort tier, so a `low`-effort mechanical
+step can still be given `xhigh` thinking and a `high`-effort action can be told
+to think cheaply. A connector that does not accept the requested level gets the
+nearest level it supports.
+
 The planner does not author phases or declare success/failure. The kernel
 derives stable presentation stages for the TUI and computes the final V2
 result. Saved V2 runs retain their original execution and workspace policy on
@@ -351,6 +364,30 @@ These pins, plus `--suggested-plan` and `--no-scout`, apply only with
 The worker lock covers scout, work actions, and evidence actions. A pool that cannot guarantee
 the requested model is ineligible rather than silently substituting another
 model.
+
+Reasoning depth can be pinned for a whole run the same way, without touching
+global strategy:
+
+```bash
+bullswarm workflow goal "Implement and verify the change" --cwd . \
+  --program plan.json --worker-reasoning high --json
+bullswarm run --lane build --reasoning xhigh --prompt '<task>' --json
+```
+
+`--worker-reasoning` covers scout, work actions, and evidence actions;
+`--planner-reasoning` covers a dispatched Workflow Planner and applies only
+with `--orchestrator`. Exactly one level is resolved per attempt, and the
+first layer that sets one wins — not the strongest: the action's own
+`reasoning` field, then the run-wide flag (`--worker-reasoning`,
+`--planner-reasoning`, `bullswarm run --reasoning`), then the configured
+`strategy.reasoning` level for that pool and tier, then the same for the tier
+globally, then the connector's own default for the effort tier, and otherwise
+nothing is appended. So an action asking for `low` beats a run-wide `max`.
+`default` at any layer stops there and passes nothing, letting the worker
+CLI's own setting decide; a connector with no `reasoning` block, or a model it
+marks as skipped, never receives a flag. The applied level is recorded on
+every attempt with the layer that set it and displayed next to the model, so a
+run that thought more cheaply than requested is visible rather than inferred.
 
 The `opencode2` connector itself does not require a Relay provider: its base
 spawn command carries no hardcoded model, so a plain OpenCode installation
@@ -656,8 +693,9 @@ while working. Process exit, a fatal auth/quota signature, explicit operator
 cancellation, or an opt-in timeout remain the terminal signals.
 
 Each attempt records the phase/action, selected pool and model, effort tier,
-routing reason, all eligible candidates with quota surplus, timestamps,
-artifact paths, outcome, and reported-or-estimated token/cost/quota usage.
+the applied reasoning level with the layer that set it, routing reason, all
+eligible candidates with quota surplus, timestamps, artifact paths, outcome,
+and reported-or-estimated token/cost/quota usage.
 `workflow tui <id>` renders this breakdown for completed runs as well as live
 ones; `workflow tui --json <id>` exposes the durable audit document.
 When a provider event stream reports the actual model, Bullswarm records that

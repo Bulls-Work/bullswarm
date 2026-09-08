@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  V2PlannerValidationError, applyV2PlannerResponse, buildV2PlannerPrompt,
+  V2PlannerValidationError, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
   buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, readPlannerCandidate, plannerCorrectionRequest,
-  validateV2PlannerResponse,
+  v2PlannerContractRules, validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
 
 const CHECK_PLANNER = new URL('../bin/check-v2-plan.js', import.meta.url).pathname;
@@ -221,4 +221,47 @@ test('planner checker enforces the exact scout unit handoff used by runtime', ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the planning contract documents the per-action reasoning override and echoes the run-wide levels', () => {
+  const goal = createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program', concurrency: 2 },
+    workerRouting: { reasoning: 'high' },
+    plannerRouting: { pool: 'codex', reasoning: 'xhigh' },
+  });
+  const contract = buildV2PlannerContract(goal);
+  assert.equal(contract.reasoning.worker, 'high');
+  assert.equal(contract.reasoning.planner, 'xhigh');
+  assert.deepEqual(contract.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max', 'default']);
+  assert.match(contract.program.actionFields.reasoning, /^optional low \| medium \| high \| xhigh \| max \| default/);
+  const rule = contract.rules.find((entry) => entry.includes('`reasoning` field'));
+  assert.ok(rule, `no reasoning rule in the contract rules: ${contract.rules.join(' | ')}`);
+  assert.match(rule, /outranks every configured level/);
+  assert.match(rule, /nearest level it supports/);
+  assert.match(rule, /`default` passes nothing/);
+  // The shape a caller copies must show the field on exactly one action, so
+  // it reads as optional rather than required.
+  const withReasoning = contract.program.example.program.actions.filter((action) => action.reasoning !== undefined);
+  assert.equal(withReasoning.length, 1);
+  assert.equal(withReasoning[0].reasoning, 'high');
+  // A goal with no run-wide override reports null rather than inventing a level.
+  const bare = buildV2PlannerContract(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program' },
+  }));
+  assert.deepEqual([bare.reasoning.worker, bare.reasoning.planner], [null, null]);
+});
+
+test('every planner rule set states the reasoning field once', () => {
+  for (const executionMode of ['program', 'verified']) {
+    const rules = v2PlannerContractRules({ executionMode });
+    const matches = rules.filter((rule) => rule.includes('`reasoning` field'));
+    assert.equal(matches.length, 1, `executionMode ${executionMode} rules mention reasoning ${matches.length} time(s)`);
+  }
+  // The dispatched planner prompt renders the same rulebook.
+  const prompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
+  assert.match(prompt, /optional per-action `reasoning` field \(low\|medium\|high\|xhigh\|max\|default\)/);
 });

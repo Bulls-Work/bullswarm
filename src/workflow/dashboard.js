@@ -115,6 +115,15 @@ function tokenText(usage) {
   return total >= 1000 ? `${(total / 1000).toFixed(1)}k tok` : `${total} tok`;
 }
 
+// The reasoning level an attempt actually ran at, shown next to the model
+// because they answer two different questions: which brain, and how hard it
+// thought. Absent (older runs, connectors with no reasoning control, or a
+// `default` that deliberately passes nothing) renders nothing at all.
+function reasoningText(attempt) {
+  const applied = attempt?.reasoning?.applied;
+  return typeof applied === 'string' && applied ? applied : '';
+}
+
 export function requestCancel(bullswarmDir, token, { source = 'api', requesterPid = process.pid } = {}) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
@@ -436,7 +445,8 @@ export function renderDetails(row, { interactive = true } = {}) {
     for (const attemptIndex of action.attempts ?? []) {
       const attempt = state.attempts?.[attemptIndex];
       if (attempt) {
-        lines.push(`${indent}  ↳ attempt ${attempt.attemptNumber} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'} · effort=${attempt.effort ?? 'auto'} · ${attempt.status} · ${attempt.startedAt ?? '—'}${attempt.finishedAt ? ` → ${attempt.finishedAt}` : ''}`);
+        const reasoning = reasoningText(attempt);
+        lines.push(`${indent}  ↳ attempt ${attempt.attemptNumber} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''} · effort=${attempt.effort ?? 'auto'} · ${attempt.status} · ${attempt.startedAt ?? '—'}${attempt.finishedAt ? ` → ${attempt.finishedAt}` : ''}`);
         if (attempt.routing) {
           const candidates = (attempt.routing.candidates ?? []).map((candidate) => `${candidate.pool}:${candidate.pace}`).join(', ');
           lines.push(`${indent}     route: ${attempt.routing.reason}${candidates ? ` · candidates [${candidates}]` : ''}`);
@@ -875,9 +885,10 @@ export function renderWorkflowTui(row, {
     const attempt = agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1;
     const selected = index === model.agentIndex;
     const tokens = tokenText(agent.attempt?.usage);
+    const reasoning = reasoningText(agent.attempt) || reasoningText(agent.active);
     const age = durationText(agent.attempt?.startedAt ?? agent.active?.startedAt, agent.attempt?.finishedAt);
     agentLines.push(selectLine(
-      `${icon} ${agent.action.id} · ${agent.pool} · ${agent.model} · #${attempt}${tokens ? ` · ${tokens}` : ''}${age !== 'time pending' ? ` · ${age}` : ''}`,
+      `${icon} ${agent.action.id} · ${agent.pool} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''} · #${attempt}${tokens ? ` · ${tokens}` : ''}${age !== 'time pending' ? ` · ${age}` : ''}`,
       selected, focus === 1, width,
     ));
   });
@@ -1511,7 +1522,8 @@ function workflowLiveLinesV2(model, width, spinnerFrame) {
     lines.push('');
   }
   for (const attempt of runningAttempts) {
-    lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}`, durationText(attempt.startedAt), width));
+    const reasoning = reasoningText(attempt);
+    lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''}`, durationText(attempt.startedAt), width));
     const event = attempt.lastAgentEvent;
     lines.push(event
       ? `   ↳ ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
@@ -1827,7 +1839,8 @@ function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false }
   if (!orchestrator.attempts.length) lines.push('· waiting for the first planning turn');
   orchestrator.attempts.forEach((attempt, index) => {
     const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
-    lines.push(`#${index + 1} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
+    const reasoning = reasoningText(attempt);
+    lines.push(`#${index + 1} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
     lines.push(`  ${compactUsage(attempt.usage)}`);
     if (decision) lines.push(`  decision: ${decision.decision} · ${decision.reason}`);
     if (attempt.failureReason) lines.push(`  failure: ${attempt.failureReason}`);
@@ -1879,7 +1892,8 @@ function orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose = false
   }
   lines.push('', `Session · ${state.planner.session?.sessionId ?? 'pending'}${state.planner.session ? ' · resumable' : ''}`);
   for (const attempt of orchestrator.attempts) {
-    lines.push(`#${attempt.turn} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? '—'} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
+    const reasoning = reasoningText(attempt);
+    lines.push(`#${attempt.turn} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? '—'}${reasoning ? ` · ${reasoning}` : ''} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
     lines.push(`  task: ${attempt.taskFile ?? '—'}`, `  output: ${attempt.outputFile ?? '—'}`);
   }
   return wrapLines(lines, width);
@@ -1947,9 +1961,13 @@ function agentDetailLines(model, width, spinnerFrame) {
   const { action, attempt, active } = agent;
   const liveActions = active?.lastActions ?? attempt?.lastActions ?? [];
   const routing = attempt?.routing;
+  const reasoning = reasoningText(attempt) || reasoningText(active);
   const lines = [
-    `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}`,
-    `${agent.pool} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? active?.effort ?? 'auto'}`,
+    `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''}`,
+    // V1 stores the tier on the attempt; V2 stores it under routing. Reading
+    // only the V1 shape made every V2 attempt render `effort auto`, right
+    // beside the reasoning level it was resolved against.
+    `${agent.pool} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? routing?.effort ?? active?.effort ?? 'auto'}${reasoning ? ` · reasoning ${reasoning}` : ''}`,
     '',
     `Step · ${action.id} · ${actionRoleLabel(action)}`,
   ];
@@ -2007,9 +2025,10 @@ function compactAgentPreviewLines(model, width, spinnerFrame) {
   const startedAt = agent.attempt?.startedAt ?? agent.active?.startedAt;
   const elapsed = startedAt ? durationText(startedAt, agent.attempt?.finishedAt) : '';
   const tokens = tokenText(agent.attempt?.usage);
+  const reasoning = reasoningText(agent.attempt) || reasoningText(agent.active);
   const lines = [
-    `${agent.action.id} · ${agent.pool} · ${agent.model} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}${elapsed ? ` · ${elapsed}` : ''}${tokens ? ` · ${tokens}` : ''}`,
-    `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}`,
+    `${agent.action.id} · ${agent.pool} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}${elapsed ? ` · ${elapsed}` : ''}${tokens ? ` · ${tokens}` : ''}`,
+    `${statusIcon(agent.status, spinnerFrame)} ${agent.status} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''}`,
     `${agent.pool} · attempt ${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}`,
     `Tokens · ${tokenText(agent.attempt?.usage) || 'pending'}`,
     compactUsage(agent.attempt?.usage),

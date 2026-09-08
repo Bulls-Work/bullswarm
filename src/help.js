@@ -97,7 +97,7 @@ const setupText = rich({
     + 'and CI retain deterministic non-interactive setup.',
   args: [],
   options: [
-    { flag: '--wizard', desc: 'open the comprehensive question-based wizard for worktree and integration settings', default: 'off; bare setup opens the provider/model control center' },
+    { flag: '--wizard', desc: 'open the comprehensive question-based wizard for worktree, reasoning-depth, and integration settings', default: 'off; bare setup opens the provider/model control center' },
     { flag: '--yes', desc: 'skip interactive setup and initialize with discovered defaults', default: 'interactive control center on a TTY' },
     { flag: '--strategy', desc: 'discover models, apply the recommended effort-tier routes, and enable strategy autopilot; requires --yes', default: 'off' },
     { flag: '--integrate', desc: 'also install agent integration (skill symlink + awareness block); requires --yes', default: 'off' },
@@ -108,10 +108,11 @@ const setupText = rich({
     'writes ~/.bullswarm/state.json and routing.json (or $BULLSWARM_HOME equivalents)',
     'with --integrate --yes, also writes symlinks and awareness-block markers under each selected agent\'s global config directory (~/.codex, ~/.claude, ~/.grok)',
     'a non-TTY caller (the common case for an agent) auto-applies discovered defaults without prompting, even without --yes',
+    '--wizard asks one reasoning level per effort tier and writes them to state.strategy.reasoning; agents set the same values with bullswarm strategy set-reasoning',
   ],
   examples: [
     { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively' },
-    { cmd: 'bullswarm setup --wizard', note: 'use the broader question-based configuration flow' },
+    { cmd: 'bullswarm setup --wizard', note: 'use the broader question-based configuration flow, including reasoning depth per effort tier' },
     { cmd: 'bullswarm setup --yes --integrate --agents claude,codex', note: 'non-interactive initialization plus agent integration; safe in CI or from an agent' },
   ],
   next: 'bullswarm doctor to confirm readiness, then bullswarm run or bullswarm workflow goal to dispatch work.',
@@ -268,17 +269,20 @@ const runText = rich({
     { flag: '--task-file <file>', desc: 'read the task text from a file instead of trailing words' },
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
     { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→high, build→medium, chore→low)' },
+    { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
+    { flag: '--dry-run', desc: 'print the routing decision and the exact command that would be spawned (including the resolved reasoning flag) without spawning it or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
-    'spawns a real external coding-agent CLI process rooted at --add-dir',
-    'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion',
+    'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
+    'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
     'may quarantine a pool for a period after an authentication failure',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
+    { cmd: 'bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"', note: 'shows the exact argv, including the clamped reasoning flag, without dispatching' },
   ],
   next: 'bullswarm health to re-judge saved outputs, or bullswarm pools to check routing/quota state before the next run.',
 });
@@ -389,6 +393,8 @@ const strategyText = rich({
     { name: 'set-provider', desc: 'enable or disable one provider pool non-interactively' },
     { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
+    { name: 'set-reasoning', desc: 'set how hard one effort tier thinks, globally or for one pool' },
+    { name: 'reset-reasoning', desc: 'return reasoning depth to the connector defaults' },
     { name: 'configure', desc: 'atomically apply an agent-authored JSON strategy file' },
     { name: 'refresh', desc: 'discover models and recommend tiers (recommend is an alias)' },
     { name: 'apply', desc: 'approve the last discovered recommendations' },
@@ -404,7 +410,7 @@ const strategyText = rich({
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -446,9 +452,19 @@ const strategySetModelText = rich({
   examples: [{ cmd: 'bullswarm strategy set-model opencode2 relay/gpt-5.6-luna --tiers high,medium,low --yes' }], next: 'Use strategy routes --json to confirm.',
 });
 const strategyConfigureText = rich({
-  usage: 'bullswarm strategy configure --file <json> --yes', purpose: 'Atomically apply provider toggles and model tier combinations from an agent-authored JSON file.',
-  args: [], options: [{ flag: '--file <json>', desc: 'object with providers and models maps' }, { flag: '--yes', desc: 'required approval' }],
-  safety: ['validates the complete document before saving routing state'],
+  usage: 'bullswarm strategy configure --file <json> --yes',
+  purpose: 'Atomically apply provider toggles, model tier combinations, and reasoning depth from an agent-authored JSON file.',
+  args: [],
+  options: [
+    { flag: '--file <json>', desc: 'object with optional providers, models, and reasoning maps; '
+      + 'reasoning is { "tiers": { "high": "xhigh" }, "pools": { "codex": { "high": "high" } } } '
+      + 'where each level is low, medium, high, xhigh, max, default, or null to remove it' },
+    { flag: '--yes', desc: 'required approval' },
+  ],
+  safety: [
+    'validates the complete document before saving routing state',
+    'an invalid reasoning section rejects the whole document; nothing is written',
+  ],
   examples: [{ cmd: 'bullswarm strategy configure --file strategy.json --yes' }], next: 'Use strategy inventory --json to verify the applied state.',
 });
 const strategyResetTierText = rich({
@@ -456,6 +472,42 @@ const strategyResetTierText = rich({
   args: [{ name: '<high|medium|low>', desc: 'tier to restore' }], options: [{ flag: '--yes', desc: 'required approval' }],
   safety: ['removes that tier from every model selection and clears its legacy pin'],
   examples: [{ cmd: 'bullswarm strategy reset-tier low --yes' }], next: 'Use strategy routes --json to confirm the automatic route.',
+});
+
+const strategySetReasoningText = rich({
+  usage: 'bullswarm strategy set-reasoning --tier <high|medium|low> --level <low|medium|high|xhigh|max|default> [--pool <name>] --yes',
+  purpose: 'Set how hard one effort tier thinks. This is a separate dimension from the model: '
+    + 'the tier chooses WHICH model runs, reasoning chooses HOW DEEPLY it thinks before answering.',
+  args: [],
+  options: [
+    { flag: '--tier <high|medium|low>', desc: 'effort tier to configure' },
+    { flag: '--level <level>', desc: 'low, medium, high, xhigh, max, or default (pass nothing and let the worker CLI decide)' },
+    { flag: '--pool <name>', desc: 'apply to one provider pool only', default: 'every pool' },
+    { flag: '--yes', desc: 'required approval' },
+  ],
+  safety: [
+    'changes what every later dispatch on that tier sends to the worker CLI',
+    'a level a CLI cannot express is clamped down to the strongest level it accepts, never up',
+  ],
+  examples: [{ cmd: 'bullswarm strategy set-reasoning --tier high --level xhigh --yes' }],
+  next: 'Use strategy inventory --json to see the effective level and its source per pool.',
+});
+
+const strategyResetReasoningText = rich({
+  usage: 'bullswarm strategy reset-reasoning [--tier <high|medium|low>] [--pool <name>] --yes',
+  purpose: 'Remove configured reasoning levels so the affected tiers fall back to each connector\'s own defaults.',
+  args: [],
+  options: [
+    { flag: '--tier <high|medium|low>', desc: 'clear one effort tier everywhere', default: 'every tier' },
+    { flag: '--pool <name>', desc: 'clear one provider pool only', default: 'the global tier defaults too' },
+    { flag: '--yes', desc: 'required approval' },
+  ],
+  safety: [
+    'with no --tier and no --pool this clears every configured reasoning level at once',
+    '--tier alone also removes that tier from every per-pool override',
+  ],
+  examples: [{ cmd: 'bullswarm strategy reset-reasoning --tier low --yes' }],
+  next: 'Use strategy routes --json to confirm the level each tier now resolves to.',
 });
 
 const strategyRefreshText = rich({
@@ -703,6 +755,8 @@ const workflowGoalText = rich({
     { flag: '--suggested-plan <text>', desc: 'with --orchestrator: persist a caller-imagined conceptual execution shape for the dispatched planner to consider; when you are the planner, the plan is the program', default: 'none' },
     { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
+    { flag: '--worker-reasoning <level>', desc: 'run-wide reasoning depth for every non-planner dispatch: low|medium|high|xhigh|max, or default to pass nothing and let each worker CLI decide; outranks the configured strategy level, and a per-action `reasoning` field outranks this; clamped to the nearest level the picked connector supports', default: 'the configured strategy level, else the connector default' },
+    { flag: '--planner-reasoning <level>', desc: 'with --orchestrator: the same run-wide reasoning depth for every dispatched Workflow Planner turn', default: 'the configured strategy level, else the connector default' },
     { flag: '--max-agents <n>', desc: 'soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
     { flag: '--max-expansion-rounds <n>', desc: 'legacy planning target retained for compatibility; new programs do not generate gap rounds', default: '2' },
     { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
@@ -730,6 +784,7 @@ const workflowGoalText = rich({
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --scout', note: 'kernel surveys first, then pauses at the initial boundary for your program' },
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd . --orchestrator auto', note: 'dispatch a Workflow Planner agent instead of planning yourself' },
     { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
+    { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --worker-reasoning high --json', note: 'every worker thinks at high unless an action sets its own reasoning field' },
   ],
   next: 'bullswarm workflow watch <shortId> to follow progress, bullswarm workflow plan show <shortId> when a caller-planner run pauses, or bare bullswarm workflow for the interactive workflow home.',
 });
@@ -744,13 +799,14 @@ const workflowGoalText = rich({
 const workflowPlanText = rich({
   usage: 'bullswarm workflow plan <contract|validate|show|submit> [options]',
   purpose: 'You are the Workflow Planner. contract prints the exact planning contract (requirement IDs, '
-    + 'rules, program schema, example) for a goal before any run exists; validate checks a program against '
+    + 'rules, program schema, example, and the run-wide reasoning levels your optional per-action '
+    + '`reasoning` field would override) for a goal before any run exists; validate checks a program against '
     + 'that contract without launching; show prints the durable planner request a paused run left behind '
     + '(context, gaps, pending steering, rules); submit validates the next program (or an exhausted decision) '
     + 'against that exact run state and relaunches the kernel. Launch the initial program with workflow goal --program.',
   argsTitle: 'Commands',
   args: [
-    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema, example, and the launch line' },
+    { name: 'contract "<goal>"', desc: 'print the planning contract for a goal: requirements, constraints, rules, program schema (including the optional per-action `reasoning` level), example, and the launch line' },
     { name: 'validate "<goal>" --program <file>', desc: 'dry-run a program against the contract: exit 0 with the accepted actions, or exit 2 with the validator issues; nothing is launched' },
     { name: 'show <runId>', desc: 'print the pending planner request of a paused caller-planner run' },
     { name: 'submit <runId>', desc: 'submit the next program (or --exhausted at a gaps boundary) to a paused run and relaunch it' },
@@ -1477,6 +1533,8 @@ const HELP = {
     'set-provider': { _text: strategySetProviderText },
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
+    'set-reasoning': { _text: strategySetReasoningText },
+    'reset-reasoning': { _text: strategyResetReasoningText },
     configure: { _text: strategyConfigureText },
     refresh: { _text: strategyRefreshText },
     recommend: { _text: strategyRecommendText },

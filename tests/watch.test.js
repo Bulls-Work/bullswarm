@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { watchOnce, argvWithModel } from '../src/lib/watch.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';
+import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -269,6 +270,147 @@ test('connector-owned model selection replaces or appends the declared flag', ()
     ['agent', '--model', 'new', '/t']);
   assert.deepEqual(argvWithModel({ ...base, spawn: { cmd: ['agent', '{taskFile}'] } },
     { taskFile: '/t', cwd: '/c' }, 'new'), ['agent', '/t', '--model', 'new']);
+});
+
+test('connector-owned reasoning level is appended after the model, before the event-stream args', () => {
+  const flagged = {
+    name: 'flagged',
+    spawn: { cmd: ['agent', '{taskFile}'] },
+    modelSelection: { flag: '--model', mode: 'replace-or-append' },
+    eventStream: { args: ['--json'] },
+    reasoning: { flag: '--effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  };
+  assert.deepEqual(
+    argvWithModel(flagged, { taskFile: '/t', cwd: '/c' }, 'opus', null, { applied: 'xhigh' }),
+    ['agent', '/t', '--model', 'opus', '--effort', 'xhigh', '--json'],
+  );
+  // A bare level string is accepted as well as the resolved record.
+  assert.deepEqual(
+    argvWithModel(flagged, { taskFile: '/t', cwd: '/c' }, null, null, 'low'),
+    ['agent', '/t', '--effort', 'low', '--json'],
+  );
+  // After the conversation arguments too, so resume flags stay adjacent.
+  assert.deepEqual(
+    argvWithModel({
+      ...flagged,
+      conversation: { newArgs: ['--session-id', '{sessionId}'], resumeArgs: ['--resume', '{sessionId}'] },
+    }, { taskFile: '/t', cwd: '/c' }, null, { sessionId: 'thread-1', resume: true }, { applied: 'max' }),
+    ['agent', '/t', '--resume', 'thread-1', '--effort', 'max', '--json'],
+  );
+  // Nothing appended when the resolver applied no level.
+  for (const nothing of [null, { applied: null }, { applied: 'default' }, 'default', { applied: 'bogus' }]) {
+    assert.deepEqual(
+      argvWithModel(flagged, { taskFile: '/t', cwd: '/c' }, null, null, nothing),
+      ['agent', '/t', '--json'],
+      JSON.stringify(nothing),
+    );
+  }
+  // A connector with no reasoning block never receives an invented flag.
+  assert.deepEqual(
+    argvWithModel({ spawn: { cmd: ['agent', '{taskFile}'] } }, { taskFile: '/t', cwd: '/c' }, null, null, { applied: 'max' }),
+    ['agent', '/t'],
+  );
+});
+
+test('a level already pinned in the connector template is replaced, never duplicated', () => {
+  const pinned = {
+    name: 'pinned',
+    spawn: { cmd: ['agent', '--effort', 'low', '{taskFile}'] },
+    reasoning: { flag: '--effort', levels: ['low', 'medium', 'high'] },
+  };
+  assert.deepEqual(
+    argvWithModel(pinned, { taskFile: '/t', cwd: '/c' }, null, null, { applied: 'high' }),
+    ['agent', '--effort', 'high', '/t'],
+  );
+  // Trailing flag with no value: append the level rather than corrupt argv.
+  assert.deepEqual(
+    argvWithModel({ ...pinned, spawn: { cmd: ['agent', '{taskFile}', '--effort'] } },
+      { taskFile: '/t', cwd: '/c' }, null, null, { applied: 'high' }),
+    ['agent', '/t', '--effort', 'high'],
+  );
+});
+
+test('the config-args reasoning form substitutes {level} verbatim', () => {
+  const configured = {
+    name: 'configured',
+    spawn: { cmd: ['codex', 'exec', '{taskFile}'] },
+    eventStream: { args: ['--json'] },
+    reasoning: { args: ['-c', 'model_reasoning_effort={level}'], levels: ['low', 'medium', 'high'] },
+  };
+  assert.deepEqual(
+    argvWithModel(configured, { taskFile: '/t', cwd: '/c' }, null, null, { applied: 'medium' }),
+    ['codex', 'exec', '/t', '-c', 'model_reasoning_effort=medium', '--json'],
+  );
+  assert.deepEqual(
+    argvWithModel(configured, { taskFile: '/t', cwd: '/c' }, null, null, { applied: null }),
+    ['codex', 'exec', '/t', '--json'],
+  );
+});
+
+test('a resolved reasoning level reaches the spawned process and is reported on the verdict', async () => {
+  const ctx = makeCtx();
+  try {
+    // The fixture echoes its own argv into the answer, so this asserts the
+    // flag reached a REAL process rather than only the argv builder.
+    const worker = join(ctx.dir, 'argv-worker.mjs');
+    writeFileSync(worker, [
+      "const argv = process.argv.slice(2);",
+      "console.log('## Completed\\n');",
+      "console.log('Ran the bounded task and captured the spawn evidence below.\\n');",
+      "console.log('- Spawned argv: ' + JSON.stringify(argv));",
+      "console.log('- Read and executed every directive in ' + argv[0] + '.');",
+      "console.log('- Ran the focused checks: all passed with exit code 0.');",
+      "",
+    ].join('\n'));
+    const spec = {
+      name: 'argv-fixture',
+      spawn: { cmd: [process.execPath, worker, '{taskFile}'], cwdMode: 'task-file-dir' },
+      authSignatures: [],
+      quotaSignatures: [],
+      outputExtraction: { strategy: 'stdout' },
+      modelSelection: { flag: '--model', mode: 'replace-or-append' },
+      reasoning: {
+        flag: '--effort',
+        levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        defaults: { high: 'xhigh', medium: 'high', low: 'medium' },
+      },
+      subscription: {},
+    };
+
+    const reasoning = resolveReasoningLevel({ connector: spec, tier: 'high' });
+    assert.deepEqual(reasoning, { requested: 'xhigh', applied: 'xhigh', source: 'connector', clamped: false });
+    const v = await watchOnce(spec, 'Do the thing.', ctx.dir, ctx.paths, { timeoutSec: 60, reasoning });
+    assert.equal(v.ok, true, v.why);
+    const observed = JSON.parse(readFileSync(ctx.paths.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1]);
+    assert.deepEqual(observed, [ctx.paths.taskFile, '--effort', 'xhigh']);
+    assert.deepEqual(v.meta.reasoning, {
+      requested: 'xhigh', applied: 'xhigh', source: 'connector', clamped: false,
+    });
+
+    // The same connector with no level resolved: the process sees no flag,
+    // and the verdict says why nothing was sent.
+    const silent = await watchOnce(spec, 'Do the thing.', ctx.dir, ctx.paths, {
+      timeoutSec: 60,
+      reasoning: resolveReasoningLevel({ connector: spec, tier: 'high', runOverride: 'default' }),
+    });
+    const silentArgv = JSON.parse(readFileSync(ctx.paths.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1]);
+    assert.deepEqual(silentArgv, [ctx.paths.taskFile]);
+    assert.deepEqual(silent.meta.reasoning, {
+      requested: 'default', applied: null, source: 'run', clamped: false,
+    });
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a verdict always reports a reasoning record, even when nothing was asked', async () => {
+  const ctx = makeCtx();
+  try {
+    const v = await watchOnce(connector, 'Do the thing.', ctx.dir, ctx.paths, { timeoutSec: 60 });
+    assert.deepEqual(v.meta.reasoning, { requested: null, applied: null, source: 'none', clamped: false });
+  } finally {
+    ctx.cleanup();
+  }
 });
 
 test('connector-owned conversation arguments create then resume one session', () => {

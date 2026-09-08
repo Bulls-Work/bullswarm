@@ -1,5 +1,58 @@
 # bullswarm changelog
 
+## 0.25.4 — reasoning levels
+
+- A connector now declares how its own CLI expresses a thinking level, and
+  every dispatch resolves exactly one level per attempt. The block is
+  `reasoning: { flag | args, levels, defaults, skipModels? }` — `flag` for a
+  CLI that takes `--effort <level>`, `args` for one whose control is a config
+  override (`-c model_reasoning_effort={level}`). The packaged `claude-code`,
+  `codex`, `grok`, and `command-code` templates carry the block read from
+  their installed CLIs or an official source (Claude Code and Command Code from
+  `--help`, Codex from its config reference, Grok from the binary's own
+  validation message); Command Code's model-dependent set stays marked
+  UNVERIFIED rather than invented. One shared resolver applies the precedence
+  chain — the action's own `reasoning` field, the run-wide override, the
+  configured `strategy.reasoning` level for that pool and tier, the same for
+  the tier globally, then the connector's default for the effort tier — so
+  the first layer that sets a level wins, not the strongest. The level is
+  appended to the spawned command exactly as `--model` is appended today;
+  nothing is appended for a connector with no block, for the literal level
+  `default`, or for a model the connector marks under `skipModels`. A level
+  the connector does not accept is clamped to the nearest one it does, never
+  dropped and never invented. `{ requested, applied, source, clamped }` is
+  recorded on every attempt, in the decision log, in `bullswarm run --json`,
+  in the V2 result envelope, and in the new `bullswarm run --dry-run` command
+  preview — which builds its argv through the same builder that spawns, so
+  preview and dispatch cannot drift.
+
+- `bullswarm setup` asks one reasoning level per effort tier (suggesting
+  high=xhigh, medium=high, low=medium, with `default` always offered to leave
+  a worker CLI's own setting untouched) and stores the answers under
+  `state.strategy.reasoning`. Agents configure the same thing without a
+  terminal: `bullswarm strategy set-reasoning --tier <high|medium|low> --level
+  <low|medium|high|xhigh|max|default> [--pool <name>] --yes`, `bullswarm
+  strategy reset-reasoning [--tier ..] [--pool ..] --yes`, and a `reasoning`
+  section in `strategy configure --file <json> --yes` whose invalidity rejects
+  the whole document. `bullswarm strategy inventory --json` reports the
+  configured levels and, through the resolver dispatch itself uses, the
+  effective level and its source for every pool and tier. Installed home
+  connectors receive the packaged `reasoning` block additively on upgrade, and
+  a block the user has customized is never overwritten.
+
+- A V2 program action accepts an optional `reasoning` field
+  (`low|medium|high|xhigh|max|default`) that the calling agent or the
+  Workflow Planner can set and that outranks every configured level for that
+  one action; `workflow plan contract` documents the field and echoes the
+  run-wide levels a launch would apply. `workflow goal` takes
+  `--worker-reasoning <level>` for every non-planner dispatch and
+  `--planner-reasoning <level>` for a dispatched Workflow Planner, and
+  `bullswarm run` takes `--reasoning <level>`; a level off the scale is a
+  usage error that launches nothing. The applied level appears next to the
+  model in `workflow runs show` (text and `--json`), `workflow runs result
+  --json`, the TUI attempt rows and agent pane, so a run that thought more
+  cheaply than asked is visible rather than inferred.
+
 ## 0.25.3 — usage-limit recovery and headroom-aware routing
 
 - A provider that reports a usage limit is now its own mechanical failure kind,

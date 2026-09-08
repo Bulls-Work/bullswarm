@@ -192,6 +192,20 @@ function runsShow(idToken, opts) {
     console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
     console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
     console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
+    // One line per attempt, so the pool, model and the reasoning level it
+    // actually ran at are visible in text mode too — --json already carries
+    // the whole record. Older runs have no reasoning and print none.
+    const attempts = Array.isArray(state.attempts) ? state.attempts : [];
+    if (attempts.length) {
+      console.log(`# attempts  ${attempts.length}`);
+      for (const attempt of attempts) {
+        const applied = attempt.reasoning?.applied;
+        const reasoning = applied
+          ? `  reasoning ${applied} (${attempt.reasoning.source ?? 'unknown'}${attempt.reasoning.clamped ? ', clamped' : ''})`
+          : '';
+        console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}`);
+      }
+    }
     return 0;
   }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);

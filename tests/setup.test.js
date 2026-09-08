@@ -11,7 +11,9 @@ import {
   upgradeConnectorMetadata,
   autoSetup,
   ensureSetup,
+  configureReasoningLevels,
 } from '../src/setup.js';
+import { loadState, saveState } from '../src/lib/state.js';
 
 function tmp() {
   const d = mkdtempSync(join(tmpdir(), 'bullswarm-setup-'));
@@ -230,4 +232,107 @@ test('integration block creates parent dirs for new AGENTS.md', () => {
   } finally {
     cleanup();
   }
+});
+
+// --- reasoning depth ---------------------------------------------------------
+
+function scriptedPrompter(answers) {
+  const asked = [];
+  return {
+    asked,
+    question(prompt) {
+      asked.push(prompt);
+      return Promise.resolve(answers.shift() ?? '');
+    },
+  };
+}
+
+test('the wizard stores one reasoning level per effort tier', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    const prompter = scriptedPrompter(['LOW', '', 'default']);
+    const stored = await configureReasoningLevels(d, prompter, { log: () => {} });
+
+    assert.deepEqual(prompter.asked, [
+      'reasoning level for high effort [low/medium/high/xhigh/max/default] (default xhigh): ',
+      'reasoning level for medium effort [low/medium/high/xhigh/max/default] (default high): ',
+      'reasoning level for low effort [low/medium/high/xhigh/max/default] (default medium): ',
+    ]);
+    // Typed answer wins (case-insensitively); a blank answer takes the
+    // suggested default; `default` is a real answer meaning "CLI decides".
+    assert.deepEqual(stored.tiers, { high: 'low', medium: 'high', low: 'default' });
+    assert.deepEqual(loadState(d).strategy.reasoning, {
+      tiers: { high: 'low', medium: 'high', low: 'default' }, pools: {},
+    });
+  } finally { cleanup(); }
+});
+
+test('an unrecognized wizard answer keeps the suggested level instead of storing junk', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    const notes = [];
+    const stored = await configureReasoningLevels(d, scriptedPrompter(['ludicrous', 'max', 'max']), {
+      log: (line) => notes.push(line),
+    });
+    assert.deepEqual(stored.tiers, { high: 'xhigh', medium: 'max', low: 'max' });
+    assert.ok(notes.some((line) => /"ludicrous" is not a reasoning level/.test(line)));
+  } finally { cleanup(); }
+});
+
+test('the wizard answer survives the strategy step writing state through its own loader', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    // Simulate the strategy autopilot question having persisted assignments
+    // after the wizard loaded its own copy of state.
+    const state = loadState(d);
+    state.strategy = { assignments: { high: { pool: 'codex', model: 'gpt-5.6-sol' } } };
+    saveState(d, state);
+    await configureReasoningLevels(d, scriptedPrompter(['max', 'high', 'low']), { log: () => {} });
+    const saved = loadState(d);
+    assert.deepEqual(saved.strategy.assignments.high, { pool: 'codex', model: 'gpt-5.6-sol' });
+    assert.deepEqual(saved.strategy.reasoning.tiers, { high: 'max', medium: 'high', low: 'low' });
+  } finally { cleanup(); }
+});
+
+test('connector metadata upgrades backfill a packaged reasoning block without touching a custom one', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const packagedDir = join(d, 'packaged');
+    const installedDir = join(d, 'connectors');
+    mkdirSync(packagedDir, { recursive: true });
+    mkdirSync(installedDir, { recursive: true });
+    const block = {
+      flag: '--effort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaults: { high: 'xhigh', medium: 'high', low: 'medium' },
+      skipModels: ['^claude-haiku-'],
+    };
+    writeFileSync(join(packagedDir, 'deep.json'), `${JSON.stringify({
+      name: 'deep', reasoning: block, '$comment-reasoning': 'verified against the CLI',
+    }, null, 2)}\n`);
+    writeFileSync(join(packagedDir, 'custom.json'), `${JSON.stringify({
+      name: 'custom', reasoning: block, '$comment-reasoning': 'verified against the CLI',
+    }, null, 2)}\n`);
+    // One installation predates the reasoning block entirely; the other has a
+    // hand-edited one that must survive the upgrade untouched.
+    writeFileSync(join(installedDir, 'deep.json'), `${JSON.stringify({ name: 'deep' }, null, 2)}\n`);
+    const mine = { flag: '--effort', levels: ['low', 'high'], defaults: { high: 'high' } };
+    writeFileSync(join(installedDir, 'custom.json'), `${JSON.stringify({
+      name: 'custom', reasoning: mine,
+    }, null, 2)}\n`);
+
+    // Only the installation that was missing the block is rewritten at all.
+    assert.deepEqual(upgradeConnectorMetadata(d, { packagedDir }), ['deep.json']);
+    const deep = JSON.parse(readFileSync(join(installedDir, 'deep.json'), 'utf8'));
+    assert.deepEqual(deep.reasoning, block);
+    assert.equal(deep['$comment-reasoning'], 'verified against the CLI');
+    const custom = JSON.parse(readFileSync(join(installedDir, 'custom.json'), 'utf8'));
+    assert.deepEqual(custom.reasoning, mine, 'a customized block is never overwritten');
+    assert.equal(custom['$comment-reasoning'], undefined, 'and gains no comment about a block it does not have');
+
+    assert.deepEqual(upgradeConnectorMetadata(d, { packagedDir }), [], 'idempotent');
+  } finally { cleanup(); }
 });
