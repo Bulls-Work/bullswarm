@@ -6,10 +6,24 @@ evidence agents by quota, and computes completion from a durable requirement
 ledger without an initiating agent authoring a graph.
 Every delegate output is judged by content before it counts.
 
-For agents, `/bullswarm` (or `$bullswarm` where skills use that syntax) is the
-common entry point. Its durable CLI equivalent is `bullswarm delegate`: it
-first explains whether the request needs one bounded agent or an autonomous
-workflow, shows the conceptual plan, and then executes the selected engine.
+## Entry points
+
+There are exactly two ways to start work:
+
+```bash
+bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Explain the parser" --json
+bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --program plan.json
+```
+
+`bullswarm run` is the single-agent entry point: route, dispatch, watch,
+verify, one JSON verdict. `bullswarm workflow goal` is the workflow entry
+point: you author the bounded action program and the kernel executes it to the
+end. For agents, `/bullswarm` (or `$bullswarm` where skills use that syntax)
+reads the packaged skill and goes straight to one of those two. The calling
+agent decides the shape itself from the request — one bounded outcome takes
+`run`, parallel territories, integration, or independent acceptance take
+`workflow goal`. There is no preview, classifier, or dispatcher command
+between them.
 
 Every command and nested subcommand supports contextual `-h` / `--help`
 without initializing state or executing the command:
@@ -79,9 +93,6 @@ bullswarm setup    # interactive provider/model configuration
 bullswarm setup --wizard  # broader worktree + integration questionnaire
 bullswarm pools    # meter state, pace position, quarantine status
 bullswarm strategy  # explicit alias for the same routing control center
-bullswarm delegate --cwd ~/some-repo --prompt "Explain the parser"            # one agent
-bullswarm delegate --cwd ~/some-repo --prompt "Audit all commands, fix help, and independently verify"  # workflow
-bullswarm delegate --dry-run --json --cwd ~/some-repo --prompt "Your task"     # bounded classification + decision/plan; no work dispatch
 bullswarm run --lane analyze --add-dir ~/some-repo --task-file /tmp/t.md --json
 bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser" --json
 bullswarm workflow plan contract "Fix the failing tests and verify the change" --cwd ~/some-repo --json  # you are the planner
@@ -96,7 +107,6 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 |---|---|
 | `setup` | Discover installed agent CLIs, show quota state, toggle pools, suggest a routing table, write config. Approval-gated, idempotent. |
 | `integrate` | Register or remove the canonical Bullswarm skill and global awareness rules for Codex, Claude, and Grok. |
-| `delegate` | Explain and execute the smallest reliable shape: one content-verified agent, or the planning contract for an autonomous workflow you author (`--orchestrator` dispatches a planner agent instead). |
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
 | `pools` | Show each pool's meter state, pace position, 5-hour utilization (`5h=<n>%`, flagged `NEAR-5H-LIMIT` at or above 75%), quarantine status |
@@ -106,22 +116,6 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `runs` | Short alias for `workflow runs`, including list, show, result, delete, and cleanup operations. |
 | `version` / `--version` | Print the installed Bullswarm version. |
 | `release` | Run the guarded local version-bump, commit, and tag workflow used before CI publishes to npm. |
-
-### Delegate classification
-
-With the default `--mode auto`, `delegate` first uses deterministic task
-signals, then uses an LLM to refine the choice between a single delegate and a
-workflow during execution. If that optional refinement is unavailable or
-unusable, automatic mode uses the deterministic decision.
-
-Use `--classify deterministic` to bypass the LLM refinement — this is the
-instant, no-dispatch preview. Use `--classify llm` when an LLM decision is
-required: the command fails if it cannot obtain a usable one. In automatic
-mode, `--dry-run` still performs that same bounded low-effort classification
-request (one analyze-lane, low-effort dispatch) and prints the resulting
-decision — it never dispatches the work itself. An explicit `--mode single` or
-`--mode workflow` is the caller's decision and bypasses automatic LLM
-classification.
 
 Discover and validate workflow definitions without executing them:
 
@@ -163,6 +157,44 @@ bullswarm strategy exclude-model claude-fable-5
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json
 ```
 
+### Rungs
+
+A **rung** is one pool's model *plus its reasoning level* for one effort tier —
+the two halves you actually choose together. `bullswarm strategy rungs` reads
+them as one table and `bullswarm strategy set-rung` writes both halves in one
+atomic save:
+
+```bash
+bullswarm strategy rungs                      # every enabled pool x configured tier
+bullswarm strategy rungs --json --pool codex  # machine-readable, one pool
+bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
+```
+
+Each row carries the effective model and where it came from, the effective
+reasoning level and which layer chose it, the dated benchmark evidence for that
+model *at that reasoning level* (`blended`, `$/task`, `tok/task`), and what this
+machine recorded for that pool and tier (dispatch count, median wall minutes, ok
+share). Evidence and record are never estimated: a model the datapack does not
+cover prints `no evidence`, and a tier with no matching attempt prints `no
+dispatches`. `strategy inventory --json` carries the identical rows under
+`rungs`.
+
+Reading is free of side effects — no state write, no model discovery, no
+download. `set-rung` never spawns discovery either: a model absent from the
+pool's cached discovery exits 2 and lists the models it does know, unless you
+pass `--force`. A reasoning level the connector cannot express is clamped down
+to the strongest level it accepts and the clamp is printed. A rung is singular
+per pool and tier, so the tier moves off whichever model held it while that
+model keeps its other tiers. Nothing about `state.json` changed shape: rungs are
+a view over `strategy.modelTiers` and `strategy.reasoning`.
+
+The benchmark evidence comes from Epoch AI's benchmarking hub, used under
+CC BY 4.0: Epoch AI, 'AI Benchmarking Hub'. Published online at epoch.ai.
+Retrieved from <https://epoch.ai/benchmarks>. `blended` is the mean of the
+cursorbench, deepswe, arc-agi-2, and critpt scores recorded for that exact
+model and reasoning level; cost and tokens per task come from cursorbench. See
+[data/README.md](data/README.md) for the schema and the refresh job.
+
 Setup first asks whether to analyze live usage and recommend routes or open the
 current configuration for manual editing. Analysis shows a spinner plus
 per-provider usage progress, then presents the proposed defaults before making
@@ -170,10 +202,13 @@ any routing change. Press `Y` to apply them or `N` to retain the current policy.
 The analysis selects at most one default model for each provider and effort
 tier. It uses OpenRouter's agentic, coding, and intelligence indices as quality
 signals and API-equivalent pricing as the budget signal. A repository-owned
-GitHub Actions job calls the authenticated OpenRouter APIs once per day and
-replaces a public, validated `openrouter-benchmarks.json` asset on the rolling
-`benchmark-data-latest` GitHub Release. Installed CLIs download only that public
-file and never need or receive an OpenRouter key.
+GitHub Actions job (`.github/workflows/refresh-benchmarks.yml`) refreshes two
+public assets on the rolling `benchmark-data-latest` GitHub Release:
+`openrouter-benchmarks.json` from the authenticated OpenRouter APIs, and
+`epoch-benchmarks.json` from Epoch AI's CC BY 4.0 benchmark export, which is
+what `strategy rungs` reads for per-model-per-reasoning-level evidence.
+Installed CLIs download only those public files and never need or receive an
+OpenRouter key.
 The sources are OpenRouter's [benchmarks API](https://openrouter.ai/docs/api/api-reference/benchmarks/list-benchmarks)
 and [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
 The CLI caches the datapack under `~/.bullswarm/cache/`; network failure falls
@@ -347,6 +382,40 @@ architecture, ambiguous tradeoffs, cross-cutting integration, or genuinely
 adversarial acceptance judgment. Merely being an analysis/evidence action or
 part of a difficult goal never promotes an action to high. The selected effort
 then resolves through the High/Medium/Low routes configured by `bullswarm setup`.
+
+### Kinds
+
+Stating lane and effort separately on every action means re-deciding two
+fields for work whose nature already implies both. The optional `kind` field
+names that nature once and derives them:
+
+| `kind` | lane | effort |
+| --- | --- | --- |
+| `mechanical` | chore | low |
+| `io-read` | analyze | low |
+| `check` | analyze | medium |
+| `implement` | build | medium |
+| `integration` | build | high |
+| `architecture` | analyze | high |
+| `adversarial-acceptance` | analyze | high |
+
+Resolution is per field: an explicit `lane` or `effort` on the action wins,
+then the kind table, then an optional program-level `defaults` object — which
+may set only `effort` and `reasoning`, because lane follows the individual
+action — then the per-lane default table. A `kind` outside that closed list is
+a validation error, not a runtime failure: it is a typo in your program, so
+`workflow plan validate` exits 2 and nothing launches. A program that uses
+neither `kind` nor `defaults` validates and runs exactly as before.
+
+Two advisories report effort smells without ever rejecting anything.
+`all-writers-high` fires when three or more `build`/`chore` actions run and
+none is below high effort; `docs-at-high` fires when a `build`/`chore` action
+owns only `*.md` files at high effort. `workflow plan validate` includes them
+as `advisories` in `--json` and prints `advisory:` lines otherwise, `workflow
+goal` prints the same lines at launch, and both keep their exit codes. The
+kernel stores them on the run, so `workflow runs show` lists them afterwards,
+and `runs result`, `runs show`, and `workflow action show` print `kind` next to
+lane and effort.
 
 Reasoning depth is a third, independent decision. An action may carry an
 optional `reasoning` field — `low`, `medium`, `high`, `xhigh`, `max`, or
