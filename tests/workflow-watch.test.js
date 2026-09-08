@@ -695,6 +695,135 @@ test('V2 --next prints no attach line and returns after the first notable event'
   } finally { dead.cleanup(); }
 });
 
+test('V2 --next --after replays a missed finish and its level once and skips a level already terminal at the cursor', async () => {
+  const f = v2Fixture({ shortId: 'aft234', executionMode: 'program' });
+  try {
+    // Committed while no watcher was attached: the previous --next exit left
+    // the cursor at sequence 0.
+    const finishedAt = new Date(f.nowMs).toISOString();
+    Object.assign(f.state.actions[0], {
+      status: 'succeeded',
+      startedAt: new Date(f.nowMs - 40_000).toISOString(),
+      finishedAt,
+      attempts: 1,
+    });
+    f.state.attempts[0] = { ...f.state.attempts[0], status: 'succeeded', finishedAt };
+    f.emit('action.finished', { actionId: 'write-report', status: 'succeeded' });
+    const missedSequence = f.state.events.sequence;
+
+    let replayed = '';
+    const code = await runWorkflowWatch(f.home, f.runId, {
+      next: true, afterSequence: 0, now: () => f.nowMs,
+      output: { write: (text) => { replayed += text; } },
+    });
+    assert.equal(code, 0);
+    assert.equal(replayed.match(/✓ write-report finished · 40s/g)?.length, 1, replayed);
+    assert.equal(replayed.match(/✓ Level 1 · write-report completed · 1\/1/g)?.length, 1, replayed);
+    assert.doesNotMatch(replayed, /watching/);
+
+    // The same level is terminal on disk on the next relaunch, but it happened
+    // before the new cursor, so it is not reported again.
+    f.emit('planner.finished', { ok: true, turn: 2, kind: 'program', summary: 'Second turn.' });
+    let again = '';
+    const nextCode = await runWorkflowWatch(f.home, f.runId, {
+      next: true, afterSequence: missedSequence, now: () => f.nowMs,
+      output: { write: (text) => { again += text; } },
+    });
+    assert.equal(nextCode, 0);
+    assert.match(again, /◇ plan updated #2 · Second turn\./);
+    assert.doesNotMatch(again, /Level 1|write-report finished/);
+  } finally { f.cleanup(); }
+});
+
+test('V2 --since suppresses a stall the previous watcher reported and keeps a later crossing', async () => {
+  const carried = v2Fixture({ shortId: 'snc234' });
+  carried.state.attempts[0].lastActivityAt = new Date(carried.nowMs - 10_000).toISOString();
+  carried.save();
+  const watch = startWatch(carried, { next: true, stallAfterMs: 1_000, sinceMs: carried.nowMs });
+  try {
+    // Silence crossed 1s after the last activity, long before this launch's
+    // --since, so the previous watcher already printed that stall line.
+    await afterFirstPoll();
+    assert.equal(watch.output, '', `stall re-fired on relaunch: ${watch.output}`);
+    carried.state.attempts[0].lastActivityAt = new Date(carried.nowMs).toISOString();
+    carried.save();
+    assert.equal(await Promise.race([
+      watch.promise,
+      sleep(3000).then(() => { throw new Error(`recovery hung: ${watch.output}`); }),
+    ]), 0);
+    assert.match(watch.output, /↻ write-report active again after 10s/);
+    assert.doesNotMatch(watch.output, /silent for/);
+  } finally {
+    await settleWatch(carried, watch);
+    carried.cleanup();
+  }
+
+  const fresh = v2Fixture({ shortId: 'snf234' });
+  try {
+    fresh.state.attempts[0].lastActivityAt = new Date(fresh.nowMs - 10_000).toISOString();
+    fresh.save();
+    let output = '';
+    // The crossing is exactly at --since: the previous watcher exited before
+    // it, so this launch owns the report.
+    const code = await runWorkflowWatch(fresh.home, fresh.runId, {
+      next: true, stallAfterMs: 1_000, sinceMs: fresh.nowMs - 9_000, now: () => fresh.nowMs,
+      output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 0);
+    assert.match(output, /⚠ write-report silent for 10s · command-code\/claude-opus-5 · still running, not auto-killed/);
+  } finally { fresh.cleanup(); }
+});
+
+test('V2 --next ends with a relaunch line, and jsonl carries the cursor as a sequence field instead', async () => {
+  const human = v2Fixture({ shortId: 'rel234' });
+  try {
+    Object.assign(human.state.actions[0], {
+      status: 'succeeded',
+      startedAt: new Date(human.nowMs - 40_000).toISOString(),
+      finishedAt: new Date(human.nowMs).toISOString(),
+      attempts: 1,
+    });
+    human.emit('action.finished', { actionId: 'write-report', status: 'succeeded' });
+    let output = '';
+    const code = await runWorkflowWatch(human.home, human.runId, {
+      next: true, now: () => human.nowMs, afterSequence: 0,
+      output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 0);
+    const lines = output.split('\n').filter((line) => line.length > 0);
+    assert.equal(
+      lines.at(-1),
+      `next: bullswarm workflow watch rel234 --next --after ${human.state.events.sequence}`
+        + ` --since ${new Date(human.nowMs).toISOString()}`,
+      output,
+    );
+    assert.equal(lines.filter((line) => line.startsWith('next: ')).length, 1, output);
+    assert.doesNotMatch(output, /outcome:/);
+  } finally { human.cleanup(); }
+
+  const jsonl = v2Fixture({ shortId: 'rlj234' });
+  try {
+    Object.assign(jsonl.state.actions[0], {
+      status: 'succeeded',
+      startedAt: new Date(jsonl.nowMs - 40_000).toISOString(),
+      finishedAt: new Date(jsonl.nowMs).toISOString(),
+      attempts: 1,
+    });
+    jsonl.emit('action.finished', { actionId: 'write-report', status: 'succeeded' });
+    let output = '';
+    const code = await runWorkflowWatch(jsonl.home, jsonl.runId, {
+      next: true, jsonl: true, now: () => jsonl.nowMs, afterSequence: 0,
+      output: { write: (text) => { output += text; } },
+    });
+    assert.equal(code, 0);
+    assert.doesNotMatch(output, /next: /);
+    const objects = output.split('\n').filter((line) => line.length > 0).map((line) => JSON.parse(line));
+    assert.equal(objects.length, 1, output);
+    for (const item of objects) assert.equal(item.sequence, jsonl.state.events.sequence);
+    assert.equal(objects[0].type, 'action.finished');
+  } finally { jsonl.cleanup(); }
+});
+
 test('V2 jsonl emits one object per notable event with documented type fields', async () => {
   const f = v2Fixture({ shortId: 'jsn234' });
   try {
@@ -709,6 +838,7 @@ test('V2 jsonl emits one object per notable event with documented type fields', 
       assert.equal(attach.running, 1);
       assert.equal(attach.waiting, 1);
       assert.equal(attach.elapsedSec, 60);
+      assert.equal(attach.sequence, 0);
       assert.ok(attach.at);
 
       f.emit('attempt.started', {

@@ -1,6 +1,13 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.25.2 — event-based watch
+
+- `workflow watch <run> --next` is safe to relaunch after every wake-up: each
+  such exit prints `next: bullswarm workflow watch <id> --next --after <seq>
+  --since <time>`; relaunching with those values replays notable events that
+  landed while no watcher was attached, reports a level at most once, and does
+  not repeat a stall already reported (its recovery line still prints). `--jsonl`
+  objects carry `sequence`.
 
 - `workflow watch` for V2 runs is event-based by default: one attach line,
   then one line per notable event (action finished/failed/blocked/cancelled,

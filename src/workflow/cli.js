@@ -1252,8 +1252,8 @@ function wfEvents(opts) {
 }
 
 async function wfWatch(opts) {
-  // A value flag with no value (--heartbeat, --interval, --stall-after) is a
-  // usage error, not a silent fall back to the default.
+  // A value flag with no value (--heartbeat, --interval, --stall-after,
+  // --after, --since) is a usage error, not a silent fall back to the default.
   const flagError = flagErrors(opts, ['workflow', 'watch']);
   if (flagError != null) return flagError;
   const token = opts.rest[0];
@@ -1275,11 +1275,31 @@ async function wfWatch(opts) {
     console.error('✗ --stall-after must be >= 1 second');
     return 2;
   }
+  // Continuity for a relaunched watcher: both values come from the `next:` line
+  // the previous --next exit printed.
+  let afterSequence = null;
+  if (opts.after != null) {
+    afterSequence = Number(opts.after);
+    if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+      console.error('✗ --after must be a non-negative integer');
+      return 2;
+    }
+  }
+  let sinceMs = null;
+  if (opts.since != null) {
+    sinceMs = Date.parse(opts.since);
+    if (!Number.isFinite(sinceMs)) {
+      console.error('✗ --since must be an ISO 8601 timestamp');
+      return 2;
+    }
+  }
   try {
     return await runWorkflowWatch(BULLSWARM_DIR(), token, {
       intervalMs: intervalSec * 1000,
       heartbeatMs: heartbeatSec == null ? null : heartbeatSec * 1000,
       stallAfterMs: stallAfterSec * 1000,
+      afterSequence,
+      sinceMs,
       once: opts.once === true,
       next: opts.next === true,
       jsonl: opts.jsonl === true,
@@ -1388,7 +1408,7 @@ function parseFlags(argv) {
     'worker-pool', 'worker-model', 'request', 'run-id',
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
-    'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'message',
+    'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
   ]);
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not

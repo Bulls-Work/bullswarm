@@ -304,6 +304,7 @@ The detached response includes a short ID and exact observation commands:
 bullswarm workflow runs show <shortId>
 bullswarm workflow watch <shortId>        # V2: attach, then one line per notable event
 bullswarm workflow watch <shortId> --next # print the next notable event and exit
+                                          # relaunch with the --after/--since it prints
 bullswarm workflow                         # unified human workflow home
 bullswarm workflow tui <shortId>          # jump directly to one run timeline
 bullswarm workflow tui --json <shortId>
@@ -495,17 +496,29 @@ running agent that has gone silent. `--next` prints no attach line and
 exits after the first notable event so a background terminal can wake the
 caller; relaunch until the outcome line reports a pause or a terminal
 status (exit 0 while the run continues or delivered, 1 when it ended
-without delivering or the kernel is not running). `--jsonl` emits one JSON
-object per notable event with a stable `type` (`attach`, `action.finished`,
+without delivering or the kernel is not running). Every `--next` exit that
+leaves the run going ends with a relaunch line —
+`next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>` —
+and the relaunch should copy those two values verbatim: `--after` starts
+from the durable event sequence the previous watcher consumed, so events
+committed while nothing was attached are printed instead of skipped, and
+`--since` is that watcher's exit time, so an agent whose silence it already
+reported does not produce a duplicate stall line (its recovery still
+prints). `--jsonl` emits one JSON object per notable event with a stable
+`type` (`attach`, `action.finished`,
 `evidence.recorded`, `stage.completed`, `planner.finished`, `agent.stalled`,
 `agent.recovered`, `cancellation.requested`, `paused`, `finished`,
 `interrupted`, and with `--verbose` `action.started`, `attempt.retrying`,
-`steering.delivered`). `--once` still prints one current snapshot. Legacy
+`steering.delivered`); in that mode the relaunch line is not printed and
+every object instead carries the `sequence` it was emitted at, which is the
+value to pass as `--after`. `--once` still prints one current snapshot. Legacy
 (non-V2) runs keep the compact transition-plus-heartbeat stream unchanged.
 
 ```bash
 bullswarm workflow watch <shortId>
 bullswarm workflow watch <shortId> --next        # next notable event, then exit
+bullswarm workflow watch <shortId> --next --after 42 --since 2026-09-08T10:15:00.000Z
+                                                 # the relaunch: values copied from the previous next: line
 bullswarm workflow watch <shortId> --jsonl       # one JSON object per event
 bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
 bullswarm workflow watch <shortId> --verbose     # started / retry / steering too
