@@ -1975,3 +1975,34 @@ test('a V2 run whose kernel died is not reported as running', async () => {
     assert.match(stale.reason, /no heartbeat recorded/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+
+test('program dashboard projects saved categories into dependency levels with overlapping activity', () => {
+  const goal = createV2GoalDocument({ goal: 'Research docs', cwd: '/tmp',
+    requirements: [{ id: 'correct', text: 'Correct comparison' }], settings: { scout: false, executionMode: 'program' } });
+  const state = createV2State(goal, { runId: 'wf-levels-abcdef', shortId: 'lv1234' });
+  state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+  state.program = { actions: [
+    { id: 'fast', purpose: 'Read docs', dependsOn: [], ownedFiles: ['a.md'] },
+    { id: 'slow', purpose: 'Research docs', dependsOn: [], ownedFiles: ['b.md'] },
+    { id: 'next', purpose: 'Write comparison', dependsOn: ['fast'], ownedFiles: ['result.md'] },
+  ] };
+  state.actions = [
+    { id: 'fast', status: 'succeeded', startedAt: iso(1), finishedAt: iso(2) },
+    { id: 'slow', status: 'running', startedAt: iso(1) },
+    { id: 'next', status: 'running', startedAt: iso(3) },
+  ];
+  state.presentation.stages = [{ id: 'old', label: 'Documentation', actionIds: ['fast', 'slow', 'next'], startedAt: iso(1) }];
+  const row = { state, events: [{ type: 'presentation.stage_started', committedAt: iso(1), payload: { label: 'Documentation' } }] };
+  const before = JSON.stringify(state);
+  const model = workflowPanelModel(row);
+  assert.deepEqual(model.phases.map((phase) => phase.status), ['active', 'active']);
+  for (const width of [60, 120]) {
+    const screen = renderWorkflowTui(row, { width, height: 40 });
+    assert.match(screen, /Level 1/);
+    assert.match(screen, /Level 2/);
+    assert.doesNotMatch(screen, /Phase [12]|Documentation/);
+    assert.match(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false }), /Dependency levels/);
+  }
+  assert.equal(JSON.stringify(state), before);
+});

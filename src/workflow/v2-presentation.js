@@ -48,3 +48,54 @@ export function presentationStageStatus(stage, actionStates) {
     total: states.length,
   };
 }
+
+// Dependency levels describe the graph; they never impose scheduling barriers.
+export function deriveV2DependencyStages(actions, revision) {
+  const byId = new Map(actions.map((action) => [action.id, action]));
+  const depths = new Map();
+  const visiting = new Set();
+  const depth = (id) => {
+    if (!byId.has(id)) return -1;
+    if (depths.has(id)) return depths.get(id);
+    if (visiting.has(id)) throw new Error('Cyclic action dependencies');
+    visiting.add(id);
+    const value = 1 + Math.max(-1, ...(byId.get(id).dependsOn ?? []).map(depth));
+    visiting.delete(id);
+    depths.set(id, value);
+    return value;
+  };
+  const groups = new Map();
+  for (const action of actions) {
+    const level = depth(action.id);
+    if (!groups.has(level)) groups.set(level, []);
+    groups.get(level).push(action);
+  }
+  return [...groups].sort(([a], [b]) => a - b).map(([level, members]) => {
+    const description = members.length === 1 ? members[0].id
+      : members.every((action) => action.lane === 'analyze') ? 'Parallel analysis' : 'Parallel work';
+    return {
+      id: `r${revision}-level-${level + 1}`,
+      label: `${revision > 1 ? `Follow-up ${revision - 1}: ` : ''}Level ${level + 1} · ${description}`,
+      revision, actionIds: members.map((action) => action.id), startedAt: null, completedAt: null,
+    };
+  });
+}
+
+// Project older saved program runs too, without rewriting their event history.
+export function projectV2DependencyStages(state) {
+  const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  const revisions = new Map();
+  for (const action of state.program?.actions ?? []) {
+    const revision = runtime.get(action.id)?.programRevision ?? 1;
+    if (!revisions.has(revision)) revisions.set(revision, []);
+    revisions.get(revision).push(action);
+  }
+  return [...revisions].sort(([a], [b]) => a - b).flatMap(([revision, actions]) =>
+    deriveV2DependencyStages(actions, revision).map((stage) => {
+      const members = stage.actionIds.map((id) => runtime.get(id));
+      const starts = members.map((action) => action?.startedAt).filter(Boolean).sort();
+      const finishes = members.map((action) => action?.finishedAt).filter(Boolean).sort();
+      return { ...stage, startedAt: starts[0] ?? null,
+        completedAt: presentationStageStatus(stage, state.actions).terminal ? finishes.at(-1) ?? null : null };
+    }));
+}
