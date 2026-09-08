@@ -1,3 +1,4 @@
+import { withV2Cancellation } from './v2-cancellation.js';
 // bullswarm workflow CLI — run | validate | list.
 
 import {
@@ -274,6 +275,12 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
   const result = await runV2AutonomousWorkflow({
     bullswarmDir: BULLSWARM_DIR(), goalDocument: doc, pools, runId, resumeRunId, initialPlannerResponse,
   });
+  if (!result.result && result.state?.lifecycle?.status === 'interrupted') {
+    const interrupted = { action: 'workflow-interrupted', runId: result.runId, shortId: result.shortId, status: 'interrupted', next: `bullswarm workflow goal --resume ${result.shortId ?? result.runId}` };
+    if (opts.json) console.log(JSON.stringify(interrupted, null, 2));
+    else if (!opts.quiet) console.log(`workflow ${result.shortId ?? result.runId} interrupted; edits retained. Resume with: ${interrupted.next}`);
+    return 130;
+  }
   if (!result.result && result.awaiting) {
     const awaiting = plannerAwaitingDocument({ ...result, cancellation: result.state?.cancellation ?? null });
     if (opts.json) console.log(JSON.stringify(awaiting, null, 2));
@@ -879,7 +886,7 @@ function loadV2RunState(token) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
-  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const state = withV2Cancellation(JSON.parse(readFileSync(statePath, 'utf8')), resolved.runDir);
   if (state?.schemaVersion !== 'bullswarm.workflow.state.v2') throw new Error(`run "${token}" is not an autonomous V2 run`);
   return { ...resolved, state };
 }

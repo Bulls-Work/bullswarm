@@ -1,3 +1,4 @@
+import { withV2Cancellation } from './v2-cancellation.js';
 // bullswarm short run IDs — friendly 6-character aliases for `wf-...` runIds.
 //
 // The full runId (e.g. `wf-mta0f0n-321bb7`) stays the durable handle
@@ -99,7 +100,7 @@ export function resolveRunId(bullswarmDir, token) {
     const sf = join(dir, 'state.json');
     if (!existsSync(sf)) continue;
     let state;
-    try { state = JSON.parse(readFileSync(sf, 'utf8')); }
+    try { state = withV2Cancellation(JSON.parse(readFileSync(sf, 'utf8')), dir); }
     catch { continue; }
     if (state.shortId === token || name === token) {
       if (match) {
@@ -130,7 +131,7 @@ export function listRuns(bullswarmDir) {
     const rf = existsSync(resultFile) ? resultFile : join(dir, 'report.json');
     let state = null, report = null;
     if (existsSync(sf)) {
-      try { state = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* corrupt */ }
+      try { state = withV2Cancellation(JSON.parse(readFileSync(sf, 'utf8')), dir); } catch { /* corrupt */ }
     }
     if (state) state = reconcileInterruptedRun(dir, state);
     if (existsSync(rf)) {
@@ -270,6 +271,7 @@ const LEGACY_SILENCE_MS = 600_000;
 export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isProcessAlive, runDir = null } = {}) {
   if (state?.schemaVersion !== 'bullswarm.workflow.state.v2') return { checked: false, alive: true, reason: null };
   const status = state.lifecycle?.status;
+  if (status === 'interrupted') return { checked: true, alive: false, reason: 'kernel interrupted; resume to continue preserved work' };
   if (!V2_NEEDS_RUNNER.has(status)) return { checked: false, alive: true, reason: null };
   const pid = state.runner?.pid ?? null;
   const beat = Date.parse(state.runner?.lastHeartbeatAt ?? '');
@@ -299,7 +301,7 @@ export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isPro
 
 export function isOngoing(runDir, state) {
   if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    if (['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status)) return false;
+    if (['completed', 'partial', 'cancelled', 'failed', 'interrupted'].includes(state.lifecycle?.status)) return false;
     // A run whose kernel died is not ongoing, whatever state.json still claims.
     return v2RunnerLiveness(state, { runDir }).alive;
   }

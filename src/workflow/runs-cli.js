@@ -1,3 +1,4 @@
+import { withV2Cancellation } from './v2-cancellation.js';
 // bullswarm workflow runs — instance management.
 //
 //   bullswarm workflow runs                       # list ongoing (default)
@@ -174,7 +175,7 @@ function runsShow(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
-  const state = readJsonSafe(statePath);
+  const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
 
@@ -215,7 +216,7 @@ function runsResult(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
-  const state = readJsonSafe(statePath);
+  const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
   if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {

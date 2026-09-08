@@ -1,3 +1,4 @@
+import { withV2Cancellation } from './v2-cancellation.js';
 // Interactive workflow dashboard, inspired by Claude Code's /workflows view.
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
@@ -136,7 +137,8 @@ export function requestCancel(bullswarmDir, token, { source = 'api', requesterPi
       source,
       requesterPid,
     });
-    writeJsonAtomic(statePath, state);
+    // The operator owns this intent file; only the kernel owns state.json.
+    writeJsonAtomic(join(resolved.runDir, 'cancellation.json'), state.cancellation);
     return { ...resolved, state, alreadyFinished: false };
   }
   if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
@@ -2116,7 +2118,7 @@ function detailRow(bullswarmDir, token) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   const reportPath = join(resolved.runDir, 'report.json');
-  const state = readJsonSafe(statePath);
+  const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
   const report = readJsonSafe(reportPath);
   return { ...resolved, state, report, events: readEvents(resolved.runDir), status: state?.status };
 }
@@ -2632,7 +2634,7 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
     if (!resolved) throw new Error(`no run found for "${token}"`);
     const statePath = join(resolved.runDir, 'state.json');
     const reportPath = join(resolved.runDir, 'report.json');
-    const state = readJsonSafe(statePath);
+    const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
     const report = readJsonSafe(reportPath);
     const events = readEvents(resolved.runDir);
     return { action: 'show', ...resolved, state, report, events };
@@ -2645,7 +2647,7 @@ export function actionJson(bullswarmDir, token, actionId) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
-  const state = readJsonSafe(statePath);
+  const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
   const action = state?.actionLedger?.find((entry) => entry.id === actionId);
   if (!action) throw new Error(`run "${token}" has no action "${actionId}"`);
   const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);

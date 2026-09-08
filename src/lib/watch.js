@@ -85,8 +85,20 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         PWD: resolvedDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: opts.processGroup === true,
     });
-    opts.onSpawn?.(child.pid);
+    const stopChild = (signal) => {
+      try {
+        if (opts.processGroup && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch { /* delegate process group already exited */ }
+    };
+    try { opts.onSpawn?.(child.pid); }
+    catch (error) {
+      stopChild('SIGKILL');
+      child.on('error', () => {});
+      throw error;
+    }
 
     let stdout = '';
     let stderr = '';
@@ -124,20 +136,20 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       // status, but do not wait indefinitely after a definitive auth/quota
       // signature has already made the attempt unusable.
       fatalKillTimer = setTimeout(() => {
-        child.kill('SIGTERM');
-        fatalForceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
+        stopChild('SIGTERM');
+        fatalForceKillTimer = setTimeout(() => stopChild('SIGKILL'), 2000);
       }, 100);
     };
     const timer = timeoutMs == null ? null : setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      stopChild('SIGTERM');
+      forceKillTimer = setTimeout(() => stopChild('SIGKILL'), 2000);
     }, timeoutMs);
     const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
       if (cancelled || !opts.shouldCancel()) return;
       cancelled = true;
-      child.kill('SIGTERM');
-      forceKillTimer ??= setTimeout(() => child.kill('SIGKILL'), 2000);
+      stopChild('SIGTERM');
+      forceKillTimer ??= setTimeout(() => stopChild('SIGKILL'), 2000);
     }, 250) : null;
 
     child.stdout.on('data', (d) => {
@@ -176,6 +188,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       });
     });
     child.on('close', (code, signal) => {
+      if (opts.processGroup && (cancelled || timedOut || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
       eventDecoder?.finish();
       if (timer) clearTimeout(timer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);

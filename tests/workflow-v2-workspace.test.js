@@ -47,3 +47,21 @@ test('isolated workspace rejects out-of-scope changes and main-workspace conflic
   assert.equal(readFileSync(join(f.repo, 'owned.txt'), 'utf8'), 'human\n');
   disposeIsolatedWorkspace(conflict);
 });
+
+
+test('recreating an existing isolated workspace preserves its unfinished edits', () => {
+  const f = fixture();
+  const workspace = createIsolatedWorkspace({ sourceDir: f.repo, runDir: f.runDir, actionId: 'interrupted-worker' });
+  writeFileSync(join(workspace.targetDir, 'owned.txt'), 'unfinished worker result');
+  assert.throws(() => createIsolatedWorkspace({ sourceDir: f.repo, runDir: f.runDir, actionId: 'interrupted-worker' }), /preserved work requires review/);
+  assert.equal(readFileSync(join(workspace.targetDir, 'owned.txt'), 'utf8'), 'unfinished worker result');
+  assert.match(execFileSync('git', ['-C', f.repo, 'worktree', 'list'], { encoding: 'utf8' }), /interrupted-worker/);
+  disposeIsolatedWorkspace(workspace);
+});
+
+test('manifest setup failure does not register an isolated worktree', () => {
+  const f = fixture();
+  const before = execFileSync('git', ['-C', f.repo, 'worktree', 'list'], { encoding: 'utf8' });
+  assert.throws(() => createIsolatedWorkspace({ sourceDir: f.repo, runDir: f.runDir, actionId: 'too-many-files', maxFiles: 1 }), /exceeds/);
+  assert.equal(execFileSync('git', ['-C', f.repo, 'worktree', 'list'], { encoding: 'utf8' }), before);
+});

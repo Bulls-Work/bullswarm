@@ -17,7 +17,7 @@ const ROUTING_KEYS = new Set(['pool', 'model', 'preferredPool', 'preferredModel'
 const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
-const LIFECYCLE_STATUSES = new Set(['queued', 'planning', 'running', 'waiting', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
+const LIFECYCLE_STATUSES = new Set(['interrupted', 'queued', 'planning', 'running', 'waiting', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
 const PREFLIGHT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'skipped']);
 const ACTION_STATE_FIELDS = new Set([
   'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',

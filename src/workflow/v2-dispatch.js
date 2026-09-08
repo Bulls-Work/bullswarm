@@ -140,6 +140,8 @@ export async function dispatchV2Action({
   maxMechanicalRetries = 1,
   shouldCancel = null,
   onAttempt = null,
+  onSpawn = null,
+  onWorkerExit = null,
   onActivity = null,
   onAgentEvent = null,
   onAgentProgress = null,
@@ -197,16 +199,20 @@ export async function dispatchV2Action({
     attempts.push(record);
     onAttempt?.('started', clone(record));
     const runtimeConnector = { ...connector, subscription: pool.subscription ?? connector.subscription ?? null };
-    const verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
+    let workerPid = null;
+    let verdict;
+    try { verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
       env: childDepthEnv(parentEnv),
       model,
       conversation: session?.invocation ?? null,
       shouldCancel,
+      processGroup: true,
+      onSpawn: (pid) => { workerPid = pid; onSpawn?.(pid); },
       outputValidator,
       onActivity,
       onAgentEvent,
       onAgentProgress,
-    });
+    }); } finally { if (workerPid) onWorkerExit?.(workerPid); }
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict);
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
