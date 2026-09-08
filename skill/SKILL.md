@@ -110,14 +110,20 @@ validate again. A valid launch detaches and returns `shortId`; report it.
 
 ```bash
 bullswarm workflow watch <shortId> --next
+bullswarm workflow watch <shortId> --next --after <sequence> --since <iso-timestamp>
 bullswarm workflow runs result <shortId> --json
 ```
 
 When the user asked you to complete the work, follow the run through its result.
 Launch `bullswarm workflow watch <shortId> --next` in a background terminal, act
 on the printed event when it exits, and relaunch until the outcome line reports
-a pause or a terminal status. V2 watch prints one line per notable event and
-stays silent while work is merely in progress; `--heartbeat` is opt-in and
+a pause or a terminal status. Each exit that leaves the run going ends with
+`next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`:
+relaunch with exactly those two values, so events committed while you were
+acting are printed instead of skipped and a stall you already saw does not
+report twice. In `--jsonl` mode there is no such line — take `--after` from the
+`sequence` field of the last object. V2 watch prints one line per notable event
+and stays silent while work is merely in progress; `--heartbeat` is opt-in and
 `--stall-after` (default 300s) reports a silent running agent.
 `watch` also exits at a durable planning pause; that is not completion.
 

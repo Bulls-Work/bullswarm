@@ -352,11 +352,46 @@ function attemptOrdinal(state, attemptId) {
 // Carried across polls: which stages have already been reported, which
 // attempts are in a reported silent episode, and which actions have a failed
 // attempt whose replacement would be a mechanical retry.
-export function initialWatchMemory(state) {
+//
+// A relaunched watcher (--after/--since) seeds the same memory from continuity
+// inputs instead of from the live state alone: replayedEvents are the durable
+// events this launch is about to print, and sinceMs is when the previous
+// watcher exited.
+export function initialWatchMemory(state, {
+  replayedEvents = [],
+  sinceMs = null,
+  stallAfterMs = DEFAULT_STALL_AFTER_MS,
+  nowMs = Date.now(),
+} = {}) {
+  // A stage whose action finished among the replayed events is exactly the news
+  // this relaunch exists to deliver, so it must not be pre-marked as reported
+  // even though it is already terminal on disk. A stage that was terminal
+  // before the cursor stays silent.
+  const replayedActions = new Set(replayedEvents
+    .filter((event) => event.type === 'action.finished' || event.type === 'evidence.recorded')
+    .map((event) => event.payload?.actionId)
+    .filter(Boolean));
   const done = isV2State(state)
-    ? v2Stages(state).filter(({ stage, status }) => status.terminal || stage.completedAt).map(({ stage }) => stage.id)
+    ? v2Stages(state)
+      .filter(({ stage, status }) => (status.terminal || stage.completedAt)
+        && !(stage.actionIds ?? []).some((id) => replayedActions.has(id)))
+      .map(({ stage }) => stage.id)
     : [];
-  return { stages: new Set(done), stalled: new Map(), retry: new Map() };
+  const stalled = new Map();
+  // An agent whose silence crossed the stall threshold before the previous
+  // watcher exited was already reported by it: remember the episode so this
+  // launch prints no duplicate stall line, while its recovery still prints.
+  if (sinceMs != null && isV2State(state)) {
+    for (const { key, attempt } of v2AttemptRecords(state)) {
+      if (attempt.status !== 'running') continue;
+      const activityAt = attemptActivityAt(attempt);
+      if (activityAt == null) continue;
+      if (nowMs - activityAt < stallAfterMs) continue;
+      if (activityAt + stallAfterMs >= sinceMs) continue;
+      stalled.set(key, { since: activityAt });
+    }
+  }
+  return { stages: new Set(done), stalled, retry: new Map() };
 }
 
 /**
@@ -578,10 +613,12 @@ export function renderWatchEvent(event) {
   }
 }
 
-function watchEventLine(event, { jsonl, at, runId, shortId }) {
+function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null }) {
   if (!jsonl) return renderWatchEvent(event);
   const { type, ...fields } = event;
-  return JSON.stringify({ type, at, runId, shortId, ...fields });
+  // `sequence` is the durable cursor this object was emitted at: the machine
+  // form of the human `next: ... --after <sequence>` relaunch line.
+  return JSON.stringify({ type, at, runId, shortId, ...(sequence == null ? {} : { sequence }), ...fields });
 }
 
 export async function runWorkflowWatch(bullswarmDir, token, {
@@ -594,6 +631,11 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   jsonl = false,
   verbose = false,
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
+  // Continuity across a --next relaunch: start from the durable sequence the
+  // previous watcher had consumed, and treat stalls it already reported (it
+  // exited at sinceMs) as reported. Both absent means attach as usual.
+  afterSequence = null,
+  sinceMs = null,
   waitForRunMs = 0,
   now = Date.now,
   output = process.stdout,
@@ -621,8 +663,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       const eventMode = isV2State(state) && !oneShot;
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
-        // durable high-water mark instead of replaying the run lifetime.
-        priorSequence = state.events?.sequence ?? state.eventSequence ?? 0;
+        // durable high-water mark instead of replaying the run lifetime, unless
+        // --after names the cursor the previous watcher stopped at, in which
+        // case the events committed since then are replayed and printed.
+        priorSequence = afterSequence ?? state.events?.sequence ?? state.eventSequence ?? 0;
         // Semantic quiet counts durable marks only (events, action starts and
         // finishes). Raw child output is surfaced separately as transport
         // liveness so a thinking agent and a dead one look different.
@@ -653,6 +697,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       const emitLine = (event) => {
         const line = watchEventLine(event, {
           jsonl, at: snapshot.at, runId: snapshot.runId, shortId: snapshot.shortId,
+          sequence: priorSequence,
         });
         if (line == null) return;
         output.write(`${line}\n`);
@@ -662,7 +707,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       if (eventMode) {
         if (!attached) {
           attached = true;
-          memory = initialWatchMemory(state);
+          memory = initialWatchMemory(state, {
+            replayedEvents: afterSequence == null ? [] : newEvents,
+            sinceMs, stallAfterMs, nowMs,
+          });
           lastPrintedAt = nowMs;
           // --next is a wake-up call, not a follow: it prints only what happens.
           if (!next) {
@@ -746,8 +794,15 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         return 0;
       }
       // --next has delivered its wake-up: something notable happened and the
-      // run is still going.
-      if (next && notablePrinted > 0) return 0;
+      // run is still going. The relaunch line hands the caller the exact cursor
+      // and exit time to resume from, so nothing committed in between is lost.
+      if (next && notablePrinted > 0) {
+        if (eventMode && !jsonl) {
+          output.write(`next: bullswarm workflow watch ${snapshot.shortId ?? snapshot.runId}`
+            + ` --next --after ${priorSequence} --since ${snapshot.at}\n`);
+        }
+        return 0;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, Math.max(100, intervalMs)));
   }

@@ -987,11 +987,14 @@ const workflowTuiText = rich({
 });
 
 const workflowWatchText = rich({
-  usage: 'bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next] [--jsonl] [--once] [--verbose]',
+  usage: 'bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
   purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
     + 'cancellation) and staying silent while work is merely in progress. `--next` prints no attach '
     + 'line and returns after the first notable event, or immediately at a pause or terminal status. '
+    + 'Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and '
+    + '`--since`; pass those two values back on the relaunch so events committed while no watcher was '
+    + 'attached are printed instead of skipped and an already-reported stall does not fire again. '
     + '`--heartbeat` is opt-in for V2; legacy runs keep the historical heartbeat stream. Distinct from the '
     + 'full-screen tui and the machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
@@ -1000,7 +1003,9 @@ const workflowWatchText = rich({
     { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off for V2, 60 for legacy' },
     { flag: '--stall-after <seconds>', desc: 'report a running agent as silent after this many seconds without activity; must be >= 1', default: '300' },
     { flag: '--next', desc: 'print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status', default: 'off (follows until terminal or pause)' },
-    { flag: '--jsonl', desc: 'emit one JSON object per line instead of human text', default: 'off (human text)' },
+    { flag: '--after <sequence>', desc: 'start from this durable event sequence instead of the current high-water mark, so events committed since the previous watcher exited are printed; use the value from the previous `next:` line (in --jsonl, the `sequence` field of the last object)', default: 'attach at the current high-water mark' },
+    { flag: '--since <iso-timestamp>', desc: 'the previous watcher\'s exit time; a running agent already silent at attach is reported only if its silence crossed --stall-after at or after this time, so no duplicate stall line prints (its recovery still does); use the value from the previous `next:` line', default: 'report every agent silent past --stall-after at attach' },
+    { flag: '--jsonl', desc: 'emit one JSON object per line instead of human text; every object carries the `sequence` it was emitted at, and the `next:` relaunch line is not printed', default: 'off (human text)' },
     { flag: '--once', desc: 'print a single current snapshot and exit immediately instead of following', default: 'off (follows until terminal)' },
     { flag: '--verbose', desc: 'include started, retry, and steering-delivered lines (V2) and per-agent action detail (legacy)', default: 'off (compact)' },
   ],
@@ -1008,9 +1013,11 @@ const workflowWatchText = rich({
     'read-only — polls durable state/events on a timer; writes nothing',
     'exits 0 if the run reaches a delivered status (or on --once), 1 if it reaches a non-delivered terminal status',
     '--next exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running',
+    'for a V2 run, a --next exit that leaves the run going ends with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`; pause, terminal and interrupted exits keep their own outcome/next lines',
   ],
   examples: [
     { cmd: 'bullswarm workflow watch ab12cd --next', note: 'print the next notable event and exit; relaunch until outcome reports a pause or a terminal status' },
+    { cmd: 'bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.000Z', note: 'the relaunch: copy both values from the `next:` line the previous exit printed' },
     { cmd: 'bullswarm workflow watch ab12cd --stall-after 120 --heartbeat 30' },
   ],
   next: 'bullswarm workflow runs result <runId> --json once it finishes, or bullswarm workflow tui <runId> for the interactive view.',

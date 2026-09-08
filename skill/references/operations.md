@@ -31,6 +31,7 @@ Observe and consume:
 
 ```bash
 bullswarm workflow watch <shortId> --next
+bullswarm workflow watch <shortId> --next --after <sequence> --since <iso-timestamp>
 bullswarm workflow watch <shortId>
 bullswarm workflow tui <shortId>
 bullswarm workflow tui --json <shortId>
@@ -42,7 +43,13 @@ V2 watch prints one attach line, then one line per notable event, and stays
 silent while work is merely in progress. Launch
 `bullswarm workflow watch <shortId> --next` in a background terminal, act on the
 printed event when it exits, and relaunch until the outcome line reports a
-pause or a terminal status. `--heartbeat` is opt-in for V2 (legacy still
+pause or a terminal status. Every `--next` exit that leaves the run going ends
+with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`;
+relaunch with those exact `--after` and `--since` values so events committed
+while no watcher was attached are printed rather than skipped and an
+already-reported stall does not fire again (its recovery still prints). With
+`--jsonl` that line is absent: take `--after` from the `sequence` field carried
+by every emitted object. `--heartbeat` is opt-in for V2 (legacy still
 defaults to 60s). `--stall-after` (default 300s) reports a silent running
 agent. Use `--verbose` only for diagnosis.
 The result command is the stable delivery/verification envelope; do not scrape
