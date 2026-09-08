@@ -30,6 +30,7 @@
     "test": "node --test \"tests/*.test.js\"",
     "refresh:openrouter": "node scripts/refresh-openrouter-benchmarks.mjs",
     "refresh:epoch": "node scripts/refresh-epoch-benchmarks.mjs",
+    "refresh:benchmarks": "npm run refresh:openrouter && npm run refresh:epoch",
     "prepublishOnly": "npm test"
   },
   "repository": {

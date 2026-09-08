@@ -30,8 +30,10 @@
   program-level `defaults` object (`effort` and `reasoning` only), then the lane
   default. A kind outside the closed list is a validation error with the allowed
   values named, because it is a typo in the program rather than a runtime
-  condition. Programs that use neither `kind` nor `defaults` normalise
-  byte-identically to before.
+  condition. Programs that use neither `kind` nor `defaults` and state
+  `lane` and `effort` on every action normalise byte-identically to before;
+  `effort` itself is now optional and falls back to the per-lane default
+  where it used to be rejected as missing.
 
 - Two non-blocking advisories, never rejections. `all-writers-high` fires when
   three or more build/chore actions run and none is below high effort;

@@ -405,7 +405,9 @@ may set only `effort` and `reasoning`, because lane follows the individual
 action — then the per-lane default table. A `kind` outside that closed list is
 a validation error, not a runtime failure: it is a typo in your program, so
 `workflow plan validate` exits 2 and nothing launches. A program that uses
-neither `kind` nor `defaults` validates and runs exactly as before.
+neither `kind` nor `defaults` and states `lane` and `effort` on every action
+validates and runs exactly as before; the one widening is that `effort` is now
+optional and falls back to the per-lane default instead of being rejected.
 
 Two advisories report effort smells without ever rejecting anything.
 `all-writers-high` fires when three or more `build`/`chore` actions run and
