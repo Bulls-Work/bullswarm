@@ -78,7 +78,7 @@ time:
 - broad repeated inspection across files, commands, packages, issues, or data;
 - implementation plus independent acceptance, release, or deployment proof;
 - unknown scope requiring discovery followed by fan-out;
-- a goal likely to expose a real semantic gap that benefits from one bounded planner update.
+- a goal that benefits from parallel territories followed by a sole integrator and repository acceptance checks.
 
 Do not choose a workflow merely because a prompt is long. Do not choose one
 agent merely to save a dispatch when the result has independent units or a
@@ -99,10 +99,10 @@ automatic LLM classification.
 The preview is an imagined execution shape, not a hand-authored graph. Pass it
 through `--plan`; Bullswarm persists it as `intent.suggestedPlan`. The workflow
 planner may refine it using repository evidence, but must still obey the
-original goal, runtime-owned requirements, verification policy, budgets, and
-proposal validator. Never generate action IDs, pool choices, dependency JSON,
-or a draft workflow unless the user specifically says the graph is the
-contract.
+original goal, runtime-owned requirements, routing policy, and proposal
+validator. When `delegate` returns `plan-required`, author the actual action
+graph from its contract. Never invent pool/model fields in that graph. Use a
+draft only when the user wants an authored draft contract.
 
 Optimize for convergence:
 
@@ -110,23 +110,26 @@ Optimize for convergence:
   tiny file;
 - run substantial disjoint work concurrently;
 - use focused checks while siblings are editing and one final acceptance check;
-- let the kernel retry only mechanical failures; semantic gaps return to the planner once as a consolidated report;
-- stop with a useful verified result and disclosed non-blocking concerns rather
+- let the kernel retry mechanical failures; inspect semantic gaps in the final
+  result and author further work explicitly if needed;
+- stop with a useful result, its actual verification evidence, and disclosed concerns rather
   than expanding for optional polish.
 
 ## You are the planner (this is the default)
 
 `workflow goal` needs a program: you are the Workflow Planner unless you
 explicitly ask for a dispatched one. Author the V2 program yourself and let the
-kernel do only what it is better at (quota routing, file ownership, independent
-evidence, the requirement ledger, completion, the stable result). This is
+kernel handle quota routing, dependency scheduling, mechanical retries,
+optional independent evidence, durable recovery, and the stable result. This is
 Bullswarm's equivalent of Claude Code's `Workflow` tool: you write the program
-once, the kernel executes it, and you are consulted again only at a real
-planning boundary.
+once and the kernel executes it to completion. It does not generate automatic
+gap rounds. Initial scouting and explicit user steering can still pause for
+your program.
 
-Exit codes are a contract: **0** done or paused durably for you (nothing is
-running), **1** the run ended without completing, **2** usage or validation
-error with nothing launched. Every refusal names the next commands.
+Exit codes are a contract: **0** launched independently, completed, or paused
+durably; **1** the run ended without completing; **2** usage or validation
+error with nothing launched. A successful launch is not a finished run, and a
+completed graph is not necessarily independently verified.
 
 1. Read the contract for the exact goal text you will launch:
 
@@ -139,15 +142,23 @@ error with nothing launched. Every refusal names the next commands.
    requirement), the read-only constraint, the planning rules, the action
    fields, the validation the kernel enforces, and a worked example. Number
    the goal's deliverables; prose collapses to one requirement, which means one
-   pass/fail verdict for the whole goal and a gap round that reopens all of it.
+   optional evidence verdict for the whole goal.
    When that happens the contract says so under `advice.requirements`. Leave a
    genuinely holistic outcome as one sentence rather than inventing clauses.
 2. Scout inline with your own tools (list files, run the tests) and write the
    program to a file: file-disjoint work actions in parallel, ordered only by
    real data or same-file dependencies, self-contained prompts with the exact
-   workspace path and focused acceptance command, and at least one evidence
-   action per mandatory requirement that depends on every action affecting it.
-   Never name pools or models; lane and effort pick the tier.
+   workspace path and focused acceptance command. Agents share one worktree:
+   `ownedFiles` is intended territory and an overlap scheduling hint, not a
+   rule that discards newly created files. Tell workers to preserve others'
+   edits and report cross-territory requests. After a parallel build wave,
+   include a sole integrator depending on all its writers: `lane: "build"`,
+   `ownedFiles: []`, and a prompt to read their outputs, apply requests, fix
+   shared files, and run the repository gates. The unrestricted integrator
+   runs alone. Evidence actions are optional; when used, each must depend on
+   every action affecting its requirements. Never name pools or models; lane
+   and effort pick the tier. Use `--isolation` only when explicitly choosing
+   strict per-worker worktrees and exact-file enforcement.
 3. Optionally dry-run the file against the contract, then launch. Both use the
    same validator; an invalid program exits 2 with the issues, launches
    nothing, and points back at `plan contract`/`plan validate`:
@@ -159,22 +170,25 @@ error with nothing launched. Every refusal names the next commands.
    ```
 
 4. `watch` ends either at a terminal result or when the run pauses for you.
-   A pause means the kernel consolidated real gaps (failed or blocked
-   requirements, failed actions) and will not guess: read them and decide.
+   New runs pause for initial scouting or explicit user steering, not for
+   negative evidence. Read the request and submit the new actions needed.
 
    ```bash
    bullswarm workflow plan show <shortId> --json
    bullswarm workflow plan submit <shortId> --program plan-2.json --watch
-   bullswarm workflow plan submit <shortId> --exhausted --reason "<why>"
    ```
 
    A submitted program contains only new actions (known actions are already in
    the run; reuse their IDs in `dependsOn`). A rejected submission exits 2 and
-   leaves the run unchanged. `--exhausted` finalizes a partial result with the
-   gaps disclosed.
+   leaves the run unchanged. Saved older V2 runs retain their gap-planning
+   behavior and support `--exhausted --reason "<why>"` at those boundaries.
 5. Obtain the terminal envelope with `bullswarm workflow runs result <shortId>
-   --json`; the same lenient acceptance applies (concerns are data, not
-   failures).
+   --json`. `completed` means all actions succeeded; `partial` exposes failed
+   or skipped branches. Check `verified`, the evidence, and the action outputs
+   before declaring acceptance. The `workspace` inventory includes pre-existing
+   and concurrent edits; it is not per-worker attribution. Shared-mode files
+   remain in place even after failure or cancellation. Further repairs use a
+   new explicitly authored program.
 
 Manage a live run with `bullswarm workflow steer <id> --message "<guidance>"`
 (surfaced in the next request you read, and consumed by the program you

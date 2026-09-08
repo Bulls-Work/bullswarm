@@ -3,6 +3,15 @@
 Written 2026-08-29 from inside a Claude Code session that has the `Workflow`
 tool ("ultracode") loaded, by the model that authors those workflows.
 
+**Implementation update, 2026-09-08:** new Bullswarm goal runs now execute
+shared-workspace programs to graph completion. Territory declarations guide
+scheduling and prompts; there is no default copying, manifest enforcement,
+discard, or automatic gap round. Independent evidence is optional and reported
+separately from execution status. A sole integrator applies shared-file requests
+and runs repository gates. `--isolation` explicitly retains strict worktrees;
+saved V2 runs retain their old policy. The comparisons below describe their
+dated versions. See [the simplification audit](workflow-simplification.md).
+
 Every statement is tagged:
 
 - **[SPEC]** — quoted or closely paraphrased from the `Workflow` tool contract

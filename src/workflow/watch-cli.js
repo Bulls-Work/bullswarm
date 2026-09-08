@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId } from './short-id.js';
 import { readSteering } from './steering.js';
+import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 
@@ -122,10 +123,14 @@ export function watchSnapshot(runDir, state, now = new Date()) {
       tokens: state.usage?.total ?? null, pendingSteering: 0, deliveredSteering: 0,
       quietForSec: 0, transportQuietForSec: transportQuietSeconds(state, now), agents,
       runningCount: (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
-      waitingCount: (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
+      waitingCount: isProgramWorkflow(state)
+        ? (state.actions ?? []).filter((action) => ['pending', 'ready', 'waiting'].includes(action.status)).length + (awaitingPlanner ? 1 : 0)
+        : (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
       latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
       awaitingPlanner,
       cancellationRequested,
+      executionMode: state.config?.settings?.executionMode ?? 'verified',
+      evidencePassed: hasPassingRequirementEvidence(state),
       terminal, timing: terminal ? timingBreakdown(state) : null,
     };
   }
@@ -214,7 +219,9 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
     const actions = events.filter((event) => event.type === 'attempt.agent_action').length;
     if (snapshot.runningCount !== undefined) {
       const state = snapshot.terminal
-        ? snapshot.status === 'completed' ? 'workflow complete; result ready' : `workflow ended ${snapshot.status}; result ready`
+        ? snapshot.status === 'completed'
+          ? snapshot.executionMode === 'program' && !snapshot.evidencePassed ? 'program complete; not independently verified; result ready' : 'workflow complete; result ready'
+          : `workflow ended ${snapshot.status}; result ready`
         : snapshot.awaitingPlanner
           ? `waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary, turn ${snapshot.awaitingPlanner.turn})`
           : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;

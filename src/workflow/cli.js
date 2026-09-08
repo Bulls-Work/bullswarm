@@ -283,6 +283,10 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
   if (opts.json) console.log(JSON.stringify(result.result, null, 2));
   else if (!opts.quiet) {
     console.log(`workflow ${result.shortId ?? result.runId} ${result.result.status}; result: bullswarm workflow runs result ${result.shortId ?? result.runId} --json`);
+    if (result.result.executionMode === 'program') {
+      console.log(`verification: ${result.result.verified ? 'all mandatory requirements have passing evidence' : 'not independently verified; inspect action outputs and evidence'}`);
+      console.log(`workspace: ${result.result.workspace?.cwd ?? doc.intent.cwd}`);
+    }
   }
   return result.result.status === 'completed' ? 0 : 1;
 }
@@ -493,7 +497,7 @@ function buildNewGoalDocument(goal, opts, planning) {
   const callerPlanner = planning.mode === 'caller';
   const workerPool = opts['worker-pool'] && opts['worker-pool'] !== 'auto' ? opts['worker-pool'] : null;
   const workerModel = opts['worker-model'] && opts['worker-model'] !== 'auto' ? opts['worker-model'] : null;
-  const isolationPolicy = loadState(BULLSWARM_DIR()).config?.worktreeIsolation ?? 'agent-decides';
+  if (opts.isolation !== undefined && typeof opts.isolation !== 'boolean') throw new Error('--isolation is a boolean flag');
   // Caller planner: the caller has done its own reconnaissance, so the kernel
   // scout is opt-in (--scout with a program adds advisory context; --scout
   // alone means "survey, then pause for my program"). Dispatched planner:
@@ -504,7 +508,8 @@ function buildNewGoalDocument(goal, opts, planning) {
     constraints: extractV2GoalConstraints(goal),
     settings: {
       ...goalSettings(opts), scout,
-      workspaceMode: isolationPolicy === 'off' ? 'shared' : 'isolated',
+      executionMode: 'program',
+      workspaceMode: opts.isolation === true ? 'isolated' : 'shared',
       ...(opts['suggested-plan'] ? { suggestedPlan: String(opts['suggested-plan']).trim() } : {}),
       ...(callerPlanner ? { plannerMode: 'caller' } : {}),
     },
@@ -578,15 +583,16 @@ function goalArg(goal) {
 }
 
 // The commands a caller can run next when it has a goal but no accepted program.
-function goalNextCommands(goal, cwd) {
+function goalNextCommands(goal, cwd, { isolation = false } = {}) {
   const q = goalArg(goal);
   const c = shellArg(cwd);
+  const workspaceFlag = isolation === true ? ' --isolation' : '';
   return {
-    contract: `bullswarm workflow plan contract ${q} --cwd ${c} --json`,
-    validate: `bullswarm workflow plan validate ${q} --program plan.json --cwd ${c} --json`,
-    launch: `bullswarm workflow goal ${q} --cwd ${c} --program plan.json --json`,
-    scout: `bullswarm workflow goal ${q} --cwd ${c} --scout`,
-    orchestrator: `bullswarm workflow goal ${q} --cwd ${c} --orchestrator auto`,
+    contract: `bullswarm workflow plan contract ${q} --cwd ${c}${workspaceFlag} --json`,
+    validate: `bullswarm workflow plan validate ${q} --program plan.json --cwd ${c}${workspaceFlag} --json`,
+    launch: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --program plan.json --json`,
+    scout: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --scout`,
+    orchestrator: `bullswarm workflow goal ${q} --cwd ${c}${workspaceFlag} --orchestrator auto`,
   };
 }
 
@@ -610,7 +616,7 @@ function refuseProgramRequired(goal, opts) {
   const doc = {
     error: 'program-required',
     message: 'workflow goal needs a program: you are the Workflow Planner',
-    next: goalNextCommands(goal, resolve(opts.cwd ?? process.cwd())),
+    next: goalNextCommands(goal, resolve(opts.cwd ?? process.cwd()), opts),
   };
   if (opts.json) console.log(JSON.stringify(doc, null, 2));
   else {
@@ -621,7 +627,7 @@ function refuseProgramRequired(goal, opts) {
 }
 
 function refuseProgramInvalid(goal, opts, issues, { message = 'caller program invalid (nothing ran)' } = {}) {
-  const next = goalNextCommands(goal, resolve(opts.cwd ?? process.cwd()));
+  const next = goalNextCommands(goal, resolve(opts.cwd ?? process.cwd()), opts);
   const doc = { error: 'program-invalid', message, issues: [...issues], next: { contract: next.contract, validate: next.validate } };
   if (opts.json) console.log(JSON.stringify(doc, null, 2));
   else {
@@ -690,7 +696,7 @@ async function wfGoal(opts) {
       console.error('✗ V2 resume preserves its durable routing contract; routing overrides are valid only when starting a new goal');
       return 2;
     }
-    if (opts.program || opts.scout) {
+    if (opts.program || opts.scout || opts.isolation !== undefined) {
       console.error(`✗ a resumed run keeps its durable planner mode; to submit a caller program use: ${callerPlannerSubmitCommand(resolvedRun.shortId ?? resumeRunId)}`);
       return 2;
     }
@@ -814,7 +820,7 @@ function planContract(opts) {
   const built = planningGoalDocument(opts, ['workflow', 'plan', 'contract']);
   if (built.exit !== undefined) return built.exit;
   const { goal, doc } = built;
-  const next = goalNextCommands(goal, doc.intent.cwd);
+  const next = goalNextCommands(goal, doc.intent.cwd, opts);
   const contract = buildV2PlannerContract(doc, { launchCommand: next.launch });
   // Advice, never a rule, and only when it applies: a goal that collapsed to a
   // single requirement gets one verdict for the whole thing, and any gap
@@ -846,7 +852,7 @@ function planValidate(opts) {
     console.error(`✗ ${err.message}`);
     return 2;
   }
-  const next = goalNextCommands(goal, doc.intent.cwd);
+  const next = goalNextCommands(goal, doc.intent.cwd, opts);
   const payload = {
     action: 'plan-valid',
     requirements: doc.intent.requirements,
@@ -1093,7 +1099,7 @@ async function wfResume(opts) {
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); return 2; }
   if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); return 2; }
-  if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined) {
+  if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined || opts.isolation !== undefined) {
     console.error(`✗ a resumed run keeps its durable planner mode and routing; to submit a caller program use: ${callerPlannerSubmitCommand(token)}`);
     return 2;
   }
@@ -1138,12 +1144,15 @@ async function wfCapabilities(opts) {
         stateSchema: 'bullswarm.workflow.state.v2',
         resultSchema: 'bullswarm.workflow.result.v2',
         actionModel: 'generic work and evidence actions',
-        completionAuthority: 'kernel requirement ledger',
+        completionAuthority: 'kernel action results; requirement evidence is reported separately',
         features: {
           plannerCreatesBoundedProgram: true,
           plannerCannotDeclareCompletion: true,
           dependencyReadyConcurrency: true,
-          enforcedFileOwnership: true,
+          enforcedFileOwnership: false,
+          optionalWorktreeIsolation: true,
+          sharedWorkspaceByDefault: true,
+          automaticGapRounds: false,
           requirementEvidenceAndInvalidation: true,
           deterministicOutputPreflight: true,
           mechanicalRetriesOnly: true,
@@ -1161,8 +1170,8 @@ async function wfCapabilities(opts) {
           caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan show|submit); the kernel pauses durably at each boundary and never dispatches a planner',
           dispatched: 'explicit --orchestrator auto|<pool>: the kernel routes a Workflow Planner agent process at each planning boundary',
         },
-        defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller' },
-        compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false },
+        defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },
+        compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true },
       },
       authoredGraphs: {
         command: 'bullswarm workflow run',

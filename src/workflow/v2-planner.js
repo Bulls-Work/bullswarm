@@ -5,6 +5,7 @@ import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
 import { deriveV2PresentationStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
+import { isProgramWorkflow } from './execution-policy.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -48,6 +49,9 @@ function runtimeFromState(state) {
     maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
     enforceMaxActions: false,
     enforceMaxParallel: false,
+    requireMandatoryEvidence: !isProgramWorkflow(state),
+    relaxedGraph: isProgramWorkflow(state),
+    requireOwnedFiles: isProgramWorkflow(state) && state.config.settings.workspaceMode === 'isolated',
   };
 }
 
@@ -68,7 +72,7 @@ export function validateV2PlannerResponse(response, state, {
     if (!plain(response.program)) issues.push('program must be an object for kind=program');
     else try {
       program = validateActionProgram(response.program, runtimeFromState(state));
-      if (boundary === 'initial' && requiredScoutUnits.length) {
+      if (!isProgramWorkflow(state) && boundary === 'initial' && requiredScoutUnits.length) {
         const workIds = new Set(program.actions
           .filter((action) => action.evidenceFor.length === 0)
           .map((action) => action.id));
@@ -146,6 +150,8 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
     },
     execution: {
       concurrency: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 1,
+      mode: state.config.settings.executionMode ?? 'verified',
+      workspaceMode: state.config.settings.workspaceMode ?? 'shared',
     },
     knownActions: state.program.actions.map((action) => ({
       id: action.id, purpose: action.purpose, dependsOn: clone(action.dependsOn),
@@ -166,8 +172,29 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
 // prompt, the caller-facing `workflow plan contract`, and every durable
 // planner request render these same lines, so an external planner (a frontier
 // agent driving Bullswarm directly) and a dispatched planner obey one rulebook.
-export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary = 'initial', plannerMode = 'dispatched' } = {}) {
+export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary = 'initial', plannerMode = 'dispatched', executionMode = 'verified', workspaceMode = 'shared' } = {}) {
   if (!['dispatched', 'caller'].includes(plannerMode)) throw new TypeError('plannerMode must be dispatched or caller');
+  if (executionMode === 'program') return [
+    'Author the complete bounded dependency graph once. The kernel runs it to the end and returns every action result. It does not request automatic gap rounds or require evidence actions to finish.',
+    'dependsOn expresses the ordering you need. Independent actions start up to the concurrency cap, and a dependent starts as soon as its own inputs are ready. A failed action skips its dependents; other branches continue. Never create artificial dependencies merely to group phases.',
+    'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
+    'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
+    'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
+    workspaceMode === 'isolated'
+      ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
+      : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
+    'Build shared contracts first, then fan out independent territories. Tell workers that others share the tree, to preserve sibling edits, avoid whole-repository formatting and git resets, and report cross-territory requests instead of making conflicting edits. Never commit unless the user explicitly requires a commit.',
+    'After a parallel implementation wave, include one integrator depending on all writers. It reads their outputs, applies cross-territory requests, reconciles shared files, and runs the repository acceptance commands. In a shared workspace, use build with empty ownedFiles to let that sole integrator fix any file.',
+    'Judge acceptance with observable behavior and the repository checks. Reproduce regressions where applicable, run focused tests after changes, then the requested full gates on the integrated tree. Preserve every acceptance qualifier; do not accept vacuous tests or a green unrelated suite as proof.',
+    'Evidence actions are optional. To request structured independent judgment, use analyze with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.',
+    'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready. Repairs or further investigation belong in an explicitly authored follow-up program.',
+    workspaceMutation === 'forbidden'
+      ? 'This goal is read-only: every action must use analyze with empty ownedFiles. Put reports in the captured final response.'
+      : 'Mutations are allowed within the task purpose. Preserve user changes and follow the shared-territory or explicit isolation rules above.',
+    boundary === 'steering'
+      ? 'The user has queued steering. Preserve completed history and append only the actions needed to honor it.'
+      : 'Return a program response containing the entire graph. Do not invent provider, model, timeout, phase, repair, or retry fields.',
+  ];
   return [
     'Propose the smallest complete bounded action program that can satisfy the supplied requirements. The kernel, not you, decides completion and failure.',
     'The numeric values in context.targets are advisory planning targets, never execution ceilings. Prefer to stay within them by consolidating optional work, but exceed them whenever the smallest essential program needs more actions, agent dispatches, or gap rounds. Reaching or crossing a target is not a reason to return exhausted.',
@@ -221,6 +248,18 @@ export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
   produces: 'optional artifact IDs this action produces for later actions',
 });
 
+function programActionFields(stateOrGoal) {
+  return {
+    ...V2_PROGRAM_ACTION_FIELDS,
+    ...(isProgramWorkflow(stateOrGoal) ? {
+      dependsOn: 'action IDs that must succeed before this action starts',
+      ownedFiles: stateOrGoal.config.settings.workspaceMode === 'isolated'
+        ? 'exact relative files a build/chore action may mutate; a non-empty list is required for isolated writers'
+        : 'intended relative file territories; empty for analyze or for an unrestricted shared build/chore integrator',
+    } : {}),
+  };
+}
+
 export const V2_PROGRAM_EXAMPLE = Object.freeze({
   schemaVersion: 'bullswarm.workflow.planner-response.v2',
   kind: 'program',
@@ -249,12 +288,14 @@ export function buildV2PlannerPrompt(context) {
   return [
     'You are the single logical Workflow Planner for Bullswarm autonomous V2.',
     ...v2PlannerContractRules({
+      executionMode: context.execution?.mode,
+      workspaceMode: context.execution?.workspaceMode,
       workspaceMutation: context.intent.constraints?.workspaceMutation ?? 'allowed',
       boundary: context.boundary,
     }),
     'Return only one JSON object with schemaVersion bullswarm.workflow.planner-response.v2.',
     `For kind=program use: ${V2_PLANNER_RESPONSE_SHAPE.program}.`,
-    `For an exhausted gap boundary use: ${V2_PLANNER_RESPONSE_SHAPE.exhausted}.`,
+    ...(context.execution?.mode === 'program' ? [] : [`For an exhausted gap boundary use: ${V2_PLANNER_RESPONSE_SHAPE.exhausted}.`]),
     '',
     JSON.stringify(context),
   ].join('\n');
@@ -278,11 +319,17 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
     requirements: clone(goalDocument.intent.requirements),
     constraints: { workspaceMutation },
     settings: clone(goalDocument.config.settings),
-    rules: v2PlannerContractRules({ workspaceMutation, boundary: 'initial', plannerMode: 'caller' }),
+    rules: v2PlannerContractRules({ workspaceMutation, boundary: 'initial', plannerMode: 'caller', executionMode: goalDocument.config.settings.executionMode, workspaceMode: goalDocument.config.settings.workspaceMode }),
     program: {
       schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
-      actionFields: { ...V2_PROGRAM_ACTION_FIELDS },
-      validation: [
+      actionFields: programActionFields(goalDocument),
+      validation: isProgramWorkflow(goalDocument) ? [
+        'IDs are kebab-case and unique; every dependency exists and the graph has no cycles',
+        'ownedFiles are scheduling territories; overlapping writers serialize, and an unrestricted shared integrator runs alone',
+        'evidence actions are optional and depend on all work affecting the requirements they judge',
+        'declared input artifacts come from dependency ancestors; plain dependencies do not require an artifact declaration',
+        'kernel-owned routing chooses pools and models from lane and effort',
+      ] : [
         'every requirement listed above that is mandatory needs at least one evidence action whose evidenceFor names it',
         'evidence actions must depend (transitively) on every work action that affects the requirement they judge',
         'two work actions with overlapping ownedFiles must be transitively ordered by dependsOn',
@@ -319,12 +366,14 @@ export function createV2PlannerRequest(state, context, { turn, requestPath, cand
     boundary: context.boundary,
     plannerMode: 'caller',
     rules: v2PlannerContractRules({
+      executionMode: context.execution?.mode,
+      workspaceMode: context.execution?.workspaceMode,
       workspaceMutation: context.intent.constraints?.workspaceMutation ?? 'allowed',
       boundary: context.boundary,
       plannerMode: 'caller',
     }),
-    responseShape: { ...V2_PLANNER_RESPONSE_SHAPE },
-    actionFields: { ...V2_PROGRAM_ACTION_FIELDS },
+    responseShape: isProgramWorkflow(state) ? { program: V2_PLANNER_RESPONSE_SHAPE.program } : { ...V2_PLANNER_RESPONSE_SHAPE },
+    actionFields: programActionFields(state),
     scoutUnitsAdvisory: true,
     context,
     // Steering queued for this run that no planner turn has consumed yet.

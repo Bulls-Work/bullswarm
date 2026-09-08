@@ -10,6 +10,7 @@ import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 import { V2_STATE_SCHEMA_VERSION } from './v2-state.js';
 import { presentationStageStatus } from './v2-presentation.js';
+import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 
 const ESC = '\x1b[';
 const SIDEBAR_WIDTH = 34;
@@ -463,6 +464,7 @@ function renderV2Details(row, { interactive = true } = {}) {
     ` bullswarm · ${row.shortId ?? state.shortId ?? state.runId}`,
     '',
     ` status: ${state.lifecycle.status}`,
+    ...(isProgramWorkflow(state) ? [` mode:   program in ${state.config.settings.workspaceMode ?? 'shared'} workspace; requirement evidence reported separately`] : []),
     ` goal:   ${state.intent.goal}`,
     ` dir:    ${row.runDir ?? '—'}`,
     '',
@@ -812,7 +814,9 @@ export function renderWorkflowTui(row, {
   const workerAttempts = attempts.filter((attempt) => attempt.actionId !== model.orchestrator.actionId);
   const finishedAgents = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
   const agentProgress = workerAttempts.length ? `${finishedAgents}/${workerAttempts.length} workers · ` : '';
-  const terminalLabel = stateFinishedAt(state) ? ` · ${status === 'completed' ? 'done' : status}` : '';
+  const terminalLabel = stateFinishedAt(state)
+    ? ` · ${status === 'completed' ? 'done' : status}${isProgramWorkflow(state) && status === 'completed' ? hasPassingRequirementEvidence(state) ? ' · evidence passed' : ' · unverified' : ''}`
+    : '';
   const runName = state.workflow ?? row?.shortId ?? state.shortId ?? row?.runId ?? 'workflow';
   const breadcrumbDepth = navigationDepth({ detail: true, focus, orchestratorDetail, workflowVerbose });
   const header = [

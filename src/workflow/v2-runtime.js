@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { writeJsonAtomic } from './fsjson.js';
 import { appendEvent } from './events.js';
 import { newRunId } from './runner.js';
-import { generateShortId, listRuns } from './short-id.js';
+import { generateShortId, isProcessAlive, listRuns } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
@@ -30,8 +30,11 @@ import {
 } from './v2-workspace.js';
 import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { deliverSteering, peekSteering, readSteering } from './steering.js';
+import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
+import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
+const ACTIVE_RUNS = new Set();
 const DEFAULTS = Object.freeze({
   concurrency: 4,
   workspaceMode: 'shared',
@@ -263,6 +266,7 @@ function ancestorPools(state, action) {
 }
 
 function buildWorkTask(state, action, targetDir = state.intent.cwd) {
+  if (isProgramWorkflow(state)) return buildProgramWorkTask(state, action, targetDir);
   const requirements = state.intent.requirements.filter((requirement) => action.affects.includes(requirement.id));
   const scopedPrompt = targetDir === state.intent.cwd
     ? action.prompt
@@ -306,6 +310,29 @@ function buildWorkTask(state, action, targetDir = state.intent.cwd) {
     '- A separate workspace artifact is valid only when it is explicitly listed in ownedFiles; still describe its concrete contents and validation in the final response.',
     'Finish with a concise, substantive delivery summary containing the concrete work or findings and exact validation performed.',
   ].filter(Boolean).join('\n');
+}
+
+function buildProgramWorkTask(state, action, targetDir) {
+  const strict = enforcesOwnership(state);
+  const readOnly = action.lane === 'analyze' || state.intent.constraints?.workspaceMutation === 'forbidden';
+  return [
+    `Bullswarm program action: ${action.id}`,
+    `Purpose: ${action.purpose}`,
+    `Workspace: ${targetDir}`,
+    readOnly ? 'This action is read-only. Do not modify workspace files.'
+      : strict ? `You own exactly these files for mutation: ${action.ownedFiles.join(', ')}. Do not modify any other path.`
+        : action.ownedFiles.length
+          ? `Your intended territory: ${action.ownedFiles.join(', ')}. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for the integrator to apply.`
+          : 'You are the sole unrestricted integrator. You may edit any file needed for this action; no other action runs alongside you.',
+    'Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user explicitly requires it.',
+    'Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, and runs the repository acceptance gates.',
+    `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
+    ...state.intent.requirements.filter((item) => action.affects.includes(item.id)).map((item) => `Requirement context (${item.id}): ${item.text}`),
+    'Deliver only your action purpose. Exercise observable behavior and run the focused checks; report exact validation and anything unfinished. Do not claim success based only on editing files or unrelated green tests.',
+    '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
+    '',
+    'Output transport: your complete final response is captured as this action\'s durable output artifact. Do not overwrite kernel-owned task/output files. Include delivered files or findings, validation results, unfinished work, and precise requests for the integrator. Read-only reports belong in the final response itself.',
+  ].join('\n');
 }
 
 function buildEvidenceTask(state, action, contractPath, candidatePath) {
@@ -393,6 +420,7 @@ export async function runV2AutonomousWorkflow({
   const id = resumeRunId ?? runId ?? newRunId();
   if (!/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(id)) throw new TypeError(`invalid V2 runId "${id}"`);
   const runDir = join(runsRoot, id);
+  if (ACTIVE_RUNS.has(runDir)) throw new Error(`run ${id} already has an active kernel`);
   if (!resuming && existsSync(runDir)) throw new Error(`cannot start: run ${id} already exists`);
   mkdirSync(runDir, { recursive: true });
 
@@ -414,6 +442,7 @@ export async function runV2AutonomousWorkflow({
         state.lifecycle.finishedAt = published.finishedAt;
         state.lifecycle.resultFile = durableResultPath;
         state.planner.status = state.planner.status === 'running' ? 'waiting' : state.planner.status;
+        if (isProgramWorkflow(state) && !['failed', 'cancelled'].includes(state.planner.status)) state.planner.status = published.status === 'cancelled' ? 'cancelled' : 'completed';
         appendEvent(runDir, state, 'workflow.finished', {
           status: published.status, verified: published.verified, resultFile: durableResultPath,
           reason: published.reason, recovered: true,
@@ -429,6 +458,10 @@ export async function runV2AutonomousWorkflow({
         runId: id, shortId: state.shortId, runDir, state: clone(state),
         result: deserializeV2ResultEnvelope(readFileSync(durableResultPath, 'utf8')),
       };
+    }
+    const processAlive = dependencies.isProcessAlive ?? isProcessAlive;
+    if (!state.planner.awaiting && state.runner?.pid !== process.pid && processAlive(state.runner?.pid)) {
+      throw new Error(`run ${id} already has an active kernel (pid ${state.runner.pid}); watch it or cancel it before resuming`);
     }
     reconcileResume(state, now());
   } else {
@@ -450,7 +483,7 @@ export async function runV2AutonomousWorkflow({
   const persist = () => {
     state.runner = {
       pid: process.pid,
-      startedAt: state.runner?.startedAt ?? runnerStartedAt,
+      startedAt: runnerStartedAt,
       lastHeartbeatAt: now(),
     };
     serializeV2DurableState(state);
@@ -504,6 +537,22 @@ export async function runV2AutonomousWorkflow({
   let limitsExhausted = false;
   let terminalReason = null;
   const config = settings(state);
+  const programExecution = isProgramWorkflow(state);
+  const schedulingOptions = v2SchedulingOptions(state);
+  const captureStatus = dependencies.captureWorkspaceStatus ?? captureWorkspaceStatus;
+  let workspaceBaseline = null;
+  if (programExecution) {
+    const baselinePath = join(runDir, 'workspace-baseline.json');
+    try {
+      if (existsSync(baselinePath)) workspaceBaseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+      else {
+        workspaceBaseline = captureStatus(state.intent.cwd);
+        writeJsonAtomic(baselinePath, workspaceBaseline);
+      }
+    } catch {
+      workspaceBaseline = { changedFiles: [], warnings: ['The initial workspace change inventory is unavailable.'] };
+    }
+  }
   const callerPlanner = config.plannerMode === 'caller';
   let pendingInitialResponse = initialPlannerResponse ? clone(initialPlannerResponse) : null;
   // A caller program supplied at launch is kept in the run directory until the
@@ -831,7 +880,7 @@ export async function runV2AutonomousWorkflow({
       isolated = null;
     };
     let before = null;
-    if (action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
+    if (enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
     let currentAttemptId = null;
     let lastProgressPersist = 0;
     const workerAttempt = () => state.attempts.find((item) => item.id === currentAttemptId);
@@ -967,13 +1016,15 @@ export async function runV2AutonomousWorkflow({
 
   const finalize = () => {
     const finishedAt = now();
-    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason });
+    const workspace = programExecution ? buildWorkspaceReport(state.intent.cwd, workspaceBaseline, state.program.actions, captureStatus) : null;
+    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace });
     const resultPath = join(runDir, 'result.json');
     writeResultAtomic(resultPath, result);
     state.lifecycle.status = result.status;
     state.lifecycle.finishedAt = finishedAt;
     state.lifecycle.resultFile = resultPath;
     state.planner.status = state.planner.status === 'running' ? 'waiting' : state.planner.status;
+    if (programExecution && !['failed', 'cancelled'].includes(state.planner.status)) state.planner.status = result.status === 'cancelled' ? 'cancelled' : 'completed';
     // A terminal run is never waiting for its caller planner; a stale request
     // would otherwise make watch/plan show report a cancelled run as paused.
     state.planner.awaiting = null;
@@ -982,80 +1033,132 @@ export async function runV2AutonomousWorkflow({
     return { runId: id, shortId: state.shortId, runDir, state: clone(state), result };
   };
 
-  for (;;) {
-    if (refreshCancellation()) return finalize();
-    // Caller-planner mode: a durable pause is authoritative. Whatever changed
-    // on disk while the kernel was away (steering queued, a resume without a
-    // submission), the run stays at its recorded boundary and turn until the
-    // caller submits; the request is refreshed with any new steering.
-    if (callerPlanner && state.planner.awaiting) {
-      return pauseForCaller(awaitCallerPlanner(state.planner.awaiting.boundary).awaiting);
+  const runActionSafely = async (action) => {
+    try { await runAction(action); }
+    catch (error) {
+      const runtime = actionState(state, action.id);
+      const finishedAt = now();
+      runtime.status = refreshCancellation() ? 'cancelled' : 'failed';
+      runtime.finishedAt = finishedAt;
+      runtime.lastFailure = { kind: 'runtime', message: error?.message || String(error) };
+      for (const attempt of state.attempts) if (attempt.actionId === action.id && attempt.status === 'running') {
+        Object.assign(attempt, { status: runtime.status, finishedAt, failureKind: 'runtime', why: runtime.lastFailure.message });
+        runtime.outputFile ??= attempt.outputFile;
+      }
+      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: 'runtime', why: runtime.lastFailure.message });
+      completePresentationStages();
     }
-    if (state.preflight.scout.status === 'pending') {
-      const scouted = await runScout();
-      if (!scouted.ok) {
-        limitsExhausted = true;
-        terminalReason = `repository preflight could not produce a valid report: ${scouted.verdict?.why ?? scouted.failureKind}`;
+  };
+  const activeTasks = new Map();
+  // A quiet worker is not a dead coordinator. Keep this independent of the
+  // provider's output/progress callbacks, and stop it on every exit path.
+  const startInterval = dependencies.setInterval ?? setInterval;
+  const stopInterval = dependencies.clearInterval ?? clearInterval;
+  let heartbeatErrorReported = false;
+  const heartbeat = startInterval(() => {
+    try { refreshCancellation(); persist(); heartbeatErrorReported = false; }
+    catch (error) {
+      if (!heartbeatErrorReported) process.stderr.write(`workflow ${id} heartbeat could not be persisted: ${error.message}\n`);
+      heartbeatErrorReported = true;
+    }
+  }, 10_000);
+  heartbeat.unref?.();
+  ACTIVE_RUNS.add(runDir);
+  try {
+    for (;;) {
+      if (refreshCancellation()) {
+        await Promise.all(activeTasks.values());
+        if (programExecution) for (const action of state.actions) if (['pending', 'ready', 'waiting'].includes(action.status)) {
+          action.status = 'cancelled';
+          action.finishedAt = now();
+          action.lastFailure = { kind: 'cancelled', message: 'cancelled before dispatch' };
+          emit('action.finished', { actionId: action.id, status: 'cancelled', why: action.lastFailure.message });
+        }
         return finalize();
       }
-      continue;
-    }
-    if (state.program.actions.length) {
-      const blockedSchedule = scheduleV2Actions(state.program.actions, state.actions, {
-        concurrency: config.concurrency, workspaceMode: schedulerWorkspaceMode,
-      });
-      for (const blocked of blockedSchedule.blocked) {
-        const runtime = actionState(state, blocked.id);
-        if (runtime && !['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted'].includes(runtime.status)) {
-          runtime.status = 'blocked';
-          runtime.finishedAt = now();
-          runtime.lastFailure = { kind: 'dependency', message: blocked.reason };
-          startPresentationStage(blocked.id);
-          emit('action.finished', { actionId: blocked.id, status: 'blocked', why: blocked.reason });
-          completePresentationStages();
+      // Caller-planner mode: a durable pause is authoritative. Whatever changed
+      // on disk while the kernel was away (steering queued, a resume without a
+      // submission), the run stays at its recorded boundary and turn until the
+      // caller submits; the request is refreshed with any new steering.
+      if (callerPlanner && state.planner.awaiting) {
+        return pauseForCaller(awaitCallerPlanner(state.planner.awaiting.boundary).awaiting);
+      }
+      if (state.preflight.scout.status === 'pending') {
+        const scouted = await runScout();
+        if (!scouted.ok && !programExecution) {
+          limitsExhausted = true;
+          terminalReason = `repository preflight could not produce a valid report: ${scouted.verdict?.why ?? scouted.failureKind}`;
+          return finalize();
+        }
+        continue;
+      }
+      if (state.program.actions.length) {
+        const blockedSchedule = scheduleV2Actions(state.program.actions, state.actions, schedulingOptions);
+        for (const blocked of blockedSchedule.blocked) {
+          const runtime = actionState(state, blocked.id);
+          if (runtime && !['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted'].includes(runtime.status)) {
+            runtime.status = 'blocked';
+            runtime.finishedAt = now();
+            runtime.lastFailure = { kind: 'dependency', message: blocked.reason };
+            startPresentationStage(blocked.id);
+            emit('action.finished', { actionId: blocked.id, status: 'blocked', why: blocked.reason });
+            completePresentationStages();
+          }
         }
       }
-    }
-    const deliveredSteeringIds = new Set((state.steering ?? []).map((entry) => entry.id));
-    const hasPendingSteering = readSteering(runDir).some((entry) => !deliveredSteeringIds.has(entry.id));
-    if (hasPendingSteering && state.program.actions.length) {
-      const planned = await runPlanner('steering');
-      if (!planned.ok) {
-        if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
-        if (planned.status === 'cancelled') continue;
-        limitsExhausted = true;
-        terminalReason = `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
+      const deliveredSteeringIds = new Set((state.steering ?? []).map((entry) => entry.id));
+      const hasPendingSteering = readSteering(runDir).some((entry) => !deliveredSteeringIds.has(entry.id));
+      if (hasPendingSteering && state.program.actions.length) {
+        if (activeTasks.size) { await Promise.race(activeTasks.values()); continue; }
+        const planned = await runPlanner('steering');
+        if (!planned.ok) {
+          if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
+          if (planned.status === 'cancelled') continue;
+          limitsExhausted = true;
+          terminalReason = `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
+        }
+        continue;
       }
-      continue;
-    }
-    const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
-    if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
-    if (progress.status === 'needs-planner') {
-      const planned = await runPlanner(progress.boundary);
-      if (!planned.ok) {
-        if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
-        if (planned.status === 'cancelled') continue;
-        limitsExhausted = true;
-        terminalReason = `the workflow planner could not produce a mechanically valid program: ${planned.verdict?.why ?? planned.failureKind}`;
-      } else if (planned.accepted.kind === 'exhausted') {
-        plannerExhausted = true;
-        terminalReason = planned.accepted.reason;
+      const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
+      if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
+      if (progress.status === 'needs-planner') {
+        const planned = await runPlanner(progress.boundary);
+        if (!planned.ok) {
+          if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
+          if (planned.status === 'cancelled') continue;
+          limitsExhausted = true;
+          terminalReason = `the workflow planner could not produce a mechanically valid program: ${planned.verdict?.why ?? planned.failureKind}`;
+        } else if (planned.accepted.kind === 'exhausted') {
+          plannerExhausted = true;
+          terminalReason = planned.accepted.reason;
+        }
+        continue;
       }
-      continue;
+      const schedule = scheduleV2Actions(state.program.actions, state.actions, schedulingOptions);
+      const selected = schedule.selected;
+      if (!selected.length) {
+        if (activeTasks.size) { await Promise.race(activeTasks.values()); continue; }
+        limitsExhausted = true;
+        terminalReason = 'the workflow has unfinished work but no dependency-ready action can run';
+        continue;
+      }
+      state.lifecycle.status = 'running';
+      state.planner.status = 'waiting';
+      persist();
+      if (programExecution) {
+        for (const actionId of selected) {
+          const task = runActionSafely(definition(state, actionId)).finally(() => activeTasks.delete(actionId));
+          activeTasks.set(actionId, task);
+        }
+        await Promise.race(activeTasks.values());
+      } else {
+        await Promise.all(selected.map((actionId) => runActionSafely(definition(state, actionId))));
+      }
     }
-    const schedule = scheduleV2Actions(state.program.actions, state.actions, {
-      concurrency: config.concurrency, workspaceMode: schedulerWorkspaceMode,
-    });
-    const selected = schedule.selected;
-    if (!selected.length) {
-      limitsExhausted = true;
-      terminalReason = 'the workflow has unfinished work but no dependency-ready action can run';
-      continue;
-    }
-    state.lifecycle.status = 'running';
-    state.planner.status = 'waiting';
-    persist();
-    await Promise.all(selected.map((id) => runAction(definition(state, id))));
+  } finally {
+    await Promise.allSettled(activeTasks.values());
+    stopInterval(heartbeat);
+    ACTIVE_RUNS.delete(runDir);
   }
 }
 

@@ -29,10 +29,12 @@ content. Published as `bullswarm` on npm.
    stored under `~/.bullswarm/drafts/<name>/` and are runnable by name
    without an upfront JSON. JSON is still the durable artifact — drafts
    are JSON documents, just built one mutation at a time.
-8. Goal-driven execution is zero-graph by default: `bullswarm workflow goal`
-   internalizes the planner contract, chooses the orchestrator and workers,
-   persists the generated workflow, and can detach so observation never
-   depends on the initiating agent or CLI process.
+8. New goal workflows are caller-planned programs in a shared workspace.
+   `bullswarm workflow goal --program` executes the graph; `--orchestrator`
+   explicitly delegates planning. File territories are advisory scheduling
+   hints, and the graph finishes without automatic gap rounds. `verified`
+   separately records requirement evidence. `--isolation` opts into strict
+   per-worker worktrees. Saved V2 runs preserve their original semantics.
 
 ## Development
 

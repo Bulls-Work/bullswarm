@@ -299,13 +299,16 @@ export function validateActionProgram(program, runtime = {}) {
     if (enforceRoutingPolicy && action.lane === 'chore' && action.effort !== 'low') {
       issues.push(`${at} chore actions are deterministic mechanical work and must use low effort`);
     }
+    if (runtime.requireOwnedFiles === true && ['build', 'chore'].includes(action.lane) && !ownedFiles.length) {
+      issues.push(`${at} isolated writers must declare non-empty ownedFiles; unrestricted integrators require a shared workspace`);
+    }
     if (evidenceFor.length && (affects.length || ownedFiles.length)) {
       issues.push(`${at} evidence actions must have empty affects and ownedFiles`);
     }
     if (evidenceFor.length && evidencePromptOwnsOutput(action.prompt)) {
       issues.push(`${at}.prompt must describe inspection scope only; evidence output schema is supplied by the V2 kernel`);
     }
-    if (!evidenceFor.length && ownedFiles.length && !affects.length) {
+    if (!evidenceFor.length && (ownedFiles.length || (runtime.relaxedGraph === true && ['build', 'chore'].includes(action.lane))) && !affects.length) {
       issues.push(`${at} mutating actions with ownedFiles must affect a requirement`);
     }
     action.dependsOn = dependsOn;
@@ -320,6 +323,7 @@ export function validateActionProgram(program, runtime = {}) {
 
   if (runtime.workspaceMutation === 'forbidden') {
     for (const action of actions) {
+      if (runtime.relaxedGraph === true && action.lane !== 'analyze') issues.push(`${action.id} must use analyze because the goal forbids workspace mutation`);
       if (action.ownedFiles.length) {
         issues.push(`${action.id}.ownedFiles must be empty because the goal forbids workspace mutation`);
       }
@@ -384,6 +388,7 @@ export function validateActionProgram(program, runtime = {}) {
     for (const dependency of action.dependsOn) {
       const dependencyAction = byId.get(dependency);
       if (!dependencyAction) continue;
+      if (runtime.relaxedGraph === true) continue;
       if (dependencyAction.evidenceFor.length && !action.inputs.some((artifact) => artifactProducer.get(artifact) === dependency)) {
         issues.push(`${action.id} may depend on evidence action "${dependency}" only through its input artifact`);
       } else if (!action.evidenceFor.length && !dependencyAction.evidenceFor.length) {
@@ -402,6 +407,7 @@ export function validateActionProgram(program, runtime = {}) {
     }
   }
   for (const left of [...knownActions, ...actions]) for (const right of [...knownActions, ...actions]) {
+    if (runtime.relaxedGraph === true) continue;
     if (left.id >= right.id || left.evidenceFor.length || right.evidenceFor.length) continue;
     if (left.ownedFiles.some((file) => right.ownedFiles.includes(file)) && !reaches(left.id, right.id, byId) && !reaches(right.id, left.id, byId)) {
       issues.push(`overlapping writers "${left.id}" and "${right.id}" must be transitively ordered`);

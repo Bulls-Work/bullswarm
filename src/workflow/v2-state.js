@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-validator.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
+import { isProgramWorkflow } from './execution-policy.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -51,7 +52,7 @@ const INTENT_CONSTRAINT_FIELDS = new Set(['workspaceMutation']);
 const GOAL_SETTING_FIELDS = new Set([
   'concurrency', 'workspaceMode', 'maxAgents', 'maxActions',
   'maxExpansionRounds', 'maxMechanicalRetries', 'maxManifestFiles', 'scout',
-  'suggestedPlan', 'plannerMode',
+  'suggestedPlan', 'plannerMode', 'executionMode',
 ]);
 
 export class V2StateValidationError extends TypeError {
@@ -109,6 +110,9 @@ function goalSettings(value) {
   }
   if (value.workspaceMode !== undefined && !['shared', 'isolated'].includes(value.workspaceMode)) {
     fail('goalDocument.config.settings.workspaceMode must be shared or isolated');
+  }
+  if (value.executionMode !== undefined && !['program', 'verified'].includes(value.executionMode)) {
+    fail('goalDocument.config.settings.executionMode must be program or verified');
   }
   if (value.scout !== undefined && typeof value.scout !== 'boolean') {
     fail('goalDocument.config.settings.scout must be a boolean');
@@ -402,6 +406,8 @@ function validateProgram(program, state) {
         freshEvidenceRequirementIds: [],
         workspaceMutation: state.intent.constraints?.workspaceMutation ?? 'allowed',
         requireMandatoryEvidence: false,
+        relaxedGraph: isProgramWorkflow(state),
+        requireOwnedFiles: isProgramWorkflow(state) && state.config.settings.workspaceMode === 'isolated',
         maxActions: state.config.settings.maxActions ?? 100,
         maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
         enforceMaxActions: false,
