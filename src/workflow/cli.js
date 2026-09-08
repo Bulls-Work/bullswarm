@@ -1252,23 +1252,36 @@ function wfEvents(opts) {
 }
 
 async function wfWatch(opts) {
+  // A value flag with no value (--heartbeat, --interval, --stall-after) is a
+  // usage error, not a silent fall back to the default.
+  const flagError = flagErrors(opts, ['workflow', 'watch']);
+  if (flagError != null) return flagError;
   const token = opts.rest[0];
   if (!token) {
     console.error(`usage: ${usageLine(['workflow', 'watch'])}`);
     return 2;
   }
   const intervalSec = Number(opts.interval ?? 2);
-  const heartbeatSec = Number(opts.heartbeat ?? 60);
+  // --heartbeat is now opt-in: absent means no periodic line for a V2 run and
+  // the historical 60s for a legacy one.
+  const heartbeatSec = opts.heartbeat == null ? null : Number(opts.heartbeat);
   if (!Number.isFinite(intervalSec) || intervalSec < 0.1 ||
-      !Number.isFinite(heartbeatSec) || heartbeatSec < 1) {
+      (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
     console.error('✗ --interval must be >= 0.1 seconds and --heartbeat must be >= 1 second');
+    return 2;
+  }
+  const stallAfterSec = Number(opts['stall-after'] ?? 300);
+  if (!Number.isFinite(stallAfterSec) || stallAfterSec < 1) {
+    console.error('✗ --stall-after must be >= 1 second');
     return 2;
   }
   try {
     return await runWorkflowWatch(BULLSWARM_DIR(), token, {
       intervalMs: intervalSec * 1000,
-      heartbeatMs: heartbeatSec * 1000,
+      heartbeatMs: heartbeatSec == null ? null : heartbeatSec * 1000,
+      stallAfterMs: stallAfterSec * 1000,
       once: opts.once === true,
+      next: opts.next === true,
       jsonl: opts.jsonl === true,
       verbose: opts.verbose === true,
     });
@@ -1375,7 +1388,7 @@ function parseFlags(argv) {
     'worker-pool', 'worker-model', 'request', 'run-id',
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
-    'retry-attempts', 'interval', 'heartbeat', 'message',
+    'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'message',
   ]);
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not

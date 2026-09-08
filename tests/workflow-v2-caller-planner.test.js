@@ -647,7 +647,7 @@ test('CLI: detached program returns negative evidence durably without another pl
     const watch = cli(f, ['workflow', 'watch', launch.runId]);
     assert.equal(watch.status, 0, watch.stderr);
     assert.doesNotMatch(watch.stdout, /waiting for the caller planner/);
-    assert.match(watch.stdout, /result ready/);
+    assert.match(watch.stdout, /outcome: completed/);
   } finally { f.cleanup(); }
 });
 

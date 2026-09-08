@@ -302,7 +302,8 @@ The detached response includes a short ID and exact observation commands:
 
 ```bash
 bullswarm workflow runs show <shortId>
-bullswarm workflow watch <shortId>        # low-noise live progress + terminal timing
+bullswarm workflow watch <shortId>        # V2: attach, then one line per notable event
+bullswarm workflow watch <shortId> --next # print the next notable event and exit
 bullswarm workflow                         # unified human workflow home
 bullswarm workflow tui <shortId>          # jump directly to one run timeline
 bullswarm workflow tui --json <shortId>
@@ -482,20 +483,33 @@ auditing completed runs.
 
 ### Live workflow dashboard
 
-For ordinary observation, use the non-interactive watcher. Human output is one
-compact aggregate line per semantic change and a 60-second heartbeat while
-otherwise quiet. Each line reports status/location, events and agent actions
-captured since the preceding sample, and quiet duration. It does not repeat
-command or response excerpts. Use `--verbose` for the detailed per-agent and
-last-action view. Compact terminal output reports the overall attempt count and
-elapsed time; `--verbose` includes every attempt's agent/model, outcome, and
-tokens. This keeps agent monitoring cheap while retaining a drill-down path.
+For ordinary observation, use the non-interactive watcher. For V2 runs it
+prints one attach line, then one line per notable event as it happens
+(action finished/failed/blocked/cancelled, evidence, stage completion,
+planner turn, stall/recovery, cancellation, and the existing pause and
+terminal `outcome:` / `next:` lines) and stays silent while work is merely
+in progress. Agent starts, mechanical retries, and steering delivery print
+only with `--verbose`. The periodic heartbeat is off unless you pass
+`--heartbeat <seconds>`; `--stall-after <seconds>` (default 300) reports a
+running agent that has gone silent. `--next` prints no attach line and
+exits after the first notable event so a background terminal can wake the
+caller; relaunch until the outcome line reports a pause or a terminal
+status (exit 0 while the run continues or delivered, 1 when it ended
+without delivering or the kernel is not running). `--jsonl` emits one JSON
+object per notable event with a stable `type` (`attach`, `action.finished`,
+`evidence.recorded`, `stage.completed`, `planner.finished`, `agent.stalled`,
+`agent.recovered`, `cancellation.requested`, `paused`, `finished`,
+`interrupted`, and with `--verbose` `action.started`, `attempt.retrying`,
+`steering.delivered`). `--once` still prints one current snapshot. Legacy
+(non-V2) runs keep the compact transition-plus-heartbeat stream unchanged.
 
 ```bash
 bullswarm workflow watch <shortId>
-bullswarm workflow watch <shortId> --jsonl       # automation-friendly stream
+bullswarm workflow watch <shortId> --next        # next notable event, then exit
+bullswarm workflow watch <shortId> --jsonl       # one JSON object per event
 bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
-bullswarm workflow watch <shortId> --verbose     # detailed agent/action view
+bullswarm workflow watch <shortId> --verbose     # started / retry / steering too
+bullswarm workflow watch <shortId> --stall-after 120 --heartbeat 30
 ```
 
 `workflow tui` is the interactive, Claude-style `/workflows` view. For an

@@ -109,11 +109,16 @@ validate again. A valid launch detaches and returns `shortId`; report it.
 ## 3. Observe and judge the result
 
 ```bash
-bullswarm workflow watch <shortId>
+bullswarm workflow watch <shortId> --next
 bullswarm workflow runs result <shortId> --json
 ```
 
 When the user asked you to complete the work, follow the run through its result.
+Launch `bullswarm workflow watch <shortId> --next` in a background terminal, act
+on the printed event when it exits, and relaunch until the outcome line reports
+a pause or a terminal status. V2 watch prints one line per notable event and
+stays silent while work is merely in progress; `--heartbeat` is opt-in and
+`--stall-after` (default 300s) reports a silent running agent.
 `watch` also exits at a durable planning pause; that is not completion.
 
 Read action outputs and actual artifacts, and probe important edge cases yourself.
