@@ -19,9 +19,10 @@ import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
 import { loadState, saveState } from './lib/state.js';
 import {
-  REASONING_DEFAULT_TIERS, STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning,
+  STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
 } from './lib/strategy.js';
-import { isReasoningLevel, REASONING_LEVELS } from './lib/reasoning.js';
+import { buildPools } from './lib/config.js';
+import { REASONING_LEVELS } from './lib/reasoning.js';
 import {
   awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
   installIntegration, retireLegacyOffload,
@@ -371,38 +372,89 @@ export function ensureSetup(bullswarmDir) {
   return autoSetup(bullswarmDir, { reason: 'first-use' });
 }
 
-// --- reasoning depth ----------------------------------------------------------
-// One question per effort tier. Reasoning is a separate dimension from the
-// model: the tier picks WHICH model, this picks HOW HARD it thinks. `default`
-// is always offered so a user can leave a worker CLI's own configured setting
-// untouched rather than guess at it. Exported so the question sequence is
-// testable without a terminal.
+// --- the tier step ------------------------------------------------------------
+// A rung is one pool's model plus its reasoning level for one effort tier, so
+// the tier step shows both halves of every suggested rung — with the dated
+// evidence line beside it when the benchmark datapack has one — and then asks
+// one reasoning question per configured tier.
+//
+// Enter is a real answer here: it keeps the connector's own per-tier default,
+// which is what the rung line above the questions already reports as the
+// effective level. Nothing is written for a tier nobody answered, so a pool
+// with no configured rung keeps behaving exactly as it does today.
 
-export async function configureReasoningLevels(bullswarmDir, prompter, { log = console.log } = {}) {
-  const choices = [...REASONING_LEVELS, 'default'].join('/');
+/**
+ * The datapack lookup, or null. Loaded through strategy-cli.js so the setup
+ * wizard and `strategy rungs` read evidence exactly one way. The import stays
+ * lazy for the same reason the refresh/apply import below is: strategy-cli.js
+ * pulls in the whole strategy TUI, which a non-wizard setup never needs.
+ */
+async function rungEvidenceSource(bullswarmDir) {
+  try {
+    const { loadRungEvidence } = await import('./strategy-cli.js');
+    return await loadRungEvidence(bullswarmDir);
+  } catch {
+    return null;
+  }
+}
+
+function rungLine(row) {
+  const evidence = formatRungEvidence(row.evidence);
+  const reasoning = row.reasoning?.applied
+    ? `${row.reasoning.applied} (${row.reasoning.source})`
+    : `connector default (${row.reasoning?.source ?? 'none'})`;
+  return `    ${row.tier.padEnd(6)} ${row.pool}/${row.model}`
+    + `  reasoning ${reasoning}${evidence ? `  ${evidence}` : ''}`;
+}
+
+export async function configureTierRungs(bullswarmDir, prompter, {
+  log = console.log, evidence,
+} = {}) {
+  const state = loadState(bullswarmDir);
+  const { pools, connectors } = buildPools(bullswarmDir);
+  const rungs = rungsFor({
+    pools,
+    connectors,
+    strategy: state.strategy ?? {},
+    decisionLog: state.decisionLog ?? [],
+    evidence: evidence === undefined ? await rungEvidenceSource(bullswarmDir) : evidence,
+  });
+  // A pool with no eligible model on a tier has no rung to suggest; the full
+  // diagnostic list (including why a pool is ineligible) is `strategy rungs`.
+  const suggested = rungs.filter((row) => row.model);
+  if (suggested.length) {
+    log('  suggested rungs (model + reasoning per effort tier):');
+    for (const row of suggested) log(rungLine(row));
+  }
+
+  // One question per CONFIGURED tier; a wizard run that skipped the strategy
+  // autopilot has configured none, and still gets asked about all three.
+  const configured = STRATEGY_TIERS.filter((tier) => (state.strategy?.configuredTiers ?? []).includes(tier));
+  const asked = configured.length ? configured : STRATEGY_TIERS;
   const answers = {};
-  for (const tier of STRATEGY_TIERS) {
-    const suggested = REASONING_DEFAULT_TIERS[tier];
+  for (const tier of asked) {
     const answer = (await prompter.question(
-      `reasoning level for ${tier} effort [${choices}] (default ${suggested}): `,
+      `Reasoning for ${tier} [Enter keeps the connector default]: `,
     )).trim().toLowerCase();
-    if (answer && !isReasoningLevel(answer)) {
-      log(`  "${answer}" is not a reasoning level - keeping ${suggested}`);
+    if (!answer) continue;
+    if (!REASONING_LEVELS.includes(answer)) {
+      log(`  "${answer}" is not a reasoning level (${REASONING_LEVELS.join('/')}) - keeping the connector default`);
+      continue;
     }
-    answers[tier] = isReasoningLevel(answer) ? answer : suggested;
+    answers[tier] = answer;
   }
   // Re-read: the strategy autopilot step persists through its own loader, so
   // the wizard's in-memory copy of state is stale by the time this runs.
-  const state = loadState(bullswarmDir);
-  state.strategy ??= {};
+  const fresh = loadState(bullswarmDir);
+  fresh.strategy ??= {};
   for (const [tier, level] of Object.entries(answers)) {
-    setStrategyReasoning(state.strategy, { tier, level });
+    setStrategyReasoning(fresh.strategy, { tier, level });
   }
-  saveState(bullswarmDir, state);
-  const stored = getStrategyReasoning(state.strategy);
+  saveState(bullswarmDir, fresh);
+  const stored = getStrategyReasoning(fresh.strategy);
   log('  reasoning levels:');
-  for (const tier of STRATEGY_TIERS) {
-    log(`    ${tier.padEnd(6)} ${stored.tiers[tier]}${stored.tiers[tier] === 'default' ? ' (worker CLI decides)' : ''}`);
+  for (const tier of asked) {
+    log(`    ${tier.padEnd(6)} ${stored.tiers[tier] ?? 'connector default'}`);
   }
   return stored;
 }
@@ -501,7 +553,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
     console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');
   }
 
-  await configureReasoningLevels(bullswarmDir, rl);
+  await configureTierRungs(bullswarmDir, rl);
 
   // 6. Cross-agent integration — one canonical skill plus concise global
   // awareness rules. Nothing is written without this explicit answer.
