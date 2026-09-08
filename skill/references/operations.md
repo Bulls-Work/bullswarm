@@ -30,6 +30,7 @@ deprecated alias for `--orchestrator <pool> --orchestrator-strict`.
 Observe and consume:
 
 ```bash
+bullswarm workflow watch <shortId> --next
 bullswarm workflow watch <shortId>
 bullswarm workflow tui <shortId>
 bullswarm workflow tui --json <shortId>
@@ -37,7 +38,13 @@ bullswarm workflow events --json <shortId> --after 0
 bullswarm workflow runs result <shortId> --json
 ```
 
-The default watch is a compact heartbeat. Use `--verbose` only for diagnosis.
+V2 watch prints one attach line, then one line per notable event, and stays
+silent while work is merely in progress. Launch
+`bullswarm workflow watch <shortId> --next` in a background terminal, act on the
+printed event when it exits, and relaunch until the outcome line reports a
+pause or a terminal status. `--heartbeat` is opt-in for V2 (legacy still
+defaults to 60s). `--stall-after` (default 300s) reports a silent running
+agent. Use `--verbose` only for diagnosis.
 The result command is the stable delivery/verification envelope; do not scrape
 task files or assume the last provider response is the deliverable.
 

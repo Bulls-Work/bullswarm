@@ -987,25 +987,32 @@ const workflowTuiText = rich({
 });
 
 const workflowWatchText = rich({
-  usage: 'bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--jsonl] [--once] [--verbose]',
-  purpose: "Follow one run's progress with low noise: prints only semantic changes plus a "
-    + 'periodic heartbeat, then a timing breakdown at completion. Each line shows two silences: '
-    + '"quiet" is time since the last durable workflow event, "agent output … ago" is time since a '
-    + 'live agent last produced output, so a thinking agent and a dead one look different. Distinct from the '
+  usage: 'bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next] [--jsonl] [--once] [--verbose]',
+  purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
+    + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
+    + 'cancellation) and staying silent while work is merely in progress. `--next` prints no attach '
+    + 'line and returns after the first notable event, or immediately at a pause or terminal status. '
+    + '`--heartbeat` is opt-in for V2; legacy runs keep the historical heartbeat stream. Distinct from the '
     + 'full-screen tui and the machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
-    { flag: '--heartbeat <seconds>', desc: 'max gap between heartbeat lines when nothing has changed', default: '60' },
+    { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off for V2, 60 for legacy' },
+    { flag: '--stall-after <seconds>', desc: 'report a running agent as silent after this many seconds without activity; must be >= 1', default: '300' },
+    { flag: '--next', desc: 'print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status', default: 'off (follows until terminal or pause)' },
     { flag: '--jsonl', desc: 'emit one JSON object per line instead of human text', default: 'off (human text)' },
     { flag: '--once', desc: 'print a single current snapshot and exit immediately instead of following', default: 'off (follows until terminal)' },
-    { flag: '--verbose', desc: 'include per-agent action detail lines', default: 'off (compact)' },
+    { flag: '--verbose', desc: 'include started, retry, and steering-delivered lines (V2) and per-agent action detail (legacy)', default: 'off (compact)' },
   ],
   safety: [
     'read-only — polls durable state/events on a timer; writes nothing',
     'exits 0 if the run reaches a delivered status (or on --once), 1 if it reaches a non-delivered terminal status',
+    '--next exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running',
   ],
-  examples: [{ cmd: 'bullswarm workflow watch ab12cd --heartbeat 30' }],
+  examples: [
+    { cmd: 'bullswarm workflow watch ab12cd --next', note: 'print the next notable event and exit; relaunch until outcome reports a pause or a terminal status' },
+    { cmd: 'bullswarm workflow watch ab12cd --stall-after 120 --heartbeat 30' },
+  ],
   next: 'bullswarm workflow runs result <runId> --json once it finishes, or bullswarm workflow tui <runId> for the interactive view.',
 });
 

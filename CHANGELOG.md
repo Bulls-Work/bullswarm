@@ -1,5 +1,20 @@
 # bullswarm changelog
 
+## Unreleased
+
+- `workflow watch` for V2 runs is event-based by default: one attach line,
+  then one line per notable event (action finished/failed/blocked/cancelled,
+  evidence, stage completion, planner turn, stall/recovery, cancellation)
+  and silence while work is merely in progress. `--next` prints no attach
+  line and exits after the first notable event (0 while the run continues or
+  delivered, 1 when it ended without delivering or the kernel is not
+  running). `--stall-after <seconds>` (default 300) reports a silent running
+  agent; `--heartbeat <seconds>` is opt-in for V2 (legacy still defaults to
+  60s). `--jsonl` emits one object per event with a stable `type`. Agent
+  starts, mechanical retries, and steering delivery remain `--verbose` only.
+  `--once` and legacy (non-V2) transition-plus-heartbeat output are
+  unchanged.
+
 ## 0.25.0 — shared programs that finish with the graph
 
 - New goal workflows share the target worktree by default. File territories
