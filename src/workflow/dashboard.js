@@ -1305,8 +1305,7 @@ function workflowTimelineLinesV2(model, width) {
   if (model.dependencyGroups) {
     for (const stage of model.stages) {
       add(stage.startedAt, '├─ started', '', null, stage.label);
-      const progress = presentationStageStatus(stage, state.actions);
-      add(stage.completedAt, `└─${progress.successful ? '✓' : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
+
     }
   }
   for (const event of model.events) {
@@ -1325,6 +1324,16 @@ function workflowTimelineLinesV2(model, width) {
       const ok = event.payload?.status === 'completed';
       add(event.committedAt, `└─${ok ? '✓' : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
     }
+  }
+  if (model.dependencyGroups) for (const stage of model.stages) {
+    if (!stage.completedAt) continue;
+    const progress = presentationStageStatus(stage, state.actions);
+    // finishedAt precedes the durable action-finished event by a few ms.
+    // A projected level closes after those events, never above its last worker.
+    const at = [stage.completedAt, ...model.events.filter((event) =>
+      ['action.finished', 'evidence.recorded'].includes(event.type) && stage.actionIds.includes(event.payload?.actionId))
+      .map((event) => event.committedAt)].filter(Boolean).sort().at(-1);
+    add(at, `└─${progress.successful ? '✓' : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
