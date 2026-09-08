@@ -59,13 +59,13 @@ bullswarm workflow runs delete <shortId> --yes
 ## Using bullswarm from another agent
 
 If you are an agent that wants to offload bounded work via bullswarm,
-read `skill/SKILL.md` — that's the agent-facing user guide. Use
-`bullswarm delegate` (or the installed `/bullswarm` skill) by default: it
-previews whether one bounded agent or an autonomous workflow is appropriate,
-shows the conceptual plan, and executes the chosen engine. Reach for `run`,
-`workflow goal`, or a fixed workflow graph directly only when the caller has
-already chosen that execution shape. The skill is published alongside the
-package and is the canonical reference for the CLI surface.
+read `skill/SKILL.md` — that's the agent-facing user guide. There are
+exactly two ways to start work, and the caller chooses the shape itself: one
+bounded outcome goes to `bullswarm run`; parallel territories, integration,
+or independent acceptance go to `bullswarm workflow goal` with a program you
+author (`bullswarm workflow plan contract` returns the schema). There is no
+classifier or preview step. The skill is published alongside the package and
+is the canonical reference for the CLI surface.
 
 - Zero runtime dependencies. Node >= 18. Tests must never require network:
   prime `~/.bullswarm/meters/*.json` caches with fresh timestamps if needed.

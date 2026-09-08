@@ -28,18 +28,97 @@
   },
   "eventStream": {
     "format": "jsonl",
-    "args": ["--output-format", "json"],
-    "modelPaths": ["event.model", "model"],
+    "args": [
+      "--output-format",
+      "json"
+    ],
+    "modelPaths": [
+      "event.model",
+      "model"
+    ],
     "silenceThresholdSec": 600,
     "rules": [
-      { "rootMatch": { "path": "event.type", "equals": "tool_queued" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "summaryPaths": ["event.input.command", "event.input.file_path", "event.input.path"], "status": "queued" },
-      { "rootMatch": { "path": "event.type", "equals": "tool_running" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "summaryPaths": ["event.description"], "status": "running" },
-      { "rootMatch": { "path": "event.type", "equals": "tool_completed" }, "idPaths": ["event.toolCallId"], "kindPaths": ["event.toolName"], "status": "completed" },
-      { "rootMatch": { "path": "event.type", "equals": "message_end" }, "forEach": "event.content", "match": { "path": "type", "equals": "text" }, "kind": "response", "summaryPaths": ["text"], "status": "completed" }
+      {
+        "rootMatch": {
+          "path": "event.type",
+          "equals": "tool_queued"
+        },
+        "idPaths": [
+          "event.toolCallId"
+        ],
+        "kindPaths": [
+          "event.toolName"
+        ],
+        "summaryPaths": [
+          "event.input.command",
+          "event.input.file_path",
+          "event.input.path"
+        ],
+        "status": "queued"
+      },
+      {
+        "rootMatch": {
+          "path": "event.type",
+          "equals": "tool_running"
+        },
+        "idPaths": [
+          "event.toolCallId"
+        ],
+        "kindPaths": [
+          "event.toolName"
+        ],
+        "summaryPaths": [
+          "event.description"
+        ],
+        "status": "running"
+      },
+      {
+        "rootMatch": {
+          "path": "event.type",
+          "equals": "tool_completed"
+        },
+        "idPaths": [
+          "event.toolCallId"
+        ],
+        "kindPaths": [
+          "event.toolName"
+        ],
+        "status": "completed"
+      },
+      {
+        "rootMatch": {
+          "path": "event.type",
+          "equals": "message_end"
+        },
+        "forEach": "event.content",
+        "match": {
+          "path": "type",
+          "equals": "text"
+        },
+        "kind": "response",
+        "summaryPaths": [
+          "text"
+        ],
+        "status": "completed"
+      }
     ],
     "output": [
-      { "match": { "path": "type", "equals": "result" }, "path": "finalText", "mode": "last" },
-      { "match": { "path": "event.type", "equals": "run_end" }, "path": "event.result.finalText", "mode": "last" }
+      {
+        "match": {
+          "path": "type",
+          "equals": "result"
+        },
+        "path": "finalText",
+        "mode": "last"
+      },
+      {
+        "match": {
+          "path": "event.type",
+          "equals": "run_end"
+        },
+        "path": "event.result.finalText",
+        "mode": "last"
+      }
     ]
   },
   "meter": {
@@ -52,30 +131,153 @@
     "build",
     "chore"
   ],
-  "capabilities": ["code-reading", "file-editing", "strong-analysis", "workflow-planning"],
-  "modelDiscovery": { "cmd": ["command-code", "--list-models"], "parse": "columns", "ignorePattern": "^(Available|Open Source$|Anthropic$|OpenAI$|Google$|Sakana$|Meta$|xAI$|Pass|cmd|Docs)", "timeoutMs": 20000, "maxModels": 150 },
-  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
-  "$comment-reasoning": "verified from `command-code --help` (1.44.0): `--effort <level>  Set reasoning effort for the session (e.g. low, medium, high) — depends on the model`. UNVERIFIED: the CLI says \"e.g.\" and \"depends on the model\", so the accepted set is neither closed nor uniform across this pool's many providers; low/medium/high is declared conservatively and a stronger request clamps down to high.",
+  "capabilities": [
+    "code-reading",
+    "file-editing",
+    "strong-analysis",
+    "workflow-planning"
+  ],
+  "modelDiscovery": {
+    "cmd": [
+      "command-code",
+      "--list-models"
+    ],
+    "parse": "columns",
+    "ignorePattern": "^(Available|Open Source$|Anthropic$|OpenAI$|Google$|Sakana$|Meta$|xAI$|Pass|cmd|Docs)",
+    "timeoutMs": 20000,
+    "maxModels": 150
+  },
+  "modelSelection": {
+    "flag": "--model",
+    "mode": "replace-or-append"
+  },
+  "$comment-reasoning": "verified 2026-09-09 against command-code 1.44.0: `--effort bogus` fails with `Unknown effort \"bogus\". Supported: low, medium, high, xhigh, max.`; `--effort max --model gpt-5.6-luna` printed `Reasoning effort set to max for GPT-5.6 Luna.` and the JSON model_request_end event carried effort \"max\". The help text still says `(e.g. low, medium, high) \u2014 depends on the model`.",
   "reasoning": {
     "flag": "--effort",
-    "levels": ["low", "medium", "high"],
-    "defaults": { "high": "high", "medium": "medium", "low": "low" }
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaults": {
+      "high": "high",
+      "medium": "medium",
+      "low": "low"
+    }
   },
   "modelProfiles": [
-    { "match": "^meta/muse-spark-1\\.3-contributor$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 0.1, "cacheReadUsdPerMillion": 0.002, "outputUsdPerMillion": 0.2 }, "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits", "pricingUpdatedAt": "2026-09-03" },
-    { "match": "^meta/muse-spark-", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 1.25, "cacheReadUsdPerMillion": 0.15, "outputUsdPerMillion": 4.25 }, "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits", "pricingUpdatedAt": "2026-09-03" },
-    { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^gpt-5\\.6-terra$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 12 }, "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^gpt-5\\.6-luna$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "outputUsdPerMillion": 1.2 }, "pricingSource": "https://developers.openai.com/api/docs/models", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false, "pricing": { "inputUsdPerMillion": 10, "cacheReadUsdPerMillion": 1, "outputUsdPerMillion": 50 }, "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^claude-opus-", "tier": "high", "qualityRank": 5 },
-    { "match": "^claude-sonnet-", "tier": "medium", "qualityRank": 4 },
-    { "match": "^claude-haiku-", "tier": "low", "qualityRank": 3 },
-    { "match": "(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)", "tier": "low", "qualityRank": 2 },
-    { "match": "(?:terra|sonnet|grok-4\\.5|gpt-5\\.4$)", "tier": "medium", "qualityRank": 4 },
-    { "match": "(?:fable|opus|sol|grok-4\\.6|minimax-m3)", "tier": "high", "qualityRank": 5 }
+    {
+      "match": "^meta/muse-spark-1\\.3-contributor$",
+      "tier": "high",
+      "qualityRank": 5,
+      "pricing": {
+        "inputUsdPerMillion": 0.1,
+        "cacheReadUsdPerMillion": 0.002,
+        "outputUsdPerMillion": 0.2
+      },
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-09-03"
+    },
+    {
+      "match": "^meta/muse-spark-",
+      "tier": "high",
+      "qualityRank": 5,
+      "pricing": {
+        "inputUsdPerMillion": 1.25,
+        "cacheReadUsdPerMillion": 0.15,
+        "outputUsdPerMillion": 4.25
+      },
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-09-03"
+    },
+    {
+      "match": "^gpt-5\\.6-sol$",
+      "tier": "high",
+      "qualityRank": 6,
+      "pricing": {
+        "inputUsdPerMillion": 4,
+        "cacheReadUsdPerMillion": 0.4,
+        "outputUsdPerMillion": 20
+      },
+      "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^gpt-5\\.6-terra$",
+      "tier": "medium",
+      "qualityRank": 4,
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.2,
+        "outputUsdPerMillion": 12
+      },
+      "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^gpt-5\\.6-luna$",
+      "tier": "low",
+      "qualityRank": 3,
+      "pricing": {
+        "inputUsdPerMillion": 0.2,
+        "cacheReadUsdPerMillion": 0.02,
+        "outputUsdPerMillion": 1.2
+      },
+      "pricingSource": "https://developers.openai.com/api/docs/models",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "(?:^|/)claude-fable-",
+      "tier": "high",
+      "qualityRank": 6,
+      "autoRecommend": false,
+      "pricing": {
+        "inputUsdPerMillion": 10,
+        "cacheReadUsdPerMillion": 1,
+        "outputUsdPerMillion": 50
+      },
+      "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^claude-opus-",
+      "tier": "high",
+      "qualityRank": 5
+    },
+    {
+      "match": "^claude-sonnet-",
+      "tier": "medium",
+      "qualityRank": 4
+    },
+    {
+      "match": "^claude-haiku-",
+      "tier": "low",
+      "qualityRank": 3
+    },
+    {
+      "match": "(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)",
+      "tier": "low",
+      "qualityRank": 2
+    },
+    {
+      "match": "(?:terra|sonnet|grok-4\\.5|gpt-5\\.4$)",
+      "tier": "medium",
+      "qualityRank": 4
+    },
+    {
+      "match": "(?:fable|opus|sol|grok-4\\.6|minimax-m3)",
+      "tier": "high",
+      "qualityRank": 5
+    }
   ],
-  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "monthly" },
+  "subscription": {
+    "plan": null,
+    "monthlyPriceUsd": null,
+    "includedValueUsd": null,
+    "quotaWindow": "monthly"
+  },
   "flags": {
     "stealth": false
   },

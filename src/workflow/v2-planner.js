@@ -1,4 +1,4 @@
-import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-validator.js';
+import { ACTION_PROGRAM_SCHEMA_VERSION, KIND_DEFAULTS, PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram } from './action-validator.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
@@ -169,6 +169,11 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
   };
 }
 
+// `kind` is the one field that says what an action IS; lane and effort are
+// derived from it. Stated once so the dispatched planner prompt, the
+// caller-facing contract, and every durable planner request read identically.
+const KIND_FIELD_RULE = `The optional per-action \`kind\` field names the nature of the work and derives both routing fields: ${Object.entries(KIND_DEFAULTS).map(([kind, { lane, effort }]) => `${kind}=${lane}/${effort}`).join(', ')}. Prefer one \`kind\` over restating lane and effort. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the optional program-level \`defaults\` object (which may set only effort and reasoning), then the per-lane default (analyze=medium, build=medium, chore=low). A kind outside that closed list is a validation error before anything runs. Two advisories are reported at validate and at launch and never change acceptance or exit codes: \`${PROGRAM_ADVISORY_CODES[0]}\` when three or more build/chore actions all sit at high effort, and \`${PROGRAM_ADVISORY_CODES[1]}\` when a build/chore action owns only *.md files at high effort.`;
+
 // `effort` picks the model tier; `reasoning` picks how hard that model
 // thinks. They are independent, so the contract states the field once and both
 // rule sets render the same sentence.
@@ -186,6 +191,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
+    KIND_FIELD_RULE,
     REASONING_FIELD_RULE,
     workspaceMode === 'isolated'
       ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
@@ -210,6 +216,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Choose lane from the action itself, not from the overall goal: analyze is read-only investigation, judgment, or evidence; build changes behavior, documentation, or tests and requires contextual implementation; chore is only deterministic mechanical mutation with no design choice. Evidence actions must use analyze. Analyze actions cannot own files. Chore actions must use low effort.',
     'Choose effort independently from lane, using the cheapest tier sufficient for this one action. Low is for fixed-procedure checks or mechanical edits whose success is objectively decidable. Medium is the default for normal bounded analysis or implementation with local decisions. High is exceptional: use it only when architecture, ambiguous tradeoffs, cross-cutting integration, or adversarial acceptance judgment materially determines correctness. If uncertain, choose medium.',
     'Do not choose high merely because an action uses analyze, supplies evidence, affects an important requirement, mentions many files, or belongs to a difficult overall goal. Do not choose low merely because an action is short. Examples: exact file comparison or formatting update = low; ordinary scoped feature plus focused test = medium; choosing an architecture across subsystems = high; running deterministic acceptance commands = low; interpreting ambiguous cross-cutting acceptance evidence = high.',
+    KIND_FIELD_RULE,
     REASONING_FIELD_RULE,
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
@@ -249,8 +256,9 @@ export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
   affects: 'requirement IDs this work action directly owns a bounded acceptance slice of (empty for evidence actions)',
   ownedFiles: 'exact relative paths this action may mutate (empty for read-only or evidence actions)',
   prompt: 'self-contained worker instructions: exact scope, files, commands, and acceptance evidence',
-  lane: 'analyze | build | chore',
-  effort: 'high | medium | low',
+  kind: 'optional mechanical | io-read | check | implement | integration | architecture | adversarial-acceptance — the nature of the work; it derives lane and effort, so prefer it over restating both',
+  lane: 'analyze | build | chore — omit when kind supplies it',
+  effort: 'high | medium | low — omit to take it from kind, program defaults, or the lane default',
   reasoning: 'optional low | medium | high | xhigh | max | default — how hard the picked model thinks on this one action; omit to use the configured level',
   evidenceFor: 'requirement IDs this evidence action independently judges (empty for work actions)',
   inputs: 'optional artifact IDs consumed, each produced by a dependency ancestor',
@@ -280,13 +288,13 @@ export const V2_PROGRAM_EXAMPLE = Object.freeze({
         id: 'fix-parser', purpose: 'Fix the parser defect with a focused regression test',
         dependsOn: [], affects: ['requirement-1'], ownedFiles: ['src/parser.js', 'tests/parser.test.js'],
         prompt: 'In <cwd>, fix the trailing-comma defect in src/parser.js. Add a focused regression in tests/parser.test.js that fails on the untouched baseline and passes after the fix. Run `node --test-timeout=60000 --test tests/parser.test.js`.',
-        lane: 'build', effort: 'medium', evidenceFor: [], inputs: [], produces: ['parser-fix'],
+        kind: 'implement', evidenceFor: [], inputs: [], produces: ['parser-fix'],
       },
       {
         id: 'check-parser', purpose: 'Independently judge the parser requirement',
         dependsOn: ['fix-parser'], affects: [], ownedFiles: [],
         prompt: 'Inspect src/parser.js and tests/parser.test.js in <cwd>; run `node --test-timeout=60000 --test tests/parser.test.js` and confirm the regression exercises the production entry point.',
-        lane: 'analyze', effort: 'low', reasoning: 'high', evidenceFor: ['requirement-1'], inputs: ['parser-fix'], produces: [],
+        kind: 'check', reasoning: 'high', evidenceFor: ['requirement-1'], inputs: ['parser-fix'], produces: [],
       },
     ],
   },
@@ -341,6 +349,19 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
     program: {
       schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,
       actionFields: programActionFields(goalDocument),
+      // The single source of truth for what a kind derives, so a caller does
+      // not have to infer the table from prose.
+      kinds: clone(KIND_DEFAULTS),
+      defaults: {
+        allowed: ['effort', 'reasoning'],
+        note: 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), and action > program defaults > run > strategy > connector (reasoning).',
+      },
+      advisories: {
+        codes: [...PROGRAM_ADVISORY_CODES],
+        'all-writers-high': 'three or more build/chore actions and none below high effort',
+        'docs-at-high': 'a build/chore action whose ownedFiles are all *.md at high effort',
+        note: 'advice only: printed by plan validate and workflow goal, stored on the run, and never a rejection or a non-zero exit',
+      },
       validation: isProgramWorkflow(goalDocument) ? [
         'IDs are kebab-case and unique; every dependency exists and the graph has no cycles',
         'ownedFiles are scheduling territories; overlapping writers serialize, and an unrestricted shared integrator runs alone',
@@ -451,6 +472,11 @@ export function applyV2PlannerResponse(state, response, options = {}) {
     revision,
     actions: [...next.program.actions, ...accepted.program.actions],
   };
+  // Advice about this revision's effort choices, recorded once so `runs show`
+  // lists exactly what the launch printed. Never gates acceptance.
+  const advisories = programAdvisories(accepted.program);
+  if (advisories.length) next.advisories = [...(next.advisories ?? []), ...advisories];
+  else next.advisories ??= [];
   next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   for (const action of accepted.program.actions) next.actions.push({
     id: action.id, status: 'pending', attempts: 0, programRevision: revision,

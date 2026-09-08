@@ -1,4 +1,4 @@
-name: Refresh OpenRouter benchmark datapack
+name: Refresh benchmark datapacks
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: openrouter-benchmark-datapack
+  group: benchmark-datapack
   cancel-in-progress: false
 
 jobs:
@@ -22,13 +22,24 @@ jobs:
         with:
           node-version: 22
 
-      - name: Fetch and validate benchmark data
+      - name: Fetch and validate OpenRouter benchmark data
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: node scripts/refresh-openrouter-benchmarks.mjs
 
-      - name: Test the generated datapack
-        run: node --test tests/openrouter-models.test.js
+      - name: Fetch Epoch benchmark data
+        run: |
+          curl -fsSL https://epoch.ai/data/benchmark_data.zip -o /tmp/epoch.zip
+          unzip -q /tmp/epoch.zip -d /tmp/epoch
+          EPOCH_DIR=$(find /tmp/epoch -name model_metadata.csv -exec dirname {} \; | head -n 1)
+          if [ -z "$EPOCH_DIR" ]; then
+            echo "unzipped archive did not contain model_metadata.csv" >&2
+            exit 1
+          fi
+          node scripts/refresh-epoch-benchmarks.mjs --input-dir "$EPOCH_DIR" --output data/epoch-benchmarks.json
+
+      - name: Test the generated datapacks
+        run: node --test tests/openrouter-models.test.js tests/epoch-benchmarks.test.js
 
       - name: Publish the public rolling datapack
         env:
@@ -41,3 +52,4 @@ jobs:
               --notes "Automatically refreshed public model benchmark data for Bullswarm setup."
           fi
           gh release upload benchmark-data-latest data/openrouter-benchmarks.json --clobber
+          gh release upload benchmark-data-latest data/epoch-benchmarks.json --clobber

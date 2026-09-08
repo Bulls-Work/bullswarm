@@ -7,6 +7,7 @@ import {
   disabledModelsForPool, setModelDisabled,
   getStrategyReasoning, setStrategyReasoning, clearStrategyReasoning,
   reasoningEffective, assertReasoningTier, assertReasoningLevel,
+  rungsFor, setRung, configuredModel, formatRungEvidence,
 } from './lib/strategy.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
@@ -15,6 +16,7 @@ import { expectedMinutesFor } from './lib/spend.js';
 import { helpText, usageLine } from './help.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
+import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
 
 function parseFlags(argv) {
   const flags = { rest: [] };
@@ -165,6 +167,12 @@ function strategyUsage() {
   return helpText(['strategy']);
 }
 
+// The synopsis is never hand-typed here: src/help.js owns it and the drift
+// guard in tests/help.test.js proves it.
+function rungUsage(missing) {
+  return `${missing}: ${usageLine(['strategy', 'set-rung'])}`;
+}
+
 function providerLabel(name) {
   const base = String(name ?? '').split(':')[0];
   const labels = {
@@ -234,7 +242,107 @@ function modelsForPool(pool, discovery, state) {
   });
 }
 
-export function strategyInventory({ pools, state, report }) {
+// --- rungs -------------------------------------------------------------------
+// One read/write view over the two halves of a tier choice: which model runs
+// and how hard it thinks. Reading never spawns discovery — a rung table is
+// assembled from persisted state, the connector files, and the decision log.
+
+/**
+ * The dated benchmark datapack, when it is installed. A missing or unreadable
+ * datapack is not an error here: every rung simply reports `no evidence`.
+ */
+export async function loadRungEvidence(bullswarmDir) {
+  try {
+    // Offline on purpose: a rung table is a read-only view, so it uses the
+    // cached or bundled datapack and never downloads one. Refreshing the
+    // datapack is scripts/refresh-epoch-benchmarks.mjs's job.
+    const datapack = await loadEpochBenchmarks({ bullswarmDir, fetchImpl: null });
+    if (!datapack) return null;
+    return { datapack, rungEvidence };
+  } catch {
+    return null;
+  }
+}
+
+/** Every rung, or one pool's rungs. Read-only: no discovery, no meter calls. */
+export async function rungRows(bullswarmDir, { pool = null } = {}) {
+  const { state, connectors, pools } = buildPools(bullswarmDir);
+  if (pool != null && !connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+  return rungsFor({
+    pools,
+    connectors,
+    strategy: state.strategy ?? {},
+    decisionLog: state.decisionLog ?? [],
+    evidence: await loadRungEvidence(bullswarmDir),
+    pool,
+  });
+}
+
+/**
+ * The models set-rung will accept without --force: whatever the last
+ * persisted discovery report saw for this pool, plus what the connector file
+ * itself declares. `configure` refreshes a cold cache through
+ * loadStrategyInventory(); set-rung deliberately does not, so writing one
+ * rung can never fan out into live CLI calls.
+ */
+function cachedPoolModels(state, connector) {
+  const cached = state.strategy?.lastReport?.discoveries?.[connector.name]?.models ?? [];
+  return [...new Set([
+    ...cached.map((model) => model.id),
+    ...(connector.knownModels ?? []),
+    configuredModel(connector),
+  ].filter(Boolean))];
+}
+
+function rungEvidenceCell(evidence) {
+  return formatRungEvidence(evidence) || 'no evidence';
+}
+
+function rungRecordCell(record) {
+  if (!record?.dispatches) return 'no dispatches';
+  return [
+    `${record.dispatches} dispatch${record.dispatches === 1 ? '' : 'es'}`,
+    record.medianMinutes != null ? `p50 ${record.medianMinutes}m` : 'p50 unknown',
+    record.okShare != null ? `${Math.round(record.okShare * 100)}% ok` : 'ok unknown',
+  ].join(' · ');
+}
+
+// A configured level the connector cannot express is a routing fact, so the
+// cell says what was actually applied and who decided it — never the level
+// someone asked for.
+function rungReasoningCell(reasoning) {
+  if (reasoning?.applied) {
+    return `${reasoning.applied} (${reasoning.source})${reasoning.clamped ? ', clamped' : ''}`;
+  }
+  return `— (${reasoning?.source ?? 'none'})`;
+}
+
+export function renderRungs(rows) {
+  if (!rows.length) {
+    return 'no rungs yet: enable a provider pool and configure an effort tier '
+      + '(strategy set-model or strategy apply --yes), then run strategy rungs again.';
+  }
+  const header = ['pool', 'tier', 'model', 'reasoning', 'evidence', 'record'];
+  const body = rows.map((row) => [
+    row.pool,
+    row.tier,
+    row.model ?? `— (${row.modelSource})`,
+    rungReasoningCell(row.reasoning),
+    rungEvidenceCell(row.evidence),
+    rungRecordCell(row.record),
+  ]);
+  const widths = header.map((label, index) => Math.max(
+    label.length,
+    ...body.map((cells) => cells[index].length),
+  ));
+  const line = (cells) => cells
+    .map((cell, index) => (index === cells.length - 1 ? cell : cell.padEnd(widths[index])))
+    .join('  ')
+    .trimEnd();
+  return [line(header), ...body.map(line)].join('\n');
+}
+
+export function strategyInventory({ pools, state, report, evidence = null }) {
   const visible = pools
     .filter((pool) => !(pool.testFixture === true && pool.enabled === false))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -308,6 +416,14 @@ export function strategyInventory({ pools, state, report }) {
     configuredTiers: state.strategy?.configuredTiers ?? [],
     providers,
     routes,
+    // The same rows `strategy rungs` prints, so one inventory call answers
+    // both "what would route" and "what did each rung actually cost".
+    rungs: rungsFor({
+      pools: visible,
+      strategy: state.strategy ?? {},
+      decisionLog: state.decisionLog ?? [],
+      evidence,
+    }),
     reasoning: {
       ...getStrategyReasoning(state.strategy),
       effective: reasoningEffective(visible, state.strategy ?? {}),
@@ -341,7 +457,9 @@ export async function loadStrategyInventory(bullswarmDir, {
   // The control center previews real routing, so it reads the same live
   // in-flight ledger and spend rates every dispatch path does.
   attachForecast(pools, bullswarmDir, { decisionLog: state.decisionLog ?? [] });
-  return strategyInventory({ pools, state, report });
+  return strategyInventory({
+    pools, state, report, evidence: await loadRungEvidence(bullswarmDir),
+  });
 }
 
 function setProviderEnabled(bullswarmDir, pool, enabled) {
@@ -479,6 +597,84 @@ export async function cmdStrategy(args, {
           if (report) applyStrategyRecommendations(bullswarmDir, report);
         },
       });
+    }
+    if (sub === 'rungs') {
+      const pool = opts.pool === undefined ? null : String(opts.pool).trim();
+      if (pool === '') throw new Error('missing --pool name for strategy rungs');
+      const rows = await rungRows(bullswarmDir, { pool });
+      console.log(opts.json
+        ? JSON.stringify({
+          schemaVersion: 'bullswarm.strategy.rungs.v1',
+          capturedAt: new Date().toISOString(),
+          rungs: rows,
+        }, null, 2)
+        : renderRungs(rows));
+      return 0;
+    }
+    if (sub === 'set-rung') {
+      const [pool, tier] = opts.rest;
+      if (!pool || !tier) throw new Error(rungUsage('missing <pool> and <tier>'));
+      const connectors = loadConnectors(bullswarmDir);
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      if (!STRATEGY_TIERS.includes(tier)) {
+        throw new Error(`unknown tier "${tier}" (${STRATEGY_TIERS.join(', ')})`);
+      }
+      const model = typeof opts.model === 'string' ? opts.model.trim() : '';
+      if (!model) throw new Error(rungUsage('missing --model <model>'));
+      let level = null;
+      if (opts.reasoning !== undefined) {
+        level = typeof opts.reasoning === 'string' ? opts.reasoning.trim().toLowerCase() : '';
+        if (!isReasoningLevel(level)) {
+          throw new Error(`--reasoning must be ${[...REASONING_LEVELS, 'default'].join(', ')}`);
+        }
+      }
+      const state = loadState(bullswarmDir);
+      state.strategy ??= {};
+      const known = cachedPoolModels(state, connectors[pool]);
+      if (!known.includes(model) && opts.force !== true) {
+        throw new Error(`unknown model "${model}" for pool "${pool}" — cached discovery knows `
+          + `${known.length ? known.join(', ') : 'no models yet; run bullswarm strategy refresh'}`
+          + '. Pass --force to select it anyway.');
+      }
+      setRung(state.strategy, { pool, tier, model, reasoning: level });
+      // One atomic save: the model half and the reasoning half of a rung can
+      // never land separately.
+      saveState(bullswarmDir, state);
+      const applied = resolveReasoningLevel({
+        connector: connectors[pool], tier, model, strategy: state.strategy,
+      });
+      const notes = [];
+      if (level != null && applied.clamped) {
+        notes.push(`${pool} cannot set ${level}; clamped to ${applied.applied}`);
+      }
+      if (level != null && level !== 'default' && applied.source === 'unsupported') {
+        notes.push(`${pool} declares no reasoning levels, so ${level} is recorded but nothing is appended to its CLI`);
+      }
+      if (level != null && applied.source === 'skipped-model') {
+        notes.push(`${pool} skips the reasoning flag for model ${model}`);
+      }
+      if (!known.includes(model)) notes.push(`${model} is not in the cached discovery for ${pool} (--force)`);
+      if (!(state.strategy.configuredTiers ?? []).includes(tier)) {
+        notes.push(`tier "${tier}" is not a configured allow-list yet, so ${tier} routing still picks models automatically`);
+      }
+      if (disabledModelsForPool(state.strategy, pool).includes(model.toLowerCase())) {
+        notes.push(`${model} is disabled for ${pool}; strategy set-model re-enables it`);
+      }
+      console.log(JSON.stringify({
+        action: 'rung-set',
+        pool,
+        tier,
+        model,
+        reasoning: {
+          requested: level,
+          applied: applied.applied,
+          source: applied.source,
+          clamped: applied.clamped,
+        },
+        modelTiers: state.strategy.modelTiers?.[pool] ?? {},
+        notes,
+      }, null, 2));
+      return 0;
     }
     if (sub === 'inventory' || sub === 'routes') {
       const inventory = await loadStrategyInventory(bullswarmDir, {
@@ -709,7 +905,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

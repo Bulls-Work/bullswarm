@@ -12,10 +12,27 @@ export const DEFAULT_EFFORT_BY_LANE = Object.freeze({
   build: 'medium',
   chore: 'low',
 });
-const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions']);
+// The closed set of work natures. `kind` says what the action IS; the table
+// derives the lane and effort that nature implies, so an author states the
+// nature once instead of re-deciding two routing fields per action.
+export const KIND_DEFAULTS = Object.freeze({
+  mechanical: Object.freeze({ lane: 'chore', effort: 'low' }),
+  'io-read': Object.freeze({ lane: 'analyze', effort: 'low' }),
+  check: Object.freeze({ lane: 'analyze', effort: 'medium' }),
+  implement: Object.freeze({ lane: 'build', effort: 'medium' }),
+  integration: Object.freeze({ lane: 'build', effort: 'high' }),
+  architecture: Object.freeze({ lane: 'analyze', effort: 'high' }),
+  'adversarial-acceptance': Object.freeze({ lane: 'analyze', effort: 'high' }),
+});
+export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
+// Exactly two advisory codes. Advisories are advice about effort choices; they
+// never affect validity, exit codes, or dispatch.
+export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high']);
+const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults']);
+const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
-  'lane', 'effort', 'evidenceFor', 'inputs', 'produces', 'reasoning',
+  'kind', 'lane', 'effort', 'evidenceFor', 'inputs', 'produces', 'reasoning',
 ]);
 
 // Only reject direct response instructions. Product-inspection prompts often
@@ -29,6 +46,65 @@ const LEGACY_EVIDENCE_SHAPE = /["']?ok["']?\s*:\s*(?:true|false|boolean|true\s*\
 function evidencePromptOwnsOutput(prompt) {
   return typeof prompt === 'string'
     && (EVIDENCE_OUTPUT_DIRECTIVE.test(prompt) || LEGACY_EVIDENCE_SHAPE.test(prompt));
+}
+
+// One resolution path for the three routing fields, used by the validator
+// (which writes the resolved values back onto the normalised action) and by
+// the advisories (which read raw or normalised programs alike). Nothing
+// downstream re-applies this precedence: acceptance normalises once.
+//   lane    : action.lane > KIND_DEFAULTS[kind].lane
+//   effort  : action.effort > KIND_DEFAULTS[kind].effort > defaults.effort
+//             > DEFAULT_EFFORT_BY_LANE[lane]
+//   reasoning: action.reasoning > defaults.reasoning  (run/strategy/connector
+//             levels still apply later, unchanged, when this is absent)
+export function resolveActionRouting(action, defaults = {}) {
+  const kindDefaults = KIND_DEFAULTS[action?.kind] ?? null;
+  const lane = action?.lane ?? kindDefaults?.lane ?? null;
+  const effort = action?.effort
+    ?? kindDefaults?.effort
+    ?? defaults?.effort
+    ?? (LANES.has(lane) ? DEFAULT_EFFORT_BY_LANE[lane] : null);
+  return {
+    lane,
+    effort: effort ?? null,
+    reasoning: action?.reasoning ?? defaults?.reasoning ?? null,
+  };
+}
+
+const isMarkdown = (file) => typeof file === 'string' && /\.md$/i.test(file);
+
+/**
+ * Non-blocking authoring advice about a program's effort choices. Advisories
+ * never change validity, exit codes, or dispatch; they are printed and stored
+ * so an author can see a routing smell it is still free to keep.
+ */
+export function programAdvisories(program) {
+  if (!isObject(program) || !Array.isArray(program.actions)) return [];
+  const defaults = isObject(program.defaults) ? program.defaults : {};
+  const resolved = program.actions.filter(isObject).map((action) => ({
+    id: typeof action.id === 'string' ? action.id : null,
+    ownedFiles: Array.isArray(action.ownedFiles) ? action.ownedFiles : [],
+    ...resolveActionRouting(action, defaults),
+  }));
+  const writers = resolved.filter((action) => action.lane === 'build' || action.lane === 'chore');
+  const advisories = [];
+  if (writers.length >= 3 && writers.every((action) => action.effort === 'high')) {
+    advisories.push({
+      code: 'all-writers-high',
+      actionId: null,
+      message: `all ${writers.length} build/chore actions run at high effort; high is for architecture, ambiguous tradeoffs, or cross-cutting integration, so ordinary implementation slices belong at medium`,
+    });
+  }
+  for (const action of writers) {
+    if (action.effort !== 'high' || !action.ownedFiles.length) continue;
+    if (!action.ownedFiles.every(isMarkdown)) continue;
+    advisories.push({
+      code: 'docs-at-high',
+      actionId: action.id,
+      message: `owns only markdown files (${action.ownedFiles.join(', ')}) at high effort; documentation edits rarely need the high tier`,
+    });
+  }
+  return advisories;
 }
 
 export class ActionValidationError extends Error {
@@ -100,6 +176,31 @@ function normalizeOwnedFiles(value, at, issues) {
     result.push(normalized);
   }
   return result;
+}
+
+// Program-level fallbacks an author may set once instead of repeating on
+// every action. Deliberately only `effort` and `reasoning`: lane follows the
+// nature of the individual action, so there is no program-wide lane.
+function programDefaults(program, issues) {
+  const raw = program.defaults;
+  if (raw === undefined) return {};
+  if (!isObject(raw)) {
+    issues.push('program.defaults must be an object');
+    return {};
+  }
+  const defaults = {};
+  for (const key of Object.keys(raw)) if (!PROGRAM_DEFAULT_FIELDS.has(key)) {
+    issues.push(`program.defaults.${key} is not allowed; only effort and reasoning`);
+  }
+  if (raw.effort !== undefined) {
+    if (EFFORTS.has(raw.effort)) defaults.effort = raw.effort;
+    else issues.push('program.defaults.effort must be high|medium|low');
+  }
+  if (raw.reasoning !== undefined) {
+    if (isReasoningLevel(raw.reasoning)) defaults.reasoning = raw.reasoning;
+    else issues.push('program.defaults.reasoning must be low|medium|high|xhigh|max|default');
+  }
+  return defaults;
 }
 
 function runtimeRequirements(runtime, issues) {
@@ -262,6 +363,7 @@ export function validateActionProgram(program, runtime = {}) {
   if (!Array.isArray(program.actions)) issues.push('actions must be an array');
   const rawActions = Array.isArray(program.actions) ? program.actions : [];
   if (Array.isArray(program.actions) && program.actions.length === 0) issues.push('actions must be a non-empty array');
+  const defaults = programDefaults(program, issues);
   const actions = [];
   const knownActions = knownActionRecords(runtime, issues);
   const knownById = new Map();
@@ -295,13 +397,24 @@ export function validateActionProgram(program, runtime = {}) {
     const inputs = action.inputs === undefined ? [] : uniqueStrings(action.inputs, `${at}.inputs`, issues, { ids: true });
     const produces = action.produces === undefined ? [] : uniqueStrings(action.produces, `${at}.produces`, issues, { ids: true });
     const ownedFiles = normalizeOwnedFiles(action.ownedFiles, `${at}.ownedFiles`, issues);
-    if (!LANES.has(action.lane)) issues.push(`${at}.lane must be analyze|build|chore`);
-    if (!EFFORTS.has(action.effort)) issues.push(`${at}.effort must be high|medium|low`);
+    // An unknown kind is a typo in the author's program, not a runtime
+    // condition, so it is rejected before anything is launched.
+    if (action.kind !== undefined && !Object.hasOwn(KIND_DEFAULTS, action.kind)) {
+      issues.push(`${at}.kind must be ${ACTION_KINDS.join('|')}`);
+    }
+    // Resolve once, here, and write the resolved values back below: dispatch,
+    // reports, and advisories all read concrete lane/effort/reasoning.
+    const routing = resolveActionRouting(action, defaults);
+    if (!LANES.has(routing.lane)) issues.push(`${at}.lane must be analyze|build|chore`);
+    if (!EFFORTS.has(routing.effort)) issues.push(`${at}.effort must be high|medium|low`);
     // Optional caller override. `effort` still picks the model tier; this only
     // sets how hard that model thinks, and it outranks every configured level.
     if (action.reasoning !== undefined && !isReasoningLevel(action.reasoning)) {
       issues.push(`${at}.reasoning must be low|medium|high|xhigh|max|default`);
     }
+    if (LANES.has(routing.lane)) action.lane = routing.lane;
+    if (EFFORTS.has(routing.effort)) action.effort = routing.effort;
+    if (routing.reasoning !== null) action.reasoning = routing.reasoning;
     if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze') {
       issues.push(`${at} evidence actions must use lane analyze`);
     }
