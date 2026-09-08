@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { withV2Cancellation } from './v2-cancellation.js';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic } from './fsjson.js';
 import { appendEvent } from './events.js';
 import { newRunId } from './runner.js';
-import { generateShortId, isProcessAlive, listRuns } from './short-id.js';
+import { generateShortId, isProcessAlive, listRuns, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';
@@ -32,6 +33,7 @@ import { presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { deliverSteering, peekSteering, readSteering } from './steering.js';
 import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
+import { acquireKernelLease, processIdentity, liveWorker, stopWorker } from './v2-process.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const ACTIVE_RUNS = new Set();
@@ -128,7 +130,7 @@ export function readCallerPlannerRequest({ bullswarmDir, runId, refresh = true }
   const runDir = join(bullswarmDir, 'workflows', runId);
   const path = statePath(runDir);
   if (!existsSync(path)) throw new Error(`run ${runId} has no durable state`);
-  const state = deserializeV2DurableState(readFileSync(path, 'utf8'));
+  const state = withV2Cancellation(deserializeV2DurableState(readFileSync(path, 'utf8')), runDir);
   const awaiting = state.planner.awaiting;
   if (!awaiting || TERMINAL.has(state.lifecycle.status)) return { state, runDir, awaiting: null, request: null, refreshed: false, pendingSteering: [] };
   let request = null;
@@ -148,16 +150,18 @@ export function readCallerPlannerRequest({ bullswarmDir, runId, refresh = true }
 // Durable submission of a caller-authored planner response to a paused run.
 // The run must be awaiting its caller planner; the response is validated
 // against the exact durable state and boundary the kernel recorded.
-export function submitCallerPlannerResponse({ bullswarmDir, runId, response, onEvent = null } = {}) {
+function submitCallerPlannerResponseLocked({ bullswarmDir, runId, response, onEvent = null } = {}) {
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   if (typeof runId !== 'string' || !runId) throw new TypeError('runId is required');
   const runDir = join(bullswarmDir, 'workflows', runId);
   const path = statePath(runDir);
   if (!existsSync(path)) throw new Error(`run ${runId} has no durable state`);
-  const state = deserializeV2DurableState(readFileSync(path, 'utf8'));
+  const state = withV2Cancellation(deserializeV2DurableState(readFileSync(path, 'utf8')), runDir);
   if (v2PlannerMode(state) !== 'caller') throw new Error(`run ${runId} uses a dispatched Workflow Planner; only caller-planner runs accept submitted programs`);
   if (TERMINAL.has(state.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${state.lifecycle.status})`);
   if (!state.planner.awaiting) throw new Error(`run ${runId} is not waiting for a planner submission (planner status ${state.planner.status}, workflow ${state.lifecycle.status})`);
+  const cancellationFile = join(runDir, 'cancellation.json');
+  if (existsSync(cancellationFile)) state.cancellation = JSON.parse(readFileSync(cancellationFile, 'utf8'));
   if (state.cancellation?.requested) {
     throw new Error(`run ${runId} has a pending cancellation (${state.cancellation.reason ?? 'operator requested stop'}); no program can be submitted. Finalize it with: bullswarm workflow goal --resume ${state.shortId ?? runId}`);
   }
@@ -172,10 +176,8 @@ export function submitCallerPlannerResponse({ bullswarmDir, runId, response, onE
     if (error instanceof V2PlannerValidationError) return { ok: false, boundary, issues: [...error.issues], state };
     throw error;
   }
-  // Re-read immediately before writing so two overlapping submissions (or a
-  // submission racing a concurrent resume) cannot both claim the same turn.
-  // V2 runs carry no owner lease, so this narrows the window; it does not
-  // replace operator discipline of one submitter per paused run.
+  // The submission holds the same lease as the kernel; recheck its boundary
+  // before committing the accepted program.
   const latest = deserializeV2DurableState(readFileSync(path, 'utf8'));
   if (!latest.planner.awaiting || latest.planner.awaiting.turn !== state.planner.awaiting.turn || latest.planner.turns !== state.planner.turns) {
     throw new Error(`run ${runId} changed while validating the submission (another submit or resume claimed turn ${state.planner.awaiting.turn}); re-run plan show and submit again`);
@@ -185,6 +187,15 @@ export function submitCallerPlannerResponse({ bullswarmDir, runId, response, onE
   serializeV2DurableState(result.state);
   writeJsonAtomic(path, result.state);
   return { ok: true, boundary, accepted: result.accepted, state: result.state, runDir, candidatePath };
+}
+
+export function submitCallerPlannerResponse(options = {}) {
+  if (!options.bullswarmDir || !/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(options.runId ?? '')) throw new TypeError('bullswarmDir and a valid runId are required');
+  const runDir = join(options.bullswarmDir, 'workflows', options.runId);
+  if (!existsSync(runDir)) throw new Error(`run ${options.runId} has no durable state`);
+  const lease = acquireKernelLease(runDir);
+  try { return submitCallerPlannerResponseLocked(options); }
+  finally { lease.release(); }
 }
 
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -357,7 +368,20 @@ function correctionTask(verdict, { originalTask }) {
   return `${originalTask}\n\nYour prior final structured output failed deterministic validation:\n${errors.map((error) => `- ${error}`).join('\n')}\nReturn one corrected final object after rerunning the mandatory preflight.`;
 }
 
-function reconcileResume(state, at) {
+function reconcileResume(state, at, runDir) {
+  // The receipt precedes the attempt snapshot. Recover either side of that
+  // atomic-write boundary without dispatching successful work a second time.
+  for (const action of state.actions) if (['running', 'waiting', 'interrupted'].includes(action.status)) {
+    const attempt = state.attempts.findLast((item) => item.actionId === action.id);
+    const path = join(runDir, `completion-${action.id}.json`);
+    if (attempt && existsSync(path)) {
+      const receipt = JSON.parse(readFileSync(path, 'utf8'));
+      if (receipt.attemptId === attempt.id && receipt.verdict?.ok) Object.assign(attempt, {
+        status: 'succeeded', finishedAt: receipt.finishedAt ?? at,
+        failureKind: null, why: 'recovered durable dispatch completion',
+      });
+    }
+  }
   for (const attempt of state.attempts) if (attempt.status === 'running') {
     attempt.status = 'interrupted';
     attempt.finishedAt = at;
@@ -370,9 +394,10 @@ function reconcileResume(state, at) {
     attempt.failureKind = 'interrupted';
     attempt.why = 'runner stopped before the planner turn reached a durable terminal state';
   }
-  for (const action of state.actions) if (['running', 'waiting'].includes(action.status)) {
+  for (const action of state.actions) if (['running', 'waiting', 'interrupted'].includes(action.status)) {
     const declared = definition(state, action.id);
-    if (declared?.affects?.length) {
+    const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
+    if (!completedAttempt && declared?.affects?.length) {
       const stillFresh = declared.affects.some((id) => state.ledger.requirements[id]?.status === 'passed');
       if (stillFresh) {
         const revision = `resume-${state.program.revision}-${state.events.sequence + 1}-${action.id}`;
@@ -397,7 +422,7 @@ function reconcileResume(state, at) {
   if (!TERMINAL.has(state.lifecycle.status)) state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
 }
 
-export async function runV2AutonomousWorkflow({
+async function runV2Kernel({
   bullswarmDir,
   goalDocument = null,
   pools = [],
@@ -408,11 +433,13 @@ export async function runV2AutonomousWorkflow({
   parentEnv = process.env,
   onEvent = null,
   dependencies = {},
+  lease,
 } = {}) {
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const dispatch = dependencies.dispatchV2Action ?? dispatchV2Action;
   const captureManifest = dependencies.captureWorkspaceManifest ?? captureWorkspaceManifest;
   const writeResultAtomic = dependencies.writeResultAtomic ?? writeJsonAtomic;
+  const writeCompletionReceipt = dependencies.writeCompletionReceipt ?? writeJsonAtomic;
   const now = dependencies.now ?? (() => new Date().toISOString());
   const runsRoot = join(bullswarmDir, 'workflows');
   mkdirSync(runsRoot, { recursive: true });
@@ -421,7 +448,6 @@ export async function runV2AutonomousWorkflow({
   if (!/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(id)) throw new TypeError(`invalid V2 runId "${id}"`);
   const runDir = join(runsRoot, id);
   if (ACTIVE_RUNS.has(runDir)) throw new Error(`run ${id} already has an active kernel`);
-  if (!resuming && existsSync(runDir)) throw new Error(`cannot start: run ${id} already exists`);
   mkdirSync(runDir, { recursive: true });
 
   let state;
@@ -460,10 +486,21 @@ export async function runV2AutonomousWorkflow({
       };
     }
     const processAlive = dependencies.isProcessAlive ?? isProcessAlive;
-    if (!state.planner.awaiting && state.runner?.pid !== process.pid && processAlive(state.runner?.pid)) {
+    if (!state.planner.awaiting && state.runner?.pid !== process.pid && processAlive(state.runner?.pid)
+      && v2RunnerLiveness(state, { processAlive }).alive) {
       throw new Error(`run ${id} already has an active kernel (pid ${state.runner.pid}); watch it or cancel it before resuming`);
     }
-    reconcileResume(state, now());
+    const workersFile = join(runDir, 'workers.json');
+    const priorWorkers = existsSync(workersFile) ? JSON.parse(readFileSync(workersFile, 'utf8')) : [];
+    const survivors = priorWorkers.filter(liveWorker);
+    for (const worker of survivors) stopWorker(worker);
+    const deadline = Date.now() + 2000;
+    while (survivors.some(liveWorker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    for (const worker of survivors.filter(liveWorker)) stopWorker(worker, 'SIGKILL');
+    const forceDeadline = Date.now() + 1000;
+    while (survivors.some(liveWorker) && Date.now() < forceDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    if (survivors.some(liveWorker)) throw new Error('previous kernel workers are still alive; refusing to replay actions');
+    reconcileResume(state, now(), runDir);
   } else {
     validateV2GoalDocument(goalDocument);
     writeJsonAtomic(goalPath(runDir), goalDocument);
@@ -481,6 +518,8 @@ export async function runV2AutonomousWorkflow({
   // on the progress tick, so stamping it here is the heartbeat.
   const runnerStartedAt = now();
   const persist = () => {
+    lease.assertOwner();
+    state = withV2Cancellation(state, runDir);
     state.runner = {
       pid: process.pid,
       startedAt: runnerStartedAt,
@@ -490,6 +529,7 @@ export async function runV2AutonomousWorkflow({
     writeJsonAtomic(statePath(runDir), state);
   };
   const emit = (type, payload = {}) => {
+    lease.assertOwner();
     const event = appendEvent(runDir, state, type, payload);
     persist();
     onEvent?.(event);
@@ -517,9 +557,27 @@ export async function runV2AutonomousWorkflow({
       });
     }
   };
+  let interrupted = false;
+  const workers = new Map();
+  const workersPath = join(runDir, 'workers.json');
+  const onSpawn = (pid) => {
+    lease.assertOwner();
+    workers.set(pid, { pid, identity: processIdentity(pid), processGroup: true });
+    writeJsonAtomic(workersPath, [...workers.values()]);
+  };
+  const onWorkerExit = (pid) => {
+    workers.delete(pid);
+    lease.assertOwner();
+    writeJsonAtomic(workersPath, [...workers.values()]);
+  };
+  const onSignal = () => { interrupted = true; for (const worker of workers.values()) stopWorker(worker); };
   const refreshCancellation = () => {
+    if (interrupted) return true;
     try {
-      const disk = JSON.parse(readFileSync(statePath(runDir), 'utf8'));
+      const requestFile = join(runDir, 'cancellation.json');
+      const disk = existsSync(requestFile)
+        ? { cancellation: JSON.parse(readFileSync(requestFile, 'utf8')) }
+        : JSON.parse(readFileSync(statePath(runDir), 'utf8'));
       if (disk?.cancellation?.requested && !state.cancellation.requested) {
         state.cancellation = clone(disk.cancellation);
         persist();
@@ -611,7 +669,7 @@ export async function runV2AutonomousWorkflow({
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
-      maxMechanicalRetries: config.maxMechanicalRetries, shouldCancel: refreshCancellation,
+      maxMechanicalRetries: config.maxMechanicalRetries, shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
       outputValidator: reportValidator,
       correctionTask: (verdict, { originalTask }) => `${originalTask}\n\nYour prior scout report failed deterministic validation:\n${(verdict?.structured?.errors ?? []).map((error) => `- ${error}`).join('\n')}\nReturn a corrected report with every exact heading.`,
       onAttempt: (stage, record) => {
@@ -774,7 +832,7 @@ export async function runV2AutonomousWorkflow({
       strictPool: state.config.plannerRouting?.strictPool ?? state.config.plannerRouting?.pool ?? null,
       currentSession: state.planner.session,
       maxMechanicalRetries: config.maxMechanicalRetries,
-      shouldCancel: refreshCancellation,
+      shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
       outputValidator: () => readPlannerCandidate(candidatePath, state, {
         boundary,
         requiredScoutUnits: boundary === 'initial' ? context.scoutUnits : [],
@@ -847,11 +905,23 @@ export async function runV2AutonomousWorkflow({
   const runAction = async (action) => {
     startPresentationStage(action.id);
     const runtime = actionState(state, action.id);
+    const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
+    const receiptPath = join(runDir, `completion-${action.id}.json`);
+    let receipt = completedAttempt && existsSync(receiptPath) ? JSON.parse(readFileSync(receiptPath, 'utf8')) : null;
+    if (receipt && receipt.attemptId !== completedAttempt.id) throw new Error(`completion receipt does not match ${completedAttempt.id}; preserved work requires review`);
+    if (completedAttempt && !receipt) {
+      // Older shared program runs have no post-dispatch ownership or integration.
+      // Recover their output; never silently repeat successful worker edits.
+      if (enforcesOwnership(state) || action.evidenceFor.length || !completedAttempt.outputFile || !existsSync(completedAttempt.outputFile)) {
+        throw new Error(`completed attempt ${completedAttempt.id} has no recovery receipt; preserved work requires review rather than replay`);
+      }
+      receipt = { attemptId: completedAttempt.id, isolated: null, before: null, verdict: { ok: true, outFile: completedAttempt.outputFile } };
+    }
     runtime.status = 'running';
     runtime.startedAt ??= now();
     runtime.finishedAt = null;
     runtime.lastFailure = null;
-    if (action.affects.length) {
+    if (!receipt && action.affects.length) {
       const revision = `work-${state.program.revision}-${state.events.sequence + 1}-${action.id}`;
       state.ledger = invalidateRequirements(state.ledger, action.affects, revision);
       runtime.workRevision = revision;
@@ -864,23 +934,25 @@ export async function runV2AutonomousWorkflow({
     const contractPath = evidence ? join(runDir, `contract-${action.id}.json`) : null;
     const candidatePath = evidence ? join(runDir, `candidate-${action.id}.json`) : null;
     if (contract) writeJsonAtomic(contractPath, contract);
-    if (candidatePath) rmSync(candidatePath, { force: true });
-    let isolated = null;
-    if (!evidence && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
+    if (candidatePath && !receipt) rmSync(candidatePath, { force: true });
+    let isolated = receipt?.isolated ?? null;
+    if (!receipt && !evidence && action.ownedFiles.length && schedulerWorkspaceMode === 'isolated') {
       isolated = createWorkspace({
-        sourceDir: state.intent.cwd, runDir, actionId: action.id,
+        sourceDir: state.intent.cwd, runDir, actionId: `${action.id}-attempt-${baseAttemptOrdinal + 1}-${Date.now().toString(36)}`,
         maxFiles: config.maxManifestFiles,
       });
-      emit('action.workspace_created', { actionId: action.id, mode: 'isolated' });
+      emit('action.workspace_created', { actionId: action.id, mode: 'isolated', workspaceRoot: isolated.workspaceRoot });
     }
     const targetDir = isolated?.targetDir ?? state.intent.cwd;
     const releaseWorkspace = () => {
       if (!isolated) return;
-      disposeWorkspace(isolated);
+      if (runtime.status === 'succeeded') disposeWorkspace(isolated);
+      else emit('action.workspace_retained', { actionId: action.id, workspaceRoot: isolated.workspaceRoot, reason: 'unfinished work preserved for recovery' });
       isolated = null;
     };
-    let before = null;
-    if (enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
+    try {
+    let before = receipt?.before ?? null;
+    if (!receipt && enforcesOwnership(state) && action.ownedFiles.length) before = captureManifest(targetDir, { maxFiles: config.maxManifestFiles });
     let currentAttemptId = null;
     let lastProgressPersist = 0;
     const workerAttempt = () => state.attempts.find((item) => item.id === currentAttemptId);
@@ -889,7 +961,7 @@ export async function runV2AutonomousWorkflow({
       if (time - lastProgressPersist >= 1000) { lastProgressPersist = time; persist(); }
     };
     let result;
-    try { result = await dispatch({
+    try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
       taskText: evidence ? buildEvidenceTask(state, action, contractPath, candidatePath) : buildWorkTask(state, action, targetDir),
       targetDir,
@@ -900,10 +972,10 @@ export async function runV2AutonomousWorkflow({
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
       avoidPools: evidence ? ancestorPools(state, action) : [],
       maxMechanicalRetries: config.maxMechanicalRetries,
-      shouldCancel: refreshCancellation,
+      shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
       outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
       correctionTask: evidence ? correctionTask : null,
-      onAttempt: (stage, record) => {
+      onAttempt: (stage, record, verdict) => {
         if (stage === 'started') {
           const ordinal = baseAttemptOrdinal + record.ordinal;
           currentAttemptId = `${action.id}-${ordinal}`;
@@ -911,6 +983,11 @@ export async function runV2AutonomousWorkflow({
           state.attempts.push(normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal }));
           emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model });
         } else {
+          lease.assertOwner();
+          if (record.status === 'succeeded') writeCompletionReceipt(receiptPath, {
+            attemptId: currentAttemptId, finishedAt: record.finishedAt, before, isolated,
+            verdict: verdict ?? { ok: true, outFile: record.outFile ?? record.outputFile },
+          });
           const attempt = state.attempts.find((item) => item.id === currentAttemptId);
           if (attempt) Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
           addUsage(state, record);
@@ -948,8 +1025,8 @@ export async function runV2AutonomousWorkflow({
       ? candidatePath
       : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
     if (!result.ok) {
-      runtime.status = result.status === 'cancelled' ? 'cancelled' : 'failed';
-      runtime.lastFailure = { kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed' };
+      runtime.status = interrupted ? 'interrupted' : result.status === 'cancelled' ? 'cancelled' : 'failed';
+      runtime.lastFailure = { kind: interrupted ? 'interrupted' : result.failureKind, message: interrupted ? 'kernel interrupted; work retained for resume' : result.verdict?.why ?? 'dispatch failed' };
       persist();
       emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: result.failureKind, why: result.verdict?.why ?? null });
       releaseWorkspace();
@@ -1007,6 +1084,7 @@ export async function runV2AutonomousWorkflow({
     }
     releaseWorkspace();
     completePresentationStages();
+    } finally { releaseWorkspace(); }
   };
 
   const pauseForCaller = (awaiting) => {
@@ -1017,6 +1095,10 @@ export async function runV2AutonomousWorkflow({
   const finalize = () => {
     const finishedAt = now();
     const workspace = programExecution ? buildWorkspaceReport(state.intent.cwd, workspaceBaseline, state.program.actions, captureStatus) : null;
+    const retainedRoot = join(runDir, 'workspaces');
+    if (workspace && existsSync(retainedRoot)) for (const entry of readdirSync(retainedRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) workspace.warnings.push(`Inspect retained isolated work at ${join(retainedRoot, entry.name)} before retrying.`);
+    }
     const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace });
     const resultPath = join(runDir, 'result.json');
     writeResultAtomic(resultPath, result);
@@ -1038,7 +1120,7 @@ export async function runV2AutonomousWorkflow({
     catch (error) {
       const runtime = actionState(state, action.id);
       const finishedAt = now();
-      runtime.status = refreshCancellation() ? 'cancelled' : 'failed';
+      runtime.status = interrupted ? 'interrupted' : refreshCancellation() ? 'cancelled' : 'failed';
       runtime.finishedAt = finishedAt;
       runtime.lastFailure = { kind: 'runtime', message: error?.message || String(error) };
       for (const attempt of state.attempts) if (attempt.actionId === action.id && attempt.status === 'running') {
@@ -1064,10 +1146,25 @@ export async function runV2AutonomousWorkflow({
   }, 10_000);
   heartbeat.unref?.();
   ACTIVE_RUNS.add(runDir);
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
+  const pauseInterrupted = () => {
+    state.lifecycle.status = 'interrupted';
+    state.lifecycle.finishedAt = null;
+    for (const action of state.actions) if (['running', 'cancelled'].includes(action.status)) {
+      action.status = 'interrupted'; action.finishedAt = now();
+      action.lastFailure = { kind: 'interrupted', message: 'kernel interrupted by signal; work retained for resume' };
+    }
+    if (['running', 'failed', 'cancelled'].includes(state.planner.status)) state.planner.status = 'pending';
+    if (['running', 'failed', 'cancelled'].includes(state.preflight.scout.status)) state.preflight.scout.status = 'pending';
+    emit('workflow.interrupted', { reason: 'kernel received SIGTERM or SIGINT; delegate processes drained' });
+    return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: null };
+  };
   try {
     for (;;) {
       if (refreshCancellation()) {
         await Promise.all(activeTasks.values());
+        if (interrupted) return pauseInterrupted();
         if (programExecution) for (const action of state.actions) if (['pending', 'ready', 'waiting'].includes(action.status)) {
           action.status = 'cancelled';
           action.finishedAt = now();
@@ -1085,6 +1182,7 @@ export async function runV2AutonomousWorkflow({
       }
       if (state.preflight.scout.status === 'pending') {
         const scouted = await runScout();
+        if (interrupted) return pauseInterrupted();
         if (!scouted.ok && !programExecution) {
           limitsExhausted = true;
           terminalReason = `repository preflight could not produce a valid report: ${scouted.verdict?.why ?? scouted.failureKind}`;
@@ -1158,8 +1256,24 @@ export async function runV2AutonomousWorkflow({
   } finally {
     await Promise.allSettled(activeTasks.values());
     stopInterval(heartbeat);
+    process.removeListener('SIGTERM', onSignal);
+    process.removeListener('SIGINT', onSignal);
     ACTIVE_RUNS.delete(runDir);
   }
+}
+
+export async function runV2AutonomousWorkflow(options = {}) {
+  const { bullswarmDir, resumeRunId } = options;
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
+  const id = resumeRunId ?? options.runId ?? newRunId();
+  if (!/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(id)) throw new TypeError(`invalid V2 runId "${id}"`);
+  const runDir = join(bullswarmDir, 'workflows', id);
+  if (ACTIVE_RUNS.has(runDir)) throw new Error(`run ${id} already has an active kernel`);
+  if (!resumeRunId && existsSync(runDir)) throw new Error(`cannot start: run ${id} already exists`);
+  mkdirSync(runDir, { recursive: true });
+  const lease = acquireKernelLease(runDir);
+  try { return await runV2Kernel({ ...options, runId: id, lease }); }
+  finally { lease.release(); }
 }
 
 export const runAutonomousV2 = runV2AutonomousWorkflow;

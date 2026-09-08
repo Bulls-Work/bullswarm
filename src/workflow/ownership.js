@@ -150,7 +150,14 @@ export function captureWorkspaceManifest(root, { maxFiles = 50_000 } = {}) {
   if (typeof root !== 'string' || !root) throw new OwnershipValidationError('workspace root must be a non-empty path');
   if (!Number.isInteger(maxFiles) || maxFiles < 1) throw new OwnershipValidationError('maxFiles must be a positive integer');
   const absoluteRoot = resolve(root);
-  const files = (gitFiles(absoluteRoot) ?? walkFiles(absoluteRoot)).filter((file) => !isIgnoredTree(file));
+  // git ls-files reports submodules as directories. Expand their actual
+  // files so unrelated edits work and mutations inside them remain visible.
+  const files = (gitFiles(absoluteRoot) ?? walkFiles(absoluteRoot)).flatMap((file) => {
+    try {
+      if (lstatSync(join(absoluteRoot, file)).isDirectory()) return walkFiles(join(absoluteRoot, file)).map((nested) => `${file}/${nested}`);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return [file];
+  }).filter((file) => !isIgnoredTree(file));
   if (files.length > maxFiles) throw new OwnershipValidationError(`workspace manifest exceeds ${maxFiles} files`);
   const manifest = {};
   for (const file of files) {

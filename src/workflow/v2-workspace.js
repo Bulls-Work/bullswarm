@@ -48,11 +48,15 @@ export function createIsolatedWorkspace({ sourceDir, runDir, actionId, maxFiles 
   const source = realpathSync(resolve(sourceDir));
   const root = gitRoot(source);
   const workspaceRoot = join(runDir, 'workspaces', actionId);
-  rmSync(workspaceRoot, { recursive: true, force: true });
+  if (existsSync(workspaceRoot)) throw new Error(`isolated workspace already exists; preserved work requires review: ${workspaceRoot}`);
+  // Capture before creating a tree so manifest failures cannot leak worktrees.
+  const mainBefore = captureWorkspaceManifest(source, { maxFiles });
   mkdirSync(dirname(workspaceRoot), { recursive: true });
   let kind = 'copy';
   let targetDir = workspaceRoot;
+  try {
   if (root) {
+    kind = 'git-worktree';
     git(root, ['worktree', 'add', '--detach', workspaceRoot, 'HEAD']);
     overlayWorkingTree(root, workspaceRoot);
     targetDir = join(workspaceRoot, relative(realpathSync(root), source));
@@ -69,9 +73,14 @@ export function createIsolatedWorkspace({ sourceDir, runDir, actionId, maxFiles 
   }
   return {
     kind, sourceDir: source, sourceRoot: root, workspaceRoot, targetDir,
-    mainBefore: captureWorkspaceManifest(source, { maxFiles }),
+    mainBefore,
     isolatedBefore: captureWorkspaceManifest(targetDir, { maxFiles }),
   };
+  } catch (error) {
+    // No delegate has run yet; remove only this failed setup tree.
+    disposeIsolatedWorkspace({ kind, sourceRoot: root, workspaceRoot });
+    throw error;
+  }
 }
 
 /** Ownership-check and atomically attribute only declared files back to main. */
@@ -82,7 +91,8 @@ export function integrateIsolatedWorkspace(workspace, { ownedFiles, maxFiles = 5
   const ownership = checkOwnership({ before: workspace.isolatedBefore, after: isolatedAfter, ownedFiles: declared });
   if (!ownership.ok) return { ok: false, kind: 'ownership', ownership };
   const mainNow = captureWorkspaceManifest(workspace.sourceDir, { maxFiles });
-  const concurrent = compareManifests(workspace.mainBefore, mainNow).changed.filter((file) => declared.includes(file));
+  const concurrent = compareManifests(workspace.mainBefore, mainNow).changed.filter((file) =>
+    declared.includes(file) && mainNow[file] !== isolatedAfter[file]);
   if (concurrent.length) return { ok: false, kind: 'conflict', concurrent, ownership };
   for (const file of ownership.changed) {
     const source = join(workspace.targetDir, file);

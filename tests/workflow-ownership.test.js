@@ -1,6 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OwnershipValidationError, captureWorkspaceManifest, changedManifestPaths, checkOwnership, compareManifests, normalizeManifest, normalizeOwnedFiles } from '../src/workflow/ownership.js';
@@ -128,4 +129,19 @@ test('a node_modules symlink injected into an isolated workspace is not the agen
     symlinkSync(join(root, 'node_modules'), join(...at, 'node_modules'), 'dir');
   }
   assert.deepEqual(Object.keys(captureWorkspaceManifest(mono)), ['src/apps/web/page.tsx']);
+});
+
+
+test('git submodules are manifest file trees, not invalid directory entries', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-submodule-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+  const module = join(root, 'module'); const repo = join(root, 'repo');
+  for (const cwd of [module, repo]) { mkdirSync(cwd); git(cwd, 'init', '-q'); writeFileSync(join(cwd, 'file.txt'), 'seed'); git(cwd, 'add', '.'); git(cwd, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'seed'); }
+  git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', module, 'vendor');
+  const before = captureWorkspaceManifest(repo);
+  assert.ok(before['vendor/file.txt']);
+  writeFileSync(join(repo, 'vendor', 'file.txt'), 'changed');
+  const ownership = checkOwnership({ before, after: captureWorkspaceManifest(repo), ownedFiles: ['file.txt'] });
+  assert.deepEqual(ownership.outOfScope, ['vendor/file.txt']);
 });

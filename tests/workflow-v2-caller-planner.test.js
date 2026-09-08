@@ -1206,7 +1206,7 @@ test('CLI legacy recovery: workflow resume is the verb form of goal --resume and
   } finally { f.cleanup(); }
 });
 
-test('CLI: capabilities and launch instructions advertise the caller-first contract', () => {
+test('CLI: capabilities and launch instructions advertise the caller-first contract', async () => {
   const f = cliFixture();
   try {
     const capabilities = JSON.parse(cli(f, ['workflow', 'capabilities']).stdout).engines.autonomousV2;
@@ -1221,6 +1221,16 @@ test('CLI: capabilities and launch instructions advertise the caller-first contr
     assert.match(launch.observe.cancel, /workflow cancel .* --json/);
     assert.match(launch.observe.steer, /workflow steer /);
     assert.ok(launch.instructions.cancel, 'the launch handoff must name the cancel verb');
+    // The launched detached kernel owns this fixture until it finishes.
+    const deadline = Date.now() + 5000;
+    while (!existsSync(join(f.home, 'workflows', launch.runId, 'result.json'))) {
+      assert.ok(Date.now() < deadline, 'detached fixture kernel must finish before cleanup');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    while (existsSync(join(f.home, 'workflows', launch.runId, 'kernel.lock'))) {
+      assert.ok(Date.now() < deadline, 'detached fixture kernel must release its lease');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   } finally { f.cleanup(); }
 });
 

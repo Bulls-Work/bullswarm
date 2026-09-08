@@ -1,3 +1,4 @@
+import { withV2Cancellation } from './v2-cancellation.js';
 // Low-noise, non-interactive workflow progress watcher.
 // Prints only semantic changes plus a periodic heartbeat, then a timing
 // breakdown at terminal status. This is intentionally distinct from the
@@ -5,7 +6,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId } from './short-id.js';
+import { resolveRunId, v2RunnerLiveness } from './short-id.js';
 import { readSteering } from './steering.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
@@ -95,8 +96,9 @@ export function transportQuietSeconds(state, now = new Date()) {
 export function watchSnapshot(runDir, state, now = new Date()) {
   if (state.schemaVersion === 'bullswarm.workflow.state.v2') {
     const lifecycle = state.lifecycle ?? {};
+    const interrupted = lifecycle.status === 'interrupted' || !v2RunnerLiveness(state, { runDir, now: now.getTime() }).alive;
     const allAttempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])];
-    const activeAttempts = allAttempts.filter((attempt) => attempt.status === 'running');
+    const activeAttempts = interrupted ? [] : allAttempts.filter((attempt) => attempt.status === 'running');
     const actionById = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
     const agents = activeAttempts.map((attempt) => ({
       stepId: attempt.actionId ?? (state.planner?.attempts?.includes(attempt) ? 'workflow-planner' : 'preflight-scout'),
@@ -115,14 +117,14 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
     return {
       at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
-      status: lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
+      interrupted, status: interrupted ? 'interrupted' : lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
       phase: null, step: runningAction?.id ?? (state.planner?.status === 'running' ? 'workflow-planner' : null),
       elapsedSec, eventSequence: state.events?.sequence ?? 0,
       dispatchesUsed: state.budget?.agents ?? 0, dispatchTarget: state.config?.settings?.maxAgents ?? null,
       expansionRound: state.budget?.expansions ?? 0, expansionLimit: state.config?.settings?.maxExpansionRounds ?? 0,
       tokens: state.usage?.total ?? null, pendingSteering: 0, deliveredSteering: 0,
       quietForSec: 0, transportQuietForSec: transportQuietSeconds(state, now), agents,
-      runningCount: (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
+      runningCount: interrupted ? 0 : (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
       waitingCount: isProgramWorkflow(state)
         ? (state.actions ?? []).filter((action) => ['pending', 'ready', 'waiting'].includes(action.status)).length + (awaitingPlanner ? 1 : 0)
         : (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
@@ -299,7 +301,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   let pendingEvents = [];
   let lastActivityAt = null;
   while (true) {
-    const state = readJson(statePath);
+    const state = withV2Cancellation(readJson(statePath), resolved.runDir);
     if (state) {
       const snapshot = watchSnapshot(resolved.runDir, state);
       if (priorSequence == null) {
@@ -351,6 +353,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         priorHumanFingerprint = humanFingerprint;
         lastPrintedAt = Date.now();
         pendingEvents = [];
+      }
+      if (snapshot.interrupted) {
+        if (!jsonl) { output.write(`outcome: interrupted; edits retained\nnext: bullswarm workflow resume ${snapshot.shortId ?? snapshot.runId}\n`); }
+        return once ? 0 : 1;
       }
       if (snapshot.terminal || once) {
         if (!jsonl && snapshot.terminal) {
