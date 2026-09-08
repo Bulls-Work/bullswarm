@@ -6,10 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createV2GoalDocument, createV2State, serializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import {
-  V2PlannerValidationError, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
+  V2PlannerValidationError, V2_PROGRAM_EXAMPLE, applyV2PlannerResponse, buildV2PlannerContract, buildV2PlannerPrompt,
   buildPlannerPreflight, createV2PlannerContext, parseV2PlannerResponse, readPlannerCandidate, plannerCorrectionRequest,
   v2PlannerContractRules, validateV2PlannerResponse,
 } from '../src/workflow/v2-planner.js';
+import { KIND_DEFAULTS } from '../src/workflow/action-validator.js';
+
+const clone = (value) => JSON.parse(JSON.stringify(value));
 
 const CHECK_PLANNER = new URL('../bin/check-v2-plan.js', import.meta.url).pathname;
 
@@ -264,4 +267,84 @@ test('every planner rule set states the reasoning field once', () => {
   // The dispatched planner prompt renders the same rulebook.
   const prompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
   assert.match(prompt, /optional per-action `reasoning` field \(low\|medium\|high\|xhigh\|max\|default\)/);
+});
+
+test('the planning contract documents kind, its derived table, program defaults, and the advisories', () => {
+  const goal = createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program', concurrency: 2 },
+  });
+  const contract = buildV2PlannerContract(goal);
+  assert.deepEqual(contract.program.kinds, KIND_DEFAULTS);
+  assert.deepEqual(contract.program.defaults.allowed, ['effort', 'reasoning']);
+  assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
+  assert.deepEqual(contract.program.advisories.codes, ['all-writers-high', 'docs-at-high']);
+  assert.match(contract.program.advisories.note, /never a rejection/);
+  assert.match(contract.program.actionFields.kind, /^optional mechanical \| io-read \| check \| implement \| integration \| architecture \| adversarial-acceptance/);
+  assert.match(contract.program.actionFields.lane, /omit when kind supplies it/);
+  assert.match(contract.program.actionFields.effort, /omit to take it from kind/);
+  const rule = contract.rules.find((entry) => entry.includes('`kind` field'));
+  assert.ok(rule, `no kind rule in the contract rules: ${contract.rules.join(' | ')}`);
+  for (const [kind, { lane, effort }] of Object.entries(KIND_DEFAULTS)) {
+    assert.ok(rule.includes(`${kind}=${lane}/${effort}`), `rule omits ${kind}`);
+  }
+  assert.match(rule, /A kind outside that closed list is a validation error/);
+  assert.match(rule, /all-writers-high/);
+  assert.match(rule, /docs-at-high/);
+  // The worked example a caller copies uses kind on every action and omits
+  // the two fields kind supplies.
+  const example = contract.program.example.program.actions;
+  assert.deepEqual(example.map((action) => action.kind), ['implement', 'check']);
+  for (const action of example) {
+    assert.equal('lane' in action, false, action.id);
+    assert.equal('effort' in action, false, action.id);
+  }
+});
+
+test('every planner rule set states the kind field once, and the example still validates', () => {
+  for (const executionMode of ['program', 'verified']) {
+    const rules = v2PlannerContractRules({ executionMode });
+    assert.equal(rules.filter((rule) => rule.includes('`kind` field')).length, 1, executionMode);
+  }
+  assert.match(buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null })), /optional per-action `kind` field/);
+  // The example must be a program the kernel would actually accept.
+  const exampleState = createV2State(createV2GoalDocument({
+    goal: 'Fix the parser', cwd: '/tmp/repo', settings: { concurrency: 2 },
+    requirements: [{ id: 'requirement-1', text: 'The parser handles trailing commas' }],
+  }), { runId: 'wf-examp-abcdef', shortId: 'exa234' });
+  const accepted = validateV2PlannerResponse(clone(V2_PROGRAM_EXAMPLE), exampleState);
+  assert.deepEqual(
+    accepted.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort]),
+    [['fix-parser', 'implement', 'build', 'medium'], ['check-parser', 'check', 'analyze', 'medium']],
+  );
+});
+
+test('accepting a program records its advisories on the run state without changing acceptance', () => {
+  const writers = ['one', 'two', 'three'].map((name) => ({
+    id: `write-${name}`, purpose: `Write ${name}`, dependsOn: [], affects: ['report-ready'],
+    ownedFiles: name === 'one' ? ['docs/report.md'] : [`src/${name}.js`],
+    prompt: `Write ${name} and run its focused checks.`, kind: 'integration',
+    evidenceFor: [], inputs: [], produces: [],
+  }));
+  const programState = createV2State(createV2GoalDocument({
+    goal: 'Deliver the report', cwd: '/tmp/repo',
+    settings: { executionMode: 'program', concurrency: 3 },
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+  }), { runId: 'wf-advis-abcdef', shortId: 'adv234' });
+  assert.deepEqual(programState.advisories, []);
+  const next = applyV2PlannerResponse(programState, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Three integration writers, one of them markdown-only.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: writers },
+  });
+  assert.equal(next.program.revision, 1, 'advisories never block acceptance');
+  assert.deepEqual(next.advisories.map((advisory) => [advisory.code, advisory.actionId]), [
+    ['all-writers-high', null],
+    ['docs-at-high', 'write-one'],
+  ]);
+  assert.equal(validateV2DurableState(next), true);
+  assert.deepEqual(programState.advisories, [], 'the input state is not mutated');
+  // A program with no smell records an empty list rather than a missing key.
+  assert.deepEqual(applyV2PlannerResponse(state(), response()).advisories, []);
 });
