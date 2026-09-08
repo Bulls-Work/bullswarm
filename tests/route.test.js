@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickPool, paceScore, isQuarantined, isExhausted, fiveHourTier } from '../src/lib/route.js';
+import {
+  pickPool, paceScore, isQuarantined, isExhausted, fiveHourTier,
+  DEFAULT_INFLIGHT_PENALTY_PCT,
+} from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
 
 const HOUR = 3600_000;
@@ -216,4 +219,240 @@ test('every eligible pool near the limit: selection proceeds among them', () => 
   assert.equal(r.pick.pool, 'b'); // most-behind wins as today
   assert.doesNotMatch(r.why, /skipped near 5h limit/);
   assert.match(r.why, /near its 5h limit \(surplus 40, 5h used 89%\)/);
+});
+
+// --- R8: forecast-aware selection ---------------------------------------------
+
+/** Pool carrying in-flight work with a known weekly spend rate. */
+function busy(name, over = {}) {
+  const { count = 1, remainingMinutes = 20, ratePerMinute = 0.05, source = 'history', ...rest } = over;
+  return pool(name, {
+    inflight: {
+      count,
+      minutes: count * remainingMinutes,
+      records: Array.from({ length: count }, () => ({ remainingMinutes })),
+    },
+    spend: { weekly: { ratePerMinute, source } },
+    ...rest,
+  });
+}
+
+test('the forecast, not the reading, decides the near-limit tier', () => {
+  // wati reads 60% but 72% is already projected for work in flight; a 10-minute
+  // candidate at 0.36%/min adds 3.6 → 75.6, over the 75 line.
+  const wati = pool('claude-code:wati', {
+    pace: 60,
+    fiveHourUsedPct: 60,
+    projectedFiveHourPct: 72,
+    spend: { fiveHour: { ratePerMinute: 0.36, source: 'history' } },
+  });
+  const codex = pool('codex', { pace: 2, fiveHourUsedPct: 20 });
+  const r = pickPool('build', [wati, codex], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 10,
+  });
+  assert.equal(r.pick.pool, 'codex');
+  assert.match(r.why, /skipped near 5h limit \(projected\): claude-code:wati 75\.6%/);
+  assert.equal(r.candidates.find((c) => c.pool === 'claude-code:wati').forecastFiveHourPct, 75.6);
+  assert.equal(r.forecast.candidateMinutes, 10);
+
+  // The same pools with a shorter candidate stay under the line: 72 + 0.36 → 72.4.
+  const short = pickPool('build', [wati, codex], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 1,
+  });
+  assert.equal(short.pick.pool, 'claude-code:wati');
+  assert.match(short.why, /5h used 60% -> 72\.4% projected/);
+});
+
+test('candidateMinutes null forecasts the projection alone', () => {
+  const p = pool('wati', {
+    pace: 5,
+    fiveHourUsedPct: 50,
+    projectedFiveHourPct: 78,
+    spend: { fiveHour: { ratePerMinute: 0.36, source: 'history' } },
+  });
+  const r = pickPool('build', [p], { callerEligible: false, callerSession: false, now: NOW });
+  assert.equal(r.forecast.candidateMinutes, null);
+  const c = r.candidates[0];
+  assert.equal(c.forecastFiveHourPct, 78);       // no candidate term added
+  assert.equal(c.projectedFiveHourPct, 78);
+  assert.equal(c.fiveHourUsedPct, 50);
+  assert.equal(c.nearFiveHourLimit, true);        // 78 ≥ 75 on the projection
+  assert.match(r.why, /near its 5h limit \(surplus 5, 5h used 50% -> 78% projected\)/);
+});
+
+test('a pool forecast at or above the burst line is gated out of selection', () => {
+  const gated = pool('wati', {
+    pace: 80,
+    fiveHourUsedPct: 70,
+    projectedFiveHourPct: 88,
+    spend: { fiveHour: { ratePerMinute: 0.36, source: 'history' } },
+  });
+  const open = pool('codex', { pace: -5, fiveHourUsedPct: 10 });
+  const r = pickPool('build', [gated, open], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 10,
+  });
+  assert.equal(r.pick.pool, 'codex');            // 88 + 3.6 = 91.6 ≥ 90
+  assert.deepEqual(r.forecast.gated, ['wati']);
+  assert.equal(r.candidates.find((c) => c.pool === 'wati').forecastGated, true);
+  assert.equal(r.candidates.at(-1).pool, 'wati'); // gated pools sort last
+  assert.match(r.why, /forecast-gated at\/above 90%: wati 91\.6%/);
+});
+
+test('every pool forecast-gated: the least loaded still wins, and why says so', () => {
+  const a = pool('a', { pace: 40, fiveHourUsedPct: 80, projectedFiveHourPct: 95 });
+  const b = pool('b', { pace: 5, fiveHourUsedPct: 82, projectedFiveHourPct: 91 });
+  const r = pickPool('build', [a, b], { callerEligible: false, callerSession: false, now: NOW });
+  assert.equal(r.pick.pool, 'b');                // least loaded, not most-behind
+  assert.deepEqual(r.forecast.gated.sort(), ['a', 'b']);
+  assert.match(r.why, /every capable pool is forecast-gated at\/above 90% of its 5h window; least loaded wins \(b, 5h used 82% -> 91% projected\)/);
+});
+
+test('an unknown forecast is never gated and never deprioritized', () => {
+  const unmetered = pool('grok', { pace: 0 });
+  const gated = pool('wati', { pace: 90, fiveHourUsedPct: 88, projectedFiveHourPct: 96 });
+  const r = pickPool('analyze', [unmetered, gated], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 10,
+  });
+  assert.equal(r.pick.pool, 'grok');
+  assert.deepEqual(r.forecast.gated, ['wati']);
+  const c = r.candidates.find((x) => x.pool === 'grok');
+  assert.deepEqual(
+    [c.forecastFiveHourPct, c.projectedFiveHourPct, c.forecastGated, c.nearFiveHourLimit],
+    [null, null, false, false],
+  );
+});
+
+test('between pools of equal pace the one carrying work in flight yields', () => {
+  const loaded = busy('wati', { pace: 10, count: 2, remainingMinutes: 20, fiveHourUsedPct: 30 });
+  const quiet = busy('codex', { pace: 10, count: 0, fiveHourUsedPct: 30 });
+  const r = pickPool('build', [loaded, quiet], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 6,
+  });
+  assert.equal(r.pick.pool, 'codex');
+  // loaded: projection 0.05×(40 + 6) = 2.3 is below the 2×3 floor → 10 − 6 = 4,
+  // labeled penalty · quiet: 10 − 0.05×6 = 9.7 on the measured rate
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pool, c.pace, c.effectiveSurplus, c.inflight, c.estimateSource]),
+    [['codex', 10, 9.7, 0, 'history'], ['wati', 10, 4, 2, 'penalty']],
+  );
+  assert.match(r.why, /preferred over busier: wati \(2 in flight\)/);
+});
+
+test('with no weekly rate, in-flight agents cost the flat penalty', () => {
+  assert.equal(DEFAULT_INFLIGHT_PENALTY_PCT, 3);
+  const loaded = pool('wati', { pace: 10, inflight: { count: 2, minutes: 40, records: [] } });
+  const quiet = pool('codex', { pace: 8 });
+  const r = pickPool('build', [loaded, quiet], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(r.pick.pool, 'codex');            // 10 − 2×3 = 4 < 8
+  const c = r.candidates.find((x) => x.pool === 'wati');
+  assert.deepEqual([c.effectiveSurplus, c.inflight, c.estimateSource], [4, 2, 'penalty']);
+
+  // The penalty is configurable; at 0 the raw pace decides again.
+  const off = pickPool('build', [loaded, quiet], {
+    callerEligible: false, callerSession: false, now: NOW, inflightPenaltyPct: 0,
+  });
+  assert.equal(off.pick.pool, 'wati');
+});
+
+test('an in-flight agent with no recorded remaining minutes still costs the penalty', () => {
+  const p = pool('wati', {
+    pace: 10,
+    inflight: { count: 2, minutes: null, records: [{ remainingMinutes: 20 }, {}] },
+    spend: { weekly: { ratePerMinute: 0.05, source: 'history' } },
+  });
+  const r = pickPool('build', [p], { callerEligible: false, callerSession: false, now: NOW });
+  // projection 0.05×20 measured + 3 for the untimed one = 4, floor 2×3 = 6 → 10 − 6
+  assert.equal(r.candidates[0].effectiveSurplus, 4);
+  assert.equal(r.candidates[0].estimateSource, 'penalty');
+});
+
+test('a measured weekly rate never charges less than the flat floor per in-flight agent', () => {
+  // The real machine measures about 0.05 weekly points per worker-minute, so a
+  // six-minute agent projects to 0.3 points: without the floor a 4-point pace
+  // gap keeps a whole burst on one pool.
+  const loaded = busy('wati', { pace: 22, count: 2, remainingMinutes: 6, fiveHourUsedPct: 30 });
+  const quiet = busy('codex', { pace: 18, count: 0, fiveHourUsedPct: 30 });
+  const r = pickPool('build', [loaded, quiet], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 6,
+  });
+  assert.equal(r.pick.pool, 'codex');
+  const w = r.candidates.find((c) => c.pool === 'wati');
+  // projection 0.05×(12 + 6) = 0.9 < floor 6 → 22 − 6 = 16 < codex 18 − 0.3
+  assert.deepEqual([w.effectiveSurplus, w.inflight, w.estimateSource], [16, 2, 'penalty']);
+  const c = r.candidates.find((x) => x.pool === 'codex');
+  assert.deepEqual([c.effectiveSurplus, c.estimateSource], [17.7, 'history']);
+
+  // A projection above the floor is charged in full and keeps its basis.
+  const heavy = pool('grok', {
+    pace: 22, fiveHourUsedPct: 30,
+    inflight: { count: 1, minutes: 5, records: [{ remainingMinutes: 100 }] },
+    spend: { weekly: { ratePerMinute: 0.5, source: 'history' } },
+  });
+  const h = pickPool('build', [heavy], { callerEligible: false, callerSession: false, now: NOW });
+  // 0.5×100 = 50 > floor 3 → 22 − 50
+  assert.deepEqual([h.candidates[0].effectiveSurplus, h.candidates[0].estimateSource], [-28, 'history']);
+});
+
+test('a loaded incumbent is displaced by a quieter challenger of equal cost', () => {
+  const incumbent = busy('wati', {
+    incumbent: true, costRank: 2, pace: 10, count: 3, remainingMinutes: 40, fiveHourUsedPct: 20,
+  });
+  const challenger = busy('codex', { costRank: 2, pace: 4, count: 0, fiveHourUsedPct: 20 });
+  const r = pickPool('chore', [incumbent, challenger], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  // incumbent 10 − max(0.05×120, 3×3) = 1 · challenger 4 − 0 = 4. R9: against a
+  // challenger carrying fewer agents the loaded incumbent has no margin to hide
+  // behind, so the higher effective surplus wins outright.
+  assert.equal(r.pick.pool, 'codex');
+  const sameLoad = busy('codex', { costRank: 2, pace: 4, count: 3, remainingMinutes: 40, fiveHourUsedPct: 20 });
+  // An equally loaded challenger (4 − 9 = −5) gets no shortcut and loses.
+  assert.equal(pickPool('chore', [incumbent, sameLoad], {
+    callerEligible: false, callerSession: false, now: NOW,
+  }).pick.pool, 'wati');
+  challenger.pace = 14;                           // 14 ≥ 1 + INCUMBENCY_MARGIN too
+  const flipped = pickPool('chore', [incumbent, challenger], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(flipped.pick.pool, 'codex');
+});
+
+test('pools without forecast fields route exactly as before', () => {
+  const pools = [pool('a', { pace: 30, fiveHourUsedPct: 40 }), pool('b', { pace: 5 })];
+  const r = pickPool('build', pools, { callerEligible: false, callerSession: false, now: NOW });
+  assert.equal(r.pick.pool, 'a');
+  assert.equal(r.why, 'most-behind capable pool with 5h headroom (surplus 30, 5h used 40%)');
+  assert.deepEqual(r.forecast, { candidateMinutes: null, gated: [] });
+  assert.deepEqual(r.candidates.map((c) => [
+    c.pace, c.effectiveSurplus, c.inflight, c.projectedFiveHourPct, c.forecastFiveHourPct,
+    c.projectedWeeklyPct, c.ratePerMinute, c.estimateSource, c.forecastGated,
+  ]), [
+    [30, 30, 0, null, 40, null, null, 'none', false],
+    [5, 5, 0, null, null, null, null, 'none', false],
+  ]);
+});
+
+test('a loaded incumbent forfeits margin and cost guard against a quieter challenger (R9)', () => {
+  // Seen on the real machine 2026-09-09: incumbent wati at surplus 26.7 with
+  // three demo agents in flight kept the build lane against an idle grok at
+  // 23.6, because grok lacked the 10-point margin. Load is not noise.
+  const incumbent = pool('wati', {
+    incumbent: true, costRank: 2, pace: 26.7, inflight: { count: 2, minutes: 0, records: [] },
+  });
+  const challenger = pool('grok', { costRank: 4, pace: 23.6 });
+  const opts = { callerEligible: false, callerSession: false, now: NOW };
+  // 26.7 − 2×3 = 20.7 < 23.6: no margin required, and a pricier pool may win.
+  assert.equal(pickPool('build', [incumbent, challenger], opts).pick.pool, 'grok');
+  // One agent in flight is still a genuine pace lead (23.7 > 23.6): the lane stays.
+  const one = pool('wati', {
+    incumbent: true, costRank: 2, pace: 26.7, inflight: { count: 1, minutes: 0, records: [] },
+  });
+  assert.equal(pickPool('build', [one, challenger], opts).pick.pool, 'wati');
+  // An equally loaded challenger still needs the margin and the cost guard.
+  const busyChallenger = pool('grok', {
+    costRank: 4, pace: 23.6, inflight: { count: 2, minutes: 0, records: [] },
+  });
+  assert.equal(pickPool('build', [incumbent, busyChallenger], opts).pick.pool, 'wati');
 });

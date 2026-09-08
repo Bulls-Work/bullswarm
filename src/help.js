@@ -66,7 +66,8 @@ const top = rich({
     { name: 'delegate', desc: 'classify any task, preview the execution shape, and route it to one agent or a workflow' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
-    { name: 'pools', desc: 'show routing pools, meters, and quarantine state' },
+    { name: 'pools', desc: 'show routing pools, meters, in-flight load, and quarantine state' },
+    { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
     { name: 'doctor', desc: 'report installation readiness' },
     { name: 'workflow', desc: 'create, execute, observe, and audit workflows' },
@@ -272,17 +273,19 @@ const runText = rich({
     { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
-    { flag: '--dry-run', desc: 'print the routing decision and the exact command that would be spawned (including the resolved reasoning flag) without spawning it or writing the decision log', default: 'off (dispatches for real)' },
+    { flag: '--dry-run', desc: 'print the routing decision, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
     'spawns a real external coding-agent CLI process rooted at --add-dir (never with --dry-run)',
     'writes ~/.bullswarm/state.json (decision log, pool incumbency) on completion; --dry-run writes neither',
+    'registers the picked pool in the shared in-flight ledger (~/.bullswarm/assignments/) for the life of the run and releases it when the attempt ends; --dry-run registers nothing',
     'may quarantine a pool for a period after an authentication failure',
   ],
   examples: [
     { cmd: 'bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"', note: 'routes one bounded analysis task and prints the verdict' },
     { cmd: 'bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"', note: 'shows the exact argv, including the clamped reasoning flag, without dispatching' },
+    { cmd: 'bullswarm run --lane build --add-dir . --dry-run "Refactor the loader"', note: 'prints a `forecast:` line — inflight count, projected 5h percent before and after this assignment, its expected minutes, the measured burn rate, and the basis of that estimate' },
   ],
   next: 'bullswarm health to re-judge saved outputs, or bullswarm pools to check routing/quota state before the next run.',
 });
@@ -347,18 +350,43 @@ const healthText = rich({
 const poolsText = rich({
   usage: 'bullswarm pools [--force] [--json]',
   purpose: 'Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, '
-    + 'pace surplus, and quarantine/burst-gate status.',
+    + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and '
+    + 'quarantine/burst-gate status. The 5-hour column reads `5h=<reading>%` alone when '
+    + 'nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is '
+    + 'expected to push the window further; routing decides on the right-hand number.',
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
-    { flag: '--json', desc: 'machine-readable pool array', default: 'human-readable aligned table' },
+    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly} rates with their source and sample count, and projectedFiveHourPct / projectedWeeklyPct', default: 'human-readable aligned table' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
     'always writes state.json after sweeping expired quarantines back into service, even in --json mode',
+    'reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours)',
   ],
   examples: [{ cmd: 'bullswarm pools --force' }],
-  next: 'bullswarm doctor for a pass/fail readiness report instead of raw pool state.',
+  next: 'bullswarm assignments to see which run and action each in-flight entry belongs to.',
+});
+
+const assignmentsText = rich({
+  usage: 'bullswarm assignments [--json]',
+  purpose: 'List the work in flight RIGHT NOW across every Bullswarm process — one line per '
+    + 'live assignment with its pool, lane/effort, source, run/action, age in minutes, expected '
+    + 'duration, and worker pid. This is the shared ledger `bullswarm pools` counts as '
+    + 'inflight=<n>, so a run started by another terminal or kernel appears here too.',
+  args: [],
+  options: [
+    { flag: '--json', desc: 'machine-readable array of live assignment records', default: 'one human-readable line per assignment' },
+  ],
+  safety: [
+    'reads ~/.bullswarm/assignments/ only — no meters, no network, no pool build',
+    'prunes entries whose kernel and worker processes are both gone, and entries older than 12 hours, so a crashed process leaves no phantom load',
+  ],
+  examples: [
+    { cmd: 'bullswarm assignments' },
+    { cmd: 'bullswarm assignments --json', note: 'each record carries pool, source, runId, actionId, kernelPid, workerPid, startedAt, elapsedMinutes, expectedMinutes, remainingMinutes' },
+  ],
+  next: 'bullswarm pools to see that same load next to each pool\'s meter and pace surplus.',
 });
 
 const doctorText = rich({
@@ -1522,6 +1550,7 @@ const HELP = {
   delegate: { _text: delegateText },
   health: { _text: healthText },
   pools: { _text: poolsText },
+  assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
   version: { _text: versionText },
   release: { _text: releaseText },

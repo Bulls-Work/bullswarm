@@ -227,6 +227,49 @@ name the utilization that decided the pick, and meters and quarantines are
 re-read before each dispatch — and again, live, right after a usage limit —
 so a long run never routes off the snapshot it launched with.
 
+Those thresholds are applied to the FORECAST, not to the last reading. A meter
+reading is already old when it arrives: agents dispatched seconds ago have
+spent quota the provider has not reported yet, and the assignment being routed
+will spend more. So each pool's projection — its reading plus the quota its
+in-flight agents are still expected to burn — gets this candidate's own
+expected consumption added, and the tiers apply to that number: a pool
+projected at or above 75% drops to the near-limit tier even while its reading
+is lower, and one projected at or above `BURST_BLOCK_PCT` (90) is left out of
+selection entirely as forecast-gated. If every capable pool is forecast-gated,
+routing still names the least loaded of them rather than stranding the action,
+and says so in the reason. A pool with no measured rate forecasts nothing and
+is never gated or deprioritized for a number nobody produced.
+
+Within a tier, pools already carrying work yield to quieter pools of similar
+pace: each pool's surplus is reduced by the weekly quota its in-flight agents
+and this assignment are expected to spend, and by at least a flat 3 surplus
+points per in-flight agent. That floor is what spreads work at real rates,
+where a six-minute agent projects to well under one point; the charge is
+labeled `penalty` when the floor set it and carries its measured basis
+(`history`, `bootstrap`) when the projection was larger. Load also beats
+incumbency: an incumbent carrying more in-flight agents than a challenger keeps
+neither its 10-point margin nor its cost protection, so the quieter pool wins
+as soon as its effective surplus is higher. A burst of parallel actions
+therefore spreads across providers instead of stacking on the single
+most-behind one.
+`bullswarm pools` shows each pool's `inflight=<n>` count and its 5-hour column
+as `5h=<reading>%-><projected>%` whenever in-flight work is expected to move
+it, `bullswarm assignments` lists what those agents are, `bullswarm run
+--dry-run` prints the forecast the pick was made on without registering
+anything, and every candidate row carries `pace`, `effectiveSurplus`,
+`inflight`, `projectedFiveHourPct`, `forecastFiveHourPct`, `ratePerMinute`,
+`estimateSource` and `forecastGated`, so a surprising pick can be read back
+number by number.
+
+The rates come from real records: every live meter reading is retained as a
+capped per-pool series (`~/.bullswarm/meters/history/<pool>.jsonl`) and paired
+with the worker-minutes dispatched between readings. Until at least five
+worker-minutes of dispatch are attributable to a window there is no rate at
+all — `null`, not a ratio of percentage points to seconds — so a fresh machine
+routes on pace and the flat penalty until it has measured something. The
+penalty itself is `config.inflightPenaltyPct` in `~/.bullswarm/state.json`
+(default 3; `0` turns the tie-breaker off).
+
 Model exclusions are hard routing policy. An excluded model is removed from
 recommendations and assignments, and Bullswarm pins a same-tier allowed model
 through the connector-owned model flag whenever the provider default could be

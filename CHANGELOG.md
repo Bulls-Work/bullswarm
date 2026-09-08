@@ -1,5 +1,81 @@
 # bullswarm changelog
 
+## 0.25.5 — forecast-aware routing
+
+- Bullswarm now knows what it is already running. Every dispatch registers the
+  work it starts in a small ledger on disk (`~/.bullswarm/assignments/`, one
+  atomically written file per assignment), and every process reads it: a
+  `bullswarm run` in one terminal, a V1 runtime and four concurrent V2 kernel
+  actions all see each other's agents instead of each assuming the pool is
+  idle. Records whose process is gone, or that are older than 12 hours, are
+  pruned on read, so a crash cannot leave phantom load behind. `bullswarm
+  assignments` lists what is in flight right now — pool, run, action, how long
+  it has been going and how much longer it is expected to take — and
+  `bullswarm pools` carries the same count as `inflight=<n>`.
+
+- A spend model turns those records into percentage points. It measures how
+  fast a pool actually burns its 5-hour and weekly windows by pairing meter
+  readings with the worker-minutes dispatched between them, and how long an
+  assignment on a given lane and effort tier usually runs by taking the median
+  of real attempts from the decision log. Every number carries its basis —
+  `history` (measured), `bootstrap` (one window's usage so far), or the
+  documented `default` table — and the sample count behind it. A pool nobody
+  has measured reports `null`, never a plausible-looking guess.
+
+- Routing now decides on the forecast instead of on the last reading. Each
+  pool's projection (reading + what its in-flight agents will still spend) gets
+  the expected consumption of the assignment being routed added on top, and the
+  existing thresholds apply to that number: a pool projected at or above 75% of
+  its 5-hour window drops to the near-limit tier while its reading is still
+  below the line, and one projected at or above 90% is dropped from selection
+  as forecast-gated. Nothing is gated on an unknown forecast, and if every
+  capable pool is gated, the least loaded of them is still picked — with the
+  reason saying exactly that — rather than the action being stranded.
+
+- Parallel work now spreads instead of stacking. Within a tier, a pool's pace
+  surplus is reduced by the weekly quota its in-flight agents and this
+  assignment are expected to spend, and by at least a flat 3 surplus points
+  per in-flight agent (`DEFAULT_INFLIGHT_PENALTY_PCT`, `config.inflightPenaltyPct`
+  in state.json, `0` disables it). The floor matters: at measured weekly rates
+  a six-minute agent projects to under one point, which would leave a burst on
+  one pool. The charge is labeled `penalty` when the floor set it and by its
+  measured basis otherwise. Load also beats incumbency: an incumbent carrying
+  more in-flight agents than a challenger keeps neither its margin nor its cost
+  guard. Four actions launched within the same second land on
+  four different providers rather than all on the single most-behind one, and
+  the V2 kernel re-reads the ledger before every pick rather than only on its
+  throttled meter refresh, so actions launched seconds apart still see each
+  other.
+
+- Everything that observes routing shows the new numbers. `bullswarm
+  assignments [--json]` is a new command listing the live ledger; `bullswarm
+  pools` gained an `inflight=<n>` column and prints its 5-hour cell as
+  `5h=<reading>%-><projected>%` when in-flight work is expected to move it,
+  with `spend`, `projectedFiveHourPct` and `projectedWeeklyPct` in `--json`;
+  `bullswarm run --dry-run` prints the forecast the pick was made on and, being
+  a preview, still registers nothing and writes no decision log; and the
+  strategy control center shows each provider's in-flight count next to its
+  usage. Live meter readings are now retained as a capped per-pool series at
+  `~/.bullswarm/meters/history/<pool>.jsonl`, because the snapshot cache keeps
+  only the newest reading and a rate needs two.
+
+- A rate is only reported once the dispatch behind it is real: at least five
+  worker-minutes must be attributable to a window before its utilization
+  counts as percentage-points-per-minute. Without that floor a pool at 26% of
+  its 5-hour window with one six-second-old agent measures as 260% per minute
+  and forecasts every provider past the burst line, which is the failure this
+  model exists to prevent rather than cause.
+
+- All of it is visible after the fact. The routing reason names the in-flight
+  counts and projections that moved the pick (`5h used 30% -> 41% projected, 2
+  in flight`, `skipped near 5h limit (projected): wati 76%`, `forecast-gated
+  at/above 90%: …`, `preferred over busier: …`), every candidate row carries
+  `pace`, `effectiveSurplus`, `inflight`, `projectedFiveHourPct`,
+  `forecastFiveHourPct`, `projectedWeeklyPct`, `ratePerMinute`,
+  `estimateSource` and `forecastGated`, and the decision log records the
+  forecast the pick was made on. Pools that carry no ledger or spend fields
+  route exactly as they did before.
+
 ## 0.25.4 — reasoning levels
 
 - A connector now declares how its own CLI expresses a thinking level, and

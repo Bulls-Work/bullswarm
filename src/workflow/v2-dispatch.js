@@ -5,6 +5,11 @@ import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, saveState
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
+import {
+  expectedMinutesFromSpendModel, registerAssignment, releaseAssignment, updateAssignment,
+  withLedger,
+} from '../lib/assignments.js';
+import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
 const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema']);
@@ -83,6 +88,16 @@ function preparePools(pools, action, effort, {
   return preferred.length ? preferred : scoped;
 }
 
+/**
+ * The run id an artifact path belongs to. The kernel owns the id and should
+ * pass it explicitly; deriving it from the run directory keeps the ledger
+ * honest for callers that have not been updated yet, without inventing one.
+ */
+function runIdFromPaths(files) {
+  const match = /(?:^|[\\/])(wf-[a-z0-9]+-[a-f0-9]{6})(?:[\\/]|$)/.exec(files?.taskFile ?? '');
+  return match ? match[1] : null;
+}
+
 function attemptPaths(base, ordinal) {
   if (typeof base === 'function') return base(ordinal);
   if (!base?.taskFile || !base?.outFile) throw new TypeError('paths must provide taskFile and outFile');
@@ -147,6 +162,7 @@ export async function dispatchV2Action({
   pools,
   refreshPools = null,
   bullswarmDir,
+  runId = null,
   parentEnv = process.env,
   preferredPool = null,
   preferredModel = null,
@@ -188,6 +204,20 @@ export async function dispatchV2Action({
       liveQuarantine: (name) => live[name]?.quarantine ?? null,
     });
   };
+  const safeCoreState = () => {
+    try { return loadCoreState(bullswarmDir); } catch { return null; }
+  };
+  const coreDecisionLog = () => safeCoreState()?.decisionLog ?? [];
+  // Operator-configurable, read once: the flat surplus cost of an in-flight
+  // agent on a pool whose weekly spend rate nobody has measured yet.
+  const inflightPenaltyPct = inflightPenaltyFrom(safeCoreState());
+  // One expectation for the whole action: lane and effort do not change
+  // between attempts, and the spend model is memoized per process anyway. The
+  // decision log makes it a measured median instead of a documented default.
+  const expected = await expectedMinutesFromSpendModel(
+    { lane: action.lane ?? 'chore', effort },
+    { decisionLog: coreDecisionLog() },
+  );
   let candidates = prepare(pools);
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
@@ -226,12 +256,21 @@ export async function dispatchV2Action({
       }
     }
     const routePools = remaining.length ? remaining : candidates;
+    // The ledger is re-read HERE, before every pick and every retry, not on
+    // the refresher's 15s throttle: up to four kernel actions start within
+    // milliseconds of each other, and each has to see the assignments the
+    // others just registered. Cheap by construction — a directory read, no
+    // meter poll and no network.
+    const pickAt = now();
+    attachForecast(routePools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
     const route = pickPool(action.lane ?? 'chore', routePools, {
       callerEligible: false,
       callerSession: false,
       preferredPool: effectivePreferredPool,
       effortTier: effort,
-      now: now(),
+      now: pickAt,
+      candidateMinutes: expected.expectedMinutes,
+      inflightPenaltyPct,
     });
     if (!route.pick) break;
     const pool = route.pick.connector;
@@ -262,6 +301,9 @@ export async function dispatchV2Action({
       routing: {
         reason: route.why, candidates: route.candidates, effort,
         lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
+        // What this attempt was routed on: the pool's load and where its 5h
+        // window is projected to land once this assignment has run.
+        forecast: forecastRecord(route, pool.name),
       },
       ...(session ? { session: clone(session.durable), continued: session.invocation.resume } : {}),
     };
@@ -269,6 +311,13 @@ export async function dispatchV2Action({
     tried.add(pool.name);
     onAttempt?.('started', clone(record));
     const runtimeConnector = { ...connector, subscription: pool.subscription ?? connector.subscription ?? null };
+    // In-flight the instant the pool is picked — before the spawn, so four
+    // concurrent kernel actions cannot all read this pool as idle.
+    const ledgerEntry = withLedger(() => registerAssignment(bullswarmDir, {
+      pool: pool.name, model: record.model, lane: action.lane ?? 'chore', effort,
+      source: 'workflow-v2', runId: runId ?? runIdFromPaths(files),
+      actionId: action.id, attempt: ordinal, startedAt, ...expected,
+    }));
     let workerPid = null;
     let verdict;
     try { verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
@@ -278,13 +327,20 @@ export async function dispatchV2Action({
       conversation: session?.invocation ?? null,
       shouldCancel,
       processGroup: true,
-      onSpawn: (pid) => { workerPid = pid; onSpawn?.(pid); },
+      onSpawn: (pid) => {
+        workerPid = pid;
+        if (ledgerEntry) withLedger(() => updateAssignment(bullswarmDir, ledgerEntry.id, { workerPid: pid }));
+        onSpawn?.(pid);
+      },
       outputValidator,
       onActivity,
       onAgentEvent,
       onAgentProgress,
       bullswarmDir,
-    }); } finally { if (workerPid) onWorkerExit?.(workerPid); }
+    }); } finally {
+      if (ledgerEntry) withLedger(() => releaseAssignment(bullswarmDir, ledgerEntry.id));
+      if (workerPid) onWorkerExit?.(workerPid);
+    }
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict);
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
@@ -324,6 +380,7 @@ export async function dispatchV2Action({
       wallSec: verdict.meta?.wallSec ?? null, model: record.model,
       reasoning: clone(reasoning),
       usage: verdict.meta?.usage ?? null, routing: record.routing,
+      forecast: record.routing.forecast,
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, {
       loadCoreState, saveCoreState,
