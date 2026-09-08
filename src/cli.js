@@ -80,7 +80,7 @@ async function cmdPools(opts) {
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it.
-    const fiveHour = p.fiveHourUsedPct == null ? '' : ` 5h=${p.fiveHourUsedPct}%`;
+    const fiveHour = p.fiveHourUsedPct == null ? '' : ` 5h=${Math.round(p.fiveHourUsedPct * 10) / 10}%`;
     const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
     const status = !p.enabled
       ? 'disabled'
