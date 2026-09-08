@@ -435,6 +435,10 @@ export function setRung(strategy, { pool, tier, model, reasoning = null } = {}) 
   const existing = normalizeModelTiers(strategy.modelTiers)[pool]?.[model] ?? [];
   setModelTierSelection(strategy, pool, model, [...existing, tier]);
   if (reasoning != null) setStrategyReasoning(strategy, { tier, level: reasoning, pool });
+  // A rung configures its tier. Without this the model half is inert
+  // (configuredModel ignores tiers outside configuredTiers) and rungsFor
+  // never lists the row; `strategy set-model` has always done the same.
+  strategy.configuredTiers = [...new Set([...(strategy.configuredTiers ?? []), tier])];
   return strategy;
 }
 

@@ -418,6 +418,20 @@ test('setRung writes both halves of a rung and keeps one rung per pool and tier'
   assert.deepEqual(Object.keys(strategy).sort(), ['configuredTiers', 'modelTiers', 'reasoning']);
 });
 
+test('setRung marks the tier configured, so a rung set on a fresh home is visible and effective', () => {
+  const fresh = { modelTiers: {} };
+  setRung(fresh, { pool: 'deep', tier: 'medium', model: 'deep-2', reasoning: 'high' });
+  assert.deepEqual(fresh.configuredTiers, ['medium']);
+  assert.deepEqual(fresh.modelTiers.deep, { 'deep-2': ['medium'] });
+  // Setting the same tier again adds no duplicate.
+  setRung(fresh, { pool: 'deep', tier: 'medium', model: 'deep-3' });
+  assert.deepEqual(fresh.configuredTiers, ['medium']);
+  // An already-configured list is extended, never replaced.
+  const seeded = { configuredTiers: ['high'], modelTiers: {} };
+  setRung(seeded, { pool: 'deep', tier: 'low', model: 'deep-1' });
+  assert.deepEqual(seeded.configuredTiers, ['high', 'low']);
+});
+
 test('setRung refuses an unknown tier or level before anything is written', () => {
   const strategy = { modelTiers: { deep: { 'deep-1': ['high'] } } };
   assert.throws(() => setRung(strategy, { pool: 'deep', tier: 'enormous', model: 'deep-2' }), /--tier must be/);

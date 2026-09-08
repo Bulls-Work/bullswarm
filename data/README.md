@@ -109,6 +109,18 @@ If Epoch published more than one row for the same `(model, level, benchmark)`,
 the first record in the pack is the one `rungEvidence` uses. The pack itself
 keeps every CSV row.
 
+### Cross-check against a prior hand computation
+
+Before the first pack was committed (2026-09-09) three rungs were compared with
+an independent hand computation over the same CSVs: grok-4.6 at medium,
+gpt-5.6-luna at max, and claude-opus-5 at high. Every cursorbench score, cost
+per task and tokens per task matched exactly; the deepswe, arc-agi-2 and
+critpt scores differed only by the hand computation's three-decimal rounding.
+One upstream quirk was found on a row outside that set: `arc_agi_2_external.csv`
+carries two `claude-opus-5_max` rows (0.9042 named "Max", 0.8833 named "High");
+the pack keeps both and `rungEvidence` uses the first, so that one blended
+value depends on record order.
+
 ### Attribution
 
 Epoch AI, 'AI Benchmarking Hub'. Published online at epoch.ai. Retrieved from https://epoch.ai/benchmarks
