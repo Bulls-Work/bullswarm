@@ -117,7 +117,7 @@
     "flag": "--model",
     "mode": "replace-or-append"
   },
-  "$comment-reasoning": "Codex has no reasoning flag; the control is the config key `model_reasoning_effort`, overridden per invocation with the escape hatch verified from `codex exec --help` (codex-cli 0.153.4): `-c, --config <key=value>  Override a configuration value that would otherwise be loaded from ~/.codex/config.toml`. Accepted values verified from the official Codex config reference (https://learn.chatgpt.com/docs/config-file/config-reference, read 2026-09-09): `minimal | low | medium | high | xhigh` — \"Adjust reasoning effort for supported models (Responses API only; xhigh is model-dependent)\". `minimal` sits below bullswarm's common scale, so a request below `low` clamps up to `low`. Tier defaults stay at high/medium/low because `xhigh` is model-dependent; an explicit `xhigh` request passes through. Without this block Codex workers think at whatever config.toml sets (this machine: low).",
+  "$comment-reasoning": "verified 2026-09-09 against codex-cli 0.153.4: `codex exec -c model_reasoning_effort=max --model gpt-5.6-luna` ran (exit 0), printed `reasoning effort: max`, and the session rollout recorded reasoning_effort \"max\"; the public config reference still lists only minimal|low|medium|high|xhigh. `minimal` is accepted by the CLI but sits below bullswarm's ladder and is not declared.",
   "reasoning": {
     "args": [
       "-c",
@@ -127,7 +127,8 @@
       "low",
       "medium",
       "high",
-      "xhigh"
+      "xhigh",
+      "max"
     ],
     "defaults": {
       "high": "high",
