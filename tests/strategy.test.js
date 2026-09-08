@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseDiscoveredModels, discoverConnectorModels, discoverAllModels, buildStrategy, resolveDispatchModel,
   selectedModelsForTier, setModelTierSelection,
+  rungsFor, setRung, rungRecord, formatRungEvidence,
 } from '../src/lib/strategy.js';
 
 test('connector-declared parsing handles columns, bullets, and plain lines', () => {
@@ -281,4 +282,156 @@ test('account-cloned providers recommend only models belonging to that account',
   });
   assert.deepEqual(report.providerSuggestions.opencode2.high.recommended, { model: 'relay/gpt-5.6-sol' });
   assert.deepEqual(report.providerSuggestions['opencode2:relay-2'].high.recommended, { model: 'relay-2/gpt-5.6-sol' });
+});
+
+// --- rungs -------------------------------------------------------------------
+// A rung is one pool's model plus its reasoning level for one effort tier.
+// These fixtures are hand-built connector specs, never a real provider.
+
+function rungFixtures() {
+  const deep = {
+    name: 'deep',
+    model: 'deep-1',
+    knownModels: ['deep-1', 'deep-2'],
+    modelSelection: { flag: '--model' },
+    reasoning: { flag: '--effort', levels: ['low', 'high'], defaults: { high: 'high' } },
+    modelProfiles: [
+      { id: 'deep-1', tier: 'high', qualityRank: 3 },
+      { id: 'deep-2', tier: 'medium', qualityRank: 1 },
+    ],
+  };
+  const flat = { name: 'flat', model: 'flat-1', knownModels: ['flat-1'] };
+  return {
+    deep,
+    flat,
+    pools: [
+      { name: 'deep', enabled: true, connector: deep },
+      { name: 'flat', enabled: false, connector: flat },
+    ],
+    strategy: {
+      configuredTiers: ['high', 'medium'],
+      modelTiers: { deep: { 'deep-1': ['high'], 'deep-2': ['medium'] }, flat: { 'flat-1': ['high'] } },
+      reasoning: { tiers: {}, pools: { deep: { medium: 'max' } } },
+    },
+  };
+}
+
+test('every rung reports its model, its effective reasoning level, and the source of each', () => {
+  const f = rungFixtures();
+  const rows = rungsFor({ pools: f.pools, strategy: f.strategy });
+  // A disabled pool cannot take a dispatch, so it has no rung; only the two
+  // CONFIGURED tiers appear, in the canonical high/medium/low order.
+  assert.deepEqual(rows.map((row) => `${row.pool}/${row.tier}`), ['deep/high', 'deep/medium']);
+  assert.deepEqual(rows[0].model, 'deep-1');
+  assert.equal(rows[0].modelSource, 'tier-selection');
+  assert.deepEqual(rows[0].reasoning, {
+    applied: 'high', source: 'connector', requested: 'high', clamped: false,
+  });
+  // The pool asked for `max`; this connector only declares low and high, so
+  // the rung reports the level the CLI would really see, marked clamped.
+  assert.equal(rows[1].model, 'deep-2');
+  assert.deepEqual(rows[1].reasoning, {
+    applied: 'high', source: 'strategy-pool', requested: 'max', clamped: true,
+  });
+});
+
+test('a rung with no evidence and no dispatches says so instead of guessing', () => {
+  const f = rungFixtures();
+  const rows = rungsFor({ pools: f.pools, strategy: f.strategy });
+  assert.deepEqual(rows.map((row) => row.evidence), [null, null]);
+  assert.deepEqual(rows.map((row) => row.record), [null, null]);
+  assert.equal(formatRungEvidence(null), '');
+});
+
+test('rung evidence comes from the injected datapack lookup, never from core', () => {
+  const f = rungFixtures();
+  const asked = [];
+  // The exact pair src/lib/epoch-benchmarks.js exports.
+  const rows = rungsFor({
+    pools: f.pools,
+    strategy: f.strategy,
+    evidence: {
+      datapack: { rows: { 'deep-1': { blended: 0.71, costPerTask: 0.42, tokensPerTask: 31_200 } } },
+      rungEvidence: (datapack, query) => {
+        asked.push(query);
+        return datapack.rows[query.model] ?? null;
+      },
+    },
+  });
+  assert.deepEqual(asked, [
+    { pool: 'deep', tier: 'high', model: 'deep-1', reasoning: 'high' },
+    { pool: 'deep', tier: 'medium', model: 'deep-2', reasoning: 'high' },
+  ]);
+  assert.deepEqual(rows[0].evidence, { blended: 0.71, costPerTask: 0.42, tokensPerTask: 31_200 });
+  assert.equal(rows[1].evidence, null, 'a model the datapack does not cover has no evidence');
+  assert.equal(formatRungEvidence(rows[0].evidence), 'blended 0.71 · $0.42/task · 31.2k tok/task');
+});
+
+test('a broken evidence lookup leaves the rung table standing', () => {
+  const f = rungFixtures();
+  const rows = rungsFor({
+    pools: f.pools,
+    strategy: f.strategy,
+    evidence: () => { throw new Error('half-written datapack'); },
+  });
+  assert.deepEqual(rows.map((row) => row.evidence), [null, null]);
+});
+
+test('a rung local record counts only the picked pool and effort tier', () => {
+  const f = rungFixtures();
+  const at = (hour) => new Date(Date.parse(`2026-09-08T0${hour}:00:00Z`)).toISOString();
+  const decisionLog = [
+    // Three matching attempts, one of them failed: 5, 7 and 10 wall minutes.
+    { ts: at(1), picked: 'deep', ok: true, wallSec: 300, routing: { effort: 'high' } },
+    { ts: at(2), picked: 'deep', ok: true, wallSec: 420, effort: 'high' },
+    { ts: at(3), pool: 'deep', ok: false, wallSec: 600, routing: { effortTier: 'high' } },
+    // Same pool, different tier; different pool, same tier; and a matching
+    // attempt with no usable duration at all.
+    { ts: at(4), picked: 'deep', ok: true, wallSec: 60, effort: 'medium' },
+    { ts: at(5), picked: 'other', ok: true, wallSec: 60, effort: 'high' },
+    { ts: at(6), picked: 'deep', effortTier: 'high' },
+  ];
+  const rows = rungsFor({ pools: f.pools, strategy: f.strategy, decisionLog });
+  assert.deepEqual(rows[0].record, { dispatches: 4, medianMinutes: 7, okShare: 0.667 });
+  assert.deepEqual(rows[1].record, { dispatches: 1, medianMinutes: 1, okShare: 1 });
+  assert.equal(rungRecord(decisionLog, 'deep', 'low'), null);
+  assert.equal(rungRecord([], 'deep', 'high'), null);
+});
+
+test('setRung writes both halves of a rung and keeps one rung per pool and tier', () => {
+  const strategy = {
+    configuredTiers: ['high', 'medium'],
+    modelTiers: { deep: { 'deep-1': ['high', 'medium'] } },
+  };
+  setRung(strategy, { pool: 'deep', tier: 'medium', model: 'deep-2', reasoning: 'high' });
+  // The tier moved off the model that held it; that model's OTHER tier stayed.
+  assert.deepEqual(strategy.modelTiers.deep, { 'deep-1': ['high'], 'deep-2': ['medium'] });
+  assert.deepEqual(strategy.reasoning, { tiers: {}, pools: { deep: { medium: 'high' } } });
+  // No level given leaves the reasoning half exactly as it was.
+  setRung(strategy, { pool: 'deep', tier: 'high', model: 'deep-2' });
+  assert.deepEqual(strategy.modelTiers.deep, { 'deep-2': ['high', 'medium'] });
+  assert.deepEqual(strategy.reasoning, { tiers: {}, pools: { deep: { medium: 'high' } } });
+  // `default` is a real answer: pass nothing to the CLI on that tier.
+  setRung(strategy, { pool: 'deep', tier: 'high', model: 'deep-2', reasoning: 'default' });
+  assert.deepEqual(strategy.reasoning.pools.deep, { high: 'default', medium: 'high' });
+  // Nothing else in state.strategy is reshaped or migrated.
+  assert.deepEqual(Object.keys(strategy).sort(), ['configuredTiers', 'modelTiers', 'reasoning']);
+});
+
+test('setRung refuses an unknown tier or level before anything is written', () => {
+  const strategy = { modelTiers: { deep: { 'deep-1': ['high'] } } };
+  assert.throws(() => setRung(strategy, { pool: 'deep', tier: 'enormous', model: 'deep-2' }), /--tier must be/);
+  assert.throws(() => setRung(strategy, { pool: 'deep', tier: 'high', model: 'deep-2', reasoning: 'ludicrous' }), /--level must be/);
+  assert.throws(() => setRung(strategy, { pool: 'deep', tier: 'high' }), /needs a model/);
+  assert.deepEqual(strategy.modelTiers, { deep: { 'deep-1': ['high'] } });
+});
+
+test('a rung written by setRung is the rung rungsFor reads back', () => {
+  const f = rungFixtures();
+  const strategy = { configuredTiers: ['medium'], modelTiers: {} };
+  setRung(strategy, { pool: 'deep', tier: 'medium', model: 'deep-2', reasoning: 'low' });
+  const [row] = rungsFor({ pools: f.pools, strategy });
+  assert.equal(row.model, 'deep-2');
+  assert.equal(row.reasoning.applied, 'low');
+  assert.equal(row.reasoning.source, 'strategy-pool');
 });

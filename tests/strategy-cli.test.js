@@ -1,17 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { autoSetup } from '../src/setup.js';
+import { discoverConnectorModels } from '../src/lib/strategy.js';
+import { loadConnectors } from '../src/lib/config.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import {
   refreshStrategy, cmdStrategy, applyStrategyRecommendations, maybeRefreshStrategy, strategyInventory,
+  renderRungs, rungRows,
 } from '../src/strategy-cli.js';
 import {
   inputKeys, recommendationLines, renderAnalysisProgress, renderRecommendationReview,
   renderSetupChoice, renderStrategyDashboard, visibleModels,
 } from '../src/strategy-dashboard.js';
+import { loadEpochBenchmarks, rungEvidence } from '../src/lib/epoch-benchmarks.js';
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-strategy-cli-'));
@@ -515,4 +519,266 @@ test('a pool with no reasoning support adds no reasoning note to the dashboard r
   });
   assert.deepEqual(inventory.routes.high.reasoning, { level: null, source: 'unsupported' });
   assert.doesNotMatch(renderStrategyDashboard(inventory, { width: 100, height: 30 }), /reasoning/);
+});
+
+// --- rungs -------------------------------------------------------------------
+// One read/write view over a pool's model plus reasoning level for one effort
+// tier. Everything below runs against a temporary home and two fixture
+// connectors; no real provider CLI is ever consulted or dispatched.
+
+function rungFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-rungs-'));
+  autoSetup(dir, { reason: 'test' });
+  // A discovery command that leaves a marker when it runs, so "never spawns
+  // model discovery" is an observed fact rather than a claim.
+  writeFileSync(join(dir, 'list-models.mjs'), [
+    "import { writeFileSync } from 'node:fs';",
+    "writeFileSync(new URL('./discovery-ran', import.meta.url), 'ran');",
+    "console.log('deep-1');",
+    '',
+  ].join('\n'));
+  writeFileSync(join(dir, 'connectors', 'deep.json'), `${JSON.stringify({
+    name: 'deep',
+    bin: 'node',
+    configDirs: [],
+    spawn: {
+      cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'],
+      cwdMode: 'task-file-dir',
+    },
+    outputExtraction: { strategy: 'stdout' },
+    meter: { type: 'none' },
+    costRank: 5,
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+    model: 'deep-1',
+    knownModels: ['deep-1', 'deep-2'],
+    modelSelection: { flag: '--model' },
+    modelDiscovery: { cmd: ['node', join(dir, 'list-models.mjs')], parse: 'lines' },
+    reasoning: { flag: '--effort', levels: ['low', 'high'], defaults: { high: 'high' } },
+    modelProfiles: [
+      { id: 'deep-1', tier: 'high', qualityRank: 3 },
+      { id: 'deep-2', tier: 'medium', qualityRank: 1 },
+    ],
+    flags: { stealth: false, testFixture: true },
+  }, null, 2)}\n`);
+  const state = loadState(dir);
+  state.pools.deep = { enabled: true };
+  state.strategy = {
+    configuredTiers: ['high', 'medium'],
+    modelTiers: { deep: { 'deep-1': ['high'], 'deep-2': ['medium'] } },
+    // A cached discovery report, exactly as `strategy refresh` persists one.
+    lastReport: { discoveries: { deep: { models: [{ id: 'deep-1' }, { id: 'deep-2' }] } } },
+  };
+  state.decisionLog = [
+    { ts: '2026-09-08T01:00:00Z', picked: 'deep', ok: true, wallSec: 300, routing: { effort: 'high' } },
+    { ts: '2026-09-08T02:00:00Z', picked: 'deep', ok: true, wallSec: 420, routing: { effort: 'high' } },
+    { ts: '2026-09-08T03:00:00Z', picked: 'deep', ok: false, wallSec: 600, routing: { effort: 'high' } },
+  ];
+  saveState(dir, state);
+  return {
+    dir,
+    marker: join(dir, 'discovery-ran'),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+async function runStrategy(args, dir) {
+  const out = [];
+  const err = [];
+  const log = console.log;
+  const error = console.error;
+  console.log = (...parts) => out.push(parts.join(' '));
+  console.error = (...parts) => err.push(parts.join(' '));
+  try {
+    const code = await cmdStrategy(args, { bullswarmDir: dir });
+    return { code, out: out.join('\n'), err: err.join('\n') };
+  } finally {
+    console.log = log;
+    console.error = error;
+  }
+}
+
+test('strategy rungs prints the model, reasoning, evidence, and local record of every rung', async () => {
+  const f = rungFixture();
+  try {
+    const table = await runStrategy(['rungs', '--pool', 'deep'], f.dir);
+    assert.equal(table.code, 0);
+    assert.deepEqual(table.out.split('\n'), [
+      'pool  tier    model   reasoning         evidence     record',
+      'deep  high    deep-1  high (connector)  no evidence  3 dispatches · p50 7m · 67% ok',
+      'deep  medium  deep-2  — (none)          no evidence  no dispatches',
+    ]);
+
+    const json = await runStrategy(['rungs', '--json', '--pool', 'deep'], f.dir);
+    assert.equal(json.code, 0);
+    const parsed = JSON.parse(json.out);
+    assert.equal(parsed.schemaVersion, 'bullswarm.strategy.rungs.v1');
+    assert.deepEqual(parsed.rungs.map((row) => [row.pool, row.tier, row.model]), [
+      ['deep', 'high', 'deep-1'],
+      ['deep', 'medium', 'deep-2'],
+    ]);
+    // No datapack is installed in this tree, so evidence is honestly absent.
+    assert.deepEqual(parsed.rungs.map((row) => row.evidence), [null, null]);
+    assert.deepEqual(parsed.rungs[0].record, { dispatches: 3, medianMinutes: 7, okShare: 0.667 });
+    assert.equal(parsed.rungs[1].record, null);
+
+    const unknown = await runStrategy(['rungs', '--pool', 'nope'], f.dir);
+    assert.equal(unknown.code, 2);
+    assert.match(unknown.err, /unknown pool "nope"/);
+  } finally { f.cleanup(); }
+});
+
+test('strategy set-rung writes the model and the reasoning level in one save, clamping what the CLI cannot express', async () => {
+  const f = rungFixture();
+  try {
+    const result = await runStrategy([
+      'set-rung', 'deep', 'medium', '--model', 'deep-1', '--reasoning', 'max',
+    ], f.dir);
+    assert.equal(result.code, 0);
+    const payload = JSON.parse(result.out);
+    assert.equal(payload.action, 'rung-set');
+    // deep declares only low and high, so max is clamped down and said so.
+    assert.deepEqual(payload.reasoning, {
+      requested: 'max', applied: 'high', source: 'strategy-pool', clamped: true,
+    });
+    assert.ok(payload.notes.some((note) => /cannot set max; clamped to high/.test(note)), payload.notes.join('|'));
+
+    const state = loadState(f.dir);
+    // One rung per pool and tier: medium moved off deep-2 onto deep-1, and
+    // deep-1 kept the high tier it already held. Both halves in one save.
+    assert.deepEqual(state.strategy.modelTiers.deep, { 'deep-1': ['high', 'medium'] });
+    assert.deepEqual(state.strategy.reasoning, { tiers: {}, pools: { deep: { medium: 'max' } } });
+    // Nothing outside the two rung halves was migrated or dropped.
+    assert.deepEqual(state.strategy.configuredTiers, ['high', 'medium']);
+    assert.ok(state.strategy.lastReport, 'the cached discovery report survives a rung write');
+
+    const rungs = await rungRows(f.dir, { pool: 'deep' });
+    assert.equal(rungs[1].model, 'deep-1');
+    assert.equal(rungs[1].reasoning.applied, 'high');
+    assert.equal(rungs[1].reasoning.clamped, true);
+  } finally { f.cleanup(); }
+});
+
+test('strategy set-rung exits 2 on an unknown pool, tier, model, or level', async () => {
+  const f = rungFixture();
+  try {
+    const pool = await runStrategy(['set-rung', 'nope', 'high', '--model', 'deep-1'], f.dir);
+    assert.equal(pool.code, 2);
+    assert.match(pool.err, /unknown pool "nope"/);
+
+    const tier = await runStrategy(['set-rung', 'deep', 'enormous', '--model', 'deep-1'], f.dir);
+    assert.equal(tier.code, 2);
+    assert.match(tier.err, /unknown tier "enormous" \(high, medium, low\)/);
+
+    const model = await runStrategy(['set-rung', 'deep', 'high', '--model', 'deep-9'], f.dir);
+    assert.equal(model.code, 2);
+    // The known models are listed, so the next attempt is a copy-paste away.
+    assert.match(model.err, /unknown model "deep-9" for pool "deep" — cached discovery knows deep-1, deep-2/);
+    assert.match(model.err, /--force/);
+
+    const level = await runStrategy([
+      'set-rung', 'deep', 'high', '--model', 'deep-1', '--reasoning', 'ludicrous',
+    ], f.dir);
+    assert.equal(level.code, 2);
+    assert.match(level.err, /--reasoning must be low, medium, high, xhigh, max, default/);
+
+    const missing = await runStrategy(['set-rung', 'deep', 'high'], f.dir);
+    assert.equal(missing.code, 2);
+
+    // None of the four rejections wrote anything.
+    assert.deepEqual(loadState(f.dir).strategy.modelTiers.deep, { 'deep-1': ['high'], 'deep-2': ['medium'] });
+    assert.equal(loadState(f.dir).strategy.reasoning, undefined);
+
+    const forced = await runStrategy(['set-rung', 'deep', 'high', '--model', 'deep-9', '--force'], f.dir);
+    assert.equal(forced.code, 0);
+    assert.deepEqual(loadState(f.dir).strategy.modelTiers.deep['deep-9'], ['high']);
+    assert.ok(JSON.parse(forced.out).notes.some((note) => /not in the cached discovery/.test(note)));
+  } finally { f.cleanup(); }
+});
+
+test('neither strategy rungs nor set-rung spawns model discovery', async () => {
+  const f = rungFixture();
+  try {
+    assert.equal(existsSync(f.marker), false);
+    assert.equal((await runStrategy(['rungs'], f.dir)).code, 0);
+    assert.equal(existsSync(f.marker), false, 'strategy rungs ran the connector discovery command');
+    assert.equal((await runStrategy([
+      'set-rung', 'deep', 'high', '--model', 'deep-2', '--reasoning', 'low',
+    ], f.dir)).code, 0);
+    assert.equal(existsSync(f.marker), false, 'strategy set-rung ran the connector discovery command');
+
+    // Positive control: the discovery path really does leave the marker, so
+    // its absence above means something. Only the fixture's own command is
+    // run — a full refresh would execute every installed provider CLI.
+    const discovered = discoverConnectorModels(loadConnectors(f.dir).deep);
+    assert.equal(discovered.source, 'cli');
+    assert.equal(existsSync(f.marker), true, 'the marker mechanism itself is broken');
+  } finally { f.cleanup(); }
+});
+
+test('strategy inventory --json carries the same rungs rows', async () => {
+  const f = rungFixture();
+  try {
+    await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
+    const result = await runStrategy(['inventory', '--json'], f.dir);
+    assert.equal(result.code, 0);
+    const inventory = JSON.parse(result.out);
+    const mine = inventory.rungs.filter((row) => row.pool === 'deep');
+    assert.deepEqual(mine.map((row) => [row.tier, row.model]), [['high', 'deep-1'], ['medium', 'deep-2']]);
+    assert.deepEqual(mine[0].record, { dispatches: 3, medianMinutes: 7, okShare: 0.667 });
+    assert.deepEqual(await rungRows(f.dir, { pool: 'deep' }), mine);
+  } finally { f.cleanup(); }
+});
+
+test('a rung whose model the bundled Epoch datapack covers carries the real evidence line', async () => {
+  const datapack = await loadEpochBenchmarks({ fetchImpl: null });
+  const levels = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const covered = (datapack?.records ?? []).find((record) => levels.includes(record.reasoningLevel)
+    && rungEvidence(datapack, { model: record.model, reasoning: record.reasoningLevel }));
+  if (!covered) return;
+  const expected = rungEvidence(datapack, { model: covered.model, reasoning: covered.reasoningLevel });
+
+  const f = rungFixture();
+  try {
+    // A fixture connector that declares a benchmarked model id and exactly the
+    // reasoning level that model was measured at. Never spawned or dispatched.
+    writeFileSync(join(f.dir, 'connectors', 'deep.json'), `${JSON.stringify({
+      name: 'deep',
+      bin: 'node',
+      lanes: ['analyze', 'build', 'chore'],
+      capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      meter: { type: 'none' },
+      model: covered.model,
+      knownModels: [covered.model],
+      modelSelection: { flag: '--model' },
+      reasoning: {
+        flag: '--effort',
+        levels: [covered.reasoningLevel],
+        defaults: { high: covered.reasoningLevel },
+      },
+      modelProfiles: [{ id: covered.model, tier: 'high', qualityRank: 3 }],
+      flags: { stealth: false, testFixture: true },
+    }, null, 2)}\n`);
+    const state = loadState(f.dir);
+    state.strategy.modelTiers = { deep: { [covered.model]: ['high'] } };
+    saveState(f.dir, state);
+
+    const [row] = await rungRows(f.dir, { pool: 'deep' });
+    assert.equal(row.model, covered.model);
+    assert.equal(row.reasoning.applied, covered.reasoningLevel);
+    assert.deepEqual(row.evidence, {
+      blended: expected.blended,
+      costPerTask: expected.costPerTask,
+      tokensPerTask: expected.tokensPerTask,
+    });
+    const printed = renderRungs([row]).split('\n')[1];
+    assert.ok(
+      printed.includes(`blended ${Math.round(expected.blended * 1000) / 1000}`),
+      `evidence line missing from ${printed}`,
+    );
+  } finally { f.cleanup(); }
+});
+
+test('an empty rung table says what to configure instead of printing nothing', () => {
+  assert.match(renderRungs([]), /^no rungs yet: enable a provider pool and configure an effort tier/);
 });
