@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ACTION_PROGRAM_SCHEMA_VERSION, validateActionProgram } from './action-validator.js';
+import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isProgramWorkflow } from './execution-policy.js';
 
@@ -239,6 +239,9 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     actions: [], attempts: [], steering: [],
     budget: { agents: 0, seconds: 0, expansions: 0 },
     cancellation: { requested: false, requestedAt: null, reason: null },
+    // Non-blocking authoring advice recorded when a program is accepted, so
+    // `runs show` can list what the launch already printed.
+    advisories: [],
     usage: { total: 0, byPool: {} },
     events: { sequence: 0, last: null },
     ledger,
@@ -378,6 +381,21 @@ function validatePreflight(preflight) {
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.preflight.scout.attempts[${index}].lastAgentEvent must be null or an object`);
   }
   if (preflight.scout.status === 'succeeded' && !preflight.scout.outputFile) fail('successful state.preflight.scout requires outputFile');
+}
+
+// Optional: runs accepted before advisories existed carry no field at all,
+// and an absent list means "no advice was recorded", never an error.
+function validateAdvisories(advisories) {
+  if (advisories === undefined || advisories === null) return;
+  if (!Array.isArray(advisories)) fail('state.advisories must be an array');
+  for (const [index, entry] of advisories.entries()) {
+    const at = `state.advisories[${index}]`;
+    object(entry, at);
+    noUnknown(entry, new Set(['code', 'actionId', 'message']), at);
+    if (!PROGRAM_ADVISORY_CODES.includes(entry.code)) fail(`${at}.code must be ${PROGRAM_ADVISORY_CODES.join('|')}`);
+    nullableString(entry.actionId, `${at}.actionId`);
+    requiredString(entry.message, `${at}.message`);
+  }
 }
 
 function validateProgram(program, state) {
@@ -528,7 +546,7 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories']), 'state');
   // Optional: written by a live kernel so readers can tell a running run from
   // one whose process died. Absent on a state no kernel has owned yet.
   if (state.runner !== undefined && state.runner !== null) {
@@ -570,6 +588,7 @@ function validateState(state) {
     nonNegativeInteger(entry.decisionSequence, `state.steering[${index}].decisionSequence`);
     if (entry.decisionSequence < 1) fail(`state.steering[${index}].decisionSequence must be positive`);
   }
+  validateAdvisories(state.advisories);
   validateCounters(state.budget, 'state.budget');
   object(state.cancellation, 'state.cancellation');
   noUnknown(state.cancellation, new Set(['requested', 'requestedAt', 'reason', 'source', 'requesterPid']), 'state.cancellation');

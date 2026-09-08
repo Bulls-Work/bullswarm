@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ActionValidationError, validateActionProgram } from '../src/workflow/action-validator.js';
+import {
+  ACTION_KINDS, ActionValidationError, DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS,
+  PROGRAM_ADVISORY_CODES, programAdvisories, validateActionProgram,
+} from '../src/workflow/action-validator.js';
 
 const work = (over = {}) => ({
   id: 'build-result', purpose: 'Build the result', dependsOn: [], affects: ['result'],
@@ -199,4 +202,188 @@ test('rejects a reasoning value that is not on the common scale', () => {
       },
     );
   }
+});
+
+// --- kind, program defaults, and advisories ---------------------------------
+
+// The exact bytes today's validator produces for an existing fixture program.
+// `kind` and `defaults` must not perturb a program that uses neither.
+const LEGACY_FIXTURE = {
+  schemaVersion: 'bullswarm.workflow.program.v2',
+  actions: [
+    { id: 'write-report', purpose: 'Write report', dependsOn: [], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Write READY to report.md.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['report'] },
+    { id: 'inspect-report', purpose: 'Inspect report', dependsOn: ['write-report'], affects: [], ownedFiles: [], prompt: 'Inspect report.md.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report'], produces: [] },
+  ],
+};
+const LEGACY_FIXTURE_NORMALIZED = '{"schemaVersion":"bullswarm.workflow.program.v2","actions":[{"id":"write-report","purpose":"Write report","dependsOn":[],"affects":["report-correct"],"ownedFiles":["report.md"],"prompt":"Write READY to report.md.","lane":"build","effort":"low","evidenceFor":[],"inputs":[],"produces":["report"]},{"id":"inspect-report","purpose":"Inspect report","dependsOn":["write-report"],"affects":[],"ownedFiles":[],"prompt":"Inspect report.md.","lane":"analyze","effort":"low","evidenceFor":["report-correct"],"inputs":["report"],"produces":[]}]}';
+
+// A writer that names only its nature. `affects` and `ownedFiles` stay so the
+// graph rules that predate kinds still apply unchanged.
+const kindWork = (kind, over = {}) => {
+  const { id = `work-${kind}`, ...rest } = over;
+  return {
+    id, purpose: `Deliver ${id}`, dependsOn: [], affects: ['result'],
+    ownedFiles: [`src/${id}.js`], prompt: `Implement ${id}.`, kind,
+    evidenceFor: [], inputs: [], produces: [], ...rest,
+  };
+};
+const relaxed = { mandatoryRequirements: ['result'], requireMandatoryEvidence: false, relaxedGraph: true };
+
+test('kind derives the documented lane and effort for every value in the closed set', () => {
+  assert.deepEqual(ACTION_KINDS, ['mechanical', 'io-read', 'check', 'implement', 'integration', 'architecture', 'adversarial-acceptance']);
+  assert.deepEqual(KIND_DEFAULTS, {
+    mechanical: { lane: 'chore', effort: 'low' },
+    'io-read': { lane: 'analyze', effort: 'low' },
+    check: { lane: 'analyze', effort: 'medium' },
+    implement: { lane: 'build', effort: 'medium' },
+    integration: { lane: 'build', effort: 'high' },
+    architecture: { lane: 'analyze', effort: 'high' },
+    'adversarial-acceptance': { lane: 'analyze', effort: 'high' },
+  });
+  for (const [kind, expected] of Object.entries(KIND_DEFAULTS)) {
+    // An analyze kind cannot own workspace files, so drop ownedFiles for those.
+    const over = expected.lane === 'analyze' ? { ownedFiles: [] } : {};
+    const [action] = validateActionProgram(
+      { schemaVersion: 'bullswarm.workflow.program.v2', actions: [kindWork(kind, over)] },
+      relaxed,
+    ).actions;
+    assert.equal(action.kind, kind, kind);
+    assert.equal(action.lane, expected.lane, kind);
+    assert.equal(action.effort, expected.effort, kind);
+  }
+});
+
+test('lane and effort resolve action field, then kind, then program defaults, then the lane table', () => {
+  const validate = (program) => validateActionProgram({ schemaVersion: 'bullswarm.workflow.program.v2', ...program }, relaxed).actions[0];
+  // Explicit action fields outrank the kind table.
+  const explicit = validate({ actions: [kindWork('mechanical', { lane: 'build', effort: 'high' })] });
+  assert.deepEqual([explicit.lane, explicit.effort], ['build', 'high']);
+  // Kind outranks program defaults.
+  const kindWins = validate({ defaults: { effort: 'high' }, actions: [kindWork('implement')] });
+  assert.deepEqual([kindWins.lane, kindWins.effort], ['build', 'medium']);
+  // Program defaults apply when neither the action nor a kind supplies effort.
+  const fromDefaults = validate({ defaults: { effort: 'high' }, actions: [kindWork('implement', { kind: undefined, lane: 'build' })] });
+  assert.deepEqual([fromDefaults.lane, fromDefaults.effort], ['build', 'high']);
+  // The lane table is the last fallback and stays the single source of truth.
+  const fromLane = validate({ actions: [kindWork('implement', { kind: undefined, lane: 'analyze', ownedFiles: [] })] });
+  assert.equal(fromLane.effort, DEFAULT_EFFORT_BY_LANE.analyze);
+  assert.deepEqual(DEFAULT_EFFORT_BY_LANE, { analyze: 'medium', build: 'medium', chore: 'low' });
+  // No lane and no kind is still the same rejection it has always been.
+  assert.throws(
+    () => validate({ actions: [kindWork('implement', { kind: undefined })] }),
+    (error) => error.issues.includes('actions[0].lane must be analyze|build|chore'),
+  );
+});
+
+test('reasoning resolves action field then program defaults, and stays absent otherwise', () => {
+  const validate = (program) => validateActionProgram({ schemaVersion: 'bullswarm.workflow.program.v2', ...program }, relaxed).actions[0];
+  assert.equal(validate({ defaults: { reasoning: 'xhigh' }, actions: [kindWork('implement')] }).reasoning, 'xhigh');
+  assert.equal(validate({ defaults: { reasoning: 'xhigh' }, actions: [kindWork('implement', { reasoning: 'max' })] }).reasoning, 'max');
+  assert.equal(Object.hasOwn(validate({ actions: [kindWork('implement')] }), 'reasoning'), false);
+});
+
+test('an unknown kind is a validation error naming the allowed values', () => {
+  for (const bad of ['implementation', 'IO-READ', 'chore', '', 3, null]) {
+    assert.throws(
+      () => validateActionProgram({ schemaVersion: 'bullswarm.workflow.program.v2', actions: [kindWork('implement', { kind: bad })] }, relaxed),
+      (error) => {
+        assert.ok(error instanceof ActionValidationError, `expected ActionValidationError for ${JSON.stringify(bad)}`);
+        assert.ok(
+          error.issues.includes(`actions[0].kind must be ${ACTION_KINDS.join('|')}`),
+          `missing kind issue for ${JSON.stringify(bad)}: ${error.issues.join('; ')}`,
+        );
+        return true;
+      },
+    );
+  }
+});
+
+test('program defaults allow only effort and reasoning', () => {
+  const withDefaults = (defaults) => validateActionProgram(
+    { schemaVersion: 'bullswarm.workflow.program.v2', defaults, actions: [kindWork('implement')] },
+    relaxed,
+  );
+  assert.throws(() => withDefaults({ lane: 'build' }), (error) => error.issues.includes('program.defaults.lane is not allowed; only effort and reasoning'));
+  assert.throws(() => withDefaults({ kind: 'implement' }), (error) => error.issues.includes('program.defaults.kind is not allowed; only effort and reasoning'));
+  assert.throws(() => withDefaults({ effort: 'ultra' }), (error) => error.issues.includes('program.defaults.effort must be high|medium|low'));
+  assert.throws(() => withDefaults({ reasoning: 'ultra' }), (error) => error.issues.includes('program.defaults.reasoning must be low|medium|high|xhigh|max|default'));
+  assert.throws(() => withDefaults('high'), (error) => error.issues.includes('program.defaults must be an object'));
+  assert.equal(withDefaults({ effort: 'low', reasoning: 'low' }).actions.length, 1);
+  // `defaults` is resolved into the actions, never echoed into the accepted
+  // program, so the durable program schema is unchanged.
+  assert.deepEqual(Object.keys(withDefaults({ effort: 'low' })), ['schemaVersion', 'actions']);
+});
+
+test('a program without kind or defaults normalizes to byte-identical actions', () => {
+  const before = JSON.parse(JSON.stringify(LEGACY_FIXTURE));
+  const normalized = validateActionProgram(LEGACY_FIXTURE, { mandatoryRequirements: ['report-correct'] });
+  assert.equal(JSON.stringify(normalized), LEGACY_FIXTURE_NORMALIZED);
+  assert.deepEqual(LEGACY_FIXTURE, before, 'the input program must not be mutated');
+  // Re-normalizing an accepted program is a fixed point, which is what every
+  // durable-state reload does.
+  assert.equal(
+    JSON.stringify(validateActionProgram(normalized, { mandatoryRequirements: ['report-correct'] })),
+    LEGACY_FIXTURE_NORMALIZED,
+  );
+});
+
+test('advisories report the two effort smells and never change validity', () => {
+  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high']);
+  const writers = (efforts) => ({
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: efforts.map((effort, index) => kindWork('implement', { id: `w-${index}`, effort })),
+  });
+  // Three or more build/chore actions with none below high.
+  const all = programAdvisories(writers(['high', 'high', 'high']));
+  assert.deepEqual(all.map((advisory) => [advisory.code, advisory.actionId]), [['all-writers-high', null]]);
+  assert.match(all[0].message, /all 3 build\/chore actions run at high effort/);
+  // Two writers, or one writer below high, is not a smell.
+  assert.deepEqual(programAdvisories(writers(['high', 'high'])), []);
+  assert.deepEqual(programAdvisories(writers(['high', 'high', 'medium'])), []);
+  // Analyze actions are not writers and never count toward the threshold.
+  assert.deepEqual(programAdvisories({
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      kindWork('implement', { id: 'w-0', effort: 'high' }),
+      kindWork('architecture', { id: 'a-0', ownedFiles: [] }),
+      kindWork('architecture', { id: 'a-1', ownedFiles: [] }),
+    ],
+  }), []);
+  // Markdown-only ownership at high effort, named per action.
+  const docs = programAdvisories({
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [kindWork('integration', { id: 'write-docs', ownedFiles: ['README.md', 'docs/guide.md'] })],
+  });
+  assert.deepEqual(docs.map((advisory) => [advisory.code, advisory.actionId]), [['docs-at-high', 'write-docs']]);
+  assert.match(docs[0].message, /README\.md, docs\/guide\.md/);
+  // One non-markdown owned path, a non-high effort, or empty ownedFiles: no advisory.
+  for (const over of [
+    { ownedFiles: ['README.md', 'src/a.js'] },
+    { ownedFiles: ['README.md'], effort: 'medium' },
+    { ownedFiles: [] },
+  ]) {
+    assert.deepEqual(programAdvisories({
+      schemaVersion: 'bullswarm.workflow.program.v2',
+      actions: [kindWork('integration', { id: 'write-docs', ...over })],
+    }), [], JSON.stringify(over));
+  }
+  // Advisories are computed from resolved effort, so program defaults reach them.
+  assert.deepEqual(programAdvisories({
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    defaults: { effort: 'high' },
+    actions: [0, 1, 2].map((index) => kindWork('implement', { id: `w-${index}`, kind: undefined, lane: 'build' })),
+  }).map((advisory) => advisory.code), ['all-writers-high']);
+  // A program that earns both advisories still validates and normalizes.
+  const smelly = {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    actions: [
+      kindWork('integration', { id: 'write-docs', ownedFiles: ['README.md'] }),
+      kindWork('integration', { id: 'w-1' }),
+      kindWork('integration', { id: 'w-2' }),
+    ],
+  };
+  assert.equal(validateActionProgram(smelly, relaxed).actions.length, 3);
+  assert.deepEqual(programAdvisories(smelly).map((advisory) => advisory.code), ['all-writers-high', 'docs-at-high']);
+  assert.deepEqual(programAdvisories(null), []);
+  assert.deepEqual(programAdvisories({ schemaVersion: 'bullswarm.workflow.program.v2' }), []);
 });

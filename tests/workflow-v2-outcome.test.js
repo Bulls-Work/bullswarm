@@ -160,3 +160,33 @@ test('result envelope carries the reasoning level of each action\'s last attempt
   broken.actions[0].reasoning = 'high';
   assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.reasoning must be an object/);
 });
+
+test('the result envelope carries each action\'s kind, and envelopes written before kinds still deserialize', () => {
+  const state = plannedState();
+  // Only the writer states a nature; the checker predates kinds entirely.
+  state.program.actions[0].kind = 'implement';
+  state.lifecycle = { status: 'completed', startedAt: '2026-08-31T01:00:00Z', finishedAt: '2026-08-31T01:10:00Z', resultFile: null };
+  state.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: [] },
+  ];
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report.md matches'], concerns: [] } } });
+
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
+  assert.equal(result.actions[0].kind, 'implement');
+  // An action without a kind reports null rather than a guessed one.
+  assert.equal(result.actions[1].kind, null);
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+
+  const legacy = structuredClone(result);
+  for (const action of legacy.actions) delete action.kind;
+  assert.deepEqual(
+    deserializeV2ResultEnvelope(JSON.stringify(legacy)).actions.map((action) => action.id),
+    ['write-report', 'check-report'],
+  );
+  const broken = structuredClone(result);
+  broken.actions[0].kind = { name: 'implement' };
+  assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.kind must be a non-empty string/);
+});
