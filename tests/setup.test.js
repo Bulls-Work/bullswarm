@@ -199,7 +199,7 @@ test('integration block: approval required, idempotent markers', () => {
     applyIntegrationBlock(file, { approved: true });
     let text = readFileSync(file, 'utf8');
     assert.match(text, /bullswarm:begin v3/);
-    assert.match(text, /bullswarm delegate/);
+    assert.match(text, /bullswarm run/);
     assert.match(text, /BULLSWARM_DEPTH/);
     assert.match(text, /existing content/); // preserved
 

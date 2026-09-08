@@ -18,6 +18,7 @@ import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
 import { cmdWorkflow } from './workflow/cli.js';
+import { DEFAULT_EFFORT_BY_LANE } from './workflow/action-validator.js';
 import {
   applyStrategyRecommendations, cmdStrategy, loadStrategyInventory, maybeRefreshStrategy,
 } from './strategy-cli.js';
@@ -25,7 +26,6 @@ import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
-import { cmdDelegate } from './delegate.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
 import {
   describeAssignment, expectedMinutesFromSpendModel, listAssignments,
@@ -157,7 +157,7 @@ async function cmdRun(opts) {
     console.error('--heartbeat must be a number of seconds greater than or equal to 1');
     return 2;
   }
-  const effortTier = opts.effort ?? ({ analyze: 'high', build: 'medium', chore: 'low' }[lane] ?? null);
+  const effortTier = opts.effort ?? (DEFAULT_EFFORT_BY_LANE[lane] ?? null);
   if (effortTier && !['high', 'medium', 'low'].includes(effortTier)) {
     console.error('--effort must be high, medium, or low');
     return 2;
@@ -681,8 +681,6 @@ export async function main(argv) {
       return cmdSetup(opts);
     case 'run':
       return cmdRun(opts);
-    case 'delegate':
-      return cmdDelegate(opts);
     case 'health':
       return cmdHealth(opts);
     case 'pools':
