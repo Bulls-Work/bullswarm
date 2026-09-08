@@ -28,6 +28,11 @@ import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { watchOnce } from '../lib/watch.js';
+import {
+  expectedMinutesFromSpendModel, registerAssignment, releaseAssignment, updateAssignment,
+  withLedger,
+} from '../lib/assignments.js';
+import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { resolveReasoningLevel } from '../lib/reasoning.js';
 import { renderDeep, extractItems, getPath } from './template.js';
 import { loadState, saveState, quarantinePool, childDepthEnv, DEPTH_ENV, assertDepthAllowed } from '../lib/state.js';
@@ -388,14 +393,33 @@ export class WorkflowRuntime {
       let escalationUsed = false;
       const actionId = this.actionId(step, opts);
       const action = this.ensureAction(step, opts);
+      // One expectation per action for the cross-process ledger: lane and
+      // effort are fixed for every attempt of this step.
+      let spendHistory = [];
+      try { spendHistory = loadState(this.bullswarmDir).decisionLog ?? []; } catch { spendHistory = []; }
+      const expectedSpend = await expectedMinutesFromSpendModel(
+        { lane: step.lane ?? 'chore', effort: effortTier },
+        { decisionLog: spendHistory },
+      );
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const assignments = attemptPools[0]?.strategyAssignments ?? {};
         const assignment = assignments?.[effortTier] ?? null;
+        // preferPoolsWithCapacity above still enforces this process's own
+        // connector concurrency; the ledger adds what every OTHER Bullswarm
+        // process is running, re-read before every attempt of this step.
+        const pickAt = Date.now();
+        let pickState = null;
+        try { pickState = loadState(this.bullswarmDir); } catch { pickState = null; }
+        attachForecast(attemptPools, this.bullswarmDir, {
+          now: pickAt, decisionLog: pickState?.decisionLog ?? [],
+        });
         const route = pickPool(step.lane ?? 'chore', attemptPools, {
           callerEligible: false,
           callerSession: false, // workflow context: every pool is a worker
-          now: Date.now(),
+          now: pickAt,
+          candidateMinutes: expectedSpend.expectedMinutes,
+          inflightPenaltyPct: inflightPenaltyFrom(pickState),
           requiredCapabilities: step.requiresCapabilities ?? [],
           // A goal-level user preference wins while it remains eligible, but
           // unlike step.pool it never removes healthy fallback candidates.
@@ -508,6 +532,7 @@ export class WorkflowRuntime {
           routing: {
             reason: route.why,
             candidates: route.candidates,
+            forecast: forecastRecord(route, conn.name),
             effort: effortTier,
             lane: step.lane ?? 'chore',
             requiredCapabilities: step.requiresCapabilities ?? [],
@@ -633,6 +658,13 @@ export class WorkflowRuntime {
         }, 10_000);
         let verdict;
         this.activeByPool.set(conn.name, Number(this.activeByPool.get(conn.name) ?? 0) + 1);
+        // activeByPool only ever sees this process. The ledger is the shared
+        // record every other Bullswarm process reads, so register here too.
+        const ledgerEntry = withLedger(() => registerAssignment(this.bullswarmDir, {
+          pool: conn.name, model: attemptRecord.model, lane: step.lane ?? 'chore',
+          effort: effortTier, source: 'workflow-v1', runId: this.state.runId ?? null,
+          actionId, attempt: attemptNumber, startedAt, ...expectedSpend,
+        }));
         try {
           verdict = await watchOnce(runtimeConnector, taskText, targetDir, attemptPaths, {
             // No connector-owned or workflow-owned wall-clock kill timer.
@@ -695,11 +727,15 @@ export class WorkflowRuntime {
               attemptRecord.childPid = pid;
               action.childPid = pid;
               this.state.activeAgents[activeKey].childPid = pid;
+              if (ledgerEntry) {
+                withLedger(() => updateAssignment(this.bullswarmDir, ledgerEntry.id, { workerPid: pid }));
+              }
               this.emit('attempt.process_started', { actionId, attemptNumber, childPid: pid });
             },
           });
         } finally {
           clearInterval(heartbeat);
+          if (ledgerEntry) withLedger(() => releaseAssignment(this.bullswarmDir, ledgerEntry.id));
           const remaining = Number(this.activeByPool.get(conn.name) ?? 1) - 1;
           if (remaining > 0) this.activeByPool.set(conn.name, remaining);
           else this.activeByPool.delete(conn.name);
@@ -995,6 +1031,9 @@ export class WorkflowRuntime {
         model: verdict.pick?.model ?? null,
         usage: verdict.meta?.usage ?? null,
         routing,
+        // Hoisted out of `routing` so every dispatch path records the forecast
+        // under the same key, whatever else its routing block carries.
+        forecast: routing?.forecast ?? null,
         outFile: paths?.outFile ?? null,
         source: 'workflow',
         stepId: step.id,

@@ -100,6 +100,57 @@ export function paceSnapshot(snapshot, nowMs = Date.now()) {
   };
 }
 
+/**
+ * Window names the spend model works in, mapped to where each one lives.
+ *   - `snapshot`: the key a provider reading uses (`seven_day` for weekly)
+ *   - `history`:  the key a history line uses (`weekly`)
+ *   - `windowMs`: the window length, for deriving its start from resets_at (M2)
+ */
+export const WINDOW_KEYS = {
+  fiveHour: { snapshot: 'five_hour', history: 'five_hour', windowMs: WINDOW_MS['5h'] },
+  weekly: { snapshot: 'seven_day', history: 'weekly', windowMs: WINDOW_MS.weekly },
+};
+
+/**
+ * Forecast one window: where utilization lands once the work already running
+ * (and, optionally, the assignment being routed) finishes at the measured
+ * spend rate.
+ *
+ *   addedPct     = ratePerMinute × (inflightRemainingMinutes + candidateMinutes)
+ *   projectedPct = clamp(usedPct + addedPct, 0, 100)
+ *
+ * Returns null when there is nothing real to project from: no utilization
+ * reading at all, or minutes to charge but no measured rate to charge them at.
+ * With zero minutes the forecast IS the reading — that is a measurement, not
+ * an invention, so it is returned even when no rate is known.
+ */
+export function projectedUtilization({
+  usedPct,
+  ratePerMinute = null,
+  inflightRemainingMinutes = 0,
+  candidateMinutes = 0,
+} = {}) {
+  const used = numberOrNull(usedPct);
+  if (used == null) return null;
+  const minutes = Math.max(0, (numberOrNull(inflightRemainingMinutes) ?? 0)
+    + (numberOrNull(candidateMinutes) ?? 0));
+  const clampPct = (v) => Math.round(Math.max(0, Math.min(100, v)) * 10) / 10;
+  if (minutes === 0) return { projectedPct: clampPct(used), addedPct: 0 };
+  const rate = numberOrNull(ratePerMinute);
+  if (rate == null || rate < 0) return null;
+  return {
+    projectedPct: clampPct(used + rate * minutes),
+    addedPct: clampPct(rate * minutes),
+  };
+}
+
+/** Finite number or null — never turns a missing measurement into a zero. */
+function numberOrNull(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** UTC calendar month ending at resetsAt (Copilot/cmd period-end semantics). */
 export function monthlyWindowMs(resetsAtMs) {
   if (!Number.isFinite(resetsAtMs)) return NaN;

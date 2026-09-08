@@ -10,6 +10,8 @@ import {
 } from './lib/strategy.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
+import { attachForecast, inflightPenaltyFrom } from './lib/forecast.js';
+import { expectedMinutesFor } from './lib/spend.js';
 import { helpText, usageLine } from './help.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
@@ -242,6 +244,10 @@ export function strategyInventory({ pools, state, report }) {
       enabled: pool.enabled !== false,
       usedPct: pool.usedPct ?? null,
       surplus: pool.pace ?? null,
+      // How many agents this pool is running right now, across every
+      // Bullswarm process — the same count `bullswarm pools` reports.
+      inflight: pool.inflight?.count ?? 0,
+      projectedFiveHourPct: pool.projectedFiveHourPct ?? null,
       meterSource: pool.meterSource,
       lanes: pool.lanes ?? [],
       capabilities: pool.capabilities ?? [],
@@ -268,6 +274,13 @@ export function strategyInventory({ pools, state, report }) {
       requiredCapabilities: context.capabilities,
       preferredPool: assignment?.pool ?? null,
       effortTier: tier,
+      // The preview routes on the same forecast a real dispatch would (the
+      // caller attaches it to `pools` before building the inventory), so the
+      // control center never shows a pick the next dispatch would not make.
+      candidateMinutes: expectedMinutesFor({ lane: context.lane, effort: tier }, {
+        decisionLog: state.decisionLog ?? [],
+      }).minutes,
+      inflightPenaltyPct: inflightPenaltyFrom(state),
     });
     if (!route.pick) {
       routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, reason: route.why };
@@ -325,6 +338,9 @@ export async function loadStrategyInventory(bullswarmDir, {
     pool.pace = live.surplus;
     pool.meterSource = live.meterSource;
   }
+  // The control center previews real routing, so it reads the same live
+  // in-flight ledger and spend rates every dispatch path does.
+  attachForecast(pools, bullswarmDir, { decisionLog: state.decisionLog ?? [] });
   return strategyInventory({ pools, state, report });
 }
 

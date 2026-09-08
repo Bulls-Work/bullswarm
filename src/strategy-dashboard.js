@@ -56,7 +56,10 @@ function providerLines(inventory, selected, width) {
   const lines = inventory.providers.flatMap((provider, index) => {
     const marker = index === selected ? '›' : ' ';
     const enabled = provider.enabled ? '●' : '○';
-    const meter = provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`;
+    // Usage is what the meter last reported; in-flight is what this pool is
+    // running right now, which routing subtracts before it compares pools.
+    const load = provider.inflight ? ` ·${provider.inflight}⚙` : '';
+    const meter = `${provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`}${load}`;
     const cellWidth = Math.max(7, Math.floor((width - 10) / STRATEGY_TIERS.length));
     const selections = STRATEGY_TIERS.map((tier) => {
       const models = provider.models
@@ -66,7 +69,7 @@ function providerLines(inventory, selected, width) {
       return pad(`${tier[0].toUpperCase()} ${choice}`, cellWidth);
     }).join(' · ');
     return [
-      `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 25))} ${pad(meter, 10)} ${provider.models.length} models`,
+      `${marker} ${enabled} ${pad(provider.name, Math.max(8, width - 29))} ${pad(meter, 14)} ${provider.models.length} models`,
       `    ${selections}`,
     ];
   });

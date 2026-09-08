@@ -27,6 +27,11 @@ import { helpForArgs, usageLine } from './help.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { cmdDelegate } from './delegate.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
+import {
+  describeAssignment, expectedMinutesFromSpendModel, listAssignments,
+  registerAssignment, releaseAssignment, updateAssignment, withLedger,
+} from './lib/assignments.js';
+import { attachForecast, forecastRecord, inflightPenaltyFrom } from './lib/forecast.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -71,6 +76,10 @@ async function cmdPools(opts) {
     console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
   }
   saveState(getBullswarmDir(), state);
+  // Current cross-process load, from the shared ledger rather than this
+  // process's own memory: work another Bullswarm started still shows here —
+  // plus the spend rates that turn that load into a projected utilization.
+  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
   if (opts.json) {
     console.log(JSON.stringify({ pools }, null, 2));
     return 0;
@@ -82,8 +91,16 @@ async function cmdPools(opts) {
       : `used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
-    // routing now deprioritizes this pool for it.
-    const fiveHour = p.fiveHourUsedPct == null ? '' : ` 5h=${Math.round(p.fiveHourUsedPct * 10) / 10}%`;
+    // routing now deprioritizes this pool for it. When in-flight work makes
+    // the projection differ from the reading, both are shown — routing decides
+    // on the right-hand number.
+    const readingPct = p.fiveHourUsedPct == null ? null : Math.round(p.fiveHourUsedPct * 10) / 10;
+    const projectedPct = p.projectedFiveHourPct == null
+      ? null
+      : Math.round(p.projectedFiveHourPct * 10) / 10;
+    const fiveHour = readingPct == null
+      ? (projectedPct == null ? '' : ` 5h=?->${projectedPct}%`)
+      : ` 5h=${readingPct}%${projectedPct != null && projectedPct !== readingPct ? `->${projectedPct}%` : ''}`;
     const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
     const status = !p.enabled
       ? 'disabled'
@@ -91,7 +108,40 @@ async function cmdPools(opts) {
         ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
         : `ready${burst}${nearLimit}`;
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'}${fiveHour} ${status}`,
+      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour} ${status}`,
+    );
+  }
+  return 0;
+}
+
+// --- assignments --------------------------------------------------------------
+// The in-flight ledger, read straight from disk: no meters, no network, no
+// pool build — just what is running right now across every Bullswarm process.
+
+function cmdAssignments(opts) {
+  const now = Date.now();
+  const records = listAssignments(getBullswarmDir(), { now });
+  if (opts.json) {
+    console.log(JSON.stringify(
+      records.map((r) => ({ ...r, ...describeAssignment(r, now) })),
+      null,
+      2,
+    ));
+    return 0;
+  }
+  if (!records.length) {
+    console.log('no in-flight assignments');
+    return 0;
+  }
+  for (const r of records) {
+    const view = describeAssignment(r, now);
+    const work = `${r.lane ?? '?'}/${r.effort ?? '?'}`;
+    const target = [r.runId, r.actionId].filter(Boolean).join('/') || '-';
+    const expected = view.expectedMinutes == null ? 'unknown' : `${view.expectedMinutes}m`;
+    console.log(
+      `${r.pool.padEnd(14)} ${work.padEnd(14)} ${(r.source ?? '-').padEnd(11)} ${target} `
+      + `age=${view.elapsedMinutes ?? '?'}m expected=${expected} `
+      + `worker=${r.workerPid ?? 'spawning'}`,
     );
   }
   return 0;
@@ -175,6 +225,16 @@ async function cmdRun(opts) {
   for (const p of pools) {
     p.incumbent = state.incumbents?.[lane] === p.name;
   }
+  // Route on the forecast, not on the reading: what every Bullswarm process
+  // has in flight right now, and how fast each pool burns its windows. Read
+  // before the eligible-pool copies are made so the fields survive the spread.
+  attachForecast(pools, getBullswarmDir(), { now, decisionLog: state.decisionLog ?? [] });
+  // The duration this assignment is booked for — the same number the ledger
+  // will publish for it (F3), so routing and every other process agree.
+  const expected = await expectedMinutesFromSpendModel(
+    { lane, effort: effortTier },
+    { decisionLog: state.decisionLog ?? [] },
+  );
 
   // Burst gate (M3): a pool whose 5h window is >=90% used is excluded from
   // dispatch entirely this run — it paces nothing, it's just out of burst room.
@@ -199,6 +259,8 @@ async function cmdRun(opts) {
     now,
     preferredPool: state.strategy?.assignments?.[effortTier]?.pool ?? null,
     effortTier,
+    candidateMinutes: expected.expectedMinutes,
+    inflightPenaltyPct: inflightPenaltyFrom(state),
   });
   if (gated.length && route.pick) {
     route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
@@ -209,12 +271,16 @@ async function cmdRun(opts) {
     // A preview never writes: the decision log records dispatches, not what
     // an operator merely asked to see.
     if (!dryRun) {
-      logDecision(state, { lane, picked: null, keepOnClaude: true, ok: null, why: route.why });
+      logDecision(state, {
+        lane, picked: null, keepOnClaude: true, ok: null, why: route.why,
+        forecast: forecastRecord(route, null),
+      });
       saveState(getBullswarmDir(), state);
     }
     emit({
       ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
       why: route.why, pick: { pool: null, command: null },
+      forecast: forecastRecord(route, null), candidates: route.candidates,
     }, opts);
     return 0;
   }
@@ -255,11 +321,15 @@ async function cmdRun(opts) {
   if (dryRun) {
     // Preview through argvWithModel — the same builder runDelegate uses — so
     // the printed command can never drift from the one that would be spawned.
+    // The forecast is reported exactly as a real dispatch would route on it;
+    // F1 keeps the preview a pure read — no ledger entry, no decision log.
     emit({
       ok: true,
       dryRun: true,
       keepOnClaude: false,
       why: route.why,
+      forecast: forecastRecord(route, connector.name),
+      candidates: route.candidates,
       pick: {
         pool: connector.name,
         model: selectedModel,
@@ -278,6 +348,17 @@ async function cmdRun(opts) {
 
   const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
   heartbeat.start();
+  // Registered the moment the pool is picked, before the worker exists, so no
+  // other process sees this pool as idle while the CLI is still spawning. The
+  // expectation is the one routing already booked this assignment for (F3).
+  const ledgerEntry = withLedger(() => registerAssignment(getBullswarmDir(), {
+    pool: connector.name,
+    model: selectedModel ?? connector.model ?? null,
+    lane: lane ?? null,
+    effort: effortTier ?? null,
+    source: 'run',
+    ...expected,
+  }));
   let verdict;
   try {
     verdict = await watchOnce(runtimeConnector, taskText, targetDir, paths, {
@@ -293,9 +374,13 @@ async function cmdRun(opts) {
       bullswarmDir: getBullswarmDir(),
       onActivity: (event) => heartbeat.activity(event),
       onAgentEvent: () => heartbeat.event(),
+      onSpawn: (pid) => {
+        if (ledgerEntry) withLedger(() => updateAssignment(getBullswarmDir(), ledgerEntry.id, { workerPid: pid }));
+      },
     });
   } finally {
     heartbeat.stop();
+    if (ledgerEntry) withLedger(() => releaseAssignment(getBullswarmDir(), ledgerEntry.id));
   }
 
   // Persist incumbency on success; quarantine hint on auth failure.
@@ -323,6 +408,11 @@ async function cmdRun(opts) {
     reasoning,
     usage: verdict.meta?.usage ?? null,
     outFile: paths.outFile,
+    // The forecast this pick was made on — the numbers pickPool compared, so a
+    // later reader can replay the decision instead of re-deriving it. The full
+    // candidate list stays out of the log: 500 entries of it would bloat the
+    // state file the spend model has to read on every dispatch.
+    forecast: forecastRecord(route, connector.name),
   });
   saveState(getBullswarmDir(), state);
 
@@ -351,6 +441,19 @@ function emit(verdict, opts) {
     console.log(line);
     if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
       console.log(`command: ${verdict.pick.command.join(' ')}`);
+    }
+    // The forecast the pick was made on, so a preview explains itself without
+    // --json: what the pool is already carrying, where its 5h window is headed
+    // once this assignment runs, and what that estimate is based on.
+    if (verdict.forecast && verdict.dryRun) {
+      const f = verdict.forecast;
+      console.log(
+        `forecast: inflight=${f.inflight} `
+        + `5h ${f.projectedFiveHourPct ?? '?'}%->${f.forecastFiveHourPct ?? '?'}% `
+        + `expected=${f.expectedMinutes == null ? 'unknown' : `${f.expectedMinutes}m`} `
+        + `rate=${f.ratePerMinute == null ? 'unmeasured' : `${f.ratePerMinute}%/min`} `
+        + `basis=${f.estimateSource ?? 'none'}`,
+      );
     }
     if (verdict.reasoning?.applied) {
       const clamped = verdict.reasoning.clamped ? ', clamped' : '';
@@ -584,6 +687,8 @@ export async function main(argv) {
       return cmdHealth(opts);
     case 'pools':
       return cmdPools(opts);
+    case 'assignments':
+      return cmdAssignments(opts);
     case 'doctor':
       return cmdDoctor(opts);
     case 'workflow':

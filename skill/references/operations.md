@@ -161,7 +161,65 @@ explicitly approved model assignments and exclusions. A pool at or above 75%
 of its 5-hour window is picked only when no eligible pool below that line
 exists; `bullswarm pools` shows the reading as `5h=<n>%` with a
 `NEAR-5H-LIMIT` label, and meters and quarantines are re-read before every
-dispatch rather than frozen at launch. Humans can use bare `bullswarm strategy` to toggle providers
+dispatch rather than frozen at launch.
+
+Those thresholds apply to the forecast, not to the reading: a pool's
+projection (its reading plus what its in-flight agents will still spend) plus
+the expected consumption of the assignment being routed. Diagnose a surprising
+pick with the numbers, in this order:
+
+```bash
+bullswarm assignments --json   # what is running right now, in every process
+bullswarm pools --json         # inflight {count, minutes, records[]} per pool
+bullswarm workflow runs show <id> --json   # routing reason + candidates
+```
+
+- `bullswarm assignments` is the ledger itself — no meters, no network. Each
+  record names the pool, source (`run` / `workflow-v1` / `workflow-v2`), run
+  and action, `startedAt`, `elapsedMinutes`, `expectedMinutes` and
+  `remainingMinutes`. An empty list with work apparently running means the
+  dispatching process never registered it; a stale-looking entry is pruned on
+  the next read once its process is gone.
+- `bullswarm pools` carries `inflight=<n>` next to each pool's `5h=<n>%`
+  reading; `--json` adds the full `inflight` block (`count`, elapsed
+  `minutes`, `remainingMinutes`, `unknownExpected`, `records[]`) and each
+  pool's `spend.fiveHour` / `spend.weekly` rates with
+  `projectedFiveHourPct` / `projectedWeeklyPct`.
+- Candidate rows (in the decision log, `workflow runs show --json`, and
+  `run --json`) explain the pick number by number: `pace` is the raw quota
+  surplus, `effectiveSurplus` is that surplus after subtracting the work the
+  pool is already carrying, `inflight` is the agent count behind it,
+  `projectedFiveHourPct` is the reading plus in-flight spend,
+  `forecastFiveHourPct` adds this assignment, `ratePerMinute` is the measured
+  5-hour burn rate, and `estimateSource` says what the adjustment was based on
+  — `history` or `bootstrap` (the measured projection exceeded the floor),
+  `penalty` (the flat 3-points-per-in-flight-agent floor set the charge, either
+  because no rate is measured or because the projection was smaller), `none`
+  (nothing to charge). An incumbent carrying more in-flight agents than a
+  challenger loses its incumbency margin and cost guard, so `why` can name a
+  pricier pool when the incumbent is the one that is loaded.
+- `forecastGated: true` means the pool was excluded because its forecast
+  reached 90%; `forecast.gated` on the result lists those names and
+  `forecast.candidateMinutes` is the duration the pick was made against. If
+  every capable pool is gated, the reason starts `every capable pool is
+  forecast-gated…` and the least-loaded one is used anyway.
+- A `null` projection or `ratePerMinute` is a pool nobody has measured yet —
+  it is deliberately never gated or deprioritized for it, so unmeasured pools
+  can look "lucky" until the model has readings for them. A rate also stays
+  `null` until at least `MIN_RATE_MINUTES` (5) of dispatch is attributable to
+  the window: percentage points divided by six seconds of work is not a rate,
+  and forecasting on it would gate every pool the moment it took its first
+  assignment.
+
+Live meter readings are retained as a capped per-pool series at
+`~/.bullswarm/meters/history/<pool>.jsonl` (500 lines) — the snapshot cache
+keeps only the newest reading, and a rate needs two. The log starts empty on
+every machine, so rates read `bootstrap` (or `null`) until enough live
+readings with dispatch between them accumulate. The flat per-in-flight-agent
+penalty is `config.inflightPenaltyPct` in `~/.bullswarm/state.json` (default
+3, `0` disables the tie-breaker).
+
+Humans can use bare `bullswarm strategy` to toggle providers
 and multi-select high/medium/low per model. Agents should consume the inventory
 and apply validated changes with `strategy set-provider`, `strategy set-model`,
 or one atomic `strategy configure --file <json> --yes`. Never weaken those
