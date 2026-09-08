@@ -5,7 +5,7 @@
 // compact trigger policy so CLI documentation cannot drift in three places.
 
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync,
+  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -230,8 +230,12 @@ function skillLinkStatus(skillPath, skillSource) {
   if (!stat.isSymbolicLink()) return { status: 'conflict', path: skillPath, target: null };
   const rawTarget = readlinkSync(skillPath);
   const target = resolve(dirname(skillPath), rawTarget);
+  // A link may reach the packaged skill through another link (an `npm link`ed
+  // global install, for example). What matters is where the chain ends, so
+  // compare real paths; a dangling chain keeps its first hop for the report.
+  const endsAt = (path) => { try { return realpathSync(path); } catch { return resolve(path); } };
   return {
-    status: target === resolve(skillSource) ? 'installed' : 'conflict',
+    status: endsAt(target) === endsAt(skillSource) ? 'installed' : 'conflict',
     path: skillPath,
     target,
   };

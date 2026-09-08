@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync,
-  rmSync, writeFileSync,
+  rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -67,6 +67,30 @@ test('integration upgrades old marker blocks, preserves user content, and remove
     assert.equal(removed.changes[0].skill.changed, true);
     assert.equal(existsSync(join(home, '.codex', 'skills', 'bullswarm')), false);
     assert.equal(readFileSync(instructions, 'utf8'), '# User rule\n');
+  } finally { cleanup(); }
+});
+
+test('a skill link that reaches the packaged skill through another link is installed, not a conflict', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    // ~/.local/lib/node_modules/bullswarm -> <repo> is how `npm link` installs
+    // the package; every agent's skills/bullswarm then points through it.
+    const hop = join(home, '.local', 'lib', 'node_modules', 'bullswarm');
+    mkdirSync(join(home, '.local', 'lib', 'node_modules'), { recursive: true });
+    symlinkSync(REPO, hop);
+    const skillPath = join(home, '.claude', 'skills', 'bullswarm');
+    mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+    symlinkSync(join(hop, 'skill'), skillPath);
+    const status = integrationStatus({ homeDir: home, agents: ['claude'], skillSource: SKILL_SOURCE });
+    const entry = status.agents.find((item) => item.agent === 'claude');
+    assert.equal(entry.skill.status, 'installed');
+    assert.equal(entry.skill.target, join(hop, 'skill'));
+    // And a link that ends somewhere else is still a conflict.
+    rmSync(skillPath);
+    mkdirSync(join(home, 'elsewhere'), { recursive: true });
+    symlinkSync(join(home, 'elsewhere'), skillPath);
+    const other = integrationStatus({ homeDir: home, agents: ['claude'], skillSource: SKILL_SOURCE });
+    assert.equal(other.agents.find((item) => item.agent === 'claude').skill.status, 'conflict');
   } finally { cleanup(); }
 });
 
