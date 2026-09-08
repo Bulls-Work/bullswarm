@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
-import { deriveV2PresentationStages } from './v2-presentation.js';
+import { deriveV2PresentationStages, deriveV2DependencyStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
 import { isProgramWorkflow } from './execution-policy.js';
 
@@ -433,7 +433,7 @@ export function applyV2PlannerResponse(state, response, options = {}) {
     revision,
     actions: [...next.program.actions, ...accepted.program.actions],
   };
-  next.presentation.stages.push(...deriveV2PresentationStages(accepted.program.actions, revision));
+  next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   for (const action of accepted.program.actions) next.actions.push({
     id: action.id, status: 'pending', attempts: 0, programRevision: revision,
     workRevision: next.ledger.workRevision, startedAt: null, finishedAt: null,

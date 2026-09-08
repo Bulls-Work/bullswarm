@@ -9,7 +9,7 @@ import { listRuns, resolveRunId, v2RunnerLiveness } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
 import { V2_STATE_SCHEMA_VERSION } from './v2-state.js';
-import { presentationStageStatus } from './v2-presentation.js';
+import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 
 const ESC = '\x1b[';
@@ -44,7 +44,7 @@ function keyPressed(name, key) {
 
 function navigationFooter({
   list = false, depth = 0, narrow = false, filterEditing = false, mobileTimeline = true,
-  timelineSelection = null,
+  timelineSelection = null, dependencyGroups = false,
 } = {}) {
   if (filterEditing) return 'Filter: {query}█ · Enter apply · Esc clear';
   if (list) {
@@ -55,9 +55,9 @@ function navigationFooter({
   const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
   const phaseNavigation = narrow && depth <= 2 && mobileTimeline;
   const phaseToggle = narrow && depth <= 2
-    ? ` · t ${mobileTimeline ? 'phases' : 'timeline'}`
+    ? ` · t ${mobileTimeline ? (dependencyGroups ? 'levels' : 'phases') : 'timeline'}`
     : '';
-  const movement = phaseNavigation ? '↑ previous phase · ↓ next phase' : `${keyHint('up')} · ${keyHint('down')}`;
+  const movement = phaseNavigation ? `↑ previous ${dependencyGroups ? 'level' : 'phase'} · ↓ next ${dependencyGroups ? 'level' : 'phase'}` : `${keyHint('up')} · ${keyHint('down')}`;
   const open = phaseNavigation ? `Enter ${timelineSelection === 0 ? 'planner' : 'agents'}` : keyHint('in');
   return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
 }
@@ -470,7 +470,7 @@ function renderV2Details(row, { interactive = true } = {}) {
     '',
     ' presentation stages:',
   ];
-  for (const stage of state.presentation.stages) {
+  for (const stage of isProgramWorkflow(state) ? projectV2DependencyStages(state) : state.presentation.stages) {
     const progress = presentationStageStatus(stage, state.actions);
     const status = stage.completedAt ? (progress.successful ? 'completed' : 'completed with gaps') : stage.startedAt ? 'running' : 'not started';
     lines.push(`   ${statusIcon(status)} ${stage.label} · ${progress.completed}/${progress.total} · ${status}`);
@@ -742,7 +742,8 @@ function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}
   const state = row.state;
   const actionDefinitions = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
   const actionStates = new Map((state.actions ?? []).map((action) => [action.id, action]));
-  const stages = state.presentation?.stages ?? [];
+  const dependencyGroups = isProgramWorkflow(state);
+  const stages = dependencyGroups ? projectV2DependencyStages(state) : state.presentation?.stages ?? [];
   const currentStageIndex = Math.max(0, stages.findIndex((stage) => stage.actionIds.some((id) => ['running', 'ready'].includes(actionStates.get(id)?.status))));
   const selectedPhaseIndex = clamp(phaseIndex == null ? currentStageIndex : phaseIndex, 0, Math.max(0, stages.length - 1));
   const phases = stages.map((stage) => {
@@ -788,7 +789,7 @@ function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}
     latestDecision: state.planner.lastDecision,
   };
   return {
-    v2: true, state, events: row.events ?? [], orchestrator, phases,
+    v2: true, state, stages, dependencyGroups, events: row.events ?? [], orchestrator, phases,
     phaseIndex: selectedPhaseIndex, selectedPhase, agents,
     agentIndex: selectedAgentIndex, selectedAgent: agents[selectedAgentIndex] ?? null,
   };
@@ -821,6 +822,7 @@ export function renderWorkflowTui(row, {
   const breadcrumbDepth = navigationDepth({ detail: true, focus, orchestratorDetail, workflowVerbose });
   const header = [
     breadcrumbLine(breadcrumbSegments(row, {
+      dependencyGroups: model.dependencyGroups,
       depth: breadcrumbDepth,
       phase: model.selectedPhase,
       agent: model.selectedAgent,
@@ -900,7 +902,7 @@ export function renderWorkflowTui(row, {
   const visiblePhases = panelWindow(['', ...phaseLines], model.phaseIndex, 1, contentHeight).slice(1);
   const visibleAgents = panelWindow(['', ...agentLines], model.agentIndex, 1, contentHeight).slice(1);
   const visibleDetail = detail.slice(scroll, scroll + contentHeight);
-  const phaseTitle = `Phases · ${model.phases.length}`;
+  const phaseTitle = `${model.dependencyGroups ? 'Dependency levels' : 'Phases'} · ${model.phases.length}`;
   const orchestrationNavLines = model.orchestrator.autonomous
     ? [
       selectLine(
@@ -1100,7 +1102,7 @@ function workflowTimelineLines(model, width) {
   const scout = ledger.find((action) => action.id === 'scout');
   add(state.startedAt, [
     timelineRow(state.startedAt, '● Workflow initiated', '', width),
-    timelineDetail(scout ? 'Goal accepted; preparing repository reconnaissance' : 'Execution started', width),
+    timelineDetail(scout ? model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance' : 'Execution started', width),
   ], Number.MAX_SAFE_INTEGER, 'Preflight');
 
   const scoutStartedAt = actionStartedAt(state, scout);
@@ -1237,7 +1239,8 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
       const segment = segments.get(event.segment ?? 'Workflow');
       const segmentFinishedAt = segment.last;
       const currentSegment = currentTimelineSegment(model);
-      const running = !workflowFinishedAt && segment.name === currentSegment;
+      const running = !workflowFinishedAt && (segment.name === currentSegment
+        || (model.dependencyGroups && model.phases.some((phase) => phase.label === segment.name && phase.status === 'active')));
       const elapsed = running ? 'running' : durationText(segment.first, segmentFinishedAt);
       const displayName = timelineSegmentDisplayName(segment.name, model);
       const header = openedSegments.has(segment.name)
@@ -1256,7 +1259,7 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
 
 function timelineSegmentDisplayName(name, model) {
   const phaseIndex = model.phases.findIndex((phase) => phase.label === name);
-  return phaseIndex >= 0 ? `Phase ${phaseIndex + 1} · ${name}` : name;
+  return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
 }
 
 function workflowTimelineLinesV2(model, width) {
@@ -1269,7 +1272,7 @@ function workflowTimelineLinesV2(model, width) {
       lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])],
     });
   };
-  add(state.lifecycle.startedAt, '● Workflow initiated', '', 'Goal accepted; preparing repository reconnaissance', 'Preflight');
+  add(state.lifecycle.startedAt, '● Workflow initiated', '', model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance', 'Preflight');
   const eventByType = new Map();
   for (const event of model.events) {
     if (!eventByType.has(event.type)) eventByType.set(event.type, []);
@@ -1296,19 +1299,26 @@ function workflowTimelineLinesV2(model, width) {
       attempt?.startedAt,
     );
   }
-  const stageById = new Map((state.presentation?.stages ?? []).map((stage) => [stage.id, stage]));
+  const stageById = new Map(model.stages.map((stage) => [stage.id, stage]));
+  if (model.dependencyGroups) {
+    for (const stage of model.stages) {
+      add(stage.startedAt, '├─ started', '', null, stage.label);
+      const progress = presentationStageStatus(stage, state.actions);
+      add(stage.completedAt, `└─${progress.successful ? '✓' : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
+    }
+  }
   for (const event of model.events) {
-    if (event.type === 'presentation.stage_started') {
+    if (!model.dependencyGroups && event.type === 'presentation.stage_started') {
       add(event.committedAt, '├─ started', '', null, event.payload.label);
     }
     if (event.type === 'action.finished' || event.type === 'evidence.recorded') {
       const actionId = event.payload?.actionId;
       const runtime = state.actions.find((action) => action.id === actionId);
-      const stage = (state.presentation?.stages ?? []).find((item) => item.actionIds.includes(actionId));
+      const stage = model.stages.find((item) => item.actionIds.includes(actionId));
       const status = runtime?.status === 'succeeded' ? '✓' : runtime?.status === 'blocked' ? '⊘' : '×';
       add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work');
     }
-    if (event.type === 'presentation.stage_completed') {
+    if (!model.dependencyGroups && event.type === 'presentation.stage_completed') {
       const stage = stageById.get(event.payload?.stageId);
       const ok = event.payload?.status === 'completed';
       add(event.committedAt, `└─${ok ? '✓' : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
@@ -1316,7 +1326,7 @@ function workflowTimelineLinesV2(model, width) {
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
-    const finalSegment = state.presentation?.stages?.findLast((stage) => stage.startedAt)?.label ?? 'Workflow';
+    const finalSegment = model.stages.findLast((stage) => stage.startedAt)?.label ?? 'Workflow';
     add(state.lifecycle.finishedAt, `${status === 'completed' ? '✓' : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, finalSegment);
   }
   return groupedTimeline(rows, model, width, state.lifecycle.finishedAt);
@@ -1356,7 +1366,7 @@ function currentTimelineSegment(model) {
   const { state, orchestrator } = model;
   if (model.v2) {
     const activeAction = state.actions.find((action) => action.status === 'running');
-    return state.presentation.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
+    return model.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
       ?? (state.preflight?.scout?.status === 'running' ? 'Preflight'
         : state.planner.status === 'running'
           ? (state.actions.length ? 'Planner' : 'Preflight')
