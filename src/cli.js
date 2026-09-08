@@ -78,13 +78,17 @@ async function cmdPools(opts) {
       ? 'unmetered'
       : `used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
+    // 5h is a gate, never a pace (doctrine M3): show the reading and whether
+    // routing now deprioritizes this pool for it.
+    const fiveHour = p.fiveHourUsedPct == null ? '' : ` 5h=${p.fiveHourUsedPct}%`;
+    const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
     const status = !p.enabled
       ? 'disabled'
       : p.quarantine
         ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
-        : `ready${burst}`;
+        : `ready${burst}${nearLimit}`;
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} ${status}`,
+      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'}${fiveHour} ${status}`,
     );
   }
   return 0;
@@ -228,6 +232,9 @@ async function cmdRun(opts) {
       timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
       env: childDepthEnv(process.env),
       model: selectedModel,
+      // Lets a usage-limit verdict fall back to this pool's cached 5h meter
+      // reset when the provider's message named no reset time of its own.
+      bullswarmDir: getBullswarmDir(),
       onActivity: (event) => heartbeat.activity(event),
       onAgentEvent: () => heartbeat.event(),
     });
@@ -240,7 +247,12 @@ async function cmdRun(opts) {
     state.incumbents ??= {};
     state.incumbents[lane] = connector.name;
   } else if (verdict.quarantineHint) {
-    quarantinePool(state, connector.name, verdict.why, now);
+    // A usage limit carries its own deadline (the reset the provider named);
+    // an auth failure keeps the flat re-probe window.
+    quarantinePool(state, connector.name, verdict.why, now, {
+      until: verdict.quarantineUntil ?? null,
+      kind: verdict.failureKind === 'quota' ? 'quota' : 'auth',
+    });
     verdict.quarantinedUntil = state.pools[connector.name]?.quarantine?.until;
   }
 

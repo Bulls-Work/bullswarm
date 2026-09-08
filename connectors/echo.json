@@ -7,6 +7,7 @@
     "cwdMode": "task-file-dir"
   },
   "authSignatures": ["Authentication failed", "unauthorized"],
+  "quotaSignatures": [],
   "outputExtraction": { "strategy": "stdout" },
   "meter": { "type": "none" },
   "costRank": 5,

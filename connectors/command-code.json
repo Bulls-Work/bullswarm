@@ -21,6 +21,8 @@
     "not authenticated",
     "cmd login"
   ],
+  "$comment-quotaSignatures": "empty on purpose: no cmd-specific usage-limit wording has been observed yet; DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js covers the generic provider phrasings.",
+  "quotaSignatures": [],
   "outputExtraction": {
     "strategy": "event-stream"
   },

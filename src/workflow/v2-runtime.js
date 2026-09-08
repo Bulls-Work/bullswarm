@@ -25,6 +25,7 @@ import {
   createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress,
 } from './v2-outcome.js';
 import { dispatchV2Action } from './v2-dispatch.js';
+import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
@@ -437,6 +438,22 @@ async function runV2Kernel({
 } = {}) {
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const dispatch = dependencies.dispatchV2Action ?? dispatchV2Action;
+  // Meters and quarantines move while a run is in flight. Every dispatch site
+  // re-reads them through this refresher instead of the list captured at
+  // launch, and the dispatch loop gets the same function so it can re-read
+  // between its own retries.
+  const refreshPools = dependencies.refreshPools
+    ?? createPoolRefresher({ bullswarmDir, initialPools: pools });
+  const syncPools = async (opts) => {
+    try {
+      const next = await refreshPools(opts);
+      if (Array.isArray(next)) pools = next;
+    } catch {
+      // A stale pool list still dispatches; a refresh failure must never end
+      // the run.
+    }
+    return pools;
+  };
   const captureManifest = dependencies.captureWorkspaceManifest ?? captureWorkspaceManifest;
   const writeResultAtomic = dependencies.writeResultAtomic ?? writeJsonAtomic;
   const writeCompletionReceipt = dependencies.writeCompletionReceipt ?? writeJsonAtomic;
@@ -661,11 +678,12 @@ async function runV2Kernel({
       ];
       return { ok: errors.length === 0, errors, value: source };
     };
+    await syncPools();
     const result = await dispatch({
       action: { id: 'preflight-scout', lane: 'analyze', effort: 'low' },
       taskText: scoutPrompt(state.intent.goal, state.intent.cwd), targetDir: state.intent.cwd,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-preflight-scout-attempt-${ordinal}.md`), outFile: join(runDir, `out-preflight-scout-attempt-${ordinal}.md`) }),
-      pools, bullswarmDir, parentEnv,
+      pools, refreshPools, bullswarmDir, parentEnv,
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
@@ -818,6 +836,7 @@ async function runV2Kernel({
       const time = Date.now();
       if (time - lastProgressPersist >= 1000) { lastProgressPersist = time; persist(); }
     };
+    await syncPools();
     const result = await dispatch({
       action: { id: 'workflow-planner', lane: 'analyze', effort: 'high' },
       taskText: prompt,
@@ -826,7 +845,7 @@ async function runV2Kernel({
         taskFile: join(runDir, `task-workflow-planner-turn-${turn}-attempt-${ordinal}.md`),
         outFile: join(runDir, `out-workflow-planner-turn-${turn}-attempt-${ordinal}.json`),
       }),
-      pools, bullswarmDir, parentEnv,
+      pools, refreshPools, bullswarmDir, parentEnv,
       preferredPool: state.config.plannerRouting?.pool ?? state.config.plannerRouting?.preferredPool ?? null,
       preferredModel: state.config.plannerRouting?.model ?? state.config.plannerRouting?.preferredModel ?? null,
       strictPool: state.config.plannerRouting?.strictPool ?? state.config.plannerRouting?.pool ?? null,
@@ -961,12 +980,13 @@ async function runV2Kernel({
       if (time - lastProgressPersist >= 1000) { lastProgressPersist = time; persist(); }
     };
     let result;
+    if (!receipt) await syncPools();
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
       taskText: evidence ? buildEvidenceTask(state, action, contractPath, candidatePath) : buildWorkTask(state, action, targetDir),
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
-      pools, bullswarmDir, parentEnv,
+      pools, refreshPools, bullswarmDir, parentEnv,
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,

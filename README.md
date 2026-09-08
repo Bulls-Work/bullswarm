@@ -37,12 +37,17 @@ detaches safely.
    passing verification.
 2. **Pace by meter.** The scheduling resource is the subscription window:
    elapsed% minus used%, most-behind pool wins. Pace may only promote a
-   *cheaper* pool. Lanes are work-nature, never hard-coded to pools.
+   *cheaper* pool. Lanes are work-nature, never hard-coded to pools. The
+   5-hour window never paces — it gates: a pool at or above 75% of it is
+   chosen only when no eligible pool below that line exists, and one at or
+   above 90% is not dispatched at all.
 3. **Delegate output is evidence, never authority.** The Workflow Planner may
    propose actions, but only the deterministic kernel validates the program,
    accepts requirement-scoped evidence, and computes completion.
 4. **Quarantine re-probes.** A benched pool must be able to return to service
-   automatically; a lane is never allowed to silently go down.
+   automatically; a lane is never allowed to silently go down. A pool benched
+   for a usage limit waits for the reset the provider named, not a flat
+   guess — and never longer.
 
 ## Install
 
@@ -94,7 +99,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `delegate` | Explain and execute the smallest reliable shape: one content-verified agent, or the planning contract for an autonomous workflow you author (`--orchestrator` dispatches a planner agent instead). |
 | `run` | route → dispatch → watch → verify → one JSON verdict |
 | `health` | Re-judge saved outputs against their verdicts; surface verify-gate failures and quarantine clusters |
-| `pools` | Show each pool's meter state, pace position, quarantine status |
+| `pools` | Show each pool's meter state, pace position, 5-hour utilization (`5h=<n>%`, flagged `NEAR-5H-LIMIT` at or above 75%), quarantine status |
 | `strategy` | Interactive provider/model control center with live high/medium/low route previews and an agent-facing JSON API |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
@@ -209,8 +214,15 @@ best eligible models on its configured interval. Disable it with
 `strategy auto off --yes`. Discovery commands, model argument syntax, pricing,
 and benchmark declarations remain connector-owned. Unknown license value,
 prices, and benchmarks stay `null` rather than being guessed. An assignment is
-only a preference: quarantine, exhaustion, burst gates, and capability checks
-still win.
+only a preference: quarantine, exhaustion, burst gates, 5-hour headroom, and
+capability checks still win. Routing prefers pools below
+`FIVE_HOUR_NEAR_LIMIT_PCT` (75) of their 5-hour window over pools at or above
+it, ahead of pace, an approved assignment, and incumbency; a near-limit pool is
+still picked when it is the only eligible one, and a pool with no 5-hour
+reading counts as having headroom. The routing reason and every candidate row
+name the utilization that decided the pick, and meters and quarantines are
+re-read before each dispatch — and again, live, right after a usage limit —
+so a long run never routes off the snapshot it launched with.
 
 Model exclusions are hard routing policy. An excluded model is removed from
 recommendations and assignments, and Bullswarm pins a same-tier allowed model
@@ -490,9 +502,18 @@ prints one attach line, then one line per notable event as it happens
 planner turn, stall/recovery, cancellation, and the existing pause and
 terminal `outcome:` / `next:` lines) and stays silent while work is merely
 in progress. Agent starts, mechanical retries, and steering delivery print
-only with `--verbose`. The periodic heartbeat is off unless you pass
-`--heartbeat <seconds>`; `--stall-after <seconds>` (default 300) reports a
-running agent that has gone silent. `--next` prints no attach line and
+only with `--verbose`. A usage-limit failure (`failureKind: 'quota'`) always
+prints, verbose or not: `⚠ <actionId> usage limit on <pool> · paused until
+<deadline> · retrying on another pool`, followed once the mechanical retry
+lands on another pool by `↺ <actionId> now on <pool> · <model>`. The
+periodic heartbeat is off unless you pass `--heartbeat <seconds>`;
+`--stall-after <seconds>` (default 300) reports a running agent that has
+gone silent. Pass `--classic` to force the older heartbeat-based watcher
+instead (the transition-on-change snapshot stream plus a periodic
+heartbeat, every 60 seconds unless `--heartbeat <seconds>` is given) —
+legacy (non-V2) runs already behave this way and `--classic` is a no-op for
+them; `--classic` cannot combine with `--next`, which exists only for event
+mode. `--next` prints no attach line and
 exits after the first notable event so a background terminal can wake the
 caller; relaunch until the outcome line reports a pause or a terminal
 status (exit 0 while the run continues or delivered, 1 when it ended
@@ -507,12 +528,14 @@ reported does not produce a duplicate stall line (its recovery still
 prints). `--jsonl` emits one JSON object per notable event with a stable
 `type` (`attach`, `action.finished`,
 `evidence.recorded`, `stage.completed`, `planner.finished`, `agent.stalled`,
-`agent.recovered`, `cancellation.requested`, `paused`, `finished`,
+`agent.recovered`, `cancellation.requested`, `attempt.quota`,
+`attempt.moved`, `paused`, `finished`,
 `interrupted`, and with `--verbose` `action.started`, `attempt.retrying`,
 `steering.delivered`); in that mode the relaunch line is not printed and
 every object instead carries the `sequence` it was emitted at, which is the
 value to pass as `--after`. `--once` still prints one current snapshot. Legacy
-(non-V2) runs keep the compact transition-plus-heartbeat stream unchanged.
+(non-V2) runs keep the compact transition-plus-heartbeat stream unchanged,
+the same stream `--classic` opts a V2 run into.
 
 ```bash
 bullswarm workflow watch <shortId>
@@ -523,6 +546,7 @@ bullswarm workflow watch <shortId> --jsonl       # one JSON object per event
 bullswarm workflow watch <shortId> --once        # one current/terminal snapshot
 bullswarm workflow watch <shortId> --verbose     # started / retry / steering too
 bullswarm workflow watch <shortId> --stall-after 120 --heartbeat 30
+bullswarm workflow watch <shortId> --classic     # older heartbeat-based watcher instead of event mode
 ```
 
 `workflow tui` is the interactive, Claude-style `/workflows` view. For an
@@ -610,6 +634,20 @@ Raw structured stdout is treated as an agent transcript, not a provider error
 channel, so reading source text such as an auth-signature matcher cannot falsely
 quarantine Grok or Command Code. Error-shaped semantic results and stderr
 diagnostics still trigger the auth/quota guard.
+
+A provider that reports a usage limit — `You've hit your session limit ·
+resets 8:20pm (Asia/Hong_Kong)`, `usage_credits_required`, `rate limit
+exceeded`, `quota exceeded` — is its own mechanical failure kind, `quota`,
+never `process`, `semantic`, or `auth`. The attempt is killed immediately
+even if the CLI would otherwise hang, and the pool is quarantined until the
+reset time parsed from the message, falling back to that pool's cached 5-hour
+`resets_at` and then to 30 minutes. The quarantine record carries
+`kind: 'quota'` and excludes the pool from every later dispatch, in this run
+and in others, until it expires; the action is immediately re-dispatched on
+another pool with quota and never retried on the one that hit the limit. An
+agent report that merely discusses usage limits, or tool output that quotes
+them, is not a limit: detection is shape-gated to lines that look like a
+provider notice.
 
 After ten minutes without transport, parsed-event, or semantic-action evidence,
 an active child is labeled `suspected_stalled`. This is an inspection signal,

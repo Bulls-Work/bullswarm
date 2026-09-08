@@ -81,8 +81,23 @@ export async function getMeterReading(pool, opts = {}) {
 
   const reader = readerFor(pool);
   if (!reader) {
-    // No programmatic reader for this pool — declared meters (state.json)
-    // are the fallback and are handled by config.js. Signal that here.
+    // No programmatic reader for this pool. A cached snapshot is still a real
+    // recorded reading, so a FORCED refresh must not blank it — that call is
+    // the post-quota-failure path, exactly when routing needs the 5h numbers
+    // most. Same age ladder as the reader-failure branch below. With no
+    // usable cache, declared meters (state.json) remain the fallback and are
+    // handled by config.js; signal that here.
+    if (cached) {
+      const ageMs = nowMs - Date.parse(cached.captured_at);
+      if (Number.isFinite(ageMs) && ageMs <= STALE_MS) {
+        return {
+          snapshot: cached,
+          source: ageMs <= FRESH_MS ? 'cache' : 'stale',
+          ageMs,
+          ...paceSnapshot(cached, nowMs),
+        };
+      }
+    }
     return { snapshot: null, source: 'none', pacing: null, burstGate: false, windows: {} };
   }
 

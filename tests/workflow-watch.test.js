@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   formatDuration, timingBreakdown, watchSnapshot, snapshotFingerprint,
   renderWatchSnapshot, runWorkflowWatch,
@@ -1063,5 +1064,129 @@ test('legacy watch output is unchanged without event-mode attach or opt-in heart
     assert.doesNotMatch(output, /watching abc234/);
     assert.doesNotMatch(output, /♡/);
     assert.doesNotMatch(output, /✓ |✗ |◆ |◇ |⚠ |↻ |⧖ /);
+  } finally { f.cleanup(); }
+});
+
+test('--classic forces the transition-plus-heartbeat stream for a V2 run and never prints event lines', async () => {
+  const f = v2Fixture({ shortId: 'cls234' });
+  try {
+    const watch = startWatch(f, { classic: true, intervalMs: 20 });
+    try {
+      await waitUntil(() => watch.lines().length >= 1, `no initial snapshot line: ${watch.output}`);
+      assert.match(watch.output, /1 running, 1 waiting/);
+      assert.doesNotMatch(watch.output, /● watching|✓ |✗ |◆ |◇ |⚠ |↺ |⧖ |↻ /);
+      const beforeHeartbeat = watch.output;
+      // No opt-in --heartbeat was given, so classic falls back to the historical
+      // 60s legacy heartbeat; the injectable clock advances past it directly.
+      f.nowMs += 61_000;
+      markRunnerLive(f.state, f.nowMs);
+      f.save();
+      await waitUntil(() => watch.output.includes('♡'), `60s heartbeat missing: ${watch.output}`);
+      assert.ok(watch.output.length > beforeHeartbeat.length, watch.output);
+      assert.doesNotMatch(watch.output, /● watching|✓ |✗ |◆ |◇ |⚠ |↺ |⧖ |↻ /);
+    } finally { await settleWatch(f, watch); }
+  } finally { f.cleanup(); }
+});
+
+test('the CLI rejects --classic combined with --next', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-watch-cliflags-'));
+  try {
+    const cliPath = resolve('bin/bullswarm.js');
+    const result = spawnSync(process.execPath, [cliPath, 'workflow', 'watch', 'anytoken', '--classic', '--next'], {
+      encoding: 'utf8', env: { ...process.env, BULLSWARM_HOME: home },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /--classic cannot combine with --next/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('V2 watch reports a usage-limit quota failure once, then the pool it moved to, in order', async () => {
+  const f = v2Fixture({ shortId: 'qta234' });
+  try {
+    const watch = startWatch(f);
+    try {
+      await waitUntil(() => watch.output.includes('● watching qta234'), `attach missing: ${watch.output}`);
+      const untilMs = f.nowMs + 10 * 60_000;
+      writeFileSync(join(f.home, 'state.json'), JSON.stringify({
+        pools: { 'command-code': { quarantine: { until: untilMs, reason: 'usage limit', kind: 'quota' } } },
+      }));
+      f.state.attempts[0] = {
+        ...f.state.attempts[0],
+        status: 'failed',
+        failureKind: 'quota',
+        why: 'usage limit: "You\'ve hit your session limit · resets 8:20pm" · pool paused until '
+          + new Date(untilMs).toISOString(),
+        finishedAt: new Date(f.nowMs).toISOString(),
+      };
+      f.emit('attempt.finished', { actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota' });
+      await waitUntil(() => watch.output.includes('usage limit on command-code'), `quota line missing: ${watch.output}`);
+      assert.match(watch.output, /⚠ write-report usage limit on command-code · paused until \S+ · retrying on another pool/);
+      assert.equal(watch.output.match(/usage limit on command-code/g)?.length, 1, watch.output);
+      assert.doesNotMatch(watch.output, /now on relay/);
+
+      f.state.attempts.push({
+        id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'running',
+        pool: 'relay', model: 'gpt-5.6-luna',
+        startedAt: new Date(f.nowMs).toISOString(), finishedAt: null,
+        lastActivityAt: new Date(f.nowMs).toISOString(), outputBytesObserved: 0,
+      });
+      f.emit('attempt.started', { actionId: 'write-report', attemptId: 'write-report-2', pool: 'relay', model: 'gpt-5.6-luna' });
+      await waitUntil(() => watch.output.includes('now on relay'), `moved line missing: ${watch.output}`);
+      assert.match(watch.output, /↺ write-report now on relay · gpt-5\.6-luna/);
+      assert.equal(watch.output.match(/now on relay/g)?.length, 1, watch.output);
+      const quotaIndex = watch.output.indexOf('usage limit on command-code');
+      const movedIndex = watch.output.indexOf('now on relay');
+      assert.ok(quotaIndex >= 0 && movedIndex > quotaIndex, watch.output);
+      assert.doesNotMatch(watch.output, /write-report retrying/);
+    } finally { await settleWatch(f, watch); }
+  } finally { f.cleanup(); }
+});
+
+test('V2 jsonl carries the attempt.quota and attempt.moved fields', async () => {
+  const f = v2Fixture({ shortId: 'qtj234' });
+  try {
+    const watch = startWatch(f, { jsonl: true });
+    try {
+      await waitUntil(() => watch.lines().some((line) => JSON.parse(line).type === 'attach'), `attach missing: ${watch.output}`);
+      const untilMs = f.nowMs + 10 * 60_000;
+      writeFileSync(join(f.home, 'state.json'), JSON.stringify({
+        pools: { 'command-code': { quarantine: { until: untilMs, reason: 'usage limit', kind: 'quota' } } },
+      }));
+      f.state.attempts[0] = {
+        ...f.state.attempts[0],
+        status: 'failed',
+        failureKind: 'quota',
+        why: 'usage limit: "session limit"',
+        finishedAt: new Date(f.nowMs).toISOString(),
+      };
+      f.emit('attempt.finished', { actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota' });
+      await waitUntil(() => watch.lines().some((line) => {
+        try { return JSON.parse(line).type === 'attempt.quota'; } catch { return false; }
+      }), `attempt.quota jsonl missing: ${watch.output}`);
+      const quotaEvent = watch.lines().map((line) => JSON.parse(line)).find((item) => item.type === 'attempt.quota');
+      assert.equal(quotaEvent.actionId, 'write-report');
+      assert.equal(quotaEvent.attemptId, 'write-report-1');
+      assert.equal(quotaEvent.pool, 'command-code');
+      assert.equal(quotaEvent.why, 'usage limit: "session limit"');
+      assert.equal(quotaEvent.until, new Date(untilMs).toISOString());
+
+      f.state.attempts.push({
+        id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'running',
+        pool: 'relay', model: 'gpt-5.6-luna',
+        startedAt: new Date(f.nowMs).toISOString(), finishedAt: null,
+        lastActivityAt: new Date(f.nowMs).toISOString(), outputBytesObserved: 0,
+      });
+      f.emit('attempt.started', { actionId: 'write-report', attemptId: 'write-report-2', pool: 'relay', model: 'gpt-5.6-luna' });
+      await waitUntil(() => watch.lines().some((line) => {
+        try { return JSON.parse(line).type === 'attempt.moved'; } catch { return false; }
+      }), `attempt.moved jsonl missing: ${watch.output}`);
+      const movedEvent = watch.lines().map((line) => JSON.parse(line)).find((item) => item.type === 'attempt.moved');
+      assert.equal(movedEvent.actionId, 'write-report');
+      assert.equal(movedEvent.attemptId, 'write-report-2');
+      assert.equal(movedEvent.pool, 'relay');
+      assert.equal(movedEvent.model, 'gpt-5.6-luna');
+      assert.equal(watch.lines().filter((line) => JSON.parse(line).type === 'attempt.quota').length, 1, watch.output);
+      assert.equal(watch.lines().filter((line) => JSON.parse(line).type === 'attempt.moved').length, 1, watch.output);
+    } finally { await settleWatch(f, watch); }
   } finally { f.cleanup(); }
 });

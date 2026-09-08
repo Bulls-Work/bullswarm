@@ -37,6 +37,16 @@ test('failure classification does not invent a process crash when exit metadata 
   assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'provider' }), 'provider');
 });
 
+test('a usage limit is classified quota, never process, semantic or auth', () => {
+  // The real shape: non-zero exit AND a quarantine hint, both of which used to
+  // win over the usage limit itself.
+  assert.equal(classifyV2DispatchFailure({
+    ok: false, failureKind: 'quota', quarantineHint: true, meta: { exitCode: 1 },
+  }), 'quota');
+  assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'quota' }), 'quota');
+  assert.equal(classifyV2DispatchFailure({ ok: false, quarantineHint: true }), 'auth');
+});
+
 test('auth failure quarantines and immediately replaces the pool', async () => {
   const h = harness([{ ok: false, why: 'quota', quarantineHint: true, meta: { exitCode: 1 } }, good]);
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
@@ -158,4 +168,120 @@ test('burst-gated pools are not waited on or dispatched', async () => {
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1', { burstGate: true })], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
   assert.equal(result.failureKind, 'unavailable');
   assert.equal(result.attempts.length, 0);
+});
+
+// --- usage-limit recovery (requirement 1) --------------------------------
+
+const QUOTA_RESET = Date.parse('2026-08-31T02:20:00Z');
+const quotaVerdict = () => ({
+  ok: false,
+  failureKind: 'quota',
+  quarantineHint: true,
+  quarantineUntil: QUOTA_RESET,
+  quarantineSource: 'message',
+  why: `usage limit: "You've hit your session limit · resets 10:20am (Asia/Hong_Kong)" `
+    + `· pool paused until ${new Date(QUOTA_RESET).toISOString()}`,
+  meta: { exitCode: 1, wallSec: 0.2 },
+});
+
+test('a quota failure quarantines until the announced reset and replaces the pool', async () => {
+  const h = harness([quotaVerdict(), good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1', { fiveHourUsedPct: 12 }), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-2']);
+  assert.equal(result.attempts[0].failureKind, 'quota');
+  assert.equal(result.attempts[0].status, 'interrupted');
+  assert.equal(result.attempts[0].why, quotaVerdict().why);
+  assert.equal(result.attempts[0].routing.fiveHourUsedPct, 12);
+  assert.equal(result.attempts[1].routing.fiveHourUsedPct, null);
+
+  const quarantine = h.core.pools['luna-1'].quarantine;
+  assert.equal(quarantine.until, QUOTA_RESET, 'the announced reset, not a flat 10 minutes');
+  assert.equal(quarantine.kind, 'quota');
+  assert.equal(quarantine.reason, quotaVerdict().why);
+  assert.equal(h.core.pools['luna-2']?.quarantine, undefined);
+});
+
+test('a quota failure on the only pool is never retried on that same pool', async () => {
+  const h = harness([quotaVerdict(), good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'quota');
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].status, 'failed');
+  assert.equal(h.core.pools['luna-1'].quarantine.until, QUOTA_RESET);
+});
+
+test('a quarantine in live core state excludes a pool whose launch-time object looks clean', async () => {
+  const h = harness([good]);
+  // Written by another action or another run after this dispatch got its list.
+  h.core.pools['luna-1'] = {
+    quarantine: { until: Date.parse('2026-08-31T03:00:00Z'), reason: 'usage limit', kind: 'quota' },
+  };
+  const pools = [connector('luna-1'), connector('luna-2')];
+  assert.equal(pools[0].quarantine, undefined, 'the stale pool object carries no quarantine');
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths, pools,
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-2']);
+});
+
+test('an expired live quarantine does not exclude the pool', async () => {
+  const h = harness([good]);
+  h.core.pools['luna-1'] = {
+    quarantine: { until: Date.parse('2026-08-31T00:30:00Z'), reason: 'usage limit', kind: 'quota' },
+  };
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.attempts[0].pool, 'luna-1');
+});
+
+test('refreshPools runs before every pick, is forced after a quota failure, and drives the next pick', async () => {
+  const h = harness([quotaVerdict(), good]);
+  const calls = [];
+  // luna-3 exists only in the refreshed list: picking it proves the live list
+  // replaced the one captured at launch.
+  const refreshed = [connector('luna-1'), connector('luna-3')];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    refreshPools: async (opts) => { calls.push(opts); return refreshed; },
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, [{ force: false }, { force: true }]);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['luna-1', 'luna-3']);
+});
+
+test('a refresher that throws or returns nothing leaves the dispatch on its launch list', async () => {
+  const h = harness([good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1')],
+    refreshPools: async () => { throw new Error('meter reader exploded'); },
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts[0].pool, 'luna-1');
+
+  const empty = harness([good]);
+  const second = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1')],
+    refreshPools: async () => [],
+    bullswarmDir: '/tmp/bs', dependencies: empty.dependencies,
+  });
+  assert.equal(second.attempts[0].pool, 'luna-1');
 });

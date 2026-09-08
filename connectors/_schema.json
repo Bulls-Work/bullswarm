@@ -10,6 +10,8 @@
     "$comment-cwd": "cwdMode documents how the CLI resolves its project: 'pwd' means the CLI resolves from $PWD so the watcher MUST set PWD and spawn inside --add-dir"
   },
   "authSignatures": ["strings in output that mean auth/throttle failure"],
+  "quotaSignatures": ["strings in output that mean this credential is out of quota RIGHT NOW (usage/rate limit hit)"],
+  "$comment-quotaSignatures": "Optional. Merged on top of DEFAULT_QUOTA_SIGNATURES (src/lib/quota.js), matched case-insensitively, and only honored when the matched line is quota-shaped (<=300 chars and the phrase starts in the first 40 chars or the line is error-shaped) so agent prose and tool output that merely discuss limits are never killed. A hit is classified as the mechanical failure kind `quota` (checked before authSignatures), kills the attempt, and quarantines the pool until the reset time parsed from the message, else the pool's cached five_hour.resets_at, else 30 minutes.",
   "outputExtraction": {
     "$comment": "how to get the real answer out of stdout+stderr+files",
     "strategy": "stdout|stdout-tail|json-field|file|event-stream",

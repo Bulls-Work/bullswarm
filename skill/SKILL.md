@@ -124,7 +124,11 @@ acting are printed instead of skipped and a stall you already saw does not
 report twice. In `--jsonl` mode there is no such line — take `--after` from the
 `sequence` field of the last object. V2 watch prints one line per notable event
 and stays silent while work is merely in progress; `--heartbeat` is opt-in and
-`--stall-after` (default 300s) reports a silent running agent.
+`--stall-after` (default 300s) reports a silent running agent. A usage-limit
+failure always prints — `⚠ ... usage limit on <pool> · paused until <deadline>
+· retrying on another pool`, then `↺ ... now on <pool> · <model>` once the
+mechanical retry lands — even without `--verbose`. Pass `--classic` for the
+older heartbeat-based watcher instead (it cannot combine with `--next`).
 `watch` also exits at a durable planning pause; that is not completion.
 
 Read action outputs and actual artifacts, and probe important edge cases yourself.

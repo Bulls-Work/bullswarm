@@ -21,6 +21,11 @@
     "unauthorized",
     "invalid api key"
   ],
+  "$comment-quotaSignatures": "usage_credits_required is a spent window, not a broken credential: it classifies `quota` (checked before authSignatures) so the pool is quarantined until its reset instead of re-probed in 10 minutes.",
+  "quotaSignatures": [
+    "usage_credits_required",
+    "usage limit"
+  ],
   "outputExtraction": {
     "strategy": "event-stream"
   },

@@ -624,6 +624,7 @@ export class WorkflowRuntime {
             // puts timeoutSec on this action.
             timeoutSec: step.timeoutSec ?? null,
             env: childEnv,
+            bullswarmDir: this.bullswarmDir,
             shouldCancel: () => this.refreshCancellation(),
             onActivity: ({ at, bytes }) => {
               attemptRecord.lastActivityAt = at;
@@ -737,12 +738,18 @@ export class WorkflowRuntime {
         // `bullswarm health` can correlate workflow outputs.
         this.appendDecision(step, conn.name, verdict, attemptPaths, attemptRecord.routing);
 
-        // R7: auth/throttle verdict → quarantine the pool for 10 min so
-        // the next dispatch doesn't re-select it.
+        // R7: auth/throttle verdict → quarantine the pool so the next
+        // dispatch doesn't re-select it. An auth failure keeps the flat 10 min
+        // re-probe window; a usage limit carries the reset the provider
+        // actually named, so it waits exactly that long and is labelled
+        // `quota` rather than `auth`.
         if (verdict.quarantineHint) {
           try {
             const coreState = loadState(this.bullswarmDir);
-            quarantinePool(coreState, conn.name, verdict.why, Date.now());
+            quarantinePool(coreState, conn.name, verdict.why, Date.now(), {
+              until: verdict.quarantineUntil ?? null,
+              kind: verdict.failureKind === 'quota' ? 'quota' : 'auth',
+            });
             saveState(this.bullswarmDir, coreState);
             // Reflect the new quarantine on the live pool view used by
             // the next attempt of this very dispatch.

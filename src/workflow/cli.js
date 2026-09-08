@@ -1196,7 +1196,7 @@ async function wfCapabilities(opts) {
     },
     routing: {
       automatic: true,
-      selection: 'approved effort-tier assignment when eligible; otherwise highest time-adjusted quota surplus among lane/capability/model-policy-eligible, enabled, non-quarantined, non-burst-gated pools',
+      selection: 'pools with 5h headroom first (a pool at or above the near-limit threshold is chosen only when no eligible pool below it exists); within that set, approved effort-tier assignment when eligible, otherwise highest time-adjusted quota surplus among lane/capability/model-policy-eligible, enabled, non-quarantined, non-burst-gated pools',
       modelSelection: 'connector-declared discovery and model flag; approved assignments may select a model; excluded models are never dispatched and force an allowed tier fallback when supported',
       strategyPolicy: coreState.strategy?.policy ?? null,
       assignments: coreState.strategy?.assignments ?? {},
@@ -1223,6 +1223,8 @@ async function wfCapabilities(opts) {
       usedPct: p.usedPct ?? null,
       pace: p.pace ?? null,
       burstGate: p.burstGate === true,
+      fiveHourUsedPct: p.fiveHourUsedPct ?? null,
+      nearFiveHourLimit: p.nearFiveHourLimit === true,
       quarantined: Boolean(p.quarantine),
     })),
   };
@@ -1259,6 +1261,12 @@ async function wfWatch(opts) {
   const token = opts.rest[0];
   if (!token) {
     console.error(`usage: ${usageLine(['workflow', 'watch'])}`);
+    return 2;
+  }
+  // --classic forces the older heartbeat-based watcher, which has no notion
+  // of notable events to wake up on, so it cannot combine with --next.
+  if (opts.classic === true && opts.next === true) {
+    console.error('✗ --classic cannot combine with --next (--next only applies to event mode)');
     return 2;
   }
   const intervalSec = Number(opts.interval ?? 2);
@@ -1302,6 +1310,7 @@ async function wfWatch(opts) {
       sinceMs,
       once: opts.once === true,
       next: opts.next === true,
+      classic: opts.classic === true,
       jsonl: opts.jsonl === true,
       verbose: opts.verbose === true,
     });

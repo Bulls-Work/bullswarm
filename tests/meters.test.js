@@ -8,7 +8,9 @@ import {
   parseCommandCodeCredits, parseCommandCodeWindows, computeMonthly, planMonthlyCredits,
 } from '../src/meters/command-code.js';
 import { extractCredentials } from '../src/meters/claude.js';
-import { windowPace, paceSnapshot, monthlyWindowMs } from '../src/meters/framework.js';
+import {
+  windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
+} from '../src/meters/framework.js';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
 
@@ -138,6 +140,142 @@ test('pace snapshot: weekly paces, 5h only gates (M3)', () => {
   const r = paceSnapshot(snap, NOW);
   assert.equal(r.pacing.usedPct, 18); // weekly drives pacing
   assert.equal(r.burstGate, true);    // 5h >= 90 blocks dispatch
+});
+
+test('pace snapshot: 5h near-limit threshold is 75, burst gate stays 90', () => {
+  assert.equal(FIVE_HOUR_NEAR_LIMIT_PCT, 75);
+  assert.equal(BURST_BLOCK_PCT, 90);
+  const resetsAt = new Date(NOW + 3600_000).toISOString();
+  const at = (utilization) => paceSnapshot({
+    five_hour: { utilization, resets_at: resetsAt },
+    seven_day: { utilization: 18, resets_at: new Date(NOW + 3 * 24 * 3600_000).toISOString() },
+  }, NOW);
+
+  const below = at(74);
+  assert.equal(below.fiveHourUsedPct, 74);
+  assert.equal(below.nearFiveHourLimit, false);
+  assert.equal(below.burstGate, false);
+  assert.equal(below.fiveHourResetsAt, resetsAt);
+  // 5h never paces (M3): the weekly window still drives surplus.
+  assert.equal(below.pacing.usedPct, 18);
+
+  const atThreshold = at(75);
+  assert.equal(atThreshold.fiveHourUsedPct, 75);
+  assert.equal(atThreshold.nearFiveHourLimit, true);
+  assert.equal(atThreshold.burstGate, false);
+
+  const highButDispatchable = at(89);
+  assert.equal(highButDispatchable.nearFiveHourLimit, true);
+  assert.equal(highButDispatchable.burstGate, false);
+
+  const gated = at(90);
+  assert.equal(gated.fiveHourUsedPct, 90);
+  assert.equal(gated.nearFiveHourLimit, true);
+  assert.equal(gated.burstGate, true);
+});
+
+test('pace snapshot: no 5h reading means headroom, not near-limit', () => {
+  const noWindow = paceSnapshot({
+    five_hour: { utilization: null, resets_at: null },
+    seven_day: { utilization: 18, resets_at: new Date(NOW + 3 * 24 * 3600_000).toISOString() },
+  }, NOW);
+  assert.equal(noWindow.fiveHourUsedPct, null);
+  assert.equal(noWindow.fiveHourResetsAt, null);
+  assert.equal(noWindow.nearFiveHourLimit, false);
+
+  const empty = paceSnapshot(null, NOW);
+  assert.equal(empty.fiveHourUsedPct, null);
+  assert.equal(empty.fiveHourResetsAt, null);
+  assert.equal(empty.nearFiveHourLimit, false);
+});
+
+test('buildPools copies the 5h gate fields onto flat pool fields', async () => {
+  const { buildPools } = await import('../src/lib/config.js');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'bs-5h-'));
+  try {
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    for (const name of ['near', 'headroom', 'unmetered']) {
+      writeFileSync(join(dir, `connectors/${name}.json`), JSON.stringify({
+        name, costRank: 2, lanes: ['analyze', 'build', 'chore'],
+        meter: { type: 'reader', window: 'weekly' },
+      }));
+    }
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      version: 1, pools: { near: { enabled: true }, headroom: { enabled: true }, unmetered: { enabled: true } },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+    }));
+    const resetsAt = new Date(NOW + 3600_000).toISOString();
+    const weeklyResets = new Date(NOW + 3 * 24 * 3600_000).toISOString();
+    const readings = {
+      near: paceSnapshot({
+        five_hour: { utilization: 82, resets_at: resetsAt },
+        seven_day: { utilization: 10, resets_at: weeklyResets },
+      }, NOW),
+      // Reading with a 5h window and no pacing window at all: the gate must
+      // still land on the pool.
+      headroom: paceSnapshot({ five_hour: { utilization: 3, resets_at: resetsAt } }, NOW),
+    };
+    readings.near.source = 'live';
+    readings.headroom.source = 'live';
+
+    const { pools } = buildPools(dir, NOW, readings);
+    const byName = Object.fromEntries(pools.map((pool) => [pool.name, pool]));
+    assert.equal(byName.near.fiveHourUsedPct, 82);
+    assert.equal(byName.near.fiveHourResetsAt, resetsAt);
+    assert.equal(byName.near.nearFiveHourLimit, true);
+    assert.equal(byName.headroom.fiveHourUsedPct, 3);
+    assert.equal(byName.headroom.nearFiveHourLimit, false);
+    assert.equal(byName.unmetered.fiveHourUsedPct, null);
+    assert.equal(byName.unmetered.fiveHourResetsAt, null);
+    assert.equal(byName.unmetered.nearFiveHourLimit, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a forced refresh keeps a cached reading for a pool with no live reader', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const home = mkdtempSync(join(tmpdir(), 'bs-force-'));
+  const previous = process.env.BULLSWARM_HOME;
+  try {
+    process.env.BULLSWARM_HOME = home;
+    // Fresh import so METERS_DIR() resolves against this home.
+    const { getMeterReading } = await import(`../src/meters/registry.js?forced=${Date.now()}`);
+    mkdirSync(join(home, 'meters'), { recursive: true });
+    const capturedAt = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(join(home, 'meters', 'fixture-pool.json'), JSON.stringify({
+      captured_at: capturedAt,
+      pool: 'fixture-pool',
+      five_hour: { utilization: 80, resets_at: new Date(Date.now() + 3600_000).toISOString() },
+      seven_day: { utilization: 5, resets_at: new Date(Date.now() + 3 * 24 * 3600_000).toISOString() },
+    }));
+    // `fixture-pool` has no reader in READERS. Before, a forced call returned
+    // source 'none' and blanked the 5h fields — right after a quota failure,
+    // when routing needs them most.
+    const forced = await getMeterReading('fixture-pool', { force: true });
+    assert.equal(forced.source, 'cache');
+    assert.equal(forced.fiveHourUsedPct, 80);
+    assert.equal(forced.nearFiveHourLimit, true);
+
+    const unforced = await getMeterReading('fixture-pool', { force: false });
+    assert.equal(unforced.fiveHourUsedPct, 80);
+
+    // No cache at all still reports honestly that nothing was measured.
+    const missing = await getMeterReading('other-fixture-pool', { force: true });
+    assert.equal(missing.source, 'none');
+    assert.equal(missing.snapshot, null);
+  } finally {
+    if (previous === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('pace snapshot: monthly used when no weekly', () => {

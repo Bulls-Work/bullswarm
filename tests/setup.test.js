@@ -111,6 +111,42 @@ test('connector metadata upgrades model paths without replacing custom event rul
   } finally { cleanup(); }
 });
 
+test('connector metadata upgrades add packaged quota signatures additively', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    // An installation that predates the `quota` failure kind: no field at all.
+    writeFileSync(join(dir, 'claude-code.json'), `${JSON.stringify({
+      name: 'claude-code',
+      capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      authSignatures: ['unauthorized', 'authentication failed', 'failed to authenticate',
+        'credit balance', 'not logged in', 'please run /login'],
+      quotaSignatures: ['my-own-limit-phrase'],
+      eventStream: { format: 'jsonl', args: ['--custom'], rules: [], modelPaths: ['model', 'message.model'] },
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['claude-code.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'claude-code.json'), 'utf8'));
+    assert.ok(installed.quotaSignatures.includes('my-own-limit-phrase'), 'user phrase kept');
+    assert.ok(installed.quotaSignatures.includes('hit your session limit'), 'packaged phrase added');
+    assert.deepEqual(upgradeConnectorMetadata(d), [], 'idempotent');
+  } finally { cleanup(); }
+});
+
+test('connector metadata upgrades backfill quota signatures onto a connector that has none', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'codex.json'), `${JSON.stringify({ name: 'codex' }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['codex.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'codex.json'), 'utf8'));
+    assert.ok(Array.isArray(installed.quotaSignatures));
+    assert.ok(installed.quotaSignatures.includes('usage_credits_required'));
+    assert.deepEqual(upgradeConnectorMetadata(d), [], 'idempotent');
+  } finally { cleanup(); }
+});
+
 test('connector metadata upgrades additive provider concurrency preferences', () => {
   const { d, cleanup } = tmp();
   try {

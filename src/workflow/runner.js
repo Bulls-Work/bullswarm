@@ -284,6 +284,8 @@ export async function runWorkflow(opts) {
         return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : connector.model ?? null;
       })(),
       burstGate: pool.burstGate === true,
+      fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
+      nearFiveHourLimit: pool.nearFiveHourLimit === true,
       quarantined: Boolean(pool.quarantine),
     })),
   };

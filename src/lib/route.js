@@ -14,6 +14,13 @@
 //       it has to WIN, not be protected.
 //   R6. A pool at 100% used is exhausted; quarantined pools are ineligible
 //       until their quarantine expires (the re-probe path).
+//   R7. 5h headroom outranks pace: a pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of
+//       its 5h window is chosen only when no eligible pool below the threshold
+//       exists for the lane. Like quarantine and burst gates, this outranks an
+//       explicit assignment and incumbency — a near-limit pool that is picked
+//       anyway spends the run's next attempt on a quota failure.
+
+import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../meters/framework.js';
 
 export const LANES = ['analyze', 'build', 'chore'];
 
@@ -58,6 +65,22 @@ export function isQuarantined(pool, now = Date.now()) {
   if (!pool.quarantine) return false;
   if (pool.quarantine.until == null) return true;
   return now < pool.quarantine.until;
+}
+
+/**
+ * 5h headroom tier: 0 = has headroom (or no reading at all), 1 = at/above
+ * FIVE_HOUR_NEAR_LIMIT_PCT. A missing reading counts as headroom — an
+ * unmetered pool must never be deprioritized for a number nobody measured.
+ */
+export function fiveHourTier(pool) {
+  const used = pool?.fiveHourUsedPct;
+  if (used == null || !Number.isFinite(Number(used))) return 0;
+  return Number(used) >= FIVE_HOUR_NEAR_LIMIT_PCT ? 1 : 0;
+}
+
+/** Round to one decimal for human-readable routing reasons. */
+function tenth(value) {
+  return Math.round(Number(value) * 10) / 10;
 }
 
 export function isExhausted(pool) {
@@ -112,15 +135,22 @@ export function pickPool(lane, pools, opts = {}) {
   const scored = eligible.map((p) => ({
     pool: p,
     pace: paceScore(p, now),
+    tier: fiveHourTier(p),
   }));
-  scored.sort((a, b) => b.pace - a.pace); // most-behind first
+  // R7 before R2: 5h headroom first, then most-behind within the tier. The
+  // candidate list is reported in this exact preference order.
+  scored.sort((a, b) => a.tier - b.tier || b.pace - a.pace);
 
   const candidates = scored.map((e) => ({
     pool: e.pool.name,
     model: e.pool.modelPolicy?.model ?? null,
     modelPolicy: e.pool.modelPolicy?.source ?? null,
-    pace: Math.round(e.pace * 10) / 10,
+    pace: tenth(e.pace),
     costRank: e.pool.costRank ?? null,
+    fiveHourUsedPct: e.pool.fiveHourUsedPct == null || !Number.isFinite(Number(e.pool.fiveHourUsedPct))
+      ? null
+      : Number(e.pool.fiveHourUsedPct),
+    nearFiveHourLimit: e.tier === 1,
   }));
 
   if (scored.length === 0) {
@@ -143,10 +173,17 @@ export function pickPool(lane, pools, opts = {}) {
         };
   }
 
+  // R7: selection happens only among pools with 5h headroom while any exists.
+  const withHeadroom = scored.filter((e) => e.tier === 0);
+  const selectable = withHeadroom.length ? withHeadroom : scored;
+  const skippedNearLimit = withHeadroom.length
+    ? scored.filter((e) => e.tier === 1)
+    : [];
+
   const preferredEntry = preferredPool
-    ? scored.find((entry) => entry.pool.name === preferredPool)
+    ? selectable.find((entry) => entry.pool.name === preferredPool)
     : null;
-  const incumbentEntry = scored.find((e) => e.pool.incumbent === true);
+  const incumbentEntry = selectable.find((e) => e.pool.incumbent === true);
 
   let winnerEntry;
   if (preferredEntry) {
@@ -162,7 +199,7 @@ export function pickPool(lane, pools, opts = {}) {
     const INCUMBENT_DISTRESS = -20;
     const incumbentDistressed =
       incumbentEntry.pace <= INCUMBENT_DISTRESS || isExhausted(incumbentEntry.pool);
-    const challenger = scored.find(
+    const challenger = selectable.find(
       (e) =>
         e !== incumbentEntry &&
         e.pace >= incumbentEntry.pace + INCUMBENCY_MARGIN &&
@@ -170,8 +207,13 @@ export function pickPool(lane, pools, opts = {}) {
     );
     winnerEntry = challenger ?? incumbentEntry;
   } else {
-    winnerEntry = scored[0];
+    winnerEntry = selectable[0];
   }
+  const why = routingReason(winnerEntry, {
+    preferred: Boolean(preferredEntry),
+    effortTier: opts.effortTier,
+    skippedNearLimit,
+  });
 
   // R5: the caller wins its lane only when no eligible delegate remains —
   // or when the caller's own pool entry genuinely wins on merit. Dispatching
@@ -183,9 +225,7 @@ export function pickPool(lane, pools, opts = {}) {
     return {
       pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
       keepOnClaude: false,
-      why: preferredEntry
-        ? `configured ${opts.effortTier ?? 'effort'} assignment (${winnerEntry.pool.name})`
-        : `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
+      why,
       candidates,
     };
   }
@@ -205,9 +245,31 @@ export function pickPool(lane, pools, opts = {}) {
   return {
     pick: { pool: winnerEntry.pool.name, connector: winnerEntry.pool },
     keepOnClaude: false,
-    why: preferredEntry
-      ? `configured ${opts.effortTier ?? 'effort'} assignment (${winnerEntry.pool.name})`
-      : `most-behind capable pool (surplus ${Math.round(winnerEntry.pace * 10) / 10})`,
+    why,
     candidates,
   };
+}
+
+/**
+ * Explain the pick: why this pool, at what 5h utilization, and which
+ * near-limit pools it was preferred over.
+ */
+function routingReason(winnerEntry, { preferred, effortTier, skippedNearLimit = [] }) {
+  const used = winnerEntry.pool.fiveHourUsedPct;
+  const note = used == null || !Number.isFinite(Number(used))
+    ? null
+    : `5h used ${tenth(used)}%`;
+  const base = preferred
+    ? `configured ${effortTier ?? 'effort'} assignment (${winnerEntry.pool.name}${note ? `, ${note}` : ''})`
+    : `most-behind capable pool${
+      note ? (winnerEntry.tier === 0 ? ' with 5h headroom' : ' near its 5h limit') : ''
+    } (surplus ${tenth(winnerEntry.pace)}${note ? `, ${note}` : ''})`;
+  if (!skippedNearLimit.length) return base;
+  const skipped = skippedNearLimit
+    .map((e) => {
+      const pct = e.pool.fiveHourUsedPct;
+      return `${e.pool.name}${pct == null ? '' : ` ${tenth(pct)}%`}`;
+    })
+    .join(', ');
+  return `${base} · skipped near 5h limit: ${skipped}`;
 }
