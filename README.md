@@ -260,15 +260,24 @@ work, but the kernel never stops or rejects essential work merely because a
 target was reached. `--concurrency` still bounds simultaneous dispatches so
 the scheduler can batch a wider useful program safely.
 
-Bullswarm first runs optional read-only reconnaissance, then invokes one
-logical, resumable Workflow Planner conversation. The planner proposes a
-complete bounded program of generic actions. Work actions produce artifacts;
-evidence actions independently judge named requirements. The kernel rejects
-malformed, cyclic, overlapping, or needlessly serialized proposals before
-dispatch, runs dependency-ready file-disjoint actions concurrently, and
-updates the requirement ledger from schema-valid evidence. Only real
-consolidated gaps re-enter the planner. There are no formal reviewer or repair
-roles and no automatic semantic repair/reverify loop.
+The caller authors a complete program, or explicitly asks for a dispatched
+planner. The kernel validates the graph, executes it, and returns every action
+result. Independent agents share the target worktree. `ownedFiles` describes
+intended territory and lets the scheduler serialize overlapping writers; it
+does not reject or discard edits. A dependent starts as soon as its own inputs
+finish, without waiting for unrelated siblings. A failed action skips its
+dependents while other branches continue.
+
+After a parallel implementation wave, plan one integrator depending on all its
+writers. Give it `lane: "build"` and `ownedFiles: []` to run alone with permission
+to fix any file. Its prompt should read worker outputs, apply cross-territory
+requests, reconcile shared files, and run the repository acceptance commands.
+Analyze actions remain read-only. Evidence actions are optional and report
+independent judgments; negative evidence does not open another planner round.
+The graph ends with `completed` when all actions succeeded, or `partial` when
+some failed or were blocked. `verified` separately records whether all mandatory
+requirements have fresh passing evidence. Read that qualification and the
+actual outputs before claiming acceptance. Further repairs use a new program.
 
 Lane and effort are separate decisions for every proposed action. `analyze` is
 read-only investigation, judgment, or evidence; `build` is contextual product,
@@ -283,7 +292,8 @@ then resolves through the High/Medium/Low routes configured by `bullswarm setup`
 
 The planner does not author phases or declare success/failure. The kernel
 derives stable presentation stages for the TUI and computes the final V2
-result. Old autonomous run directories are not migrated or resumed;
+result. Saved V2 runs retain their original execution and workspace policy on
+resume. V1 autonomous run directories are not migrated or resumed;
 explicitly naming one fails before any paid dispatch. Fixed JSON workflows and
 drafts remain a separate authored-graph feature with their existing step
 types.
@@ -343,12 +353,13 @@ hard-stop useful work. `--concurrency` is the actual bound on simultaneous
 dependency-ready dispatches. There is no default wall-clock timeout: fresh
 semantic/transport heartbeats allow a useful worker to continue, while silence
 is inspected rather than blindly killed.
-Interactive setup also records a worktree-isolation
-preference (`agent-decides`, `off`, or `required`); Bullswarm communicates that
-policy to the V2 kernel. Unless explicitly set to `off`, mutating autonomous
-actions use isolated worktrees; the kernel checks actual changed paths against
-declared ownership before integration. `off` serializes shared-workspace
-writers and still enforces the changed-path boundary.
+New goal runs use the shared workspace regardless of the older setup
+worktree-isolation preference. Add `--isolation` to `workflow goal` when you
+explicitly want per-worker worktrees and strict ownership before integration.
+Pass it to `workflow plan contract` and `workflow plan validate` as well so the
+contract describes that run. Shared execution does no manifest scan, copying,
+integration, or rollback. Its final Git inventory is advisory, includes
+pre-existing/concurrent changes, and never prevents completion if unavailable.
 
 ## Building a workflow from the shell
 
@@ -357,9 +368,8 @@ writers and still enforces the changed-path boundary.
 This is the default. The calling agent (Claude Code, Codex, or any frontier
 model with the repository in context) is the Workflow Planner, instead of the
 kernel paying for a dispatched scout and planner that cannot see the
-conversation. The kernel keeps everything it owns — proposal validation, quota
-routing, isolated worktrees and changed-path ownership, independent evidence,
-the requirement ledger, completion, and the stable result envelope — while the
+conversation. The kernel handles graph validation, quota routing, scheduling,
+mechanical retries, optional evidence, durable recovery, and the result envelope while the
 caller supplies the program, exactly the division of labour Claude Code's
 `Workflow` tool uses between the authoring model and its harness.
 
@@ -370,24 +380,27 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 #   → dry run against that contract; exit 0 valid, exit 2 with the issues; nothing launches
 bullswarm workflow goal "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --watch
 #   → validated before launch; executes with zero planner/scout dispatches
-bullswarm workflow plan show <shortId> --json      # when the run pauses at a gap boundary
+bullswarm workflow plan show <shortId> --json      # initial scout or explicit steering pause
 bullswarm workflow plan submit <shortId> --program plan-2.json --watch
-bullswarm workflow plan submit <shortId> --exhausted --reason "<why no bounded action remains>"
 ```
 
 Exit codes are a contract: **0** done or paused durably for you (nothing is
 running), **1** the run ended without completing, **2** usage or validation
 error with nothing launched. Every refusal names the commands that come next.
 
+For foreground execution, exit 0 means the graph ran successfully or paused
+durably; it does not imply independent verification. An independent launch
+also returns 0 before the workers finish. Consume its eventual result.
+
 `--program` accepts the planner response envelope or a bare
 `bullswarm.workflow.program.v2` document. An invalid program exits 2 with the
 validator's issues and nothing is launched. When the kernel reaches a planning
-boundary it does not guess: it writes `planner-request-turn-N.json` (the same
-context a dispatched planner would receive, plus the consolidated gaps and any
-queued steering), sets the run to `waiting`, exits, and `watch` prints the
+boundary for an initial plan or queued user steering, it writes
+`planner-request-turn-N.json`, sets the run to `waiting`, exits, and `watch` prints the
 `plan show` command. A submitted program contains only new actions and is
-validated against the exact durable state at that boundary; `--exhausted`
-finalizes a partial result with its gaps disclosed. `--scout` without
+validated against the exact durable state at that boundary. Older saved V2
+runs still support their original gap boundaries and `--exhausted` submissions.
+`--scout` without
 `--program` runs the kernel scout first and pauses at the initial boundary so
 the caller plans against a real survey; scout units are advisory for a caller
 planner.
@@ -452,8 +465,12 @@ After a workflow reaches a terminal state, agents should consume
 `workflow runs result <id> --json` instead of probing `state.json`, task files,
 or provider-specific output. Autonomous V2 returns the versioned
 `bullswarm.workflow.result.v2` envelope with kernel-computed status, fresh
-requirement evidence, action/artifact records, explicit gaps, usage, and
-verification qualification. Fixed authored workflows retain their existing
+requirement evidence, per-action status/failure/output files, explicit gaps,
+usage, and verification qualification. New programs include `executionMode:
+"program"` and a `workspace` report with `changedFiles`, `baselineChangedFiles`,
+and warnings. This is a Git status inventory, not attribution to individual
+workers; files stay in the target directory. A completed program may be
+unverified and contain negative evidence. Fixed authored workflows retain their existing
 result envelope. `runs show` remains the low-level debugging surface.
 Goal launch output includes an `instructions` handoff with four named paths:
 `agentInspect` for a machine-readable snapshot, `watch` for low-noise progress,

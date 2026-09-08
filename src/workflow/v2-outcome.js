@@ -1,5 +1,6 @@
 import { scheduleV2Actions } from './v2-scheduler.js';
 import { validateV2DurableState } from './v2-state.js';
+import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -66,12 +67,13 @@ function validateResultRequirement(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
   if (value.outputFile !== null && (typeof value.outputFile !== 'string' || !value.outputFile)) resultFail(`${name}.outputFile must be null or a non-empty string`);
   stringArray(value.artifactIds, `${name}.artifactIds`);
+  if (value.failure !== undefined && value.failure !== null) failureSummary(value.failure, `${name}.failure`);
 }
 
 function validateGaps(value, result) {
@@ -162,14 +164,10 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   if (state.cancellation.requested) return { status: 'cancelled', terminal: true, reason: state.cancellation.reason ?? 'workflow cancellation requested' };
   const requirements = Object.values(state.ledger.requirements);
   const unresolvedMandatory = requirements.filter((requirement) => requirement.mandatory && requirement.status !== 'passed');
-  const settings = state.config.settings;
   const schedule = scheduleV2Actions(
     state.program.actions,
     state.actions,
-    {
-      concurrency: settings.concurrency ?? settings.maxParallel ?? 1,
-      workspaceMode: settings.workspaceMode ?? 'shared',
-    },
+    v2SchedulingOptions(state),
   );
   const runtimeStates = stateByAction(state);
   const nonterminal = state.program.actions.filter((action) => !TERMINAL_ACTION_STATUSES.has(runtimeStates.get(action.id)?.status ?? 'pending'));
@@ -191,6 +189,12 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
       active: clone(schedule.active), runnable: clone(schedule.selected), waiting: clone(schedule.waiting), deferred: clone(schedule.deferred),
     };
   }
+  if (isProgramWorkflow(state)) {
+    const unsuccessful = state.program.actions.filter((action) => runtimeStates.get(action.id)?.status !== 'succeeded');
+    return unsuccessful.length
+      ? { status: 'partial', terminal: true, reason: `program finished with ${unsuccessful.length} unsuccessful action(s)`, gaps: consolidateV2Gaps(state) }
+      : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all program actions finished successfully; consult evidence for verification' };
+  }
   if (!unresolvedMandatory.length) {
     return { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all mandatory requirements have fresh passing evidence' };
   }
@@ -201,13 +205,15 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   return { status: 'needs-planner', terminal: false, boundary: 'gaps', reason: gaps.summary, gaps };
 }
 
-export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null } = {}) {
+export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null } = {}) {
   validateV2DurableState(state);
   const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
   if (!['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
     throw new TypeError(`V2 result is not ready: workflow status is ${progress.status}`);
   }
   const status = progress.status === 'ready-to-finalize' ? 'completed' : progress.status;
+  const program = isProgramWorkflow(state);
+  const verified = status === 'completed' && (!program || hasPassingRequirementEvidence(state));
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -215,7 +221,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     intentId: state.intentId,
     goal: state.intent.goal,
     status,
-    verified: status === 'completed',
+    verified,
+    ...(program ? { executionMode: 'program', ...(workspace ? { workspace: clone(workspace) } : {}) } : {}),
     reason: progress.reason,
     requirements: state.intent.requirements.map((intentRequirement) => {
       const requirement = state.ledger.requirements[intentRequirement.id];
@@ -236,9 +243,10 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         status: runtime?.status ?? 'pending',
         outputFile: runtime?.outputFile ?? null,
         artifactIds: clone(runtime?.artifactIds ?? []),
+        ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
       };
     }),
-    gaps: status === 'completed' ? null : (progress.gaps ?? consolidateV2Gaps(state)),
+    gaps: status === 'completed' && verified ? null : (progress.gaps ?? consolidateV2Gaps(state)),
     usage: clone(state.usage),
     finishedAt,
   };
@@ -248,11 +256,13 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
 
 export function validateV2ResultEnvelope(result) {
   resultObject(result, 'result');
-  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt']);
+  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace']);
   exactFields(result, allowed, 'result');
   if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) resultFail(`schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
   if (!['completed', 'partial', 'cancelled'].includes(result.status)) resultFail('status is invalid');
-  if (result.verified !== (result.status === 'completed')) resultFail('verified does not match status');
+  if (result.executionMode !== undefined && result.executionMode !== 'program') resultFail('executionMode must be program when present');
+  const program = result.executionMode === 'program';
+  if (typeof result.verified !== 'boolean' || (!program && result.verified !== (result.status === 'completed')) || (result.verified && result.status !== 'completed')) resultFail('verified does not match status');
   for (const key of ['runId', 'shortId', 'intentId', 'goal', 'reason', 'finishedAt']) resultString(result[key], key);
   if (Number.isNaN(Date.parse(result.finishedAt))) resultFail('finishedAt must be an ISO-compatible timestamp');
   if (!Array.isArray(result.requirements) || !Array.isArray(result.actions)) resultFail('requirements and actions must be arrays');
@@ -268,9 +278,17 @@ export function validateV2ResultEnvelope(result) {
     resultString(pool, 'usage.byPool key');
     if (!Number.isFinite(total) || total < 0) resultFail(`usage.byPool.${pool} must be non-negative`);
   }
-  if (result.status === 'completed' && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) resultFail('completed result has an unresolved mandatory requirement');
-  if (result.status === 'completed' && result.gaps !== null) resultFail('completed result must not contain gaps');
-  if (result.status !== 'completed') validateGaps(result.gaps, result);
+  if (result.verified && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) resultFail('verified result has an unresolved mandatory requirement');
+  if (program && result.status === 'completed' && (!result.actions.length || result.actions.some((action) => action.status !== 'succeeded'))) resultFail('completed program must have successful actions');
+  if (result.verified && result.gaps !== null) resultFail('verified result must not contain gaps');
+  if (!result.verified) validateGaps(result.gaps, result);
+  if (result.workspace !== undefined) {
+    if (!program) resultFail('workspace report requires program execution');
+    resultObject(result.workspace, 'workspace');
+    exactFields(result.workspace, new Set(['cwd', 'changedFiles', 'baselineChangedFiles', 'warnings']), 'workspace');
+    resultString(result.workspace.cwd, 'workspace.cwd');
+    for (const key of ['changedFiles', 'baselineChangedFiles', 'warnings']) stringArray(result.workspace[key], `workspace.${key}`);
+  }
   return true;
 }
 

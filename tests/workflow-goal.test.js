@@ -172,10 +172,12 @@ test('capabilities separate autonomous V2 from fixed authored graphs', () => {
     assert.equal(result.status, 0, result.stderr);
     const capabilities = JSON.parse(result.stdout);
     assert.equal(capabilities.engines.autonomousV2.stateSchema, 'bullswarm.workflow.state.v2');
-    assert.equal(capabilities.engines.autonomousV2.completionAuthority, 'kernel requirement ledger');
+    assert.equal(capabilities.engines.autonomousV2.completionAuthority, 'kernel action results; requirement evidence is reported separately');
+    assert.equal(capabilities.engines.autonomousV2.defaults.workspaceMode, 'shared');
+    assert.equal(capabilities.engines.autonomousV2.features.enforcedFileOwnership, false);
     assert.equal(capabilities.engines.autonomousV2.features.semanticRepairLoops, false);
     assert.deepEqual(capabilities.engines.autonomousV2.compatibility, {
-      resumesAutonomousV1: false, migratesAutonomousV1: false,
+      resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true,
     });
     assert.deepEqual(capabilities.engines.authoredGraphs.stepTypes, ['run', 'fanout', 'verify', 'decide']);
   } finally { f.cleanup(); }

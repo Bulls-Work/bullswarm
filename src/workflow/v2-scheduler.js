@@ -72,7 +72,8 @@ function validateOptions(options) {
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new SchedulerValidationError('concurrency must be a positive integer');
   const workspaceMode = value.workspaceMode ?? 'shared';
   if (workspaceMode !== 'shared' && workspaceMode !== 'isolated') throw new SchedulerValidationError('workspaceMode must be shared or isolated');
-  return { concurrency, workspaceMode };
+  if (value.allowParallelShared !== undefined && typeof value.allowParallelShared !== 'boolean') throw new SchedulerValidationError('allowParallelShared must be a boolean');
+  return { concurrency, workspaceMode, allowParallelShared: value.allowParallelShared === true };
 }
 
 function mutating(action) { return action.ownedFiles.length > 0; }
@@ -99,17 +100,23 @@ export function scheduleV2Actions(input, states, options = {}) {
     throw new SchedulerValidationError(`${action.id}.dependsOn references unknown action "${dep}"`);
   }
   validateAcyclic(actions, byId);
-  const { concurrency, workspaceMode } = validateOptions(options);
+  const { concurrency, workspaceMode, allowParallelShared } = validateOptions(options);
+  // In program mode, a build/chore action without a territory is an
+  // unrestricted integrator. It takes the workspace alone, including readers.
+  const unrestricted = (action) => allowParallelShared && workspaceMode === 'shared'
+    && !action.ownedFiles.length && ['build', 'chore'].includes(action.lane);
+  const writes = (action) => mutating(action) || unrestricted(action);
   const status = normalizeStates(states, new Set(byId.keys()));
   const active = actions.filter((action) => ACTIVE.has(status.get(action.id)));
   if (active.length > concurrency) throw new SchedulerValidationError('active actions exceed concurrency');
   for (const action of active) if (action.dependsOn.some((dependency) => status.get(dependency) !== SUCCESS)) {
     throw new SchedulerValidationError(`active action "${action.id}" has an unfinished dependency`);
   }
-  const activeMutators = active.filter(mutating);
-  if (workspaceMode === 'shared' && activeMutators.length > 1) {
+  const activeMutators = active.filter(writes);
+  if (workspaceMode === 'shared' && !allowParallelShared && activeMutators.length > 1) {
     throw new SchedulerValidationError('shared workspace has multiple active mutating actions');
   }
+  if (active.some(unrestricted) && active.length > 1) throw new SchedulerValidationError('unrestricted integrator must run alone');
   for (let left = 0; left < activeMutators.length; left += 1) for (let right = left + 1; right < activeMutators.length; right += 1) {
     if (overlap(activeMutators[left].ownedFiles, activeMutators[right].ownedFiles)) {
       throw new SchedulerValidationError('active mutating actions have an owned file conflict');
@@ -143,10 +150,13 @@ export function scheduleV2Actions(input, states, options = {}) {
   const available = concurrency - active.length;
   for (const action of ready) {
     if (selected.length >= available) { deferred.push({ id: action.id, reason: 'concurrency cap' }); continue; }
-    if (workspaceMode === 'shared' && mutating(action) && (activeMutators.length || selected.some(mutating))) {
+    if ((unrestricted(action) && (active.length || selected.length)) || [...active, ...selected].some(unrestricted)) {
+      deferred.push({ id: action.id, reason: 'unrestricted integrator runs alone' }); continue;
+    }
+    if (workspaceMode === 'shared' && !allowParallelShared && writes(action) && (activeMutators.length || selected.some(writes))) {
       deferred.push({ id: action.id, reason: 'shared workspace allows one mutating action' }); continue;
     }
-    if (mutating(action) && [...activeMutators, ...selected.filter(mutating)].some((other) => overlap(action.ownedFiles, other.ownedFiles))) {
+    if (writes(action) && [...activeMutators, ...selected.filter(writes)].some((other) => overlap(action.ownedFiles, other.ownedFiles))) {
       deferred.push({ id: action.id, reason: 'owned file conflict' }); continue;
     }
     selected.push(action);

@@ -677,9 +677,10 @@ const workflowGoalText = rich({
     + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options]  ·  bullswarm workflow goal --resume <shortId|runId>',
   purpose: 'Run an autonomous V2 goal end to end. You are the Workflow Planner: pass the program you '
     + 'authored (--program, from `workflow plan contract`) and the kernel validates it against the exact '
-    + 'requirement ledger, schedules it, routes agents that produce work or requirement-scoped evidence, '
-    + 'and alone computes the stable result, pausing durably at any later planning boundary for '
-    + '`workflow plan submit`. Without a program the command refuses (exit 2, nothing launched) and prints '
+    + 'requirements, schedules the dependency graph in a shared workspace, and returns every action result. '
+    + 'File territories guide coordination; exact-file enforcement and worktree copying require --isolation. '
+    + 'Completion means all actions succeeded; verified separately reports requirement evidence. There are no automatic gap rounds. '
+    + 'Without a program the command refuses (exit 2, nothing launched) and prints '
     + 'the next commands; --scout alone has the kernel survey the repository first and then pause for your '
     + 'program; --orchestrator explicitly dispatches a Workflow Planner agent instead of planning yourself. '
     + 'Launches independently by default so the caller is not blocked.',
@@ -688,6 +689,7 @@ const workflowGoalText = rich({
   ],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal executes in', default: 'current directory' },
+    { flag: '--isolation', desc: 'opt into per-worker worktrees and strict exact-file ownership checks; saved runs retain their original workspace policy on resume', default: 'off (shared workspace, advisory territories)' },
     { flag: '--watch', desc: 'immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with --detach, --foreground, --json, --resume, or --request', default: 'off' },
     { flag: '--foreground', desc: 'keep execution attached to this terminal instead of detaching', default: 'off (detaches into a background process)' },
     { flag: '--json', desc: 'print the launch/report document as JSON', default: 'human-readable launch instructions' },
@@ -702,7 +704,7 @@ const workflowGoalText = rich({
     { flag: '--worker-pool <pool|auto>', desc: 'pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool', default: 'auto (normal routing)' },
     { flag: '--worker-model <model|auto>', desc: 'pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible', default: 'auto (effort-tier strategy or connector default)' },
     { flag: '--max-agents <n>', desc: 'soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it', default: '30' },
-    { flag: '--max-expansion-rounds <n>', desc: 'soft planning target for consolidated gap-driven planner updates; essential gap closure may exceed it', default: '2' },
+    { flag: '--max-expansion-rounds <n>', desc: 'legacy planning target retained for compatibility; new programs do not generate gap rounds', default: '2' },
     { flag: '--max-actions <n>', desc: 'soft planning target for total actions across planner revisions; essential actions may exceed it', default: '100' },
     { flag: '--no-scout', desc: 'with --orchestrator: skip the read-only repository reconnaissance before the dispatched planner creates its first program', default: 'the scout runs first for a dispatched planner' },
     { flag: '--concurrency <n>', desc: 'max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap', default: '4' },
@@ -718,7 +720,9 @@ const workflowGoalText = rich({
     'writes durable workflow state under ~/.bullswarm/workflows/<runId>/ throughout execution '
       + '(state.json, events, attempts)',
     'dispatches real coding-agent CLI processes per generic action, the same as bullswarm run',
-    'the goal, every planner response, worker ownership, and structured evidence are validated before they can become trusted state',
+    'the goal, action graph, routing lanes, and any declared structured evidence are validated; shared workspace file territories are advisory',
+    'workers keep their edits even when their action fails; failed dependencies skip downstream actions and independent branches finish',
+    'saved V2 runs keep their original completion and isolation policy when resumed',
     'there is no V1 autonomous migration or fallback; explicitly resuming an old run dispatches nothing',
   ],
   examples: [
@@ -829,6 +833,7 @@ const workflowPlanContractText = rich({
   args: [{ name: '"<goal>"', desc: 'the goal text exactly as it will be passed to workflow goal; numbering clauses 1. 2. 3. yields one requirement per clause' }],
   options: [
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in', default: 'current directory' },
+    { flag: '--isolation', desc: 'describe strict per-worker worktree isolation and retain the flag in launch guidance', default: 'off (shared workspace)' },
     { flag: '--json', desc: 'accepted for consistency; the contract is always printed as JSON', default: 'JSON' },
     { flag: '--max-agents <n>', desc: 'advisory dispatch target recorded in the contract settings', default: '30' },
     { flag: '--max-actions <n>', desc: 'advisory action target recorded in the contract settings', default: '100' },

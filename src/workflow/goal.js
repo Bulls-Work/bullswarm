@@ -38,8 +38,8 @@ function compactRequirement(text) {
 // per clause, while a genuinely holistic outcome ("make the parser faster") is
 // correctly one requirement and must not be split into invented parts.
 export const REQUIREMENT_GRANULARITY_HINT =
-  'This goal is tracked as one requirement, so the result reports one pass/fail for the whole thing and any gap reopens all of it. '
-  + 'If it has distinct deliverables, number them ("1. ... 2. ...") to get one tracked requirement each, with separate verdicts and gap rounds scoped to the part that failed. '
+  'This goal is tracked as one requirement, so optional requirement evidence reports one pass/fail for the whole thing. '
+  + 'If it has distinct deliverables, number them ("1. ... 2. ...") to get one tracked requirement each, with separate verdicts that identify the part needing follow-up. '
   + 'Leave a single holistic outcome as one sentence; do not invent clauses to split it.';
 
 export function extractGoalRequirements(goal) {

@@ -379,7 +379,7 @@ function cliFixture() {
     '  const candidate = task.match(/exact durable path: \'([^\']+)\'/)?.[1];',
     '  writeFileSync(candidate, JSON.stringify({schemaVersion:"bullswarm.workflow.evidence.v2",requirements:{"requirement-1":{status:ok?"passed":"failed",evidence:[ok?"done.txt has the exact line":"done.txt missing or wrong"],concerns:[]}}}));',
     '  process.stdout.write("The durable evidence candidate validated.");',
-    '} else if (task.includes("Bullswarm autonomous V2 action: skip-work")) {',
+    '} else if (/Bullswarm (?:autonomous V2|program) action: skip-work/.test(task)) {',
     '  process.stdout.write("Deliberately did not create the file so the evidence fails and the kernel consolidates a gap. This is the bounded fixture behaviour for the gap test.");',
     '} else {',
     '  writeFileSync("done.txt", "caller-complete\\n");',
@@ -412,6 +412,23 @@ function cli(f, args) {
 
 const GOAL = '1. Create done.txt containing exactly caller-complete followed by a newline.';
 
+// Legacy saved requests intentionally omit executionMode. Exercise their real
+// CLI recovery path without requiring new launches to retain gap gating.
+function launchLegacyGoal(f, programPath, cwd = f.target) {
+  const runId = 'wf-legacy-abcdef';
+  const requestPath = join(f.root, 'legacy-request.json');
+  const document = createV2GoalDocument({
+    goal: GOAL, cwd,
+    requirements: [{ id: 'requirement-1', text: 'Create done.txt containing exactly caller-complete followed by a newline.' }],
+    settings: { scout: false, plannerMode: 'caller', workspaceMode: 'shared', concurrency: 2, maxExpansionRounds: 2 },
+  });
+  writeFileSync(requestPath, JSON.stringify({
+    schemaVersion: 'bullswarm.goal.request.v2', runId, document,
+    initialPlannerResponse: normalizeCallerPlannerResponse(JSON.parse(readFileSync(programPath, 'utf8'))),
+  }));
+  return cli(f, ['workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json']);
+}
+
 function cliProgram(workId = 'create-done') {
   return {
     schemaVersion: 'bullswarm.workflow.program.v2',
@@ -433,7 +450,8 @@ test('CLI: plan contract exposes requirement IDs, rules, and the example without
     assert.match(contract.requirements[0].text, /caller-complete/);
     assert.equal(contract.settings.plannerMode, 'caller');
     assert.equal(contract.settings.scout, false);
-    assert.ok(contract.rules.length >= 20);
+    assert.equal(contract.settings.executionMode, 'program');
+    assert.ok(contract.rules.some((rule) => /integrator/.test(rule)));
     assert.equal(contract.program.schemaVersion, 'bullswarm.workflow.program.v2');
     assert.match(contract.launch.command, /--program plan\.json --json$/);
     // One requirement means one verdict for the whole goal, so the contract
@@ -509,12 +527,12 @@ test('CLI: an invalid --program is rejected synchronously and nothing is launche
   } finally { f.cleanup(); }
 });
 
-test('CLI: a gap pauses the run; plan show explains it; plan submit resumes it to completion', () => {
+test('CLI legacy recovery: a gap pauses the run; plan show explains it; plan submit resumes it to completion', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json', '--max-expansion-rounds', '2']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const awaiting = JSON.parse(launched.stdout);
     assert.equal(awaiting.action, 'planner-awaiting');
@@ -579,12 +597,12 @@ test('CLI: a gap pauses the run; plan show explains it; plan submit resumes it t
   } finally { f.cleanup(); }
 });
 
-test('CLI: plan submit --exhausted finalizes a partial result', () => {
+test('CLI legacy recovery: plan submit --exhausted finalizes a partial result', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const token = JSON.parse(launched.stdout).shortId;
     const missingReason = cli(f, ['workflow', 'plan', 'submit', token, '--exhausted']);
@@ -598,7 +616,7 @@ test('CLI: plan submit --exhausted finalizes a partial result', () => {
   } finally { f.cleanup(); }
 });
 
-test('CLI: detached caller-planner launch reports the plan command and pauses durably', async () => {
+test('CLI: detached program returns negative evidence durably without another planner round', async () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
@@ -613,18 +631,23 @@ test('CLI: detached caller-planner launch reports the plan command and pauses du
     assert.ok(launch.instructions.callerPlanner);
     const statePath = join(f.home, 'workflows', launch.runId, 'state.json');
     let state = null;
-    for (let i = 0; i < 200 && !(state?.planner?.awaiting); i += 1) {
+    for (let i = 0; i < 200 && !(state?.lifecycle?.resultFile); i += 1) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
       try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* not yet */ }
     }
-    assert.ok(state?.planner?.awaiting, 'detached run must pause at the gap boundary');
-    assert.equal(state.lifecycle.status, 'waiting');
+    assert.ok(state?.lifecycle?.resultFile, 'detached program must finish even when evidence is negative');
+    assert.equal(state.lifecycle.status, 'completed');
+    assert.equal(state.planner.awaiting, null);
+    assert.equal(state.planner.turns, 1);
+    const report = JSON.parse(readFileSync(state.lifecycle.resultFile, 'utf8'));
+    assert.equal(report.verified, false);
+    assert.equal(report.requirements[0].status, 'failed');
     const request = JSON.parse(readFileSync(join(f.home, 'goals', launch.runId, 'request.json'), 'utf8'));
     assert.equal(request.initialPlannerResponse.kind, 'program');
     const watch = cli(f, ['workflow', 'watch', launch.runId]);
     assert.equal(watch.status, 0, watch.stderr);
-    assert.match(watch.stdout, /outcome: waiting for the caller planner \(gaps boundary\)/);
-    assert.match(watch.stdout, /next: bullswarm workflow plan show/);
+    assert.doesNotMatch(watch.stdout, /waiting for the caller planner/);
+    assert.match(watch.stdout, /result ready/);
   } finally { f.cleanup(); }
 });
 
@@ -849,7 +872,7 @@ test('CLI: the exhausted hint appears only at a gaps boundary, and plan show rep
     assert.equal(request.submit.exhausted, undefined);
     assert.equal(request.requestRefreshed, false);
     assert.deepEqual(request.pendingSteering, []);
-    assert.ok(request.rules.some((rule) => /advisory default action boundaries/.test(rule)));
+    assert.ok(request.rules.some((rule) => /Scout units and numeric targets are advisory/.test(rule)));
     const human = cli(f, ['workflow', 'plan', 'show', token]);
     assert.ok(!/--exhausted/.test(human.stdout), human.stdout);
     const programPath = join(f.root, 'plan.json');
@@ -869,14 +892,14 @@ test('CLI: the exhausted hint appears only at a gaps boundary, and plan show rep
   } finally { f.cleanup(); }
 });
 
-test('CLI: plan submit refuses a vanished goal directory before touching state', () => {
+test('CLI legacy recovery: plan submit refuses a vanished goal directory before touching state', () => {
   const f = cliFixture();
   try {
     const target = join(f.root, 'vanishing');
     mkdirSync(target);
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath, target);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const awaiting = JSON.parse(launched.stdout);
     assert.equal(awaiting.boundary, 'gaps');
@@ -893,12 +916,12 @@ test('CLI: plan submit refuses a vanished goal directory before touching state',
   } finally { f.cleanup(); }
 });
 
-test('CLI: cancelling a paused run refuses submissions, points at the finalizing resume, and leaves no stale pause', () => {
+test('CLI legacy recovery: cancelling a paused run refuses submissions, points at the finalizing resume, and leaves no stale pause', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const token = JSON.parse(launched.stdout).shortId;
     const cancel = cli(f, ['workflow', 'tui', '--cancel', token, '--json']);
@@ -943,12 +966,12 @@ test('CLI: cancelling a paused run refuses submissions, points at the finalizing
   } finally { f.cleanup(); }
 });
 
-test('CLI: steering queued while paused shows in plan show and is consumed by a detached plan submit that runs to completion', async () => {
+test('CLI legacy recovery: steering queued while paused shows in plan show and is consumed by a detached plan submit that runs to completion', async () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const { shortId: token, runId } = JSON.parse(launched.stdout);
     const steer = cli(f, ['workflow', 'steer', token, '--message', 'Create the file with a single write.']);
@@ -1033,10 +1056,10 @@ test('CLI: an invalid program is refused the same way by plan validate and by go
   const f = cliFixture();
   try {
     const badPath = join(f.root, 'bad.json');
-    // Work action with no evidence action for the requirement it affects.
+    // A dependency on an unknown action must still be refused before dispatch.
     writeFileSync(badPath, JSON.stringify({
       schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [{ id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] }],
+      actions: [{ id: 'create-done', purpose: 'Create done.txt', dependsOn: ['missing-action'], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [] }],
     }));
     const validated = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', badPath, '--json']);
     assert.equal(validated.status, 2, validated.stdout);
@@ -1123,12 +1146,12 @@ test('CLI: planning flags are rejected in the combinations that would plan behin
   } finally { f.cleanup(); }
 });
 
-test('CLI: workflow cancel finalizes a paused caller run and is idempotent afterwards', () => {
+test('CLI legacy recovery: workflow cancel finalizes a paused caller run and is idempotent afterwards', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const { shortId: token, runId } = JSON.parse(launched.stdout);
 
@@ -1153,12 +1176,12 @@ test('CLI: workflow cancel finalizes a paused caller run and is idempotent after
   } finally { f.cleanup(); }
 });
 
-test('CLI: workflow resume is the verb form of goal --resume and refuses planning flags', () => {
+test('CLI legacy recovery: workflow resume is the verb form of goal --resume and refuses planning flags', () => {
   const f = cliFixture();
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--foreground', '--json']);
+    const launched = launchLegacyGoal(f, programPath);
     assert.equal(launched.status, 0, launched.stderr || launched.stdout);
     const { shortId: token, runId } = JSON.parse(launched.stdout);
 
