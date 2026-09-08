@@ -16,7 +16,12 @@ const ACTION_FIELDS = new Set([
   'lane', 'effort', 'evidenceFor', 'inputs', 'produces',
 ]);
 
-const EVIDENCE_OUTPUT_DIRECTIVE = /\b(?:return|respond|reply|output|emit|produce|provide|finish|end)\b[\s\S]{0,120}\b(?:json|schema|object|format|form|envelope)\b/i;
+// Only reject direct response instructions. Product-inspection prompts often
+// mention output, JSON, and schemas together; proximity alone says nothing
+// about whether the planner is trying to replace the kernel's evidence format.
+// This is authoring feedback, not the enforcement boundary: evidence still
+// passes the kernel-owned output validator after dispatch.
+const EVIDENCE_OUTPUT_DIRECTIVE = /(?:^|[.!?;\n]|\b(?:and|then)\s+)\s*(?:please\s+)?(?:return|respond|reply|output|emit|produce|provide|finish|end)\s+(?:(?:only|exactly|with|in|as|using|an?|the|your|final|evidence|structured|valid|raw|plain)\s+){0,8}(?:json|object|envelope)\b/i;
 const LEGACY_EVIDENCE_SHAPE = /["']?ok["']?\s*:\s*(?:true|false|boolean|true\s*\|\s*false)[\s\S]{0,240}["']?(?:concerns|summary)["']?\s*:/i;
 
 function evidencePromptOwnsOutput(prompt) {
