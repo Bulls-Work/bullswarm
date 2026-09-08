@@ -124,6 +124,21 @@ test('rejects planner-owned output contracts in evidence prompts before dispatch
   );
 });
 
+test('accepts evidence inspecting product output without mistaking it for the verifier response', () => {
+  for (const prompt of [
+    'Run every command README shows and compare its documented output and exit codes with the actual output; documented JSON/markdown output must match the real stdout exactly.',
+    'Check that the CLI can emit JSON and that its output matches the documented schema.',
+    'Inspect the API return values and compare them with the expected object shape.',
+    'Inspect the report. Do not return your own JSON envelope; the kernel supplies the evidence contract.',
+  ]) {
+    assert.equal(
+      validateActionProgram(program([work(), evidence({ prompt })]), { mandatoryRequirements: ['result'] }).actions.length,
+      2,
+      prompt,
+    );
+  }
+});
+
 test('enforces structural lane and effort invariants before dispatch', () => {
   assert.throws(
     () => validateActionProgram(program([work({ lane: 'analyze' }), evidence()])),
