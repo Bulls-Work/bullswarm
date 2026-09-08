@@ -1,7 +1,10 @@
 # Bullswarm operations reference
 
-Read this reference only after the common `/bullswarm` decision when the task
-needs direct commands, workflow operation, or recovery.
+There are exactly two ways to start work: `bullswarm run` for one bounded
+outcome, and `bullswarm workflow goal` for a program you author. Decide the
+shape yourself — there is no preview or classifier command. Read this reference
+only after that decision, when the task needs direct commands, workflow
+operation, or recovery.
 
 ## Autonomous workflow execution
 
@@ -76,6 +79,38 @@ V2-only. An old autonomous run ID fails before dispatch; there is no migration
 or fallback executor. Fixed authored workflows and drafts remain a separate
 product surface. `bullswarm workflow goal --resume <shortId>` and
 `bullswarm workflow tui --cancel <shortId>` remain as aliases.
+
+## Program actions: `kind`, `defaults`, and advisories
+
+An action's `kind` names what the work IS and derives its `lane` and `effort`,
+so a program states the nature once instead of re-deciding two routing fields:
+
+| `kind` | lane | effort |
+|---|---|---|
+| `mechanical` | chore | low |
+| `io-read` | analyze | low |
+| `check` | analyze | medium |
+| `implement` | build | medium |
+| `integration` | build | high |
+| `architecture` | analyze | high |
+| `adversarial-acceptance` | analyze | high |
+
+Resolution is per field: an explicit `lane` or `effort` on the action wins,
+then the kind table, then an optional program-level `defaults` object — which
+may set only `effort` and `reasoning`, since lane follows the individual action
+— then the per-lane default. A `kind` outside that closed list is a validation
+error, not a runtime failure: `workflow plan validate` exits 2 and nothing
+launches. A program using neither `kind` nor `defaults` validates and runs
+exactly as before.
+
+Two advisories report effort smells and never reject anything.
+`all-writers-high` fires when three or more `build`/`chore` actions run and none
+is below high effort; `docs-at-high` fires when a `build`/`chore` action owns
+only `*.md` files at high effort. `plan validate --json` carries them under
+`advisories` and its human output prints `advisory:` lines; `workflow goal`
+prints the same lines at launch. Exit codes are unchanged, and the kernel stores
+them on the run, so `workflow runs show` lists them afterwards. `runs result`,
+`runs show`, and `workflow action show` print `kind` next to lane and effort.
 
 ## Submitting work at a planning pause
 
@@ -185,6 +220,17 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
   `minutes`, `remainingMinutes`, `unknownExpected`, `records[]`) and each
   pool's `spend.fiveHour` / `spend.weekly` rates with
   `projectedFiveHourPct` / `projectedWeeklyPct`.
+- `bullswarm strategy rungs --json` answers "what would this pool actually run
+  on this tier, and what did it cost last time" in one row per pool and effort
+  tier: the effective model and its source, the effective reasoning level and
+  the layer that chose it (`action` > `run` > `strategy-pool` > `strategy-tier`
+  > `connector`), the dated benchmark evidence for that model at that level, and
+  the local record from the decision log (dispatches, median wall minutes, ok
+  share). Use it when a pick looks right but the *result* was wrong — a rung
+  whose reasoning shows `clamped` sent the worker a weaker level than you
+  configured, and a rung whose `record.okShare` is low is failing at a level
+  `bullswarm strategy set-rung <pool> <tier> --model <model> --reasoning <level>`
+  changes in one write. Reading spawns no discovery and downloads nothing.
 - Candidate rows (in the decision log, `workflow runs show --json`, and
   `run --json`) explain the pick number by number: `pace` is the raw quota
   surplus, `effectiveSurplus` is that surplus after subtracting the work the
