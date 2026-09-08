@@ -541,12 +541,19 @@ bullswarm workflow action show --json <id> <actionId>
 bullswarm workflow approval approve --json <id>  # then resume the run
 ```
 
-Cancellation is persisted as `cancelling`, terminates an active child process,
-records its termination signal and latency evidence, then commits `cancelled`.
-`SIGTERM` and `SIGINT` use the same cooperative child termination path but
-commit a distinct resumable `interrupted` state. On every workflow command,
-active states with a dead/stale owner are automatically reconciled to
-`interrupted` instead of remaining falsely `running`.
+Cancellation stops active delegates and commits `cancelled`. V2 goal workflows
+keep the operator request in a separate durable file so kernel progress cannot
+overwrite it; authored V1 graphs additionally expose a `cancelling` state.
+`SIGTERM` and `SIGINT` stop delegate process groups and commit a resumable
+`interrupted` state. A V2 resume holds an exclusive kernel lease, stops recorded
+surviving delegates from the previous kernel, and finishes post-processing from
+durable successful-attempt receipts instead of dispatching that work again.
+
+Watchers identify dead kernels as interrupted; V2 state is reconciled on resume.
+Unfinished attempts may execute again, so external side effects still require
+idempotency. Shared edits are retained. Failed or interrupted isolated trees
+are preserved for inspection; result warnings identify any retained trees.
+Recovery refuses to overwrite conflicting user edits during integration.
 
 `workflow steer` is optional operator guidance, not hot-patching. It appends a
 durable instruction that is delivered only to the next not-yet-started
