@@ -6,8 +6,10 @@
 //       resort and are labeled as such.
 //   M2. elapsed% derives from the provider's resets_at minus the window
 //       length — never from a locally assumed window start.
-//   M3. Weekly/monthly windows pace routing; 5h windows are burst gates
-//       only (block dispatch near exhaustion, never pace by them).
+//   M3. Weekly/monthly windows pace routing; 5h windows are gates only
+//       (they never pace): >= BURST_BLOCK_PCT blocks dispatch outright and
+//       >= FIVE_HOUR_NEAR_LIMIT_PCT deprioritizes the pool while any pool
+//       with 5h headroom is eligible.
 //   M4. Readers fail closed: an unreadable response is an error, not a
 //       zero. A stale cached reading is shown with its age.
 //   M5. Auth tokens are read from each CLI's native store; refresh
@@ -39,11 +41,24 @@ export function windowPace({ usedPct, resetsAtMs, windowMs, nowMs = Date.now() }
  * Pace a snapshot per doctrine M3:
  *   - pacing window = weekly ?? monthly ?? none (never 5h)
  *   - burst gate = 5h utilization >= BURST_BLOCK_PCT blocks dispatch
+ *   - near limit  = 5h utilization >= FIVE_HOUR_NEAR_LIMIT_PCT: still
+ *     dispatchable, but routing prefers any pool with 5h headroom
  */
 export const BURST_BLOCK_PCT = 90;
+/** 5h utilization at/above which routing treats a pool as near its limit. */
+export const FIVE_HOUR_NEAR_LIMIT_PCT = 75;
 
 export function paceSnapshot(snapshot, nowMs = Date.now()) {
-  if (!snapshot) return { pacing: null, burstGate: false, windows: {} };
+  if (!snapshot) {
+    return {
+      pacing: null,
+      burstGate: false,
+      windows: {},
+      fiveHourUsedPct: null,
+      fiveHourResetsAt: null,
+      nearFiveHourLimit: false,
+    };
+  }
 
   const windows = {};
   for (const kind of ['five_hour', 'seven_day', 'monthly']) {
@@ -64,10 +79,25 @@ export function paceSnapshot(snapshot, nowMs = Date.now()) {
 
   const pacing = windows.seven_day ?? windows.monthly ?? null;
   const fiveHourUsed = snapshot.five_hour?.utilization;
-  const burstGate =
-    Number.isFinite(fiveHourUsed) && fiveHourUsed >= BURST_BLOCK_PCT;
+  const fiveHourUsedPct = Number.isFinite(fiveHourUsed) ? fiveHourUsed : null;
+  const burstGate = fiveHourUsedPct != null && fiveHourUsedPct >= BURST_BLOCK_PCT;
+  // resets_at is reported straight from the snapshot (M2): no reading, no
+  // deadline — never a locally assumed one.
+  const fiveHourResetsMs = snapshot.five_hour?.resets_at
+    ? Date.parse(snapshot.five_hour.resets_at)
+    : NaN;
 
-  return { pacing, burstGate, windows };
+  return {
+    pacing,
+    burstGate,
+    windows,
+    fiveHourUsedPct,
+    fiveHourResetsAt: Number.isFinite(fiveHourResetsMs)
+      ? new Date(fiveHourResetsMs).toISOString()
+      : null,
+    nearFiveHourLimit:
+      fiveHourUsedPct != null && fiveHourUsedPct >= FIVE_HOUR_NEAR_LIMIT_PCT,
+  };
 }
 
 /** UTC calendar month ending at resetsAt (Copilot/cmd period-end semantics). */

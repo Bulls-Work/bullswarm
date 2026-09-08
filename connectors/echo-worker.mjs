@@ -1,6 +1,7 @@
 // echo-worker.mjs — deterministic test delegate for bullswarm.
 // Reads a task file; behavior is driven by directives in the task text.
 //   FAIL:auth   -> prints an auth failure, exits 0 (the lying-exit trap)
+//   FAIL:quota  -> prints a provider usage limit naming its reset, exits 0
 //   FAIL:exit   -> prints a complete answer, exits 1 (exit-1-after-success)
 //   INTENT:     -> prints only an announcement, exits 0
 //   otherwise   -> echoes the task as a completed answer, exit 0
@@ -11,6 +12,11 @@ const task = readFileSync(process.argv[2], 'utf8');
 const sleepMatch = task.match(/SLEEP_MS:(\d+)/);
 if (sleepMatch) await new Promise((resolve) => setTimeout(resolve, Number(sleepMatch[1])));
 
+if (task.includes('FAIL:quota')) {
+  // A usage limit is not a broken credential: it names when it resets.
+  console.log('Error: usage limit reached · resets in 45 minutes');
+  process.exit(0);
+}
 if (task.includes('FAIL:auth-hang')) {
   console.log('Authentication failed: quota exhausted; waiting process should be terminated.');
   await new Promise((resolve) => setTimeout(resolve, 5000));

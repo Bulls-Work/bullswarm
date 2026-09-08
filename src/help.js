@@ -987,20 +987,26 @@ const workflowTuiText = rich({
 });
 
 const workflowWatchText = rich({
-  usage: 'bullswarm workflow watch <runId> [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
+  usage: 'bullswarm workflow watch <runId> [--classic] [--interval <seconds>] [--heartbeat <seconds>] [--stall-after <seconds>] [--next [--after <sequence>] [--since <iso-timestamp>]] [--jsonl] [--once] [--verbose]',
   purpose: "Follow one V2 run by printing one attach line, then one line per notable event "
     + '(action finished/failed/blocked/cancelled, evidence, stage completion, stall/recovery, planning, '
-    + 'cancellation) and staying silent while work is merely in progress. `--next` prints no attach '
-    + 'line and returns after the first notable event, or immediately at a pause or terminal status. '
+    + 'cancellation) and staying silent while work is merely in progress. A usage-limit failure always '
+    + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline> · retrying on '
+    + 'another pool` line, then an `↺ ... now on <pool> · <model>` line once the mechanical retry lands. '
+    + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '
+    + 'a periodic heartbeat); legacy runs already behave this way and are unaffected. `--next` prints no '
+    + 'attach line and returns after the first notable event, or immediately at a pause or terminal status '
+    + '(event mode only — it cannot combine with `--classic`). '
     + 'Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and '
     + '`--since`; pass those two values back on the relaunch so events committed while no watcher was '
     + 'attached are printed instead of skipped and an already-reported stall does not fire again. '
-    + '`--heartbeat` is opt-in for V2; legacy runs keep the historical heartbeat stream. Distinct from the '
-    + 'full-screen tui and the machine-oriented events replay.',
+    + '`--heartbeat` is opt-in for V2; legacy runs (and `--classic`) keep the historical 60s heartbeat by '
+    + 'default. Distinct from the full-screen tui and the machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
+    { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; no-op for legacy runs; cannot combine with --next', default: 'off (event mode for V2 runs)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
-    { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off for V2, 60 for legacy' },
+    { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off for V2, 60 for legacy and --classic' },
     { flag: '--stall-after <seconds>', desc: 'report a running agent as silent after this many seconds without activity; must be >= 1', default: '300' },
     { flag: '--next', desc: 'print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status', default: 'off (follows until terminal or pause)' },
     { flag: '--after <sequence>', desc: 'start from this durable event sequence instead of the current high-water mark, so events committed since the previous watcher exited are printed; use the value from the previous `next:` line (in --jsonl, the `sequence` field of the last object)', default: 'attach at the current high-water mark' },
@@ -1014,11 +1020,13 @@ const workflowWatchText = rich({
     'exits 0 if the run reaches a delivered status (or on --once), 1 if it reaches a non-delivered terminal status',
     '--next exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running',
     'for a V2 run, a --next exit that leaves the run going ends with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`; pause, terminal and interrupted exits keep their own outcome/next lines',
+    '--classic --next is rejected with exit 2: --next only applies to event mode',
   ],
   examples: [
     { cmd: 'bullswarm workflow watch ab12cd --next', note: 'print the next notable event and exit; relaunch until outcome reports a pause or a terminal status' },
     { cmd: 'bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.000Z', note: 'the relaunch: copy both values from the `next:` line the previous exit printed' },
     { cmd: 'bullswarm workflow watch ab12cd --stall-after 120 --heartbeat 30' },
+    { cmd: 'bullswarm workflow watch ab12cd --classic', note: 'the older heartbeat-based watcher instead of event mode' },
   ],
   next: 'bullswarm workflow runs result <runId> --json once it finishes, or bullswarm workflow tui <runId> for the interactive view.',
 });

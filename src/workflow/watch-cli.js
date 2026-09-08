@@ -2,8 +2,10 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // Low-noise, non-interactive workflow progress watcher.
 // V2 runs are event-based: one attach line, then one line per notable event
 // and silence while work is merely in progress. Legacy runs keep their
-// transition-plus-heartbeat output. This is intentionally distinct from the
-// full-screen TUI and the machine-oriented events replay API.
+// transition-plus-heartbeat output; `--classic` forces that same
+// transition-plus-heartbeat stream for a V2 run too. This is intentionally
+// distinct from the full-screen TUI and the machine-oriented events replay
+// API.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -391,7 +393,41 @@ export function initialWatchMemory(state, {
       stalled.set(key, { since: activityAt });
     }
   }
-  return { stages: new Set(done), stalled, retry: new Map() };
+  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map() };
+}
+
+// Epoch ms of a pool's re-probe deadline from the CORE bullswarm state (the
+// one at `<bullswarmDir>/state.json`, distinct from this run's own
+// state.json), when readable.
+function readCoreQuarantineUntilMs(bullswarmDir, pool) {
+  if (!bullswarmDir || !pool) return null;
+  const core = readJson(join(bullswarmDir, 'state.json'));
+  const until = core?.pools?.[pool]?.quarantine?.until;
+  return Number.isFinite(until) ? until : null;
+}
+
+// ISO timestamp literal embedded in a verdict `why` string, e.g.
+// `usage limit: "..." · pool paused until 2026-09-08T14:59:59.000Z`.
+const ISO_TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T[\d:.]+Z\b/;
+
+function quotaDeadlineIso(bullswarmDir, pool, why) {
+  const untilMs = readCoreQuarantineUntilMs(bullswarmDir, pool);
+  if (untilMs != null) return new Date(untilMs).toISOString();
+  return ISO_TIMESTAMP_RE.exec(String(why ?? ''))?.[0] ?? null;
+}
+
+// Human deadline: HH:MM local when the deadline falls on the same calendar
+// day as `now`, else the full ISO timestamp so the date is never ambiguous.
+function formatDeadline(untilIso, now) {
+  if (!untilIso) return 'unknown';
+  const until = new Date(untilIso);
+  if (Number.isNaN(until.getTime())) return 'unknown';
+  const reference = now instanceof Date ? now : new Date(now);
+  const sameDay = until.getFullYear() === reference.getFullYear()
+    && until.getMonth() === reference.getMonth()
+    && until.getDate() === reference.getDate();
+  if (!sameDay) return untilIso;
+  return `${String(until.getHours()).padStart(2, '0')}:${String(until.getMinutes()).padStart(2, '0')}`;
 }
 
 /**
@@ -406,11 +442,13 @@ export function notableWatchEvents({
   verbose = false,
   nowMs = Date.now(),
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
+  bullswarmDir = null,
 } = {}) {
   const carried = memory ?? initialWatchMemory(state);
   const stages = new Set(carried.stages);
   const stalled = new Map(carried.stalled);
   const retry = new Map(carried.retry);
+  const moving = new Map(carried.moving);
   const notable = [];
 
   const onAttemptStarted = (actionId, payload, ordinal) => {
@@ -418,6 +456,15 @@ export function notableWatchEvents({
     if (retry.has(actionId)) {
       if (verbose) notable.push({ type: 'attempt.retrying', actionId, failureKind: retry.get(actionId) });
       retry.delete(actionId);
+    }
+    // A usage-limit failure always gets its own always-on pair of lines
+    // (attempt.quota then attempt.moved), never the generic verbose retry line.
+    if (moving.has(actionId)) {
+      notable.push({
+        type: 'attempt.moved', actionId, attemptId: payload.attemptId ?? null,
+        pool: payload.pool ?? null, model: payload.model ?? null,
+      });
+      moving.delete(actionId);
     }
     if (verbose) {
       notable.push({
@@ -427,8 +474,25 @@ export function notableWatchEvents({
     }
   };
   const onAttemptFinished = (actionId, payload) => {
-    if (payload.status === 'succeeded') retry.delete(actionId);
-    else retry.set(actionId, payload.failureKind ?? payload.status ?? 'unknown');
+    if (payload.status === 'succeeded') { retry.delete(actionId); return; }
+    const failureKind = payload.failureKind
+      ?? (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId)?.failureKind;
+    if (failureKind === 'quota') {
+      const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
+      const pool = record?.pool ?? payload.pool ?? null;
+      const why = payload.why ?? record?.why ?? null;
+      notable.push({
+        type: 'attempt.quota',
+        actionId,
+        attemptId: payload.attemptId ?? record?.id ?? null,
+        pool,
+        why,
+        until: quotaDeadlineIso(bullswarmDir, pool, why),
+      });
+      moving.set(actionId, true);
+      return;
+    }
+    retry.set(actionId, payload.failureKind ?? payload.status ?? 'unknown');
   };
 
   for (const event of events) {
@@ -438,6 +502,7 @@ export function notableWatchEvents({
         const runtime = (state.actions ?? []).find((item) => item.id === payload.actionId) ?? null;
         const status = payload.status ?? runtime?.status ?? 'finished';
         retry.delete(payload.actionId);
+        moving.delete(payload.actionId);
         notable.push({
           type: 'action.finished',
           actionId: payload.actionId,
@@ -568,11 +633,13 @@ export function notableWatchEvents({
     });
   }
 
-  return { notable, memory: { stages, stalled, retry } };
+  return { notable, memory: { stages, stalled, retry, moving } };
 }
 
-/** One notable event as one human line. */
-export function renderWatchEvent(event) {
+/** One notable event as one human line. `now` anchors the attempt.quota
+ * deadline's local-vs-ISO formatting; it defaults to wall-clock time but the
+ * watch loop threads its injectable clock through so it stays deterministic. */
+export function renderWatchEvent(event, { now = Date.now() } = {}) {
   switch (event.type) {
     case 'attach':
       return `● watching ${event.shortId ?? event.runId} · ${event.status} · ` +
@@ -606,6 +673,11 @@ export function renderWatchEvent(event) {
       return `▶ ${event.actionId} started · ${event.pool ?? '?'}/${event.model ?? '?'} · attempt ${event.attempt ?? '?'}`;
     case 'attempt.retrying':
       return `↺ ${event.actionId} retrying · ${event.failureKind}`;
+    case 'attempt.quota':
+      return `⚠ ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
+        `paused until ${formatDeadline(event.until, now)} · retrying on another pool`;
+    case 'attempt.moved':
+      return `↺ ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
     case 'steering.delivered':
       return '→ steering delivered';
     default:
@@ -614,7 +686,7 @@ export function renderWatchEvent(event) {
 }
 
 function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null }) {
-  if (!jsonl) return renderWatchEvent(event);
+  if (!jsonl) return renderWatchEvent(event, { now: at });
   const { type, ...fields } = event;
   // `sequence` is the durable cursor this object was emitted at: the machine
   // form of the human `next: ... --after <sequence>` relaunch line.
@@ -628,6 +700,9 @@ export async function runWorkflowWatch(bullswarmDir, token, {
   heartbeatMs = null,
   once = false,
   next = false,
+  // Forces the legacy transition-plus-heartbeat stream for a V2 run too.
+  // Ignored for legacy runs, which already behave this way.
+  classic = false,
   jsonl = false,
   verbose = false,
   stallAfterMs = DEFAULT_STALL_AFTER_MS,
@@ -660,7 +735,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
       const snapshot = watchSnapshot(resolved.runDir, state, new Date(nowMs));
       // Legacy runs keep their transition-plus-heartbeat output exactly as it
       // was; only V2 runs become event-based, and --once stays a snapshot.
-      const eventMode = isV2State(state) && !oneShot;
+      // --classic forces the same transition-plus-heartbeat stream for a V2 run.
+      const eventMode = isV2State(state) && !oneShot && !classic;
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime, unless
@@ -722,7 +798,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           }
         }
         const collected = notableWatchEvents({
-          events: newEvents, state, memory, verbose, nowMs, stallAfterMs,
+          events: newEvents, state, memory, verbose, nowMs, stallAfterMs, bullswarmDir,
         });
         memory = collected.memory;
         for (const event of collected.notable) {

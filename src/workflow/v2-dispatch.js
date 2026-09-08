@@ -6,7 +6,9 @@ import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } fr
 import { watchOnce } from '../lib/watch.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
-const MECHANICAL_KINDS = new Set(['auth', 'provider', 'process', 'interrupted', 'schema']);
+const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema']);
+/** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
+const POOL_FATAL_KINDS = new Set(['auth', 'quota']);
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -15,6 +17,10 @@ function clone(value) {
 function classifyFailure(verdict) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
+  // Quota outranks the quarantine hint: a usage limit also asks for a
+  // quarantine, but it is a healthy credential with an empty window, and only
+  // it carries a real reset deadline.
+  if (verdict?.failureKind === 'quota') return 'quota';
   if (verdict?.quarantineHint) return 'auth';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
@@ -32,10 +38,15 @@ function providerIdFromModel(model) {
 
 function preparePools(pools, action, effort, {
   avoidPools = [], preferredModel = null, strictPool = null, now = Date.now(),
+  liveQuarantine = null,
 } = {}) {
   const available = [];
   for (const pool of pools) {
     if (pool.enabled === false || pool.burstGate === true || isQuarantined(pool, now)) continue;
+    // The pool object may predate a quarantine written by another action or
+    // another run. Core state is the shared record, so consult it directly.
+    const live = typeof liveQuarantine === 'function' ? liveQuarantine(pool.name) : null;
+    if (live && isQuarantined({ quarantine: live }, now)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
     // meter. Retargeting it to another provider-qualified model would make the
@@ -84,7 +95,12 @@ function appendDecision(bullswarmDir, record, { loadCoreState, saveCoreState, qu
   const state = loadCoreState(bullswarmDir);
   state.decisionLog ??= [];
   state.decisionLog.push(record);
-  if (quarantine) quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now);
+  if (quarantine) {
+    quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
+      until: quarantine.until ?? null,
+      kind: quarantine.kind ?? 'auth',
+    });
+  }
   saveCoreState(bullswarmDir, state);
 }
 
@@ -128,6 +144,7 @@ export async function dispatchV2Action({
   targetDir,
   paths,
   pools,
+  refreshPools = null,
   bullswarmDir,
   parentEnv = process.env,
   preferredPool = null,
@@ -157,9 +174,18 @@ export async function dispatchV2Action({
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
-  let candidates = preparePools(pools, action, effort, {
-    avoidPools, preferredModel, strictPool, now: now(),
+  const liveQuarantines = dependencies.liveQuarantines ?? (() => {
+    try { return loadCoreState(bullswarmDir).pools ?? {}; }
+    catch { return {}; }
   });
+  const prepare = (poolList) => {
+    const live = liveQuarantines();
+    return preparePools(poolList, action, effort, {
+      avoidPools, preferredModel, strictPool, now: now(),
+      liveQuarantine: (name) => live[name]?.quarantine ?? null,
+    });
+  };
+  let candidates = prepare(pools);
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
   const effectivePreferredPool = preferredPool ?? configuredAssignment?.pool ?? null;
@@ -169,9 +195,33 @@ export async function dispatchV2Action({
   let retriesUsed = 0;
   let nextTask = taskText;
   let last = null;
+  const tried = new Set();
+  let forceRefresh = false;
+  let replayPool = null;
 
   while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
+    const replay = replayPool;
+    replayPool = null;
+    // Meters and quarantines move while an action is in flight. Re-read them
+    // before every pick so a pool that just hit its limit — here or in another
+    // run — is no longer a candidate.
+    if (typeof refreshPools === 'function') {
+      let refreshed = null;
+      try { refreshed = await refreshPools({ force: forceRefresh }); }
+      catch { refreshed = null; }
+      forceRefresh = false;
+      if (Array.isArray(refreshed) && refreshed.length) {
+        candidates = prepare(refreshed);
+        remaining.length = 0;
+        // A pool deliberately re-queued for a same-pool retry survives the
+        // rebuild; every other already-tried pool stays out.
+        if (replay) remaining.push(replay);
+        for (const candidate of candidates) {
+          if (!tried.has(candidate.name) && candidate.name !== replay?.name) remaining.push(candidate);
+        }
+      }
+    }
     const routePools = remaining.length ? remaining : candidates;
     const route = pickPool(action.lane ?? 'chore', routePools, {
       callerEligible: false,
@@ -193,10 +243,15 @@ export async function dispatchV2Action({
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
-      outFile: files.outFile, routing: { reason: route.why, candidates: route.candidates, effort, lane: action.lane ?? 'chore' },
+      outFile: files.outFile,
+      routing: {
+        reason: route.why, candidates: route.candidates, effort,
+        lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
+      },
       ...(session ? { session: clone(session.durable), continued: session.invocation.resume } : {}),
     };
     attempts.push(record);
+    tried.add(pool.name);
     onAttempt?.('started', clone(record));
     const runtimeConnector = { ...connector, subscription: pool.subscription ?? connector.subscription ?? null };
     let workerPid = null;
@@ -212,6 +267,7 @@ export async function dispatchV2Action({
       onActivity,
       onAgentEvent,
       onAgentProgress,
+      bullswarmDir,
     }); } finally { if (workerPid) onWorkerExit?.(workerPid); }
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict);
@@ -220,7 +276,7 @@ export async function dispatchV2Action({
     const canRetryMechanically = MECHANICAL_KINDS.has(kind)
       && kind !== 'schema'
       && (remainingAfterAttempt.length > 0
-        || (retriesUsed < maxMechanicalRetries && candidates.length === 1 && kind !== 'auth'));
+        || (retriesUsed < maxMechanicalRetries && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind)));
     const willRecover = canCorrectSchema || canRetryMechanically;
     Object.assign(record, {
       finishedAt,
@@ -254,8 +310,15 @@ export async function dispatchV2Action({
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, {
       loadCoreState, saveCoreState,
-      quarantine: verdict.quarantineHint ? { pool: pool.name, reason: verdict.why, now: now() } : null,
+      quarantine: verdict.quarantineHint ? {
+        pool: pool.name, reason: verdict.why, now: now(),
+        until: verdict.quarantineUntil ?? null,
+        kind: kind === 'quota' ? 'quota' : 'auth',
+      } : null,
     });
+    // A quota failure invalidates this run's meter picture: poll live before
+    // choosing where the work goes next.
+    if (kind === 'quota') forceRefresh = true;
     if (verdict.ok) return { ok: true, status: 'succeeded', attempts, verdict, session: currentSession };
     if (kind === 'cancelled') return { ok: false, status: 'cancelled', failureKind: kind, attempts, verdict };
     if (!MECHANICAL_KINDS.has(kind)) return { ok: false, status: 'failed', failureKind: kind, attempts, verdict };
@@ -269,13 +332,17 @@ export async function dispatchV2Action({
       // connector supports it. Put the same pool first without widening the
       // total correction allowance.
       remaining.unshift(pool);
+      replayPool = pool;
       continue;
     }
     if (retriesUsed >= maxMechanicalRetries) break;
     retriesUsed += 1;
     // Prefer a different eligible pool. If no alternative exists, one bounded
     // same-pool retry is permitted for transient process/provider failure.
-    if (!remaining.length && candidates.length === 1 && kind !== 'auth') remaining.push(pool);
+    if (!remaining.length && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind)) {
+      remaining.push(pool);
+      replayPool = pool;
+    }
   }
 
   return {

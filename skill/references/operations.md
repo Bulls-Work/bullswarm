@@ -51,7 +51,13 @@ already-reported stall does not fire again (its recovery still prints). With
 `--jsonl` that line is absent: take `--after` from the `sequence` field carried
 by every emitted object. `--heartbeat` is opt-in for V2 (legacy still
 defaults to 60s). `--stall-after` (default 300s) reports a silent running
-agent. Use `--verbose` only for diagnosis.
+agent. A usage-limit failure always prints, verbose or not: `⚠ ... usage
+limit on <pool> · paused until <deadline> · retrying on another pool`, then
+`↺ ... now on <pool> · <model>` once the mechanical retry lands on another
+pool. Use `--verbose` only for diagnosis. `--classic` forces the older
+heartbeat-based watcher (transition-on-change snapshots plus a periodic
+heartbeat) instead of event mode; it is a no-op for legacy runs and cannot
+combine with `--next`.
 The result command is the stable delivery/verification envelope; do not scrape
 task files or assume the last provider response is the deliverable.
 
@@ -149,9 +155,13 @@ bullswarm strategy inventory --json
 bullswarm strategy routes --json
 ```
 
-Automatic routing chooses the most-behind capable eligible pool, honors burst
-gates and quarantine, and applies only explicitly approved model assignments
-and exclusions. Humans can use bare `bullswarm strategy` to toggle providers
+Automatic routing chooses the most-behind capable eligible pool among those
+with 5-hour headroom, honors burst gates and quarantine, and applies only
+explicitly approved model assignments and exclusions. A pool at or above 75%
+of its 5-hour window is picked only when no eligible pool below that line
+exists; `bullswarm pools` shows the reading as `5h=<n>%` with a
+`NEAR-5H-LIMIT` label, and meters and quarantines are re-read before every
+dispatch rather than frozen at launch. Humans can use bare `bullswarm strategy` to toggle providers
 and multi-select high/medium/low per model. Agents should consume the inventory
 and apply validated changes with `strategy set-provider`, `strategy set-model`,
 or one atomic `strategy configure --file <json> --yes`. Never weaken those
@@ -159,8 +169,13 @@ controls in a prompt.
 
 ## Recovery and stopping rules
 
-- Auth/throttle signatures quarantine the affected pool; later dispatches use
-  another eligible pool.
+- Auth signatures quarantine the affected pool for a 10-minute re-probe
+  window; later dispatches use another eligible pool.
+- A provider usage limit is the distinct failure kind `quota`: the attempt is
+  killed at once, the pool is quarantined until the reset the message named
+  (else its cached 5-hour `resets_at`, else 30 minutes), and the action moves
+  to a pool that still has quota. The quarantine holds across runs until it
+  expires. Discussing usage limits in a report is not a usage limit.
 - A quota-gated preferred orchestrator falls back unless it was strictly pinned
   for QA.
 - Silence is evidence to inspect, not automatic proof of a hang. Check the TUI

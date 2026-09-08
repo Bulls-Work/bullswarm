@@ -1,5 +1,45 @@
 # bullswarm changelog
 
+## 0.25.3 — usage-limit recovery and headroom-aware routing
+
+- A provider that reports a usage limit is now its own mechanical failure kind,
+  `quota` — never `process`, `semantic`, or `auth`. The attempt is killed at
+  once instead of waiting out a CLI that printed its limit and then hung, and
+  the pool is quarantined until the reset the message named, falling back to
+  that pool's cached 5-hour `resets_at` and then to 30 minutes rather than the
+  flat 10. The quarantine record carries `kind: 'quota'` and excludes the pool
+  from every later dispatch, in that run and in others, until it expires; the
+  action moves to another pool with quota and is never retried on the one that
+  hit the limit. `bullswarm run`, the V1 runtime, and V2 dispatch all apply the
+  same deadline. Detection is shape-gated: an agent report that discusses usage
+  limits, or tool output quoting them, is not a limit, and phrases that other
+  services also emit (`rate limited`, `too many requests`, `quota exceeded`)
+  count only as a bare notice, never as narration about someone else's quota
+  ("rate limited by the GitHub API, retrying"). Connectors declare their
+  own phrases under `quotaSignatures`; installed connectors receive new ones on
+  upgrade.
+
+- Routing avoids pools that are close to their 5-hour limit. A pool at or above
+  `FIVE_HOUR_NEAR_LIMIT_PCT` (75) is chosen only when no eligible pool below it
+  exists for the lane, ahead of pace, an approved assignment, and incumbency;
+  pools at or above 90 stay excluded outright, and a pool with no 5-hour
+  reading counts as having headroom. Routing reasons and candidate lists name
+  the utilization that decided the pick, and `bullswarm pools` shows it as
+  `5h=<n>%` with a `NEAR-5H-LIMIT` label. Meters and quarantines are re-read
+  from the meter cache and core state before every action dispatch and before
+  every retry inside one — forced live right after a usage limit — so a long
+  run no longer dispatches from the pool snapshot frozen at launch.
+
+- `workflow watch` reports a usage-limit retry as a notable event in both
+  modes' vocabulary: `⚠ <action> usage limit on <pool> · paused until
+  <deadline> · retrying on another pool`, then `↺ <action> now on <pool> ·
+  <model>` once the retry lands. Both print without `--verbose`, wake `--next`,
+  and appear in `--jsonl` as `attempt.quota` and `attempt.moved`. The new
+  `--classic` flag forces the older heartbeat-based watcher (transition-on-change
+  snapshots plus a periodic heartbeat, 60 seconds unless `--heartbeat <seconds>`
+  is given) for a V2 run; it is a no-op for legacy runs and cannot combine with
+  `--next`.
+
 ## 0.25.2 — event-based watch
 
 - `workflow watch <run> --next` is safe to relaunch after every wake-up: each

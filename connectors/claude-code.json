@@ -23,6 +23,12 @@
     "not logged in",
     "please run /login"
   ],
+  "$comment-quotaSignatures": "usage-limit phrases: classified `quota`, quarantined until the reset the message names. DEFAULT_QUOTA_SIGNATURES (src/lib/quota.js) apply on top of these.",
+  "quotaSignatures": [
+    "hit your session limit",
+    "hit your limit",
+    "hit your usage limit"
+  ],
   "outputExtraction": {
     "strategy": "event-stream"
   },

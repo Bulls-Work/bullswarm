@@ -295,6 +295,57 @@ test('G2: a quota-gated preferred pool falls back immediately to an eligible poo
 // a decisionLog entry was written.
 // -------------------------------------------------------------------------
 
+test('G3b: workflow usage-limit verdicts quarantine as kind quota until the announced reset', async () => {
+  const { dir, cleanup } = fixtureHome();
+  try {
+    const connectorsDir = join(dir, '.bullswarm', 'connectors');
+    const echo = JSON.parse(readFileSync(join(connectorsDir, 'echo.json'), 'utf8'));
+    const pools = [{
+      name: 'echo',
+      connector: {
+        ...echo,
+        spawn: { cmd: ['node', join(REPO, 'connectors', 'echo-worker.mjs'), '{taskFile}'], cwdMode: 'task-file-dir' },
+      },
+      enabled: true,
+      costRank: 5,
+      lanes: ['analyze', 'build', 'chore'],
+      meter: { type: 'none' },
+      usedPct: null,
+      quarantine: null,
+      pace: 0,
+      burstGate: false,
+    }];
+    const doc = {
+      name: 'g3b-quota',
+      description: 'g',
+      inputs: {},
+      settings: { concurrency: 1, escalateOnFail: false },
+      phases: [
+        { name: 'p', steps: [{ id: 'k', type: 'run', lane: 'chore', prompt: 'FAIL:quota please', timeoutSec: 60 }] },
+      ],
+    };
+    const before = Date.now();
+    const result = await runWorkflow({
+      bullswarmDir: join(dir, '.bullswarm'),
+      doc,
+      pools,
+      inputs: {},
+      onEvent: () => {},
+    });
+    assert.equal(result.state.outputs.k.ok, false);
+    assert.match(result.state.outputs.k.why, /^usage limit: /);
+    const coreState = loadState(join(dir, '.bullswarm'));
+    const quarantine = coreState.pools.echo?.quarantine;
+    assert.ok(quarantine, 'pool was not quarantined');
+    // The announced reset, not the flat 10-minute auth window.
+    assert.equal(quarantine.kind, 'quota');
+    const aheadMin = (quarantine.until - before) / 60_000;
+    assert.ok(aheadMin > 40 && aheadMin < 50, `expected ~45 min ahead, got ${aheadMin}`);
+  } finally {
+    cleanup();
+  }
+});
+
 test('G3: workflow auth verdicts quarantine the pool and log to decisionLog', async () => {
   const { dir, cleanup } = fixtureHome();
   try {

@@ -4,6 +4,8 @@
 //   S1. Quarantine always carries a re-probe deadline; a recovered pool
 //       returns to service AUTOMATICALLY (fixes the /offload gap where a
 //       pool benched 30 minutes stayed benched while it had recovered).
+//       The deadline is 10 minutes unless the caller knows the real one — a
+//       usage limit supplies its announced reset time and kind 'quota'.
 //   S2. Incumbency per lane persists so picks don't flap between runs.
 //   S3. Every run appends to the decision log — routing telemetry is the
 //       substrate for burn-rate learning later.
@@ -15,7 +17,7 @@ import { dirname, join } from 'node:path';
 
 export const DEFAULT_STATE = {
   version: 1,
-  pools: {},        // name -> {enabled, meter:{type,windowStart?,usedPct?,declaredBy}, quarantine:{until,reason}|null}
+  pools: {},        // name -> {enabled, meter:{type,windowStart?,usedPct?,declaredBy}, quarantine:{until,reason,kind}|null}
   incumbents: {},   // lane -> poolName
   decisionLog: [],  // {ts, lane, picked, keepOnClaude, ok, why, wallSec}
   config: {
@@ -50,17 +52,22 @@ export function saveState(bullswarmDir, state) {
 
 // --- quarantine -----------------------------------------------------------
 
-export function quarantinePool(state, poolName, reason, now = Date.now()) {
+export function quarantinePool(state, poolName, reason, now = Date.now(), {
+  until = null, kind = 'auth',
+} = {}) {
   // Re-probe window: 10 minutes by default (not 30) with automatic release.
-  const until = now + 10 * 60_000;
+  // A quota failure knows better: it passes the reset time the provider
+  // announced (or its cached meter reset), so the pool comes back exactly when
+  // it has quota again instead of being probed into a second failure.
+  const deadline = Number.isFinite(until) && until > now ? until : now + 10 * 60_000;
   state.pools[poolName] ??= {};
-  state.pools[poolName].quarantine = { until, reason };
+  state.pools[poolName].quarantine = { until: deadline, reason, kind };
   // A quarantined pool cannot hold incumbency: it isn't serving work, and
   // keeping the flag would lock the lane against its return.
   for (const [lane, name] of Object.entries(state.incumbents ?? {})) {
     if (name === poolName) delete state.incumbents[lane];
   }
-  return until;
+  return deadline;
 }
 
 export function releaseIfProbeDue(state, poolName, now = Date.now()) {

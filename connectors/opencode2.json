@@ -8,6 +8,8 @@
     "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
   },
   "authSignatures": ["No cookie auth credentials found", "unauthorized"],
+  "$comment-quotaSignatures": "empty on purpose: provider quota errors reach opencode from the upstream API in generic form (insufficient_quota, rate limit exceeded, too many requests), which DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js already matches.",
+  "quotaSignatures": [],
   "outputExtraction": { "strategy": "event-stream" },
   "eventStream": {
     "format": "jsonl",

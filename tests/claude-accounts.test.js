@@ -80,6 +80,9 @@ test('discoverClaudeAccounts returns one usable login per distinct token', () =>
     });
     const accounts = discoverClaudeAccounts({
       homeDir: home,
+      // A shell that exports CLAUDE_CONFIG_DIR (every worker spawned on an
+      // extra Claude login does) must not leak a real login into the fixture.
+      envConfigDir: '',
       platform: 'linux',
       nowMs: Date.now(),
     });

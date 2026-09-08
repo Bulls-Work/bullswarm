@@ -13,6 +13,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
+import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../meters/framework.js';
 import { expandClaudeAccountConnectors } from './claude-accounts.js';
 import { expandOpenCodeRelayConnectors } from './opencode-relay.js';
 
@@ -66,6 +67,10 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       elapsedPct: null,
       pace: null,
       burstGate: false,
+      // 5h window (doctrine M3): gates routing, never paces it.
+      fiveHourUsedPct: null,
+      fiveHourResetsAt: null,
+      nearFiveHourLimit: false,
       meterSnapshot: null,
       subscription: {
         ...(conn.subscription ?? {}),
@@ -85,6 +90,15 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
     const ps = state.pools[p.name] ?? {};
 
     const reading = readings[p.name];
+    // The 5h gate is independent of the pacing window: a reading may carry a
+    // 5h utilization with no weekly/monthly window to pace by, and routing
+    // still has to see that the pool is close to its 5h limit.
+    if (reading) {
+      const fiveHour = fiveHourFromReading(reading);
+      p.fiveHourUsedPct = fiveHour.usedPct;
+      p.fiveHourResetsAt = fiveHour.resetsAt;
+      p.nearFiveHourLimit = fiveHour.nearLimit;
+    }
     if (reading?.pacing) {
       // Provider-truth path (M1/M2)
       p.meterSource = reading.source; // live | cache | stale
@@ -110,6 +124,30 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
     }
   }
   return { state, connectors, pools };
+}
+
+/** null-safe finite coercion: null/undefined/NaN all mean "no reading". */
+function finiteOrNull(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 5h window fields from a meter reading. Prefers the flat fields paceSnapshot
+ * produces and falls back to the raw snapshot, so a reading assembled by an
+ * older code path still reports a real 5h number instead of null.
+ */
+function fiveHourFromReading(reading) {
+  const usedPct = finiteOrNull(reading?.fiveHourUsedPct)
+    ?? finiteOrNull(reading?.snapshot?.five_hour?.utilization);
+  const raw = reading?.fiveHourResetsAt ?? reading?.snapshot?.five_hour?.resets_at ?? null;
+  const resetsMs = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return {
+    usedPct,
+    resetsAt: Number.isFinite(resetsMs) ? new Date(resetsMs).toISOString() : null,
+    nearLimit: usedPct != null && usedPct >= FIVE_HOUR_NEAR_LIMIT_PCT,
+  };
 }
 
 /**

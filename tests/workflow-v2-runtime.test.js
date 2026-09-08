@@ -466,3 +466,87 @@ test('resume reconciles an atomically published result after a crash before term
   assert.equal(resumed.state.lifecycle.resultFile, join(runDir, 'result.json'));
   assert.equal(readEvents(runDir).at(-1).payload.recovered, true);
 });
+
+test('every dispatch re-reads pools through the refresher, not the launch list', async () => {
+  const f = setup();
+  const launchPools = [{ name: 'launch-snapshot', enabled: true, lanes: ['analyze', 'build', 'chore'], pace: 0 }];
+  // Each refresh reports a different live list, so the pools handed to a
+  // dispatch identify exactly which refresh produced them.
+  const refreshed = [
+    [{ name: 'refresh-1', enabled: true, lanes: ['analyze', 'build', 'chore'], pace: 0, fiveHourUsedPct: 3, nearFiveHourLimit: false }],
+    [{ name: 'refresh-2', enabled: true, lanes: ['analyze', 'build', 'chore'], pace: 0, fiveHourUsedPct: 82, nearFiveHourLimit: true }],
+    [{ name: 'refresh-3', enabled: true, lanes: ['analyze', 'build', 'chore'], pace: 0, fiveHourUsedPct: 40, nearFiveHourLimit: false }],
+  ];
+  const refreshCalls = [];
+  const refreshPools = async (opts = {}) => {
+    refreshCalls.push(opts);
+    return refreshed[Math.min(refreshCalls.length - 1, refreshed.length - 1)];
+  };
+
+  const seen = [];
+  const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    seen.push({
+      actionId: options.action.id,
+      pools: options.pools.map((pool) => pool.name),
+      refreshPools: options.refreshPools,
+    });
+    if (options.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+
+  const result = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: launchPools,
+    runId: 'wf-refresh-abcdef', dependencies: { dispatchV2Action: dispatch, refreshPools },
+  });
+  assert.equal(result.result.status, 'completed');
+
+  assert.deepEqual(seen.map((entry) => entry.actionId), ['workflow-planner', 'write-report', 'inspect-report']);
+  // One refresh per dispatch, each dispatch seeing its own refresh's list.
+  assert.deepEqual(seen.map((entry) => entry.pools), [['refresh-1'], ['refresh-2'], ['refresh-3']]);
+  assert.equal(refreshCalls.length, 3);
+  // The launch-time snapshot never reaches a dispatch again.
+  assert.equal(seen.some((entry) => entry.pools.includes('launch-snapshot')), false);
+  // The dispatch loop gets the refresher itself so it can re-read between its
+  // own retries (forced after a quota failure).
+  for (const entry of seen) assert.equal(entry.refreshPools, refreshPools);
+});
+
+test('a refresh that throws or returns garbage never fails the run', async () => {
+  const f = setup();
+  const launchPools = [{ name: 'launch-snapshot', enabled: true, lanes: ['analyze', 'build', 'chore'], pace: 0 }];
+  let calls = 0;
+  const refreshPools = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('meter registry exploded');
+    return null; // contract violation from a future refresher
+  };
+  const seen = [];
+  const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    seen.push(options.pools.map((pool) => pool.name));
+    if (options.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+
+  const result = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: launchPools,
+    runId: 'wf-refbad-abcdef', dependencies: { dispatchV2Action: dispatch, refreshPools },
+  });
+  assert.equal(result.result.status, 'completed');
+  assert.equal(calls, 3);
+  // Every dispatch still had a usable list: the last known good one.
+  assert.deepEqual(seen, [['launch-snapshot'], ['launch-snapshot'], ['launch-snapshot']]);
+});

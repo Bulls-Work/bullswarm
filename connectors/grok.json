@@ -17,6 +17,8 @@
     "rate limit",
     "invalid api key"
   ],
+  "$comment-quotaSignatures": "empty on purpose: no grok-specific usage-limit wording has been observed yet, and the generic phrasings (rate limit exceeded, too many requests, quota exceeded) already come from DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js.",
+  "quotaSignatures": [],
   "outputExtraction": {
     "strategy": "event-stream"
   },

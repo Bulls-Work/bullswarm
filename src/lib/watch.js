@@ -11,6 +11,9 @@
 //   W4. A non-zero exit is never a success — but when content verification
 //       passes anyway, report contentUsableDespiteExit instead of
 //       discarding completed work.
+//   W5. A usage limit is reported as its own failure kind `quota` with the
+//       reset deadline it announced. It is never `process` merely because the
+//       CLI exited non-zero, and never `auth` merely because it throttled.
 
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
@@ -19,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
 import { estimateInvocationUsage } from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
+import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -110,8 +114,20 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let forceKillTimer = null;
     let detectedModel = null;
     let providerFailureType = null;
+    // Assistant prose only. Tool results are quoted file/command output and
+    // routinely contain limit wording that says nothing about OUR quota.
+    let responseText = '';
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
-      onEvent: opts.onAgentEvent,
+      onEvent: (event) => {
+        if (event?.kind === 'response' && typeof event.summary === 'string'
+          // A truncation marker means a long answer, not a bare limit notice;
+          // judging the collapsed head of a real report would kill a healthy
+          // agent for discussing rate limits in its first sentence.
+          && !event.summary.endsWith('\u2026')) {
+          responseText = `${responseText}${event.summary}\n`.slice(-8000);
+        }
+        opts.onAgentEvent?.(event);
+      },
       onProgress: (event) => {
         if (event.model) detectedModel = event.model;
         if ((connector.eventStream?.failureTypes ?? []).includes(event.providerType)) {
@@ -127,10 +143,23 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       // that transport can kill a healthy agent merely for reading auth code.
       // Provider diagnostics on stderr remain safe to terminate on. Plain-text
       // connectors retain the legacy combined-stream fast-fail behavior.
-      const transport = connector.outputExtraction?.strategy === 'event-stream'
-        ? stderr
-        : `${stdout}\n${stderr}`;
-      fatalSignature = matchAuthSignature(connector, transport.slice(-4000));
+      const eventStreamed = connector.outputExtraction?.strategy === 'event-stream';
+      const transport = eventStreamed ? stderr : `${stdout}\n${stderr}`;
+      // Quota is classified BEFORE auth and is read from the semantic channels
+      // too: a provider that exhausted its window answers with the limit
+      // notice as its own response/result and may never exit on its own. Some
+      // connectors list a usage phrase (codex `usage_credits_required`) among
+      // their auth signatures — a throttle must still be reported as quota.
+      const quotaTransport = eventStreamed
+        ? [stderr.slice(-4000), responseText, (eventDecoder?.output() ?? '').slice(-4000)].join('\n')
+        : transport.slice(-4000);
+      const quota = findQuotaFailure(connector, quotaTransport);
+      if (quota) {
+        fatalSignature = { kind: 'quota', ...quota };
+      } else {
+        const authHit = matchAuthSignature(connector, transport.slice(-4000));
+        if (authHit) fatalSignature = { kind: 'auth', signature: authHit, line: null, context: null };
+      }
       if (!fatalSignature) return;
       // Give a well-behaved CLI a brief chance to exit with its own truthful
       // status, but do not wait indefinitely after a definitive auth/quota
@@ -247,8 +276,7 @@ function matchLikelyAuthFailure(connector, text) {
   const line = lower.slice(lineStart, lineEnd < 0 ? lower.length : lineEnd).trim();
   // A semantic result may legitimately discuss auth handling. Require the
   // matched line to look like a provider failure instead of source/report text.
-  const errorShaped = /^(?:error|fatal)(?:\b|:)|^(?:authentication failed|failed to authenticate|not authenticated|invalid api key|rate limit(?:ed| exceeded)?|cmd login)(?:[.!:]|$)|\b(?:http\s*(?:401|403|429)|status\s*(?:401|403|429)|login required|please login|access denied|quota exceeded)\b/i.test(line);
-  return errorShaped ? hit : null;
+  return ERROR_SHAPED_LINE.test(line) ? hit : null;
 }
 
 /**
@@ -276,11 +304,27 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
+  //   a quota-shaped usage-limit line -> fail + quarantine until the reset
+  //     (checked before auth: a throttle is not a broken credential).
   //   an error-shaped auth signature in the extracted semantic response ->
   //     fail + quarantine hint (raw structured tool output is not evidence of
   //     provider auth health).
   //   else content judge decides; exit code only modulates flags.
-  const authHit = obs.fatalSignature ?? matchLikelyAuthFailure(connector, output.slice(0, 2000));
+  const head = output.slice(0, 2000);
+  const fatalKind = obs.fatalSignature?.kind ?? null;
+  const quotaFailure = fatalKind === 'quota'
+    ? { signature: obs.fatalSignature.signature, line: obs.fatalSignature.line, context: obs.fatalSignature.context }
+    : fatalKind === null ? findQuotaFailure(connector, head) : null;
+  const authHit = fatalKind === 'auth'
+    ? obs.fatalSignature.signature
+    : quotaFailure ? null : matchLikelyAuthFailure(connector, head);
+  const quotaDeadline = quotaFailure
+    ? quotaQuarantineUntil({
+        text: quotaFailure.context ?? quotaFailure.line ?? '',
+        pool: connector.name ?? null,
+        bullswarmDir: opts.bullswarmDir ?? null,
+      })
+    : null;
 
   let verdict;
   let structured = null;
@@ -292,6 +336,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
   } else if (obs.providerFailureType) {
     verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
+  } else if (quotaFailure) {
+    verdict = {
+      ok: false,
+      failureKind: 'quota',
+      quarantineHint: true,
+      quarantineUntil: quotaDeadline.until,
+      quarantineSource: quotaDeadline.source,
+      why: `usage limit: "${(quotaFailure.line ?? quotaFailure.signature).slice(0, 160)}" `
+        + `· pool paused until ${new Date(quotaDeadline.until).toISOString()}`,
+    };
   } else if (authHit) {
     verdict = { ok: false, why: `auth/throttle signature: "${authHit}"`, quarantineHint: true };
   } else if (typeof opts.outputValidator === 'function') {
@@ -339,6 +393,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     !obs.spawnError &&
     !obs.timedOut &&
     !authHit &&
+    !quotaFailure &&
     obs.exitCode !== 0 &&
     judgeContent(output, {
       expectWork: true,

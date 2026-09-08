@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { watchOnce, argvWithModel } from '../src/lib/watch.js';
+import { parseQuotaResetAt } from '../src/lib/quota.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -355,6 +356,139 @@ test('PWD quirk mode: env.PWD is set to the resolved target dir', async () => {
       new RegExp(`PWD environment variable: ${escaped}\\n- getcwd`),
     );
     assert.match(out, new RegExp(`process.cwd\\(\\): ${escaped}`));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+// --- usage limits (requirement 1) ----------------------------------------
+
+// The message Claude Code really returned in run wf-mtshxsjk-f91d0a, as the
+// final stream-json result of attempt integrate-continuation-2.
+const SESSION_LIMIT = "You've hit your session limit · resets 8:20pm (Asia/Hong_Kong)";
+
+/** A claude-code-shaped stream-json connector driven by `node -e` rows. */
+function streamJsonConnector(script, extra = {}) {
+  return {
+    name: 'fixture-claude',
+    spawn: { cmd: [process.execPath, '-e', script] },
+    authSignatures: ['unauthorized', 'authentication failed'],
+    quotaSignatures: ['hit your session limit'],
+    outputExtraction: { strategy: 'event-stream' },
+    eventStream: {
+      format: 'jsonl',
+      modelPaths: ['model', 'message.model'],
+      rules: [
+        { rootMatch: { path: 'type', equals: 'assistant' }, forEach: 'message.content', match: { path: 'type', equals: 'text' }, kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        { rootMatch: { path: 'type', equals: 'user' }, forEach: 'message.content', match: { path: 'type', equals: 'tool_result' }, idPaths: ['tool_use_id'], kind: 'tool', defaultStatus: 'completed' },
+      ],
+      output: [{ match: { path: 'type', equals: 'result' }, path: 'result', mode: 'last' }],
+    },
+    ...extra,
+  };
+}
+
+const rowsScript = (rows, tail = '') =>
+  `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row));${tail}`;
+
+test('a stream-json usage limit kills a hanging CLI and quarantines until the parsed reset', async () => {
+  const ctx = makeCtx();
+  try {
+    // Prints the limit as its final result, then hangs for a minute.
+    const connector = streamJsonConnector(rowsScript(
+      [{ type: 'result', subtype: 'success', is_error: false, result: SESSION_LIMIT }],
+      ' setTimeout(() => {}, 60000);',
+    ));
+    const before = Date.now();
+    const v = await watchOnce(connector, 'Do the work.', ctx.dir, ctx.paths);
+    const elapsedMs = Date.now() - before;
+
+    assert.equal(v.ok, false);
+    assert.equal(v.failureKind, 'quota');
+    assert.equal(v.quarantineHint, true);
+    assert.equal(v.quarantineSource, 'message');
+    // The reset is the next 20:20 in Hong Kong; bound it by the clock either
+    // side of the run so the assertion cannot straddle that instant.
+    const acceptable = new Set([
+      parseQuotaResetAt(SESSION_LIMIT, { now: before }),
+      parseQuotaResetAt(SESSION_LIMIT, { now: Date.now() }),
+    ]);
+    assert.ok(acceptable.has(v.quarantineUntil), `unexpected deadline ${v.quarantineUntil}`);
+    assert.equal(
+      v.why,
+      `usage limit: "${SESSION_LIMIT}" · pool paused until ${new Date(v.quarantineUntil).toISOString()}`,
+    );
+    assert.equal(v.meta.signal, 'SIGTERM', 'the hanging child was terminated, not waited out');
+    assert.equal(v.meta.timedOut, false);
+    assert.ok(elapsedMs < 6000, `expected a prompt kill, took ${elapsedMs}ms`);
+    assert.equal(v.contentUsableDespiteExit, false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('tool output quoting a usage limit neither kills nor quarantines', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = '## Completed\n\nAudited the quota matcher and its call sites.\n\n'
+      + '- Read src/lib/quota.js and confirmed the signature list is the only place the phrases live.\n'
+      + '- Ran the focused watcher suite: every check passed with no failures.\n';
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: `src/lib/quota.js:30:  'hit your session limit',` }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: report },
+    ]));
+    const v = await watchOnce(connector, 'Audit the quota matcher.', ctx.dir, ctx.paths);
+    assert.equal(v.ok, true);
+    assert.equal(v.failureKind, undefined);
+    assert.equal(v.quarantineHint, undefined);
+    assert.equal(v.quarantineUntil, undefined);
+    assert.equal(v.meta.signal, null, 'a healthy agent must not be signalled');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a substantive report discussing usage limits still passes', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = '## Completed\n\nImplemented the recovery path and verified it end to end.\n\n'
+      + 'The dispatcher now treats a worker that answers usage limit reached as its own failure '
+      + 'kind, so the run moves the action to a pool that still has window left.\n\n'
+      + '- A provider answering rate limit exceeded is no longer recorded as a process crash.\n'
+      + '- Core state carries the reset deadline the provider named, so the pool returns by itself.\n'
+      + '- Ran the focused suites: 11 quota checks and 3 watcher checks passed with no failures.\n';
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: report },
+    ]));
+    const v = await watchOnce(connector, 'Implement usage-limit recovery.', ctx.dir, ctx.paths);
+    assert.equal(v.failureKind, undefined);
+    assert.equal(v.quarantineHint, undefined);
+    assert.doesNotMatch(v.why, /usage limit:/);
+    assert.equal(v.ok, true);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a plain-stdout connector reports a usage limit as quota, not auth', async () => {
+  const ctx = makeCtx();
+  try {
+    const plain = {
+      name: 'fixture-plain',
+      spawn: { cmd: [process.execPath, '-e', "console.log('Error: rate limit exceeded, resets in 2 hours'); setTimeout(() => {}, 60000);"] },
+      authSignatures: ['unauthorized', 'rate limit'],
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const before = Date.now();
+    const v = await watchOnce(plain, 'Do the work.', ctx.dir, ctx.paths);
+    assert.equal(v.ok, false);
+    assert.equal(v.failureKind, 'quota', 'a throttle is not a broken credential');
+    assert.equal(v.quarantineSource, 'message');
+    assert.ok(v.quarantineUntil >= before + 2 * 60 * 60_000 - 5000);
+    assert.ok(v.quarantineUntil <= Date.now() + 2 * 60 * 60_000);
+    assert.doesNotMatch(v.why, /auth\/throttle signature/);
   } finally {
     ctx.cleanup();
   }

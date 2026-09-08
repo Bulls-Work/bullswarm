@@ -196,6 +196,18 @@ export function upgradeConnectorMetadata(bullswarmDir) {
           changed = true;
         }
       }
+      // Usage-limit phrases are additive for the same reason auth signatures
+      // are: an installation that predates the `quota` failure kind would
+      // otherwise never learn its provider's own limit wording and would keep
+      // reporting a throttle as a generic process failure.
+      if (Array.isArray(packaged.quotaSignatures)) {
+        const existing = Array.isArray(installed.quotaSignatures) ? installed.quotaSignatures : [];
+        const merged = [...new Set([...existing, ...packaged.quotaSignatures])];
+        if (!Array.isArray(installed.quotaSignatures) || JSON.stringify(merged) !== JSON.stringify(existing)) {
+          installed.quotaSignatures = merged;
+          changed = true;
+        }
+      }
       if (installed.model == null && packaged.model != null) {
         installed.model = packaged.model;
         changed = true;
