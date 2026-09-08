@@ -121,3 +121,42 @@ test('gap report is compact and contains no planner repair instruction', () => {
   assert.ok(!JSON.stringify(gaps).includes('repair'));
   assert.equal(gaps.requirements[0].status, 'pending');
 });
+
+test('result envelope carries the reasoning level of each action\'s last attempt', () => {
+  const state = plannedState();
+  state.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 2, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: [] },
+  ];
+  // A retry can land on another connector with another level; the envelope
+  // reports the attempt whose output it is describing.
+  state.attempts = [
+    {
+      id: 'write-report-1', actionId: 'write-report', ordinal: 1, status: 'failed',
+      pool: 'alpha', model: 'alpha-sol', startedAt: '2026-08-31T01:01:00Z',
+      reasoning: { requested: 'max', applied: 'max', source: 'action', clamped: false },
+    },
+    {
+      id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'succeeded',
+      pool: 'beta', model: 'beta-luna', startedAt: '2026-08-31T01:02:00Z',
+      reasoning: { requested: 'max', applied: 'high', source: 'action', clamped: true },
+    },
+  ];
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report.md matches'], concerns: [] } } });
+
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
+  assert.deepEqual(result.actions[0].reasoning, { requested: 'max', applied: 'high', source: 'action', clamped: true });
+  // An action with no attempt at all reports null rather than inventing a level.
+  assert.equal(result.actions[1].reasoning, null);
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+
+  // Envelopes written before reasoning levels existed still deserialize.
+  const legacy = structuredClone(result);
+  for (const action of legacy.actions) delete action.reasoning;
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(legacy)).actions.map((action) => action.id), ['write-report', 'check-report']);
+  const broken = structuredClone(result);
+  broken.actions[0].reasoning = 'high';
+  assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.reasoning must be an object/);
+});

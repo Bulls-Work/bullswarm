@@ -167,6 +167,37 @@ and apply validated changes with `strategy set-provider`, `strategy set-model`,
 or one atomic `strategy configure --file <json> --yes`. Never weaken those
 controls in a prompt.
 
+Reasoning depth is a separate axis from routing: the lane and effort tier
+choose the pool and model, and the reasoning level chooses how hard that model
+thinks. The first layer that sets a level wins — not the strongest — in this
+order: an action's own `reasoning` field, then the run-wide
+`--worker-reasoning` / `--planner-reasoning` (`bullswarm run --reasoning`),
+then the configured `strategy.reasoning` level for that pool and tier, then
+the same for the tier globally, then the connector default. An action asking
+for `low` therefore beats a run-wide `max`. `default` at any layer means "pass
+nothing and let the worker CLI's own setting decide", and a connector that does
+not accept the requested level gets the nearest level it supports. The applied
+level is recorded per attempt and shown next to the model in `workflow runs
+show` (text and `--json`), `workflow runs result --json`, the TUI attempt rows,
+and the agent pane, so an unexpectedly cheap or expensive turn is visible
+rather than inferred.
+
+Configure the standing levels the same way as the rest of strategy — no
+interactive UI required:
+
+```bash
+bullswarm strategy set-reasoning --tier high --level xhigh --yes
+bullswarm strategy set-reasoning --tier high --level high --pool codex --yes
+bullswarm strategy reset-reasoning --tier high --yes
+bullswarm strategy inventory --json   # reasoning.tiers, .pools, .effective
+```
+
+`inventory --json` reports `reasoning.effective['<pool>'][tier]` as
+`{ level, source }` through the same resolver dispatch uses, so what it shows
+is what a run will send. `strategy configure --file <json> --yes` takes the
+same values as a `reasoning` section; an invalid section rejects the whole
+document and writes nothing.
+
 ## Recovery and stopping rules
 
 - Auth signatures quarantine the affected pool for a 10-minute re-probe

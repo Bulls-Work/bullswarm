@@ -165,3 +165,38 @@ test('can replay a historical program without retroactively applying routing pol
   );
   assert.equal(historical.actions[0].effort, 'medium');
 });
+
+test('optional per-action reasoning is accepted on the common scale and survives normalization', () => {
+  const accepted = validateActionProgram(
+    program([work({ reasoning: 'xhigh' }), evidence({ reasoning: 'default' })]),
+    { mandatoryRequirements: ['result'] },
+  );
+  assert.equal(accepted.actions[0].reasoning, 'xhigh');
+  assert.equal(accepted.actions[1].reasoning, 'default');
+  // Omitting the field must stay omitted, not become a level the caller never
+  // asked for: absent means "use the configured level".
+  const omitted = validateActionProgram(program(), { mandatoryRequirements: ['result'] });
+  assert.equal(Object.hasOwn(omitted.actions[0], 'reasoning'), false);
+  for (const level of ['low', 'medium', 'high', 'max']) {
+    assert.equal(
+      validateActionProgram(program([work({ reasoning: level }), evidence()]), { mandatoryRequirements: ['result'] }).actions[0].reasoning,
+      level,
+    );
+  }
+});
+
+test('rejects a reasoning value that is not on the common scale', () => {
+  for (const bad of ['ultra', 'HIGH', 'auto', '', 3, null, true]) {
+    assert.throws(
+      () => validateActionProgram(program([work({ reasoning: bad }), evidence()]), { mandatoryRequirements: ['result'] }),
+      (error) => {
+        assert.ok(error instanceof ActionValidationError, `expected ActionValidationError for ${JSON.stringify(bad)}`);
+        assert.ok(
+          error.issues.includes('actions[0].reasoning must be low|medium|high|xhigh|max|default'),
+          `missing reasoning issue for ${JSON.stringify(bad)}: ${error.issues.join('; ')}`,
+        );
+        return true;
+      },
+    );
+  }
+});

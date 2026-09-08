@@ -13,7 +13,7 @@ const LEGACY_FIELDS = new Set([
   'phases', 'steps', 'graph', 'engine', 'engineSelector',
   'verify', 'reviewer', 'repair', 'decisions', 'decision', 'result', 'completion',
 ]);
-const ROUTING_KEYS = new Set(['pool', 'model', 'preferredPool', 'preferredModel', 'strictPool']);
+const ROUTING_KEYS = new Set(['pool', 'model', 'preferredPool', 'preferredModel', 'strictPool', 'reasoning']);
 const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
@@ -26,7 +26,7 @@ const ACTION_STATE_FIELDS = new Set([
 const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
-  'usage', 'routing', 'continued', 'lastActivityAt', 'lastEventAt',
+  'usage', 'routing', 'reasoning', 'continued', 'lastActivityAt', 'lastEventAt',
   'outputBytesObserved', 'lastAgentEvent', 'wallSec',
 ]);
 const PLANNER_BOUNDARIES = new Set(['initial', 'gaps', 'steering']);
@@ -38,7 +38,7 @@ const PLANNER_SESSION_FIELDS = new Set([
   'pool', 'model', 'sessionId', 'startedAt', 'lastUsedAt', 'generation',
 ]);
 const PLANNER_ATTEMPT_FIELDS = new Set([
-  'ordinal', 'turn', 'status', 'pool', 'model', 'startedAt', 'finishedAt',
+  'ordinal', 'turn', 'status', 'pool', 'model', 'reasoning', 'startedAt', 'finishedAt',
   'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
   'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
 ]);
@@ -290,6 +290,7 @@ function validatePlanner(planner) {
     for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.planner.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
     if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.planner.attempts[${index}].usage must be null or an object`);
+    if (attempt.reasoning !== undefined && attempt.reasoning !== null && !isObject(attempt.reasoning)) fail(`state.planner.attempts[${index}].reasoning must be null or an object`);
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.planner.attempts[${index}].continued must be a boolean`);
     for (const field of ['lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.planner.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
@@ -475,7 +476,7 @@ function validateAttempts(attempts, program) {
     for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
     if (attempt.failure !== undefined && attempt.failure !== null && !isObject(attempt.failure)) fail(`state.attempts[${index}].failure must be null or an object`);
-    for (const field of ['usage', 'routing']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
+    for (const field of ['usage', 'routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.attempts[${index}].continued must be a boolean`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);

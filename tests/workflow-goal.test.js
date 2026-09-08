@@ -360,3 +360,97 @@ test('detached CLI goal survives the initiating CLI and remains observable', asy
     assert.equal(resumedState.attempts.filter((attempt) => attempt.actionId === 'goal-work').length, 1);
   } finally { f.cleanup(); }
 });
+
+test('run-wide reasoning flags are validated and land in the durable routing contract', () => {
+  const f = fixture();
+  try {
+    const bad = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt at an invented reasoning level.',
+      '--cwd', f.target, '--foreground', '--json', '--orchestrator', 'goal-agent',
+      '--worker-reasoning', 'ultra',
+    ]);
+    assert.equal(bad.status, 2, bad.stdout || bad.stderr);
+    assert.match(bad.stderr, /--worker-reasoning must be low\|medium\|high\|xhigh\|max\|default/);
+    const runsDir = join(f.home, 'workflows');
+    assert.equal(existsSync(runsDir) ? readdirSync(runsDir).length : 0, 0, 'a rejected flag must not create a run');
+
+    const missing = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt.', '--cwd', f.target, '--foreground',
+      '--orchestrator', 'goal-agent', '--worker-reasoning',
+    ]);
+    assert.equal(missing.status, 2, missing.stdout || missing.stderr);
+    assert.match(missing.stderr, /--worker-reasoning requires a value/);
+
+    const result = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt with run-wide reasoning depth.',
+      '--cwd', f.target, '--foreground', '--json',
+      '--orchestrator', 'goal-agent', '--orchestrator-strict', '--orchestrator-model', 'planner-sol',
+      '--worker-pool', 'goal-agent', '--worker-model', 'worker-luna',
+      '--worker-reasoning', 'xhigh', '--planner-reasoning', 'default',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    const runDir = join(f.home, 'workflows', report.runId);
+    const goal = JSON.parse(readFileSync(join(runDir, 'goal.json'), 'utf8'));
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    assert.deepEqual(goal.config.workerRouting, {
+      pool: 'goal-agent', preferredModel: 'worker-luna', strictPool: 'goal-agent', reasoning: 'xhigh',
+    });
+    assert.deepEqual(goal.config.plannerRouting, {
+      pool: 'goal-agent', preferredModel: 'planner-sol', strictPool: 'goal-agent', reasoning: 'default',
+    });
+    assert.equal(state.config.workerRouting.reasoning, 'xhigh');
+    assert.equal(state.config.plannerRouting.reasoning, 'default');
+    // Resume keeps the durable contract instead of accepting a new level.
+    const resumed = cli(f, ['workflow', 'goal', '--resume', report.runId, '--worker-reasoning', 'low']);
+    assert.equal(resumed.status, 2, resumed.stdout || resumed.stderr);
+    assert.match(resumed.stderr, /routing overrides are valid only when starting a new goal/);
+  } finally { f.cleanup(); }
+});
+
+test('plan contract echoes the run-wide reasoning levels a launch will apply', () => {
+  const f = fixture();
+  try {
+    const result = cli(f, [
+      'workflow', 'plan', 'contract', 'Create done.txt and verify it.',
+      '--cwd', f.target, '--worker-reasoning', 'high', '--json',
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const contract = JSON.parse(result.stdout);
+    assert.equal(contract.reasoning.worker, 'high');
+    assert.equal(contract.reasoning.planner, null);
+    assert.match(contract.program.actionFields.reasoning, /how hard the picked model thinks on this one action/);
+  } finally { f.cleanup(); }
+});
+
+test('--planner-reasoning is refused where there is no dispatched planner to apply it to', () => {
+  const f = fixture();
+  try {
+    // Caller-planner mode never builds a plannerRouting, so accepting the flag
+    // would silently discard a level the caller believes it set.
+    const caller = cli(f, [
+      'workflow', 'goal', 'Create and verify done.txt.', '--cwd', f.target, '--foreground',
+      '--scout', '--planner-reasoning', 'high',
+    ]);
+    assert.equal(caller.status, 2, caller.stdout || caller.stderr);
+    assert.match(caller.stderr, /--planner-reasoning appl(?:ies|y) only with --orchestrator/);
+    const runsDir = join(f.home, 'workflows');
+    assert.equal(existsSync(runsDir) ? readdirSync(runsDir).length : 0, 0, 'a rejected flag must not create a run');
+
+    // The planning commands always describe caller-planner mode.
+    const contract = cli(f, [
+      'workflow', 'plan', 'contract', 'Create done.txt and verify it.',
+      '--cwd', f.target, '--planner-reasoning', 'high', '--json',
+    ]);
+    assert.equal(contract.status, 2, contract.stdout || contract.stderr);
+    assert.match(contract.stderr, /--planner-reasoning applies only to a dispatched planner/);
+
+    // --worker-reasoning stays accepted in exactly the same place.
+    const worker = cli(f, [
+      'workflow', 'plan', 'contract', 'Create done.txt and verify it.',
+      '--cwd', f.target, '--worker-reasoning', 'high', '--json',
+    ]);
+    assert.equal(worker.status, 0, worker.stderr || worker.stdout);
+    assert.equal(JSON.parse(worker.stdout).reasoning.worker, 'high');
+  } finally { f.cleanup(); }
+});

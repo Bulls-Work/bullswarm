@@ -224,6 +224,9 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     usage: clone(record.usage ?? null),
     wallSec: record.wallSec ?? null,
     routing: clone(record.routing ?? null),
+    // The resolved {requested, applied, source, clamped} record, so the TUI
+    // and the durable state show the level this attempt actually ran at.
+    reasoning: clone(record.reasoning ?? null),
     ...(record.continued !== undefined ? { continued: record.continued } : {}),
     ...(record.lastActivityAt !== undefined ? { lastActivityAt: record.lastActivityAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
@@ -687,6 +690,7 @@ async function runV2Kernel({
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
+      runReasoning: state.config.workerRouting?.reasoning ?? null,
       maxMechanicalRetries: config.maxMechanicalRetries, shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
       outputValidator: reportValidator,
       correctionTask: (verdict, { originalTask }) => `${originalTask}\n\nYour prior scout report failed deterministic validation:\n${(verdict?.structured?.errors ?? []).map((error) => `- ${error}`).join('\n')}\nReturn a corrected report with every exact heading.`,
@@ -694,6 +698,7 @@ async function runV2Kernel({
         if (stage === 'started') {
           current = {
             ordinal: durable.attempts.length + 1, turn: 1, status: 'running', pool: record.pool, model: record.model,
+            reasoning: clone(record.reasoning ?? null),
             startedAt: record.startedAt, finishedAt: null, taskFile: record.taskFile, outputFile: record.outFile,
           };
           durable.attempts.push(current);
@@ -849,6 +854,7 @@ async function runV2Kernel({
       preferredPool: state.config.plannerRouting?.pool ?? state.config.plannerRouting?.preferredPool ?? null,
       preferredModel: state.config.plannerRouting?.model ?? state.config.plannerRouting?.preferredModel ?? null,
       strictPool: state.config.plannerRouting?.strictPool ?? state.config.plannerRouting?.pool ?? null,
+      runReasoning: state.config.plannerRouting?.reasoning ?? null,
       currentSession: state.planner.session,
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
@@ -866,10 +872,11 @@ async function runV2Kernel({
           currentAttemptId = state.planner.attempts.length + 1;
           state.planner.attempts.push({
             ordinal: currentAttemptId, turn, status: 'running', pool: record.pool, model: record.model,
+            reasoning: clone(record.reasoning ?? null),
             startedAt: record.startedAt, finishedAt: null, taskFile: record.taskFile,
             outputFile: record.outFile, continued: record.continued === true,
           });
-          emit('planner.attempt_started', { turn, ordinal: currentAttemptId, pool: record.pool, model: record.model });
+          emit('planner.attempt_started', { turn, ordinal: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
         } else {
           const attempt = state.planner.attempts.find((item) => item.ordinal === currentAttemptId);
           if (attempt) Object.assign(attempt, {
@@ -990,6 +997,9 @@ async function runV2Kernel({
       preferredPool: state.config.workerRouting?.pool ?? state.config.workerRouting?.preferredPool ?? null,
       preferredModel: state.config.workerRouting?.model ?? state.config.workerRouting?.preferredModel ?? null,
       strictPool: state.config.workerRouting?.strictPool ?? state.config.workerRouting?.pool ?? null,
+      // The program author's per-action override outranks the run-wide level.
+      reasoningOverride: action.reasoning ?? null,
+      runReasoning: state.config.workerRouting?.reasoning ?? null,
       avoidPools: evidence ? ancestorPools(state, action) : [],
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
@@ -1001,7 +1011,7 @@ async function runV2Kernel({
           currentAttemptId = `${action.id}-${ordinal}`;
           runtime.attempts = ordinal;
           state.attempts.push(normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal }));
-          emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model });
+          emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
         } else {
           lease.assertOwner();
           if (record.status === 'succeeded') writeCompletionReceipt(receiptPath, {

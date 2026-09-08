@@ -60,6 +60,13 @@
   "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
   "knownModels": ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "$comment-reasoning": "verified from `claude --help` (Claude Code 2.1.263): `--effort <level>  Effort level for the current session (low, medium, high, xhigh, max)`. skipModels: `--help` does not state per-model support, so Haiku is excluded conservatively — re-verify before removing the exclusion. With no `reasoning` override anywhere, workers inherit whatever effortLevel the home settings.json sets.",
+  "reasoning": {
+    "flag": "--effort",
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "defaults": { "high": "xhigh", "medium": "high", "low": "medium" },
+    "skipModels": ["^claude-haiku-"]
+  },
   "conversation": {
     "newArgs": ["--session-id", "{sessionId}"],
     "resumeArgs": ["--resume", "{sessionId}"]

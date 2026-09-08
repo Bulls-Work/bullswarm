@@ -31,14 +31,61 @@
   },
   "eventStream": {
     "format": "jsonl",
-    "args": ["--json"],
+    "args": [
+      "--json"
+    ],
     "silenceThresholdSec": 600,
     "rules": [
-      { "rootMatch": { "path": "type", "equals": "item.started" }, "idPaths": ["item.id"], "kindPaths": ["item.type"], "kindMap": { "agent_message": "response" }, "summaryPaths": ["item.command", "item.text"], "status": "running" },
-      { "rootMatch": { "path": "type", "equals": "item.completed" }, "idPaths": ["item.id"], "kindPaths": ["item.type"], "kindMap": { "agent_message": "response" }, "summaryPaths": ["item.command", "item.text"], "status": "completed" }
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "item.started"
+        },
+        "idPaths": [
+          "item.id"
+        ],
+        "kindPaths": [
+          "item.type"
+        ],
+        "kindMap": {
+          "agent_message": "response"
+        },
+        "summaryPaths": [
+          "item.command",
+          "item.text"
+        ],
+        "status": "running"
+      },
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "item.completed"
+        },
+        "idPaths": [
+          "item.id"
+        ],
+        "kindPaths": [
+          "item.type"
+        ],
+        "kindMap": {
+          "agent_message": "response"
+        },
+        "summaryPaths": [
+          "item.command",
+          "item.text"
+        ],
+        "status": "completed"
+      }
     ],
     "output": [
-      { "match": { "path": "type", "equals": "item.completed" }, "path": "item.text", "mode": "last" }
+      {
+        "match": {
+          "path": "type",
+          "equals": "item.completed"
+        },
+        "path": "item.text",
+        "mode": "last"
+      }
     ]
   },
   "meter": {
@@ -51,18 +98,109 @@
     "build",
     "chore"
   ],
-  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
-  "knownModels": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
-  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
-  "modelProfiles": [
-    { "match": "^gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "pricing": { "inputUsdPerMillion": 4, "cacheReadUsdPerMillion": 0.4, "outputUsdPerMillion": 20 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^gpt-5\\.(5|4)$", "tier": "high", "qualityRank": 5 },
-    { "match": "^gpt-5\\.6-terra$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.2, "outputUsdPerMillion": 12 }, "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^gpt-5\\.3-codex$", "tier": "medium", "qualityRank": 4, "pricing": { "inputUsdPerMillion": 1.75, "cacheReadUsdPerMillion": 0.175, "outputUsdPerMillion": 14 }, "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^gpt-5\\.6-luna$", "tier": "low", "qualityRank": 3, "pricing": { "inputUsdPerMillion": 0.2, "cacheReadUsdPerMillion": 0.02, "outputUsdPerMillion": 1.2 }, "pricingSource": "https://developers.openai.com/api/docs/models", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "mini", "tier": "low", "qualityRank": 2 }
+  "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
   ],
-  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
+  "knownModels": [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex"
+  ],
+  "modelSelection": {
+    "flag": "--model",
+    "mode": "replace-or-append"
+  },
+  "$comment-reasoning": "Codex has no reasoning flag; the control is the config key `model_reasoning_effort`, overridden per invocation with the escape hatch verified from `codex exec --help` (codex-cli 0.153.4): `-c, --config <key=value>  Override a configuration value that would otherwise be loaded from ~/.codex/config.toml`. Accepted values verified from the official Codex config reference (https://learn.chatgpt.com/docs/config-file/config-reference, read 2026-09-09): `minimal | low | medium | high | xhigh` — \"Adjust reasoning effort for supported models (Responses API only; xhigh is model-dependent)\". `minimal` sits below bullswarm's common scale, so a request below `low` clamps up to `low`. Tier defaults stay at high/medium/low because `xhigh` is model-dependent; an explicit `xhigh` request passes through. Without this block Codex workers think at whatever config.toml sets (this machine: low).",
+  "reasoning": {
+    "args": [
+      "-c",
+      "model_reasoning_effort={level}"
+    ],
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "defaults": {
+      "high": "high",
+      "medium": "medium",
+      "low": "low"
+    }
+  },
+  "modelProfiles": [
+    {
+      "match": "^gpt-5\\.6-sol$",
+      "tier": "high",
+      "qualityRank": 6,
+      "pricing": {
+        "inputUsdPerMillion": 4,
+        "cacheReadUsdPerMillion": 0.4,
+        "outputUsdPerMillion": 20
+      },
+      "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^gpt-5\\.(5|4)$",
+      "tier": "high",
+      "qualityRank": 5
+    },
+    {
+      "match": "^gpt-5\\.6-terra$",
+      "tier": "medium",
+      "qualityRank": 4,
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.2,
+        "outputUsdPerMillion": 12
+      },
+      "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^gpt-5\\.3-codex$",
+      "tier": "medium",
+      "qualityRank": 4,
+      "pricing": {
+        "inputUsdPerMillion": 1.75,
+        "cacheReadUsdPerMillion": 0.175,
+        "outputUsdPerMillion": 14
+      },
+      "pricingSource": "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^gpt-5\\.6-luna$",
+      "tier": "low",
+      "qualityRank": 3,
+      "pricing": {
+        "inputUsdPerMillion": 0.2,
+        "cacheReadUsdPerMillion": 0.02,
+        "outputUsdPerMillion": 1.2
+      },
+      "pricingSource": "https://developers.openai.com/api/docs/models",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "mini",
+      "tier": "low",
+      "qualityRank": 2
+    }
+  ],
+  "subscription": {
+    "plan": null,
+    "monthlyPriceUsd": null,
+    "includedValueUsd": null,
+    "quotaWindow": "weekly"
+  },
   "flags": {
     "stealth": false
   },

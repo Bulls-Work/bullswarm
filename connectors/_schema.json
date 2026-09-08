@@ -74,6 +74,19 @@
     "free": false
   }],
   "modelSelection": {"flag": "--model", "mode": "replace-or-append"},
+  "reasoning": {
+    "$comment": "Optional. How THIS CLI expresses a thinking level. Omit the block entirely when the CLI has no such control: core then appends nothing and reports source 'unsupported'. Declare exactly one of flag/args.",
+    "flag": "--effort",
+    "args": ["-c", "model_reasoning_effort={level}"],
+    "$comment-form": "flag: appended as `<flag> <level>` with replace-or-append semantics, so a level already pinned in spawn.cmd is replaced rather than duplicated. args: appended verbatim with {level} substituted, for CLIs whose control is a config override rather than a flag.",
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "$comment-levels": "the subset of the common scale (low, medium, high, xhigh, max — weakest to strongest, src/lib/reasoning.js) that this CLI accepts, weakest first. A requested level outside the subset is clamped to the strongest supported level not above it, or to the weakest supported level when the request is below all of them, and the clamp is recorded.",
+    "defaults": {"high": "xhigh", "medium": "high", "low": "medium"},
+    "$comment-defaults": "the level to use for each effort tier when nothing else asked. Last layer of the precedence chain: action override > run override > strategy per-pool > strategy per-tier > THESE > nothing appended. The literal 'default' at any layer means 'append nothing, let the CLI's own configuration decide'.",
+    "skipModels": ["^model-id-regex-that-rejects-the-flag"],
+    "$comment-skipModels": "Optional connector-owned regexes. A selected model matching one gets no level appended (source 'skipped-model'), for CLIs whose flag is only valid on some models."
+  },
+  "$comment-reasoning": "Optional prose companion. Say which command's output the block was read from, and mark anything the CLI does not actually print as UNVERIFIED — never invent an accepted value.",
   "subscription": {"plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly"},
   "flags": {
     "stealth": false,

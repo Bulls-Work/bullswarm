@@ -31,19 +31,20 @@ function setup(settings = {}) {
   return { root, bullswarmDir, workspace, goal };
 }
 
-function fakeDispatch(handler) {
+function fakeDispatch(handler, { reasoning = undefined } = {}) {
   let calls = 0;
+  const resolved = reasoning === undefined ? {} : { reasoning };
   const dispatch = async (options) => {
     calls += 1;
     const files = typeof options.paths === 'function' ? options.paths(1) : options.paths;
     const startedAt = '2026-08-31T01:00:01.000Z';
-    options.onAttempt?.('started', { ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', status: 'running', startedAt, taskFile: files.taskFile, outFile: files.outFile, routing: {} });
+    options.onAttempt?.('started', { ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', status: 'running', startedAt, taskFile: files.taskFile, outFile: files.outFile, routing: {}, ...resolved });
     const value = await handler(options, calls, files);
     const record = {
       ordinal: 1, pool: 'relay', model: 'gpt-5.6-luna', status: value.ok ? 'succeeded' : 'failed',
       startedAt, finishedAt: '2026-08-31T01:00:02.000Z', taskFile: files.taskFile, outFile: files.outFile,
       failureKind: value.failureKind ?? null, why: value.verdict?.why ?? null,
-      usage: { tokens: { totalKnown: 10 } }, wallSec: 1, routing: {},
+      usage: { tokens: { totalKnown: 10 } }, wallSec: 1, routing: {}, ...resolved,
     };
     options.onAttempt?.('finished', record, value.verdict);
     return { attempts: [record], ...value };
@@ -549,4 +550,84 @@ test('a refresh that throws or returns garbage never fails the run', async () =>
   assert.equal(calls, 3);
   // Every dispatch still had a usable list: the last known good one.
   assert.deepEqual(seen, [['launch-snapshot'], ['launch-snapshot'], ['launch-snapshot']]);
+});
+
+test('the kernel carries the per-action reasoning override and the run-wide level into every dispatch', async () => {
+  const f = setup({ scout: true });
+  // Both routing objects carry a run-wide level; the program overrides it on
+  // exactly one action so the two layers are distinguishable in the options.
+  f.goal.config.workerRouting = { reasoning: 'high' };
+  f.goal.config.plannerRouting = { reasoning: 'xhigh' };
+  const reasoningProgram = () => ({
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Write the report at maximum depth and inspect it at the run-wide level.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+      { id: 'write-report', purpose: 'Write report', dependsOn: [], affects: ['report-correct'], ownedFiles: ['report.md'], prompt: 'Write READY to report.md.', lane: 'build', effort: 'low', reasoning: 'max', evidenceFor: [], inputs: [], produces: ['report'] },
+      { id: 'inspect-report', purpose: 'Inspect report', dependsOn: ['write-report'], affects: [], ownedFiles: [], prompt: 'Inspect report.md.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: ['report'], produces: [] },
+    ] },
+  });
+  const scoutReport = [
+    'TREE:\n- report.md', 'MANIFEST:\n- Node.js', 'TEST STATUS:\n- tests pass',
+    'UNITS OF WORK:\n- write-report', 'SHARED FILES:\n- none', 'RISKS:\n- none',
+    'Additional repository facts '.repeat(8), '["write-report"]',
+  ].join('\n');
+  const options = new Map();
+  const dispatch = fakeDispatch(async (opts, _calls, files) => {
+    options.set(opts.action.id, { reasoningOverride: opts.reasoningOverride, runReasoning: opts.runReasoning });
+    if (opts.action.id === 'preflight-scout') {
+      writeFileSync(files.outFile, scoutReport);
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: scoutReport }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (opts.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: reasoningProgram() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (opts.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const result = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [],
+    runId: 'wf-reason-abcdef', dependencies: { dispatchV2Action: dispatch },
+  });
+  assert.equal(result.result.status, 'completed');
+  // Program action with its own level: the override wins and the run-wide
+  // level still travels so the resolver can see both layers.
+  assert.deepEqual(options.get('write-report'), { reasoningOverride: 'max', runReasoning: 'high' });
+  // Program action without one: no override, run-wide level only.
+  assert.deepEqual(options.get('inspect-report'), { reasoningOverride: null, runReasoning: 'high' });
+  // Kernel-owned dispatches are not program actions, so they never carry an override.
+  assert.deepEqual(options.get('preflight-scout'), { reasoningOverride: undefined, runReasoning: 'high' });
+  assert.deepEqual(options.get('workflow-planner'), { reasoningOverride: undefined, runReasoning: 'xhigh' });
+});
+
+test('a resolved reasoning record survives dispatch into the durable attempt and the started event', async () => {
+  const f = setup();
+  const resolved = { requested: 'xhigh', applied: 'high', source: 'run', clamped: true };
+  const dispatch = fakeDispatch(async (opts, _calls, files) => {
+    if (opts.action.id === 'workflow-planner') {
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: programResponse() }, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (opts.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['READY found'], concerns: [] } } };
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: { value: evidence }, outFile: files.outFile, meta: { exitCode: 0 } } };
+  }, { reasoning: resolved });
+  const result = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [],
+    runId: 'wf-reasrec-abcdef', dependencies: { dispatchV2Action: dispatch },
+  });
+  assert.equal(result.result.status, 'completed');
+  for (const attempt of result.state.attempts) assert.deepEqual(attempt.reasoning, resolved);
+  assert.deepEqual(result.state.planner.attempts[0].reasoning, resolved);
+  const started = readEvents(result.runDir).filter((event) => event.type === 'attempt.started');
+  assert.equal(started.length, 2);
+  for (const event of started) assert.deepEqual(event.payload.reasoning, resolved);
+  // The durable state must still validate with the new field present.
+  const durable = deserializeV2DurableState(readFileSync(join(result.runDir, 'state.json'), 'utf8'));
+  assert.deepEqual(durable.attempts.map((attempt) => attempt.reasoning?.applied), ['high', 'high']);
 });

@@ -112,8 +112,11 @@ function routeLines(inventory) {
   return STRATEGY_TIERS.map((tier) => {
     const route = inventory.routes[tier];
     const label = `${tier[0].toUpperCase()}${tier.slice(1)}`.padEnd(6);
+    // Reasoning depth is display-only here: the CLI owns every mutation, so
+    // the control center shows what each tier would actually be sent.
+    const depth = route?.reasoning?.level ? ` · reasoning ${route.reasoning.level}` : '';
     return route?.pool
-      ? `${label} ${route.lane.padEnd(7)} → ${route.pool}/${route.model ?? 'provider default'} · surplus ${route.surplus ?? '?'}`
+      ? `${label} ${route.lane.padEnd(7)} → ${route.pool}/${route.model ?? 'provider default'} · surplus ${route.surplus ?? '?'}${depth}`
       : `${label} ${route?.lane?.padEnd(7) ?? ''} → unavailable${route?.reason ? ` · ${route.reason}` : ''}`;
   });
 }

@@ -67,13 +67,16 @@ function validateResultRequirement(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
   if (value.outputFile !== null && (typeof value.outputFile !== 'string' || !value.outputFile)) resultFail(`${name}.outputFile must be null or a non-empty string`);
   stringArray(value.artifactIds, `${name}.artifactIds`);
   if (value.failure !== undefined && value.failure !== null) failureSummary(value.failure, `${name}.failure`);
+  // Optional so envelopes written before reasoning levels existed still
+  // deserialize; absent and null both mean "no level was applied".
+  if (value.reasoning !== undefined && value.reasoning !== null) resultObject(value.reasoning, `${name}.reasoning`);
 }
 
 function validateGaps(value, result) {
@@ -99,6 +102,14 @@ function validateGaps(value, result) {
 
 function stateByAction(state) {
   return new Map(state.actions.map((action) => [action.id, action]));
+}
+
+// The reasoning record of the LAST attempt for an action: a retry can land on
+// another connector with another level, and the last attempt is the one whose
+// output the envelope reports.
+function lastAttemptReasoning(state, actionId) {
+  const attempt = state.attempts?.findLast((entry) => entry.actionId === actionId) ?? null;
+  return clone(attempt?.reasoning ?? null);
 }
 
 function currentEvidence(ledger, requirement) {
@@ -243,6 +254,10 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         status: runtime?.status ?? 'pending',
         outputFile: runtime?.outputFile ?? null,
         artifactIds: clone(runtime?.artifactIds ?? []),
+        // The level the attempt that produced this action's output actually
+        // ran at, so a consumer of the envelope alone can see how hard the
+        // worker thought without re-reading durable state.
+        reasoning: lastAttemptReasoning(state, definition.id),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
       };
     }),

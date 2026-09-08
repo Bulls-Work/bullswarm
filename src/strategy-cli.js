@@ -5,7 +5,10 @@ import {
   discoverAllModels, buildStrategy, normalizeExcludedModels, resolveDispatchModel,
   selectedModelsForTier, setModelTierSelection, STRATEGY_TIERS,
   disabledModelsForPool, setModelDisabled,
+  getStrategyReasoning, setStrategyReasoning, clearStrategyReasoning,
+  reasoningEffective, assertReasoningTier, assertReasoningLevel,
 } from './lib/strategy.js';
+import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
 import { helpText, usageLine } from './help.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
@@ -38,7 +41,7 @@ function refreshHoursValue(value) {
   return hours;
 }
 
-function render(report) {
+function render(report, reasoning = null) {
   const lines = [`bullswarm strategy · ${report.capturedAt}`, '', 'subscriptions:'];
   for (const sub of report.subscriptions) {
     const value = sub.monthlyPriceUsd == null || sub.includedValueUsd == null
@@ -53,8 +56,107 @@ function render(report) {
     lines.push(`    ${suggestion.basis}`);
   }
   lines.push('', `excluded models: ${report.excludedModels?.length ? report.excludedModels.join(', ') : 'none'}`);
+  if (reasoning) lines.push('', ...reasoningLines(reasoning));
   lines.push('', 'Use --json for models, pricing sources, benchmarks, and caveats.');
   return lines.join('\n');
+}
+
+// Reasoning depth is a routing fact, so the human report states both what the
+// user configured and what each pool would actually receive — a configured
+// level a CLI cannot express is visible here, not only in --json.
+function reasoningLines(reasoning) {
+  // A null level means two different things: the CLI takes no reasoning flag,
+  // or someone answered `default` on purpose. Say which.
+  const configured = (pool, tier) => reasoning.pools?.[pool]?.[tier] ?? reasoning.tiers?.[tier] ?? null;
+  const cell = (pool, tier, entry) => {
+    const source = entry?.source ?? 'none';
+    if (entry?.level) return `${entry.level} (${source})`;
+    if (configured(pool, tier) === 'default' && source !== 'unsupported' && source !== 'skipped-model') {
+      return `CLI decides (${source})`;
+    }
+    return `\u2014 (${source})`;
+  };
+  const lines = ['reasoning levels:'];
+  lines.push(`  configured tiers: ${STRATEGY_TIERS
+    .map((tier) => `${tier}=${reasoning.tiers?.[tier] ?? 'connector default'}`).join(' \u00b7 ')}`);
+  for (const [pool, tiers] of Object.entries(reasoning.pools ?? {})) {
+    lines.push(`  ${pool} override: ${STRATEGY_TIERS.filter((tier) => tiers[tier])
+      .map((tier) => `${tier}=${tiers[tier]}`).join(' \u00b7 ')}`);
+  }
+  const width = Math.max(0, ...Object.keys(reasoning.effective ?? {}).map((pool) => pool.length));
+  for (const [pool, tiers] of Object.entries(reasoning.effective ?? {})) {
+    lines.push(`  ${pool.padEnd(width)}  ${STRATEGY_TIERS
+      .map((tier) => `${tier}=${cell(pool, tier, tiers[tier])}`).join(' \u00b7 ')}`);
+  }
+  return lines;
+}
+
+function reasoningReport(bullswarmDir) {
+  const state = loadState(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir);
+  const pools = Object.values(connectors)
+    .map((connector) => ({ name: connector.name, connector }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    ...getStrategyReasoning(state.strategy),
+    effective: reasoningEffective(pools, state.strategy ?? {}),
+  };
+}
+
+// An agent-authored strategy document is validated in full before anything is
+// written, so a typo in one tier cannot leave half a policy applied. `null`
+// removes a level, which is how a document expresses "back to the default".
+function validateReasoningSection(section, connectors) {
+  if (section == null) return null;
+  const levels = [...REASONING_LEVELS, 'default'].join(', ');
+  if (typeof section !== 'object' || Array.isArray(section)) {
+    throw new Error('reasoning must be an object with optional tiers and pools maps');
+  }
+  const tierMap = (value, label) => {
+    if (value == null) return {};
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`${label} must map high, medium, or low to a reasoning level`);
+    }
+    const out = {};
+    for (const [tier, level] of Object.entries(value)) {
+      if (!STRATEGY_TIERS.includes(tier)) {
+        throw new Error(`${label}.${tier} is not an effort tier (${STRATEGY_TIERS.join(', ')})`);
+      }
+      if (level === null) { out[tier] = null; continue; }
+      if (!isReasoningLevel(level)) throw new Error(`${label}.${tier} must be ${levels}`);
+      out[tier] = level;
+    }
+    return out;
+  };
+  const pools = {};
+  if (section.pools != null) {
+    if (typeof section.pools !== 'object' || Array.isArray(section.pools)) {
+      throw new Error('reasoning.pools must map a pool name to its tier levels');
+    }
+    for (const [pool, value] of Object.entries(section.pools)) {
+      if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+      pools[pool] = tierMap(value, `reasoning.pools.${pool}`);
+    }
+  }
+  return { tiers: tierMap(section.tiers, 'reasoning.tiers'), pools };
+}
+
+function applyReasoningSection(strategy, reasoning) {
+  if (!reasoning) return;
+  for (const [tier, level] of Object.entries(reasoning.tiers)) {
+    setStrategyReasoning(strategy, { tier, level, pool: null });
+  }
+  for (const [pool, tiers] of Object.entries(reasoning.pools)) {
+    for (const [tier, level] of Object.entries(tiers)) {
+      setStrategyReasoning(strategy, { tier, level, pool });
+    }
+  }
+}
+
+function reasoningFlag(value, sub) {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') throw new Error(`usage: ${usageLine(['strategy', sub])}`);
+  return value.trim().toLowerCase();
 }
 
 function strategyUsage() {
@@ -131,8 +233,10 @@ function modelsForPool(pool, discovery, state) {
 }
 
 export function strategyInventory({ pools, state, report }) {
-  const providers = pools
+  const visible = pools
     .filter((pool) => !(pool.testFixture === true && pool.enabled === false))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const providers = visible
     .map((pool) => ({
       name: pool.name,
       enabled: pool.enabled !== false,
@@ -142,8 +246,7 @@ export function strategyInventory({ pools, state, report }) {
       lanes: pool.lanes ?? [],
       capabilities: pool.capabilities ?? [],
       models: modelsForPool(pool, report.discoveries?.[pool.name], state),
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    }));
   const routes = {};
   for (const tier of STRATEGY_TIERS) {
     const context = report.suggestions?.[tier]?.requirements ?? { lane: ({ high: 'analyze', medium: 'build', low: 'chore' })[tier], capabilities: [] };
@@ -166,13 +269,25 @@ export function strategyInventory({ pools, state, report }) {
       preferredPool: assignment?.pool ?? null,
       effortTier: tier,
     });
-    routes[tier] = route.pick ? {
+    if (!route.pick) {
+      routes[tier] = { lane: context.lane, pool: null, model: null, reasoning: null, reason: route.why };
+      continue;
+    }
+    const picked = route.pick.connector;
+    const model = picked.modelPolicy?.model ?? null;
+    // Report the depth the picked pool would actually receive, including the
+    // selected model, so a skipped or clamped level is visible in the route.
+    const reasoning = resolveReasoningLevel({
+      connector: picked.connector ?? picked, tier, model, strategy: state.strategy ?? {},
+    });
+    routes[tier] = {
       lane: context.lane,
       pool: route.pick.pool,
-      model: route.pick.connector.modelPolicy?.model ?? null,
-      surplus: route.pick.connector.pace ?? null,
+      model,
+      surplus: picked.pace ?? null,
+      reasoning: { level: reasoning.applied, source: reasoning.source },
       reason: route.why,
-    } : { lane: context.lane, pool: null, model: null, reason: route.why };
+    };
   }
   return {
     schemaVersion: 'bullswarm.strategy.inventory.v1',
@@ -180,6 +295,10 @@ export function strategyInventory({ pools, state, report }) {
     configuredTiers: state.strategy?.configuredTiers ?? [],
     providers,
     routes,
+    reasoning: {
+      ...getStrategyReasoning(state.strategy),
+      effective: reasoningEffective(visible, state.strategy ?? {}),
+    },
     recommendations: report.providerSuggestions ?? {},
     openRouter: report.openRouter ?? null,
     excludedModels: normalizeExcludedModels(state.strategy?.excludedModels),
@@ -391,12 +510,33 @@ export async function cmdStrategy(args, {
       console.log(JSON.stringify({ action: 'tier-reset-to-automatic', tier }, null, 2));
       return 0;
     }
+    if (sub === 'set-reasoning' || sub === 'reset-reasoning') {
+      if (opts.yes !== true) throw new Error(`strategy ${sub} changes routing; pass --yes to approve`);
+      const pool = reasoningFlag(opts.pool, sub);
+      if (pool !== null && !loadConnectors(bullswarmDir)[pool]) throw new Error(`unknown pool "${pool}"`);
+      const state = loadState(bullswarmDir);
+      state.strategy ??= {};
+      if (sub === 'set-reasoning') {
+        const tier = assertReasoningTier(reasoningFlag(opts.tier, sub));
+        const level = assertReasoningLevel(reasoningFlag(opts.level, sub));
+        const reasoning = setStrategyReasoning(state.strategy, { tier, level, pool });
+        saveState(bullswarmDir, state);
+        console.log(JSON.stringify({ action: 'reasoning-updated', tier, level, pool, reasoning }, null, 2));
+        return 0;
+      }
+      const tier = opts.tier === undefined ? null : assertReasoningTier(reasoningFlag(opts.tier, sub));
+      const reasoning = clearStrategyReasoning(state.strategy, { tier, pool });
+      saveState(bullswarmDir, state);
+      console.log(JSON.stringify({ action: 'reasoning-reset', tier, pool, reasoning }, null, 2));
+      return 0;
+    }
     if (sub === 'configure') {
       if (opts.yes !== true) throw new Error('strategy configure changes routing; pass --yes to approve');
       if (!opts.file) throw new Error(`usage: ${usageLine(['strategy', 'configure'])}`);
       const { readFileSync } = await import('node:fs');
       const config = JSON.parse(readFileSync(opts.file, 'utf8'));
       const connectors = loadConnectors(bullswarmDir);
+      const reasoning = validateReasoningSection(config.reasoning, connectors);
       const inventory = await loadStrategyInventory(bullswarmDir);
       const state = loadState(bullswarmDir);
       state.strategy ??= {};
@@ -430,8 +570,13 @@ export async function cmdStrategy(args, {
       for (const tier of configured) {
         if (state.strategy.assignments) delete state.strategy.assignments[tier];
       }
+      applyReasoningSection(state.strategy, reasoning);
       saveState(bullswarmDir, state);
-      console.log(JSON.stringify({ action: 'strategy-configured', configuredTiers: state.strategy.configuredTiers }, null, 2));
+      console.log(JSON.stringify({
+        action: 'strategy-configured',
+        configuredTiers: state.strategy.configuredTiers,
+        reasoning: getStrategyReasoning(state.strategy),
+      }, null, 2));
       return 0;
     }
     if (sub === 'refresh' || sub === 'recommend') {
@@ -441,13 +586,15 @@ export async function cmdStrategy(args, {
         ? applyStrategyRecommendations(bullswarmDir, report, {
           refreshHours: refreshHoursValue(opts['refresh-hours']),
         }) : null;
-      console.log(opts.json ? JSON.stringify(applied ? { report, ...applied } : report, null, 2) : render(report));
+      console.log(opts.json
+        ? JSON.stringify(applied ? { report, ...applied } : report, null, 2)
+        : render(report, reasoningReport(bullswarmDir)));
       return 0;
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
       const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
-      console.log(opts.json ? JSON.stringify(report, null, 2) : render(report));
+      console.log(opts.json ? JSON.stringify(report, null, 2) : render(report, reasoningReport(bullswarmDir)));
       return 0;
     }
     if (sub === 'set-subscription') {
@@ -546,7 +693,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier) changes|--tiers must be|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

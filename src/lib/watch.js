@@ -23,6 +23,7 @@ import { judgeContent } from './verify.js';
 import { estimateInvocationUsage } from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
+import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -35,7 +36,15 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
   );
 }
 
-export function argvWithModel(connector, paths, model = null, conversation = null) {
+/**
+ * Build the argv this connector is spawned with.
+ *
+ * `reasoning` is the resolved record from resolveReasoningLevel (or a bare
+ * level string). Its level is appended exactly like the model flag — after
+ * the model and the conversation arguments, before the event-stream args —
+ * and nothing is appended when the resolver applied no level.
+ */
+export function argvWithModel(connector, paths, model = null, conversation = null, reasoning = null) {
   const argv = substituteArgv(connector.spawn.cmd, paths);
   if (model && connector.modelSelection?.flag) {
     const flag = connector.modelSelection.flag;
@@ -53,6 +62,19 @@ export function argvWithModel(connector, paths, model = null, conversation = nul
       : connector.conversation.newArgs;
     argv.push(...(template ?? []).map((arg) => String(arg).replaceAll('{sessionId}', conversation.sessionId)));
   }
+  const reasoningLevel = appliedReasoningLevel(reasoning);
+  if (reasoningLevel) {
+    const flag = connector.reasoning?.flag;
+    const index = typeof flag === 'string' && flag ? argv.indexOf(flag) : -1;
+    if (index >= 0) {
+      // Replace-or-append, like the model flag: a connector template that
+      // already pins a level must end up with ONE level, not two.
+      if (index + 1 < argv.length) argv[index + 1] = reasoningLevel;
+      else argv.push(reasoningLevel);
+    } else {
+      argv.push(...reasoningArgs(connector, reasoningLevel));
+    }
+  }
   argv.push(...(connector.eventStream?.args ?? []));
   return argv;
 }
@@ -69,7 +91,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   const argv = argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
-  }, opts.model, opts.conversation);
+  }, opts.model, opts.conversation, opts.reasoning ?? null);
   const usePwdMode = connector.spawn.cwdMode === 'pwd';
   // realpath: getcwd() resolves symlinks (macOS /var -> /private/var), so an
   // unresolved PWD would disagree with cwd and defeat wrong-repo detection.
@@ -417,6 +439,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       wallSec,
       outBytes: output.length,
       usage,
+      // The level this attempt actually ran at, exactly as resolved. Reported
+      // even when nothing was appended, so a record can say WHY it was silent.
+      reasoning: reasoningRecord(opts.reasoning ?? null),
     },
     outFile: paths.outFile,
     taskFile: paths.taskFile,

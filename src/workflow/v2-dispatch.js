@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, saveState } from '../lib/state.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
+import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
@@ -151,6 +152,8 @@ export async function dispatchV2Action({
   preferredModel = null,
   strictPool = null,
   avoidPools = [],
+  reasoningOverride = null,
+  runReasoning = null,
   outputValidator = null,
   correctionTask = null,
   currentSession = null,
@@ -239,11 +242,23 @@ export async function dispatchV2Action({
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);
     const coreState = loadCoreState(bullswarmDir);
     assertDepthAllowed(coreState, parentEnv);
+    // Resolved per attempt, not per action: a retry lands on another pool with
+    // another connector and another model, so the level is recomputed against
+    // whatever this attempt actually spawns, reading the LIVE core strategy.
+    const reasoning = resolveReasoningLevel({
+      connector,
+      tier: effort,
+      model,
+      strategy: coreState.strategy ?? null,
+      runOverride: runReasoning,
+      actionOverride: reasoningOverride
+        ?? (isReasoningLevel(action.reasoning) ? action.reasoning : null),
+    });
     const startedAt = new Date(now()).toISOString();
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
-      outFile: files.outFile,
+      outFile: files.outFile, reasoning,
       routing: {
         reason: route.why, candidates: route.candidates, effort,
         lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
@@ -259,6 +274,7 @@ export async function dispatchV2Action({
     try { verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
       env: childDepthEnv(parentEnv),
       model,
+      reasoning,
       conversation: session?.invocation ?? null,
       shouldCancel,
       processGroup: true,
@@ -306,6 +322,7 @@ export async function dispatchV2Action({
       ts: finishedAt, lane: action.lane ?? 'chore', picked: pool.name,
       keepOnClaude: false, ok: verdict.ok, why: verdict.why ?? null,
       wallSec: verdict.meta?.wallSec ?? null, model: record.model,
+      reasoning: clone(reasoning),
       usage: verdict.meta?.usage ?? null, routing: record.routing,
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, {

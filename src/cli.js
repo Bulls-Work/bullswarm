@@ -4,7 +4,10 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { pickPool } from './lib/route.js';
-import { watchOnce } from './lib/watch.js';
+import { argvWithModel, watchOnce } from './lib/watch.js';
+import {
+  isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
+} from './lib/reasoning.js';
 import {
   loadState, saveState, quarantinePool, sweepQuarantines,
   assertDepthAllowed, childDepthEnv,
@@ -109,6 +112,16 @@ async function cmdRun(opts) {
     console.error('--effort must be high, medium, or low');
     return 2;
   }
+  // The run-wide reasoning override. Validated here so a typo is a usage
+  // error, never a silently-ignored preference that the record then claims.
+  if (opts.reasoning === true) {
+    console.error('usage: --reasoning requires a value');
+    return 2;
+  }
+  if (opts.reasoning != null && !isReasoningLevel(opts.reasoning)) {
+    console.error(`--reasoning must be one of ${[...REASONING_LEVELS, REASONING_DEFAULT].join(', ')}`);
+    return 2;
+  }
   const targetDir = resolve(opts['add-dir'] ?? process.cwd());
 
   // Validate task input before routing so malformed invocations never fall
@@ -191,10 +204,18 @@ async function cmdRun(opts) {
     route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
   }
 
+  const dryRun = opts['dry-run'] === true;
   if (!route.pick && route.keepOnClaude) {
-    logDecision(state, { lane, picked: null, keepOnClaude: true, ok: null, why: route.why });
-    saveState(getBullswarmDir(), state);
-    emit({ ok: true, keepOnClaude: true, why: route.why, pick: { pool: null, command: null } }, opts);
+    // A preview never writes: the decision log records dispatches, not what
+    // an operator merely asked to see.
+    if (!dryRun) {
+      logDecision(state, { lane, picked: null, keepOnClaude: true, ok: null, why: route.why });
+      saveState(getBullswarmDir(), state);
+    }
+    emit({
+      ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
+      why: route.why, pick: { pool: null, command: null },
+    }, opts);
     return 0;
   }
   if (!route.pick) {
@@ -221,6 +242,40 @@ async function cmdRun(opts) {
     outFile: join(runDir, `out-${stamp}.md`),
   };
 
+  // One resolution per attempt, from the connector that will actually be
+  // spawned, the effort tier that picked the model, and the live strategy.
+  const reasoning = resolveReasoningLevel({
+    connector: runtimeConnector,
+    tier: effortTier,
+    model: selectedModel,
+    strategy: state.strategy ?? null,
+    runOverride: opts.reasoning ?? null,
+  });
+
+  if (dryRun) {
+    // Preview through argvWithModel — the same builder runDelegate uses — so
+    // the printed command can never drift from the one that would be spawned.
+    emit({
+      ok: true,
+      dryRun: true,
+      keepOnClaude: false,
+      why: route.why,
+      pick: {
+        pool: connector.name,
+        model: selectedModel,
+        command: argvWithModel(
+          runtimeConnector,
+          { taskFile: paths.taskFile, cwd: targetDir },
+          selectedModel,
+          null,
+          reasoning,
+        ),
+      },
+      reasoning,
+    }, opts);
+    return 0;
+  }
+
   const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
   heartbeat.start();
   let verdict;
@@ -232,6 +287,7 @@ async function cmdRun(opts) {
       timeoutSec: opts.timeout == null ? null : Number(opts.timeout),
       env: childDepthEnv(process.env),
       model: selectedModel,
+      reasoning,
       // Lets a usage-limit verdict fall back to this pool's cached 5h meter
       // reset when the provider's message named no reset time of its own.
       bullswarmDir: getBullswarmDir(),
@@ -264,11 +320,13 @@ async function cmdRun(opts) {
     why: verdict.why,
     wallSec: verdict.meta?.wallSec,
     model: verdict.pick?.model ?? null,
+    reasoning,
     usage: verdict.meta?.usage ?? null,
     outFile: paths.outFile,
   });
   saveState(getBullswarmDir(), state);
 
+  verdict.reasoning = reasoning;
   emit(verdict, opts);
   return verdict.ok ? 0 : 1;
 }
@@ -291,6 +349,13 @@ function emit(verdict, opts) {
       verdict.why ?? '',
     ].filter(Boolean).join(' ');
     console.log(line);
+    if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
+      console.log(`command: ${verdict.pick.command.join(' ')}`);
+    }
+    if (verdict.reasoning?.applied) {
+      const clamped = verdict.reasoning.clamped ? ', clamped' : '';
+      console.log(`reasoning: ${verdict.reasoning.applied} (${verdict.reasoning.source}${clamped})`);
+    }
     if (verdict.outFile) console.log(`output: ${verdict.outFile}`);
     const usage = verdict.meta?.usage;
     if (usage) {

@@ -19,6 +19,10 @@ import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
 import { loadState, saveState } from './lib/state.js';
 import {
+  REASONING_DEFAULT_TIERS, STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning,
+} from './lib/strategy.js';
+import { isReasoningLevel, REASONING_LEVELS } from './lib/reasoning.js';
+import {
   awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
   installIntegration, retireLegacyOffload,
 } from './integrate.js';
@@ -168,17 +172,19 @@ export function repairConnectors(bullswarmDir) {
 // Forward-compatible metadata migration for existing installations. Preserve
 // user-edited spawn commands and other connector quirks; only fill fields that
 // did not exist in older published connector documents.
-export function upgradeConnectorMetadata(bullswarmDir) {
+export function upgradeConnectorMetadata(bullswarmDir, {
+  packagedDir = join(REPO_ROOT, 'connectors'),
+} = {}) {
   const target = join(bullswarmDir, 'connectors');
   if (!existsSync(target)) return [];
   const upgraded = [];
-  for (const f of readdirSync(join(REPO_ROOT, 'connectors'))) {
+  for (const f of readdirSync(packagedDir)) {
     if (!f.endsWith('.json') || f.startsWith('_')) continue;
     const dst = join(target, f);
     if (!existsSync(dst)) continue;
     try {
       const installed = JSON.parse(readFileSync(dst, 'utf8'));
-      const packaged = JSON.parse(readFileSync(join(REPO_ROOT, 'connectors', f), 'utf8'));
+      const packaged = JSON.parse(readFileSync(join(packagedDir, f), 'utf8'));
       let changed = false;
       if (Array.isArray(packaged.capabilities)) {
         const existing = Array.isArray(installed.capabilities) ? installed.capabilities : [];
@@ -248,6 +254,17 @@ export function upgradeConnectorMetadata(bullswarmDir) {
           installed.modelProfiles = [...missing, ...installed.modelProfiles];
           changed = true;
         }
+      }
+      // Reasoning depth is a whole connector-owned block (flag spelling,
+      // accepted levels, per-tier defaults). Backfill it only when the
+      // installation has none: a customized block is the user's answer to
+      // how deeply this CLI should think, and must survive every upgrade.
+      if (installed.reasoning == null && packaged.reasoning != null) {
+        installed.reasoning = packaged.reasoning;
+        if (packaged['$comment-reasoning'] != null && installed['$comment-reasoning'] == null) {
+          installed['$comment-reasoning'] = packaged['$comment-reasoning'];
+        }
+        changed = true;
       }
       for (const field of ['modelDiscovery', 'knownModels', 'modelProfiles', 'modelSelection', 'conversation', 'subscription', 'preferredConcurrency']) {
         if (installed[field] == null && packaged[field] != null) {
@@ -354,6 +371,42 @@ export function ensureSetup(bullswarmDir) {
   return autoSetup(bullswarmDir, { reason: 'first-use' });
 }
 
+// --- reasoning depth ----------------------------------------------------------
+// One question per effort tier. Reasoning is a separate dimension from the
+// model: the tier picks WHICH model, this picks HOW HARD it thinks. `default`
+// is always offered so a user can leave a worker CLI's own configured setting
+// untouched rather than guess at it. Exported so the question sequence is
+// testable without a terminal.
+
+export async function configureReasoningLevels(bullswarmDir, prompter, { log = console.log } = {}) {
+  const choices = [...REASONING_LEVELS, 'default'].join('/');
+  const answers = {};
+  for (const tier of STRATEGY_TIERS) {
+    const suggested = REASONING_DEFAULT_TIERS[tier];
+    const answer = (await prompter.question(
+      `reasoning level for ${tier} effort [${choices}] (default ${suggested}): `,
+    )).trim().toLowerCase();
+    if (answer && !isReasoningLevel(answer)) {
+      log(`  "${answer}" is not a reasoning level - keeping ${suggested}`);
+    }
+    answers[tier] = isReasoningLevel(answer) ? answer : suggested;
+  }
+  // Re-read: the strategy autopilot step persists through its own loader, so
+  // the wizard's in-memory copy of state is stale by the time this runs.
+  const state = loadState(bullswarmDir);
+  state.strategy ??= {};
+  for (const [tier, level] of Object.entries(answers)) {
+    setStrategyReasoning(state.strategy, { tier, level });
+  }
+  saveState(bullswarmDir, state);
+  const stored = getStrategyReasoning(state.strategy);
+  log('  reasoning levels:');
+  for (const tier of STRATEGY_TIERS) {
+    log(`    ${tier.padEnd(6)} ${stored.tiers[tier]}${stored.tiers[tier] === 'default' ? ' (worker CLI decides)' : ''}`);
+  }
+  return stored;
+}
+
 // --- wizard -------------------------------------------------------------------
 
 export async function runWizard(bullswarmDir, opts = {}) {
@@ -447,6 +500,8 @@ export async function runWizard(bullswarmDir, opts = {}) {
   } else {
     console.log('  strategy autopilot: off (enable later with bullswarm strategy apply --yes)');
   }
+
+  await configureReasoningLevels(bullswarmDir, rl);
 
   // 6. Cross-agent integration — one canonical skill plus concise global
   // awareness rules. Nothing is written without this explicit answer.

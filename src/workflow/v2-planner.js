@@ -6,6 +6,7 @@ import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
 import { deriveV2PresentationStages, deriveV2DependencyStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
 import { isProgramWorkflow } from './execution-policy.js';
+import { REASONING_LEVELS } from '../lib/reasoning.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
 
@@ -168,6 +169,11 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
   };
 }
 
+// `effort` picks the model tier; `reasoning` picks how hard that model
+// thinks. They are independent, so the contract states the field once and both
+// rule sets render the same sentence.
+const REASONING_FIELD_RULE = 'The optional per-action `reasoning` field (low|medium|high|xhigh|max|default) sets how hard the picked model thinks on that one action and outranks every configured level for it. Omit it and the configured level applies. Set it only when an action needs deeper thinking than its effort tier implies (a tricky shared-file integrator or ambiguous acceptance judgment at xhigh) or cheaper thinking for mechanical work (low). `default` passes nothing and lets the worker CLI\'s own setting decide. It never changes the pool, model, or effort tier, and a connector that does not accept the exact level gets the nearest level it supports.';
+
 // One source of truth for the planning contract. The dispatched planner
 // prompt, the caller-facing `workflow plan contract`, and every durable
 // planner request render these same lines, so an external planner (a frontier
@@ -180,6 +186,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Every action has a self-contained prompt describing its purpose, repository context, expected files, and concrete acceptance commands. Dependency output artifacts are passed to the worker; ask it to read them, including outstanding requests for shared-file changes.',
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
+    REASONING_FIELD_RULE,
     workspaceMode === 'isolated'
       ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
       : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
@@ -203,6 +210,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Choose lane from the action itself, not from the overall goal: analyze is read-only investigation, judgment, or evidence; build changes behavior, documentation, or tests and requires contextual implementation; chore is only deterministic mechanical mutation with no design choice. Evidence actions must use analyze. Analyze actions cannot own files. Chore actions must use low effort.',
     'Choose effort independently from lane, using the cheapest tier sufficient for this one action. Low is for fixed-procedure checks or mechanical edits whose success is objectively decidable. Medium is the default for normal bounded analysis or implementation with local decisions. High is exceptional: use it only when architecture, ambiguous tradeoffs, cross-cutting integration, or adversarial acceptance judgment materially determines correctness. If uncertain, choose medium.',
     'Do not choose high merely because an action uses analyze, supplies evidence, affects an important requirement, mentions many files, or belongs to a difficult overall goal. Do not choose low merely because an action is short. Examples: exact file comparison or formatting update = low; ordinary scoped feature plus focused test = medium; choosing an architecture across subsystems = high; running deterministic acceptance commands = low; interpreting ambiguous cross-cutting acceptance evidence = high.',
+    REASONING_FIELD_RULE,
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
     'For mutating behavioral work, keep implementation and its focused regression test under one coherent owner. The action must prove the regression on the untouched baseline, then exercise the real production entry point or state transition after the change; disconnected helpers, no-op assertions, and test-only behavior do not satisfy acceptance.',
@@ -243,6 +251,7 @@ export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
   prompt: 'self-contained worker instructions: exact scope, files, commands, and acceptance evidence',
   lane: 'analyze | build | chore',
   effort: 'high | medium | low',
+  reasoning: 'optional low | medium | high | xhigh | max | default — how hard the picked model thinks on this one action; omit to use the configured level',
   evidenceFor: 'requirement IDs this evidence action independently judges (empty for work actions)',
   inputs: 'optional artifact IDs consumed, each produced by a dependency ancestor',
   produces: 'optional artifact IDs this action produces for later actions',
@@ -277,7 +286,7 @@ export const V2_PROGRAM_EXAMPLE = Object.freeze({
         id: 'check-parser', purpose: 'Independently judge the parser requirement',
         dependsOn: ['fix-parser'], affects: [], ownedFiles: [],
         prompt: 'Inspect src/parser.js and tests/parser.test.js in <cwd>; run `node --test-timeout=60000 --test tests/parser.test.js` and confirm the regression exercises the production entry point.',
-        lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['parser-fix'], produces: [],
+        lane: 'analyze', effort: 'low', reasoning: 'high', evidenceFor: ['requirement-1'], inputs: ['parser-fix'], produces: [],
       },
     ],
   },
@@ -319,6 +328,15 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
     requirements: clone(goalDocument.intent.requirements),
     constraints: { workspaceMutation },
     settings: clone(goalDocument.config.settings),
+    // The run-wide reasoning levels this launch will apply, so a caller sees
+    // what its per-action `reasoning` field would override.
+    reasoning: {
+      worker: goalDocument.config.workerRouting?.reasoning ?? null,
+      planner: goalDocument.config.plannerRouting?.reasoning ?? null,
+      actionField: 'reasoning',
+      levels: [...REASONING_LEVELS, 'default'],
+      note: 'null means no run-wide override: the configured strategy or connector default applies. A per-action `reasoning` value outranks both.',
+    },
     rules: v2PlannerContractRules({ workspaceMutation, boundary: 'initial', plannerMode: 'caller', executionMode: goalDocument.config.settings.executionMode, workspaceMode: goalDocument.config.settings.workspaceMode }),
     program: {
       schemaVersion: ACTION_PROGRAM_SCHEMA_VERSION,

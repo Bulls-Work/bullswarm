@@ -1,5 +1,7 @@
 // Deterministic validation for the generic autonomous workflow V2 program.
 
+import { isReasoningLevel } from '../lib/reasoning.js';
+
 export const ACTION_PROGRAM_SCHEMA_VERSION = 'bullswarm.workflow.program.v2';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -13,7 +15,7 @@ export const DEFAULT_EFFORT_BY_LANE = Object.freeze({
 const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions']);
 const ACTION_FIELDS = new Set([
   'id', 'purpose', 'dependsOn', 'affects', 'ownedFiles', 'prompt',
-  'lane', 'effort', 'evidenceFor', 'inputs', 'produces',
+  'lane', 'effort', 'evidenceFor', 'inputs', 'produces', 'reasoning',
 ]);
 
 // Only reject direct response instructions. Product-inspection prompts often
@@ -295,6 +297,11 @@ export function validateActionProgram(program, runtime = {}) {
     const ownedFiles = normalizeOwnedFiles(action.ownedFiles, `${at}.ownedFiles`, issues);
     if (!LANES.has(action.lane)) issues.push(`${at}.lane must be analyze|build|chore`);
     if (!EFFORTS.has(action.effort)) issues.push(`${at}.effort must be high|medium|low`);
+    // Optional caller override. `effort` still picks the model tier; this only
+    // sets how hard that model thinks, and it outranks every configured level.
+    if (action.reasoning !== undefined && !isReasoningLevel(action.reasoning)) {
+      issues.push(`${at}.reasoning must be low|medium|high|xhigh|max|default`);
+    }
     if (enforceRoutingPolicy && evidenceFor.length && action.lane !== 'analyze') {
       issues.push(`${at} evidence actions must use lane analyze`);
     }

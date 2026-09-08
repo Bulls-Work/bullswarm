@@ -24,15 +24,71 @@
   },
   "eventStream": {
     "format": "jsonl",
-    "args": ["--output-format", "streaming-json"],
+    "args": [
+      "--output-format",
+      "streaming-json"
+    ],
     "silenceThresholdSec": 600,
     "rules": [
-      { "rootMatch": { "path": "type", "equals": "tool_call" }, "idPaths": ["toolCallId"], "kindPaths": ["toolName", "title"], "summaryPaths": ["rawInput.command", "rawInput.file_path", "rawInput.path", "title"], "statusPath": "status" },
-      { "rootMatch": { "path": "type", "equals": "tool_call_update" }, "idPaths": ["toolCallId"], "kindPaths": ["toolName"], "summaryPaths": ["rawOutput.command"], "statusPath": "status" },
-      { "rootMatch": { "path": "type", "equals": "text" }, "kind": "response", "summaryPaths": ["data"], "status": "streaming", "aggregate": "consecutive", "summaryMode": "concat" }
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "tool_call"
+        },
+        "idPaths": [
+          "toolCallId"
+        ],
+        "kindPaths": [
+          "toolName",
+          "title"
+        ],
+        "summaryPaths": [
+          "rawInput.command",
+          "rawInput.file_path",
+          "rawInput.path",
+          "title"
+        ],
+        "statusPath": "status"
+      },
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "tool_call_update"
+        },
+        "idPaths": [
+          "toolCallId"
+        ],
+        "kindPaths": [
+          "toolName"
+        ],
+        "summaryPaths": [
+          "rawOutput.command"
+        ],
+        "statusPath": "status"
+      },
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "text"
+        },
+        "kind": "response",
+        "summaryPaths": [
+          "data"
+        ],
+        "status": "streaming",
+        "aggregate": "consecutive",
+        "summaryMode": "concat"
+      }
     ],
     "output": [
-      { "match": { "path": "type", "equals": "text" }, "path": "data", "mode": "concat" }
+      {
+        "match": {
+          "path": "type",
+          "equals": "text"
+        },
+        "path": "data",
+        "mode": "concat"
+      }
     ]
   },
   "meter": {
@@ -45,20 +101,81 @@
     "build",
     "chore"
   ],
-  "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
-  "modelDiscovery": { "cmd": ["grok", "models"], "parse": "bullets", "timeoutMs": 20000, "maxModels": 50 },
-  "knownModels": ["grok-4.6", "grok-4.5"],
+  "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+  ],
+  "modelDiscovery": {
+    "cmd": [
+      "grok",
+      "models"
+    ],
+    "parse": "bullets",
+    "timeoutMs": 20000,
+    "maxModels": 50
+  },
+  "knownModels": [
+    "grok-4.6",
+    "grok-4.5"
+  ],
   "model": "grok-4.6",
-  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "modelSelection": {
+    "flag": "--model",
+    "mode": "replace-or-append"
+  },
+  "$comment-reasoning": "flag verified from `grok --help` (grok 1.0.13): `--reasoning-effort <EFFORT>  Reasoning effort for reasoning models  [aliases: --effort]`. Accepted values verified from the grok 1.0.13 binary's own validation message (`strings` on the executable): `invalid reasoning effort: (expected one of: none, minimal, low, medium, high, xhigh, max)`. `none` and `minimal` sit below bullswarm's common scale, so a request below `low` clamps up to `low`. Tier defaults mirror claude-code (high=xhigh, medium=high, low=medium).",
+  "reasoning": {
+    "flag": "--reasoning-effort",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaults": {
+      "high": "xhigh",
+      "medium": "high",
+      "low": "medium"
+    }
+  },
   "conversation": {
-    "newArgs": ["--session-id", "{sessionId}"],
-    "resumeArgs": ["--resume", "{sessionId}"]
+    "newArgs": [
+      "--session-id",
+      "{sessionId}"
+    ],
+    "resumeArgs": [
+      "--resume",
+      "{sessionId}"
+    ]
   },
   "modelProfiles": [
-    { "match": "^grok-4\\.6$", "tier": "high", "qualityRank": 5, "pricing": { "inputUsdPerMillion": 2, "cacheReadUsdPerMillion": 0.5, "outputUsdPerMillion": 6 }, "pricingSource": "https://docs.x.ai/developers/models/grok-4.6", "pricingUpdatedAt": "2026-08-27" },
-    { "match": "^grok-4\\.5$", "tier": "medium", "qualityRank": 4 }
+    {
+      "match": "^grok-4\\.6$",
+      "tier": "high",
+      "qualityRank": 5,
+      "pricing": {
+        "inputUsdPerMillion": 2,
+        "cacheReadUsdPerMillion": 0.5,
+        "outputUsdPerMillion": 6
+      },
+      "pricingSource": "https://docs.x.ai/developers/models/grok-4.6",
+      "pricingUpdatedAt": "2026-08-27"
+    },
+    {
+      "match": "^grok-4\\.5$",
+      "tier": "medium",
+      "qualityRank": 4
+    }
   ],
-  "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": "weekly" },
+  "subscription": {
+    "plan": null,
+    "monthlyPriceUsd": null,
+    "includedValueUsd": null,
+    "quotaWindow": "weekly"
+  },
   "flags": {
     "stealth": false
   },

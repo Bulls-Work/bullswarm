@@ -863,3 +863,30 @@ test('I13: same BULLSWARM_HOME across module load + call works', () => {
     assert.match(r.stdout, /wf-fake/);
   } finally { cleanup(); }
 });
+
+// --- I10: reasoning depth is visible in text mode, not only --json -----
+test('I10: runs show prints each attempt with the reasoning level it ran at', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const fixture = autonomousV2Fixture(home);
+    const state = JSON.parse(readFileSync(join(fixture.runDir, 'state.json'), 'utf8'));
+    state.attempts = [
+      {
+        id: 'produce-1', actionId: 'produce', ordinal: 1, status: 'succeeded',
+        pool: 'alpha', model: 'alpha-sol',
+        reasoning: { requested: 'max', applied: 'high', source: 'action', clamped: true },
+      },
+      // A connector with no reasoning control prints no level rather than a
+      // placeholder that would read as a real decision.
+      { id: 'prove-1', actionId: 'prove', ordinal: 1, status: 'succeeded', pool: 'beta', model: 'beta-luna', reasoning: null },
+    ];
+    writeFileSync(join(fixture.runDir, 'state.json'), JSON.stringify(state));
+
+    const shown = run(wf('runs', 'show', 'v2r234'), { home });
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.match(shown.stdout, /# attempts {2}2/);
+    assert.match(shown.stdout, /produce #1 {2}succeeded {2}alpha {2}alpha-sol {2}reasoning high \(action, clamped\)/);
+    assert.match(shown.stdout, /prove #1 {2}succeeded {2}beta {2}beta-luna$/m);
+    assert.equal(/prove #1.*reasoning/.test(shown.stdout), false);
+  } finally { cleanup(); }
+});

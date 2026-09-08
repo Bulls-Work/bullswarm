@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { pickPool, isQuarantined } from '../lib/route.js';
 import { watchOnce } from '../lib/watch.js';
+import { resolveReasoningLevel } from '../lib/reasoning.js';
 import { renderDeep, extractItems, getPath } from './template.js';
 import { loadState, saveState, quarantinePool, childDepthEnv, DEPTH_ENV, assertDepthAllowed } from '../lib/state.js';
 import { Semaphore } from './semaphore.js';
@@ -431,6 +432,20 @@ export class WorkflowRuntime {
           subscription: poolView?.subscription ?? connector.subscription ?? null,
         };
 
+        // One reasoning level per attempt, from the connector actually being
+        // spawned and this step's effort tier. Read from the live core
+        // strategy so an operator change between attempts takes effect; a
+        // missing or unreadable state never blocks the dispatch.
+        let coreStrategy = null;
+        try { coreStrategy = loadState(this.bullswarmDir).strategy ?? null; }
+        catch { coreStrategy = null; }
+        const reasoning = resolveReasoningLevel({
+          connector: runtimeConnector,
+          tier: effortTier,
+          model: selectedModel,
+          strategy: coreStrategy,
+        });
+
         // Pin pool if requested (validation already checked existence)
         const chosen = step.pool
           ? attemptPools.find((p) => p.name === step.pool)
@@ -489,6 +504,7 @@ export class WorkflowRuntime {
           taskFile: attemptPaths.taskFile,
           outFile: attemptPaths.outFile,
           why: null,
+          reasoning,
           routing: {
             reason: route.why,
             candidates: route.candidates,
@@ -672,6 +688,7 @@ export class WorkflowRuntime {
               }
             },
             model: selectedModel,
+            reasoning,
             conversation,
             acceptVerifyJson: step.type === 'verify',
             onSpawn: (pid) => {

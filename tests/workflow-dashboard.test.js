@@ -2094,3 +2094,106 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     assert.match(renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 130, height: 22, focus: 1, phaseIndex: 1 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), /#1 · 1m0[5-9]s · 1\.2k tok/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test('V2 attempt rows and the agent pane show the applied reasoning level next to the model', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-reasoning-'));
+  try {
+    const runId = 'wf-v2reas-abcdef';
+    const dir = join(home, 'workflows', runId);
+    mkdirSync(dir, { recursive: true });
+    const goal = createV2GoalDocument({
+      goal: 'Implement and prove a result envelope', cwd: '/tmp/repo',
+      requirements: [{ id: 'result-correct', text: 'The result envelope is correct' }],
+      settings: { scout: false, concurrency: 2 },
+      workerRouting: { reasoning: 'xhigh' },
+    });
+    let state = createV2State(goal, { runId, shortId: 'v2r234' });
+    state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Implement then collect independent evidence.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'implement-result', purpose: 'Implement result envelope', dependsOn: [], affects: ['result-correct'], ownedFiles: ['src/result.js'], prompt: 'Implement it.', lane: 'build', effort: 'low', reasoning: 'max', evidenceFor: [], inputs: [], produces: ['result'] },
+        { id: 'check-result', purpose: 'Collect independent evidence', dependsOn: ['implement-result'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['result-correct'], inputs: ['result'], produces: [] },
+      ] },
+    });
+    state.presentation.stages[0].startedAt = iso(2);
+    state.presentation.stages[0].completedAt = iso(5);
+    Object.assign(state.actions[0], { status: 'succeeded', startedAt: iso(2), finishedAt: iso(5), attempts: 1 });
+    // Finished attempt: the action's own override was applied.
+    state.attempts.push({
+      id: 'implement-result-1', actionId: 'implement-result', ordinal: 1, status: 'succeeded',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(2), finishedAt: iso(5),
+      reasoning: { requested: 'max', applied: 'max', source: 'action', clamped: false },
+      routing: { reason: 'most-behind capable pool', candidates: [], effort: 'low', lane: 'build' },
+    });
+    state.presentation.stages[1].startedAt = iso(6);
+    Object.assign(state.actions[1], { status: 'running', startedAt: iso(6), attempts: 1 });
+    // Running attempt: the run-wide level was clamped to what the connector takes.
+    state.attempts.push({
+      id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running',
+      pool: 'relay-2', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null,
+      reasoning: { requested: 'xhigh', applied: 'high', source: 'run', clamped: true },
+    });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const live = renderWorkflowTui(row, { width: 120, height: 30 });
+    // The live row shows the level the running worker is actually thinking at.
+    assert.match(live, /check-result · relay-2 · gpt-5\.6-luna · high/);
+    // Phase 1 holds the finished attempt; its own override reads next to the model.
+    const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
+    assert.match(phaseOne, /implement-result · relay · gpt-5\.6-luna · max · #1/);
+    assert.match(phaseOne, /succeeded · gpt-5\.6-luna · max/);
+    // The drilled-in agent pane states it as a labelled field beside effort.
+    const agentPane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 });
+    assert.match(agentPane, /succeeded · gpt-5\.6-luna · max/);
+    // The V2 tier lives under attempt.routing; both fields read correctly.
+    assert.match(agentPane, /relay · attempt 1 · effort low · reasoning max/);
+    // Narrow mode keeps the same fact on the single full-width agent pane.
+    const narrow = renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 1, agentIndex: 0 });
+    assert.match(narrow, /gpt-5\.6-luna · max/);
+    // The durable record is what observation reads, so JSON carries it too.
+    assert.deepEqual(
+      dashboardJson(home, { token: 'v2r234' }).state.attempts.map((attempt) => attempt.reasoning.applied),
+      ['max', 'high'],
+    );
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('attempts without a reasoning record render exactly as before', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-noreasoning-'));
+  try {
+    const runId = 'wf-v2plain-abcdef';
+    const dir = join(home, 'workflows', runId);
+    mkdirSync(dir, { recursive: true });
+    const goal = createV2GoalDocument({
+      goal: 'Implement and prove a result envelope', cwd: '/tmp/repo',
+      requirements: [{ id: 'result-correct', text: 'The result envelope is correct' }],
+      settings: { scout: false, concurrency: 2 },
+    });
+    let state = createV2State(goal, { runId, shortId: 'v2p234' });
+    state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Implement then collect independent evidence.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        { id: 'implement-result', purpose: 'Implement result envelope', dependsOn: [], affects: ['result-correct'], ownedFiles: ['src/result.js'], prompt: 'Implement it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['result'] },
+        { id: 'check-result', purpose: 'Collect independent evidence', dependsOn: ['implement-result'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['result-correct'], inputs: ['result'], produces: [] },
+      ] },
+    });
+    Object.assign(state.actions[0], { status: 'running', startedAt: iso(2), attempts: 1 });
+    state.presentation.stages[0].startedAt = iso(2);
+    state.attempts.push({
+      id: 'implement-result-1', actionId: 'implement-result', ordinal: 1, status: 'running',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(2), finishedAt: null, reasoning: null,
+    });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const live = renderWorkflowTui(row, { width: 120, height: 30 });
+    assert.match(live, /implement-result · relay · gpt-5\.6-luna\s+\d/);
+    assert.doesNotMatch(live, /gpt-5\.6-luna · /);
+    const pane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
+    assert.match(pane, /implement-result · relay · gpt-5\.6-luna · #1/);
+    const agentPane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 });
+    assert.match(agentPane, /relay · attempt 1 · effort auto/);
+    assert.doesNotMatch(agentPane, /reasoning/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

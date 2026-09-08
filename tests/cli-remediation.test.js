@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -144,4 +144,134 @@ test('version bumping is deterministic and dry-run release behavior is safe', ()
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+// --- reasoning ---------------------------------------------------------------
+// `bullswarm run` resolves ONE reasoning level per dispatch and has to agree
+// with itself in three places: the argv it previews, the argv it spawns, and
+// the record it reports. These run the real binary against a fixture pool.
+
+/** Point the sandbox pool at a worker that echoes its own argv, and declare reasoning. */
+function reasoningSandbox({ levels = ['low', 'medium', 'high'], defaults = { low: 'medium' } } = {}) {
+  const f = sandbox();
+  const worker = join(f.home, 'argv-worker.mjs');
+  writeFileSync(worker, [
+    "const argv = process.argv.slice(2);",
+    "console.log('## Completed\\n');",
+    "console.log('Ran the bounded task and captured the spawn evidence below.\\n');",
+    "console.log('- Spawned argv: ' + JSON.stringify(argv));",
+    "console.log('- Read and executed every directive in ' + argv[0] + '.');",
+    "console.log('- Ran the focused checks: all passed with exit code 0.');",
+    "",
+  ].join('\n'));
+  const connectorPath = join(f.home, 'connectors', 'local-agent.json');
+  const connector = JSON.parse(readFileSync(connectorPath, 'utf8'));
+  connector.spawn.cmd = [process.execPath, worker, '{taskFile}'];
+  connector.reasoning = { flag: '--effort', levels, defaults };
+  writeFileSync(connectorPath, JSON.stringify(connector));
+  return f;
+}
+
+test('run --dry-run --json previews the real command with the resolved reasoning flag', () => {
+  const f = reasoningSandbox();
+  try {
+    const preview = verdict(run(f.home, [
+      'run', '--lane', 'chore', '--reasoning', 'max', '--dry-run', '--json', 'PREVIEW_TASK',
+    ]));
+    assert.equal(preview.dryRun, true);
+    assert.equal(preview.pick.pool, 'local-agent');
+    // max is above everything this connector accepts: clamped down to high,
+    // and the clamp is on the record rather than silently applied.
+    assert.deepEqual(preview.reasoning, {
+      requested: 'max', applied: 'high', source: 'run', clamped: true,
+    });
+    const command = preview.pick.command;
+    assert.equal(command.at(-2), '--effort');
+    assert.equal(command.at(-1), 'high');
+
+    // A preview dispatches nothing and records nothing.
+    assert.equal(existsSync(join(f.home, 'runs')) ? readdirSync(join(f.home, 'runs')).length : 0, 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8')).decisionLog, []);
+
+    // The preview and the live spawn come from the same builder: everything
+    // after the task-file argument is identical (the two runs get their own
+    // task-file stamps, so those are compared by position, not by value).
+    const live = verdict(run(f.home, [
+      'run', '--lane', 'chore', '--reasoning', 'max', '--json', 'LIVE_TASK',
+    ]));
+    assert.equal(live.ok, true);
+    const observed = JSON.parse(
+      readFileSync(live.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1],
+    );
+    assert.deepEqual(observed, [live.taskFile, '--effort', 'high']);
+    const afterTaskFile = (argv) => argv.slice(argv.findIndex((arg) => arg.endsWith('.md')) + 1);
+    assert.deepEqual(afterTaskFile(command), ['--effort', 'high']);
+    assert.deepEqual(afterTaskFile(observed), afterTaskFile(command));
+  } finally { f.cleanup(); }
+});
+
+test('run reports the resolved reasoning level in its verdict and its decision log', () => {
+  const f = reasoningSandbox();
+  try {
+    // Nothing asked: the connector's own default for the chore tier (low).
+    const fromConnector = verdict(run(f.home, ['run', '--lane', 'chore', '--json', 'TASK']));
+    assert.deepEqual(fromConnector.reasoning, {
+      requested: 'medium', applied: 'medium', source: 'connector', clamped: false,
+    });
+    assert.deepEqual(fromConnector.meta.reasoning, fromConnector.reasoning);
+    const observed = JSON.parse(
+      readFileSync(fromConnector.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1],
+    );
+    assert.deepEqual(observed.slice(1), ['--effort', 'medium']);
+
+    const logged = JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8')).decisionLog;
+    assert.equal(logged.length, 1);
+    assert.deepEqual(logged[0].reasoning, fromConnector.reasoning);
+
+    // `default` means "append nothing and let the CLI's own config decide".
+    const silent = verdict(run(f.home, [
+      'run', '--lane', 'chore', '--reasoning', 'default', '--json', 'TASK',
+    ]));
+    assert.deepEqual(silent.reasoning, {
+      requested: 'default', applied: null, source: 'run', clamped: false,
+    });
+    const silentArgv = JSON.parse(
+      readFileSync(silent.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1],
+    );
+    assert.deepEqual(silentArgv.slice(1), []);
+  } finally { f.cleanup(); }
+});
+
+test('a pool whose connector declares no reasoning is dispatched without a flag', () => {
+  const f = reasoningSandbox();
+  try {
+    const connectorPath = join(f.home, 'connectors', 'local-agent.json');
+    const connector = JSON.parse(readFileSync(connectorPath, 'utf8'));
+    delete connector.reasoning;
+    writeFileSync(connectorPath, JSON.stringify(connector));
+    const result = verdict(run(f.home, [
+      'run', '--lane', 'chore', '--reasoning', 'high', '--json', 'TASK',
+    ]));
+    assert.deepEqual(result.reasoning, {
+      requested: 'high', applied: null, source: 'unsupported', clamped: false,
+    });
+    const observed = JSON.parse(
+      readFileSync(result.outFile, 'utf8').match(/Spawned argv: (\[.*\])/)[1],
+    );
+    assert.deepEqual(observed.slice(1), []);
+  } finally { f.cleanup(); }
+});
+
+test('run rejects an unknown or valueless --reasoning with exit 2 before dispatching', () => {
+  const f = reasoningSandbox();
+  try {
+    const bogus = run(f.home, ['run', '--lane', 'chore', '--reasoning', 'ludicrous', 'TASK', '--json']);
+    assert.equal(bogus.status, 2);
+    assert.match(bogus.stderr, /--reasoning must be one of low, medium, high, xhigh, max, default/);
+    assert.equal(bogus.stdout, '');
+    const missing = run(f.home, ['run', '--lane', 'chore', '--reasoning', '--json', 'TASK']);
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /--reasoning requires a value/);
+    assert.equal(existsSync(join(f.home, 'runs')) ? readdirSync(join(f.home, 'runs')).length : 0, 0);
+  } finally { f.cleanup(); }
 });

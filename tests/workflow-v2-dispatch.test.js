@@ -9,8 +9,8 @@ const connector = (name, extra = {}) => ({
   ...extra,
 });
 
-function harness(verdicts) {
-  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [] };
+function harness(verdicts, coreOverrides = {}) {
+  const core = { config: { depthLimit: 2 }, pools: {}, incumbents: {}, decisionLog: [], ...coreOverrides };
   let index = 0;
   return {
     dependencies: {
@@ -284,4 +284,166 @@ test('a refresher that throws or returns nothing leaves the dispatch on its laun
     bullswarmDir: '/tmp/bs', dependencies: empty.dependencies,
   });
   assert.equal(second.attempts[0].pool, 'luna-1');
+});
+
+// --- reasoning ---------------------------------------------------------------
+// One level is resolved PER ATTEMPT, from the connector actually picked, and it
+// has to arrive in three places at once: the spawned watch options, the attempt
+// record (which is what `attempt.started` carries), and the decision log.
+
+const thinking = (name, reasoning, extra = {}) => connector(name, {
+  reasoning: reasoning ?? {
+    flag: '--effort',
+    levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaults: { high: 'xhigh', medium: 'high', low: 'medium' },
+  },
+  ...extra,
+});
+
+async function dispatchWithReasoning({ pools, core = {}, ...rest } = {}) {
+  const seen = [];
+  const h = harness([({ opts }) => { seen.push(opts.reasoning); return good; }], core);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools, bullswarmDir: '/tmp/bs', dependencies: h.dependencies, ...rest,
+  });
+  return { result, seen, core: h.core };
+}
+
+test('an attempt resolves its reasoning level from the connector default for the effort tier', async () => {
+  // action.effort is 'low', so the connector's low default is what runs.
+  const { result, seen, core } = await dispatchWithReasoning({ pools: [thinking('luna-1')] });
+  assert.equal(result.ok, true);
+  const expected = { requested: 'medium', applied: 'medium', source: 'connector', clamped: false };
+  assert.deepEqual(result.attempts[0].reasoning, expected);
+  assert.deepEqual(seen, [expected], 'watchOnce must receive opts.reasoning');
+  assert.deepEqual(core.decisionLog[0].reasoning, expected);
+});
+
+test('a strategy tier level in live core state outranks the connector default', async () => {
+  const { result, seen } = await dispatchWithReasoning({
+    pools: [thinking('luna-1')],
+    core: { strategy: { reasoning: { tiers: { low: 'high' } } } },
+  });
+  const expected = { requested: 'high', applied: 'high', source: 'strategy-tier', clamped: false };
+  assert.deepEqual(result.attempts[0].reasoning, expected);
+  assert.deepEqual(seen, [expected]);
+});
+
+test('a strategy per-pool level outranks the strategy tier level', async () => {
+  const { result } = await dispatchWithReasoning({
+    pools: [thinking('luna-1')],
+    core: { strategy: { reasoning: { tiers: { low: 'high' }, pools: { 'luna-1': { low: 'max' } } } } },
+  });
+  assert.deepEqual(result.attempts[0].reasoning, {
+    requested: 'max', applied: 'max', source: 'strategy-pool', clamped: false,
+  });
+});
+
+test('runReasoning outranks strategy, and reasoningOverride outranks everything', async () => {
+  const core = { strategy: { reasoning: { tiers: { low: 'high' }, pools: { 'luna-1': { low: 'max' } } } } };
+  const run = await dispatchWithReasoning({ pools: [thinking('luna-1')], core, runReasoning: 'low' });
+  assert.deepEqual(run.result.attempts[0].reasoning, {
+    requested: 'low', applied: 'low', source: 'run', clamped: false,
+  });
+  const override = await dispatchWithReasoning({
+    pools: [thinking('luna-1')], core, runReasoning: 'low', reasoningOverride: 'xhigh',
+  });
+  assert.deepEqual(override.result.attempts[0].reasoning, {
+    requested: 'xhigh', applied: 'xhigh', source: 'action', clamped: false,
+  });
+  assert.deepEqual(override.seen, [{
+    requested: 'xhigh', applied: 'xhigh', source: 'action', clamped: false,
+  }]);
+});
+
+test('a program action carrying its own reasoning field is honored as the action override', async () => {
+  const seen = [];
+  const h = harness([({ opts }) => { seen.push(opts.reasoning); return good; }]);
+  const result = await dispatchV2Action({
+    action: { ...action, reasoning: 'max' }, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [thinking('luna-1')], runReasoning: 'low',
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.deepEqual(result.attempts[0].reasoning, {
+    requested: 'max', applied: 'max', source: 'action', clamped: false,
+  });
+  assert.deepEqual(seen[0], result.attempts[0].reasoning);
+});
+
+test('a request the picked connector cannot express is clamped on the record it ran under', async () => {
+  const { result, seen } = await dispatchWithReasoning({
+    pools: [thinking('luna-1', {
+      args: ['-c', 'model_reasoning_effort={level}'],
+      levels: ['low', 'medium', 'high'],
+      defaults: { high: 'high', medium: 'medium', low: 'low' },
+    })],
+    runReasoning: 'max',
+  });
+  assert.deepEqual(result.attempts[0].reasoning, {
+    requested: 'max', applied: 'high', source: 'run', clamped: true,
+  });
+  assert.deepEqual(seen, [{ requested: 'max', applied: 'high', source: 'run', clamped: true }]);
+});
+
+test('a connector without reasoning records unsupported instead of a level it never sent', async () => {
+  const { result, seen } = await dispatchWithReasoning({
+    pools: [connector('luna-1')], runReasoning: 'max',
+  });
+  assert.deepEqual(result.attempts[0].reasoning, {
+    requested: 'max', applied: null, source: 'unsupported', clamped: false,
+  });
+  assert.deepEqual(seen, [{ requested: 'max', applied: null, source: 'unsupported', clamped: false }]);
+});
+
+test('a model the connector marks as skipped records skipped-model', async () => {
+  const { result } = await dispatchWithReasoning({
+    pools: [thinking('luna-1', {
+      flag: '--effort',
+      levels: ['low', 'medium', 'high'],
+      defaults: { low: 'medium' },
+      skipModels: ['^gpt-5\\.6-luna$'],
+    })],
+  });
+  // The strategy assignment pins gpt-5.6-luna as this pool's model.
+  assert.equal(result.attempts[0].model, 'gpt-5.6-luna');
+  assert.deepEqual(result.attempts[0].reasoning, {
+    requested: 'medium', applied: null, source: 'skipped-model', clamped: false,
+  });
+});
+
+test('each attempt of one action resolves against the connector it actually landed on', async () => {
+  const seen = [];
+  const h = harness([
+    ({ opts }) => { seen.push(opts.reasoning); return { ok: false, why: 'auth', quarantineHint: true, meta: { exitCode: 1 } }; },
+    ({ opts }) => { seen.push(opts.reasoning); return good; },
+  ]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    // luna-1 accepts the full scale; luna-2 tops out at high.
+    pools: [
+      thinking('luna-1'),
+      thinking('luna-2', { flag: '--effort', levels: ['low', 'medium', 'high'], defaults: { low: 'low' } }),
+    ],
+    runReasoning: 'xhigh',
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.reasoning), [
+    { requested: 'xhigh', applied: 'xhigh', source: 'run', clamped: false },
+    { requested: 'xhigh', applied: 'high', source: 'run', clamped: true },
+  ]);
+  assert.deepEqual(seen, result.attempts.map((attempt) => attempt.reasoning));
+  assert.deepEqual(h.core.decisionLog.map((entry) => entry.reasoning), result.attempts.map((a) => a.reasoning));
+});
+
+test('the attempt.started notification carries the resolved reasoning record', async () => {
+  const started = [];
+  const h = harness([good]);
+  await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [thinking('luna-1')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+    onAttempt: (phase, record) => { if (phase === 'started') started.push(record.reasoning); },
+  });
+  assert.deepEqual(started, [{ requested: 'medium', applied: 'medium', source: 'connector', clamped: false }]);
 });

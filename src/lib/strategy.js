@@ -5,6 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
+import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -67,6 +68,105 @@ export function setModelDisabled(strategy, pool, model, disabled) {
   else current.delete(String(model).trim().toLowerCase());
   if (current.size) strategy.disabledModels[pool] = [...current];
   else delete strategy.disabledModels[pool];
+}
+
+// --- reasoning depth ---------------------------------------------------------
+// The persisted shape is `state.strategy.reasoning = { tiers, pools }`, where
+// every value is a common-scale level or the literal 'default'. Absent keys
+// fall through to the next layer; nothing is written implicitly, so an empty
+// strategy still lets each connector's own per-tier defaults decide.
+
+/** Suggested wizard answers. NOT applied implicitly — the setup question is. */
+export const REASONING_DEFAULT_TIERS = Object.freeze({ high: 'xhigh', medium: 'high', low: 'medium' });
+
+function reasoningLevelList() {
+  return [...REASONING_LEVELS, 'default'].join(', ');
+}
+
+function normalizeReasoningTiers(value) {
+  const normalized = {};
+  if (!value || typeof value !== 'object') return normalized;
+  for (const tier of STRATEGY_TIERS) {
+    if (isReasoningLevel(value[tier])) normalized[tier] = value[tier];
+  }
+  return normalized;
+}
+
+export function getStrategyReasoning(strategy = {}) {
+  const raw = strategy?.reasoning ?? {};
+  const pools = {};
+  for (const [pool, tiers] of Object.entries(raw.pools ?? {})) {
+    const normalized = normalizeReasoningTiers(tiers);
+    if (Object.keys(normalized).length) pools[pool] = normalized;
+  }
+  return { tiers: normalizeReasoningTiers(raw.tiers), pools };
+}
+
+function storeStrategyReasoning(strategy, reasoning) {
+  for (const [pool, tiers] of Object.entries(reasoning.pools)) {
+    if (!Object.keys(tiers).length) delete reasoning.pools[pool];
+  }
+  if (Object.keys(reasoning.tiers).length || Object.keys(reasoning.pools).length) {
+    strategy.reasoning = reasoning;
+  } else {
+    delete strategy.reasoning;
+  }
+  return getStrategyReasoning(strategy);
+}
+
+export function assertReasoningTier(tier) {
+  if (!STRATEGY_TIERS.includes(tier)) {
+    throw new Error(`--tier must be ${STRATEGY_TIERS.join(', ')}`);
+  }
+  return tier;
+}
+
+export function assertReasoningLevel(level) {
+  if (!isReasoningLevel(level)) throw new Error(`--level must be ${reasoningLevelList()}`);
+  return level;
+}
+
+/** Set (level) or remove (level null) one tier level, globally or per pool. */
+export function setStrategyReasoning(strategy, { tier, level, pool = null } = {}) {
+  assertReasoningTier(tier);
+  if (level != null) assertReasoningLevel(level);
+  const reasoning = getStrategyReasoning(strategy);
+  const target = pool ? (reasoning.pools[pool] ??= {}) : reasoning.tiers;
+  if (level == null) delete target[tier];
+  else target[tier] = level;
+  return storeStrategyReasoning(strategy, reasoning);
+}
+
+/** Clear everything (no arguments), one pool, one tier, or one pool+tier. */
+export function clearStrategyReasoning(strategy, { tier = null, pool = null } = {}) {
+  if (tier != null) assertReasoningTier(tier);
+  if (tier == null && pool == null) {
+    delete strategy.reasoning;
+    return { tiers: {}, pools: {} };
+  }
+  const reasoning = getStrategyReasoning(strategy);
+  if (pool && tier) delete reasoning.pools[pool]?.[tier];
+  else if (pool) delete reasoning.pools[pool];
+  else {
+    // A tier reset returns that effort tier to connector defaults everywhere,
+    // the same way `strategy reset-tier` clears a tier from every selection.
+    delete reasoning.tiers[tier];
+    for (const tiers of Object.values(reasoning.pools)) delete tiers[tier];
+  }
+  return storeStrategyReasoning(strategy, reasoning);
+}
+
+/** Effective `{ [pool]: { [tier]: { level, source } } }` for a pool list. */
+export function reasoningEffective(pools, strategy = {}) {
+  const effective = {};
+  for (const pool of pools) {
+    const connector = pool.connector ?? pool;
+    effective[pool.name] = Object.fromEntries(STRATEGY_TIERS.map((tier) => {
+      const resolved = resolveReasoningLevel({ connector, tier, strategy });
+      return [tier, { level: resolved.applied, source: resolved.source }];
+    }));
+  }
+  return effective;
 }
 
 function configuredModel(connector) {

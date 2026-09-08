@@ -95,6 +95,20 @@ Author the graph around these rules:
   `affects`/`ownedFiles`, and `evidenceFor` requirement IDs. Depend on every
   writer affecting those requirements. Describe the checks; the kernel adds
   the evidence JSON instructions. Evidence is optional for graph completion.
+- **Optional reasoning depth:** `effort` picks the model tier; the optional
+  `reasoning` field picks how hard that model thinks. Values are
+  `low|medium|high|xhigh|max`, or `default` to pass nothing and let the worker
+  CLI's own setting decide. It applies to that one action and outranks every
+  configured level for it — so a `low`-effort integrator can still get `xhigh`
+  thinking. Omit it and the configured level applies; it never changes the
+  pool, model, or effort tier, and a connector that does not accept the exact
+  level gets the nearest level it supports. Set it only when an action needs
+  deeper thinking than its tier implies (a tricky shared-file integrator,
+  ambiguous acceptance judgment) or cheaper thinking for mechanical work.
+  For the whole run instead of one action, pass
+  `--worker-reasoning <level>` (and `--planner-reasoning <level>` with
+  `--orchestrator`) to `workflow goal`; the contract's `reasoning` block
+  echoes what a launch will apply.
 
 Validate, then launch:
 
