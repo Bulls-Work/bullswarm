@@ -14,54 +14,36 @@ permission to delegate does not authorize messages, releases, or other external
 writes. If `BULLSWARM_DEPTH` is set, do the assigned work directly unless the
 task explicitly requires nested delegation.
 
-## 1. Choose the execution shape
+## 1. Choose the shape yourself
 
 Use one agent for a bounded outcome such as a review or localized fix. Use a
 workflow for parallel territories, integration, or implementation followed by
-independent acceptance. When the user already chose the shape, go directly to
-that mode below. Otherwise preview:
-
-```bash
-bullswarm delegate --dry-run --json --cwd=<abs-dir> --prompt='<user request>'
-```
-
-Tell the user the selected **Single bounded agent** or **Autonomous workflow**,
-its `reason`, and the short `phases` plan. Stop here if the user requested only
-a plan; otherwise execute without reconfirming:
-
-```bash
-bullswarm delegate --mode=<single|workflow> --cwd=<abs-dir> \
-  --plan='<decision.suggestedPlan>' --prompt='<same user request>' --json
-```
-
-Use `--task-file` instead of `--prompt` for long text or awkward quoting.
-The default preview can call a low-effort classifier; add
-`--classify deterministic` for a no-provider preview. Do not run `doctor`
-unless dispatch reports a readiness problem.
+independent acceptance. There is no preview or classifier step — decide from
+the request itself and go directly to the matching mode below.
 
 ## 2a. One agent
 
-The `delegate --mode=single` result contains `execution`:
+Dispatch it directly:
+
+```bash
+bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
+```
+
+Choose `build` for edits, `chore` for mechanical edits, or `analyze` for
+read-only work. Use `--task-file` instead of `--prompt` for long text or
+awkward quoting. The result's top-level fields include `ok`, `keepOnClaude`,
+`pick` (the chosen `{pool, model, command}`), `outFile`, and `why`:
 
 - `keepOnClaude: true`: do the work yourself, even if `ok` is true.
 - Otherwise, when `ok: true`, read `outFile` and check its content before using it.
 - `ok: false`: inspect and report the failure; a successful CLI exit is not
   proof that the work succeeded.
 
-For an explicitly requested direct run:
-
-```bash
-bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
-```
-
-Its result fields are top-level. Choose `build` for edits or `chore` for
-mechanical edits; `analyze` is read-only.
+Do not run `doctor` unless dispatch reports a readiness problem.
 
 ## 2b. A workflow
 
-`delegate --mode=workflow` returns `action: "plan-required"` and the planning
-contract. This has **not launched workers**. Use that contract; if starting a
-workflow directly, get it with:
+Get the planning contract:
 
 ```bash
 bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
@@ -74,10 +56,21 @@ contains the current schema, IDs, rules, and a worked program example.
 
 Write `plan.json` from the contract's worked example. The bare program has
 `schemaVersion: "bullswarm.workflow.program.v2"` and a populated `actions` array.
-Each action needs `id`, `purpose`, `dependsOn`, `affects`, `ownedFiles`, `prompt`, `lane`,
-`effort`, and `evidenceFor`. Copy requirement IDs from the contract. Optional
-`inputs`/`produces` describe actual artifacts; ordinary dependencies do not
-need them. Never put provider/model fields into the program.
+Each action needs `id`, `purpose`, `dependsOn`, `affects`, `ownedFiles`,
+`prompt`, and `evidenceFor`, plus either `kind` or an explicit `lane`. Copy
+requirement IDs from the contract. Optional `inputs`/`produces` describe actual
+artifacts; ordinary dependencies do not need them. Never put provider/model
+fields into the program.
+
+Set `kind` on every action and it fills `lane` and `effort`: `mechanical`
+(chore/low), `io-read` (analyze/low), `check` (analyze/medium), `implement`
+(build/medium), `integration` (build/high), `architecture` (analyze/high),
+`adversarial-acceptance` (analyze/high). An explicit `lane` or `effort` still
+wins, then the kind table, then an optional program-level `defaults` object
+(`effort` and `reasoning` only), then the per-lane default. A kind outside that
+list is rejected before anything runs. `plan validate` and `workflow goal` also
+print non-blocking `advisory:` lines — `all-writers-high` and `docs-at-high` —
+which never change acceptance or the exit code.
 
 Author the graph around these rules:
 

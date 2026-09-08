@@ -11,7 +11,7 @@ import {
   upgradeConnectorMetadata,
   autoSetup,
   ensureSetup,
-  configureReasoningLevels,
+  configureTierRungs,
 } from '../src/setup.js';
 import { loadState, saveState } from '../src/lib/state.js';
 
@@ -199,7 +199,7 @@ test('integration block: approval required, idempotent markers', () => {
     applyIntegrationBlock(file, { approved: true });
     let text = readFileSync(file, 'utf8');
     assert.match(text, /bullswarm:begin v3/);
-    assert.match(text, /bullswarm delegate/);
+    assert.match(text, /bullswarm run/);
     assert.match(text, /BULLSWARM_DEPTH/);
     assert.match(text, /existing content/); // preserved
 
@@ -247,37 +247,42 @@ function scriptedPrompter(answers) {
   };
 }
 
-test('the wizard stores one reasoning level per effort tier', async () => {
+test('the wizard tier step asks one reasoning question per tier and Enter keeps the connector default', async () => {
   const { d, cleanup } = tmp();
   try {
     autoSetup(d, { reason: 'test' });
-    const prompter = scriptedPrompter(['LOW', '', 'default']);
-    const stored = await configureReasoningLevels(d, prompter, { log: () => {} });
+    const prompter = scriptedPrompter(['LOW', '', 'max']);
+    const stored = await configureTierRungs(d, prompter, { log: () => {}, evidence: null });
 
     assert.deepEqual(prompter.asked, [
-      'reasoning level for high effort [low/medium/high/xhigh/max/default] (default xhigh): ',
-      'reasoning level for medium effort [low/medium/high/xhigh/max/default] (default high): ',
-      'reasoning level for low effort [low/medium/high/xhigh/max/default] (default medium): ',
+      'Reasoning for high [Enter keeps the connector default]: ',
+      'Reasoning for medium [Enter keeps the connector default]: ',
+      'Reasoning for low [Enter keeps the connector default]: ',
     ]);
-    // Typed answer wins (case-insensitively); a blank answer takes the
-    // suggested default; `default` is a real answer meaning "CLI decides".
-    assert.deepEqual(stored.tiers, { high: 'low', medium: 'high', low: 'default' });
+    // A typed answer wins (case-insensitively); a blank answer stores NOTHING,
+    // which is what leaves the connector's own per-tier default in charge.
+    assert.deepEqual(stored.tiers, { high: 'low', low: 'max' });
     assert.deepEqual(loadState(d).strategy.reasoning, {
-      tiers: { high: 'low', medium: 'high', low: 'default' }, pools: {},
+      tiers: { high: 'low', low: 'max' }, pools: {},
     });
   } finally { cleanup(); }
 });
 
-test('an unrecognized wizard answer keeps the suggested level instead of storing junk', async () => {
+test('an unrecognized wizard answer keeps the connector default instead of storing junk', async () => {
   const { d, cleanup } = tmp();
   try {
     autoSetup(d, { reason: 'test' });
     const notes = [];
-    const stored = await configureReasoningLevels(d, scriptedPrompter(['ludicrous', 'max', 'max']), {
+    const stored = await configureTierRungs(d, scriptedPrompter(['ludicrous', 'max', 'default']), {
       log: (line) => notes.push(line),
+      evidence: null,
     });
-    assert.deepEqual(stored.tiers, { high: 'xhigh', medium: 'max', low: 'max' });
+    // `default` is no longer offered by this question: Enter already means
+    // "let the connector decide", so anything off the five-level scale is
+    // reported and dropped rather than stored.
+    assert.deepEqual(stored.tiers, { medium: 'max' });
     assert.ok(notes.some((line) => /"ludicrous" is not a reasoning level/.test(line)));
+    assert.ok(notes.some((line) => /"default" is not a reasoning level/.test(line)));
   } finally { cleanup(); }
 });
 
@@ -290,10 +295,68 @@ test('the wizard answer survives the strategy step writing state through its own
     const state = loadState(d);
     state.strategy = { assignments: { high: { pool: 'codex', model: 'gpt-5.6-sol' } } };
     saveState(d, state);
-    await configureReasoningLevels(d, scriptedPrompter(['max', 'high', 'low']), { log: () => {} });
+    await configureTierRungs(d, scriptedPrompter(['max', 'high', 'low']), {
+      log: () => {}, evidence: null,
+    });
     const saved = loadState(d);
     assert.deepEqual(saved.strategy.assignments.high, { pool: 'codex', model: 'gpt-5.6-sol' });
     assert.deepEqual(saved.strategy.reasoning.tiers, { high: 'max', medium: 'high', low: 'low' });
+  } finally { cleanup(); }
+});
+
+test('the tier step asks only about configured tiers and shows each rung with its evidence line', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    // Enable the packaged echo fixture and give it a configured low rung, so
+    // the step has exactly one real rung to display and one tier to ask about.
+    const state = loadState(d);
+    state.pools.echo = { enabled: true };
+    state.strategy = {
+      configuredTiers: ['low'],
+      modelTiers: { echo: { 'echo-local': ['low'] } },
+    };
+    saveState(d, state);
+
+    const lines = [];
+    const prompter = scriptedPrompter(['high']);
+    const stored = await configureTierRungs(d, prompter, {
+      log: (line) => lines.push(line),
+      // Exactly the pair src/lib/epoch-benchmarks.js will export.
+      evidence: {
+        datapack: { models: { 'echo-local': {} } },
+        rungEvidence: (datapack, { model }) => (datapack.models[model]
+          ? { blended: 0.42, costPerTask: 0.13, tokensPerTask: 24_500 }
+          : null),
+      },
+    });
+
+    assert.deepEqual(prompter.asked, ['Reasoning for low [Enter keeps the connector default]: ']);
+    assert.deepEqual(stored.tiers, { low: 'high' });
+    const rung = lines.find((line) => line.includes('echo/echo-local'));
+    assert.ok(rung, `no rung line printed; got ${JSON.stringify(lines)}`);
+    assert.match(rung, /^ {4}low {4}echo\/echo-local {2}reasoning connector default \(unsupported\) {2}blended 0\.42 · \$0\.13\/task · 24\.5k tok\/task$/);
+  } finally { cleanup(); }
+});
+
+test('the tier step prints no evidence text for a rung the datapack does not cover', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    const state = loadState(d);
+    state.pools.echo = { enabled: true };
+    state.strategy = {
+      configuredTiers: ['low'],
+      modelTiers: { echo: { 'echo-local': ['low'] } },
+    };
+    saveState(d, state);
+    const lines = [];
+    await configureTierRungs(d, scriptedPrompter(['']), {
+      log: (line) => lines.push(line),
+      evidence: () => null,
+    });
+    const rung = lines.find((line) => line.includes('echo/echo-local'));
+    assert.equal(rung, '    low    echo/echo-local  reasoning connector default (unsupported)');
   } finally { cleanup(); }
 });
 

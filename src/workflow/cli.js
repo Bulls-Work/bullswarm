@@ -20,6 +20,7 @@ import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashb
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
+import { programAdvisories } from './action-validator.js';
 import { createV2GoalDocument, createV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './v2-runtime.js';
 import { requestCancel } from './dashboard.js';
@@ -688,6 +689,14 @@ function previewValidateInitialProgram(doc, response) {
   return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [] });
 }
 
+// Advisories are advice, never a rejection: they go to stderr so a --json
+// caller keeps a clean stdout document, and the exit code is untouched.
+function printAdvisories(advisories, { stream = console.error } = {}) {
+  for (const advisory of advisories) {
+    stream(`advisory: ${advisory.code}${advisory.actionId ? ` ${advisory.actionId}` : ''} — ${advisory.message}`);
+  }
+}
+
 function printValidationIssues(prefix, issues) {
   console.error(`✗ ${prefix}:`);
   for (const issue of issues) console.error(`  - ${issue}`);
@@ -781,11 +790,15 @@ async function wfGoal(opts) {
     if (pool && !names.includes(pool)) { console.error(`✗ requested ${label} pool "${pool}" is not available`); return 1; }
   }
   if (initialPlannerResponse && !opts.request) {
-    try { previewValidateInitialProgram(doc, initialPlannerResponse); }
+    let previewed;
+    try { previewed = previewValidateInitialProgram(doc, initialPlannerResponse); }
     catch (err) {
       if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(doc.intent.goal, opts, err.issues);
       throw err;
     }
+    // The same lines `plan validate` prints, at the moment the program is
+    // actually launched. The kernel also stores them on the run state.
+    printAdvisories(programAdvisories(previewed.program));
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {
@@ -897,18 +910,24 @@ function planValidate(opts) {
     program: {
       summary: accepted.summary,
       actions: accepted.program.actions.map((action) => ({
-        id: action.id, lane: action.lane, effort: action.effort,
+        id: action.id,
+        ...(action.kind ? { kind: action.kind } : {}),
+        lane: action.lane, effort: action.effort,
         ...(action.reasoning ? { reasoning: action.reasoning } : {}),
         dependsOn: action.dependsOn,
         affects: action.affects, evidenceFor: action.evidenceFor, ownedFiles: action.ownedFiles,
       })),
     },
+    // Advice about the accepted program. Present (possibly empty) on every
+    // valid program so a caller can read it without probing for the key.
+    advisories: programAdvisories(accepted.program),
     next: { launch: next.launch },
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
   else {
     console.log(`✓ program valid against the contract: ${payload.program.actions.length} action${payload.program.actions.length === 1 ? '' : 's'} for ${payload.requirements.length} requirement${payload.requirements.length === 1 ? '' : 's'} (nothing launched)`);
-    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    for (const action of payload.program.actions) console.log(`  ${action.id.padEnd(24)} ${action.lane}/${action.effort}${action.kind ? ` kind=${action.kind}` : ''}${action.reasoning ? ` reasoning=${action.reasoning}` : ''}${action.evidenceFor.length ? ` evidence for ${action.evidenceFor.join(', ')}` : ` affects ${action.affects.join(', ') || '(none)'}`}`);
+    printAdvisories(payload.advisories, { stream: console.log });
     console.log(`  launch   ${next.launch}`);
   }
   return 0;
@@ -1379,6 +1398,45 @@ function wfSteer(opts) {
   }
 }
 
+// A V2 run keeps its graph in state.program.actions and its per-action
+// bookkeeping in state.actions; the V1 shape (actionLedger) has neither, so
+// the V1 reader in dashboard.js cannot describe a V2 action at all.
+function v2ActionJson(resolved, state, actionId) {
+  const action = state.program?.actions?.find((entry) => entry.id === actionId);
+  if (!action) throw new Error(`run "${resolved.shortId ?? resolved.runId}" has no action "${actionId}"`);
+  const actionState = state.actions?.find((entry) => entry.id === actionId) ?? null;
+  return {
+    action: 'show-action',
+    runId: resolved.runId,
+    shortId: resolved.shortId ?? null,
+    runDir: resolved.runDir,
+    actionRecord: {
+      id: action.id,
+      purpose: action.purpose,
+      status: actionState?.status ?? 'unknown',
+      // `kind` only when the author supplied one; lane and effort are always
+      // the values acceptance resolved, which is what dispatch used.
+      ...(action.kind ? { kind: action.kind } : {}),
+      lane: action.lane,
+      effort: action.effort,
+      ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+      dependsOn: action.dependsOn,
+      affects: action.affects,
+      evidenceFor: action.evidenceFor,
+      ownedFiles: action.ownedFiles,
+      inputs: action.inputs ?? [],
+      produces: action.produces ?? [],
+      programRevision: actionState?.programRevision ?? null,
+      outputFile: actionState?.outputFile ?? null,
+      artifactIds: actionState?.artifactIds ?? [],
+      lastFailure: actionState?.lastFailure ?? null,
+    },
+    attempts: (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId),
+    events: readEvents(resolved.runDir).filter((event) =>
+      event.payload?.actionId === actionId || event.payload?.parentId === actionId),
+  };
+}
+
 function wfAction(opts) {
   const [sub, token, actionId] = opts.rest;
   if (sub !== 'show' || !token || !actionId) {
@@ -1386,7 +1444,17 @@ function wfAction(opts) {
     return 2;
   }
   try {
-    console.log(JSON.stringify(actionJson(BULLSWARM_DIR(), token, actionId), null, 2));
+    const resolved = resolveRunId(BULLSWARM_DIR(), token);
+    if (!resolved) throw new Error(`no run found for "${token}"`);
+    const statePath = join(resolved.runDir, 'state.json');
+    let state = null;
+    if (existsSync(statePath)) {
+      try { state = withV2Cancellation(JSON.parse(readFileSync(statePath, 'utf8')), resolved.runDir); }
+      catch { state = null; }
+    }
+    console.log(JSON.stringify(state?.schemaVersion === 'bullswarm.workflow.state.v2'
+      ? v2ActionJson(resolved, state, actionId)
+      : actionJson(BULLSWARM_DIR(), token, actionId), null, 2));
     return 0;
   } catch (err) {
     console.error(`✗ ${err.message}`);

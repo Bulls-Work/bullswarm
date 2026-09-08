@@ -56,14 +56,14 @@ function rich({ usage, purpose, argsTitle = 'Arguments', args = [], options = []
 const top = rich({
   usage: 'bullswarm <command> [options]',
   purpose: 'Route work across coding-agent subscriptions and verify the result before treating '
-    + 'it as done. `bullswarm delegate` is the default agent-facing entry point: it chooses '
-    + 'one bounded agent or an autonomous workflow and previews that choice before execution. '
-    + "Reach for a specific command's --help for full options.",
+    + 'it as done. There are exactly two ways to start work: `bullswarm run` dispatches one '
+    + 'bounded task to a single agent, and `bullswarm workflow goal` executes a program you '
+    + "author across a coordinated multi-agent run. Reach for a specific command's --help for "
+    + 'full options.',
   argsTitle: 'Commands',
   args: [
     { name: 'setup', desc: 'discover and configure installed coding agents' },
     { name: 'integrate', desc: 'register Bullswarm guidance with Codex, Claude, and Grok' },
-    { name: 'delegate', desc: 'classify any task, preview the execution shape, and route it to one agent or a workflow' },
     { name: 'run', desc: 'dispatch one bounded task' },
     { name: 'health', desc: 're-judge saved delegate outputs' },
     { name: 'pools', desc: 'show routing pools, meters, in-flight load, and quarantine state' },
@@ -83,8 +83,8 @@ const top = rich({
     '--help/-h/help never reads or writes state, calls a network endpoint, or spawns a process, on any command',
   ],
   examples: [
-    { cmd: 'bullswarm delegate --prompt "Fix the parser and verify the focused tests"', note: 'classify, preview, and execute through the appropriate engine' },
     { cmd: 'bullswarm setup --yes && bullswarm run --lane analyze "audit this repo for TODOs"', note: 'one-time initialization, then one bounded task' },
+    { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Add tests." --cwd . --program plan.json', note: 'author the program yourself, the kernel routes and verifies it' },
   ],
   next: "bullswarm <command> --help for that command's full arguments, options, and defaults.",
 });
@@ -109,7 +109,7 @@ const setupText = rich({
     'writes ~/.bullswarm/state.json and routing.json (or $BULLSWARM_HOME equivalents)',
     'with --integrate --yes, also writes symlinks and awareness-block markers under each selected agent\'s global config directory (~/.codex, ~/.claude, ~/.grok)',
     'a non-TTY caller (the common case for an agent) auto-applies discovered defaults without prompting, even without --yes',
-    '--wizard asks one reasoning level per effort tier and writes them to state.strategy.reasoning; agents set the same values with bullswarm strategy set-reasoning',
+    '--wizard shows each suggested rung with its benchmark evidence and asks one reasoning level per configured effort tier; Enter keeps that connector\'s own default and writes nothing, and agents set the same values with bullswarm strategy set-reasoning or set-rung',
   ],
   examples: [
     { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively' },
@@ -218,44 +218,6 @@ const integrateRetireLegacyText = rich({
 
 // --- run ------------------------------------------------------------------------
 
-const delegateText = rich({
-  usage: 'bullswarm delegate [--mode auto|single|workflow] [--cwd <dir>] '
-    + '(--task-file <file> | --prompt <text> | <task text...>) [options]',
-  purpose: 'Provide one agent-facing interface for arbitrary self-contained work. Bullswarm '
-    + 'uses deterministic task signals and, in automatic execution, an LLM refinement to '
-    + 'choose one bounded delegate or an autonomous workflow. It explains the decision and '
-    + 'conceptual plan, then executes through the existing verified engines.',
-  args: [
-    { name: '<task text...>', desc: 'the task request as trailing words; mutually exclusive with --prompt and --task-file' },
-  ],
-  options: [
-    { flag: '--mode <auto|single|workflow>', desc: 'use transparent automatic classification or explicitly choose an execution shape', default: 'auto' },
-    { flag: '--classify <deterministic|llm>', desc: 'bypass LLM refinement or require a usable LLM classification; applies only to automatic execution', default: 'automatic mode refines deterministic signals with an LLM and falls back if unavailable' },
-    { flag: '--cwd <dir>', desc: 'working directory for the delegate or workflow', default: 'current directory' },
-    { flag: '--task-file <file>', desc: 'read the task from a file' },
-    { flag: '--prompt <text>', desc: 'pass the task inline as one flag value' },
-    { flag: '--lane <analyze|build|chore>', desc: 'single-agent lane override; ignored for workflow mode', default: 'inferred from the task' },
-    { flag: '--plan <text>', desc: 'caller-supplied conceptual plan; with --orchestrator it is persisted as guidance for the dispatched planner, and it never replaces the validated graph', default: 'generated from the classification' },
-    { flag: '--orchestrator <auto|pool>', desc: 'for workflow-shaped work, dispatch a Workflow Planner agent instead of returning the planning contract to you; auto lets the kernel route it', default: 'off (you author the program from the returned contract)' },
-    { flag: '--effort <high|medium|low>', desc: 'single-agent effort-tier override', default: 'derived from the selected lane' },
-    { flag: '--timeout <seconds>', desc: 'single-agent hard timeout', default: 'none' },
-    { flag: '--no-caller', desc: 'single-agent mode may not fall back to the calling agent', default: 'caller fallback allowed' },
-    { flag: '--dry-run', desc: 'print the decision, plan, and intended command without dispatching the work itself; automatic mode still performs one bounded low-effort classification request', default: 'off' },
-    { flag: '--json', desc: 'print one machine-readable decision and execution envelope', default: 'human plan followed by execution summary' },
-  ],
-  safety: [
-    '--dry-run previews the decision and never dispatches the work itself; in automatic mode it still performs one bounded low-effort classification request, the same as a live run — like other non-help commands it may self-initialize Bullswarm first',
-    'single mode blocks until one delegate result passes or fails the content gate; workflow mode returns the planning contract for you to author a program (nothing is dispatched), or with --orchestrator launches a durable background workflow and returns observation commands',
-    '--classify deterministic is the instant no-dispatch preview: it uses the deterministic decision without dispatching an LLM classifier, even under --dry-run; --classify llm fails if a usable LLM decision cannot be obtained',
-    'an explicit --mode single or --mode workflow is the caller\'s choice and bypasses automatic LLM classification; a suggested workflow plan is guidance, while the runtime planner and validator still own the exact executable graph',
-  ],
-  examples: [
-    { cmd: 'bullswarm delegate --dry-run --prompt "Explain src/workflow/result.js"', note: 'preview a likely single-agent analysis' },
-    { cmd: 'bullswarm delegate --prompt "Implement the feature, add tests, update docs, and independently verify it"', note: 'preview and launch the selected workflow' },
-  ],
-  next: 'For a single result, read the reported output file; for a workflow, use the printed watch/TUI/result commands.',
-});
-
 const runText = rich({
   usage: 'bullswarm run --lane <analyze|build|chore> --add-dir <dir> (--task-file <file> | --prompt <text> | <task text...>) [options]',
   purpose: 'Dispatch one bounded task to the best-available delegate pool (or keep it on the '
@@ -269,7 +231,7 @@ const runText = rich({
     { flag: '--add-dir <dir>', desc: 'working directory the delegate operates in', default: 'current directory' },
     { flag: '--task-file <file>', desc: 'read the task text from a file instead of trailing words' },
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
-    { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→high, build→medium, chore→low)' },
+    { flag: '--effort <high|medium|low>', desc: 'override the effort tier used for model-tier routing', default: 'derived from --lane (analyze→medium, build→medium, chore→low)' },
     { flag: '--reasoning <low|medium|high|xhigh|max|default>', desc: "run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing and lets the delegate CLI's own configuration decide", default: 'strategy reasoning setting for the effort tier, else the connector default' },
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
@@ -418,8 +380,10 @@ const strategyText = rich({
     { name: 'tui', desc: 'open the interactive strategy control center (default on a TTY)' },
     { name: 'inventory', desc: 'machine-readable providers, models, selections, meters, and effective routes' },
     { name: 'routes', desc: 'print only the currently effective high/medium/low choices' },
+    { name: 'rungs', desc: 'list every pool/tier rung with its model, reasoning, evidence, and local record' },
     { name: 'set-provider', desc: 'enable or disable one provider pool non-interactively' },
     { name: 'set-model', desc: 'assign one model to multiple effort tiers or turn it off' },
+    { name: 'set-rung', desc: 'set one pool/tier model and reasoning level in one atomic write' },
     { name: 'reset-tier', desc: 'return one tier from an explicit allow-list to automatic routing' },
     { name: 'set-reasoning', desc: 'set how hard one effort tier thinks, globally or for one pool' },
     { name: 'reset-reasoning', desc: 'return reasoning depth to the connector defaults' },
@@ -438,7 +402,7 @@ const strategyText = rich({
     { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
   ],
   safety: [
-    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning all mutate ~/.bullswarm/state.json',
+    'refresh/apply/assign/clear-assignment/exclude-model/include-model/set-subscription/set-reasoning/reset-reasoning/set-rung all mutate ~/.bullswarm/state.json',
     'refresh (and a cold show) perform live discovery calls against every installed agent CLI and the public OpenRouter model API',
   ],
   examples: [
@@ -536,6 +500,49 @@ const strategyResetReasoningText = rich({
   ],
   examples: [{ cmd: 'bullswarm strategy reset-reasoning --tier low --yes' }],
   next: 'Use strategy routes --json to confirm the level each tier now resolves to.',
+});
+
+const strategyRungsText = rich({
+  usage: 'bullswarm strategy rungs [--json] [--pool <name>]',
+  purpose: 'List every rung: one pool\'s model plus its reasoning level for one effort tier, with the '
+    + 'dated benchmark evidence for that exact pair and what this machine actually recorded for it.',
+  args: [],
+  options: [
+    { flag: '--json', desc: 'machine-readable rows (the same rows strategy inventory --json carries under "rungs")' },
+    { flag: '--pool <name>', desc: 'limit the table to one provider pool', default: 'every enabled pool' },
+  ],
+  safety: [
+    'read-only: writes no state, spawns no model discovery, and downloads no meter or datapack',
+    'a rung with no benchmark row prints "no evidence" and one with no matching attempt prints "no dispatches" — neither is ever estimated',
+  ],
+  examples: [
+    { cmd: 'bullswarm strategy rungs' },
+    { cmd: 'bullswarm strategy rungs --json --pool codex', note: 'one pool, machine-readable' },
+  ],
+  next: 'bullswarm strategy set-rung <pool> <tier> --model <model> --reasoning <level> to change one.',
+});
+
+const strategySetRungText = rich({
+  usage: 'bullswarm strategy set-rung <pool> <tier> --model <model> [--reasoning <low|medium|high|xhigh|max|default>] [--force]',
+  purpose: 'Set one rung — the model AND the reasoning level a pool uses for one effort tier — in a single '
+    + 'atomic state save, so the two halves can never land separately.',
+  args: [
+    { name: '<pool>', desc: 'exact pool name from strategy rungs or strategy inventory' },
+    { name: '<tier>', desc: 'effort tier: high, medium, or low' },
+  ],
+  options: [
+    { flag: '--model <model>', desc: 'model to run on that tier; must appear in the pool\'s cached discovery unless --force' },
+    { flag: '--reasoning <level>', desc: 'low, medium, high, xhigh, max, or default (append nothing and let the worker CLI decide)', default: 'leaves the configured level untouched' },
+    { flag: '--force', desc: 'accept a model the cached discovery has not seen', default: 'off' },
+  ],
+  safety: [
+    'changes what every later dispatch on that pool and tier sends to the worker CLI',
+    'a rung is singular per pool and tier: the tier moves off whichever model held it, and that model keeps its other tiers',
+    'a level the connector cannot express is clamped down to the strongest level it accepts, and the clamp is printed under "notes"',
+    'never spawns model discovery — an unknown pool, tier, or model exits 2 instead',
+  ],
+  examples: [{ cmd: 'bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh' }],
+  next: 'bullswarm strategy rungs to read the rung back with its evidence and local record.',
 });
 
 const strategyRefreshText = rich({
@@ -1547,7 +1554,6 @@ const HELP = {
     'retire-legacy': { _text: integrateRetireLegacyText },
   },
   run: { _text: runText },
-  delegate: { _text: delegateText },
   health: { _text: healthText },
   pools: { _text: poolsText },
   assignments: { _text: assignmentsText },
@@ -1563,6 +1569,8 @@ const HELP = {
     'set-model': { _text: strategySetModelText },
     'reset-tier': { _text: strategyResetTierText },
     'set-reasoning': { _text: strategySetReasoningText },
+    rungs: { _text: strategyRungsText },
+    'set-rung': { _text: strategySetRungText },
     'reset-reasoning': { _text: strategyResetReasoningText },
     configure: { _text: strategyConfigureText },
     refresh: { _text: strategyRefreshText },

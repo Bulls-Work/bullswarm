@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
+import { attemptWindow } from './spend.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -76,7 +77,11 @@ export function setModelDisabled(strategy, pool, model, disabled) {
 // fall through to the next layer; nothing is written implicitly, so an empty
 // strategy still lets each connector's own per-tier defaults decide.
 
-/** Suggested wizard answers. NOT applied implicitly — the setup question is. */
+/**
+ * A suggested level per effort tier, for a caller that wants to propose one.
+ * Nothing applies it: the setup wizard's tier question now treats Enter as
+ * "keep the connector default", so an unanswered tier stores nothing at all.
+ */
 export const REASONING_DEFAULT_TIERS = Object.freeze({ high: 'xhigh', medium: 'high', low: 'medium' });
 
 function reasoningLevelList() {
@@ -169,7 +174,7 @@ export function reasoningEffective(pools, strategy = {}) {
   return effective;
 }
 
-function configuredModel(connector) {
+export function configuredModel(connector) {
   if (connector.model) return connector.model;
   const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
   return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
@@ -233,6 +238,208 @@ export function resolveDispatchModel(connector, tier, {
     source: 'model-policy-blocked',
     reason: `cannot guarantee an allowed ${tier} model while exclusions are active`,
   };
+}
+
+// --- rungs -------------------------------------------------------------------
+// A rung is ONE pool's model plus its reasoning level for ONE effort tier —
+// the two halves an operator actually chooses together, read and written as
+// one row. Nothing new is persisted: the model half stays in
+// `strategy.modelTiers[pool][model]` and the reasoning half in
+// `strategy.reasoning.pools[pool][tier]`, so a rung view is a projection of
+// state that already exists and setRung() is the two existing writers applied
+// together. No migration, no schema change.
+
+/**
+ * Pool name and effort tier for one decision-log entry. Every writer has used
+ * a slightly different shape (`bullswarm run` records no effort tier at all;
+ * the V2 dispatcher records it under `routing.effort`), so these mirror the
+ * accessors in src/lib/spend.js — a rung's local record counts exactly the
+ * attempts expectedMinutesFor() would price for that lane and tier.
+ */
+function decisionPool(entry) {
+  return entry?.picked ?? entry?.pool ?? entry?.poolName ?? null;
+}
+
+function decisionEffort(entry) {
+  return entry?.effort ?? entry?.effortTier
+    ?? entry?.routing?.effort ?? entry?.routing?.effortTier ?? null;
+}
+
+function medianOf(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * What this machine actually recorded for one pool on one effort tier:
+ * dispatch count, median wall minutes, and ok share. `null` when nothing
+ * matched — an unmeasured rung is unknown, never zero (spend doctrine S3).
+ * Wall time comes from spend.js's attemptWindow(), so an entry with no usable
+ * duration still counts as a dispatch but contributes no minutes.
+ */
+export function rungRecord(decisionLog, pool, tier) {
+  const rows = (Array.isArray(decisionLog) ? decisionLog : [])
+    .filter((entry) => decisionPool(entry) === pool && decisionEffort(entry) === tier);
+  if (!rows.length) return null;
+  const minutes = [];
+  for (const row of rows) {
+    const window = attemptWindow(row);
+    if (window) minutes.push(window.minutes);
+  }
+  const verdicts = rows.filter((row) => typeof row.ok === 'boolean');
+  return {
+    dispatches: rows.length,
+    medianMinutes: minutes.length ? Math.round(medianOf(minutes) * 100) / 100 : null,
+    okShare: verdicts.length
+      ? Math.round((verdicts.filter((row) => row.ok).length / verdicts.length) * 1000) / 1000
+      : null,
+  };
+}
+
+/**
+ * Adapt whatever the caller injected into one `(query) => row|null` lookup.
+ * Accepts a plain function or the datapack module's own pair
+ * (`{datapack, rungEvidence}`), so core never parses a datapack itself and a
+ * missing datapack simply means every rung reports no evidence.
+ */
+function evidenceLookup(evidence) {
+  if (typeof evidence === 'function') return evidence;
+  if (evidence && typeof evidence.rungEvidence === 'function') {
+    return (query) => evidence.rungEvidence(evidence.datapack ?? null, query);
+  }
+  return () => null;
+}
+
+/**
+ * The one-line evidence summary for a rung, or '' when there is no evidence.
+ * Callers that need a table cell add their own `no evidence` placeholder; the
+ * setup wizard prints nothing at all, which is why this returns an empty
+ * string rather than a label.
+ */
+export function formatRungEvidence(evidence) {
+  if (!evidence) return '';
+  const parts = [];
+  // Display rounding only — the row keeps the datapack's own number.
+  if (evidence.blended != null) parts.push(`blended ${Math.round(evidence.blended * 1000) / 1000}`);
+  if (evidence.costPerTask != null) parts.push(`$${Math.round(evidence.costPerTask * 100) / 100}/task`);
+  if (evidence.tokensPerTask != null) {
+    const tokens = Number(evidence.tokensPerTask);
+    parts.push(`${tokens >= 1000 ? `${Math.round(tokens / 100) / 10}k` : Math.round(tokens)} tok/task`);
+  }
+  return parts.join(' \u00b7 ');
+}
+
+/** Keep only the three numbers a rung row reports, and only when real. */
+function evidenceCells(row) {
+  if (!row || typeof row !== 'object') return null;
+  const cell = (value) => (value != null && Number.isFinite(Number(value)) ? Number(value) : null);
+  const cells = {
+    blended: cell(row.blended),
+    costPerTask: cell(row.costPerTask),
+    tokensPerTask: cell(row.tokensPerTask),
+  };
+  return Object.values(cells).some((value) => value != null) ? cells : null;
+}
+
+/**
+ * Every rung: one row per enabled pool and configured effort tier.
+ *
+ * @param {object} input
+ * @param {Array<object>} input.pools        pool views from buildPools()
+ * @param {object} [input.connectors]        name -> connector, for pool views without one
+ * @param {object} [input.strategy]          core state.strategy
+ * @param {Array<object>} [input.decisionLog] core state.decisionLog
+ * @param {Function|object|null} [input.evidence] lookup or {datapack, rungEvidence}
+ * @param {string|null} [input.pool]         limit to one pool
+ */
+export function rungsFor({
+  pools = [],
+  connectors = {},
+  strategy = {},
+  decisionLog = [],
+  evidence = null,
+  pool: only = null,
+} = {}) {
+  const lookup = evidenceLookup(evidence);
+  const tiers = STRATEGY_TIERS.filter((tier) => (strategy?.configuredTiers ?? []).includes(tier));
+  // A disabled pool cannot take a dispatch, so it has no rung. The packaged
+  // echo test fixture is disabled unless someone enabled it on purpose, which
+  // is the same rule `strategy inventory` uses to keep it out of sight.
+  const visible = pools
+    .filter((pool) => pool.enabled !== false)
+    .filter((pool) => only == null || pool.name === only)
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const rows = [];
+  for (const pool of visible) {
+    const connector = pool.connector ?? connectors[pool.name] ?? pool;
+    for (const tier of tiers) {
+      const policy = resolveDispatchModel(connector, tier, {
+        assignment: strategy?.assignments?.[tier] ?? null,
+        excludedModels: [
+          ...(strategy?.excludedModels ?? []),
+          ...disabledModelsForPool(strategy, pool.name),
+        ],
+        allowedModels: selectedModelsForTier(strategy, pool.name, tier),
+      });
+      const reasoning = resolveReasoningLevel({
+        connector, tier, model: policy.model, strategy: strategy ?? {},
+      });
+      let found = null;
+      if (policy.model) {
+        // Evidence is advisory: a broken or half-written datapack reports no
+        // evidence rather than taking the whole rung table down with it.
+        try {
+          found = evidenceCells(lookup({
+            pool: pool.name, tier, model: policy.model, reasoning: reasoning.applied,
+          }));
+        } catch { found = null; }
+      }
+      rows.push({
+        pool: pool.name,
+        tier,
+        model: policy.model,
+        modelSource: policy.source,
+        eligible: policy.eligible,
+        reasoning: {
+          applied: reasoning.applied,
+          source: reasoning.source,
+          requested: reasoning.requested,
+          clamped: reasoning.clamped,
+        },
+        evidence: found,
+        record: rungRecord(decisionLog, pool.name, tier),
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Write one rung into `strategy`: the pool's model selection for that tier
+ * and, when a level is given, that pool+tier reasoning level. Pure — the
+ * caller saves state exactly once, so a rung can never land half-written.
+ * A rung is singular per pool and tier, so the tier moves off whichever model
+ * held it before; the model's OTHER tiers are preserved.
+ */
+export function setRung(strategy, { pool, tier, model, reasoning = null } = {}) {
+  if (!pool) throw new Error('setRung needs a pool');
+  if (!model) throw new Error('setRung needs a model');
+  assertReasoningTier(tier);
+  if (reasoning != null) assertReasoningLevel(reasoning);
+  strategy.modelTiers = normalizeModelTiers(strategy.modelTiers);
+  for (const [other, tiers] of Object.entries(strategy.modelTiers[pool] ?? {})) {
+    if (other === model || !tiers.includes(tier)) continue;
+    setModelTierSelection(strategy, pool, other, tiers.filter((entry) => entry !== tier));
+  }
+  const existing = normalizeModelTiers(strategy.modelTiers)[pool]?.[model] ?? [];
+  setModelTierSelection(strategy, pool, model, [...existing, tier]);
+  if (reasoning != null) setStrategyReasoning(strategy, { tier, level: reasoning, pool });
+  // A rung configures its tier. Without this the model half is inert
+  // (configuredModel ignores tiers outside configuredTiers) and rungsFor
+  // never lists the row; `strategy set-model` has always done the same.
+  strategy.configuredTiers = [...new Set([...(strategy.configuredTiers ?? []), tier])];
+  return strategy;
 }
 
 export function parseDiscoveredModels(output, discovery = {}) {

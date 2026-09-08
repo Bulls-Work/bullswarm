@@ -1259,3 +1259,112 @@ test('CLI: refusal guidance is copy-pasteable — shell-safe quoting, and a plac
     }
   } finally { f.cleanup(); }
 });
+
+// A program that states only the nature of each action: no lane, no effort.
+// `write-notes` owns a markdown file at the high effort `integration` derives,
+// which is exactly the docs-at-high advisory.
+function kindProgram() {
+  return {
+    schemaVersion: 'bullswarm.workflow.program.v2',
+    defaults: { reasoning: 'low' },
+    actions: [
+      { id: 'create-done', purpose: 'Create done.txt', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['done.txt'], prompt: 'Create done.txt with the exact line caller-complete.', kind: 'mechanical', evidenceFor: [], inputs: [], produces: ['done'] },
+      { id: 'write-notes', purpose: 'Record the change in notes.md', dependsOn: ['create-done'], affects: ['requirement-1'], ownedFiles: ['notes.md'], prompt: 'Summarise the done.txt change in notes.md.', kind: 'integration', evidenceFor: [], inputs: ['done'], produces: [] },
+      { id: 'check-create-done', purpose: 'Inspect done.txt', dependsOn: ['create-done', 'write-notes'], affects: [], ownedFiles: [], prompt: 'Read done.txt and compare bytes.', kind: 'check', evidenceFor: ['requirement-1'], inputs: ['done'], produces: [] },
+    ],
+  };
+}
+
+test('CLI: plan validate resolves lane and effort from kind and reports advisories at exit 0', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'kinds.json');
+    writeFileSync(programPath, JSON.stringify(kindProgram()));
+    const result = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath, '--json']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.action, 'plan-valid');
+    assert.deepEqual(payload.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort, action.reasoning]), [
+      ['create-done', 'mechanical', 'chore', 'low', 'low'],
+      ['write-notes', 'integration', 'build', 'high', 'low'],
+      ['check-create-done', 'check', 'analyze', 'medium', 'low'],
+    ]);
+    assert.deepEqual(payload.advisories, [{
+      code: 'docs-at-high', actionId: 'write-notes',
+      message: 'owns only markdown files (notes.md) at high effort; documentation edits rarely need the high tier',
+    }]);
+    // Human output prints one advisory line and still exits 0.
+    const human = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', programPath]);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /create-done\s+chore\/low kind=mechanical reasoning=low/);
+    assert.match(human.stdout, /advisory: docs-at-high write-notes — owns only markdown files/);
+    // An unknown kind is a typo in the program, so validate refuses with exit 2.
+    const typo = kindProgram();
+    typo.actions[0].kind = 'mechanicals';
+    const typoPath = join(f.root, 'typo.json');
+    writeFileSync(typoPath, JSON.stringify(typo));
+    const rejected = cli(f, ['workflow', 'plan', 'validate', GOAL, '--cwd', f.target, '--program', typoPath, '--json']);
+    assert.equal(rejected.status, 2);
+    const refusal = JSON.parse(rejected.stdout);
+    assert.equal(refusal.error, 'program-invalid');
+    assert.ok(
+      refusal.issues.some((issue) => issue.includes('kind must be mechanical|io-read|check|implement|integration|architecture|adversarial-acceptance')),
+      refusal.issues.join('; '),
+    );
+    assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');
+  } finally { f.cleanup(); }
+});
+
+test('CLI: a kind-only program dispatches on the derived lane and effort and reports kind everywhere', () => {
+  const f = cliFixture();
+  try {
+    const programPath = join(f.root, 'kinds.json');
+    writeFileSync(programPath, JSON.stringify(kindProgram()));
+    const result = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--program', programPath, '--summary', 'Kind-driven program', '--foreground', '--json']);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.status, 'completed');
+    assert.equal(report.verified, true);
+    // The launch prints the same advisory line plan validate printed.
+    assert.match(result.stderr, /advisory: docs-at-high write-notes — owns only markdown files \(notes\.md\) at high effort/);
+    const state = JSON.parse(readFileSync(join(f.home, 'workflows', report.runId, 'state.json'), 'utf8'));
+    assert.deepEqual(state.program.actions.map((action) => [action.id, action.kind, action.lane, action.effort, action.reasoning]), [
+      ['create-done', 'mechanical', 'chore', 'low', 'low'],
+      ['write-notes', 'integration', 'build', 'high', 'low'],
+      ['check-create-done', 'check', 'analyze', 'medium', 'low'],
+    ]);
+    assert.deepEqual(state.advisories, [{
+      code: 'docs-at-high', actionId: 'write-notes',
+      message: 'owns only markdown files (notes.md) at high effort; documentation edits rarely need the high tier',
+    }]);
+    // The proof that kind reached routing: the mechanical action was actually
+    // dispatched on lane chore at effort low.
+    const routed = state.attempts.map((attempt) => [attempt.actionId, attempt.routing?.lane, attempt.routing?.effort]);
+    assert.deepEqual(routed, [
+      ['create-done', 'chore', 'low'],
+      ['write-notes', 'build', 'high'],
+      ['check-create-done', 'analyze', 'medium'],
+    ]);
+    const token = report.shortId ?? report.runId;
+    const show = cli(f, ['workflow', 'runs', 'show', token]);
+    assert.equal(show.status, 0, show.stderr);
+    assert.match(show.stdout, /create-done\s+chore\/low\s+kind mechanical\s+succeeded/);
+    assert.match(show.stdout, /# advisories {2}1/);
+    assert.match(show.stdout, /advisory: docs-at-high write-notes — owns only markdown files/);
+    const resultText = cli(f, ['workflow', 'runs', 'result', token]);
+    assert.equal(resultText.status, 0, resultText.stderr);
+    assert.match(resultText.stdout, /create-done\s+chore\/low\s+kind mechanical/);
+    assert.match(resultText.stdout, /advisory: docs-at-high/);
+    const actionShow = cli(f, ['workflow', 'action', 'show', token, 'create-done']);
+    assert.equal(actionShow.status, 0, actionShow.stderr);
+    const shown = JSON.parse(actionShow.stdout);
+    assert.equal(shown.actionRecord.kind, 'mechanical');
+    assert.equal(shown.actionRecord.lane, 'chore');
+    assert.equal(shown.actionRecord.effort, 'low');
+    assert.equal(shown.actionRecord.status, 'succeeded');
+    assert.deepEqual(shown.attempts.map((attempt) => attempt.actionId), ['create-done']);
+    const missing = cli(f, ['workflow', 'action', 'show', token, 'no-such-action']);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /has no action "no-such-action"/);
+  } finally { f.cleanup(); }
+});

@@ -137,3 +137,29 @@ test('rejects schema mismatch and graph-shaped state fields', () => {
   progressed.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['inspect'], startedAt: null, completedAt: null }] };
   assert.throws(() => serializeV2DurableState(progressed), /does not match durable attempt records/);
 });
+
+test('durable state carries program advisories, validates their shape, and tolerates their absence', () => {
+  const goal = createV2GoalDocument(input());
+  const state = createV2DurableState(goal, { runId: 'wf-adv', shortId: 'adv234' });
+  assert.deepEqual(state.advisories, []);
+  state.advisories = [
+    { code: 'all-writers-high', actionId: null, message: 'all 3 build/chore actions run at high effort' },
+    { code: 'docs-at-high', actionId: 'write-docs', message: 'owns only markdown files at high effort' },
+  ];
+  assert.equal(validateV2DurableState(state), true);
+  assert.deepEqual(deserializeV2DurableState(serializeV2DurableState(state)).advisories, state.advisories);
+  for (const [bad, message] of [
+    [{ code: 'made-up', actionId: null, message: 'x' }, /code must be all-writers-high\|docs-at-high/],
+    [{ code: 'docs-at-high', actionId: null, message: '' }, /message must be a non-empty string/],
+    [{ code: 'docs-at-high', actionId: 7, message: 'x' }, /actionId must be null or a non-empty string/],
+    [{ code: 'docs-at-high', actionId: null, message: 'x', extra: 1 }, /extra is not allowed/],
+  ]) {
+    assert.throws(() => validateV2DurableState({ ...state, advisories: [bad] }), message, JSON.stringify(bad));
+  }
+  assert.throws(() => validateV2DurableState({ ...state, advisories: 'none' }), /state.advisories must be an array/);
+  // Runs written before advisories existed have no field at all and must
+  // still load rather than fail schema validation on resume.
+  const legacy = { ...state };
+  delete legacy.advisories;
+  assert.equal(validateV2DurableState(legacy), true);
+});

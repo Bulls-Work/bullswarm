@@ -1,5 +1,108 @@
 # bullswarm changelog
 
+## 0.26.0 — two entry points, kinds and rungs
+
+- There are now exactly two ways to start work, and `bullswarm delegate` is
+  gone. `delegate` existed to decide, on the caller's behalf, whether a request
+  needed one agent or a workflow — with `--mode auto` it spent a real
+  analyze-lane dispatch on a deterministic-then-LLM classifier before doing any
+  of the actual work. The calling agent already knows the shape of its own
+  request, so that round trip bought latency and quota, not accuracy. `bullswarm
+  run` is the single-agent entry point and `bullswarm workflow goal` is the
+  workflow entry point; `bullswarm --help` names those two, in that order, and
+  `bullswarm delegate` now exits 2 with the standard unknown-verb message and
+  dispatches nothing. The packaged skill and the awareness block registered into
+  Codex, Claude, and Grok say the same thing in six lines: decide the shape
+  yourself, there is no preview step.
+
+- `bullswarm run --lane analyze` now defaults to `medium` effort instead of
+  `high`. The V2 validator has always defaulted an analyze action to medium, so
+  the same lane meant a different tier depending on which entry point you used.
+  `run` and the validator now read one exported `DEFAULT_EFFORT_BY_LANE` table,
+  and `run --help` states the corrected default.
+
+- Program actions can now say what they *are* instead of restating how to route
+  them. The optional `kind` field takes one of seven values — `mechanical`,
+  `io-read`, `check`, `implement`, `integration`, `architecture`,
+  `adversarial-acceptance` — and derives `lane` and `effort` from a table
+  exported alongside the existing per-lane default. Resolution is per field: an
+  explicit action field wins, then the kind table, then a new optional
+  program-level `defaults` object (`effort` and `reasoning` only), then the lane
+  default. A kind outside the closed list is a validation error with the allowed
+  values named, because it is a typo in the program rather than a runtime
+  condition. Programs that use neither `kind` nor `defaults` and state
+  `lane` and `effort` on every action normalise byte-identically to before;
+  `effort` itself is now optional and falls back to the per-lane default
+  where it used to be rejected as missing.
+
+- Two non-blocking advisories, never rejections. `all-writers-high` fires when
+  three or more build/chore actions run and none is below high effort;
+  `docs-at-high` fires when a build/chore action owns only `*.md` files at high
+  effort. `workflow plan validate --json` carries them as `advisories` and the
+  human output prints `advisory:` lines; `workflow goal --program` prints the
+  same lines at launch. Neither changes acceptance or an exit code. The kernel
+  records them on the run, and `workflow runs show` lists them.
+
+- `workflow runs result`, `runs show`, and `action show` print `kind` next to
+  lane and effort when an action has one. `workflow action show` now understands
+  autonomous V2 runs at all — it previously read only the V1 action ledger and
+  failed on every V2 run.
+
+- **Rungs: one pool's model plus its reasoning level, for one effort tier, read
+  and written as one thing.** `bullswarm strategy rungs [--json] [--pool <name>]`
+  prints one row per enabled pool and configured tier with the effective model
+  and its source, the effective reasoning level and the layer that chose it, the
+  dated Epoch benchmark evidence for that model *at that level* (`blended`, cost
+  per task, tokens per task), and the local record from the decision log for that
+  pool and tier (dispatches, median wall minutes, ok share). Absent evidence
+  prints `no evidence` and an unmeasured tier prints `no dispatches`; neither is
+  ever estimated. `strategy inventory --json` gained the same rows under `rungs`.
+
+- `bullswarm strategy set-rung <pool> <tier> --model <model> [--reasoning <level>]
+  [--force]` writes both halves of a rung in one atomic state save, so the model
+  and the thinking depth can never land separately. A rung is singular per pool
+  and tier: the tier moves off whichever model held it, and that model keeps its
+  other tiers. A level the connector cannot express is clamped to the strongest
+  it accepts and the clamp is printed. An unknown pool or tier exits 2; a model
+  absent from the pool's cached discovery exits 2 and lists the known models
+  unless `--force` is given. Neither `rungs` nor `set-rung` ever spawns model
+  discovery. No state migration: rungs are a projection of `strategy.modelTiers`
+  and `strategy.reasoning`, and `~/.bullswarm/state.json` gained no keys.
+
+- The setup wizard's tier step now shows each suggested rung with its benchmark
+  evidence line and asks one reasoning question per configured tier. **Behavior
+  change:** Enter keeps that connector's own per-tier default and writes nothing,
+  where the previous question stored a suggested level (`xhigh`/`high`/`medium`)
+  on a blank answer. Connector defaults remain the final fallback, so a pool with
+  no configured rung behaves exactly as before. Non-TTY and `--yes` paths are
+  unchanged.
+
+- A dated evidence datapack per model *and reasoning level*, from Epoch AI.
+  `data/epoch-benchmarks.json` (schema `bullswarm.epoch.benchmarks.v1`) is built
+  by the new `scripts/refresh-epoch-benchmarks.mjs` from Epoch's cursorbench,
+  deepswe, arc-agi-2, and critpt exports, and `src/lib/epoch-benchmarks.js`
+  reads it with the same cache → bundled → URL fallback as the OpenRouter pack.
+  `rungEvidence()` returns the mean of whichever of those four scores exist for a
+  (model, level) pair as `blended`, with cost and tokens per task from
+  cursorbench; `normalizeModelId()` is how connector model ids match the export.
+  The data is used under CC BY 4.0 — Epoch AI, 'AI Benchmarking Hub'. Published
+  online at epoch.ai. Retrieved from https://epoch.ai/benchmarks.
+
+- The daily refresh job is renamed `.github/workflows/refresh-benchmarks.yml` and
+  now refreshes both assets on the rolling `benchmark-data-latest` release: it
+  downloads and unzips Epoch's public export, runs the script, runs the new
+  tests, and uploads `epoch-benchmarks.json` next to `openrouter-benchmarks.json`.
+  The ambiguous `npm run refresh:benchmarks` script is split into
+  `refresh:openrouter` and `refresh:epoch`, since only one of the two now
+  refreshes "the benchmarks".
+
+- The OpenRouter builder is unchanged, and that is a finding rather than an
+  omission: the Artificial Analysis records in the 2026-09-08 capture carry only
+  `agentic_index`, `coding_index`, and `intelligence_index` per model, with no
+  reasoning-effort marker on any of the `reasoning_effort`, `effort`, `variant`,
+  `reasoning`, or `reasoning_level` fields checked, so there is no per-effort row
+  to keep. `data/README.md` records the field names inspected.
+
 ## 0.25.5 — forecast-aware routing
 
 - Bullswarm now knows what it is already running. Every dispatch registers the

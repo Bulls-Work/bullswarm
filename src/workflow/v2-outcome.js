@@ -67,7 +67,7 @@ function validateResultRequirement(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -77,6 +77,9 @@ function validateResultAction(value, name) {
   // Optional so envelopes written before reasoning levels existed still
   // deserialize; absent and null both mean "no level was applied".
   if (value.reasoning !== undefined && value.reasoning !== null) resultObject(value.reasoning, `${name}.reasoning`);
+  // Same optionality for `kind`: envelopes written before program actions
+  // could state a work nature carry neither the field nor a null.
+  if (value.kind !== undefined && value.kind !== null) resultString(value.kind, `${name}.kind`);
 }
 
 function validateGaps(value, result) {
@@ -258,6 +261,10 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // ran at, so a consumer of the envelope alone can see how hard the
         // worker thought without re-reading durable state.
         reasoning: lastAttemptReasoning(state, definition.id),
+        // The work nature the author stated, when they stated one. Lane and
+        // effort are derived from it at acceptance and already visible on the
+        // durable action; `kind` is what a reader needs to know WHY.
+        kind: definition.kind ?? null,
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
       };
     }),

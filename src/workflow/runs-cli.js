@@ -167,6 +167,30 @@ function runsList(opts) {
   return 0;
 }
 
+// One line per program action showing the routing acceptance resolved, with
+// `kind` next to lane/effort whenever the author supplied one. Programs
+// written before kinds existed print exactly what they printed before.
+function printV2ProgramRouting(state) {
+  const actions = Array.isArray(state?.program?.actions) ? state.program.actions : [];
+  if (!actions.length) return;
+  const status = new Map((state.actions ?? []).map((entry) => [entry.id, entry.status]));
+  for (const action of actions) {
+    const kind = action.kind ? `  kind ${action.kind}` : '';
+    console.log(`  ${String(action.id).padEnd(24)} ${action.lane ?? '?'}/${action.effort ?? '?'}${kind}  ${status.get(action.id) ?? 'unknown'}`);
+  }
+}
+
+// Advice recorded when the program was accepted. Advisories never changed the
+// outcome; they are shown so the author sees what the launch already said.
+function printV2Advisories(state) {
+  const advisories = Array.isArray(state?.advisories) ? state.advisories : [];
+  if (!advisories.length) return;
+  console.log(`# advisories  ${advisories.length}`);
+  for (const advisory of advisories) {
+    console.log(`  advisory: ${advisory.code}${advisory.actionId ? ` ${advisory.actionId}` : ''} — ${advisory.message}`);
+  }
+}
+
 function runsShow(idToken, opts) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'show'])}`, 2);
   const resolved = resolveRunId(BULLSWARM_DIR(), idToken);
@@ -192,6 +216,7 @@ function runsShow(idToken, opts) {
     console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
     console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
     console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
+    printV2ProgramRouting(state);
     // One line per attempt, so the pool, model and the reasoning level it
     // actually ran at are visible in text mode too — --json already carries
     // the whole record. Older runs have no reasoning and print none.
@@ -206,6 +231,7 @@ function runsShow(idToken, opts) {
         console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}`);
       }
     }
+    printV2Advisories(state);
     return 0;
   }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
@@ -252,6 +278,14 @@ function runsResult(idToken, opts) {
     console.log(`# outcome  ${stable.reason}`);
     console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
     if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+    // The stable envelope records outcomes, not routing. The durable state
+    // next to it holds the accepted program, so the routing each action ran
+    // on — including its `kind` — is reported from there.
+    if (Array.isArray(state?.program?.actions) && state.program.actions.length) {
+      console.log(`# actions  ${state.program.actions.length}`);
+      printV2ProgramRouting(state);
+    }
+    printV2Advisories(state);
     return stable.status === 'completed' ? 0 : 1;
   }
   const result = buildWorkflowResult({
