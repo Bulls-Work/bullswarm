@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { resolveRunId } from './short-id.js';
+import { resolveRunId, isLegacyRunState } from './short-id.js';
 import { isTerminalWorkflowStatus } from './status.js';
 
 export function steeringPath(runDir) {
@@ -31,15 +31,13 @@ export function queueSteering(bullswarmDir, token, message) {
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
-  const v2 = state.schemaVersion === 'bullswarm.workflow.state.v2';
-  const status = v2 ? state.lifecycle?.status : state.status;
-  const finishedAt = v2 ? state.lifecycle?.finishedAt : state.finishedAt;
-  if (finishedAt || isTerminalWorkflowStatus(status)) {
+  // The CLI refuses a legacy run before it gets here; this is the library-level
+  // guard for any other caller.
+  if (isLegacyRunState(state)) throw new Error(`run "${token}" is a legacy authored-graph run and cannot be steered`);
+  const status = state.lifecycle?.status;
+  if (state.lifecycle?.finishedAt || isTerminalWorkflowStatus(status)) {
     throw new Error(`run "${token}" is already terminal (${status})`);
   }
-  const hasDecisionGate = v2 || state._doc?.phases?.some((phase) =>
-    phase.steps?.some((step) => step.type === 'decide'));
-  if (!hasDecisionGate) throw new Error(`run "${token}" has no orchestration decision gate to receive steering`);
   const entry = {
     id: `steer-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`,
     message: text,

@@ -13,18 +13,30 @@ import { withV2Cancellation } from './v2-cancellation.js';
 //
 // `<id>` is a shortId (6 chars) or a full runId (`wf-...`). The
 // resolver in short-id.js maps both to the run directory.
+//
+// Legacy (pre-0.27.0 authored-graph) runs are read-only history: they list as
+// one row marked `legacy`, `show`/`result` refuse them with a single line and
+// exit 2, and `delete` still removes the directory.
 
 import { existsSync, rmSync, readFileSync } from 'node:fs';
 import { readJsonSafe } from './fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isOngoing } from './short-id.js';
+import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
-import { buildWorkflowResult } from './result.js';
 import { deserializeV2ResultEnvelope } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
 function err(msg, code = 1) { console.error(msg); return code; }
+
+// Every command that would drive a legacy run answers with the same sentence
+// and the same exit code, so a script never has to parse a special case.
+function refuseLegacy({ runId, shortId, runDir }, opts) {
+  const message = legacyRunLine({ shortId, runId, runDir });
+  if (opts.json) console.log(JSON.stringify({ legacy: true, runId, shortId: shortId ?? null, dir: runDir, message }, null, 2));
+  else console.error(message);
+  return 2;
+}
 
 export function cmdRuns(args) {
   const opts = parseRunsFlags(args);
@@ -85,7 +97,7 @@ function runsList(opts) {
   }
   const all = listRuns(BULLSWARM_DIR());
   let filtered = all;
-  if (opts.name) filtered = filtered.filter((r) => r.state?.workflow === opts.name);
+  if (opts.name) filtered = filtered.filter((r) => (r.legacy ? legacyRunName(r) : r.state?.intent?.goal) === opts.name);
   // Default scope: ongoing only. `--all` includes historical.
   if (!opts.all && !opts.historical) {
     filtered = filtered.filter((r) => r.ongoing);
@@ -143,28 +155,32 @@ function runsList(opts) {
     return 0;
   }
   for (const r of filtered) {
-    if (r.state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-      // lifecycle.status is what the kernel last wrote; if the kernel is gone
-      // that word is stale, so say the run stopped rather than repeat it.
-      const durable = r.state.lifecycle?.status;
-      const status = !r.ongoing && ['queued', 'planning', 'running', 'ready-to-finalize'].includes(durable)
-        ? 'interrupted' : durable ?? (r.ongoing ? 'running' : 'unknown');
-      const completed = r.state.actions?.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length ?? 0;
-      const total = r.state.actions?.length ?? 0;
-      console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${(r.state.intent?.goal ?? '?').slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
+    if (r.legacy) {
+      // One read-only row: no step or action progress is claimed, because
+      // 0.27.0 never reads far enough into a legacy state.json to know it.
+      console.log(
+        `○  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ` +
+        `${String(legacyRunName(r)).slice(0, 28).padEnd(28)} ${String(r.state?.status ?? 'unknown').padEnd(10)} ` +
+        `${humanAge(runStartedAt(r))}  legacy`,
+      );
       continue;
     }
-    const wf = r.state?.workflow ?? '?';
-    const status = r.state?.status ?? (r.ongoing ? 'running' : 'unknown');
-    const age = humanAge(runStartedAt(r));
-    const phases = `${r.state?.steps?.filter((s) => s.ok).length ?? 0}/${r.state?.steps?.length ?? 0}`;
-    console.log(
-      `${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ` +
-      `${r.runId.padEnd(28)} ${wf.padEnd(20)} ${status.padEnd(10)} ` +
-      `${phases.padStart(4)} steps  ${age}`,
-    );
+    // lifecycle.status is what the kernel last wrote; if the kernel is gone
+    // that word is stale, so say the run stopped rather than repeat it.
+    const durable = r.state.lifecycle?.status;
+    const status = !r.ongoing && ['queued', 'planning', 'running', 'ready-to-finalize'].includes(durable)
+      ? 'interrupted' : durable ?? (r.ongoing ? 'running' : 'unknown');
+    const completed = r.state.actions?.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length ?? 0;
+    const total = r.state.actions?.length ?? 0;
+    console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${(r.state.intent?.goal ?? '?').slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
   }
   return 0;
+}
+
+// The name a legacy run is listed under: whatever workflow name it recorded,
+// else its goal, else nothing to say.
+function legacyRunName(r) {
+  return r.state?.name ?? r.state?.goal ?? '?';
 }
 
 // One line per program action showing the routing acceptance resolved, with
@@ -199,6 +215,7 @@ function runsShow(idToken, opts) {
   const { runId, runDir } = resolved;
   const statePath = join(runDir, 'state.json');
   const reportPath = join(runDir, 'report.json');
+  if (isLegacyRunDir(runDir)) return refuseLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
@@ -207,44 +224,30 @@ function runsShow(idToken, opts) {
     jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, state, report }, opts);
     return 0;
   }
-  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
-    console.log(`# dir  ${runDir}`);
-    console.log(`# goal  ${state.intent?.goal ?? '?'}`);
-    console.log(`# status  ${state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : '(terminal)'}`);
-    console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
-    console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
-    console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
-    console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
-    printV2ProgramRouting(state);
-    // One line per attempt, so the pool, model and the reasoning level it
-    // actually ran at are visible in text mode too — --json already carries
-    // the whole record. Older runs have no reasoning and print none.
-    const attempts = Array.isArray(state.attempts) ? state.attempts : [];
-    if (attempts.length) {
-      console.log(`# attempts  ${attempts.length}`);
-      for (const attempt of attempts) {
-        const applied = attempt.reasoning?.applied;
-        const reasoning = applied
-          ? `  reasoning ${applied} (${attempt.reasoning.source ?? 'unknown'}${attempt.reasoning.clamped ? ', clamped' : ''})`
-          : '';
-        console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}`);
-      }
-    }
-    printV2Advisories(state);
-    return 0;
-  }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
   console.log(`# dir  ${runDir}`);
-  console.log(`# workflow  ${state?.workflow ?? '?'}`);
-  console.log(`# status  ${state?.status ?? (ongoing ? 'running' : 'unknown')}  ${ongoing ? '(ongoing)' : '(historical)'}`);
-  console.log(`# started  ${state?.startedAt ?? '?'}`);
-  console.log(`# finished ${state?.finishedAt ?? '—'}`);
-  if (state?.abortReason) console.log(`# abort   ${state.abortReason}`);
-  if (report?.summary) {
-    const s = report.summary;
-    console.log(`# summary steps ✓${s.stepsOk}/✗${s.stepsFailed}, fanout ✓${s.fanoutOk}/✗${s.fanoutFailed}`);
+  console.log(`# goal  ${state.intent?.goal ?? '?'}`);
+  console.log(`# status  ${state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : '(terminal)'}`);
+  console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
+  console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
+  console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
+  console.log(`# actions  ${state.actions?.filter((action) => action.status === 'succeeded').length ?? 0}/${state.actions?.length ?? 0} succeeded`);
+  printV2ProgramRouting(state);
+  // One line per attempt, so the pool, model and the reasoning level it
+  // actually ran at are visible in text mode too — --json already carries
+  // the whole record. Older runs have no reasoning and print none.
+  const attempts = Array.isArray(state.attempts) ? state.attempts : [];
+  if (attempts.length) {
+    console.log(`# attempts  ${attempts.length}`);
+    for (const attempt of attempts) {
+      const applied = attempt.reasoning?.applied;
+      const reasoning = applied
+        ? `  reasoning ${applied} (${attempt.reasoning.source ?? 'unknown'}${attempt.reasoning.clamped ? ', clamped' : ''})`
+        : '';
+      console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}`);
+    }
   }
+  printV2Advisories(state);
   return 0;
 }
 
@@ -254,81 +257,37 @@ function runsResult(idToken, opts) {
   if (!resolved) return err(`no run found for "${idToken}"`);
 
   const { runId, runDir } = resolved;
-  const statePath = join(runDir, 'state.json');
-  const reportPath = join(runDir, 'report.json');
-  const state = withV2Cancellation(readJsonSafe(statePath), runDir);
-  const report = readJsonSafe(reportPath);
+  if (isLegacyRunDir(runDir)) return refuseLegacy(resolved, opts);
+  const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
-  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    const stablePath = join(runDir, 'result.json');
-    if (!existsSync(stablePath)) {
-      if (state.planner?.awaiting) return err(`workflow ${resolved.shortId ?? runId} is waiting for its caller planner (${state.planner.awaiting.boundary} boundary); next: bullswarm workflow plan show ${resolved.shortId ?? runId} --json`);
-      return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
-    }
-    let stable;
-    try { stable = deserializeV2ResultEnvelope(readFileSync(stablePath, 'utf8')); }
-    catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
-    if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
-      return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
-    }
-    if (opts.json) { jsonOut(stable, opts); return 0; }
-    console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
-    console.log(`# status  ${stable.status}  result ready`);
-    console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
-    console.log(`# outcome  ${stable.reason}`);
-    console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
-    if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
-    // The stable envelope records outcomes, not routing. The durable state
-    // next to it holds the accepted program, so the routing each action ran
-    // on — including its `kind` — is reported from there.
-    if (Array.isArray(state?.program?.actions) && state.program.actions.length) {
-      console.log(`# actions  ${state.program.actions.length}`);
-      printV2ProgramRouting(state);
-    }
-    printV2Advisories(state);
-    return stable.status === 'completed' ? 0 : 1;
+  const stablePath = join(runDir, 'result.json');
+  if (!existsSync(stablePath)) {
+    if (state.planner?.awaiting) return err(`workflow ${resolved.shortId ?? runId} is waiting for its caller planner (${state.planner.awaiting.boundary} boundary); next: bullswarm workflow plan show ${resolved.shortId ?? runId} --json`);
+    return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
   }
-  const result = buildWorkflowResult({
-    state, report, runId, shortId: resolved.shortId, ongoing,
-  });
-
-  if (opts.json) {
-    jsonOut(result, opts);
-    return 0;
+  let stable;
+  try { stable = deserializeV2ResultEnvelope(readFileSync(stablePath, 'utf8')); }
+  catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
+  if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
+    return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
   }
-  console.log(`# workflow result  ${result.runId}  (${result.shortId ?? 'no shortId'})`);
-  console.log(`# status  ${result.status}${result.ready ? '  ready' : ''}`);
-  console.log(`# verified  ${result.verified === true ? 'yes' : 'no'}`);
-  if (result.outcome?.reason) console.log(`# outcome  ${result.outcome.reason}`);
-  if (Array.isArray(result.outcome?.concerns) && result.outcome.concerns.length > 0) {
-    console.log('# concerns');
-    for (const concern of result.outcome.concerns) console.log(`- ${concern}`);
+  if (opts.json) { jsonOut(stable, opts); return 0; }
+  console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
+  console.log(`# status  ${stable.status}  result ready`);
+  console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);
+  console.log(`# outcome  ${stable.reason}`);
+  console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
+  if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+  // The stable envelope records outcomes, not routing. The durable state
+  // next to it holds the accepted program, so the routing each action ran
+  // on — including its `kind` — is reported from there.
+  if (Array.isArray(state?.program?.actions) && state.program.actions.length) {
+    console.log(`# actions  ${state.program.actions.length}`);
+    printV2ProgramRouting(state);
   }
-  if (result.goal) console.log(`# goal  ${result.goal}`);
-  console.log(`# agents  ${result.agentProgress.completed}/${result.agentProgress.total}`);
-  if (result.delivery) {
-    console.log(`# delivery  ${result.delivery.actionId}`);
-    console.log(`# artifact  ${result.delivery.outFile ?? 'unavailable'}`);
-    if (result.delivery.content != null) {
-      const rendered = result.delivery.format === 'json'
-        ? JSON.stringify(result.delivery.content, null, 2)
-        : String(result.delivery.content);
-      if (result.delivery.truncated || rendered.length > MAX_HUMAN_RESULT_CHARS) {
-        console.log(`# preview  first ${MAX_HUMAN_RESULT_CHARS} characters; use --json and outFile for the durable artifact`);
-      }
-      console.log(rendered.slice(0, MAX_HUMAN_RESULT_CHARS));
-    }
-  } else {
-    console.log('# delivery  not available yet');
-  }
-  if (result.verification?.verdict) {
-    console.log(`# verification  ${result.verification.actionId}  ${result.verification.verdict.ok ? 'passed' : 'failed'}`);
-    if (result.verification.verdict.summary) console.log(result.verification.verdict.summary);
-  }
-  return 0;
+  printV2Advisories(state);
+  return stable.status === 'completed' ? 0 : 1;
 }
-
-const MAX_HUMAN_RESULT_CHARS = 64 * 1024;
 
 function runsDelete(idToken, opts, rest) {
   if (!idToken) return err(`usage: ${usageLine(['workflow', 'runs', 'delete'])}`, 2);
@@ -362,24 +321,17 @@ function runsDelete(idToken, opts, rest) {
 }
 
 function summarize(r) {
-  if (r.state?.schemaVersion === 'bullswarm.workflow.state.v2') return {
-    runId: r.runId, shortId: r.shortId, workflow: 'autonomous-v2', goal: r.state.intent?.goal ?? null,
+  if (r.legacy) return {
+    runId: r.runId, shortId: r.shortId, legacy: true, dir: r.runDir,
+    workflow: r.state?.name ?? null, goal: r.state?.goal ?? null,
+    status: r.state?.status ?? null, startedAt: r.state?.startedAt ?? null,
+    finishedAt: r.state?.finishedAt ?? null, ongoing: false,
+  };
+  return {
+    runId: r.runId, shortId: r.shortId, legacy: false, workflow: 'autonomous-v2', goal: r.state.intent?.goal ?? null,
     status: r.state.lifecycle?.status ?? null, startedAt: runStartedAt(r), finishedAt: r.state.lifecycle?.finishedAt ?? null,
     ongoing: r.ongoing, actionsSucceeded: r.state.actions?.filter((action) => action.status === 'succeeded').length ?? 0,
     actionsTotal: r.state.actions?.length ?? 0,
-  };
-  return {
-    runId: r.runId,
-    shortId: r.shortId,
-    workflow: r.state?.workflow ?? null,
-    status: r.state?.status ?? null,
-    startedAt: runStartedAt(r),
-    finishedAt: r.state?.finishedAt ?? r.report?.finishedAt ?? null,
-    ongoing: r.ongoing,
-    stepsOk: r.state?.steps?.filter((s) => s.ok).length ?? 0,
-    stepsFailed: r.state?.steps?.filter((s) => s.ok === false).length ?? 0,
-    stepsTotal: r.state?.steps?.length ?? 0,
-    abortReason: r.state?.abortReason ?? null,
   };
 }
 
