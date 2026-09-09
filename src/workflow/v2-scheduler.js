@@ -163,7 +163,3 @@ export function scheduleV2Actions(input, states, options = {}) {
   }
   return clone({ workspaceMode, concurrency, active: active.map((action) => action.id), ready: ready.map((action) => action.id), selected: selected.map((action) => action.id), waiting, blocked, deferred });
 }
-
-export const scheduleActions = scheduleV2Actions;
-export const getReadySet = scheduleV2Actions;
-export const selectReadyActions = scheduleV2Actions;

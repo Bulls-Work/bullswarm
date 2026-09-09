@@ -6,10 +6,10 @@
 //       not a result. An output that merely OPENS with an announcement is
 //       judged on its remainder; an output made ONLY of announcements is a
 //       no-op regardless of its byte length.
-//   V3. Failure patterns (rate limits, auth errors) only count near the
-//       START of an output. A delegate WRITING ABOUT rate limits is not
-//       rate-limited. Outputs shorter than SHORT_OUTPUT_MAX are judged
-//       whole: they are short enough to be nothing but an error.
+//   V3. Failure patterns (rate limits, auth errors) count at the head or tail
+//       of an output. A delegate WRITING ABOUT rate limits in the middle is not
+//       rate-limited. Outputs shorter than SHORT_OUTPUT_MAX are judged whole:
+//       they are short enough to be nothing but an error.
 //   V4. Sentence splitting breaks ONLY before a capital letter, digit, or
 //       markdown starter after terminal punctuation + whitespace. Tokens
 //       like ".d.ts", "Node.js", "log.ts" never shred.
@@ -20,7 +20,7 @@ export const MIN_SUBSTANCE_CHARS = 80;
 export const MIN_MULTI_UNIT_SUBSTANCE_CHARS = 40;
 
 // Patterns indicating the DELEGATE ITSELF failed (not that it discusses
-// failure). Case-insensitive against the head slice.
+// failure). Case-insensitive against the head or tail slice.
 export const FAILURE_PATTERNS = [
   /^rate limit/i,
   /^exceeded.*quota/i,
@@ -90,9 +90,13 @@ export function splitSentences(text) {
 }
 
 function scanForFailure(text) {
-  const slice =
-    text.length < SHORT_OUTPUT_MAX ? text : text.slice(0, FAILURE_SCAN_HEAD);
-  return FAILURE_PATTERNS.some((re) => re.test(slice));
+  if (text.length < SHORT_OUTPUT_MAX) {
+    return FAILURE_PATTERNS.some((re) => re.test(text));
+  }
+  const head = text.slice(0, FAILURE_SCAN_HEAD);
+  const tail = text.slice(-FAILURE_SCAN_HEAD);
+  return FAILURE_PATTERNS.some((re) => re.test(head))
+    || tail.split(/\r?\n/).some((line) => FAILURE_PATTERNS.some((re) => re.test(line)));
 }
 
 /**
@@ -134,12 +138,32 @@ function hasVerifyJson(text) {
  * A structured answer: the output is, or ends with, a JSON array (a discovery
  * step's item list, possibly empty) or is a single JSON object. Such output is
  * substance by construction; the prose heuristics must not reject it as an
- * announcement.
+ * announcement. Error-shaped objects are not answers.
  */
+const ERROR_OBJECT_KEYS = new Set([
+  'error', 'errors', 'message', 'code', 'status', 'detail', 'reason',
+]);
+
+function parseStructuredObject(text) {
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function isErrorObject(value) {
+  const keys = Object.keys(value);
+  return keys.length > 0 && keys.every((key) => ERROR_OBJECT_KEYS.has(key));
+}
+
 export function hasStructuredAnswer(text) {
   const trimmed = text.trim();
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try { return typeof JSON.parse(trimmed) === 'object'; } catch { /* not a single object */ }
+    const value = parseStructuredObject(trimmed);
+    return value !== null && !isErrorObject(value);
   }
   const end = trimmed.lastIndexOf(']');
   if (end === -1 || trimmed.slice(end + 1).trim().length > 0) return false;
@@ -164,7 +188,11 @@ export function judgeContent(text, { exitCode, expectWork = true, acceptVerifyJs
     return { verdict: 'fail', why: 'empty output' };
   }
   if (scanForFailure(text)) {
-    return { verdict: 'fail', why: 'failure pattern at output head' };
+    return { verdict: 'fail', why: 'failure pattern at output head or tail' };
+  }
+  const structuredObject = parseStructuredObject(text.trim());
+  if (expectWork && structuredObject && isErrorObject(structuredObject)) {
+    return { verdict: 'fail', why: 'structured: error object, not an answer' };
   }
   if (expectWork && !looksLikeWork(text) && !(acceptVerifyJson && hasVerifyJson(text)) && !hasStructuredAnswer(text)) {
     return { verdict: 'intent_only', why: 'announcement without substance' };

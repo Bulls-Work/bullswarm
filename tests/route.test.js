@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pickPool, paceScore, isQuarantined, isExhausted, fiveHourTier,
+  pickPool, paceScore, isQuarantined, isExhausted,
   DEFAULT_INFLIGHT_PENALTY_PCT,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
@@ -122,19 +122,82 @@ test('explicit effort-tier assignment wins only while its pool remains eligible'
   assert.equal(fallback.pick.pool, 'fast-quota');
 });
 
-// --- R7: 5h headroom outranks pace -------------------------------------------
+// --- D7: an empty candidate list names the stage that emptied it -------------
 
-test('5h tier: null reading is headroom, threshold is inclusive', () => {
-  assert.equal(FIVE_HOUR_NEAR_LIMIT_PCT, 75);
-  assert.equal(fiveHourTier(pool('a')), 0);                             // absent
-  assert.equal(fiveHourTier(pool('a', { fiveHourUsedPct: null })), 0);  // no reading
-  assert.equal(fiveHourTier(pool('a', { fiveHourUsedPct: 0 })), 0);
-  assert.equal(fiveHourTier(pool('a', { fiveHourUsedPct: 74.9 })), 0);
-  assert.equal(fiveHourTier(pool('a', { fiveHourUsedPct: 75 })), 1);
-  assert.equal(fiveHourTier(pool('a', { fiveHourUsedPct: 82 })), 1);
+test('empty list blames the tier allow-list, not capabilities, when that is the cause', () => {
+  // Every pool declares both required capabilities and both are lane-capable.
+  // What made them ineligible is resolveDispatchModel: the `high` allow-list
+  // selects models on some other pool, so neither of these has one.
+  const blocked = (name) => pool(name, {
+    capabilities: ['code-reading', 'file-editing'],
+    modelPolicy: {
+      eligible: false, model: null, source: 'tier-selection-empty',
+      reason: 'no enabled model is assigned to high',
+    },
+  });
+  const r = pickPool('analyze', [blocked('codex'), blocked('grok')], {
+    callerEligible: false,
+    callerSession: false,
+    requiredCapabilities: ['code-reading', 'file-editing'],
+    effortTier: 'high',
+    now: NOW,
+  });
+  assert.equal(r.pick, null);
+  assert.equal(r.why, 'no pool has a model allowed for the high tier');
+  assert.doesNotMatch(r.why, /capabilities/);
+  assert.deepEqual(r.candidates, []);
 });
 
+test('the caller-eligible variant keeps the allow-list cause too', () => {
+  const r = pickPool('build', [pool('codex', {
+    modelPolicy: { eligible: false, model: null, source: 'tier-selection-empty' },
+  })], { effortTier: 'medium', now: NOW });
+  assert.equal(r.keepOnClaude, true);
+  assert.equal(r.why, 'no pool has a model allowed for the medium tier; caller takes the lane');
+});
+
+test('a model policy blocked for another reason reports that reason verbatim', () => {
+  const r = pickPool('build', [pool('codex', {
+    modelPolicy: {
+      eligible: false, model: null, source: 'tier-selection-unsupported',
+      reason: 'connector codex cannot select an assigned medium model',
+    },
+  })], { callerEligible: false, callerSession: false, effortTier: 'medium', now: NOW });
+  assert.equal(
+    r.why,
+    'no pool has an allowed medium model under the current model policy '
+      + '(connector codex cannot select an assigned medium model)',
+  );
+});
+
+test('capabilities are still blamed when capabilities are the real cause', () => {
+  const r = pickPool('analyze', [pool('codex', { capabilities: ['code-reading'] })], {
+    callerEligible: false,
+    callerSession: false,
+    requiredCapabilities: ['strong-analysis'],
+    effortTier: 'high',
+    now: NOW,
+  });
+  assert.equal(r.why, 'no eligible pool with capabilities: strong-analysis');
+});
+
+test('an eligible model policy routes exactly as an absent one does', () => {
+  const opts = { callerEligible: false, callerSession: false, effortTier: 'medium', now: NOW };
+  const plain = pickPool('build', [pool('codex', { pace: 10 })], opts);
+  const policed = pickPool('build', [pool('codex', {
+    pace: 10, modelPolicy: { eligible: true, model: 'gpt-5.6-sol', source: 'tier-selection' },
+  })], opts);
+  assert.equal(plain.pick.pool, 'codex');
+  assert.equal(policed.pick.pool, 'codex');
+  assert.equal(policed.candidates[0].model, 'gpt-5.6-sol');
+  assert.equal(policed.candidates[0].modelPolicy, 'tier-selection');
+});
+
+// --- R7: 5h headroom outranks pace -------------------------------------------
+
 test('near-limit pool loses to a headroom pool with a lower weekly surplus', () => {
+  // The threshold itself is doctrine and README:249 documents the number.
+  assert.equal(FIVE_HOUR_NEAR_LIMIT_PCT, 75);
   const near = pool('claude-code:wati', { pace: 60, fiveHourUsedPct: 80 });
   const headroom = pool('codex', { pace: 2, fiveHourUsedPct: 3 });
   const r = pickPool('build', [near, headroom], {

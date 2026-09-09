@@ -1,3 +1,5 @@
+> Historical (2026-09-06): accurate when written; see CHANGELOG for what changed since.
+
 # Is bullswarm's workflow system at Claude `Workflow`/ultracode quality? — evaluation and the caller-planner change (2026-09-06)
 
 Written from a Claude Code session (Fable 5.1) with the `Workflow` tool

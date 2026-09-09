@@ -178,6 +178,52 @@ test('previously-drifted flags are present in --help now that help.js is canonic
   }
 });
 
+// 0.27.1 aligned four help texts with what the parsers actually do. Each
+// assertion below pins one of those four to the behaviour it now describes,
+// so help cannot quietly drift back.
+test('help describes the 0.27.1 command-surface behaviour it is now paired with', () => {
+  const runHelp = helpForArgs(['run', '--help']);
+  assert.match(runHelp, /--no-caller/, 'run --help must document --no-caller (read by cmdRun since 0.24)');
+  assert.match(runHelp, /--lane .*required/s, 'run --help must say --lane is required');
+
+  // The bare example used to be `workflow goal "..." --cwd .`, which the real
+  // parser refuses with exit 2 for having no program, scout, or orchestrator.
+  const workflowHelp = helpForArgs(['workflow', '--help']);
+  const goalExamples = workflowHelp.split('\n').filter((l) => l.includes('bullswarm workflow goal'));
+  assert.ok(goalExamples.length > 0, 'workflow --help must show a goal example');
+  for (const example of goalExamples) {
+    assert.match(
+      example, /--program|--scout|--orchestrator/,
+      `workflow --help example would exit 2 as written: ${example.trim()}`,
+    );
+  }
+
+  // Three verbs have no human renderer. Usage, options and behaviour now
+  // agree: the synopsis does not offer --json, the options block says the
+  // flag selects nothing, and the purpose says the output is always JSON.
+  for (const path of [['strategy', 'inventory'], ['strategy', 'routes'], ['workflow', 'capabilities']]) {
+    const text = helpText(path);
+    assert.doesNotMatch(
+      text.split('\n')[0], /--json/,
+      `${path.join(' ')}: the usage line must not advertise a flag that selects nothing`,
+    );
+    assert.match(text, /always JSON/, `${path.join(' ')}: help must say the output is always JSON`);
+    assert.match(text, /--json/, `${path.join(' ')}: --json is still accepted and must stay documented`);
+  }
+
+  // health is the opposite case: --json used to be inert there too, and now
+  // selects between a human summary and the machine-readable report.
+  const healthHelp = helpText(['health']);
+  assert.match(healthHelp, /--json .*machine-readable health report/);
+  assert.match(healthHelp, /human-readable summary/);
+  assert.doesNotMatch(healthHelp, /has no effect|always JSON/);
+
+  // The root help is where an agent learns the input contract.
+  const rootHelp = helpText([]);
+  assert.match(rootHelp, /unknown flag --name/);
+  assert.match(rootHelp, /exits 2/);
+});
+
 // Preserved behavior: --help must never spawn a delegate coding-agent CLI
 // process. Exercising this against the real binary with PATH stripped to
 // nothing but the node executable's own directory is a real, executable

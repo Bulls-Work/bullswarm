@@ -19,12 +19,13 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // exit 2, and `delete` still removes the directory.
 
 import { existsSync, rmSync, readFileSync } from 'node:fs';
-import { readJsonSafe } from './fsjson.js';
+import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine } from './short-id.js';
+import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
 import { deserializeV2ResultEnvelope } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
+import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
 function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
 function err(msg, code = 1) { console.error(msg); return code; }
@@ -38,14 +39,49 @@ function refuseLegacy({ runId, shortId, runDir }, opts) {
   return 2;
 }
 
-export function cmdRuns(args) {
+// `alias` is the help root the caller actually typed: the top-level `runs`
+// shorthand renders its own synopsis rather than the canonical one.
+export function cmdRuns(args, { alias = ['workflow', 'runs'] } = {}) {
   const opts = parseRunsFlags(args);
   const [sub, idToken, ...rest] = opts._positional;
+  const SUBS = ['list', 'show', 'result', 'delete'];
+  if (sub && !SUBS.includes(sub)) {
+    console.error(runsUsage());
+    return 2;
+  }
+  // Same gate as every other command path, against this subcommand's row of
+  // the table: `runs list --bogus` is an error, not a silent no-op.
+  const path = [...alias, ...(sub ? [sub] : [])];
+  const flagExit = unknownFlagExit(opts._flags, path);
+  if (flagExit !== null) return flagExit;
+  const typedExit = typedFlagErrors(opts, path);
+  if (typedExit !== null) return typedExit;
   if (!sub || sub === 'list') return runsList(opts);
   if (sub === 'show') return runsShow(idToken, opts);
   if (sub === 'result') return runsResult(idToken, opts);
-  if (sub === 'delete') return runsDelete(idToken, opts, rest);
-  console.error(runsUsage());
+  return runsDelete(idToken, opts, rest);
+}
+
+// Typed inputs are validated at the boundary, before any run directory is
+// read: `--limit nope` used to parse to NaN, fail the `opts.limit > 0` test
+// in runsList(), and quietly return the unlimited list with exit 0.
+function typedFlagErrors(opts, path) {
+  const problems = [];
+  for (const [flag, raw] of Object.entries(opts._values ?? {})) {
+    if (raw === true || raw === undefined || raw === '') {
+      problems.push(`--${flag} requires a value`);
+      continue;
+    }
+    if (flag === 'limit') {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        problems.push(`--limit must be a positive integer (got "${raw}")`);
+      }
+    }
+  }
+  if (!problems.length) return null;
+  for (const problem of problems) console.error(`✗ ${problem}`);
+  console.error(`usage: ${usageLine(path)}`);
   return 2;
 }
 
@@ -54,7 +90,7 @@ export function runsUsage() {
 }
 
 function parseRunsFlags(argv) {
-  const out = { _positional: [] };
+  const out = { _positional: [], _flags: [], _values: {} };
   const valueFlags = new Map([
     ['name', 'name'],
     ['limit', 'limit'],
@@ -67,6 +103,8 @@ function parseRunsFlags(argv) {
   ]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    const seen = flagName(a);
+    if (seen && !out._flags.includes(seen)) out._flags.push(seen);
     if (a === '--json') out.json = true;
     else if (a === '--all') out.all = true;
     else if (a === '--historical') out.historical = true;
@@ -77,8 +115,12 @@ function parseRunsFlags(argv) {
       const key = a.slice(2, eq > 0 ? eq : undefined);
       const target = valueFlags.get(key);
       if (target) {
-        const value = eq > 0 ? a.slice(eq + 1) : argv[++i];
-        out[target] = target === 'limit' ? Number(value) : value;
+        // A value flag whose next token is another flag (or nothing) got the
+        // flag itself as its value before; keep the raw text for the boundary
+        // check so the error names what was actually typed.
+        const next = eq > 0 ? a.slice(eq + 1) : (flagName(argv[i + 1]) ? undefined : argv[++i]);
+        out._values[key] = next;
+        out[target] = target === 'limit' ? Number(next) : next;
       } else {
         out[key] = eq > 0 ? a.slice(eq + 1) : true;
       }
@@ -219,9 +261,11 @@ function runsShow(idToken, opts) {
   const state = withV2Cancellation(readJsonSafe(statePath), runDir);
   const report = readJsonSafe(reportPath);
   const ongoing = isOngoing(runDir, state);
+  const liveness = v2RunnerLiveness(state, { runDir });
+  const kernelStderrTail = !liveness.alive ? readKernelStderrTail(runDir) : [];
 
   if (opts.json) {
-    jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, state, report }, opts);
+    jsonOut({ runId, shortId: resolved.shortId, runDir, ongoing, state, report, ...(kernelStderrTail.length ? { kernelStderrTail } : {}) }, opts);
     return 0;
   }
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
@@ -248,6 +292,10 @@ function runsShow(idToken, opts) {
     }
   }
   printV2Advisories(state);
+  if (kernelStderrTail.length) {
+    console.log('kernel log:');
+    for (const line of kernelStderrTail) console.log(`  ${line}`);
+  }
   return 0;
 }
 
@@ -260,8 +308,14 @@ function runsResult(idToken, opts) {
   if (isLegacyRunDir(runDir)) return refuseLegacy(resolved, opts);
   const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json')), runDir);
   const ongoing = isOngoing(runDir, state);
+  const liveness = v2RunnerLiveness(state, { runDir });
+  const kernelStderrTail = !liveness.alive ? readKernelStderrTail(runDir) : [];
   const stablePath = join(runDir, 'result.json');
   if (!existsSync(stablePath)) {
+    if (opts.json && kernelStderrTail.length) {
+      jsonOut({ runId, shortId: resolved.shortId, status: 'interrupted', reason: liveness.reason, kernelStderrTail }, opts);
+      return 1;
+    }
     if (state.planner?.awaiting) return err(`workflow ${resolved.shortId ?? runId} is waiting for its caller planner (${state.planner.awaiting.boundary} boundary); next: bullswarm workflow plan show ${resolved.shortId ?? runId} --json`);
     return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
   }
@@ -271,7 +325,10 @@ function runsResult(idToken, opts) {
   if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
     return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
   }
-  if (opts.json) { jsonOut(stable, opts); return 0; }
+  if (opts.json) {
+    jsonOut(kernelStderrTail.length ? { ...stable, kernelStderrTail } : stable, opts);
+    return 0;
+  }
   console.log(`# workflow result  ${stable.runId}  (${stable.shortId ?? 'no shortId'})`);
   console.log(`# status  ${stable.status}  result ready`);
   console.log(`# verified  ${stable.verified ? 'yes' : 'no'}`);

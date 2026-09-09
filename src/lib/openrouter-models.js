@@ -2,7 +2,10 @@ import {
   existsSync, mkdirSync, readFileSync, renameSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// One strict numeric coercion for the whole codebase (src/lib/num.js). The
+// local copy this replaces used bare Number(), so a blank upstream price or
+// score (`''`) landed in the datapack as a measured 0.
+import { finiteOrNull as finite } from './num.js';
 
 export const OPENROUTER_BENCHMARKS_API = 'https://openrouter.ai/api/v1/benchmarks';
 export const OPENROUTER_MODELS_API = 'https://openrouter.ai/api/v1/models';
@@ -10,12 +13,6 @@ export const OPENROUTER_DATAPACK_URL = 'https://github.com/cowcow02/bullswarm/re
 export const OPENROUTER_RANKINGS_SOURCE = 'https://openrouter.ai/rankings';
 export const OPENROUTER_DATAPACK_SCHEMA = 'bullswarm.openrouter.benchmarks.v1';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
-const BUNDLED_DATAPACK = fileURLToPath(new URL('../../data/openrouter-benchmarks.json', import.meta.url));
-
-function finite(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
 
 function perMillion(value) {
   const parsed = finite(value);
@@ -153,10 +150,20 @@ async function fetchDatapack(fetchImpl, url, timeoutMs) {
   }
 }
 
+/**
+ * Load the OpenRouter benchmark datapack. Two tiers only: the per-home cache
+ * (`<home>/cache/openrouter-benchmarks.json`, written by every successful
+ * refresh) and the network release asset.
+ *
+ * There is deliberately NO bundled last-resort tier here. The removed one read
+ * `data/openrouter-benchmarks.json`, a path no commit has ever contained, so
+ * the `cache: 'bundled'` branch was unreachable and the honest `cache: 'miss'`
+ * result was hidden behind a file lookup that always failed. Epoch's bundled
+ * pack (`data/epoch-benchmarks.json`) is real and is untouched.
+ */
 export async function loadOpenRouterCatalog({
   bullswarmDir,
   cacheFile = bullswarmDir ? join(bullswarmDir, 'cache', 'openrouter-benchmarks.json') : null,
-  bundledFile = BUNDLED_DATAPACK,
   url = OPENROUTER_DATAPACK_URL,
   fetchImpl = globalThis.fetch,
   force = false,
@@ -176,8 +183,6 @@ export async function loadOpenRouterCatalog({
       return { ...remote, cache: 'refreshed', source: url, error: null };
     } catch (error) {
       if (cached) return { ...cached, cache: 'stale', source: url, error: error.message };
-      const bundled = readDatapack(bundledFile);
-      if (bundled) return { ...bundled, cache: 'bundled', source: bundledFile, error: error.message };
       return {
         schemaVersion: OPENROUTER_DATAPACK_SCHEMA,
         capturedAt: new Date(now).toISOString(),
@@ -190,9 +195,8 @@ export async function loadOpenRouterCatalog({
       };
     }
   }
-  const fallback = cached ?? readDatapack(bundledFile);
-  return fallback
-    ? { ...fallback, cache: cached ? 'stale' : 'bundled', source: cached ? url : bundledFile, error: 'fetch is unavailable' }
+  return cached
+    ? { ...cached, cache: 'stale', source: url, error: 'fetch is unavailable' }
     : {
       schemaVersion: OPENROUTER_DATAPACK_SCHEMA,
       capturedAt: new Date(now).toISOString(),

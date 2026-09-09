@@ -18,29 +18,33 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Provider phrases that mean "you have no quota left right now".
+ * Provider phrases that mean "you have no quota left right now", each marked
+ * with whether third-party services emit it too (`generic`) — the one table
+ * both exported lists below are projected from.
  *
  * Deliberately excluded: bare `resets at` / `resets in` wording. A reset time
  * alone is not a limit — it appears in healthy meter reports, and treating it
  * as a signature would quarantine pools that merely told us when their window
  * turns over. Reset wording is only ever read AFTER a signature matched.
  */
-export const DEFAULT_QUOTA_SIGNATURES = [
-  'hit your session limit',
-  'hit your limit',
-  'hit your usage limit',
-  'usage limit reached',
-  'reached your usage limit',
-  'usage_credits_required',
-  'rate limit exceeded',
-  'rate_limit_exceeded',
-  'rate limited',
-  'too many requests',
-  'quota exceeded',
-  'exceeded your current quota',
-  'insufficient_quota',
-  'out of credits',
-];
+const QUOTA_SIGNATURE_TABLE = Object.freeze([
+  { phrase: 'hit your session limit' },
+  { phrase: 'hit your limit' },
+  { phrase: 'hit your usage limit' },
+  { phrase: 'usage limit reached' },
+  { phrase: 'reached your usage limit' },
+  { phrase: 'usage_credits_required' },
+  { phrase: 'rate limit exceeded', generic: true },
+  { phrase: 'rate_limit_exceeded', generic: true },
+  { phrase: 'rate limited', generic: true },
+  { phrase: 'too many requests', generic: true },
+  { phrase: 'quota exceeded', generic: true },
+  { phrase: 'exceeded your current quota' },
+  { phrase: 'insufficient_quota' },
+  { phrase: 'out of credits', generic: true },
+].map((entry) => Object.freeze({ generic: false, ...entry })));
+
+export const DEFAULT_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE.map((entry) => entry.phrase);
 
 /**
  * Phrases that third-party services emit too. An agent narrates "Rate limited
@@ -50,15 +54,14 @@ export const DEFAULT_QUOTA_SIGNATURES = [
  * clause, a parenthesised detail, or a number. Provider first-person wording
  * ("hit your session limit", "usage_credits_required") and connector-declared
  * phrases are not subject to this rule.
+ *
+ * Derived from QUOTA_SIGNATURE_TABLE's `generic: true` marker, not restated: a
+ * phrase added to one hand-written list and not the other used to change quota
+ * detection asymmetrically (audit C4).
  */
-export const GENERIC_QUOTA_SIGNATURES = [
-  'rate limit exceeded',
-  'rate_limit_exceeded',
-  'rate limited',
-  'too many requests',
-  'quota exceeded',
-  'out of credits',
-];
+export const GENERIC_QUOTA_SIGNATURES = QUOTA_SIGNATURE_TABLE
+  .filter((entry) => entry.generic)
+  .map((entry) => entry.phrase);
 const GENERIC_SET = new Set(GENERIC_QUOTA_SIGNATURES.map((s) => s.toLowerCase()));
 /** What may follow a generic phrase on a bare notice line. */
 const BARE_NOTICE_TAIL = /^(?:[\s.,:;!?·•\-–—|/]*(?:\(|\[|\d|resets?\b|resetting\b|reset\b|try again\b|retry\b|retrying\b|please\b|wait\b|until\b|after\b|in\s+\d|for\s+\d|back\b|available\b|limit\b|quota\b|window\b|window\b|$))/i;

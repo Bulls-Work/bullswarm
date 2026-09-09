@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pickPool, isQuarantined } from '../lib/route.js';
-import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, saveState } from '../lib/state.js';
+import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, updateState } from '../lib/state.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
@@ -107,17 +107,23 @@ function attemptPaths(base, ordinal) {
   return { taskFile: insert(base.taskFile), outFile: insert(base.outFile) };
 }
 
-function appendDecision(bullswarmDir, record, { loadCoreState, saveCoreState, quarantine = null }) {
-  const state = loadCoreState(bullswarmDir);
-  state.decisionLog ??= [];
-  state.decisionLog.push(record);
-  if (quarantine) {
-    quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
-      until: quarantine.until ?? null,
-      kind: quarantine.kind ?? 'auth',
-    });
-  }
-  saveCoreState(bullswarmDir, state);
+/**
+ * Append this attempt's decision to shared core state. Concurrent actions in
+ * one workflow all write this file, so the whole read-modify-write happens
+ * inside updateCoreState's cross-process lock on a fresh load — a plain
+ * load/push/save dropped sibling entries and undid quarantines (S5, D5).
+ */
+function appendDecision(bullswarmDir, record, { updateCoreState, quarantine = null }) {
+  updateCoreState(bullswarmDir, (state) => {
+    state.decisionLog ??= [];
+    state.decisionLog.push(record);
+    if (quarantine) {
+      quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
+        until: quarantine.until ?? null,
+        kind: quarantine.kind ?? 'auth',
+      });
+    }
+  });
 }
 
 function selectedModel(pool, effort, preferredModel = null) {
@@ -189,7 +195,17 @@ export async function dispatchV2Action({
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const watch = dependencies.watchOnce ?? watchOnce;
   const loadCoreState = dependencies.loadState ?? loadState;
-  const saveCoreState = dependencies.saveState ?? saveState;
+  // Injectable for tests; the default is the locked read-modify-write. A test
+  // that only stubs loadState/saveState still gets a locked update built from
+  // its own stubs, so its recorded writes stay observable.
+  const updateCoreState = dependencies.updateState
+    ?? (dependencies.loadState || dependencies.saveState
+      ? (dir, mutator) => {
+        const state = loadCoreState(dir);
+        if (mutator(state) !== false) (dependencies.saveState ?? (() => {}))(dir, state);
+        return state;
+      }
+      : updateState);
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
@@ -383,7 +399,7 @@ export async function dispatchV2Action({
       forecast: record.routing.forecast,
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, {
-      loadCoreState, saveCoreState,
+      updateCoreState,
       quarantine: verdict.quarantineHint ? {
         pool: pool.name, reason: verdict.why, now: now(),
         until: verdict.quarantineUntil ?? null,

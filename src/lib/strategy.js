@@ -7,6 +7,9 @@ import { modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
 import { attemptWindow } from './spend.js';
+// The canonical lane/effort tables. Imported, never restated: see
+// TIER_CONTEXTS below for the tier -> lane derivation they feed.
+import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -58,6 +61,25 @@ export function setModelTierSelection(strategy, pool, model, tiers) {
   return selected;
 }
 
+/**
+ * Drop the hard pool pin for one effort tier.
+ *
+ * `assignments[tier]` and `modelTiers[pool][model]` overlap (audit B5): the
+ * first pins a pool, the second allow-lists models. Every writer of the second
+ * has to invalidate the first, or the two stores disagree about routing and a
+ * stale pin silently wins as `pickPool`'s preferredPool. This is that
+ * invalidation, in one place, so no writer can forget it.
+ *
+ * @param {object} strategy `state.strategy` (may be null/undefined)
+ * @param {string} tier     high | medium | low
+ * @returns {boolean} whether a pin was actually removed
+ */
+export function clearTierAssignment(strategy, tier) {
+  if (!strategy?.assignments || !(tier in strategy.assignments)) return false;
+  delete strategy.assignments[tier];
+  return true;
+}
+
 export function disabledModelsForPool(strategy = {}, pool) {
   return normalizeExcludedModels(strategy.disabledModels?.[pool] ?? []);
 }
@@ -76,13 +98,6 @@ export function setModelDisabled(strategy, pool, model, disabled) {
 // every value is a common-scale level or the literal 'default'. Absent keys
 // fall through to the next layer; nothing is written implicitly, so an empty
 // strategy still lets each connector's own per-tier defaults decide.
-
-/**
- * A suggested level per effort tier, for a caller that wants to propose one.
- * Nothing applies it: the setup wizard's tier question now treats Enter as
- * "keep the connector default", so an unanswered tier stores nothing at all.
- */
-export const REASONING_DEFAULT_TIERS = Object.freeze({ high: 'xhigh', medium: 'high', low: 'medium' });
 
 function reasoningLevelList() {
   return [...REASONING_LEVELS, 'default'].join(', ');
@@ -629,19 +644,65 @@ function recommendationModels(pool, discovery) {
   return models.filter((model) => model.id.startsWith(prefix) || model.id === configured);
 }
 
+/**
+ * Effort tier -> lane, DERIVED from the canonical lane/effort tables in
+ * src/workflow/action-validator.js rather than restated here. Three tables
+ * used to describe this one relation (audit B6/C1) and two of them disagreed.
+ *
+ * The canonical tables run lane -> effort, so inverting them needs a stated
+ * rule, because the relation is not one-to-one — `analyze` and `build` both
+ * default to `medium`, and no lane defaults to `high`:
+ *
+ *   1. The tier's lane is the lane KIND_DEFAULTS pairs with that effort most
+ *      often. Two of the three `high` kinds (architecture,
+ *      adversarial-acceptance) are `analyze`, so high -> analyze.
+ *   2. A tie goes to the most specialised lane — the one with the fewest kinds
+ *      overall. `analyze` and `build` have one `medium` kind each (check,
+ *      implement), and `build` carries two kinds to `analyze`'s four, so
+ *      medium -> build. Likewise low -> chore over `analyze`'s io-read.
+ *   3. Remaining ties are alphabetical, so the map is total and stable.
+ *
+ * DEFAULT_EFFORT_BY_LANE supplies the lane universe, so a lane the validator
+ * does not know can never appear in a tier context.
+ */
+function deriveTierLane(tier) {
+  const lanes = new Set(Object.keys(DEFAULT_EFFORT_BY_LANE));
+  const kinds = Object.values(KIND_DEFAULTS).filter((kind) => lanes.has(kind.lane));
+  const totalKinds = (lane) => kinds.filter((kind) => kind.lane === lane).length;
+  const atTier = new Map();
+  for (const kind of kinds) {
+    if (kind.effort !== tier) continue;
+    atTier.set(kind.lane, (atTier.get(kind.lane) ?? 0) + 1);
+  }
+  const ranked = [...atTier.entries()].sort(
+    (a, b) => b[1] - a[1] || totalKinds(a[0]) - totalKinds(b[0]) || a[0].localeCompare(b[0]),
+  );
+  return ranked[0]?.[0] ?? null;
+}
+
+/** The derived tier -> lane map. Computed, never typed. */
+export const TIER_LANES = Object.freeze(Object.fromEntries(
+  STRATEGY_TIERS.map((tier) => [tier, deriveTierLane(tier)]),
+));
+
+/**
+ * Per-tier routing context. The lane half is derived (above); the capability
+ * half is strategy's own — nothing else declares which capabilities an effort
+ * tier needs, so it stays stated here.
+ */
 export const TIER_CONTEXTS = {
   high: {
-    lane: 'analyze',
+    lane: TIER_LANES.high,
     capabilities: ['strong-analysis', 'workflow-planning'],
     description: 'analysis and autonomous orchestration',
   },
   medium: {
-    lane: 'build',
+    lane: TIER_LANES.medium,
     capabilities: ['code-reading', 'file-editing'],
     description: 'implementation and verification',
   },
   low: {
-    lane: 'chore',
+    lane: TIER_LANES.low,
     capabilities: [],
     description: 'bounded chores and low-cost work',
   },

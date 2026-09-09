@@ -5,8 +5,6 @@ import { isProgramWorkflow } from './execution-policy.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
-export const GOAL_SCHEMA_VERSION = V2_GOAL_SCHEMA_VERSION;
-export const STATE_SCHEMA_VERSION = V2_STATE_SCHEMA_VERSION;
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const LEGACY_FIELDS = new Set([
@@ -614,7 +612,6 @@ function validateState(state) {
   return state;
 }
 
-export const V2_PLANNER_MODES = Object.freeze([...PLANNER_MODES]);
 export function v2PlannerMode(stateOrGoal) {
   return stateOrGoal?.config?.settings?.plannerMode ?? 'dispatched';
 }
@@ -646,4 +643,3 @@ export function assertV2Resume(goalDocument, state, { runId, shortId } = {}) {
 }
 
 export const createV2State = createV2DurableState;
-export const assertV2ResumeCompatible = assertV2Resume;

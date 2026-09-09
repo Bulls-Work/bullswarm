@@ -1,6 +1,8 @@
 # bullswarm — Goal Statement
 
-**Status:** PROTOTYPE · **Owner:** cowcow02 · **Created:** 2026-08-21
+> Historical (2026-08-21): accurate when written; see CHANGELOG for what changed since.
+
+**Status:** HISTORICAL PROTOTYPE CHARTER · **Owner:** cowcow02 · **Created:** 2026-08-21
 
 ## One sentence
 

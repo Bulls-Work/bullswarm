@@ -36,6 +36,9 @@
 //       quieter pool wins as soon as its effective surplus is higher.
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT } from '../meters/framework.js';
+// One strict numeric coercion for the whole codebase (src/lib/num.js): a
+// missing measurement stays null instead of becoming a confident zero.
+import { finiteOrNull as num } from './num.js';
 
 export const LANES = ['analyze', 'build', 'chore'];
 
@@ -91,30 +94,9 @@ export function isQuarantined(pool, now = Date.now()) {
   return now < pool.quarantine.until;
 }
 
-/**
- * 5h headroom tier: 0 = has headroom (or no reading at all), 1 = at/above
- * FIVE_HOUR_NEAR_LIMIT_PCT. A missing reading counts as headroom — an
- * unmetered pool must never be deprioritized for a number nobody measured.
- */
-export function fiveHourTier(pool) {
-  const used = pool?.fiveHourUsedPct;
-  if (used == null || !Number.isFinite(Number(used))) return 0;
-  return Number(used) >= FIVE_HOUR_NEAR_LIMIT_PCT ? 1 : 0;
-}
-
 /** Round to one decimal for human-readable routing reasons. */
 function tenth(value) {
   return Math.round(Number(value) * 10) / 10;
-}
-
-/**
- * Finite number or null. Never coerces null/''/booleans to 0 — a missing
- * measurement must stay missing, not become a confident zero.
- */
-function num(value) {
-  if (value == null || value === '' || typeof value === 'boolean') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -290,7 +272,11 @@ export function pickPool(lane, pools, opts = {}) {
     };
   }
 
-  const eligible = pools.filter(
+  // Eligibility in two stages, so an empty candidate list can say WHICH stage
+  // emptied it (D7). A pool the model policy rejected is not a pool that lacks
+  // a capability, and reporting the wrong one sends an operator to fix a
+  // connector when the fix is `strategy set-rung`.
+  const laneCapable = pools.filter(
     (p) =>
       p.enabled !== false &&
       (p.lanes ?? LANES).includes(lane) &&
@@ -299,6 +285,13 @@ export function pickPool(lane, pools, opts = {}) {
       !isQuarantined(p, now) &&
       !isExhausted(p),
   );
+  // resolveDispatchModel() marks a pool ineligible when the persisted routing
+  // policy cannot name a model for this tier — most often an effort tier whose
+  // allow-list selects models on other pools only. Filtering here (instead of
+  // in each caller) keeps that reason reachable; pools with no modelPolicy
+  // attached at all are unaffected.
+  const modelBlocked = laneCapable.filter((p) => p.modelPolicy?.eligible === false);
+  const eligible = laneCapable.filter((p) => p.modelPolicy?.eligible !== false);
 
   const scored = eligible.map((p) => {
     const forecast = fiveHourForecast(p, candidateMins);
@@ -349,22 +342,25 @@ export function pickPool(lane, pools, opts = {}) {
   const forecastReport = { candidateMinutes: candidateMins, gated: gatedNames };
 
   if (scored.length === 0) {
+    // D7: name the stage that emptied the list. A tier allow-list that matched
+    // no model on any pool outranks the capability wording, which would other-
+    // wise blame connectors that declare every capability the lane asked for.
+    const blocked = modelPolicyReason(modelBlocked, opts.effortTier);
+    const withCapabilities = requiredCapabilities.length
+      ? ` with capabilities: ${requiredCapabilities.join(', ')}`
+      : '';
     return callerEligible
       ? {
           pick: null,
           keepOnClaude: true,
-          why: requiredCapabilities.length
-            ? `no eligible delegate pool with capabilities: ${requiredCapabilities.join(', ')}; caller takes the lane`
-            : 'no eligible delegate pool; caller takes the lane',
+          why: `${blocked ?? `no eligible delegate pool${withCapabilities}`}; caller takes the lane`,
           candidates,
           forecast: forecastReport,
         }
       : {
           pick: null,
           keepOnClaude: false,
-          why: requiredCapabilities.length
-            ? `no eligible pool with capabilities: ${requiredCapabilities.join(', ')}`
-            : 'no eligible pool',
+          why: blocked ?? `no eligible pool${withCapabilities}`,
           candidates,
           forecast: forecastReport,
         };
@@ -487,6 +483,28 @@ export function pickPool(lane, pools, opts = {}) {
     candidates,
     forecast: forecastReport,
   };
+}
+
+/**
+ * Why the candidate list is empty when every lane-capable pool was rejected by
+ * the persisted model policy, or null when the model policy is not the cause.
+ *
+ * `modelPolicy.source` comes from resolveDispatchModel() in src/lib/strategy.js;
+ * `tier-selection-empty` means the effort tier's allow-list named no model this
+ * pool can run, which is a rung problem, not a capability problem. Any other
+ * ineligible source (a connector that cannot pin an allowed model, active
+ * exclusions) keeps its own reason text.
+ */
+function modelPolicyReason(blocked, effortTier) {
+  if (!blocked.length) return null;
+  const tier = effortTier ?? 'effort';
+  if (blocked.every((p) => p.modelPolicy?.source === 'tier-selection-empty')) {
+    return `no pool has a model allowed for the ${tier} tier`;
+  }
+  const reasons = [...new Set(blocked.map((p) => p.modelPolicy?.reason).filter(Boolean))];
+  return `no pool has an allowed ${tier} model under the current model policy${
+    reasons.length ? ` (${reasons.join('; ')})` : ''
+  }`;
 }
 
 /**

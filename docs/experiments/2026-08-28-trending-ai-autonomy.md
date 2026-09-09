@@ -1,3 +1,5 @@
+> Historical (2026-08-28): accurate when written; see CHANGELOG for what changed since.
+
 # Trending AI repository autonomy experiment — 2026-08-28
 
 ## Question
