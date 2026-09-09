@@ -96,9 +96,14 @@ async function cmdPools(opts) {
   }
   for (const p of pools) {
     const src = p.meterSource;
+    // Name the window the numbers came from: `used`/`elapsed` mean different
+    // things for a weekly-paced and a monthly-paced pool, and the surplus
+    // routing compares is this window's. Only a real window reading is
+    // labeled — a declared meter has a number but no window.
+    const window = p.pacingWindow && p.elapsedPct != null ? `${p.pacingWindow} ` : '';
     const meter = src === 'none'
       ? 'unmetered'
-      : `used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
+      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it. When in-flight work makes

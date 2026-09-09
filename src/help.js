@@ -328,7 +328,7 @@ const poolsText = rich({
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
-    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly} rates with their source and sample count, and projectedFiveHourPct / projectedWeeklyPct', default: 'human-readable aligned table' },
+    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
@@ -660,15 +660,16 @@ const strategyIncludeModelText = rich({
 });
 
 const strategySetSubscriptionText = rich({
-  usage: 'bullswarm strategy set-subscription <pool> [--plan <name>] [--monthly-usd <n|unknown>] [--included-usd <n|unknown>] [--quota-window <name>]',
+  usage: 'bullswarm strategy set-subscription <pool> [--plan <name>] [--monthly-usd <n|unknown>] [--included-usd <n|unknown>] [--quota-window <weekly|monthly|unknown>]',
   purpose: "Record known subscription pricing for a pool so refresh's value-multiple math "
-    + '(included value vs. monthly cost) is accurate.',
+    + '(included value vs. monthly cost) is accurate, and choose the quota window '
+    + 'routing paces this pool by.',
   args: [{ name: '<pool>', desc: 'connector/pool name to record economics for' }],
   options: [
     { flag: '--plan <name>', desc: 'plan label to record', default: 'unchanged' },
     { flag: '--monthly-usd <n|unknown>', desc: 'monthly subscription price', default: 'unchanged' },
     { flag: '--included-usd <n|unknown>', desc: 'estimated included usage value', default: 'unchanged' },
-    { flag: '--quota-window <name>', desc: 'label for the quota reset window', default: 'unchanged' },
+    { flag: '--quota-window <weekly|monthly>', desc: 'the subscription window that PACES routing for this pool (used% vs elapsed% of it); unknown clears it back to the connector default', default: 'unchanged' },
   ],
   safety: ['writes state.strategy.subscriptions[pool] and invalidates the cached report'],
   examples: [{ cmd: 'bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000' }],

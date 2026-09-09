@@ -8,7 +8,7 @@ import {
   appendMeterHistory, readMeterHistory, meterHistoryPath, meterHistoryEntry,
   getMeterReading, MAX_HISTORY_LINES, HISTORY_REWRITE_AT,
 } from '../src/meters/registry.js';
-import { projectedUtilization, WINDOW_KEYS } from '../src/meters/framework.js';
+import { projectedUtilization, WINDOW_KEYS, monthlyWindowMs } from '../src/meters/framework.js';
 import {
   expectedMinutesFor, spendRateFor, workerMinutesForPool, attachSpend,
   attemptWindow, remainingMinutesOf, MIN_EXPECTED_MINUTES, MIN_RATE_MINUTES,
@@ -565,5 +565,114 @@ test('attachSpend tolerates missing ledgers, missing pools and odd input', () =>
   assert.deepEqual(pool.spend, {
     fiveHour: { ratePerMinute: null, source: null, samples: 0 },
     weekly: { ratePerMinute: null, source: null, samples: 0 },
+    monthly: { ratePerMinute: null, source: null, samples: 0 },
+    // A pool that declares no quota window is paced weekly, exactly as
+    // before 0.28.1 — `pacing` restates that window's rate, it does not
+    // change it.
+    pacing: { window: 'weekly', ratePerMinute: null, source: null, samples: 0 },
   });
+});
+
+// --- the monthly window and the pacing window --------------------------------
+//
+// The command-code numbers, read live at 2026-09-09T10:45:28Z: 79.38571…% of a
+// monthly credit allocation resetting 2026-09-17T03:06:55Z.
+const CMD_MONTHLY_RESETS = Date.parse('2026-09-17T03:06:55.000Z');
+const CMD_MONTHLY_UTIL = 79.38571428571429;
+
+test('the monthly rate bootstraps from the window start the provider implies', () => {
+  // WINDOW_KEYS.monthly declares no constant length: a month is not 30 days,
+  // so the length (and therefore the start) comes from resets_at (M2).
+  assert.equal(WINDOW_KEYS.monthly.windowMs, null);
+  const windowStart = CMD_MONTHLY_RESETS - monthlyWindowMs(CMD_MONTHLY_RESETS);
+  assert.equal(new Date(windowStart).toISOString(), '2026-08-17T03:06:55.000Z');
+
+  const asked = [];
+  const rate = spendRateFor('command-code', {
+    history: [{
+      captured_at: new Date(NOW - HOUR).toISOString(),
+      monthly: { utilization: CMD_MONTHLY_UTIL, resets_at: new Date(CMD_MONTHLY_RESETS).toISOString() },
+    }],
+    workerMinutesBetween: (from, to) => {
+      asked.push([from, to]);
+      return from === windowStart && to === NOW ? 400 : 0;
+    },
+    nowMs: NOW,
+  });
+  assert.deepEqual(asked.at(-1), [windowStart, NOW]);
+  assert.equal(rate.monthly.source, 'bootstrap');
+  assert.equal(rate.monthly.ratePerMinute, Math.round((CMD_MONTHLY_UTIL / 400) * 1e6) / 1e6);
+  assert.equal(rate.monthly.ratePerMinute, 0.198464);
+  assert.equal(rate.monthly.windowUsedPct, CMD_MONTHLY_UTIL);
+  // A pool with no monthly reading reports unknown, never zero (S3).
+  assert.deepEqual(
+    spendRateFor('p', { history: [], workerMinutesBetween: () => 100, nowMs: NOW }).monthly,
+    { ratePerMinute: null, source: null, samples: 0, windowUsedPct: null },
+  );
+});
+
+test('spend.pacing and projectedPacingPct follow the pool pacing window', () => {
+  const dir = tempDir('bs-spend-pacing-');
+  try {
+    const pool = 'command-code';
+    const weeklyResets = NOW + 12 * HOUR;
+    // Three readings, 60 worker-minutes between each pair: the weekly window
+    // gains 1.0 point per hour of dispatch, the monthly window 2.0.
+    const line = (capturedAtMs, weeklyUtil, monthlyUtil) => ({
+      captured_at: new Date(capturedAtMs).toISOString(),
+      weekly: { utilization: weeklyUtil, resets_at: new Date(weeklyResets).toISOString() },
+      monthly: { utilization: monthlyUtil, resets_at: new Date(CMD_MONTHLY_RESETS).toISOString() },
+    });
+    writeHistory(dir, pool, [
+      line(NOW - 2 * HOUR, 71, 75.4),
+      line(NOW - HOUR, 72, 77.4),
+      line(NOW, 73, 79.4),
+    ]);
+    // One agent running for the whole two hours, with 10 minutes left.
+    const inflight = {
+      [pool]: {
+        count: 1,
+        records: [{ startedAt: new Date(NOW - 120 * MIN).toISOString(), expectedMinutes: 130, remainingMinutes: 10 }],
+      },
+    };
+    const snapshot = {
+      captured_at: new Date(NOW).toISOString(),
+      seven_day: { utilization: 73, resets_at: new Date(weeklyResets).toISOString() },
+      monthly: { utilization: 79.4, resets_at: new Date(CMD_MONTHLY_RESETS).toISOString() },
+    };
+    const monthlyPaced = { name: pool, pacingWindow: 'monthly', meterSnapshot: snapshot };
+    const weeklyPaced = { name: pool, pacingWindow: 'weekly', meterSnapshot: snapshot };
+    const undeclared = { name: pool, meterSnapshot: snapshot };
+
+    for (const view of [monthlyPaced, weeklyPaced, undeclared]) {
+      attachSpend([view], { historyDir: dir, decisionLog: [], inflight, nowMs: NOW });
+    }
+
+    // Two pairs over 120 worker-minutes: weekly 2/120, monthly 4/120.
+    assert.deepEqual(monthlyPaced.spend.weekly, { ratePerMinute: 0.016667, source: 'history', samples: 2 });
+    assert.deepEqual(monthlyPaced.spend.monthly, { ratePerMinute: 0.033333, source: 'history', samples: 2 });
+    // pacing restates the chosen window's rate and names it.
+    assert.deepEqual(monthlyPaced.spend.pacing, {
+      window: 'monthly', ratePerMinute: 0.033333, source: 'history', samples: 2,
+    });
+    // 79.4 + 0.033333 × 10 remaining minutes = 79.7
+    assert.equal(monthlyPaced.projectedMonthlyPct, 79.7);
+    assert.equal(monthlyPaced.projectedPacingPct, 79.7);
+    // 73 + 0.016667 × 10 = 73.2 — still reported, just not what paces.
+    assert.equal(monthlyPaced.projectedWeeklyPct, 73.2);
+
+    // Declared weekly, and declared nothing, both pace weekly.
+    for (const view of [weeklyPaced, undeclared]) {
+      assert.equal(view.spend.pacing.window, 'weekly');
+      assert.equal(view.spend.pacing.ratePerMinute, view.spend.weekly.ratePerMinute);
+      assert.equal(view.projectedPacingPct, 73.2);
+      assert.equal(view.projectedWeeklyPct, 73.2);
+    }
+    // An unrecognised stored label paces by default (weekly), never by guess.
+    const junk = { name: pool, pacingWindow: 'fortnight', meterSnapshot: snapshot };
+    attachSpend([junk], { historyDir: dir, decisionLog: [], inflight, nowMs: NOW });
+    assert.equal(junk.spend.pacing.window, 'weekly');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

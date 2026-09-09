@@ -8,6 +8,13 @@
 // Pace source (doctrine M2): the pacing object carries elapsed% computed
 // from the provider's resets_at. Declared meters fall back to the local
 // elapsed estimate and are visibly labeled.
+//
+// Pacing window (doctrine M3): WHICH window paces a pool is the pool's own
+// subscription window — `state.strategy.subscriptions[pool].quotaWindow`,
+// else `connector.subscription.quotaWindow` — resolved here, where both the
+// state and the connector are in hand, so a cache, stale or live reading is
+// paced identically. `p.pacingWindow` names the window the numbers on the
+// pool view actually came from.
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,7 +22,7 @@ import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
 import { finiteOrNull } from './num.js';
-import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../meters/framework.js';
+import { FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow } from '../meters/framework.js';
 import { expandClaudeAccountConnectors } from './claude-accounts.js';
 import { expandOpenCodeRelayConnectors } from './opencode-relay.js';
 
@@ -79,6 +86,13 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       usedPct: null,
       elapsedPct: null,
       pace: null,
+      // The subscription window that paces this pool, before any reading:
+      // the operator's setting, else the connector's declaration, else null
+      // (default order). Replaced below by the window a reading really used.
+      pacingWindow: pacingWindowFor({
+        connector: conn,
+        subscription: state.strategy?.subscriptions?.[name] ?? null,
+      }),
       burstGate: false,
       // 5h window (doctrine M3): gates routing, never paces it.
       fiveHourUsedPct: null,
@@ -112,13 +126,15 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       p.fiveHourResetsAt = fiveHour.resetsAt;
       p.nearFiveHourLimit = fiveHour.nearLimit;
     }
-    if (reading?.pacing) {
+    const paced = pacedReading(reading, p.pacingWindow);
+    if (paced) {
       // Provider-truth path (M1/M2)
       p.meterSource = reading.source; // live | cache | stale
-      p.usedPct = reading.pacing.usedPct;
-      p.elapsedPct = reading.pacing.elapsedPct;
-      p.pace = reading.pacing.surplus; // surplus = elapsed − used
-      p.paceResetsAt = reading.pacing.resetsAt;
+      p.usedPct = paced.pacing.usedPct;
+      p.elapsedPct = paced.pacing.elapsedPct;
+      p.pace = paced.pacing.surplus; // surplus = elapsed − used
+      p.paceResetsAt = paced.pacing.resetsAt;
+      p.pacingWindow = paced.window;
       p.burstGate = reading.burstGate === true;
       p.meterSnapshot = reading.snapshot ?? null;
     } else {
@@ -137,6 +153,28 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
     }
   }
   return { state, connectors, pools };
+}
+
+/**
+ * The window of a reading that paces this pool, and its name.
+ *
+ * `reading.windows` carries every window the provider reported, so the choice
+ * is made here rather than re-deriving it: 'monthly' takes monthly and falls
+ * back to weekly, anything else keeps the historical weekly-first order.
+ * A reading assembled without `windows` (a hand-built one, or an older code
+ * path) still carries `pacing`, which is used as-is — its window name is
+ * whatever the producer labeled, else the pool's declaration.
+ *
+ * @returns {{pacing: object, window: 'weekly'|'monthly'|null}|null}
+ */
+function pacedReading(reading, pacingWindow) {
+  if (!reading) return null;
+  if (reading.windows) {
+    const chosen = pickPacingWindow(reading.windows, pacingWindow);
+    if (chosen.pacing) return chosen;
+  }
+  if (!reading.pacing) return null;
+  return { pacing: reading.pacing, window: reading.pacingWindow ?? pacingWindow ?? null };
 }
 
 /**

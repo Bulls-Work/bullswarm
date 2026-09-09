@@ -225,7 +225,7 @@ export async function dispatchV2Action({
   };
   const coreDecisionLog = () => safeCoreState()?.decisionLog ?? [];
   // Operator-configurable, read once: the flat surplus cost of an in-flight
-  // agent on a pool whose weekly spend rate nobody has measured yet.
+  // agent on a pool whose pacing-window spend rate nobody has measured yet.
   const inflightPenaltyPct = inflightPenaltyFrom(safeCoreState());
   // One expectation for the whole action: lane and effort do not change
   // between attempts, and the spend model is memoized per process anyway. The
