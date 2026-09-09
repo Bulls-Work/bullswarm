@@ -531,6 +531,7 @@ test('I10: runs show prints each attempt with the reasoning level it ran at', ()
         id: 'produce-1', actionId: 'produce', ordinal: 1, status: 'succeeded',
         pool: 'alpha', model: 'alpha-sol',
         reasoning: { requested: 'max', applied: 'high', source: 'action', clamped: true },
+         bytes: { taskFile: 3174, authorPrompt: 96, kernel: 2890, dependencyInputs: 62259, output: 15104 },
       },
       // A connector with no reasoning control prints no level rather than a
       // placeholder that would read as a real decision.
@@ -541,7 +542,7 @@ test('I10: runs show prints each attempt with the reasoning level it ran at', ()
     const shown = run(wf('runs', 'show', 'v2r234'), { home });
     assert.equal(shown.status, 0, shown.stderr);
     assert.match(shown.stdout, /# attempts {2}2/);
-    assert.match(shown.stdout, /produce #1 {2}succeeded {2}alpha {2}alpha-sol {2}reasoning high \(action, clamped\)/);
+    assert.match(shown.stdout, /produce #1 {2}succeeded {2}alpha {2}alpha-sol {2}reasoning high \(action, clamped\) {2}in 3.1K\/60.8K out 14.8K/);
     assert.match(shown.stdout, /prove #1 {2}succeeded {2}beta {2}beta-luna$/m);
     assert.equal(/prove #1.*reasoning/.test(shown.stdout), false);
   } finally { cleanup(); }

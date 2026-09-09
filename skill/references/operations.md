@@ -43,8 +43,10 @@ bullswarm workflow watch <shortId>
 bullswarm workflow tui <shortId>
 bullswarm workflow tui --json <shortId>
 bullswarm workflow events --json <shortId> --after 0
-bullswarm workflow runs result <shortId> --json
+bullswarm workflow runs result <shortId> --json --summary
 ```
+
+Use the compact summary in the status loop. Read the full envelope with `--json` alone when the run is failed or partial, or before judging evidence.
 
 V2 watch prints one attach line, then one line per notable event, and stays
 silent while work is merely in progress. Launch
@@ -96,6 +98,7 @@ so a program states the nature once instead of re-deciding two routing fields:
 |---|---|---|
 | `mechanical` | chore | low |
 | `io-read` | analyze | low |
+| `digest` | analyze | low |
 | `check` | analyze | medium |
 | `implement` | build | medium |
 | `integration` | build | high |
@@ -109,6 +112,23 @@ may set only `effort` and `reasoning`, since lane follows the individual action
 error, not a runtime failure: `workflow plan validate` exits 2 and nothing
 launches. A program using neither `kind` nor `defaults` validates and runs
 exactly as before.
+
+`digest` is the one kernel-owned kind: the runtime writes its task from a
+template, so the action's own `prompt` is appended as focus guidance only. A
+digest reads every dependency output in full and re-emits it condensed and
+verbatim — each source's delivered items, validation results with their
+numbers, commands and outputs, unfinished work and every shared-file request,
+one section per source headed by that source's absolute output path, no
+verdicts and no recommendations — targeting at most a quarter of the input
+bytes or 8 KB, whichever is larger. Use one when three or more writers feed a
+single integrator, or when a consumer's dependency outputs exceed roughly
+20 KB. Four rules are enforced at `plan validate` and at launch, each exit 2:
+a digest must depend on at least one action, must have empty `evidenceFor`,
+must have empty `ownedFiles`, and no evidence action may list a digest in its
+`dependsOn` — evidence reads the real artifacts. A consumer that depends on a
+digest gets the digest entry in its `Dependency artifacts` list plus a
+`digestOf` array naming each digested source, so it can still open the
+originals.
 
 Two advisories report effort smells and never reject anything.
 `all-writers-high` fires when three or more `build`/`chore` actions run and none

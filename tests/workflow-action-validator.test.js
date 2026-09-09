@@ -230,10 +230,11 @@ const kindWork = (kind, over = {}) => {
 const relaxed = { mandatoryRequirements: ['result'], requireMandatoryEvidence: false, relaxedGraph: true };
 
 test('kind derives the documented lane and effort for every value in the closed set', () => {
-  assert.deepEqual(ACTION_KINDS, ['mechanical', 'io-read', 'check', 'implement', 'integration', 'architecture', 'adversarial-acceptance']);
+  assert.deepEqual(ACTION_KINDS, ['mechanical', 'io-read', 'digest', 'check', 'implement', 'integration', 'architecture', 'adversarial-acceptance']);
   assert.deepEqual(KIND_DEFAULTS, {
     mechanical: { lane: 'chore', effort: 'low' },
     'io-read': { lane: 'analyze', effort: 'low' },
+    digest: { lane: 'analyze', effort: 'low' },
     check: { lane: 'analyze', effort: 'medium' },
     implement: { lane: 'build', effort: 'medium' },
     integration: { lane: 'build', effort: 'high' },
@@ -243,10 +244,14 @@ test('kind derives the documented lane and effort for every value in the closed 
   for (const [kind, expected] of Object.entries(KIND_DEFAULTS)) {
     // An analyze kind cannot own workspace files, so drop ownedFiles for those.
     const over = expected.lane === 'analyze' ? { ownedFiles: [] } : {};
-    const [action] = validateActionProgram(
-      { schemaVersion: 'bullswarm.workflow.program.v2', actions: [kindWork(kind, over)] },
+    // A digest has nothing to condense without a dependency, and delivers no
+    // acceptance slice of its own, so it is validated against a peer writer.
+    const peers = kind === 'digest' ? [kindWork('implement', { id: 'source' })] : [];
+    const digestOver = kind === 'digest' ? { dependsOn: ['source'], affects: [] } : {};
+    const action = validateActionProgram(
+      { schemaVersion: 'bullswarm.workflow.program.v2', actions: [...peers, kindWork(kind, { ...over, ...digestOver })] },
       relaxed,
-    ).actions;
+    ).actions.at(-1);
     assert.equal(action.kind, kind, kind);
     assert.equal(action.lane, expected.lane, kind);
     assert.equal(action.effort, expected.effort, kind);

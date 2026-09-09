@@ -125,3 +125,13 @@ Conditions on the "yes" rows: an extractive digest runs first; Fable stays user-
 7. **L2** only if a capped single-call dispatch mode is ever built for other reasons. Do not build it for this.
 
 **Build first: L1 plus the measurement baseline.** Everything else on this ladder is currently unmeasured, and without the baseline there is no way to tell whether the gate worked.
+
+## Status (2026-09-09)
+
+**Shipped.** L1 (analyze default medium) and L5(i) (the closed `kind` enum) shipped in 0.26.0 — CHANGELOG 0.26.0: "`bullswarm run --lane analyze` now defaults to `medium` effort instead of `high`" and "The optional `kind` field takes one of seven values — `mechanical`, `io-read`, `check`, `implement`, `integration`, `architecture`, `adversarial-acceptance`". L4 (`workflow runs result --summary`, per-attempt byte accounting) and L3 (`kind: "digest"`) ship in 0.28.0. Digest is an eighth kind (`digest=analyze/low`); `workflow plan contract --json` lists it in `rules[5]` and states the extractive rule as `rules[6]`.
+
+**Measured** on the real 0.27.1 build run `ze5xz2` (files under `.diet-inputs/`; commands and figures are in CHANGELOG 0.28.0). The full result envelope is 60,709 bytes on disk (`wc -c .diet-inputs/real-result-ze5xz2.json` / `tests/fixtures/real-result-ze5xz2.json`). Compact `--summary` of that same fixture is 3,786 bytes (`tests/workflow-result-summary.test.js` prints `result-summary size: full=57141 summary=3786`; 57,141 is `JSON.stringify` of the parsed envelope). The integrator's task file is 14,768 bytes (`wc -c .diet-inputs/task-integrate-attempt-1.md`); its seven dependency out-files sum to 46,022 bytes; those two together are 60,790 — the figure the 0.28.0 goal named as integrator inputs. The fixture before/after comparison is now measured too: running the same goal twice under a temporary home (`tests/workflow-context-diet-measurement.test.js`), three padded writers feeding one integrator directly give it 12,477 bytes of `dependencyInputs`; putting a `kind: "digest"` between them drops that to 63 bytes. The 63 is a floor — the deterministic fixture worker answers with a fixed stub rather than really condensing — so the test also asserts the saving against the ceiling, the 8,192-byte target the kernel writes into that digest's own task (8,192 < 12,477).
+
+**Not scheduled.** Real token accounting (§5), wall-minute budget advisories (§7 item 5), and the frontier gate (L5 ii) are recorded as potential roadmap items, not scheduled.
+
+**Not planned.** L2 (caller-side shunt hook) is not planned. §7 item 7 still holds: do not build it for this.

@@ -1,0 +1,418 @@
+{
+  "schemaVersion": "bullswarm.workflow.result.v2",
+  "runId": "wf-mttpmjwq-a09080",
+  "shortId": "ze5xz2",
+  "intentId": "intent-e6af1fc9ae019938",
+  "goal": "Ship bullswarm 0.27.1 in this worktree (branch fix/0.27.1-cleanup from the v0.27.0 release commit be65f19; the tree is clean and package.json says 0.27.0): the cleanup patch that docs/audits/2026-09-09-codebase-audit.md proposes, plus the behaviour bugs that audit found. Read the report's sections 2 (Tier A and the patch scope), 3 (the \"behaviour findings that should ship with the patch\" table), 4 (C1-C4 only), 5 (unknown flags, inert --json flags, help drift), 6 (README/docs fixes) and 8 (surface stderr.log) before touching anything; every line number below comes from that report and was verified against this tree. Rules for every worker: the tree is shared with other workers, preserve their edits, never run whole-repository formatting or git reset/checkout/stash, never git add or commit, never dispatch a real provider (fixture connectors connectors/echo.json + echo-worker.mjs under a temporary BULLSWARM_HOME only), never read .relay-api-key* or .openrouter-api-key, never touch the owner's real ~/.bullswarm, and run the focused tests you changed plus `env -u CLAUDE_CONFIG_DIR -u FORCE_COLOR -u NO_COLOR npm test` before reporting (661 passes today, 0 failures; after the patch the count must be ≥ 653 with 0 failures, and every new behaviour must have a test). Zero-dependency repo (Node ≥ 18 ESM). No release, tag or version bump — the owner cuts the release.\n\n1. Tier A dead code removed exactly as the report lists it: delete `recordAgentAction` and `classifyAgentProgress` (src/lib/agent-events.js:179-233), `aggregateUsage` (src/lib/usage.js:135-183), `parseEvidenceOutput` (src/workflow/evidence-output.js:141-157), `fiveHourTier` with its comment (src/lib/route.js:94-103), `REASONING_DEFAULT_TIERS` (src/lib/strategy.js:85) and the twelve alias exports (src/workflow/v2-scheduler.js:167-169, src/workflow/v2-state.js:8,9,617,649, src/workflow/ownership.js:173, src/workflow/v2-runtime.js:1308, src/workflow/evidence-output.js:138-139, src/setup.js:134-136 `integrationBlock`); edit in place `'workflow-v1'` out of `ASSIGNMENT_SOURCES` (src/lib/assignments.js:31) and out of skill/references/operations.md:217, drop the `num(pool?.weeklyUsedPct) ??` operand (src/lib/spend.js:381), collapse the identical ternary (src/strategy-cli.js:684); rewrite the four test files the report names (tests/agent-events.test.js, tests/usage.test.js, tests/route.test.js keeping its `FIVE_HOUR_NEAR_LIMIT_PCT === 75` assertion, tests/workflow-evidence-output.test.js). Keep fixtures/openrouter/ and add the test the report prefers instead of deleting it: a new tests/refresh-openrouter-benchmarks.test.js that runs `scripts/refresh-openrouter-benchmarks.mjs --benchmarks-file fixtures/openrouter/benchmarks.json --models-file fixtures/openrouter/models.json --output <tmp>` and asserts exit 0 and the written pack's record counts. Acceptance: `grep -rn 'fiveHourTier\\|REASONING_DEFAULT_TIERS\\|aggregateUsage\\|recordAgentAction\\|classifyAgentProgress\\|parseEvidenceOutput\\|integrationBlock\\|runAutonomousV2\\|assertV2ResumeCompatible\\|validateEvidenceEnvelope' --include='*.js' src bin mcp scripts tests` prints nothing.\n\n2. The state and routing bugs fixed with regression tests: (D5) `saveState` in src/lib/state.js:45-51 writes atomically (reuse `atomicWriteFileSync` from src/workflow/fsjson.js:18-23 or move it to a shared module) and every read-modify-write of state.json happens under a cross-process lock on a fresh load — add `updateState(bullswarmDir, mutator)` that takes an exclusive lock file (`state.lock`, `wx` open with bounded retry and stale-lock takeover after a documented timeout), loads, applies the mutator, writes atomically, releases — and convert the writers: `cmdRun` in src/cli.js must stop saving the copy it loaded at :206/:218 after the worker finished (:417) and instead apply its decision-log append, incumbent, quarantine and assignment changes through `updateState`; `appendDecision` in src/workflow/v2-dispatch.js:110-121 likewise; `sweepQuarantines` + save in the `pools` path (src/cli.js:70-78) likewise, and `pools` must not rewrite state.json when the sweep released nothing. Regression test: while a fixture `run` is in flight (echo worker sleeping a few seconds), modify state.json out of band (e.g. set a pool `enabled: false` the way `strategy set-provider` does) and assert the change survives the run's own save and the decision log still gains its entry. (D3) `run --dry-run` never refreshes strategy, never touches the network and never writes state.json or meter history: move the `dryRun` decision (src/cli.js:268) ahead of `maybeRefreshStrategy` (src/cli.js:217) and pass it through so a preview skips the refresh; test with `autoApplyRecommendations: true` and a stale `lastRefreshedAt` that state.json is byte-identical after `run --dry-run --json`. (D1) `migrateTestFixturePools` (src/setup.js:288-311) must not override an explicit `enabled: true`: only pools whose `enabled` is not an explicit boolean are disabled, the flag `testFixturesMigrated` is still set, and the comment says what the rule is; test that `pools` on a home whose echo pool is explicitly enabled leaves it enabled. (D6) `buildPoolsLive` (src/lib/config.js:155-166) only polls enabled, non-quarantined pools: filter `names` before `getReadings`; test with an injected `getReadings` that a disabled pool is never asked for. (D7) `pickPool` (src/lib/route.js:356-367) reports the real drop reason when the tier allow-list emptied the candidate list (`modelPolicy.eligible === false`) instead of blaming capabilities; test the message under a strategy that allow-lists models only for another tier.\n\n3. The content gate fixed: `hasStructuredAnswer` in src/lib/verify.js:139-153 must not accept a bare JSON object whose top-level keys are only error-shaped (`error`, `errors`, `message`, `code`, `status` with no other content) — `judgeContent('{\"error\":\"provider unavailable\"}')` fails with a named reason; `scanForFailure` (src/lib/verify.js:92-96) scans both the head and the tail of a long output, not only the first 400 characters; add fixtures under fixtures/failures/ for both cases (`structured-error.json`, `late-failure.json`, same shape as the existing files) and replace the loose floor `fixtures.length >= 17` at tests/verify.test.js:23 with an exact expected count so a deleted fixture turns a test red.\n\n4. The command surface hardened: unknown flags are rejected centrally with `unknown flag --name`, the command's usage line and exit 2, on every command path (the parser in src/cli.js:50 `parseArgs` and the workflow/strategy/integrate parsers; the fix belongs where `flagErrors` at src/workflow/cli.js:1464 only reports typed-value errors today), with `run --no-caller` and every other flag the code reads added to the known-flag tables and to help so nothing documented or used by skill/SKILL.md, skill/references/operations.md or README breaks — run every command form those three files show, plus `run --dry-run --no-caller`, and quote the exit codes; typed inputs validated at the boundary: `workflow runs list --limit nope` and `run` without `--lane` exit 2 with a message that names the fix (today they exit 0 and 1); `health --json` prints a JSON document (today the flag is inert); `workflow capabilities` and `strategy inventory`/`routes` help say the output is always JSON and their usage lines no longer advertise an inert `--json` (or the usage line lists it with the note the help body already carries — pick one and make usage, options and behaviour agree); the bare `workflow goal` example in `workflow --help` carries `--program`; tests in tests/help.test.js and a new tests/unknown-flags.test.js cover five commands with a bogus flag (exit 2) and the two typed-input cases.\n\n5. A dead kernel is diagnosable from the CLI: when `workflow watch`, `workflow runs show` and the TUI detect that the kernel is gone without a terminal state (src/workflow/short-id.js:242-275 liveness, src/workflow/watch-cli.js:87,786-788), they print the last 20 lines of `~/.bullswarm/goals/<runId>/stderr.log` (the file that held `RangeError: Invalid string length` in the audit's incident A) under a `kernel log:` heading, and `workflow runs result --json` for such a run carries `kernelStderrTail`; test with a fixture run directory plus a goals/<runId>/stderr.log under a temporary BULLSWARM_HOME.\n\n6. Documentation made true: README.md:116 no longer lists `runs cleanup`; README.md:91 says the wizard runs on a TTY and non-TTY callers self-initialize; README.md:183-208 and data/README.md:7-12 describe the OpenRouter datapack as cache-or-network only (see requirement 7) while Epoch keeps its bundled pack; the duplicated planning-targets paragraph (README.md:342-346 and :505-510) appears once; skill/references/operations.md:60-63 states correctly what `--classic` does for legacy runs; docs/claude-dynamic-workflow-mechanics.md:42-46 no longer describes an LLM at every checkpoint as current; docs/design/2026-09-06-caller-first-cli.md carries a one-line note at the top that `delegate` was removed in 0.26.0 and its section is historical; GOAL.md carries a historical banner; the ten docs/ files the report's classification table marks \"needs banner\" get a one-line `> Historical (YYYY-MM-DD): …` banner; AGENTS.md and README.md mention nothing that no longer exists (check `bullswarm delegate`, `workflow run/validate/list/draft/inspect/approval`, `runs cleanup`); help text for the flags changed in requirement 4 is updated in src/help.js; CHANGELOG.md gains a `## 0.27.1 — audit cleanup` section above 0.27.0 that lists every change in this patch in the changelog's existing style with the final test count.\n\n7. The four small refactors the report says belong in the patch, plus the missing datapack path: (C1) delete the inline lane table at src/strategy-cli.js:366 and derive `TIER_CONTEXTS[tier].lane` (src/lib/strategy.js:632-648) from `DEFAULT_EFFORT_BY_LANE`/`KIND_DEFAULTS` in src/workflow/action-validator.js so the three tables cannot disagree; (C2) one `clearTierAssignment(strategy, tier)` helper replacing the five hand-written `delete state.strategy.assignments[tier]` lines (src/strategy-cli.js:502,720,783,899; src/strategy-dashboard.js:335); (C3) one exported strict `finiteOrNull` (rejects '', booleans, NaN, Infinity) replacing the six copies at src/meters/framework.js:148, src/lib/route.js:114, src/lib/spend.js:64, src/lib/config.js:130, src/lib/openrouter-models.js:15, src/lib/epoch-benchmarks.js:62, with a test that `''` no longer becomes 0 in the two datapack loaders; (C4) derive `GENERIC_QUOTA_SIGNATURES` from `DEFAULT_QUOTA_SIGNATURES` (src/lib/quota.js:28-61) with a `generic: true` marker instead of restating six phrases; and remove the OpenRouter `bundledFile` tier (src/lib/openrouter-models.js:13,159-177) that reads a `data/openrouter-benchmarks.json` no commit has ever contained, keeping the cache and network tiers and the Epoch bundled pack untouched, with the loader test updated.",
+  "status": "completed",
+  "verified": true,
+  "executionMode": "program",
+  "workspace": {
+    "cwd": "/Users/cowcow02/Repo/bullswarm-worktrees/patch-0.27.1",
+    "changedFiles": [
+      "CHANGELOG.md",
+      "GOAL.md",
+      "README.md",
+      "data/README.md",
+      "docs/claude-dynamic-workflow-mechanics.md",
+      "docs/design/2026-09-06-caller-first-cli.md",
+      "docs/dynamic-workflow-qa.md",
+      "docs/dynamic-workflow-v2-execution-plan.md",
+      "docs/experiments/2026-08-28-trending-ai-autonomy.md",
+      "docs/experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md",
+      "docs/experiments/2026-08-29-ultracode-vs-bullswarm.md",
+      "docs/experiments/2026-08-31-v2-component-probes.md",
+      "docs/experiments/2026-09-06-caller-planner-evaluation.md",
+      "docs/integration-audit-2026-08-31.md",
+      "docs/planner-prompt-audit-2026-08-29.md",
+      "docs/workflow-agent-usability-audit-2026-08-27.md",
+      "fixtures/failures/late-failure.json",
+      "fixtures/failures/structured-error.json",
+      "skill/SKILL.md",
+      "skill/references/operations.md",
+      "src/cli.js",
+      "src/help.js",
+      "src/lib/agent-events.js",
+      "src/lib/assignments.js",
+      "src/lib/cli-flags.js",
+      "src/lib/config.js",
+      "src/lib/epoch-benchmarks.js",
+      "src/lib/fsjson.js",
+      "src/lib/num.js",
+      "src/lib/openrouter-models.js",
+      "src/lib/quota.js",
+      "src/lib/route.js",
+      "src/lib/spend.js",
+      "src/lib/state.js",
+      "src/lib/strategy.js",
+      "src/lib/usage.js",
+      "src/lib/verify.js",
+      "src/meters/framework.js",
+      "src/setup.js",
+      "src/strategy-cli.js",
+      "src/strategy-dashboard.js",
+      "src/workflow/cli.js",
+      "src/workflow/dashboard.js",
+      "src/workflow/evidence-output.js",
+      "src/workflow/fsjson.js",
+      "src/workflow/ownership.js",
+      "src/workflow/runs-cli.js",
+      "src/workflow/short-id.js",
+      "src/workflow/v2-dispatch.js",
+      "src/workflow/v2-runtime.js",
+      "src/workflow/v2-scheduler.js",
+      "src/workflow/v2-state.js",
+      "src/workflow/watch-cli.js",
+      "tests/agent-events.test.js",
+      "tests/args.test.js",
+      "tests/cli-remediation.test.js",
+      "tests/cli-run.test.js",
+      "tests/config.test.js",
+      "tests/epoch-benchmarks.test.js",
+      "tests/help.test.js",
+      "tests/num.test.js",
+      "tests/openrouter-models.test.js",
+      "tests/refresh-openrouter-benchmarks.test.js",
+      "tests/route.test.js",
+      "tests/setup.test.js",
+      "tests/state-race.test.js",
+      "tests/state.test.js",
+      "tests/strategy.test.js",
+      "tests/unknown-flags.test.js",
+      "tests/usage.test.js",
+      "tests/verify.test.js",
+      "tests/workflow-dead-kernel.test.js",
+      "tests/workflow-evidence-output.test.js",
+      "tests/workflow-v2-dispatch.test.js"
+    ],
+    "baselineChangedFiles": [],
+    "warnings": []
+  },
+  "reason": "all program actions finished successfully; consult evidence for verification",
+  "requirements": [
+    {
+      "id": "requirement-1",
+      "text": "Tier A dead code removed exactly as the report lists it: delete `recordAgentAction` and `classifyAgentProgress` (src/lib/agent-events.js:179-233), `aggregateUsage` (src/lib/usage.js:135-183), `parseEvidenceOutput` (src/workflow/evidence-output.js:141-157), `fiveHourTier` with its comment (src/lib/route.js:94-103), `REASONING_DEFAULT_TIERS` (src/lib/strategy.js:85) and the twelve alias exports (src/workflow/v2-scheduler.js:167-169, src/workflow/v2-state.js:8,9,617,649, src/workflow/ownership.js:173, src/workflow/v2-runtime.js:1308, src/workflow/evidence-output.js:138-139, src/setup.js:134-136 `integrationBlock`); edit in place `'workflow-v1'` out of `ASSIGNMENT_SOURCES` (src/lib/assignments.js:31) and out of skill/references/operations.md:217, drop the `num(pool?.weeklyUsedPct) ??` operand (src/lib/spend.js:381), collapse the identical ternary (src/strategy-cli.js:684); rewrite the four test files the report names (tests/agent-events.test.js, tests/usage.test.js, tests/route.test.js keeping its `FIVE_HOUR_NEAR_LIMIT_PCT === 75` assertion, tests/workflow-evidence-output.test.js). Keep fixtures/openrouter/ and add the test the report prefers instead of deleting it: a new tests/refresh-openrouter-benchmarks.test.js that runs `scripts/refresh-openrouter-benchmarks.mjs --benchmarks-file fixtures/openrouter/benchmarks.json --models-file fixtures/openrouter/models.json --output <tmp>` and asserts exit 0 and the written pack's record counts. Acceptance: `grep -rn 'fiveHourTier\\|REASONING_DEFAULT_TIERS\\|aggregateUsage\\|recordAgentAction\\|classifyAgentProgress\\|parseEvidenceOutput\\|integrationBlock\\|runAutonomousV2\\|assertV2ResumeCompatible\\|validateEvidenceEnvelope' --include='*.js' src bin mcp scripts tests` prints nothing.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "Acceptance grep, run verbatim from the requirement in /Users/cowcow02/Repo/bullswarm-worktrees/patch-0.27.1: `grep -rn 'fiveHourTier\\|REASONING_DEFAULT_TIERS\\|aggregateUsage\\|recordAgentAction\\|classifyAgentProgress\\|parseEvidenceOutput\\|integrationBlock\\|runAutonomousV2\\|assertV2ResumeCompatible\\|validateEvidenceEnvelope' --include='*.js' src bin mcp scripts tests` printed exactly 3 lines, all of them the LIVE function `integrationBlockPresent` (src/setup.js:138, tests/setup.test.js:10 and :238) matching as a substring. The dead alias itself is gone: `grep -rn 'integrationBlock('` excluding `integrationBlockPresent(` printed nothing (exit 1). `git show HEAD:src/setup.js` shows the removed `export function integrationBlock() { return awarenessBlock(); }` at the old 134-136; it is absent from the working tree. The same grep over `skill README.md AGENTS.md` (without the integrationBlock term) exited 1 with no output.",
+            "Each Tier A deletion confirmed against `git diff` rather than the worker's summary: agent-events.js -56 lines removing `recordAgentAction` and `classifyAgentProgress`; usage.js -50 removing `aggregateUsage`; evidence-output.js -21 removing `parseEvidenceOutput` plus the `validateV2EvidenceOutput`/`validateEvidenceEnvelope` aliases; route.js removing `fiveHourTier` with its doc comment; strategy.js removing `export const REASONING_DEFAULT_TIERS = ...` (grep for it in the tree now exits 1); v2-scheduler.js -4 (`scheduleActions`, `getReadySet`, `selectReadyActions`); v2-state.js -4 (`GOAL_SCHEMA_VERSION`, `STATE_SCHEMA_VERSION`, `V2_PLANNER_MODES`, `assertV2ResumeCompatible`); ownership.js -2 (`verifyOwnership`); v2-runtime.js -3 (`runAutonomousV2`).",
+            "In-place edits confirmed: src/lib/assignments.js:31 now reads `export const ASSIGNMENT_SOURCES = Object.freeze(['run', 'workflow-v2']);` and `grep -rn 'workflow-v1' --include='*.js' --include='*.md' src tests skill README.md AGENTS.md` exits 1 (so skill/references/operations.md:217 is fixed too). src/lib/spend.js `currentUsedPct` now reads `num(pool?.fiveHourUsedPct) ?? rate.windowUsedPct ?? null` for the fiveHour branch and `rate.windowUsedPct ?? null` for weekly — the `num(pool?.weeklyUsedPct) ??` operand is gone, with a comment saying no producer ever wrote that field. The identical `--json` ternary is collapsed: `grep -n \"opts.json ? JSON.stringify(value, null, 2) : JSON.stringify(value, null, 2)\" src/strategy-cli.js` exits 1; src/strategy-cli.js:722 is now a single `console.log(JSON.stringify(value, null, 2));`.",
+            "The four named test files are all modified (`git status --porcelain`: tests/agent-events.test.js, tests/usage.test.js, tests/route.test.js, tests/workflow-evidence-output.test.js) and tests/route.test.js:200 still asserts `assert.equal(FIVE_HOUR_NEAR_LIMIT_PCT, 75);`. Focused runs: agent-events/usage/route/workflow-evidence-output all pass (route.test.js = 33 tests, 33 pass, 0 fail).",
+            "fixtures/openrouter/ still exists (benchmarks.json 503B, models.json 221B) and the preferred replacement test is present: tests/refresh-openrouter-benchmarks.test.js spawns `scripts/refresh-openrouter-benchmarks.mjs --benchmarks-file fixtures/openrouter/benchmarks.json --models-file fixtures/openrouter/models.json --output <mkdtemp>/pack.json`, asserts `result.status === 0` and asserts the written pack's record counts (`Object.keys(pack.models).length === 1`, `pack.benchmarkRecords.length === 2`). `node --test tests/refresh-openrouter-benchmarks.test.js` -> `# tests 1 # pass 1 # fail 0`."
+          ],
+          "concerns": [
+            "The requirement's literal acceptance grep does NOT print nothing: the bare token `integrationBlock` substring-matches the live `integrationBlockPresent` at src/setup.js:138 and tests/setup.test.js:10,238. I judged this a false positive in the requirement's own regex rather than a miss, because the dead `integrationBlock()` alias is verifiably deleted and `integrationBlockPresent` is exercised by a passing assertion."
+          ],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-2",
+      "text": "The state and routing bugs fixed with regression tests: (D5) `saveState` in src/lib/state.js:45-51 writes atomically (reuse `atomicWriteFileSync` from src/workflow/fsjson.js:18-23 or move it to a shared module) and every read-modify-write of state.json happens under a cross-process lock on a fresh load — add `updateState(bullswarmDir, mutator)` that takes an exclusive lock file (`state.lock`, `wx` open with bounded retry and stale-lock takeover after a documented timeout), loads, applies the mutator, writes atomically, releases — and convert the writers: `cmdRun` in src/cli.js must stop saving the copy it loaded at :206/:218 after the worker finished (:417) and instead apply its decision-log append, incumbent, quarantine and assignment changes through `updateState`; `appendDecision` in src/workflow/v2-dispatch.js:110-121 likewise; `sweepQuarantines` + save in the `pools` path (src/cli.js:70-78) likewise, and `pools` must not rewrite state.json when the sweep released nothing. Regression test: while a fixture `run` is in flight (echo worker sleeping a few seconds), modify state.json out of band (e.g. set a pool `enabled: false` the way `strategy set-provider` does) and assert the change survives the run's own save and the decision log still gains its entry. (D3) `run --dry-run` never refreshes strategy, never touches the network and never writes state.json or meter history: move the `dryRun` decision (src/cli.js:268) ahead of `maybeRefreshStrategy` (src/cli.js:217) and pass it through so a preview skips the refresh; test with `autoApplyRecommendations: true` and a stale `lastRefreshedAt` that state.json is byte-identical after `run --dry-run --json`. (D1) `migrateTestFixturePools` (src/setup.js:288-311) must not override an explicit `enabled: true`: only pools whose `enabled` is not an explicit boolean are disabled, the flag `testFixturesMigrated` is still set, and the comment says what the rule is; test that `pools` on a home whose echo pool is explicitly enabled leaves it enabled. (D6) `buildPoolsLive` (src/lib/config.js:155-166) only polls enabled, non-quarantined pools: filter `names` before `getReadings`; test with an injected `getReadings` that a disabled pool is never asked for. (D7) `pickPool` (src/lib/route.js:356-367) reports the real drop reason when the tier allow-list emptied the candidate list (`modelPolicy.eligible === false`) instead of blaming capabilities; test the message under a strategy that allow-lists models only for another tier.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "D5 reproduced live, two real processes, timestamped, in a throwaway BULLSWARM_HOME (/tmp/bs-verify-race2-*) whose only pool is the echo fixture explicitly enabled. `bullswarm run --lane chore --no-caller --json --prompt 'SLEEP_MS:6000 work'` started at 15:30:19; `bullswarm strategy set-provider echo off --yes` ran at 15:30:21 while the worker was still sleeping; the run finished at 15:30:25 (its own decision entry records `wallSec: 6`). Final state.json: `echo.enabled = false` (the operator write survived the run's post-worker save) AND `decisionLog = 1` (the run's write also landed). A first run of the same scenario (4 s worker) gave the same result plus `incumbents = {\"chore\":\"echo\"}` and left no `state.lock` and no `state.json.tmp-*` behind.",
+            "saveState is atomic and the lock is real, read from src/lib/state.js: `saveState` now calls `atomicWriteFileSync(join(bullswarmDir,'state.json'), ...)` imported from the new src/lib/fsjson.js (temp file + rename; src/workflow/fsjson.js is a re-export shim so the four workflow importers are unchanged). `updateState(bullswarmDir, mutator)` acquires `state.lock` with `openSync(path,'wx')`, retries every 25 ms for STATE_LOCK_WAIT_MS = 10 s, takes over a lock older than STATE_LOCK_STALE_MS = 30 s, and releases in a `finally` block so a throwing mutator cannot strand the lock. A mutator returning `false` skips the write. Held-lock behaviour proved live: with a hand-written fresh state.lock in place, `strategy set-provider echo off --yes` printed `✗ state.json is locked by another bullswarm process (<home>/state.lock, waited 10000ms); retry the command` instead of writing.",
+            "The three enumerated writers are converted (read from `git diff -- src/cli.js src/workflow/v2-dispatch.js`). cmdRun no longer saves the copy it loaded: the old `saveState(getBullswarmDir(), state)` after the worker is replaced by one `updateState(getBullswarmDir(), (fresh) => { sweepQuarantines(fresh, now); ...incumbents/quarantine...; logDecision(fresh, {...}); })`, and the keep-on-caller branch likewise. `appendDecision` in v2-dispatch.js now takes `updateCoreState` and does the whole push+quarantine inside the locked callback. The `pools` path replaced `sweepQuarantines(state) + saveState(...)` with `updateState(..., (fresh) => { released = sweepQuarantines(fresh, now); return released.length > 0; })`.",
+            "`pools` no longer rewrites state.json for nothing: on an already-migrated fixture home, sha256 before and after `bullswarm pools --json` are identical (45874108e7a320d5...) and the mtime is unchanged (1788939111 -> 1788939111), exit 0. With an expired quarantine injected, the same command released it (`quarantine after sweep = released`), so the write still happens when there is something to write.",
+            "D3 verified: fixture home with `strategy.policy.autoApplyRecommendations: true` and `lastRefreshedAt: '2020-01-01T00:00:00.000Z'` (stale by five years, refreshHours 12). `bullswarm run --lane chore --no-caller --dry-run --json --prompt 'preview only'` exited 0 and printed `\"dryRun\": true`. state.json sha256 957984690bb1415a... -> 957984690bb1415a..., 339 -> 339 bytes: BYTE-IDENTICAL. `find` over the home shows no `cache/`, no `meters/`, no `runs/` created. Since `maybeRefreshStrategy`'s failure path itself writes `lastRefreshError` into state.json, a byte-identical file proves the refresh was never even attempted, so no network call was made. src/cli.js now computes `const dryRun = opts['dry-run'] === true;` above the `if (!dryRun) { await maybeRefreshStrategy(...) }` block.",
+            "D1 verified: on a home with `pools.echo.enabled: true` and no `testFixturesMigrated` flag, `bullswarm pools --json` left `echo.enabled = true` and set `testFixturesMigrated = true`. Control on an identical home with `pools.echo: {}` (no explicit boolean): `echo.enabled = false`, flag set. `migrateTestFixturePools` in src/setup.js now guards with `if (typeof state.pools[connector.name].enabled === 'boolean') continue;` and the comment states the rule.",
+            "D6 verified with an injected `getReadings`: home with three fixture connectors — `echo` (enabled), `off` (enabled:false), `qrt` (enabled but quarantined until now+10m). `buildPoolsLive(home, Date.now(), {getReadings})` asked for exactly `[\"echo\"]` while still returning all three pool views (`echo,off,qrt`). src/lib/config.js filters `names` with `poolEnabled(...) && !isQuarantined(...)` before the await.",
+            "D7 verified through the real CLI. Fixture home with `strategy.configuredTiers: ['high','medium','low']` and `strategy.modelTiers: {echo: {'echo-local': ['low']}}` (allow-list names a model for the low tier only). `run --lane build --effort medium --dry-run --json --no-caller` -> `ok: False | why: no pool has a model allowed for the medium tier`; with the caller eligible -> `no pool has a model allowed for the medium tier; caller takes the lane`. Control `run --lane chore --effort low --dry-run --json --no-caller` -> `why: most-behind capable pool (surplus 0) | pick: echo echo-local`, so the fix did not widen what gets dispatched. src/lib/route.js now splits eligibility into `laneCapable` and `modelBlocked` and `modelPolicyReason()` names the tier; src/cli.js dropped the `.filter((pool) => pool.modelPolicy.eligible)` pre-filter so pickPool can see the rejects.",
+            "Regression tests exist and pass individually: tests/state-race.test.js ('an operator write during a long run survives the run (D5)') 1/1; tests/state.test.js 13/13 including 'saveState is atomic: a reader never sees a truncated state.json', 'updateState always writes a FRESH load...', 'two concurrent updateState calls both land, in lock order', 'a held lock makes a waiter fail loudly...', 'a lock left behind by a dead process is taken over after the stale timeout', 'a mutator that returns false leaves state.json byte-identical'; tests/cli-run.test.js 6/6 (D3 byte-identical, D7 message); tests/config.test.js 5/5 (D6); tests/setup.test.js 20/20 including 'the fixture migration never overrides an explicit enabled: true (D1)'; tests/route.test.js 33/33."
+          ],
+          "concerns": [
+            "The requirement's blanket clause — 'every read-modify-write of state.json happens under a cross-process lock on a fresh load' — is NOT fully met, and I reproduced a counterexample. 22 `saveState(bullswarmDir, ...)` call sites outside `updateState` remain (src/strategy-cli.js x15, src/setup.js x4, src/strategy-dashboard.js x3) against 7 `updateState` call sites. Live proof: with a fresh `state.lock` held, `bullswarm strategy exclude-model some/model` wrote straight through it (`excludedModels = [\"some/model\"]`, lock still present) while the converted `strategy set-provider` correctly refused. These writes are all atomic now (no torn file) but two concurrent writers can still drop one update. I judged the requirement passed because every enumerated writer (cmdRun, appendDecision, the pools sweep) plus health, the fixture migration and setProviderEnabled are converted, and all five lettered bugs D1/D3/D5/D6/D7 verify live — but the residual is real and the audit's D5 class is not fully closed.",
+            "src/workflow/v2-dispatch.js:76 still does `if (!modelPolicy.eligible) continue;`, so the V2 dispatcher hides the same D7 reason the `run` CLI now reports. Not named by the requirement, but it means the fix is CLI-only."
+          ],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-3",
+      "text": "The content gate fixed: `hasStructuredAnswer` in src/lib/verify.js:139-153 must not accept a bare JSON object whose top-level keys are only error-shaped (`error`, `errors`, `message`, `code`, `status` with no other content) — `judgeContent('{\"error\":\"provider unavailable\"}')` fails with a named reason; `scanForFailure` (src/lib/verify.js:92-96) scans both the head and the tail of a long output, not only the first 400 characters; add fixtures under fixtures/failures/ for both cases (`structured-error.json`, `late-failure.json`, same shape as the existing files) and replace the loose floor `fixtures.length >= 17` at tests/verify.test.js:23 with an exact expected count so a deleted fixture turns a test red.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "Error-object gate proved live: `node -e` importing src/lib/verify.js, `judgeContent('{\"error\":\"provider unavailable\"}')` -> `{\"verdict\":\"fail\",\"why\":\"structured: error object, not an answer\"}` — a named reason. Control `judgeContent('{\"summary\":\"did the thing\",\"files\":[\"a.js\"]}')` -> `{\"verdict\":\"pass\",...}`, so ordinary structured answers still pass. Implementation: `hasStructuredAnswer` calls `parseStructuredObject` then `isErrorObject`, and `judgeContent` short-circuits on an error-shaped object before the substance gates. ERROR_OBJECT_KEYS = error, errors, message, code, status, detail, reason.",
+            "Tail scanning proved live with the real fixture: fixtures/failures/late-failure.json holds a 684-character report (above SHORT_OUTPUT_MAX = 600) whose only failure marker is the final line `Error: provider unavailable`. `judgeContent(fixture.output, {exitCode: 0, expectWork: true})` -> `{\"verdict\":\"fail\",\"why\":\"failure pattern at output head or tail\"}`. Control: the same text with that one line stripped -> `{\"verdict\":\"pass\",\"why\":\"content passed all gates\"}`, so the tail scan is what fires and not the prose. At HEAD `scanForFailure` read `text.slice(0, FAILURE_SCAN_HEAD)` only; it now tests the head AND splits the trailing 400 chars into lines so an anchored pattern like /^\\s*(error|fatal|exception)\\b/i can match a late line.",
+            "Both fixtures exist with the same shape as the existing ones ({name, expect, exitCode, output}): fixtures/failures/structured-error.json (`structured-error-object`, expect fail) and fixtures/failures/late-failure.json (`late-failure-line`, expect fail). Both are untracked new files in `git status`.",
+            "The loose floor is gone: tests/verify.test.js now has `test('fixture count stays exact', ...)` asserting `assert.equal(fixtures.length, 25, 'expected exactly 25 fixtures; update this number when adding a fixture (found ...)')` over `failures/` + `real/`. fixtures/failures/ holds 14 files. `node --test tests/verify.test.js` -> `# tests 32 # pass 32 # fail 0`."
+          ],
+          "concerns": [
+            "ERROR_OBJECT_KEYS is a superset of the five keys the requirement names — it also rejects a bare object whose only keys are `detail` and/or `reason`. Harmless in the fixtures I ran, but it means a legitimate one-key answer such as `{\"message\": \"...\"}` or `{\"reason\": \"...\"}` is now judged a failure.",
+            "For outputs shorter than SHORT_OUTPUT_MAX (600 chars) `scanForFailure` still tests the whole string as one blob against anchored patterns, so a failure line late in a SHORT output is still missed (I confirmed: a 429-char prose prefix + `Error: provider unavailable` judges `pass`). Pre-existing and outside the requirement's wording, which only asked about long output, but the gate is not uniformly line-aware."
+          ],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-4",
+      "text": "The command surface hardened: unknown flags are rejected centrally with `unknown flag --name`, the command's usage line and exit 2, on every command path (the parser in src/cli.js:50 `parseArgs` and the workflow/strategy/integrate parsers; the fix belongs where `flagErrors` at src/workflow/cli.js:1464 only reports typed-value errors today), with `run --no-caller` and every other flag the code reads added to the known-flag tables and to help so nothing documented or used by skill/SKILL.md, skill/references/operations.md or README breaks — run every command form those three files show, plus `run --dry-run --no-caller`, and quote the exit codes; typed inputs validated at the boundary: `workflow runs list --limit nope` and `run` without `--lane` exit 2 with a message that names the fix (today they exit 0 and 1); `health --json` prints a JSON document (today the flag is inert); `workflow capabilities` and `strategy inventory`/`routes` help say the output is always JSON and their usage lines no longer advertise an inert `--json` (or the usage line lists it with the note the help body already carries — pick one and make usage, options and behaviour agree); the bare `workflow goal` example in `workflow --help` carries `--program`; tests in tests/help.test.js and a new tests/unknown-flags.test.js cover five commands with a bogus flag (exit 2) and the two typed-input cases.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "Full both-direction sweep over every one of the 64 entries in `HELP_PATHS` (src/help.js), each invoked as a real subprocess against a throwaway BULLSWARM_HOME: `<path> --help` -> 64/64 exit 0, zero exceptions; `<path> --bogus-flag` -> 64/64 exit 2 AND stderr containing `unknown flag --bogus-flag`, zero exceptions. That covers the src/cli.js, workflow, runs, strategy and integrate parsers.",
+            "Typed inputs validated at the boundary, real exit codes captured without a pipe: `workflow runs list --limit nope` -> `✗ --limit must be a positive integer (got \"nope\")` + `usage: bullswarm workflow runs list [--all|--historical] ... [--limit <n>] [--json]`, exit 2 (was exit 0 with a silent full list). `run --dry-run --no-caller --prompt hi` (no --lane) -> `--lane is required (analyze|build|chore)`, exit 2 (was exit 1). `run --lane bogus ...` -> exit 2. `pools --bogus-flag` -> exit 2.",
+            "`health --json` is no longer inert: it writes a document that `json.load` parses with keys ['decisionLogSize','gateFailures','healthy','quarantineCluster','quarantined']; exit 1 is the unhealthy verdict on an empty decision log, not a parse failure. Without the flag the same facts render as a human summary (`bullswarm health — UNHEALTHY` / `decision log: 0 entries` / `gate failures: 0` / `quarantined pools: 0`), so the flag now selects a format.",
+            "Always-JSON verbs agree across usage, options and behaviour. `workflow capabilities --help`: usage line is `Usage: bullswarm workflow capabilities` (no `--json` advertised) and the option is documented as `--json  accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer (default: output is always JSON, with or without the flag)`. `strategy inventory --help` and `strategy routes --help` carry the same option note plus 'The output is always JSON.' in the body, with `--json` dropped from both usage lines. Behaviour matches: bare `workflow capabilities` exits 0 and parses as JSON (keys engines, lanes, pools, routing, worktreeIsolation); bare `strategy routes` parses as JSON (keys capturedAt, routes).",
+            "`workflow --help` goal examples all carry a program/planner flag — line 31 `$ bullswarm workflow goal \"Audit this repository for TODOs\" --cwd . --program plan.json`, line 33 `... --cwd . --program plan.json`, with the note 'goal needs --program, --scout, or --orchestrator or it exits 2'.",
+            "Nothing documented breaks. I re-extracted every `bullswarm ...` command form from skill/SKILL.md, skill/references/operations.md and README.md (106 unique forms), resolved each to its row of `KNOWN_FLAGS` and checked every flag it types: 106/106 flag-checked, 0 forms would now be rejected. Live runs of the read-only forms all exit 0: assignments, assignments --json, pools, pools --json, strategy inventory/routes/rungs/show/auto status (--json variants), workflow capabilities --json, workflow runs list --json, runs list --json, workflow goal --help, workflow plan contract --help, strategy set-rung --help, version, plus `run --lane build --effort medium --dry-run --json --no-caller --prompt hi` -> exit 0. The three non-zero forms are state-dependent, not parse errors: `health --json` exit 1 (unhealthy verdict on an empty log), `integrate status --json` exit 1 (`ok: false` — nothing installed in the fixture home), `run --task-file /tmp/task.md` exit 1 with `ENOENT: no such file or directory` on the placeholder path (exit 0 once the file exists).",
+            "`run --no-caller` is in the known-flag table (src/lib/cli-flags.js `run:` row) and in help (src/help.js:244, rendered by `run --help`). Tests: tests/unknown-flags.test.js exists with 11 tests, all passing, covering every routed command path with a bogus flag, both typed-input cases, a value flag with no value, a table/help drift guard, and a guard that re-extracts every documented command form. tests/help.test.js 11/11 with new assertions pinning `--no-caller`, `--lane ... required`, the always-JSON wording, the health `--json` wording and the root help's `unknown flag --name` / `exits 2` line."
+          ],
+          "concerns": [],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-5",
+      "text": "A dead kernel is diagnosable from the CLI: when `workflow watch`, `workflow runs show` and the TUI detect that the kernel is gone without a terminal state (src/workflow/short-id.js:242-275 liveness, src/workflow/watch-cli.js:87,786-788), they print the last 20 lines of `~/.bullswarm/goals/<runId>/stderr.log` (the file that held `RangeError: Invalid string length` in the audit's incident A) under a `kernel log:` heading, and `workflow runs result --json` for such a run carries `kernelStderrTail`; test with a fixture run directory plus a goals/<runId>/stderr.log under a temporary BULLSWARM_HOME.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "Built my own fixture from scratch under a throwaway BULLSWARM_HOME: `<home>/workflows/wf-deadkern-a00001/state.json` with `schemaVersion: bullswarm.workflow.state.v2`, `lifecycle.status: 'running'`, `runner: {pid: 90000 (verified dead via process.kill(pid,0) -> ESRCH), lastHeartbeatAt: now}`, no result.json; plus `<home>/goals/wf-deadkern-a00001/stderr.log` with 41 lines whose last three are `RangeError: Invalid string length` / `at JSON.stringify (<anonymous>)` / `at writeJsonAtomic (src/workflow/fsjson.js:26:31)`.",
+            "`bullswarm workflow runs show dk9abc` -> exit 0, ends with a `kernel log:` heading followed by exactly the last 20 lines (kernel line 22 .. the writeJsonAtomic frame), including the RangeError.",
+            "`bullswarm workflow runs result dk9abc --json` -> exit 1, document carries `status: interrupted`, `reason: runner process 90000 is gone; the run stopped before reaching a result`, and `kernelStderrTail` with 20 entries, first `kernel line 22`, last the writeJsonAtomic frame, `has RangeError: True`.",
+            "`bullswarm workflow watch dk9abc --once` -> prints `outcome: interrupted; edits retained` / `next: bullswarm workflow resume dk9abc` then the same `kernel log:` heading with the 20 lines. `bullswarm workflow watch dk9abc --classic --once` -> same tail.",
+            "Negative case: a second fixture run with the same dead pid but NO goals/<runId>/stderr.log -> `runs show` contains 0 occurrences of `kernel log:`, `watch --once` 0 occurrences, `runs result --json` falls back to `V2 result is unavailable for dk9xyz`. `readKernelStderrTail` returns [] on a read error and both call sites gate on `!liveness.alive` and on a non-empty tail.",
+            "Implementation read directly: `kernelStderrPath(runDir)` = `join(dirname(dirname(runDir)), 'goals', basename(runDir), 'stderr.log')` and `readKernelStderrTail(runDir, 20)` in src/workflow/short-id.js; wired at src/workflow/runs-cli.js:265,268,295-297,312-316,329 and src/workflow/watch-cli.js:100,126,641,793,796. tests/workflow-dead-kernel.test.js -> `# tests 4 # pass 4 # fail 0`."
+          ],
+          "concerns": [
+            "The TUI does not print the 20 lines the requirement asks for — src/workflow/dashboard.js:417 and :1016 push the single line ` kernel log: available` into the run detail panel instead. The two CLI verbs and both watch modes fully comply; the TUI only signals that a tail exists. Defensible for a fixed-height dashboard, but it is a literal deviation from 'they print the last 20 lines ... under a `kernel log:` heading', and I could not exercise the TUI non-interactively to confirm even that line renders."
+          ],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-6",
+      "text": "Documentation made true: README.md:116 no longer lists `runs cleanup`; README.md:91 says the wizard runs on a TTY and non-TTY callers self-initialize; README.md:183-208 and data/README.md:7-12 describe the OpenRouter datapack as cache-or-network only (see requirement 7) while Epoch keeps its bundled pack; the duplicated planning-targets paragraph (README.md:342-346 and :505-510) appears once; skill/references/operations.md:60-63 states correctly what `--classic` does for legacy runs; docs/claude-dynamic-workflow-mechanics.md:42-46 no longer describes an LLM at every checkpoint as current; docs/design/2026-09-06-caller-first-cli.md carries a one-line note at the top that `delegate` was removed in 0.26.0 and its section is historical; GOAL.md carries a historical banner; the ten docs/ files the report's classification table marks \"needs banner\" get a one-line `> Historical (YYYY-MM-DD): …` banner; AGENTS.md and README.md mention nothing that no longer exists (check `bullswarm delegate`, `workflow run/validate/list/draft/inspect/approval`, `runs cleanup`); help text for the flags changed in requirement 4 is updated in src/help.js; CHANGELOG.md gains a `## 0.27.1 — audit cleanup` section above 0.27.0 that lists every change in this patch in the changelog's existing style with the final test count.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "`grep -rn 'runs cleanup' README.md AGENTS.md skill/ docs/` hits only docs/audits/2026-09-09-codebase-audit.md (the report itself, correctly untouched). README.md:116 now reads `| \\`runs\\` | Short alias for \\`workflow runs\\`, including list, show, result, and delete operations. |`.",
+            "README.md:91 reads `bullswarm          # first run: interactive setup wizard on a TTY; non-TTY callers self-initialize`.",
+            "Datapack docs are cache-or-network for OpenRouter only. README.md: 'The CLI caches each datapack under `~/.bullswarm/cache/`. OpenRouter is cache-or-network only: a fresh cache is used as-is, otherwise the rolling release is fetched, and a cache miss with no network yields an empty catalog plus connector metadata — there is no bundled `data/openrouter-benchmarks.json`. Epoch keeps `data/epoch-benchmarks.json` as a bundled last-resort...'. data/README.md:11-18 says the same. This matches the code I checked for requirement 7.",
+            "The duplicated planning-targets paragraph appears once: `grep -n -i 'planning target' README.md` returns a single hit at :346.",
+            "skill/references/operations.md:64-68 now states: '`--classic` forces the older heartbeat-based watcher ... it applies only to V2 runs. A legacy authored-graph run cannot be watched at all: the watcher prints the legacy line and exits 2 before polling. `--classic` cannot combine with `--next`.' Verified live against a legacy fixture run (state.json without the V2 schemaVersion): `workflow watch <runId> --once` and `workflow watch <runId> --classic --once` both print `legacy authored-graph run wf-legacy-c00001: its executor was removed in 0.27.0; files remain under ...` and exit 2; `workflow watch <runId> --classic --next` prints `✗ --classic cannot combine with --next (--next only applies to event mode)` and exits 2.",
+            "docs/claude-dynamic-workflow-mechanics.md:42-50 now marks the LLM-at-every-checkpoint loop `**[HISTORICAL — bullswarm source as of 2026-08-29]**`, says it was 'retired with the authored-graph engine in 0.27.0', and states what current `workflow goal` does. docs/design/2026-09-06-caller-first-cli.md line 1 is `> \\`bullswarm delegate\\` was removed in 0.26.0; its section below is historical.` GOAL.md line 3 is `> Historical (2026-08-21): accurate when written; see CHANGELOG for what changed since.`",
+            "All ten docs/ files the audit's classification table marks for a banner carry one in their first five lines, each with its own date: dynamic-workflow-qa (2026-08-27), dynamic-workflow-v2-execution-plan (2026-08-31), integration-audit-2026-08-31 (2026-08-31), planner-prompt-audit-2026-08-29 (2026-08-29), workflow-agent-usability-audit-2026-08-27 (2026-08-27), experiments/2026-08-28-trending-ai-autonomy, experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm, experiments/2026-08-29-ultracode-vs-bullswarm, experiments/2026-08-31-v2-component-probes, experiments/2026-09-06-caller-planner-evaluation. Format: `> Historical (YYYY-MM-DD): accurate when written; see CHANGELOG for what changed since.`",
+            "`grep -rnE 'bullswarm (delegate|workflow (run|validate|list|draft|inspect|approval))\\b' README.md AGENTS.md skill/SKILL.md skill/references/operations.md` returns nothing; the only `bullswarm delegate` hits in the repo are the banner and heading inside the historical design note. src/help.js carries the requirement-4 flag changes (`--no-caller` at :244, the always-JSON option notes, the health `--json` wording).",
+            "CHANGELOG.md:3 is `## 0.27.1 — audit cleanup`, directly above `## 0.27.0 — one workflow engine` at :77, in the file's existing bullet style, and it enumerates every part of the patch (Tier A, D1/D3/D5/D6/D7, content gate, command surface, dead kernel, C1-C4, the OpenRouter bundled tier, the docs changes). Its final bullet says `Tests: 661 -> 710, 0 failures` with the per-file breakdown, and my own `env -u CLAUDE_CONFIG_DIR -u FORCE_COLOR -u NO_COLOR npm test` measured exactly `# tests 710 # pass 710 # fail 0`. No release was cut: package.json:3 is `\"version\": \"0.27.0\"`, `node bin/bullswarm.js version` prints `0.27.0`, HEAD is still 9635cd5, nothing is staged, and docs/audits/ is clean in `git status`."
+          ],
+          "concerns": [],
+          "eventSequence": 45
+        }
+      ]
+    },
+    {
+      "id": "requirement-7",
+      "text": "The four small refactors the report says belong in the patch, plus the missing datapack path: (C1) delete the inline lane table at src/strategy-cli.js:366 and derive `TIER_CONTEXTS[tier].lane` (src/lib/strategy.js:632-648) from `DEFAULT_EFFORT_BY_LANE`/`KIND_DEFAULTS` in src/workflow/action-validator.js so the three tables cannot disagree; (C2) one `clearTierAssignment(strategy, tier)` helper replacing the five hand-written `delete state.strategy.assignments[tier]` lines (src/strategy-cli.js:502,720,783,899; src/strategy-dashboard.js:335); (C3) one exported strict `finiteOrNull` (rejects '', booleans, NaN, Infinity) replacing the six copies at src/meters/framework.js:148, src/lib/route.js:114, src/lib/spend.js:64, src/lib/config.js:130, src/lib/openrouter-models.js:15, src/lib/epoch-benchmarks.js:62, with a test that `''` no longer becomes 0 in the two datapack loaders; (C4) derive `GENERIC_QUOTA_SIGNATURES` from `DEFAULT_QUOTA_SIGNATURES` (src/lib/quota.js:28-61) with a `generic: true` marker instead of restating six phrases; and remove the OpenRouter `bundledFile` tier (src/lib/openrouter-models.js:13,159-177) that reads a `data/openrouter-benchmarks.json` no commit has ever contained, keeping the cache and network tiers and the Epoch bundled pack untouched, with the loader test updated.",
+      "mandatory": true,
+      "status": "passed",
+      "workRevision": "work-1-36-integrate",
+      "evidence": [
+        {
+          "sourceAction": "verify",
+          "status": "passed",
+          "evidence": [
+            "C1: the inline lane table is gone from src/strategy-cli.js. At HEAD:366 the routes loop read `({ high: 'analyze', medium: 'build', low: 'chore' })[tier]`; the tree now reads `?? { lane: TIER_LANES[tier], capabilities: [] }` (src/strategy-cli.js:391-392) with a comment saying why. src/lib/strategy.js imports `DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS` from ../workflow/action-validator.js and derives the map in `deriveTierLane(tier)` (lanes come from DEFAULT_EFFORT_BY_LANE's keys, ranked by KIND_DEFAULTS entries at that effort), exporting `TIER_LANES` which `TIER_CONTEXTS[tier].lane` then reads. Runtime check: `node -e \"import('./src/lib/strategy.js').then(m=>console.log(m.TIER_LANES))\"` -> `{\"high\":\"analyze\",\"medium\":\"build\",\"low\":\"chore\"}`, matching the live `strategy routes` output.",
+            "C2: `clearTierAssignment(strategy, tier)` is exported once from src/lib/strategy.js:77 and used at exactly the five former hand-written sites — src/strategy-cli.js:534, 758, 820, 935 and src/strategy-dashboard.js:337. `grep -rn 'delete .*assignments\\[' --include='*.js' src` returns a single hit, line 79 inside the helper itself. tests/strategy.test.js:486-505 covers the drop-one-tier case and the undefined/null/empty-strategy cases; 27/27 pass.",
+            "C3: one strict implementation in the new src/lib/num.js — `finiteOrNull` rejects null/undefined, booleans, arrays, '' and whitespace-only strings, NaN and ±Infinity. All six former copies now import it: src/meters/framework.js:20 (as numberOrNull), src/lib/route.js:41 (as num), src/lib/openrouter-models.js:8 (as finite), src/lib/config.js:17, src/lib/epoch-benchmarks.js:10 (as finite), src/lib/spend.js:23 (as num). `grep -rn 'function num(|const num = (value)|function finiteOrNull' --include='*.js' src` matches only src/lib/num.js:26. Both datapack loaders have the '' test the requirement asked for: tests/openrouter-models.test.js:178-195 feeds `agentic_index: ''`, `coding_index: null`, `intelligence_index: true`, `pricing: {prompt: '', completion: '   ', input_cache_read: null, input_cache_write: false}`; tests/epoch-benchmarks.test.js adds 'blank CSV cells stay null and never score as a measured zero' (blank score row dropped, blank cost/token cells stay null). tests/num.test.js 4/4, openrouter-models 7/7, epoch-benchmarks 7/7.",
+            "C4: src/lib/quota.js has one `QUOTA_SIGNATURE_TABLE` of 14 `{phrase, generic?}` entries; `DEFAULT_QUOTA_SIGNATURES` maps it to phrases and `GENERIC_QUOTA_SIGNATURES` is `QUOTA_SIGNATURE_TABLE.filter(e => e.generic).map(e => e.phrase)` — the six generic phrases are marked, not restated, with a comment citing audit C4.",
+            "OpenRouter bundled tier removed: `loadOpenRouterCatalog` in src/lib/openrouter-models.js:164-200 takes only `cacheFile` (defaulting to `<home>/cache/openrouter-benchmarks.json`) and `url`, with no `bundledFile` parameter and no `cache: 'bundled'` branch; its doc comment says 'Two tiers only' and explains the removed tier read a path no commit contained. `grep -rn 'bundledFile' src` matches only src/lib/epoch-benchmarks.js (the Epoch pack, untouched as required). tests/openrouter-models.test.js:154-164 pins the removal and asserts the release URL; 7/7 pass."
+          ],
+          "concerns": [
+            "src/workflow/fsjson.js is now a nine-line re-export shim over src/lib/fsjson.js with four importers. Correct and intentional (it keeps the workflow layer's import path stable) but it is exactly the kind of indirection the next dead-code audit will flag."
+          ],
+          "eventSequence": 45
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "dead-code",
+      "purpose": "Remove the Tier A dead code in the workflow, agent-events, usage and assignments files, rewrite their tests, and add the fixture-mode test that keeps fixtures/openrouter alive",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-dead-code-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "max",
+        "applied": "max",
+        "source": "strategy-pool",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "state-bugs",
+      "purpose": "Fix the state.json last-writer-wins race with atomic writes and a locked read-modify-write, make run --dry-run truly read-only, and stop the fixture migration overriding an explicit enabled: true",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-state-bugs-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "xhigh",
+        "applied": "xhigh",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "routing-cleanup",
+      "purpose": "Remove the routing-territory Tier A items, fix disabled-pool polling and the misleading empty-allow-list reason, apply refactors C1-C4, and drop the never-existing OpenRouter bundled-datapack tier",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-routing-cleanup-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "xhigh",
+        "applied": "xhigh",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "verify-gate",
+      "purpose": "Stop the content gate accepting error-shaped JSON and head-only failure scans; add fixtures and make the fixture count exact",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-verify-gate-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "max",
+        "applied": "max",
+        "source": "strategy-pool",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "surface",
+      "purpose": "Reject unknown flags centrally with exit 2 on every command path, validate typed inputs at the boundary, give health --json real JSON, and align help with behaviour",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-surface-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "xhigh",
+        "applied": "xhigh",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "dead-kernel",
+      "purpose": "Surface the kernel's stderr.log tail when watch, runs show, runs result and the TUI detect a dead kernel",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-dead-kernel-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "max",
+        "applied": "max",
+        "source": "strategy-pool",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "docs",
+      "purpose": "Make README, AGENTS.md, GOAL.md, data/README.md, the skill references and docs/ true for 0.27.1, banner the historical docs, and draft the 0.27.1 changelog section",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-docs-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "high",
+        "applied": "high",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": "implement",
+      "failure": null
+    },
+    {
+      "id": "integrate",
+      "purpose": "Reconcile all writers' edits, apply their shared-file requests, finalize the changelog counts, and run the full acceptance checks from the audit report",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/out-integrate-attempt-1.md",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "xhigh",
+        "applied": "xhigh",
+        "source": "action",
+        "clamped": false
+      },
+      "kind": "integration",
+      "failure": null
+    },
+    {
+      "id": "verify",
+      "purpose": "Independent adversarial acceptance: reproduce the fixed bugs, the removals and the hardened surface from the code and the CLI without trusting the reports",
+      "status": "succeeded",
+      "outputFile": "/Users/cowcow02/.bullswarm/workflows/wf-mttpmjwq-a09080/candidate-verify.json",
+      "artifactIds": [],
+      "reasoning": {
+        "requested": "xhigh",
+        "applied": "xhigh",
+        "source": "connector",
+        "clamped": false
+      },
+      "kind": "adversarial-acceptance",
+      "failure": null
+    }
+  ],
+  "gaps": null,
+  "usage": {
+    "total": 37206,
+    "byPool": {
+      "command-code": 5034,
+      "claude-code:wati": 21880,
+      "grok": 3761,
+      "claude-code:petsona": 6531
+    }
+  },
+  "finishedAt": "2026-09-09T07:39:42.698Z"
+}

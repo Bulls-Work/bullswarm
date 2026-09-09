@@ -25,7 +25,19 @@ const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
   'usage', 'routing', 'reasoning', 'continued', 'lastActivityAt', 'lastEventAt',
-  'outputBytesObserved', 'lastAgentEvent', 'wallSec',
+  'outputBytesObserved', 'bytes', 'lastAgentEvent', 'wallSec',
+]);
+// `state.attempts[].bytes` — the kernel's byte ledger for one dispatch, written
+// at dispatch and completed when the attempt ends (src/workflow/v2-runtime.js
+// `attemptBytes`). `taskFile` is the task file the attempt was handed,
+// `authorPrompt` the program author's own prompt text as authored, `kernel` the
+// remainder after the prompt and any embedded requirement text,
+// `dependencyInputs` the total size of the dependency output files the task
+// points at (0 when there are none), and `output` the durable out file — null
+// until the attempt finishes and whenever no out file exists. Attempts recorded
+// before this ledger existed carry no `bytes` field at all.
+const ATTEMPT_BYTES_FIELDS = new Set([
+  'taskFile', 'authorPrompt', 'kernel', 'dependencyInputs', 'output',
 ]);
 const PLANNER_BOUNDARIES = new Set(['initial', 'gaps', 'steering']);
 const PLANNER_MODES = new Set(['dispatched', 'caller']);
@@ -437,7 +449,8 @@ function validateProgram(program, state) {
       );
       for (const action of actions) {
         knownActions.push({
-          id: action.id, dependsOn: clone(action.dependsOn), affects: clone(action.affects),
+          id: action.id, kind: action.kind ?? null,
+          dependsOn: clone(action.dependsOn), affects: clone(action.affects),
           ownedFiles: clone(action.ownedFiles), evidenceFor: clone(action.evidenceFor),
           produces: clone(action.produces ?? []),
         });
@@ -475,6 +488,17 @@ function validateActionStates(actions, program) {
   for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);
 }
 
+// Byte counts are measured, never estimated: each field is a real file size or
+// a real string length, and an unmeasured `output` is null rather than 0.
+function validateAttemptBytes(bytes, at) {
+  object(bytes, at);
+  noUnknown(bytes, ATTEMPT_BYTES_FIELDS, at);
+  for (const field of ['taskFile', 'authorPrompt', 'kernel', 'dependencyInputs']) {
+    nonNegativeInteger(bytes[field], `${at}.${field}`);
+  }
+  if (bytes.output !== null && bytes.output !== undefined) nonNegativeInteger(bytes.output, `${at}.output`);
+}
+
 function validateAttempts(attempts, program) {
   if (!Array.isArray(attempts)) fail('state.attempts must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
@@ -495,6 +519,7 @@ function validateAttempts(attempts, program) {
     for (const field of ['usage', 'routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.attempts[${index}].continued must be a boolean`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
   }
