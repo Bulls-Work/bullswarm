@@ -153,7 +153,7 @@ const TABLE = {
     'started-before', 'to', 'limit', 'json',
   ],
   'workflow runs show': ['json'],
-  'workflow runs result': ['json'],
+  'workflow runs result': ['json', 'summary'],
   'workflow runs delete': ['yes', 'force', 'json'],
 };
 

@@ -68,7 +68,7 @@ test('V2 watch heartbeat reports only counts, latest purpose, freshness, and res
     let output = '';
     assert.equal(await runWorkflowWatch(home, 'v2w234', { once: true, output: { write: (text) => { output += text; } } }), 0);
     assert.match(output, /workflow ended partial; result ready/);
-    assert.match(output, /next: bullswarm workflow runs result v2w234 --json/);
+    assert.match(output, /next: bullswarm workflow runs result v2w234 --json --summary/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -135,7 +135,7 @@ test('terminal watch emits attempt timing breakdown and exits', async () => {
     assert.equal(code, 0);
     assert.match(output, /timing: 1 attempts in 3m00s/);
     assert.match(output, /write-report#1/);
-    assert.match(output, /next: bullswarm workflow runs result tim234 --json/);
+    assert.match(output, /next: bullswarm workflow runs result tim234 --json --summary/);
   } finally { f.cleanup(); }
 });
 
@@ -588,7 +588,7 @@ test('V2 --next prints no attach line and returns after the first notable event'
     assert.equal(code, 0);
     assert.doesNotMatch(output, /watching/);
     assert.match(output, /outcome: completed\n/);
-    assert.match(output, /next: bullswarm workflow runs result nxc234 --json/);
+    assert.match(output, /next: bullswarm workflow runs result nxc234 --json --summary/);
   } finally { delivered.cleanup(); }
 
   const failed = v2Fixture({ shortId: 'nxf234', running: false });

@@ -1199,14 +1199,20 @@ const workflowRunsShowText = rich({
 });
 
 const workflowRunsResultText = rich({
-  usage: 'bullswarm workflow runs result <shortId|runId> [--json]',
+  usage: 'bullswarm workflow runs result <shortId|runId> [--json] [--summary]',
   purpose: 'Print the stable caller envelope. V2 returns the kernel-computed goal, requirement '
     + `ledger, action outcomes, and unresolved gaps; a legacy row remains read-only. ${legacyRunNote} `
-    + 'This is the intended integration point for scripts and agents.',
+    + 'This is the intended integration point for scripts and agents. Use --summary for the compact status-loop envelope; read the full envelope on failed or partial runs and before judging evidence.',
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
-  options: [{ flag: '--json', desc: 'print the full versioned result document as JSON', default: 'human-readable result summary' }],
+  options: [
+    { flag: '--json', desc: 'print the full versioned result document as JSON', default: 'human-readable result summary' },
+    { flag: '--summary', desc: 'print the compact JSON status-loop envelope; implies --json', default: 'full result envelope' },
+  ],
   safety: ['read-only'],
-  examples: [{ cmd: 'bullswarm workflow runs result ab12cd --json' }],
+  examples: [
+    { cmd: 'bullswarm workflow runs result ab12cd --json' },
+    { cmd: 'bullswarm workflow runs result ab12cd --json --summary', note: 'compact status-loop result; read the full envelope for failed/partial runs or before judging evidence' },
+  ],
   next: 'bullswarm workflow runs delete ab12cd --yes once you no longer need the run directory.',
 });
 

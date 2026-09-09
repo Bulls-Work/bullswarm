@@ -205,6 +205,11 @@ console.log(result.result.status);
   };
   const results = await Promise.all([start(), start()]);
   assert.equal(results.filter((result) => result.code === 0).length, 1, JSON.stringify(results));
-  assert.match(results.find((result) => result.code !== 0).output, /active kernel/);
+  // Two refusals are correct, and which one the loser prints is a race: it
+  // either never claims the lease ("active kernel") or claims it and finds the
+  // winner's token in the file on the next fenced write ("kernel lease lost").
+  // Both come from the same lease in src/workflow/v2-process.js, and the
+  // assertions around this one are what prove exactly one kernel dispatched.
+  assert.match(results.find((result) => result.code !== 0).output, /active kernel|kernel lease lost/);
   assert.equal(readFileSync(join(f.cwd, 'a.txt'), 'utf8'), 'seed\nreplacement\n');
 });

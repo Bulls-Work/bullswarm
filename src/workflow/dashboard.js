@@ -1149,8 +1149,8 @@ function friendlyActionKind(kind) {
 }
 
 // The role shown between an action's id and its status. A program action states
-// its nature in `kind` (mechanical, io-read, check, implement, integration,
-// architecture, adversarial-acceptance), so show that; for one written before
+// its nature in `kind` (mechanical, io-read, digest, check, implement,
+// integration, architecture, adversarial-acceptance), so show that; for one written before
 // kinds existed, derive the role the way the kernel defines it — an action that
 // judges a requirement is evidence, anything else with a definition is work.
 function actionRoleLabel(action) {

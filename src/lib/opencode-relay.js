@@ -5,10 +5,16 @@
 // Spawn adds or retargets `--model` to `<id>/gpt-5.6-luna` for discovered
 // providers. No hardcoded key list — whatever OpenCode has configured with a
 // Relay base URL is used.
+//
+// Each pool also carries env.OPENCODE_CONFIG_CONTENT declaring the five
+// reasoning variants for its OWN provider id, which is what makes the
+// connector's `--variant <level>` mean anything (see relayVariantsConfig).
 
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+
+import { REASONING_LEVELS } from './reasoning.js';
 
 export const RELAY_BASE_HOST = 'api.relay.com';
 export const RELAY_OPENCODE_MODEL = 'gpt-5.6-luna';
@@ -22,6 +28,29 @@ export function isRelayBaseUrl(url) {
   } catch {
     return false;
   }
+}
+
+/**
+ * The OPENCODE_CONFIG_CONTENT value for one Relay pool.
+ *
+ * opencode's `--variant <level>` only reaches the provider when the CONFIG
+ * declares that variant for that model; a bare install declares none, so the
+ * flag is accepted and silently dropped. OPENCODE_CONFIG_CONTENT is a JSON
+ * string opencode merges OVER the config file (the file's own provider keys,
+ * including the API key, stay in force), so declaring one variant per common
+ * reasoning level here is what turns `--variant max` into
+ * `reasoning_effort: "max"` on the Relay request.
+ *
+ * The keys are REASONING_LEVELS verbatim, so the injected variants can never
+ * drift from the levels connectors/opencode2.json declares.
+ *
+ * @returns {string} JSON, e.g. for `relay-2`:
+ *   {"provider":{"relay-2":{"models":{"gpt-5.6-luna":{"variants":{"low":{"reasoningEffort":"low"},…}}}}}}
+ */
+export function relayVariantsConfig(providerId, model = RELAY_OPENCODE_MODEL) {
+  const variants = {};
+  for (const level of REASONING_LEVELS) variants[level] = { reasoningEffort: level };
+  return JSON.stringify({ provider: { [providerId]: { models: { [model]: { variants } } } } });
 }
 
 export function poolNameForRelayProvider(providerId, index) {
@@ -101,8 +130,24 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
     clone.spawn = { ...clone.spawn, cmd: retargetOpenCodeModel(clone.spawn.cmd, providerId) };
   };
 
+  // An OPENCODE_CONFIG_CONTENT the operator wrote into the INSTALLED
+  // connector is their own answer about which opencode config a pool runs
+  // under, and is never overwritten — not on the base pool, and not on the
+  // clones, which inherit it through structuredClone. Read before any
+  // injection, so the base pool's own injected value is not mistaken for one.
+  const operatorSetConfigContent = typeof base.env?.OPENCODE_CONFIG_CONTENT === 'string'
+    && base.env.OPENCODE_CONFIG_CONTENT.trim() !== '';
+  const injectVariants = (clone, providerId) => {
+    if (operatorSetConfigContent) return;
+    clone.env = {
+      ...(clone.env ?? {}),
+      OPENCODE_CONFIG_CONTENT: relayVariantsConfig(providerId),
+    };
+  };
+
   const primary = providers[0];
   pinModel(base, primary.id);
+  injectVariants(base, primary.id);
   base.profile = {
     providerId: primary.id,
     command: primary.command,
@@ -119,6 +164,7 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
     const clone = structuredClone(base);
     clone.name = extra.pool;
     pinModel(clone, extra.id);
+    injectVariants(clone, extra.id);
     clone.flags = { ...(base.flags ?? {}), isCaller: false };
     clone.profile = {
       providerId: extra.id,

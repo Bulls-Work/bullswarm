@@ -1,5 +1,5 @@
 import { withV2Cancellation } from './v2-cancellation.js';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent } from './events.js';
@@ -229,6 +229,10 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.lastActivityAt !== undefined ? { lastActivityAt: record.lastActivityAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
     ...(record.outputBytesObserved !== undefined ? { outputBytesObserved: record.outputBytesObserved } : {}),
+    // The dispatch-time byte ledger (see attemptBytes). Only the kernel's
+    // 'started' call carries it; a later normalize of the same attempt leaves
+    // the recorded object in place instead of erasing it.
+    ...(record.bytes !== undefined ? { bytes: clone(record.bytes) } : {}),
     ...(record.lastAgentEvent !== undefined ? { lastAgentEvent: clone(record.lastAgentEvent) } : {}),
   };
 }
@@ -262,8 +266,86 @@ function initializeNewActions(state) {
 function dependencyArtifacts(state, action) {
   return action.dependsOn.map((id) => {
     const runtime = actionState(state, id);
-    return { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []) };
+    const declared = definition(state, id);
+    const entry = { actionId: id, outputFile: runtime?.outputFile ?? null, artifactIds: clone(runtime?.artifactIds ?? []) };
+    // A digest already condensed other actions' outputs. Name those sources
+    // (one level is enough) so a consumer handed the digest can still drill
+    // down to a raw artifact when the condensation is not sufficient.
+    if (declared?.kind === 'digest') {
+      entry.digestOf = (declared.dependsOn ?? []).map((sourceId) => ({
+        actionId: sourceId,
+        outputFile: actionState(state, sourceId)?.outputFile ?? null,
+      }));
+    }
+    return entry;
   });
+}
+
+/**
+ * The byte sizes, as of dispatch time, of the dependency output files the task
+ * file points this action at. A dependency whose output file is missing or
+ * unreadable counts as 0 — never a guess. `digestOf` drill-down paths are
+ * pointers, not inputs, so only the top-level entries are measured.
+ */
+function dependencyInputBytes(state, action) {
+  let total = 0;
+  for (const entry of dependencyArtifacts(state, action)) {
+    if (!entry.outputFile) continue;
+    try { total += statSync(entry.outputFile).size; } catch { /* missing output counts as 0 */ }
+  }
+  return total;
+}
+
+// The requirement texts a task file embeds verbatim: `affects` for work,
+// `evidenceFor` for evidence, none for a kernel-owned digest.
+function embeddedRequirementBytes(state, action, { evidence = false, digest = false } = {}) {
+  if (digest) return 0;
+  const ids = evidence ? action.evidenceFor ?? [] : action.affects ?? [];
+  return state.intent.requirements
+    .filter((item) => ids.includes(item.id))
+    .reduce((total, item) => total + Buffer.byteLength(String(item.text ?? ''), 'utf8'), 0);
+}
+
+/**
+ * The byte ledger recorded on every attempt this kernel dispatches, at
+ * `state.attempts[].bytes`:
+ *   taskFile         bytes of the task file the attempt was handed
+ *   authorPrompt     bytes of the program author's own prompt, as authored
+ *   kernel           taskFile minus authorPrompt minus embedded requirement text
+ *   dependencyInputs total bytes of the dependency output files it points at
+ *   output           bytes of the durable out file, filled in on completion
+ * `output` is null until the attempt finishes, and stays null when no out file
+ * was written. The three parts are measured independently, so `kernel` is
+ * floored at 0 rather than reporting a negative remainder.
+ */
+function attemptBytes(state, action, taskText, { evidence = false, digest = false } = {}) {
+  const taskFile = Buffer.byteLength(taskText, 'utf8');
+  const authorPrompt = Buffer.byteLength(String(action.prompt ?? ''), 'utf8');
+  const requirements = embeddedRequirementBytes(state, action, { evidence, digest });
+  return {
+    taskFile,
+    authorPrompt,
+    kernel: Math.max(0, taskFile - authorPrompt - requirements),
+    dependencyInputs: dependencyInputBytes(state, action),
+    output: null,
+  };
+}
+
+// Re-measure what the attempt actually cost once it is over: the task file as
+// written (a bounded schema correction rewrites it larger) and the durable out
+// file. Anything unreadable is left as recorded, never guessed.
+function observeAttemptBytes(attempt, { authorPrompt, requirements }) {
+  if (!attempt?.bytes) return;
+  if (attempt.taskFile) {
+    try {
+      attempt.bytes.taskFile = statSync(attempt.taskFile).size;
+      attempt.bytes.kernel = Math.max(0, attempt.bytes.taskFile - authorPrompt - requirements);
+    } catch { /* the task file is gone; keep the dispatched size */ }
+  }
+  if (attempt.outputFile) {
+    try { attempt.bytes.output = statSync(attempt.outputFile).size; }
+    catch { /* no durable out file: output stays null */ }
+  }
 }
 
 function ancestorPools(state, action) {
@@ -345,6 +427,38 @@ function buildProgramWorkTask(state, action, targetDir) {
     '', targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
     '',
     'Output transport: your complete final response is captured as this action\'s durable output artifact. Do not overwrite kernel-owned task/output files. Include delivered files or findings, validation results, unfinished work, and precise requests for the integrator. Read-only reports belong in the final response itself.',
+  ].join('\n');
+}
+
+/**
+ * The kernel-owned task for a `kind: "digest"` action: an extractive
+ * condensation of its dependencies' outputs so an expensive consumer reads one
+ * digest instead of many raw files. The rules are the kernel's, not the
+ * author's — the author's prompt is appended as focus guidance only, because a
+ * digest that judged or paraphrased would be delegated reasoning.
+ */
+function buildDigestTask(state, action, targetDir = state.intent.cwd) {
+  const inputBytes = dependencyInputBytes(state, action);
+  const budget = Math.max(8192, Math.round(inputBytes / 4));
+  return [
+    `Bullswarm digest action: ${action.id}`,
+    `Purpose: ${action.purpose}`,
+    `Workspace: ${targetDir}`,
+    'This action is read-only. Do not modify workspace files.',
+    `Dependency artifacts:\n${JSON.stringify(dependencyArtifacts(state, action))}`,
+    'Read every dependency output above in full, then produce an extractive digest of those outputs.',
+    'Quote verbatim; never paraphrase and never judge. From each source, carry over:',
+    '- every item it reports as delivered, with the exact file paths it names',
+    '- every validation result, with its exact numbers, and the commands it ran with their observed output',
+    '- everything it reports as unfinished, blocked, or unverified',
+    '- every shared-file request and every request addressed to an integrator',
+    'Keep one section per source, headed by that source\'s absolute output path.',
+    'No verdicts, no recommendations, no new claims, and no work of your own: you are not judging these outputs, and a reader must be able to trust every line as a quotation.',
+    `Target at most ${budget} bytes in total (a quarter of the ${inputBytes} bytes of dependency output you were handed, or 8 KB, whichever is larger). Drop repetition and boilerplate first; never drop a number, a path, or a request.`,
+    '', 'Focus guidance from the program author (scope only):',
+    targetDir === state.intent.cwd ? action.prompt : action.prompt.split(state.intent.cwd).join(targetDir),
+    '',
+    'Output transport: your complete final response is captured as this action\'s durable output artifact. Do not overwrite kernel-owned task/output files. The digest itself belongs in the final response.',
   ].join('\n');
 }
 
@@ -986,9 +1100,17 @@ async function runV2Kernel({
     };
     let result;
     if (!receipt) await syncPools();
+    // Composed once, so the byte ledger below measures exactly the text this
+    // attempt was handed rather than a second rendering of it.
+    const digest = action.kind === 'digest';
+    const taskText = evidence
+      ? buildEvidenceTask(state, action, contractPath, candidatePath)
+      : digest ? buildDigestTask(state, action, targetDir) : buildWorkTask(state, action, targetDir);
+    const dispatchedBytes = attemptBytes(state, action, taskText, { evidence, digest });
+    const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence, digest });
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
-      taskText: evidence ? buildEvidenceTask(state, action, contractPath, candidatePath) : buildWorkTask(state, action, targetDir),
+      taskText,
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
@@ -1008,7 +1130,7 @@ async function runV2Kernel({
           const ordinal = baseAttemptOrdinal + record.ordinal;
           currentAttemptId = `${action.id}-${ordinal}`;
           runtime.attempts = ordinal;
-          state.attempts.push(normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal }));
+          state.attempts.push(normalizeAttempt({ ...record, bytes: clone(dispatchedBytes) }, { id: currentAttemptId, actionId: action.id, ordinal }));
           emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
         } else {
           lease.assertOwner();
@@ -1017,7 +1139,10 @@ async function runV2Kernel({
             verdict: verdict ?? { ok: true, outFile: record.outFile ?? record.outputFile },
           });
           const attempt = state.attempts.find((item) => item.id === currentAttemptId);
-          if (attempt) Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
+          if (attempt) {
+            Object.assign(attempt, normalizeAttempt(record, { id: currentAttemptId, actionId: action.id, ordinal: attempt.ordinal }));
+            observeAttemptBytes(attempt, { authorPrompt: dispatchedBytes.authorPrompt, requirements: observedRequirementBytes });
+          }
           addUsage(state, record);
           emit('attempt.finished', { actionId: action.id, attemptId: currentAttemptId, status: record.status, failureKind: record.failureKind ?? null });
         }
