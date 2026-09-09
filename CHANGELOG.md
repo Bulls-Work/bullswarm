@@ -1,5 +1,25 @@
 # bullswarm changelog
 
+## 0.28.1 — summary bytes on the wire
+
+- `workflow runs result <id> --summary` was budgeted by `fitResultSummary`
+  against compact `JSON.stringify(summary)` (`RESULT_SUMMARY_BYTE_BUDGET =
+  4096` in `src/workflow/v2-outcome.js`) but `jsonOut` printed
+  `JSON.stringify(obj, null, 2)`, so the bytes on the wire exceeded the
+  budget. `--summary` now prints compact single-line JSON
+  (`JSON.stringify(obj)` in `src/workflow/runs-cli.js`); `--json` without
+  `--summary` still pretty-prints the full envelope, and `--summary --json`
+  stays identical to `--summary`. Measured on
+  `tests/fixtures/real-result-ze5xz2.json` through the summariser / CLI:
+  compact `--summary` is 3,786 bytes
+  (`tests/workflow-result-summary.test.js` prints `result-summary size:
+  full=57141 summary=3786`; same figure as
+  `Buffer.byteLength(JSON.stringify(summarizeV2Result(fixture)))`); the
+  full envelope as `--json` prints it is 60,709 bytes
+  (`JSON.stringify(envelope, null, 2)` plus the trailing newline
+  `console.log` adds — `tests/workflow-result-summary.test.js` prints
+  `result-summary cli: prettyFull=60709`).
+
 ## 0.28.0 — context diet
 
 - `workflow runs result <id> --summary` prints a compact status-loop
@@ -77,9 +97,10 @@
   39,288; compact `JSON.stringify` of the parsed envelope is 57,141.
   `summarizeV2Result` of that fixture is 3,786 bytes —
   `tests/workflow-result-summary.test.js` prints `result-summary size:
-  full=57141 summary=3786`. The 0.28.0 goal recorded the integrator's
-  inputs as 60,790 bytes; `wc -c` of the seven dependency out-files under
-  `.diet-inputs/` sums to 46,022 (out-surface 18,659, out-routing-cleanup
+  full=57141 summary=3786` (numbers re-measured in 0.28.1). The 0.28.0
+  goal recorded the integrator's inputs as 60,790 bytes; `wc -c` of the
+  seven dependency out-files under `.diet-inputs/` sums to 46,022
+  (out-surface 18,659, out-routing-cleanup
   10,202, out-state-bugs 7,052, out-docs 6,831, out-dead-kernel 1,377,
   out-verify-gate 974, out-dead-code 927) and the integrator task file is
   14,768 (`wc -c .diet-inputs/task-integrate-attempt-1.md`), which

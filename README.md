@@ -656,6 +656,10 @@ These are UTF-8 byte counts, never tokens.
 requirement as `{ id, status, mandatory, evidenceCount, why }`, each action as
 `{ id, kind, lane, effort, status, pool, model, reasoning, wallSec, outFile,
 bytes }`, `concerns: { count, first }`, `usage`, and `next: { full, runDir, outputs }` — every output name is a basename inside `next.runDir`.
+`--summary` is single-line JSON (`JSON.stringify`), so the bytes on the wire
+match the 4,096-byte fitter budget. As printed by the CLI on
+`tests/fixtures/real-result-ze5xz2.json`, the compact summary is 3,786 bytes
+and the pretty full envelope (`--json` alone) is 60,709 bytes.
 The full `bullswarm.workflow.result.v2` envelope is unchanged and remains the
 default. Read it (`--json` alone) on a failed or partial run, or before judging
 evidence. A terminal `workflow watch` prints the same compact command as
