@@ -1,6 +1,10 @@
 # bullswarm Dynamic Workflows — Design
 
-**Status:** implemented; historical design rationale retained · **Created:** 2026-08-21
+**Status:** historical. The authored-graph engine this document describes —
+`workflow run`, `workflow validate`, `workflow draft`, the `bullswarm.workflow.v1`
+document, its `decide` step and the `check-output-schema` preflight — was removed in
+0.27.0. The program-based V2 goal engine is the only workflow engine; see README.md.
+Kept for design rationale only · **Created:** 2026-08-21
 
 ## Problem
 

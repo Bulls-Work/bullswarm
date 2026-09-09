@@ -136,7 +136,7 @@ test('scout unit handoff accepts only a trailing unique kebab-case JSON array', 
   assert.deepEqual(extractScoutUnitIds('UNITS OF WORK:\n- alpha'), []);
 });
 
-test('retired autonomous V1 documents and runs fail closed before dispatch', () => {
+test('retired authored-graph verbs and V1 runs fail closed before dispatch', () => {
   const f = fixture();
   try {
     const legacyPath = join(f.root, 'retired-autonomous-v1.json');
@@ -148,10 +148,22 @@ test('retired autonomous V1 documents and runs fail closed before dispatch', () 
       orchestration: { mode: 'autonomous' },
       inputs: {}, settings: {}, phases: [],
     }));
-    const direct = cli(f, ['workflow', 'run', legacyPath, '--json']);
-    assert.equal(direct.status, 1);
-    assert.match(direct.stderr, /retired autonomous V1 workflow documents cannot run/);
-    assert.equal(existsSync(join(f.home, 'workflows')), false, 'rejection must not create a paid run');
+    // 0.27.0 removed the authored-graph executor: every one of its verbs is
+    // now an unknown workflow subcommand. A V1 document is not rejected on its
+    // content any more — there is no verb left that would read it.
+    for (const argv of [
+      ['workflow', 'run', legacyPath, '--json'],
+      ['workflow', 'validate', legacyPath],
+      ['workflow', 'list'],
+      ['workflow', 'inspect', legacyPath],
+      ['workflow', 'draft', 'list'],
+      ['workflow', 'approval', 'approve', 'abc234'],
+    ]) {
+      const retired = cli(f, argv);
+      assert.equal(retired.status, 2, `${argv.join(' ')}: ${retired.stdout}${retired.stderr}`);
+      assert.match(retired.stderr, /bullswarm workflow/);
+      assert.equal(existsSync(join(f.home, 'workflows')), false, `${argv.join(' ')} must not create a run`);
+    }
 
     const oldRunDir = join(f.home, 'workflows', 'wf-retired-v1');
     mkdirSync(oldRunDir, { recursive: true });
@@ -165,7 +177,7 @@ test('retired autonomous V1 documents and runs fail closed before dispatch', () 
   } finally { f.cleanup(); }
 });
 
-test('capabilities separate autonomous V2 from fixed authored graphs', () => {
+test('capabilities report one live engine and the authored graphs as retired', () => {
   const f = fixture();
   try {
     const result = cli(f, ['workflow', 'capabilities']);
@@ -179,7 +191,11 @@ test('capabilities separate autonomous V2 from fixed authored graphs', () => {
     assert.deepEqual(capabilities.engines.autonomousV2.compatibility, {
       resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true,
     });
-    assert.deepEqual(capabilities.engines.authoredGraphs.stepTypes, ['run', 'fanout', 'verify', 'decide']);
+    assert.equal(capabilities.engines.authoredGraphs.retired, '0.27.0');
+    assert.equal(capabilities.engines.authoredGraphs.command, null);
+    assert.deepEqual(capabilities.engines.authoredGraphs.stepTypes, []);
+    assert.match(capabilities.engines.authoredGraphs.legacyRuns, /rows marked legacy/);
+    assert.equal(capabilities.worktreeIsolation.authoredGraphs, undefined);
   } finally { f.cleanup(); }
 });
 

@@ -1,22 +1,18 @@
 import { withV2Cancellation } from './v2-cancellation.js';
-// bullswarm workflow CLI — run | validate | list.
+// bullswarm workflow CLI — goal | plan | runs | watch | tui.
 
 import {
-  existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync,
+  existsSync, statSync, readFileSync, writeFileSync, mkdirSync,
   openSync, closeSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { loadWorkflow, runWorkflow, newRunId } from './runner.js';
-import { validateWorkflow, WorkflowValidationError } from './validate.js';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
-import { WorkflowTui } from './tui.js';
-import { cmdDraft } from './draft-cli.js';
 import { cmdRuns } from './runs-cli.js';
-import { resolveRunId, reconcileInterruptedRuns } from './short-id.js';
-import { runDashboard, dashboardJson, actionJson, decideApproval } from './dashboard.js';
+import { newRunId, resolveRunId, isLegacyRunDir, isLegacyRunState, legacyRunLine } from './short-id.js';
+import { runDashboard, dashboardJson } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
@@ -32,7 +28,6 @@ import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
-import { isDeliveredWorkflowStatus } from './status.js';
 import { helpText, usageLine } from '../help.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
@@ -47,54 +42,9 @@ function bullswarmDir() {
 }
 export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external import
 
-function workflowDirs() {
-  const dir = bullswarmDir();
-  return [
-    join(process.cwd(), 'workflows'),
-    join(dir, 'workflows'),
-    join(dir, 'drafts'),
-  ];
-}
-
-function discover() {
-  const found = [];
-  for (const dir of workflowDirs()) {
-    if (!existsSync(dir)) continue;
-    for (const f of readdirSync(dir).sort()) {
-      const p = join(dir, f);
-      const isDraft = statSync(p).isDirectory() && existsSync(join(p, 'workflow.json'));
-      if (isDraft) {
-        // Drafts are <draft>/workflow.json.
-        const dp = join(p, 'workflow.json');
-        try {
-          const doc = JSON.parse(readFileSync(dp, 'utf8'));
-          found.push({
-            name: doc.name ?? f,
-            path: dp,
-            valid: null,
-            draft: true,
-          });
-        } catch (err) {
-          found.push({ name: f, path: dp, valid: `parse error: ${err.message}`, draft: true });
-        }
-        continue;
-      }
-      if (!statSync(p).isFile() || !f.endsWith('.json')) continue;
-      try {
-        const doc = JSON.parse(readFileSync(p, 'utf8'));
-        found.push({ name: doc.name ?? f.replace(/\.json$/, ''), path: p, valid: null });
-      } catch (err) {
-        found.push({ name: f.replace(/\.json$/, ''), path: p, valid: `parse error: ${err.message}` });
-      }
-    }
-  }
-  return found;
-}
-
 export async function cmdWorkflow(args, {
   bullswarmDir = BULLSWARM_DIR(), input = process.stdin, output = process.stdout,
 } = {}) {
-  reconcileInterruptedRuns(bullswarmDir);
   const [sub, ...rest] = args;
   const opts = parseFlags(rest);
 
@@ -112,22 +62,19 @@ export async function cmdWorkflow(args, {
       return wfCancel(opts);
     case 'resume':
       return wfResume(opts);
-    case 'run':
-      return wfRun(opts);
-    case 'validate':
-      return wfValidate(opts);
-    case 'list':
-      return wfList(opts);
-    case 'draft':
-      return cmdDraft(rest);
     case 'runs':
       return cmdRuns(rest);
     case 'capabilities':
       return wfCapabilities(opts);
-    case 'inspect':
-      return wfInspect(opts);
     case 'tui':
       try {
+        {
+          const token = opts.rest[0] ?? opts.show;
+          if (token) {
+            const legacy = legacyRunRefusal(token, { json: Boolean(opts.json) });
+            if (legacy !== null) return legacy;
+          }
+        }
         if (opts.json || opts.cancel || opts.show || opts.all) {
           const token = opts.rest[0] ?? opts.show;
           const result = dashboardJson(bullswarmDir, {
@@ -149,13 +96,10 @@ export async function cmdWorkflow(args, {
       return wfSteer(opts);
     case 'action':
       return wfAction(opts);
-    case 'approval':
-      return wfApproval(opts);
     default: {
-      // Smart error: if the user typed a `runs` subcommand under
-      // `workflow run ...` (e.g. `workflow run show jd3uki`), point
-      // them at the right verb. Same for `workflow list` vs
-      // `workflow runs list` confusion.
+      // Smart error: if the user typed a `runs` subcommand directly
+      // under `workflow` (e.g. `workflow show jd3uki`), point them at
+      // the right verb instead of dumping the whole help text.
       const runsSubcommands = new Set(['show', 'delete']);
       if (sub && runsSubcommands.has(sub)) {
         console.error(
@@ -933,13 +877,27 @@ function planValidate(opts) {
   return 0;
 }
 
+// Legacy (pre-0.27.0 authored-graph) runs are read-only history. Every verb
+// that would drive one — cancel, resume, steer, action show, tui <runId> —
+// answers with the same sentence and exit 2 before doing anything else.
+// Returns null when `token` is not a legacy run, so the caller carries on.
+function legacyRunRefusal(token, { json = false } = {}) {
+  const resolved = resolveRunId(BULLSWARM_DIR(), token);
+  if (!resolved) return null;
+  if (!isLegacyRunDir(resolved.runDir)) return null;
+  const message = legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir });
+  if (json) console.log(JSON.stringify({ legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null, dir: resolved.runDir, message }, null, 2));
+  else console.error(message);
+  return 2;
+}
+
 function loadV2RunState(token) {
   const resolved = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   const state = withV2Cancellation(JSON.parse(readFileSync(statePath, 'utf8')), resolved.runDir);
-  if (state?.schemaVersion !== 'bullswarm.workflow.state.v2') throw new Error(`run "${token}" is not an autonomous V2 run`);
+  if (isLegacyRunState(state)) throw new Error(`run "${token}" is not an autonomous V2 run`);
   return { ...resolved, state };
 }
 
@@ -1090,18 +1048,11 @@ async function wfCancel(opts) {
   if (flagExit !== null) return flagExit;
   const token = opts.rest[0];
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'cancel'])}`); return 2; }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
   let resolvedRun;
   try { resolvedRun = loadV2RunState(token); }
-  catch (err) {
-    // Authored-graph runs keep the cooperative request path.
-    try {
-      const result = requestCancel(BULLSWARM_DIR(), token, { source: 'cli' });
-      const payload = { action: 'cancel', runId: result.runId, shortId: result.shortId ?? null, alreadyFinished: result.alreadyFinished, finalized: false };
-      if (opts.json) console.log(JSON.stringify(payload, null, 2));
-      else console.log(result.alreadyFinished ? `workflow ${token} is already terminal` : `✓ cancellation requested for ${token}; the run stops at its next safe checkpoint`);
-      return 0;
-    } catch (inner) { console.error(`✗ ${inner.message}`); return 1; }
-  }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
   const { state } = resolvedRun;
   const id = state.shortId ?? state.runId;
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status);
@@ -1162,12 +1113,14 @@ async function wfResume(opts) {
     console.error(`✗ a resumed run keeps its durable planner mode and routing; to submit a caller program use: ${callerPlannerSubmitCommand(token)}`);
     return 2;
   }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
   const resolvedRun = resolveRunId(BULLSWARM_DIR(), token);
   if (!resolvedRun) { console.error(`✗ no run found for "${token}"`); return 1; }
   const durableGoalPath = join(resolvedRun.runDir, 'goal.json');
   let doc;
   try {
-    if (!existsSync(durableGoalPath)) throw new Error('unsupported V1 autonomous run; start a new V2 goal');
+    if (!existsSync(durableGoalPath)) throw new Error('the run has no durable goal.json to resume from');
     doc = JSON.parse(readFileSync(durableGoalPath, 'utf8'));
     validateV2GoalDocument(doc);
   } catch (err) { console.error(`✗ cannot resume ${resolvedRun.runId}: ${err.message}`); return 1; }
@@ -1232,18 +1185,14 @@ async function wfCapabilities(opts) {
         defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },
         compatibility: { resumesAutonomousV1: false, migratesAutonomousV1: false, preservesSavedV2Semantics: true },
       },
+      // Retired in 0.27.0, but still reported so an agent that probes for the
+      // authored-graph engine reads an explicit retirement instead of undefined.
       authoredGraphs: {
-        command: 'bullswarm workflow run',
-        documentSchema: 'bullswarm.workflow.v1',
-        stepTypes: ['run', 'fanout', 'verify', 'decide'],
-        features: {
-          sequentialPhases: true,
-          dynamicFanout: true,
-          authoredGraphExpansion: true,
-          adversarialVerifyStep: true,
-          resumable: true,
-          staleOwnerReconciliation: true,
-        },
+        retired: '0.27.0',
+        command: null,
+        documentSchema: null,
+        stepTypes: [],
+        legacyRuns: 'run directories remain readable as rows marked legacy; every driving command fails closed with exit 2',
       },
     },
     routing: {
@@ -1257,7 +1206,6 @@ async function wfCapabilities(opts) {
     worktreeIsolation: {
       policy: coreState.config?.worktreeIsolation ?? 'agent-decides',
       autonomousV2: 'mutating actions use isolated worktrees unless policy is off; shared writers are serialized and changed-path ownership is enforced before integration',
-      authoredGraphs: 'configuration remains an agent execution-style preference for the fixed-graph engine',
     },
     pools: pools.map((p) => ({
       name: p.name,
@@ -1322,8 +1270,8 @@ async function wfWatch(opts) {
     return 2;
   }
   const intervalSec = Number(opts.interval ?? 2);
-  // --heartbeat is now opt-in: absent means no periodic line for a V2 run and
-  // the historical 60s for a legacy one.
+  // --heartbeat is opt-in: absent means no periodic line in event mode, and
+  // the historical 60s in --once/--classic mode.
   const heartbeatSec = opts.heartbeat == null ? null : Number(opts.heartbeat);
   if (!Number.isFinite(intervalSec) || intervalSec < 0.1 ||
       (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
@@ -1379,6 +1327,8 @@ function wfSteer(opts) {
     console.error(`usage: ${usageLine(['workflow', 'steer'])}`);
     return 2;
   }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
   try {
     const result = queueSteering(BULLSWARM_DIR(), token, message);
     const payload = {
@@ -1399,8 +1349,7 @@ function wfSteer(opts) {
 }
 
 // A V2 run keeps its graph in state.program.actions and its per-action
-// bookkeeping in state.actions; the V1 shape (actionLedger) has neither, so
-// the V1 reader in dashboard.js cannot describe a V2 action at all.
+// bookkeeping in state.actions.
 function v2ActionJson(resolved, state, actionId) {
   const action = state.program?.actions?.find((entry) => entry.id === actionId);
   if (!action) throw new Error(`run "${resolved.shortId ?? resolved.runId}" has no action "${actionId}"`);
@@ -1443,69 +1392,17 @@ function wfAction(opts) {
     console.error(`usage: ${usageLine(['workflow', 'action', 'show'])}`);
     return 2;
   }
+  // The refusal is the same single line every other verb prints; --json asks
+  // for the machine form instead.
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
   try {
     const resolved = resolveRunId(BULLSWARM_DIR(), token);
     if (!resolved) throw new Error(`no run found for "${token}"`);
-    const statePath = join(resolved.runDir, 'state.json');
-    let state = null;
-    if (existsSync(statePath)) {
-      try { state = withV2Cancellation(JSON.parse(readFileSync(statePath, 'utf8')), resolved.runDir); }
-      catch { state = null; }
-    }
-    console.log(JSON.stringify(state?.schemaVersion === 'bullswarm.workflow.state.v2'
-      ? v2ActionJson(resolved, state, actionId)
-      : actionJson(BULLSWARM_DIR(), token, actionId), null, 2));
+    const state = withV2Cancellation(JSON.parse(readFileSync(join(resolved.runDir, 'state.json'), 'utf8')), resolved.runDir);
+    console.log(JSON.stringify(v2ActionJson(resolved, state, actionId), null, 2));
     return 0;
   } catch (err) {
-    console.error(`✗ ${err.message}`);
-    return 1;
-  }
-}
-
-function wfApproval(opts) {
-  const [decision, token] = opts.rest;
-  if (!['approve', 'reject'].includes(decision) || !token) {
-    console.error(`usage: ${usageLine(['workflow', 'approval'])}`);
-    return 2;
-  }
-  try {
-    console.log(JSON.stringify({ action: 'approval', ...decideApproval(BULLSWARM_DIR(), token, decision) }, null, 2));
-    return 0;
-  } catch (err) {
-    console.error(`✗ ${err.message}`);
-    return 1;
-  }
-}
-
-async function wfInspect(opts) {
-  const target = opts.rest[0];
-  if (!target) {
-    console.error(`usage: ${usageLine(['workflow', 'inspect'])}`);
-    return 2;
-  }
-  try {
-    const { doc, path } = loadWorkflow(target, workflowDirs());
-    const { names } = await livePoolNames();
-    const validation = validateWorkflow(doc, { poolNames: names });
-    console.log(JSON.stringify({
-      action: 'inspect-workflow', path, document: doc, validation,
-      availablePools: names,
-      semantics: {
-        phases: 'ordered and sequential',
-        run: 'one dispatch',
-        fanout: 'one dispatch per runtime item, bounded by concurrency',
-        verify: 'review artifact and require JSON ok:true',
-        retries: 'settings.retryAttempts adds same-pool retries; escalateOnFail may try alternate pools',
-        decide: 'planner proposal is validated, bounded, appended, executed, observed, and replanned',
-        dynamicGraphExpansion: doc.phases.some((phase) => phase.steps?.some((step) => step.type === 'decide')),
-      },
-    }, null, 2));
-    return 0;
-  } catch (err) {
-    if (err instanceof WorkflowValidationError) {
-      console.error(JSON.stringify({ action: 'inspect-workflow', ok: false, issues: err.issues }, null, 2));
-      return 1;
-    }
     console.error(`✗ ${err.message}`);
     return 1;
   }
@@ -1571,35 +1468,6 @@ function flagErrors(opts, path) {
   return 2;
 }
 
-async function wfValidate(opts) {
-  const target = opts.rest[0];
-  if (!target) {
-    console.error(`usage: ${usageLine(['workflow', 'validate'])}`);
-    return 2;
-  }
-  let doc, path;
-  try {
-    ({ doc, path } = loadWorkflow(target, workflowDirs()));
-  } catch (err) {
-    console.error(`✗ ${err.message}`);
-    return 1;
-  }
-  const poolsInfo = await livePoolNames();
-  try {
-    const r = validateWorkflow(doc, { poolNames: poolsInfo.names });
-    console.log(`✓ ${path} is valid (${doc.phases?.length ?? 0} phases)`);
-    for (const w of r.warnings) console.log(`  ⚠ ${w}`);
-    return 0;
-  } catch (err) {
-    if (err instanceof WorkflowValidationError) {
-      console.error(`✗ ${path}:`);
-      for (const issue of err.issues) console.error(`  - ${issue}`);
-      return 1;
-    }
-    throw err;
-  }
-}
-
 async function livePoolNames() {
   try {
     await maybeRefreshStrategy(BULLSWARM_DIR());
@@ -1611,110 +1479,4 @@ async function livePoolNames() {
     const { pools } = buildPools(BULLSWARM_DIR(), Date.now());
     return { names: pools.map((p) => p.name), pools, meterWarning: err.message };
   }
-}
-
-async function wfRun(opts) {
-  const target = opts.rest[0];
-  if (!target) {
-    console.error(`usage: ${usageLine(['workflow', 'run'])}`);
-    return 2;
-  }
-
-  // Smart redirect: if the user typed `workflow run <subcommand> ...`
-  // (e.g. `workflow run show jd3uki`), the second positional is a
-  // subcommand of `runs`, not a workflow name. Surface a helpful
-  // pointer instead of failing with "workflow not found".
-  const runsSubcommands = new Set(['show', 'delete']);
-  if (runsSubcommands.has(target)) {
-    console.error(
-      `✗ "workflow run ${target}" is not a subcommand. ` +
-      `Did you mean "workflow runs ${target} <id>"?`,
-    );
-    return 2;
-  }
-
-  // Pre-flight: resolve --resume token BEFORE loading the workflow.
-  // A bogus shortId should fail fast, regardless of whether the named
-  // workflow exists. Accepts a shortId (6 chars) or a full `wf-...`
-  // runId; rejects anything that looks like neither.
-  let resumeRunId = opts.resume;
-  if (resumeRunId) {
-    const resolved = resolveRunId(BULLSWARM_DIR(), resumeRunId);
-    if (resolved) {
-      const resumeState = JSON.parse(readFileSync(join(resolved.runDir, 'state.json'), 'utf8'));
-      if (resumeState?.schemaVersion !== 'bullswarm.workflow.state.v2'
-          && resumeState?.intent?.autonomous === true) {
-        console.error(`✗ cannot resume ${resolved.runId}: unsupported V1 autonomous run; start a new V2 goal`);
-        return 1;
-      }
-      resumeRunId = resolved.runId;
-    } else if (resumeRunId.startsWith('wf-')) {
-      // already a runId, leave as-is (loadWorkflow will surface ENOENT)
-    } else {
-      console.error(`✗ --resume token "${resumeRunId}" did not match any run`);
-      return 1;
-    }
-  }
-
-  let doc, path;
-  try {
-    ({ doc, path } = loadWorkflow(target, workflowDirs()));
-  } catch (err) {
-    console.error(`✗ ${err.message}`);
-    return 1;
-  }
-
-  if (doc?.schemaVersion === 'bullswarm.workflow.v1'
-      && doc?.intent?.autonomous === true
-      && doc?.orchestration?.mode === 'autonomous') {
-    console.error('✗ retired autonomous V1 workflow documents cannot run; start a new goal with bullswarm workflow goal "<goal>"');
-    return 1;
-  }
-
-  const { names, pools } = await livePoolNames();
-  try {
-    validateWorkflow(doc, { poolNames: names });
-  } catch (err) {
-    if (err instanceof WorkflowValidationError) {
-      console.error(`✗ workflow invalid (nothing ran):`);
-      for (const issue of err.issues) console.error(`  - ${issue}`);
-      return 1;
-    }
-    throw err;
-  }
-
-  const tui = new WorkflowTui({ quiet: opts.quiet, json: opts.json });
-  const result = await runWorkflow({
-    bullswarmDir: BULLSWARM_DIR(),
-    doc,
-    pools,
-    inputs: opts.inputs,
-    resumeRunId,
-    // --json is a report protocol, not JSONL event streaming. Events are
-    // still rendered for the human TUI, but agents get exactly one document.
-    onEvent: opts.json ? undefined : (ev) => tui.handle(ev),
-  });
-
-  if (opts.json) {
-    console.log(JSON.stringify(result.report, null, 2));
-  }
-  return isDeliveredWorkflowStatus(result.report.status) ? 0 : 1;
-}
-
-function wfList(opts) {
-  const found = discover();
-  if (opts.json) {
-    console.log(JSON.stringify({ workflows: found }, null, 2));
-    return 0;
-  }
-  if (found.length === 0) {
-    console.log(`no workflows found in: ${workflowDirs().join(', ')}`);
-    return 0;
-  }
-  for (const w of found) {
-    const mark = w.valid ? `✗ ${w.valid}` : '✓';
-    const tag = w.draft ? '(draft)' : '';
-    console.log(`${mark}  ${w.name.padEnd(24)} ${tag.padEnd(8)} ${w.path}`);
-  }
-  return 0;
 }

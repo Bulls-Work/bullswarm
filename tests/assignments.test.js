@@ -16,7 +16,6 @@ import {
   registerAssignment, releaseAssignment, updateAssignment, withLedger,
 } from '../src/lib/assignments.js';
 import { dispatchV2Action } from '../src/workflow/v2-dispatch.js';
-import { runWorkflow } from '../src/workflow/runner.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'bin', 'bullswarm.js');
@@ -367,7 +366,11 @@ test('the V2 dispatcher registers before the spawn and releases on every outcome
   }
 });
 
-test('the V1 workflow runtime registers an assignment around a real echo dispatch', async () => {
+// The V2 kernel dispatches through dispatchV2Action, so the ledger's real
+// contract — one entry, carrying the actual child pid, released when the
+// attempt ends — is proved here against a real echo delegate rather than a
+// stubbed watchOnce.
+test('the V2 dispatcher registers an assignment around a real echo dispatch', async () => {
   const base = tempHome();
   const bullswarmDir = join(base, '.bullswarm');
   try {
@@ -378,6 +381,13 @@ test('the V1 workflow runtime registers an assignment around a real echo dispatc
         readFileSync(join(ROOT, 'connectors', file)),
       );
     }
+    writeFileSync(join(bullswarmDir, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: { echo: { enabled: true } },
+      incumbents: {},
+      decisionLog: [],
+      config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+    }, null, 2));
     const connector = JSON.parse(readFileSync(join(ROOT, 'connectors', 'echo.json'), 'utf8'));
     connector.spawn.cmd = ['node', join(ROOT, 'connectors', 'echo-worker.mjs'), '{taskFile}'];
     const pools = [{
@@ -385,39 +395,34 @@ test('the V1 workflow runtime registers an assignment around a real echo dispatc
       lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
       usedPct: null, quarantine: null, pace: 0,
     }];
-    const doc = {
-      name: 'ledger-probe',
-      description: 'observe the in-flight ledger during a real dispatch',
-      inputs: {},
-      settings: { concurrency: 1, escalateOnFail: false },
-      phases: [{
-        name: 'only',
-        steps: [{ id: 'one', type: 'run', lane: 'chore', prompt: 'SLEEP_MS:1200 do it', timeoutSec: 60 }],
-      }],
-    };
 
+    const runId = 'wf-mtszc1by-54277e';
+    const runDir = join(bullswarmDir, 'workflows', runId);
+    mkdirSync(runDir, { recursive: true });
     let inFlight = null;
-    const result = await runWorkflow({
-      bullswarmDir,
-      doc,
+    const result = await dispatchV2Action({
+      action: { id: 'one', lane: 'chore' },
+      taskText: 'SLEEP_MS:1200 do it',
+      targetDir: base,
+      paths: { taskFile: join(runDir, 'task-one.md'), outFile: join(runDir, 'out-one.md') },
       pools,
-      inputs: {},
-      onEvent: (event) => {
-        if (event.type === 'attempt.process_started') inFlight = listAssignments(bullswarmDir);
-      },
+      bullswarmDir,
+      runId,
+      // The pid exists and is already on the record by the time this fires.
+      onSpawn: () => { inFlight = listAssignments(bullswarmDir); },
     });
 
-    assert.equal(result.report.status, 'completed');
-    assert.ok(inFlight, 'the runtime emitted attempt.process_started');
+    assert.equal(result.ok, true, result.verdict?.why);
+    assert.ok(inFlight, 'the dispatcher reported a spawned child');
     assert.equal(inFlight.length, 1);
     assert.equal(inFlight[0].pool, 'echo');
-    assert.equal(inFlight[0].source, 'workflow-v1');
+    assert.equal(inFlight[0].source, 'workflow-v2');
     assert.equal(inFlight[0].lane, 'chore');
     assert.equal(inFlight[0].effort, 'low');
     assert.equal(inFlight[0].actionId, 'one');
     assert.equal(inFlight[0].attempt, 1);
     assert.equal(inFlight[0].kernelPid, process.pid);
-    assert.equal(inFlight[0].runId, result.state.runId);
+    assert.equal(inFlight[0].runId, runId);
     assert.ok(inFlight[0].workerPid > 0, 'the real child pid is recorded');
     assert.deepEqual(listAssignments(bullswarmDir), [], 'released when the attempt ends');
   } finally {

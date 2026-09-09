@@ -3,8 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { writeJsonAtomic } from './fsjson.js';
 import { appendEvent } from './events.js';
-import { newRunId } from './runner.js';
-import { generateShortId, isProcessAlive, listRuns, v2RunnerLiveness } from './short-id.js';
+import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
 import { scheduleV2Actions } from './v2-scheduler.js';

@@ -4,23 +4,19 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { readFileSync, existsSync } from 'node:fs';
 import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from './fsjson.js';
-import { fanoutSucceededCount } from './runner.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, v2RunnerLiveness } from './short-id.js';
+import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, legacyRunLine } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
-import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
-import { V2_STATE_SCHEMA_VERSION } from './v2-state.js';
+import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 
 const ESC = '\x1b[';
 const SIDEBAR_WIDTH = 34;
 const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
-const isV2State = (state) => state?.schemaVersion === V2_STATE_SCHEMA_VERSION;
-
-const stateStatus = (state) => isV2State(state) ? state.lifecycle.status : state?.status;
-const stateStartedAt = (state) => isV2State(state) ? state.lifecycle.startedAt : state?.startedAt;
-const stateFinishedAt = (state) => isV2State(state) ? state.lifecycle.finishedAt : state?.finishedAt;
+const stateStatus = (state) => state?.lifecycle?.status;
+const stateStartedAt = (state) => state?.lifecycle?.startedAt;
+const stateFinishedAt = (state) => state?.lifecycle?.finishedAt;
 
 // Keep navigation wording and bindings in one place. Rendering and input use
 // the same vocabulary so a hint never describes a different action.
@@ -130,35 +126,26 @@ export function requestCancel(bullswarmDir, token, { source = 'api', requesterPi
   const statePath = join(resolved.runDir, 'state.json');
   if (!existsSync(statePath)) throw new Error(`run "${token}" has no state.json`);
   const state = readJsonForUpdate(statePath, 'workflow state');
-  if (isV2State(state)) {
-    if (V2_TERMINAL.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
-    const requestedAt = new Date().toISOString();
-    state.cancellation = {
-      requested: true,
-      requestedAt,
-      reason: 'operator requested stop',
-      source,
-      requesterPid,
-    };
-    appendEvent(resolved.runDir, state, 'workflow.cancellation_requested', {
-      requestedAt,
-      reason: state.cancellation.reason,
-      source,
-      requesterPid,
-    });
-    // The operator owns this intent file; only the kernel owns state.json.
-    writeJsonAtomic(join(resolved.runDir, 'cancellation.json'), state.cancellation);
-    return { ...resolved, state, alreadyFinished: false };
-  }
-  if (state.finishedAt || isTerminalWorkflowStatus(state.status)) {
-    return { ...resolved, state, alreadyFinished: true };
-  }
-  state.cancelRequested = true;
-  state.cancelRequestedAt = new Date().toISOString();
-  state.status = 'cancelling';
-  state.cancellingAt = state.cancelRequestedAt;
-  appendEvent(resolved.runDir, state, 'run.cancellation_requested', { requestedAt: state.cancelRequestedAt });
-  writeJsonAtomic(statePath, state);
+  // A legacy run has no kernel to ask, so nothing is written and nothing is
+  // claimed: the caller is told what it is and left alone.
+  if (isLegacyRunState(state)) return { ...resolved, legacy: true, alreadyFinished: true };
+  if (V2_TERMINAL.has(state.lifecycle.status)) return { ...resolved, state, alreadyFinished: true };
+  const requestedAt = new Date().toISOString();
+  state.cancellation = {
+    requested: true,
+    requestedAt,
+    reason: 'operator requested stop',
+    source,
+    requesterPid,
+  };
+  appendEvent(resolved.runDir, state, 'workflow.cancellation_requested', {
+    requestedAt,
+    reason: state.cancellation.reason,
+    source,
+    requesterPid,
+  });
+  // The operator owns this intent file; only the kernel owns state.json.
+  writeJsonAtomic(join(resolved.runDir, 'cancellation.json'), state.cancellation);
   return { ...resolved, state, alreadyFinished: false };
 }
 
@@ -172,45 +159,43 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
     })
     .map((r) => {
       const state = r.state ?? {};
-      if (isV2State(state)) {
-        const actions = state.actions ?? [];
-        const runningAttempts = (state.attempts ?? []).filter((attempt) => attempt.status === 'running');
-        const current = actions.find((action) => action.status === 'running') ?? actions.find((action) => ['ready', 'pending'].includes(action.status));
-        const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
-          ?? state.presentation?.stages?.findLast((item) => item.startedAt)
-          ?? null;
-        const liveness = v2RunnerLiveness(state, { runDir: r.runDir });
+      // A legacy row is five read-only fields and a marker; its detail pane is
+      // one line and it offers nothing to drive. A torn state.json lands here
+      // too, which keeps observation non-crashing until the writer settles.
+      if (r.legacy || isLegacyRunState(state)) {
         return {
           ...r,
-          events: readEvents(r.runDir),
-          liveness,
-          status: state.cancellation?.requested ? 'stopping'
-            : liveness.alive ? state.lifecycle.status : 'interrupted',
-          phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
-          stepsOk: actions.filter((action) => action.status === 'succeeded').length,
-          stepsTotal: actions.length,
-          fanout: { total: 0, ok: 0, failed: 0 },
-          activeAgents: runningAttempts,
-          currentPhase: stage,
-          currentStep: current ?? null,
-          usage: state.usage ?? null,
+          legacy: true,
+          events: [],
+          status: state.status ?? 'unknown',
+          phase: 'legacy',
+          stepsOk: 0,
+          stepsTotal: 0,
+          activeAgents: [],
+          currentPhase: null,
+          currentStep: null,
+          usage: null,
         };
       }
-      const steps = state.steps ?? [];
-      const fanout = Object.values(state.outputs ?? {}).filter((v) => v?.items).reduce((acc, v) => ({
-        total: acc.total + (v.total ?? 0), ok: acc.ok + fanoutSucceededCount(v), failed: acc.failed + (v.failed ?? 0),
-      }), { total: 0, ok: 0, failed: 0 });
+      const actions = state.actions ?? [];
+      const runningAttempts = (state.attempts ?? []).filter((attempt) => attempt.status === 'running');
+      const current = actions.find((action) => action.status === 'running') ?? actions.find((action) => ['ready', 'pending'].includes(action.status));
+      const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
+        ?? state.presentation?.stages?.findLast((item) => item.startedAt)
+        ?? null;
+      const liveness = v2RunnerLiveness(state, { runDir: r.runDir });
       return {
         ...r,
         events: readEvents(r.runDir),
-        status: state.cancelRequested ? 'stopping' : (state.status ?? 'running'),
-        phase: state.currentStep?.phase ?? state.currentPhase?.name ?? steps.at(-1)?.phase ?? 'starting',
-        stepsOk: steps.filter((s) => s.ok).length,
-        stepsTotal: steps.length,
-        fanout,
-        activeAgents: Object.values(state.activeAgents ?? {}),
-        currentPhase: state.currentPhase ?? null,
-        currentStep: state.currentStep ?? null,
+        liveness,
+        status: state.cancellation?.requested ? 'stopping'
+          : liveness.alive ? state.lifecycle.status : 'interrupted',
+        phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
+        stepsOk: actions.filter((action) => action.status === 'succeeded').length,
+        stepsTotal: actions.length,
+        activeAgents: runningAttempts,
+        currentPhase: stage,
+        currentStep: current ?? null,
         usage: state.usage ?? null,
       };
     });
@@ -266,9 +251,13 @@ export function renderDashboard({
     bodyHeight,
   );
   let right;
-   if (selectedRow?.state && rightWidth >= 3) {
-     const model = workflowPanelModel(selectedRow);
-     right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
+  if (selectedRow?.legacy && rightWidth >= 3) {
+    right = renderPanel('Selected workflow', wrapLines([
+      legacyRunLine({ shortId: selectedRow.shortId, runId: selectedRow.runId, runDir: selectedRow.runDir }),
+    ], Math.max(1, rightWidth - 4)), rightWidth, bodyHeight);
+  } else if (selectedRow?.state && rightWidth >= 3) {
+    const model = workflowPanelModel(selectedRow);
+    right = renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, 0);
   } else {
     const hint = allRows.length && filter === 'active'
       ? ['No active workflows.', '', 'Press a to browse recent runs.']
@@ -280,15 +269,15 @@ export function renderDashboard({
 }
 
 function isWaitingWorkflow(state) {
-  const value = String(stateStatus(state) ?? state?.stage ?? '').toLowerCase();
+  const value = String(stateStatus(state) ?? '').toLowerCase();
   return value.includes('waiting') || value === 'paused';
 }
 
 function workflowRunLabel(row) {
   const state = row?.state ?? {};
-  const workflow = String(state.workflow ?? '').trim();
-  if (workflow && !workflow.startsWith('goal-')) return workflow;
-  return String(state.intent?.goal ?? state.intent?.description ?? workflow ?? row?.runId ?? 'workflow')
+  // A legacy row carries only the workflow name and goal it recorded.
+  if (row?.legacy) return String(state.name ?? state.goal ?? row?.runId ?? 'workflow').split('\n')[0].trim();
+  return String(state.intent?.goal ?? state.intent?.description ?? row?.runId ?? 'workflow')
     .split('\n')[0]
     .trim();
 }
@@ -303,22 +292,26 @@ function dashboardRunLines(rows, selected, narrow, width) {
   return rows.map((row, index) => {
     const state = row.state ?? {};
     const selectedRow = index === selected;
-    const durableStatus = stateStatus(state);
-    const icon = row.ongoing
-      ? statusIcon(durableStatus ?? 'running')
-      : workflowStatusIcon(isV2State(state) ? { status: durableStatus } : state.status ? state : { ...state, status: 'completed' });
-    const elapsed = durationText(stateStartedAt(state) ?? row.report?.startedAt, stateFinishedAt(state) ?? row.report?.finishedAt);
-    const workerAttempts = (state.attempts ?? []).filter((attempt) =>
+    const legacy = Boolean(row.legacy);
+    const durableStatus = legacy ? state.status : stateStatus(state);
+    const icon = legacy ? '·'
+      : row.ongoing ? statusIcon(durableStatus ?? 'running')
+        : workflowStatusIcon({ status: durableStatus });
+    const elapsed = legacy
+      ? durationText(state.startedAt, state.finishedAt)
+      : durationText(stateStartedAt(state) ?? row.report?.startedAt, stateFinishedAt(state) ?? row.report?.finishedAt);
+    const workerAttempts = legacy ? [] : (state.attempts ?? []).filter((attempt) =>
       attempt.actionId !== state.orchestration?.actionId && attempt.actionId !== 'orchestrator');
     const finished = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
-    let progress = workerAttempts.length
-      ? `${finished}/${workerAttempts.length} workers`
-      : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
-    if (row.fanout?.total) progress += ` · ${row.fanout.ok}/${row.fanout.total} items`;
-    const concerns = workflowConcernCount(row);
+    // A legacy row claims no progress: 0.27.0 never reads its steps.
+    let progress = legacy ? 'legacy'
+      : workerAttempts.length
+        ? `${finished}/${workerAttempts.length} workers`
+        : `${row.stepsOk ?? 0}/${row.stepsTotal ?? 0} actions`;
+    const concerns = legacy ? 0 : workflowConcernCount(row);
     const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(durableStatus, row.ongoing);
     const name = workflowRunLabel(row);
-    const phase = humanPhaseName(row.phase ?? state.stage ?? 'starting');
+    const phase = legacy ? 'legacy' : humanPhaseName(row.phase ?? 'starting');
     if (narrow) {
       const inner = Math.max(1, width - 4);
       return {
@@ -367,7 +360,7 @@ function filterDashboardRows(rows, filter, query) {
     if (filter === 'active' && !row.ongoing) return false;
     if (!needle) return true;
     const state = row.state ?? {};
-    return [row.shortId, row.runId, state.workflow, state.intent?.goal, row.phase, stateStatus(state)]
+    return [row.shortId, row.runId, state.name, state.goal, state.intent?.goal, row.phase, row.status, stateStatus(state)]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(needle));
   });
@@ -375,98 +368,16 @@ function filterDashboardRows(rows, filter, query) {
 
 export function renderDetails(row, { interactive = true } = {}) {
   const state = row?.state ?? {};
-  if (isV2State(state)) return renderV2Details(row, { interactive });
-  const phases = state._doc?.phases ?? [];
-  const displayedPhase = state.currentPhase?.name
-    ?? state.steps?.at(-1)?.phase
-    ?? state.stage
-    ?? 'starting';
-  const displayedCurrent = state.currentStep?.id
-    ?? (state.finishedAt ? `terminal:${state.status ?? state.stage ?? 'finished'}` : '—');
-  const lines = [
-    `${ESC}2J${ESC}H`,
-    ` bullswarm · ${state.workflow ?? '?'} · ${row?.shortId ?? row?.runId ?? '?'}`,
-    '',
-    ` status: ${row?.status ?? state.status ?? 'running'}`,
-    ` phase:  ${row?.phase ?? displayedPhase}`,
-    ` current: ${displayedCurrent}`,
-    ` goal:   ${state.intent?.goal ?? state.intent?.description ?? '—'}`,
-    ` orchestrator: ${state.orchestration?.selectedPool ?? state.orchestration?.requestedPool ?? 'auto/pending'} · ${state.orchestration?.selectedModel ?? 'connector model'} · ${state.orchestration?.selection ?? 'workflow-defined'}`,
-    ` dir:    ${row?.runDir ?? '—'}`,
-    '',
-    ' phases:',
-  ];
-  for (const phase of phases) {
-    const active = phase.name === state.currentPhase?.name ? ' ◀ active' : '';
-    lines.push(`   ${phase.name}${active}`);
-    for (const step of phase.steps ?? []) {
-      const result = state.outputs?.[step.id];
-      const mark = result?.ok === true ? '✓' : result?.ok === false ? '✗' : '·';
-      lines.push(`     ${mark} ${step.id} (${step.type})`);
-    }
+  // A legacy run has no readable graph left, so the pane says exactly what the
+  // CLI says and stops there.
+  if (row?.legacy || isLegacyRunState(state)) {
+    return [
+      `${ESC}2J${ESC}H`,
+      legacyRunLine({ shortId: row?.shortId, runId: row?.runId, runDir: row?.runDir }),
+      ...(interactive ? ['', ` ${keyHint('out')} · r refresh · ${keyHint('detach')}`] : []),
+    ].join('\n');
   }
-  lines.push('', ' active agents:');
-  for (const agent of Object.values(state.activeAgents ?? {})) {
-    const activity = agent.lastActivityAt
-      ? ` · output activity ${agent.lastActivityAt} (${agent.outputBytesObserved ?? 0} bytes observed)`
-      : ' · no streamed output observed yet';
-    const stall = agent.stall?.status === 'suspected_stalled'
-      ? ` · ⚠ suspected stalled (${agent.stall.silentForSec}s without evidence; no auto-kill)`
-      : agent.stall ? ` · active (${agent.stall.silentForSec}s since evidence)` : '';
-    lines.push(`   ⟡ ${agent.stepId} · ${agent.pool ?? '—'} · ${agent.model ?? 'model from connector'} · attempt ${agent.attempt ?? 0}${activity}${stall}`);
-    if (agent.eventStreamSupported) {
-      lines.push('     last actions:');
-      for (const action of agent.lastActions ?? []) {
-        const summary = action.summary ? ` · ${action.summary}` : '';
-        lines.push(`       ${action.status === 'completed' ? '✓' : action.status === 'failed' ? '✗' : '·'} ${action.kind} · ${action.status}${summary}`);
-      }
-      if (!(agent.lastActions ?? []).length) lines.push('       waiting for a semantic action event');
-    } else {
-      lines.push('     last actions: unavailable (connector has no event stream)');
-    }
-  }
-  if (!Object.keys(state.activeAgents ?? {}).length) lines.push('   none');
-  lines.push('', ' completed log:');
-  for (const step of state.steps ?? []) lines.push(`   ${step.ok ? '✓' : '✗'} ${step.phase}/${step.stepId}${step.why ? ` · ${step.why}` : ''}`);
-  const dispatchTarget = state.budget?.dispatchTarget ?? state.budget?.dispatchLimit ?? '∞';
-  const dispatchOverage = state.budget?.overTargetBy > 0 ? ` · ${state.budget.overTargetBy} over target` : '';
-  const workflowTarget = state.budget?.workflowTargetSec ?? state.settings?.maxWorkflowSeconds ?? '∞';
-  const workflowOverage = state.budget?.workflowOverTargetBySec > 0
-    ? ` · ${Math.round(state.budget.workflowOverTargetBySec)}s over target`
-    : '';
-  lines.push('', ` budget: ${state.budget?.dispatchesUsed ?? 0}/${dispatchTarget} dispatch target (advisory${dispatchOverage}) · ${Math.round(state.budget?.workflowElapsedSec ?? 0)}/${workflowTarget}s duration target (advisory${workflowOverage}) · expansion ${state.budget?.expansionRound ?? 0}/${state.budget?.expansionLimit ?? 0}`);
-  lines.push(` usage:  ${compactUsage(state.usage)}`);
-  lines.push('', ' action tree:');
-  for (const action of state.actionLedger ?? []) {
-    const indent = action.parentId ? '     ' : '   ';
-    const item = action.item === undefined ? '' : ` · item=${JSON.stringify(action.item)}`;
-    const timing = action.startedAt ? ` · ${action.startedAt}${action.finishedAt ? ` → ${action.finishedAt}` : ' → running'}` : '';
-    lines.push(`${indent}${action.status === 'succeeded' ? '✓' : action.status?.startsWith('failed') ? '✗' : '·'} ${action.id} (${action.kind}) · ${action.status}${item}${timing}`);
-    for (const attemptIndex of action.attempts ?? []) {
-      const attempt = state.attempts?.[attemptIndex];
-      if (attempt) {
-        const reasoning = reasoningText(attempt);
-        lines.push(`${indent}  ↳ attempt ${attempt.attemptNumber} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''} · effort=${attempt.effort ?? 'auto'} · ${attempt.status} · ${attempt.startedAt ?? '—'}${attempt.finishedAt ? ` → ${attempt.finishedAt}` : ''}`);
-        if (attempt.routing) {
-          const candidates = (attempt.routing.candidates ?? []).map((candidate) => `${candidate.pool}:${candidate.pace}`).join(', ');
-          lines.push(`${indent}     route: ${attempt.routing.reason}${candidates ? ` · candidates [${candidates}]` : ''}`);
-        }
-        lines.push(`${indent}     ${compactUsage(attempt.usage)}`);
-        for (const agentAction of attempt.lastActions ?? []) {
-          lines.push(`${indent}     action: ${agentAction.kind} · ${agentAction.status}${agentAction.summary ? ` · ${agentAction.summary}` : ''}`);
-        }
-      }
-    }
-  }
-  if (!(state.actionLedger ?? []).length) lines.push('   none');
-  lines.push('', ' decisions:');
-  for (const decision of state.decisions ?? []) lines.push(`   ${decision.sequence}. ${decision.decision} · ${decision.reason}`);
-  if (!(state.decisions ?? []).length) lines.push('   none');
-  lines.push('', ' recent events:');
-  for (const event of (row?.events ?? []).slice(-8)) lines.push(`   #${event.sequence} ${event.type}`);
-  if (!(row?.events ?? []).length) lines.push('   none');
-  if (interactive) lines.push('', ` ${keyHint('out')} · c stop · r refresh · ${keyHint('detach')}`);
-  return lines.join('\n');
+  return renderV2Details(row, { interactive });
 }
 
 function renderV2Details(row, { interactive = true } = {}) {
@@ -511,246 +422,7 @@ const TERMINAL_ACTIONS = new Set([
 ]);
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-function isLiveAgent(agent) {
-  return !agent?.status || agent.status === 'running';
-}
-
-function autonomousControlPlane(state) {
-  const autonomous = state.intent?.autonomous === true || state.orchestration?.mode === 'autonomous';
-  if (!autonomous) return { autonomous: false, actionId: null, attempts: [], active: null };
-  const actionId = state.decisions?.find((decision) => decision.gateId)?.gateId ?? 'orchestrator';
-  const attempts = (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId);
-  const active = Object.values(state.activeAgents ?? {}).find((agent) => agent.stepId === actionId && isLiveAgent(agent)) ?? null;
-  const latestAttempt = attempts.at(-1) ?? null;
-  const terminal = Boolean(state.finishedAt);
-  const workerActive = Object.values(state.activeAgents ?? {}).some((agent) => agent.stepId !== actionId && isLiveAgent(agent));
-  const status = terminal
-    ? state.status === 'completed' ? 'completed' : state.status ?? 'finished'
-    : active ? 'planning'
-      : workerActive ? 'directing execution'
-        : state.decisions?.length ? 'reviewing evidence' : 'starting';
-  return {
-    autonomous,
-    actionId,
-    attempts,
-    active,
-    latestAttempt,
-    status,
-    pool: active?.pool ?? latestAttempt?.pool ?? state.orchestration?.selectedPool ?? state.orchestration?.requestedPool ?? 'selecting',
-    model: active?.model ?? latestAttempt?.model ?? state.orchestration?.selectedModel ?? 'connector model',
-    latestDecision: state.decisions?.at(-1) ?? null,
-  };
-}
-
-function effectiveActionStatus(action, state) {
-  // A re-running action (repair round, re-verify, schema retry) must read as
-  // running even when a previous round recorded ok:false — a failed mark on
-  // work that is still being retried misreports the run (user report 2026-08-29).
-  const active = Object.values(state.activeAgents ?? {}).some((agent) =>
-    isLiveAgent(agent) && (agent.stepId === action.id || String(agent.stepId ?? '').startsWith(`${action.id}[`)));
-  if (active || action.status === 'running') return 'running';
-  const output = state.outputs?.[action.id];
-  if (output?.ok === false) return 'failed_terminal';
-  if (output?.ok === true && action.status === 'succeeded') return 'succeeded';
-  return action.status ?? 'pending';
-}
-
-// Qualification belongs to the outcome envelope, not to the status string:
-// a delivered run reads `verified`, `bestEffort` and its concern count from
-// `state.outcome`, so a new run and a legacy `completed_with_concerns` run
-// render the same sentence.
-function outcomeQualification(state) {
-  const outcome = state?.outcome ?? null;
-  const concernCount = outcome?.concerns?.length ?? 0;
-  const verified = outcome?.verified === true;
-  // Legacy run dirs predate the envelope: without a concerns array the old
-  // status string is the only evidence that concerns were recorded.
-  const legacyConcerns = state?.status === 'completed_with_concerns' && !Array.isArray(outcome?.concerns);
-  return {
-    outcome,
-    concernCount,
-    verified,
-    bestEffort: outcome?.bestEffort === true && !verified,
-    concerned: concernCount > 0 || legacyConcerns,
-  };
-}
-
-function concernPhrase(count) {
-  return `${count} concern${count === 1 ? '' : 's'}`;
-}
-
-function deliveredRun(state) {
-  return Boolean(state?.finishedAt) && isDeliveredWorkflowStatus(state?.status);
-}
-
-// An action can end terminal without ever being dispatched: the runner marks
-// dynamic actions whose dependencies failed `dependencyBlocked`, and they
-// record no attempt. Such an action never ran, so it neither completed nor
-// has an agent pane to show.
-function actionWasDispatched(action, state) {
-  if ((action?.attempts ?? []).length) return true;
-  return (state?.attempts ?? []).some((attempt) => attempt.actionId === action?.id
-    || String(attempt.actionId ?? '').startsWith(`${action?.id}[`));
-}
-
-function isNeverDispatchedBlocked(action, state) {
-  return state?.outputs?.[action?.id]?.dependencyBlocked === true && !actionWasDispatched(action, state);
-}
-
-// Name the dependency that actually failed instead of repeating the runner's
-// generic "blocked by failed or unresolved dependencies" message.
-function blockingDependencies(action, state) {
-  const deps = action?.dependsOn ?? [];
-  const failed = deps.filter((id) => {
-    const output = state?.outputs?.[id];
-    if (output && output.ok !== true) return true;
-    const dep = (state?.actionLedger ?? []).find((entry) => entry.id === id);
-    return dep ? String(effectiveActionStatus(dep, state)).startsWith('failed') : false;
-  });
-  return failed.length ? failed : deps;
-}
-
-function phaseLabel(name, control) {
-  if (control.autonomous) {
-    if (name === 'execution' || String(name).endsWith(':adaptive')) return 'Execution';
-    const dynamic = String(name).split(':').at(-1);
-    return dynamic.split('-').map((part) => part ? `${part[0].toUpperCase()}${part.slice(1)}` : '').join(' ');
-  }
-  return compactPhaseName(name);
-}
-
-export function workflowPanelModel(row, {
-  phaseIndex = null, agentIndex = null,
-} = {}) {
-  const state = row?.state ?? {};
-  if (isV2State(state)) return workflowPanelModelV2(row, { phaseIndex, agentIndex });
-  const ledger = state.actionLedger ?? [];
-  const orchestrator = autonomousControlPlane(state);
-  const isControlAction = (action) => orchestrator.autonomous
-    && action.id === orchestrator.actionId
-    && action.kind === 'decide';
-  const isPreflightAction = (action) => orchestrator.autonomous && action.id === 'scout';
-  const isNonPhaseAction = (action) => isControlAction(action) || isPreflightAction(action);
-  const phaseNames = [];
-  const addPhase = (name) => {
-    if (name && !phaseNames.includes(name)) phaseNames.push(name);
-  };
-  for (const phase of state._doc?.phases ?? []) {
-    const controlOnly = orchestrator.autonomous
-      && (phase.steps ?? []).length
-      && (phase.steps ?? []).every((step) =>
-        (step.id === orchestrator.actionId && step.type === 'decide') || step.id === 'scout');
-    if (!controlOnly) addPhase(phase.name);
-  }
-  for (const action of ledger) if (!isNonPhaseAction(action)) addPhase(action.phase);
-  for (const step of state.steps ?? []) if (step.stepId !== orchestrator.actionId && step.stepId !== 'scout') addPhase(step.phase);
-  if (state.currentStep?.id !== orchestrator.actionId && state.currentStep?.id !== 'scout') addPhase(state.currentStep?.phase);
-  if (!orchestrator.autonomous) addPhase(state.currentPhase?.name);
-  if (!phaseNames.length) phaseNames.push(orchestrator.autonomous ? 'execution' : 'starting');
-
-  const activePhaseName = state.currentStep?.phase ?? state.currentPhase?.name;
-  const currentPhaseIndex = Math.max(0, phaseNames.indexOf(activePhaseName));
-  const selectedPhaseIndex = clamp(
-    phaseIndex == null ? currentPhaseIndex : phaseIndex,
-    0,
-    phaseNames.length - 1,
-  );
-  const delivered = deliveredRun(state);
-  const phases = phaseNames.map((name) => {
-    const actions = ledger.filter((action) => action.phase === name && !isNonPhaseAction(action));
-    const entries = actions.map((action) => ({
-      action,
-      status: effectiveActionStatus(action, state),
-      blocked: isNeverDispatchedBlocked(action, state),
-    }));
-    // A never-dispatched action is not finished work: counting it produced
-    // "1/1 complete" above an empty agent pane (user report 2026-08-31).
-    const completed = entries.filter((entry) => !entry.blocked && TERMINAL_ACTIONS.has(entry.status)).length;
-    const failed = entries.filter((entry) => String(entry.status).startsWith('failed')).length;
-    const blockedActions = entries.filter((entry) => entry.blocked).map((entry) => ({
-      id: entry.action.id,
-      kind: entry.action.kind ?? 'run',
-      blockedBy: blockingDependencies(entry.action, state),
-    }));
-    const current = name === activePhaseName && !state.finishedAt;
-    const active = entries.some((entry) => entry.status === 'running');
-    // On a delivered run every failure was recovered or superseded before the
-    // delivery, so a permanent ✗ on the phase list misreports the run (user
-    // report 2026-08-31). Attempt rows keep their true per-attempt history,
-    // and failed, blocked or interrupted runs keep their failure marks.
-    const failureMarks = delivered ? 0 : failed;
-    const status = active ? 'active'
-      : failureMarks ? 'failed'
-        : blockedActions.length && completed < actions.length ? 'dependency_blocked'
-          : actions.length && completed === actions.length ? 'completed'
-            : current ? 'waiting' : 'pending';
-    return {
-      name, label: phaseLabel(name, orchestrator), status, actions,
-      completed, total: actions.length, blockedActions,
-    };
-  });
-  const selectedPhase = phases[selectedPhaseIndex];
-
-  const agents = [];
-  const representedActiveKeys = new Set();
-  for (const action of selectedPhase.actions) {
-    for (const attemptIndex of action.attempts ?? []) {
-      const attempt = state.attempts?.[attemptIndex];
-      if (!attempt) continue;
-      const activeEntry = Object.entries(state.activeAgents ?? {}).find(([, active]) =>
-        active.stepId === action.id && active.pool === attempt.pool &&
-        (active.attempt == null || active.attempt === attempt.attemptNumber));
-      if (activeEntry) representedActiveKeys.add(activeEntry[0]);
-      agents.push({
-        key: `attempt:${attemptIndex}`,
-        action,
-        attempt,
-        active: activeEntry?.[1] ?? null,
-        pool: attempt.pool ?? activeEntry?.[1]?.pool ?? 'unassigned',
-        model: attempt.model ?? activeEntry?.[1]?.model ?? 'connector model',
-        status: activeEntry ? 'running'
-          : state.outputs?.[action.id]?.ok === false ? 'failed_verification'
-            : attempt.status ?? effectiveActionStatus(action, state),
-      });
-    }
-  }
-  for (const [key, active] of Object.entries(state.activeAgents ?? {})) {
-    if (representedActiveKeys.has(key)) continue;
-    // The autonomous orchestrator is a control-plane thread, not a worker in
-    // whichever execution phase happens to be selected. It has its own panel.
-    // Without this guard, an active checkpoint is re-added below a completed
-    // phase when both share the durable `autonomous-delivery` phase name.
-    if (orchestrator.autonomous && active.stepId === orchestrator.actionId) continue;
-    const action = ledger.find((entry) => entry.id === active.stepId || active.stepId?.startsWith(`${entry.id}[`));
-    if ((action?.phase ?? state.currentPhase?.name) !== selectedPhase.name) continue;
-    agents.push({
-      key: `active:${key}`,
-      action: action ?? { id: active.stepId, kind: state.currentStep?.type ?? 'run', status: 'running' },
-      attempt: null,
-      active,
-      pool: active.pool ?? 'unassigned',
-      model: active.model ?? 'connector model',
-      status: active.status ?? 'running',
-    });
-  }
-  const activeAgentIndex = Math.max(0, agents.findIndex((agent) => agent.status === 'running' || agent.active));
-  const selectedAgentIndex = agents.length
-    ? (agentIndex == null ? activeAgentIndex : clamp(agentIndex, 0, agents.length - 1))
-    : 0;
-  return {
-    state,
-    events: row?.events ?? [],
-    orchestrator,
-    phases,
-    phaseIndex: selectedPhaseIndex,
-    selectedPhase,
-    agents,
-    agentIndex: selectedAgentIndex,
-    selectedAgent: agents[selectedAgentIndex] ?? null,
-  };
-}
-
-function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}) {
+export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null } = {}) {
   const state = row.state;
   const actionDefinitions = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
   const actionStates = new Map((state.actions ?? []).map((action) => [action.id, action]));
@@ -801,7 +473,7 @@ function workflowPanelModelV2(row, { phaseIndex = null, agentIndex = null } = {}
     latestDecision: state.planner.lastDecision,
   };
   return {
-    v2: true, state, stages, dependencyGroups, events: row.events ?? [], orchestrator, phases,
+    state, stages, dependencyGroups, events: row.events ?? [], orchestrator, phases,
     phaseIndex: selectedPhaseIndex, selectedPhase, agents,
     agentIndex: selectedAgentIndex, selectedAgent: agents[selectedAgentIndex] ?? null,
   };
@@ -920,7 +592,7 @@ export function renderWorkflowTui(row, {
     ? [
       selectLine(
         `${model.orchestrator.active ? statusIcon('running', spinnerFrame)
-          : stateFinishedAt(state) ? workflowStatusIcon(isV2State(state) ? { status: stateStatus(state) } : state, spinnerFrame)
+          : stateFinishedAt(state) ? workflowStatusIcon({ status: stateStatus(state) }, spinnerFrame)
             : statusIcon(model.orchestrator.status, spinnerFrame)} ${plannerDisplayStatus(model)}`,
         controlSelected,
         focus === 0 && !orchestratorDetail,
@@ -1103,115 +775,6 @@ function sectionDivider(label, inner) {
   return `├${text}${'─'.repeat(Math.max(0, inner - text.length))}┤`;
 }
 
-function workflowTimelineLines(model, width, spinnerFrame = 0) {
-  if (model.v2) return workflowTimelineLinesV2(model, width, spinnerFrame);
-  const { state, orchestrator } = model;
-  const ledger = state.actionLedger ?? [];
-  const events = [];
-  const add = (at, lines, sequence = Number.MAX_SAFE_INTEGER, segment = null) => {
-    if (!at) return;
-    events.push({ at, sequence, segment, lines: Array.isArray(lines) ? lines : [lines] });
-  };
-  const scout = ledger.find((action) => action.id === 'scout');
-  add(state.startedAt, [
-    timelineRow(state.startedAt, '● Workflow initiated', '', width),
-    timelineDetail(scout ? model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance' : 'Execution started', width),
-  ], Number.MAX_SAFE_INTEGER, 'Preflight');
-
-  const scoutStartedAt = actionStartedAt(state, scout);
-  const scoutFinishedAt = actionFinishedAt(state, scout);
-  if (scoutStartedAt) {
-    add(scoutStartedAt, [
-       timelineRow(scoutStartedAt, '● Scout started', '', width),
-      timelineDetail('Read-only repository and capability inspection', width),
-    ], Number.MAX_SAFE_INTEGER, 'Preflight');
-  }
-  if (scoutFinishedAt && TERMINAL_ACTIONS.has(effectiveActionStatus(scout, state))) {
-    const attempt = latestAttemptForAction(state, scout);
-    const metadata = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
-    add(scoutFinishedAt, [
-       timelineRow(scoutFinishedAt, `${statusIcon(effectiveActionStatus(scout, state))} Scout completed`, durationText(scoutStartedAt, scoutFinishedAt), width),
-      ...(metadata ? [timelineDetail(metadata, width)] : []),
-    ], Number.MAX_SAFE_INTEGER, 'Preflight');
-  }
-
-  orchestrator.attempts.forEach((attempt, index) => {
-    if (!attempt.finishedAt || !TERMINAL_ACTIONS.has(attempt.status)) return;
-    const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
-    const summary = decision?.reason ? sentencePreview(decision.reason, Math.max(30, width - 10))
-      : decision ? decisionLabel(decision.decision) : 'No accepted decision; correction or retry turn';
-    const acceptedBefore = orchestrator.attempts.slice(0, index).filter((entry, priorIndex) =>
-      decisionForPlannerAttempt(state, entry, priorIndex, orchestrator.attempts)).length;
-    const plannerLabel = !decision
-      ? `planning retry #${index + 1}`
-      : decision.decision === 'complete'
-        ? 'completion confirmed'
-        : acceptedBefore === 0 ? 'plan created' : `plan updated #${acceptedBefore + 1}`;
-    const segment = index === 0 ? 'Preflight' : 'Planner';
-    add(attempt.finishedAt, [
-      timelineRow(attempt.finishedAt, `◆ [Workflow Planner] ${plannerLabel}`, durationText(attempt.startedAt, attempt.finishedAt), width),
-      timelineDetail(summary, width),
-    ], Number.MAX_SAFE_INTEGER, segment);
-  });
-
-  const phases = new Map();
-  for (const action of ledger) {
-    if (action.id === 'scout' || (orchestrator.autonomous && action.id === orchestrator.actionId && action.kind === 'decide')) continue;
-    if (!action.phase) continue;
-    if (!phases.has(action.phase)) phases.set(action.phase, []);
-    phases.get(action.phase).push(action);
-  }
-  for (const [name, actions] of phases) {
-    const realStart = earliestTimestamp(actions.map((action) => actionStartedAt(state, action)));
-    const startedAt = realStart ?? earliestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
-    if (!startedAt) continue;
-    const label = phaseLabel(name, orchestrator);
-    const dependencyBlocked = actions.filter((action) => state.outputs?.[action.id]?.dependencyBlocked === true);
-    if (!realStart && dependencyBlocked.length === actions.length) {
-      const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
-      if (finishedAt) {
-        add(finishedAt, [
-          timelineRow(finishedAt, '⊘ skipped', `${actions.length} action${actions.length === 1 ? '' : 's'} not run`, width),
-          timelineDetail('Required earlier work did not pass; the planner chose a recovery path', width),
-        ], Number.MAX_SAFE_INTEGER, label);
-      }
-      continue;
-    }
-    add(startedAt, timelineRow(startedAt, `├─ ${realStart ? 'started' : 'blocked'}`, '', width), Number.MAX_SAFE_INTEGER, label);
-    const finished = actions
-      .filter((action) => actionFinishedAt(state, action) && TERMINAL_ACTIONS.has(effectiveActionStatus(action, state)))
-      .sort((a, b) => Date.parse(actionFinishedAt(state, a)) - Date.parse(actionFinishedAt(state, b)));
-    finished.forEach((action, index) => {
-      const terminalPhase = finished.length === actions.length && index === finished.length - 1;
-      const branch = terminalPhase ? '│  └─' : '│  ├─';
-      const actionFinished = actionFinishedAt(state, action);
-      const actionStarted = actionStartedAt(state, action);
-      const blocked = state.outputs?.[action.id]?.dependencyBlocked === true;
-      add(actionFinished, timelineRow(
-        actionFinished,
-        `${branch}${blocked ? '⊘' : statusIcon(effectiveActionStatus(action, state))} ${action.id}`,
-        actionStarted ? durationText(actionStarted, actionFinished) : '',
-        width,
-      ), Number.MAX_SAFE_INTEGER, label);
-    });
-    if (finished.length === actions.length && actions.length) {
-      const finishedAt = latestTimestamp(actions.map((action) => actionFinishedAt(state, action)));
-      const blocked = actions.some((action) => state.outputs?.[action.id]?.dependencyBlocked === true);
-      const failed = actions.some((action) => state.outputs?.[action.id]?.dependencyBlocked !== true
-        && String(effectiveActionStatus(action, state)).startsWith('failed'));
-      const outcome = failed ? 'finished with failures' : blocked ? 'incomplete' : 'completed';
-      add(finishedAt, timelineRow(finishedAt, `└─${failed ? '✗' : blocked ? '!' : '✓'} ${outcome}`, `${finished.length}/${actions.length}`, width), Number.MAX_SAFE_INTEGER, label);
-    }
-  }
-
-  for (const event of model.events) {
-    const detail = timelineControlEvent(event, width);
-    if (detail) add(event.committedAt, detail, Number(event.sequence), event.type.startsWith('decision.') ? 'Planner' : 'Preflight');
-  }
-
-  return groupedTimeline(events, model, width, state.finishedAt);
-}
-
 function groupedTimeline(events, model, width, workflowFinishedAt) {
   const chronological = (a, b) => Date.parse(a.at) - Date.parse(b.at)
     || Number(a.sequence ?? Number.MAX_SAFE_INTEGER) - Number(b.sequence ?? Number.MAX_SAFE_INTEGER);
@@ -1275,7 +838,7 @@ function timelineSegmentDisplayName(name, model) {
   return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
 }
 
-function workflowTimelineLinesV2(model, width, spinnerFrame = 0) {
+function workflowTimelineLines(model, width, spinnerFrame = 0) {
   const { state } = model;
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
@@ -1397,114 +960,20 @@ function continuationHeader(segment, elapsed, width, at = null) {
 }
 
 function currentTimelineSegment(model) {
-  const { state, orchestrator } = model;
-  if (model.v2) {
-    const activeAction = state.actions.find((action) => action.status === 'running');
-    return model.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
-      ?? (state.preflight?.scout?.status === 'running' ? 'Preflight'
-        : state.planner.status === 'running'
-          ? (state.actions.length ? 'Planner' : 'Preflight')
-          : 'Workflow');
-  }
-  if (orchestrator.active || (orchestrator.autonomous && !state.currentStep?.phase)) return 'Planner';
-  const phase = state.currentStep?.phase ?? state.currentPhase?.name;
-  return phase ? phaseLabel(phase, orchestrator) : 'Preflight';
+  const { state } = model;
+  const activeAction = state.actions.find((action) => action.status === 'running');
+  return model.stages.find((stage) => stage.actionIds.includes(activeAction?.id))?.label
+    ?? (state.preflight?.scout?.status === 'running' ? 'Preflight'
+      : state.planner.status === 'running'
+        ? (state.actions.length ? 'Planner' : 'Preflight')
+        : 'Workflow');
 }
 
 function timelineText(value) {
   return typeof value === 'string' ? value : value?.text ?? '';
 }
 
-function decisionForPlannerAttempt(state, attempt, index, attempts) {
-  const decisions = state.decisions ?? [];
-  if (attempt?.outFile) {
-    const artifactMatch = decisions.find((decision) => decision.artifact === attempt.outFile);
-    if (artifactMatch) return artifactMatch;
-  }
-  const started = Date.parse(attempt?.startedAt ?? '');
-  const finished = Date.parse(attempt?.finishedAt ?? '');
-  if (Number.isFinite(started) && Number.isFinite(finished)) {
-    const timeMatch = decisions.find((decision) => {
-      const created = Date.parse(decision.createdAt ?? '');
-      return Number.isFinite(created) && created >= started && created <= finished + 2_000;
-    });
-    if (timeMatch) return timeMatch;
-  }
-  const hasDurableCorrelation = decisions.some((decision) => decision.artifact || decision.createdAt)
-    || attempts.some((entry) => entry.outFile);
-  return hasDurableCorrelation ? null : decisions[index];
-}
-
-function timelineControlEvent(event, width) {
-  const labels = {
-    'decision.rejected': '✗ [Workflow Planner] decision rejected',
-    'decision.correction_requested': '⧖ [Workflow Planner] correction requested',
-    'decision.orchestrator_escalated': '◆ [Workflow Planner] provider escalated',
-    'run.cancellation_requested': '⧖ Workflow cancellation requested',
-    'run.cancelling': '⧖ Workflow cancellation requested',
-    'run.interruption_requested': '⧖ Workflow interruption requested',
-    'workflow.expansion_target_exceeded': '! Advisory expansion target exceeded',
-    'workflow.agent_target_exceeded': '! Advisory agent target exceeded',
-  };
-  const label = labels[event.type];
-  if (!label) return null;
-  const reason = event.payload?.why ?? event.payload?.reason;
-  return [
-    timelineRow(event.committedAt, label, '', width),
-    ...(reason ? [timelineDetail(sentencePreview(reason, Math.max(20, width - 8)), width)] : []),
-  ];
-}
-
 function workflowLiveLines(model, width, spinnerFrame) {
-  if (model.v2) return workflowLiveLinesV2(model, width, spinnerFrame);
-  const { state, orchestrator } = model;
-  const activeWorkers = Object.values(state.activeAgents ?? {})
-    .filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent))
-    .sort((a, b) => String(b.lastEventAt ?? b.lastActivityAt ?? '').localeCompare(String(a.lastEventAt ?? a.lastActivityAt ?? '')));
-  const lines = [];
-  let running = activeWorkers.length + (orchestrator.active ? 1 : 0);
-  let waiting = 0;
-  if (orchestrator.autonomous && !state.finishedAt) {
-    const plannerWaiting = !orchestrator.active && activeWorkers.length > 0;
-    if (plannerWaiting) waiting += 1;
-    const plannerStatus = orchestrator.active ? 'planning' : plannerWaiting ? 'waiting' : orchestrator.status;
-    lines.push(alignRight(
-      `${statusIcon(plannerStatus, spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`,
-      plannerStatus,
-      width,
-    ));
-    if (plannerWaiting) lines.push(`   Waiting for ${activeWorkers.length === 1 ? activeWorkers[0].stepId : `${activeWorkers.length} workers`}`);
-    else if (orchestrator.active) lines.push('   Choosing the next smallest useful action');
-    else lines.push(`   ${humanStatus(orchestrator.status)}`);
-    const plannerAction = orchestrator.active?.lastActions?.at(-1) ?? orchestrator.latestAttempt?.lastActions?.at(-1);
-    if (plannerAction) lines.push(`   ↳ ${friendlyActionKind(plannerAction.kind)}${plannerAction.summary ? ` · ${friendlyActionSummary(plannerAction)}` : ''}`);
-    else if (orchestrator.latestDecision) lines.push(`   ↳ Decision · ${decisionLabel(orchestrator.latestDecision.decision)}`);
-    const plannerStream = streamActivityLine(orchestrator.active);
-    if (plannerStream) lines.push(`   ${plannerStream}`);
-    lines.push('');
-  }
-  for (const agent of activeWorkers) {
-    const action = (state.actionLedger ?? []).find((entry) => entry.id === agent.stepId || agent.stepId?.startsWith(`${entry.id}[`));
-    lines.push(alignRight(
-      `${statusIcon(agent.status ?? 'running', spinnerFrame)} ${agent.stepId} · ${agent.pool ?? 'unassigned'} · ${agent.model ?? 'connector model'}`,
-      durationText(action?.startedAt ?? agent.startedAt),
-      width,
-    ));
-    const latest = agent.lastActions?.at(-1);
-    lines.push(latest
-      ? `   ↳ ${friendlyActionKind(latest.kind)}${latest.summary ? ` · ${friendlyActionSummary(latest)}` : ''}`
-      : '   ↳ waiting for the first semantic action event');
-    const stream = streamActivityLine(agent);
-    if (stream) lines.push(`   ${stream}`);
-    lines.push('');
-  }
-  if (!lines.length) lines.push(state.finishedAt
-    ? `${workflowStatusIcon(state)} No agents running · ${terminalWorkflowLabel(state)}`
-    : '⧖ Waiting for the next dispatch');
-  return { lines, running, waiting };
-}
-
-function workflowLiveLinesV2(model, width, spinnerFrame) {
   const { state, orchestrator } = model;
   const runningAttempts = state.attempts.filter((attempt) => attempt.status === 'running');
   const lines = [];
@@ -1545,57 +1014,7 @@ function workflowLiveLinesV2(model, width, spinnerFrame) {
   return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0), waiting };
 }
 
-function terminalWorkflowLabel(state) {
-  const status = state?.status;
-  const { concernCount, bestEffort, concerned } = outcomeQualification(state);
-  if (isDeliveredWorkflowStatus(status)) {
-    const concerns = concernCount ? concernPhrase(concernCount) : concerned ? 'concerns' : '';
-    if (bestEffort) return `best-effort delivery, unverified${concerns ? ` — ${concerns}` : ''}`;
-    return concerns ? `workflow finished with ${concerns}` : 'workflow finished';
-  }
-  if (status === 'blocked') return 'workflow stopped with blockers';
-  if (status === 'failed') return 'workflow failed';
-  if (status === 'cancelled') return 'workflow cancelled';
-  if (status === 'interrupted') return 'workflow interrupted';
-  return 'workflow stopped';
-}
-
 function workflowNextLines(model, width) {
-  if (model.v2) return workflowNextLinesV2(model, width);
-  const { state, orchestrator } = model;
-  if (state.finishedAt) {
-    const { concernCount, bestEffort, concerned } = outcomeQualification(state);
-    const next = isDeliveredWorkflowStatus(state.status)
-      ? concernCount ? `review ${concernPhrase(concernCount)} in result`
-        : concerned ? 'review concerns in result'
-          : bestEffort ? 'review the unverified best-effort delivery'
-            : 'result ready'
-      : state.status === 'blocked' ? 'review blockers and partial work'
-        : state.status === 'failed' ? 'inspect the failure before using partial work'
-          : state.status === 'cancelled' ? 'review any partial work'
-            : state.status === 'interrupted' ? 'resume the workflow or inspect partial work'
-              : 'inspect the workflow result';
-    const label = terminalWorkflowLabel(state);
-    return [truncate(`${workflowStatusIcon(state)} ${label[0].toUpperCase()}${label.slice(1)} · ${next}`, width)];
-  }
-  const ledger = state.actionLedger ?? [];
-  const pending = ledger.find((action) => action.id !== 'scout'
-    && action.id !== orchestrator.actionId
-    && !TERMINAL_ACTIONS.has(effectiveActionStatus(action, state))
-    && effectiveActionStatus(action, state) !== 'running');
-  if (pending) {
-    const blockers = (pending.dependsOn ?? []).filter((id) => state.outputs?.[id]?.ok !== true);
-    const wait = blockers.length ? ` · waiting for ${blockers.join(', ')}` : '';
-    return [truncate(`○ [Phase: ${phaseLabel(pending.phase, orchestrator)}] · ${pending.id}${wait}`, width)];
-  }
-  if (Object.keys(state.activeAgents ?? {}).some((key) => state.activeAgents[key]?.stepId !== orchestrator.actionId)) {
-    return ['○ [Workflow Planner] will reassess when current work finishes'];
-  }
-  if (orchestrator.active) return ['○ Awaiting the next [Workflow Planner] decision'];
-  return ['○ Awaiting the next [Workflow Planner] decision'];
-}
-
-function workflowNextLinesV2(model, width) {
   const { state } = model;
   if (stateFinishedAt(state)) return [truncate(`✓ Workflow ${state.lifecycle.status === 'completed' ? 'complete' : state.lifecycle.status} - result is ready`, width)];
   const running = state.attempts.filter((attempt) => attempt.status === 'running');
@@ -1611,39 +1030,19 @@ function workflowNextLinesV2(model, width) {
 }
 
 function workflowTechnicalLines(model, width) {
-  if (model.v2) {
-    const { state } = model;
-    return wrapLines([
-      `Schema · ${state.schemaVersion}`,
-      `Status · ${state.lifecycle.status}`,
-      `Started · ${state.lifecycle.startedAt ?? '—'}`,
-      `Usage · ${state.usage.total} known tokens`,
-      '', 'Action program',
-      ...state.actions.map((action) => `${statusIcon(action.status)} ${action.id} · revision ${action.programRevision} · ${action.status}`),
-      '', 'Requirement ledger',
-      ...Object.values(state.ledger.requirements).map((requirement) => `${statusIcon(requirement.status)} ${requirement.id} · ${requirement.status}`),
-      '', 'Recent durable events',
-      ...model.events.slice(-12).map((event) => `#${event.sequence} ${event.type}`),
-    ], width);
-  }
-  const { state, orchestrator } = model;
-  const lines = [
-    `Status · ${state.status ?? 'starting'}`,
-    `Current · ${state.currentStep?.id ?? '—'} · ${state.currentStep?.phase ?? state.currentPhase?.name ?? '—'}`,
-    `Started · ${state.startedAt ?? '—'}`,
-    `Usage · ${compactUsage(state.usage)}`,
-    '',
-    'Action ledger',
-  ];
-  for (const action of state.actionLedger ?? []) {
-    const control = orchestrator.autonomous && action.id === orchestrator.actionId && action.kind === 'decide';
-    lines.push(`${statusIcon(effectiveActionStatus(action, state))} ${control ? '[Workflow Planner]' : action.id} · ${action.kind} · ${action.status ?? 'pending'} · ${action.phase ?? '—'}`);
-  }
-  if (!(state.actionLedger ?? []).length) lines.push('· no actions recorded');
-  lines.push('', 'Recent durable events');
-  for (const event of model.events.slice(-12)) lines.push(`#${event.sequence} ${event.type}`);
-  if (!model.events.length) lines.push('· no events recorded');
-  return wrapLines(lines, width);
+  const { state } = model;
+  return wrapLines([
+    `Schema · ${state.schemaVersion}`,
+    `Status · ${state.lifecycle.status}`,
+    `Started · ${state.lifecycle.startedAt ?? '—'}`,
+    `Usage · ${state.usage.total} known tokens`,
+    '', 'Action program',
+    ...state.actions.map((action) => `${statusIcon(action.status)} ${action.id} · revision ${action.programRevision} · ${action.status}`),
+    '', 'Requirement ledger',
+    ...Object.values(state.ledger.requirements).map((requirement) => `${statusIcon(requirement.status)} ${requirement.id} · ${requirement.status}`),
+    '', 'Recent durable events',
+    ...model.events.slice(-12).map((event) => `#${event.sequence} ${event.type}`),
+  ], width);
 }
 
 function timelineRow(at, label, right, width) {
@@ -1672,31 +1071,6 @@ function clockText(value) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-function earliestTimestamp(values) {
-  return values.filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
-}
-
-function latestTimestamp(values) {
-  return values.filter(Boolean).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
-}
-
-function latestAttemptForAction(state, action) {
-  if (!action) return null;
-  return (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean).at(-1) ?? null;
-}
-
-function actionStartedAt(state, action) {
-  if (!action) return null;
-  const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
-  return action.startedAt ?? earliestTimestamp(attempts.map((attempt) => attempt.startedAt));
-}
-
-function actionFinishedAt(state, action) {
-  if (!action) return null;
-  const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
-  return action.finishedAt ?? latestTimestamp(attempts.map((attempt) => attempt.finishedAt));
-}
-
 function streamActivityLine(agent) {
   if (!agent) return '';
   const at = agent.lastEventAt ?? agent.lastActivityAt;
@@ -1717,33 +1091,14 @@ function humanStatus(value) {
 
 function plannerDisplayStatus(model) {
   const { orchestrator, state } = model;
-  if (model.v2) {
-    if (stateFinishedAt(state)) return state.lifecycle.status === 'completed' ? 'Completed' : humanStatus(state.lifecycle.status);
-    if (orchestrator.active) return 'Creating or updating plan';
-    if (state.attempts.some((attempt) => attempt.status === 'running')) return 'Waiting for workers';
-    return humanStatus(state.planner.status);
-  }
-  if (state.finishedAt && isDeliveredWorkflowStatus(state.status)) {
-    const { concernCount, bestEffort, concerned } = outcomeQualification(state);
-    const concerns = concernCount ? concernPhrase(concernCount) : concerned ? 'concerns' : '';
-    // The planner pane is a 34-column nav column: state the qualification
-    // here and leave the count to the Live, Next and Result lines.
-    if (bestEffort) return 'Best-effort, unverified';
-    return concerns ? `Completed with ${concerns}` : 'Completed';
-  }
-  if (state.finishedAt) return humanStatus(state.status);
-  if (orchestrator.active) return 'Planning next actions';
-  const workers = Object.values(state.activeAgents ?? {}).filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent));
-  if (workers.length) return 'Waiting for workers';
-  if (orchestrator.status === 'reviewing evidence') return 'Reviewing evidence';
-  return humanStatus(orchestrator.status);
+  if (stateFinishedAt(state)) return state.lifecycle.status === 'completed' ? 'Completed' : humanStatus(state.lifecycle.status);
+  if (orchestrator.active) return 'Creating or updating plan';
+  if (state.attempts.some((attempt) => attempt.status === 'running')) return 'Waiting for workers';
+  return humanStatus(state.planner.status);
 }
 
 function plannerUsageSummary(model) {
-  const checkpoints = model.orchestrator.attempts.length;
-  if (model.v2) return `Checkpoints ${checkpoints} · ${model.state.usage.total || 0} tok`;
-  const cost = model.state.usage?.cost?.estimatedUsd ?? model.state.usage?.cost?.knownSubtotalUsd;
-  return `Checkpoints ${checkpoints}${Number.isFinite(cost) ? ` · $${cost.toFixed(2)}` : ''}`;
+  return `Checkpoints ${model.orchestrator.attempts.length} · ${model.state.usage.total || 0} tok`;
 }
 
 function dimText(value, width) {
@@ -1751,125 +1106,6 @@ function dimText(value, width) {
 }
 
 function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
-  const { orchestrator, state } = model;
-  if (model.v2) return orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose });
-  if (!orchestrator.autonomous) {
-    return wrapLines(['This workflow has no autonomous orchestrator thread.'], width);
-  }
-  const latest = orchestrator.latestAttempt;
-  const active = orchestrator.active;
-  const liveActions = active?.lastActions ?? latest?.lastActions ?? [];
-  const totalActions = active?.actionCount ?? latest?.actionCount ?? liveActions.length;
-  const conversations = Object.entries(state.orchestration?.conversations ?? {});
-  const decisions = state.decisions ?? [];
-  const latestDecision = decisions.at(-1);
-  const latestLiveAction = liveActions.at(-1) ?? null;
-  const workerAttempts = (state.attempts ?? []).filter((attempt) => attempt.actionId !== orchestrator.actionId);
-  const completedWorkers = workerAttempts.filter((attempt) => TERMINAL_ACTIONS.has(attempt.status)).length;
-  const activeWorkers = Object.values(state.activeAgents ?? {})
-    .filter((agent) => agent.stepId !== orchestrator.actionId && isLiveAgent(agent));
-  const nextActions = latestDecision?.actions?.map((action) => action.id).filter(Boolean) ?? [];
-  const stateLabel = active
-    ? 'Choosing the next smallest useful action'
-    : activeWorkers.length
-      ? `Waiting for ${activeWorkers.length} worker${activeWorkers.length === 1 ? '' : 's'} to finish`
-      : state.finishedAt
-        ? 'Workflow finished'
-        : 'Reviewing completed evidence';
-  const lines = [
-    `${statusIcon(active ? 'running' : latest?.status ?? orchestrator.status, spinnerFrame)} ${orchestrator.status} · ${orchestrator.pool} · ${orchestrator.model}`,
-    '',
-    `Now · ${stateLabel}`,
-    `Progress · ${completedWorkers}/${workerAttempts.length} worker attempts finished · ${orchestrator.attempts.length} planning checkpoint${orchestrator.attempts.length === 1 ? '' : 's'}`,
-  ];
-  if (active) {
-    lines.push(latestLiveAction
-      ? `Latest action · ${friendlyActionKind(latestLiveAction.kind)}${latestLiveAction.summary ? ` · ${friendlyActionSummary(latestLiveAction)}` : ''}`
-      : 'Latest action · waiting for the first semantic event');
-    lines.push(active.lastEventAt
-      ? `Live stream · event ${durationText(active.lastEventAt)} ago · ${active.outputBytesObserved ?? 0} bytes observed`
-      : 'Live stream · waiting for the first provider event');
-  }
-  if (latestDecision) {
-    lines.push(`Latest decision · ${decisionLabel(latestDecision.decision)}`);
-    if (latestDecision.reason) lines.push(`Why · ${sentencePreview(latestDecision.reason)}`);
-    lines.push(`Next · ${nextActions.length ? nextActions.join(', ') : latestDecision.decision === 'complete' ? 'Return the verified result' : 'Wait for current work, then reassess'}`);
-  } else {
-    lines.push('Latest decision · Planning has not completed its first checkpoint yet');
-  }
-  if (active?.stall?.status === 'suspected_stalled') {
-    lines.push(`Attention · No new evidence for ${active.stall.silentForSec}s; the agent has not been auto-killed`);
-  }
-
-  if (!verbose) {
-    if (state.finishedAt) {
-      const { verified, bestEffort, concernCount, concerned } = outcomeQualification(state);
-      const concerns = concernCount ? ` · ${concernPhrase(concernCount)}` : concerned ? ' with concerns' : '';
-      const result = isDeliveredWorkflowStatus(state.status)
-        ? verified
-          ? `Verified delivery is ready${concerns}`
-          : `Best useful delivery is ready${bestEffort ? ', unverified' : ''}${concerns}`
-        : state.status === 'blocked' ? 'No useful delivery could be completed' : 'Workflow is terminal';
-      lines.push('', `Result · ${result}`);
-      if (concernCount) lines.push(`Concerns · ${concernCount} recorded in the result envelope`);
-    }
-    lines.push('', 'Recent activity');
-    if (!liveActions.length) lines.push('· waiting for semantic action events');
-    const firstVisibleActionNumber = Math.max(1, totalActions - liveActions.length + 1);
-    liveActions.slice(-3).forEach((action, index, visible) => {
-      const number = Math.max(firstVisibleActionNumber, totalActions - visible.length + 1) + index;
-      lines.push(`#${number} ${statusIcon(action.status, spinnerFrame)} ${friendlyActionKind(action.kind)}${action.summary ? ` · ${friendlyActionSummary(action)}` : ''}`);
-    });
-    lines.push('', 'Press v for checkpoint prompts, sessions, usage, and artifact paths.');
-    return wrapLines(lines, width);
-  }
-
-  lines.push('', 'Technical thread');
-  lines.push(`Logical thread · ${orchestrator.attempts.length} checkpoint turn${orchestrator.attempts.length === 1 ? '' : 's'}`);
-  for (const [pool, thread] of conversations) {
-    lines.push(`Session · ${pool} · ${thread.sessionId ?? '—'}${thread.started ? ' · resumable' : ' · pending first turn'}`);
-  }
-  if (!conversations.length) lines.push('Session · pending first orchestrator dispatch');
-  if (active?.lastActivityAt) lines.push(`Last activity · ${active.lastActivityAt} · ${active.outputBytesObserved ?? 0} bytes`);
-  if (active?.stall?.status === 'suspected_stalled') {
-    lines.push(`⚠ Suspected stalled · ${active.stall.silentForSec}s without evidence · never auto-killed`);
-  }
-
-  lines.push('', 'Checkpoint turns');
-  if (!orchestrator.attempts.length) lines.push('· waiting for the first planning turn');
-  orchestrator.attempts.forEach((attempt, index) => {
-    const decision = decisionForPlannerAttempt(state, attempt, index, orchestrator.attempts);
-    const reasoning = reasoningText(attempt);
-    lines.push(`#${index + 1} ${statusIcon(attempt.status, spinnerFrame)} ${attempt.status} · ${attempt.pool ?? '—'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''} · ${durationText(attempt.startedAt, attempt.finishedAt)}`);
-    lines.push(`  ${compactUsage(attempt.usage)}`);
-    if (decision) lines.push(`  decision: ${decision.decision} · ${decision.reason}`);
-    if (attempt.failureReason) lines.push(`  failure: ${attempt.failureReason}`);
-  });
-
-  const prompt = taskPreview(active?.taskFile ?? latest?.taskFile);
-  lines.push('', `Current checkpoint prompt${prompt.length ? ` · ${prompt.length} lines shown` : ''}`);
-  if (prompt.length) lines.push(...prompt.map((line) => `  ${line}`));
-  else lines.push('  unavailable');
-
-  const activityLabel = totalActions > liveActions.length
-    ? `Activity · last ${liveActions.length} of ${totalActions}` : 'Activity';
-  lines.push('', activityLabel);
-  if (!liveActions.length) lines.push('· waiting for semantic action events');
-  const firstVisibleActionNumber = Math.max(1, totalActions - liveActions.length + 1);
-  liveActions.forEach((action, index) => {
-    lines.push(`#${firstVisibleActionNumber + index} ${statusIcon(action.status, spinnerFrame)} ${action.kind} · ${action.status}`);
-    if (action.summary) lines.push(`  ${action.summary}`);
-  });
-
-  const outcome = outcomePreview(latest?.outFile, state.outputs?.[orchestrator.actionId]);
-  if (outcome.length) lines.push('', 'Latest checkpoint outcome', ...outcome.map((line) => `  ${line}`));
-  lines.push('', 'Artifacts');
-  lines.push(`task: ${active?.taskFile ?? latest?.taskFile ?? '—'}`);
-  lines.push(`output: ${active?.outFile ?? latest?.outFile ?? '—'}`);
-  return wrapLines(lines, width);
-}
-
-function orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose = false } = {}) {
   const { orchestrator, state } = model;
   const running = state.attempts.filter((attempt) => attempt.status === 'running');
   const now = orchestrator.active
@@ -1899,20 +1135,6 @@ function orchestratorDetailLinesV2(model, width, spinnerFrame, { verbose = false
   return wrapLines(lines, width);
 }
 
-function decisionLabel(decision) {
-  return ({
-    needs_more_work: 'Continue with bounded work',
-    complete: 'Finish and deliver',
-    stop: 'Stop with the best useful outcome',
-  })[decision] ?? String(decision ?? 'Pending');
-}
-
-function sentencePreview(value, maxChars = 420) {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  const sentences = text.match(/.*?[.!?](?:\s|$)/g)?.slice(0, 2).map((part) => part.trim()).join(' ') ?? text;
-  return truncate(sentences || text, maxChars);
-}
-
 function friendlyActionKind(kind) {
   return ({
     read_file: 'Read file',
@@ -1923,10 +1145,11 @@ function friendlyActionKind(kind) {
   })[kind] ?? String(kind ?? 'Action').replaceAll('_', ' ');
 }
 
-// The role shown between an action's id and its status. Authored drafts carry an
-// explicit `kind` (run, fanout, verify, bash); V2 program actions never do, so
-// derive their role the way the kernel defines it — an action that judges a
-// requirement is evidence, anything else with a program definition is work.
+// The role shown between an action's id and its status. A program action states
+// its nature in `kind` (mechanical, io-read, check, implement, integration,
+// architecture, adversarial-acceptance), so show that; for one written before
+// kinds existed, derive the role the way the kernel defines it — an action that
+// judges a requirement is evidence, anything else with a definition is work.
 function actionRoleLabel(action) {
   if (action.kind) return action.kind;
   if (Array.isArray(action.evidenceFor) && action.evidenceFor.length) return 'evidence';
@@ -2084,11 +1307,8 @@ function wrapLines(lines, width) {
   return out;
 }
 
-// Workflow-level glyph: the qualification comes from the outcome envelope, so
-// a `completed` run that recorded concerns still reads as `!`.
+// Workflow-level glyph for a terminal run.
 function workflowStatusIcon(state, spinnerFrame = 0) {
-  const { concernCount, bestEffort, concerned } = outcomeQualification(state);
-  if (isDeliveredWorkflowStatus(state?.status) && (concernCount || concerned || bestEffort)) return '!';
   return statusIcon(state?.status, spinnerFrame);
 }
 
@@ -2120,11 +1340,6 @@ function durationText(startedAt, finishedAt) {
 function truncate(value, width) {
   const text = String(value ?? '');
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
-}
-
-function compactPhaseName(name) {
-  const parts = String(name ?? '').split(':');
-  return parts.length > 1 ? `↳ ${parts.slice(1).join(':')}` : parts[0];
 }
 
 function panelWindow(lines, selectedIndex, itemHeight, height) {
@@ -2161,11 +1376,14 @@ function clamp(value, min, max) {
 function detailRow(bullswarmDir, token) {
   const resolved = resolveRunId(bullswarmDir, token);
   if (!resolved) throw new Error(`no run found for "${token}"`);
-  const statePath = join(resolved.runDir, 'state.json');
-  const reportPath = join(resolved.runDir, 'report.json');
-  const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
-  const report = readJsonSafe(reportPath);
-  return { ...resolved, state, report, events: readEvents(resolved.runDir), status: state?.status };
+  const legacy = isLegacyRunDir(resolved.runDir);
+  const state = legacy ? null : withV2Cancellation(readJsonSafe(join(resolved.runDir, 'state.json')), resolved.runDir);
+  const report = readJsonSafe(join(resolved.runDir, 'report.json'));
+  return {
+    ...resolved, legacy, state, report,
+    events: legacy ? [] : readEvents(resolved.runDir),
+    status: state?.lifecycle?.status,
+  };
 }
 
 export async function runDashboard(bullswarmDir, {
@@ -2175,6 +1393,11 @@ export async function runDashboard(bullswarmDir, {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
     const row = detailRow(bullswarmDir, token);
+    // Nothing to draw for a legacy run: the same single line the CLI prints.
+    if (row.legacy) {
+      output.write(`${legacyRunLine({ shortId: row.shortId, runId: row.runId, runDir: row.runDir })}\n`);
+      return 2;
+    }
     const details = renderDetails(row, { interactive: false });
     // A non-TTY run-ID inspection must expose the same segmented timeline as
     // the interactive viewer; otherwise real command output cannot evidence
@@ -2189,7 +1412,8 @@ export async function runDashboard(bullswarmDir, {
   }
   let selected = 0;
   const directRow = token ? detailRow(bullswarmDir, token) : null;
-  const directV2 = isV2State(directRow?.state);
+  // A legacy run has no drilldown: open on its detail pane, which is one line.
+  const directV2 = Boolean(directRow) && !directRow.legacy;
   let detail = Boolean(token) && !directV2;
   let message = null;
   let lastGoodRow = null;
@@ -2251,8 +1475,9 @@ export async function runDashboard(bullswarmDir, {
       // A torn read while the runner writes state.json yields state:null for
       // one frame — keep painting the last good snapshot of the same run.
       const fresh = detailRow(bullswarmDir, selectedRunId);
-      const row = (fresh.state || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
+      const row = (fresh.state || fresh.legacy || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
       if (row === fresh) lastGoodRow = fresh;
+      if (row.legacy) { writeFrame(renderDetails(row)); return; }
       const model = workflowPanelModel(row, {
         phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
         agentIndex: ui.followActiveAgent ? null : ui.agentIndex,
@@ -2677,10 +1902,15 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   if (token) {
     const resolved = resolveRunId(bullswarmDir, token);
     if (!resolved) throw new Error(`no run found for "${token}"`);
-    const statePath = join(resolved.runDir, 'state.json');
-    const reportPath = join(resolved.runDir, 'report.json');
-    const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
-    const report = readJsonSafe(reportPath);
+    if (isLegacyRunDir(resolved.runDir)) {
+      return {
+        action: 'show', legacy: true, runId: resolved.runId, shortId: resolved.shortId ?? null,
+        dir: resolved.runDir,
+        message: legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir }),
+      };
+    }
+    const state = withV2Cancellation(readJsonSafe(join(resolved.runDir, 'state.json')), resolved.runDir);
+    const report = readJsonSafe(join(resolved.runDir, 'report.json'));
     const events = readEvents(resolved.runDir);
     return { action: 'show', ...resolved, state, report, events };
   }
@@ -2688,47 +1918,3 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   return { action: 'list', count: runs.length, runs };
 }
 
-export function actionJson(bullswarmDir, token, actionId) {
-  const resolved = resolveRunId(bullswarmDir, token);
-  if (!resolved) throw new Error(`no run found for "${token}"`);
-  const statePath = join(resolved.runDir, 'state.json');
-  const state = withV2Cancellation(readJsonSafe(statePath), resolved.runDir);
-  const action = state?.actionLedger?.find((entry) => entry.id === actionId);
-  if (!action) throw new Error(`run "${token}" has no action "${actionId}"`);
-  const attempts = (action.attempts ?? []).map((index) => state.attempts?.[index]).filter(Boolean);
-  const events = readEvents(resolved.runDir).filter((event) =>
-    event.payload?.actionId === actionId || event.payload?.parentId === actionId);
-  return { action: 'show-action', ...resolved, actionRecord: action, attempts, output: state.outputs?.[actionId] ?? null, events };
-}
-
-export function decideApproval(bullswarmDir, token, decision) {
-  if (!['approve', 'reject'].includes(decision)) throw new Error('approval decision must be approve or reject');
-  const resolved = resolveRunId(bullswarmDir, token);
-  if (!resolved) throw new Error(`no run found for "${token}"`);
-  const statePath = join(resolved.runDir, 'state.json');
-  const state = readJsonForUpdate(statePath, 'workflow state');
-  if (state.status !== 'waiting_for_approval' || !state.approval) {
-    throw new Error(`run "${token}" is not waiting for approval`);
-  }
-  const at = new Date().toISOString();
-  state.approval = {
-    ...state.approval,
-    status: decision === 'approve' ? 'approved' : 'rejected',
-    decidedAt: at,
-  };
-  if (decision === 'approve') {
-    state.status = 'paused';
-    state.stage = 'approval_granted';
-  } else {
-    state.status = 'cancelled';
-    state.stage = 'cancelled';
-    state.finishedAt = at;
-    state.cancelledAt = at;
-  }
-  appendEvent(resolved.runDir, state, decision === 'approve' ? 'approval.granted' : 'approval.rejected', {
-    gateId: state.approval.gateId,
-    decidedAt: at,
-  });
-  writeJsonAtomic(statePath, state);
-  return { ...resolved, decision, state };
-}

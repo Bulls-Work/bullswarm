@@ -1,20 +1,19 @@
 import { withV2Cancellation } from './v2-cancellation.js';
 // Low-noise, non-interactive workflow progress watcher.
-// V2 runs are event-based: one attach line, then one line per notable event
-// and silence while work is merely in progress. Legacy runs keep their
-// transition-plus-heartbeat output; `--classic` forces that same
-// transition-plus-heartbeat stream for a V2 run too. This is intentionally
+// A run is event-based by default: one attach line, then one line per notable
+// event and silence while work is merely in progress. `--once` and `--classic`
+// switch to the transition-plus-heartbeat stream instead. This is intentionally
 // distinct from the full-screen TUI and the machine-oriented events replay
-// API.
+// API. Legacy (pre-0.27.0 authored-graph) runs cannot be watched at all —
+// nothing drives them — so the watcher refuses them with a single line.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId, v2RunnerLiveness } from './short-id.js';
-import { readSteering } from './steering.js';
+import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine } from './short-id.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
-import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from './status.js';
+import { isDeliveredWorkflowStatus } from './status.js';
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -43,9 +42,7 @@ function compactTokens(value) {
 }
 
 export function timingBreakdown(state) {
-  const sourceAttempts = state.schemaVersion === 'bullswarm.workflow.state.v2'
-    ? [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])]
-    : (state.attempts ?? []);
+  const sourceAttempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])];
   const attempts = sourceAttempts.map((attempt) => ({
     actionId: attempt.actionId,
     attemptNumber: attempt.attemptNumber ?? attempt.ordinal,
@@ -75,108 +72,56 @@ export function timingBreakdown(state) {
 // distinct from quietForSec, which counts durable workflow events (has
 // anything semantically happened?). null when no agent is running.
 export function transportQuietSeconds(state, now = new Date()) {
-  if (state.schemaVersion === 'bullswarm.workflow.state.v2') {
-    const attempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])]
-      .filter((attempt) => attempt.status === 'running');
-    if (!attempts.length) return null;
-    const latest = Math.max(...attempts.map((attempt) => Math.max(
-      Date.parse(attempt.lastActivityAt ?? '') || 0, Date.parse(attempt.lastEventAt ?? '') || 0,
-      Date.parse(attempt.startedAt ?? '') || 0,
-    )));
-    return latest ? Math.max(0, Math.floor((now.getTime() - latest) / 1000)) : null;
-  }
-  const running = Object.values(state.activeAgents ?? {}).filter((agent) =>
-    !agent.finishedAt && (agent.status ?? 'running') === 'running');
-  if (!running.length) return null;
-  const latest = Math.max(...running.map((agent) => Math.max(
-    Date.parse(agent.lastActivityAt ?? '') || 0,
-    Date.parse(agent.lastEventAt ?? '') || 0,
-    Date.parse(agent.startedAt ?? '') || 0,
+  const attempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])]
+    .filter((attempt) => attempt.status === 'running');
+  if (!attempts.length) return null;
+  const latest = Math.max(...attempts.map((attempt) => Math.max(
+    Date.parse(attempt.lastActivityAt ?? '') || 0, Date.parse(attempt.lastEventAt ?? '') || 0,
+    Date.parse(attempt.startedAt ?? '') || 0,
   )));
-  if (!latest) return null;
-  return Math.max(0, Math.floor((now.getTime() - latest) / 1000));
+  return latest ? Math.max(0, Math.floor((now.getTime() - latest) / 1000)) : null;
 }
 
 export function watchSnapshot(runDir, state, now = new Date()) {
-  if (state.schemaVersion === 'bullswarm.workflow.state.v2') {
-    const lifecycle = state.lifecycle ?? {};
-    const interrupted = lifecycle.status === 'interrupted' || !v2RunnerLiveness(state, { runDir, now: now.getTime() }).alive;
-    const allAttempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])];
-    const activeAttempts = interrupted ? [] : allAttempts.filter((attempt) => attempt.status === 'running');
-    const actionById = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
-    const agents = activeAttempts.map((attempt) => ({
-      stepId: attempt.actionId ?? (state.planner?.attempts?.includes(attempt) ? 'workflow-planner' : 'preflight-scout'),
-      pool: attempt.pool ?? null, model: attempt.model ?? null, status: attempt.status,
-      elapsedSec: secondsBetween(attempt.startedAt, attempt.finishedAt ?? now.toISOString()),
-      silentForSec: null, stall: null, outputBytesObserved: attempt.outputBytesObserved ?? 0,
-      lastActions: attempt.lastAgentEvent ? [{ kind: attempt.lastAgentEvent.kind ?? attempt.lastAgentEvent.type ?? 'agent', status: 'running', summary: attempt.lastAgentEvent.summary ?? null }] : [],
-    }));
-    const runningAction = (state.actions ?? []).find((action) => ['running', 'waiting'].includes(action.status));
-    const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status);
-    // A terminal run is never waiting for its caller planner, whatever a stale
-    // request record says; cancellation is surfaced so the watcher knows why a
-    // paused run needs one resume to finalize.
-    const awaitingPlanner = !terminal && state.planner?.awaiting ? { boundary: state.planner.awaiting.boundary, turn: state.planner.awaiting.turn } : null;
-    const cancellationRequested = Boolean(state.cancellation?.requested) && !terminal;
-    const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
-    return {
-      at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
-      interrupted, status: interrupted ? 'interrupted' : lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
-      phase: null, step: runningAction?.id ?? (state.planner?.status === 'running' ? 'workflow-planner' : null),
-      elapsedSec, eventSequence: state.events?.sequence ?? 0,
-      dispatchesUsed: state.budget?.agents ?? 0, dispatchTarget: state.config?.settings?.maxAgents ?? null,
-      expansionRound: state.budget?.expansions ?? 0, expansionLimit: state.config?.settings?.maxExpansionRounds ?? 0,
-      tokens: state.usage?.total ?? null, pendingSteering: 0, deliveredSteering: 0,
-      quietForSec: 0, transportQuietForSec: transportQuietSeconds(state, now), agents,
-      runningCount: interrupted ? 0 : (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
-      waitingCount: isProgramWorkflow(state)
-        ? (state.actions ?? []).filter((action) => ['pending', 'ready', 'waiting'].includes(action.status)).length + (awaitingPlanner ? 1 : 0)
-        : (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
-      latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
-      awaitingPlanner,
-      cancellationRequested,
-      executionMode: state.config?.settings?.executionMode ?? 'verified',
-      evidencePassed: hasPassingRequirementEvidence(state),
-      terminal, timing: terminal ? timingBreakdown(state) : null,
-    };
-  }
-  const delivered = new Set((state.steering ?? []).map((entry) => entry.id));
-  const queuedSteering = readSteering(runDir).filter((entry) => !delivered.has(entry.id));
-  const elapsedSec = secondsBetween(state.startedAt, state.finishedAt ?? now.toISOString());
+  const lifecycle = state.lifecycle ?? {};
+  const interrupted = lifecycle.status === 'interrupted' || !v2RunnerLiveness(state, { runDir, now: now.getTime() }).alive;
+  const allAttempts = [...(state.preflight?.scout?.attempts ?? []), ...(state.planner?.attempts ?? []), ...(state.attempts ?? [])];
+  const activeAttempts = interrupted ? [] : allAttempts.filter((attempt) => attempt.status === 'running');
+  const actionById = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
+  const agents = activeAttempts.map((attempt) => ({
+    stepId: attempt.actionId ?? (state.planner?.attempts?.includes(attempt) ? 'workflow-planner' : 'preflight-scout'),
+    pool: attempt.pool ?? null, model: attempt.model ?? null, status: attempt.status,
+    elapsedSec: secondsBetween(attempt.startedAt, attempt.finishedAt ?? now.toISOString()),
+    silentForSec: null, stall: null, outputBytesObserved: attempt.outputBytesObserved ?? 0,
+    lastActions: attempt.lastAgentEvent ? [{ kind: attempt.lastAgentEvent.kind ?? attempt.lastAgentEvent.type ?? 'agent', status: 'running', summary: attempt.lastAgentEvent.summary ?? null }] : [],
+  }));
+  const runningAction = (state.actions ?? []).find((action) => ['running', 'waiting'].includes(action.status));
+  const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status);
+  // A terminal run is never waiting for its caller planner, whatever a stale
+  // request record says; cancellation is surfaced so the watcher knows why a
+  // paused run needs one resume to finalize.
+  const awaitingPlanner = !terminal && state.planner?.awaiting ? { boundary: state.planner.awaiting.boundary, turn: state.planner.awaiting.turn } : null;
+  const cancellationRequested = Boolean(state.cancellation?.requested) && !terminal;
+  const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
   return {
-    at: now.toISOString(),
-    runId: state.runId,
-    shortId: state.shortId ?? null,
-    status: state.status ?? 'unknown',
-    stage: state.stage ?? null,
-    phase: state.currentStep?.phase ?? state.currentPhase?.name ?? null,
-    step: state.currentStep?.id ?? null,
-    elapsedSec,
-    eventSequence: state.eventSequence ?? 0,
-    dispatchesUsed: state.budget?.dispatchesUsed ?? 0,
-    dispatchTarget: state.budget?.dispatchTarget ?? null,
-    expansionRound: state.budget?.expansionRound ?? 0,
-    expansionLimit: state.budget?.expansionLimit ?? 0,
-    tokens: state.usage?.tokens?.totalKnown ?? null,
-    pendingSteering: queuedSteering.length,
-    deliveredSteering: state.steering?.length ?? 0,
-    quietForSec: 0,
-    transportQuietForSec: transportQuietSeconds(state, now),
-    agents: Object.values(state.activeAgents ?? {}).map((agent) => ({
-      stepId: agent.stepId,
-      pool: agent.pool ?? null,
-      model: agent.model ?? null,
-      status: agent.status ?? 'running',
-      elapsedSec: secondsBetween(agent.startedAt, agent.finishedAt ?? now.toISOString()),
-      silentForSec: agent.stall?.silentForSec ?? null,
-      stall: agent.stall?.status ?? null,
-      outputBytesObserved: agent.outputBytesObserved ?? 0,
-      lastActions: (agent.lastActions ?? []).slice(-3).map((action) => ({
-        kind: action.kind ?? 'agent', status: action.status, summary: action.summary ?? null,
-      })),
-    })),
-    terminal: isTerminalWorkflowStatus(state.status) || Boolean(state.finishedAt),
-    timing: isTerminalWorkflowStatus(state.status) || state.finishedAt ? timingBreakdown(state) : null,
+    at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
+    interrupted, status: interrupted ? 'interrupted' : lifecycle.status ?? 'unknown', stage: state.preflight?.scout?.status === 'running' ? 'preflight' : state.planner?.status === 'running' ? 'planning' : terminal ? 'finished' : 'execution',
+    phase: null, step: runningAction?.id ?? (state.planner?.status === 'running' ? 'workflow-planner' : null),
+    elapsedSec, eventSequence: state.events?.sequence ?? 0,
+    dispatchesUsed: state.budget?.agents ?? 0, dispatchTarget: state.config?.settings?.maxAgents ?? null,
+    expansionRound: state.budget?.expansions ?? 0, expansionLimit: state.config?.settings?.maxExpansionRounds ?? 0,
+    tokens: state.usage?.total ?? null, pendingSteering: 0, deliveredSteering: 0,
+    quietForSec: 0, transportQuietForSec: transportQuietSeconds(state, now), agents,
+    runningCount: interrupted ? 0 : (state.actions ?? []).filter((action) => action.status === 'running').length + (state.planner?.status === 'running' ? 1 : 0) + (state.preflight?.scout?.status === 'running' ? 1 : 0),
+    waitingCount: isProgramWorkflow(state)
+      ? (state.actions ?? []).filter((action) => ['pending', 'ready', 'waiting'].includes(action.status)).length + (awaitingPlanner ? 1 : 0)
+      : (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
+    latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
+    awaitingPlanner,
+    cancellationRequested,
+    executionMode: state.config?.settings?.executionMode ?? 'verified',
+    evidencePassed: hasPassingRequirementEvidence(state),
+    terminal, timing: terminal ? timingBreakdown(state) : null,
   };
 }
 
@@ -281,25 +226,24 @@ async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs
     if (resolved && existsSync(join(resolved.runDir, 'state.json'))) return resolved;
     if (Date.now() >= deadline) {
       if (!resolved) throw new Error(`no run found for "${token}"`);
-      throw new Error(`run "${token}" has no state.json`);
+      // The grace window is spent and there is still no state.json: by the one
+      // rule every other reader uses (isLegacyRunDir) that directory is legacy
+      // history, so hand it back and let the caller's legacy guard answer with
+      // the same sentence the other driving verbs print. Reporting a missing
+      // file here would jump the guard and exit 1 instead of 2.
+      return resolved;
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(50, intervalMs))));
   }
 }
 
 // ── Event mode ──────────────────────────────────────────────────────────────
-// For V2 runs the watcher is event-based: one attach line, then one line per
+// By default the watcher is event-based: one attach line, then one line per
 // notable event and nothing at all while work is merely in progress. Progress
 // polling still happens (state.json plus events.jsonl), but a poll that
 // carries no notable event prints nothing.
 
 export const DEFAULT_STALL_AFTER_MS = 300_000;
-
-const V2_SCHEMA = 'bullswarm.workflow.state.v2';
-
-function isV2State(state) {
-  return state?.schemaVersion === V2_SCHEMA;
-}
 
 // Every agent attempt in one list with a stable key, so a silent episode can
 // be reported exactly once and recovered exactly once. Worker attempts carry
@@ -373,17 +317,15 @@ export function initialWatchMemory(state, {
     .filter((event) => event.type === 'action.finished' || event.type === 'evidence.recorded')
     .map((event) => event.payload?.actionId)
     .filter(Boolean));
-  const done = isV2State(state)
-    ? v2Stages(state)
-      .filter(({ stage, status }) => (status.terminal || stage.completedAt)
-        && !(stage.actionIds ?? []).some((id) => replayedActions.has(id)))
-      .map(({ stage }) => stage.id)
-    : [];
+  const done = v2Stages(state)
+    .filter(({ stage, status }) => (status.terminal || stage.completedAt)
+      && !(stage.actionIds ?? []).some((id) => replayedActions.has(id)))
+    .map(({ stage }) => stage.id);
   const stalled = new Map();
   // An agent whose silence crossed the stall threshold before the previous
   // watcher exited was already reported by it: remember the episode so this
   // launch prints no duplicate stall line, while its recovery still prints.
-  if (sinceMs != null && isV2State(state)) {
+  if (sinceMs != null) {
     for (const { key, attempt } of v2AttemptRecords(state)) {
       if (attempt.status !== 'running') continue;
       const activityAt = attemptActivityAt(attempt);
@@ -695,13 +637,12 @@ function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null }) {
 
 export async function runWorkflowWatch(bullswarmDir, token, {
   intervalMs = 2000,
-  // Absent means "no periodic heartbeat" for V2 runs and the historical 60s
-  // for legacy runs; `--heartbeat <seconds>` opts a V2 run back in.
+  // Absent means "no periodic heartbeat"; `--heartbeat <seconds>` opts back in,
+  // and the transition-plus-heartbeat stream falls back to the historical 60s.
   heartbeatMs = null,
   once = false,
   next = false,
-  // Forces the legacy transition-plus-heartbeat stream for a V2 run too.
-  // Ignored for legacy runs, which already behave this way.
+  // Forces the transition-plus-heartbeat stream instead of event mode.
   classic = false,
   jsonl = false,
   verbose = false,
@@ -717,6 +658,12 @@ export async function runWorkflowWatch(bullswarmDir, token, {
 } = {}) {
   const resolved = await resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs);
   const statePath = join(resolved.runDir, 'state.json');
+  // Nothing drives a legacy run, so there is nothing to watch: say so once and
+  // stop, before any polling loop or output stream is set up.
+  if (isLegacyRunDir(resolved.runDir)) {
+    output.write(`${legacyRunLine({ shortId: resolved.shortId, runId: resolved.runId, runDir: resolved.runDir })}\n`);
+    return 2;
+  }
   // --next follows the run until something happens, so it never degrades to a
   // single snapshot even if --once is also passed.
   const oneShot = once && !next;
@@ -733,10 +680,9 @@ export async function runWorkflowWatch(bullswarmDir, token, {
     if (state) {
       const nowMs = now();
       const snapshot = watchSnapshot(resolved.runDir, state, new Date(nowMs));
-      // Legacy runs keep their transition-plus-heartbeat output exactly as it
-      // was; only V2 runs become event-based, and --once stays a snapshot.
-      // --classic forces the same transition-plus-heartbeat stream for a V2 run.
-      const eventMode = isV2State(state) && !oneShot && !classic;
+      // --once stays a single snapshot and --classic forces the historical
+      // transition-plus-heartbeat stream; everything else is event-based.
+      const eventMode = !oneShot && !classic;
       if (priorSequence == null) {
         // A newly attached watcher has no preceding interval. Start at the
         // durable high-water mark instead of replaying the run lifetime, unless
@@ -815,10 +761,10 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           pendingEvents = [];
         }
       } else {
-        const legacyHeartbeatMs = heartbeatMs == null ? 60000 : heartbeatMs;
+        const classicHeartbeatMs = heartbeatMs == null ? 60000 : heartbeatMs;
         const fingerprint = snapshotFingerprint(snapshot);
         const humanFingerprint = humanTransitionFingerprint(snapshot);
-        const heartbeat = nowMs - lastPrintedAt >= legacyHeartbeatMs;
+        const heartbeat = nowMs - lastPrintedAt >= classicHeartbeatMs;
         const changed = jsonl || verbose
           ? fingerprint !== priorFingerprint
           : humanFingerprint !== priorHumanFingerprint;

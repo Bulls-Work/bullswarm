@@ -1,52 +1,70 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, actionJson, decideApproval, runDashboard } from '../src/workflow/dashboard.js';
+import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
-import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
+import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
+
+function v2Actions() {
+  return [
+    { id: 'audit-files', purpose: 'Audit every file', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['audit.md'], prompt: 'Audit them.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['audit'] },
+    { id: 'inspect-audit', purpose: 'Inspect the audit', dependsOn: ['audit-files'], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['audit'], produces: [] },
+  ];
+}
+
+function writeV2Run(home, {
+  runId, shortId, goal, status = 'running', startedAt = new Date().toISOString(),
+  finishedAt = null, live = false, running = false,
+}) {
+  const dir = join(home, 'workflows', runId);
+  mkdirSync(dir, { recursive: true });
+  const document = createV2GoalDocument({
+    goal, cwd: home,
+    requirements: [{ id: 'requirement-1', text: 'Every file is audited.', mandatory: true }],
+    settings: { scout: false },
+  });
+  let state = createV2State(document, { runId, shortId });
+  state = applyV2PlannerResponse(state, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Audit then inspect.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: v2Actions() },
+  });
+  // Accepting a program moves the lifecycle on, so the caller's status wins.
+  state.lifecycle = { status, startedAt, finishedAt, resultFile: null };
+  if (running) {
+    Object.assign(state.actions[0], { status: 'running', startedAt, attempts: 1 });
+    state.attempts.push({
+      id: 'audit-files-1', actionId: 'audit-files', ordinal: 1, status: 'running',
+      pool: 'planner-agent', model: 'planner-v1', startedAt, finishedAt: null,
+      lastActivityAt: startedAt, outputBytesObserved: 42,
+    });
+  }
+  // A live kernel pid is what makes a run read as ongoing.
+  if (live) state.runner = { pid: process.pid, lastHeartbeatAt: new Date().toISOString() };
+  writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+  return { dir, state };
+}
 
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-'));
-  const dir = join(home, 'workflows', 'wf-test');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'state.json'), JSON.stringify({
-    runId: 'wf-test', shortId: 'abc234', workflow: 'audit-files', startedAt: new Date().toISOString(),
-    intent: { goal: 'Audit every file autonomously.' },
-    orchestration: { selectedPool: 'planner-agent', selectedModel: 'planner-v1', selection: 'capability-and-quota' },
-    inputs: {}, outputs: { fan: { total: 3, ok: 2, failed: 0, items: [] } },
-    steps: [{ phase: 'review', stepId: 'fan', ok: true }],
-    usage: {
-      tokens: { standardRead: 120, cacheRead: 40, cacheWrite: 10, output: 30 },
-      cost: { estimatedUsd: 0.012 },
-      normalizedQuota: { estimatedPercent: 0.5 },
-    },
-  }));
+  writeV2Run(home, {
+    runId: 'wf-test', shortId: 'abc234', goal: 'Audit every file autonomously.',
+    live: true, running: true,
+  });
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 function addHistoricalRun(home) {
-  const dir = join(home, 'workflows', 'wf-done');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'state.json'), JSON.stringify({
-    runId: 'wf-done', shortId: 'def345', workflow: 'docs-audit',
-    startedAt: '2026-08-30T01:00:00.000Z', finishedAt: '2026-08-30T01:05:00.000Z',
-    status: 'completed_with_concerns', stage: 'delivered',
-    intent: { goal: 'Audit documentation freshness.' },
-    outcome: { concerns: ['One stale example remains.'] },
-    actionLedger: [{ id: 'audit', phase: 'audit', kind: 'run', status: 'succeeded', attempts: [0] }],
-    attempts: [{
-      actionId: 'audit', attemptNumber: 1, pool: 'opencode2', model: 'luna',
-      status: 'succeeded', startedAt: '2026-08-30T01:00:00.000Z', finishedAt: '2026-08-30T01:05:00.000Z',
-    }],
-    steps: [{ phase: 'audit', stepId: 'audit', ok: true }],
-    outputs: { audit: { ok: true, outputText: 'Audit complete.' } },
-  }));
-  writeFileSync(join(dir, 'report.json'), JSON.stringify({ status: 'completed_with_concerns' }));
+  writeV2Run(home, {
+    runId: 'wf-done', shortId: 'def345', goal: 'Audit documentation freshness.',
+    status: 'completed', startedAt: '2026-08-30T01:00:00.000Z',
+    finishedAt: '2026-08-30T01:05:00.000Z',
+  });
 }
 
 function addV2HistoricalRun(home) {
@@ -102,10 +120,6 @@ function timelineSegments(screen) {
   return segments;
 }
 
-function segmentLabels(screen) {
-  return timelineSegments(screen).map((segment) => segment.label);
-}
-
 function normalizeRow(line) {
   return line.replace(/^\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
 }
@@ -124,14 +138,14 @@ test('dashboard renders ongoing run progress and details', () => {
   try {
     const rows = dashboardRows(home);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].fanout.ok, 2);
-    assert.match(renderDashboard({ rows }), /audit-files/);
-    assert.match(renderDashboard({ rows }), /2\/3 items/);
-    assert.match(renderDetails(rows[0]), /review\/fan/);
-    assert.match(renderDetails(rows[0]), /Audit every file autonomously/);
-    assert.match(renderDetails(rows[0]), /planner-agent · planner-v1 · capability-and-quota/);
-    assert.match(renderDetails(rows[0]), /read=120 cache-read=40 cache-write=10 output=30/);
-    assert.match(renderDetails(rows[0]), /quota≈0.5%/);
+    assert.equal(rows[0].legacy, false);
+    assert.equal(rows[0].stepsTotal, 2);
+    assert.match(renderDashboard({ rows }), /abc234 · Audit every file autonomously/);
+    assert.match(renderDashboard({ rows }), /0\/1 workers/);
+    assert.match(renderDetails(rows[0]), /audit-files · running/);
+    assert.match(renderDetails(rows[0]), /goal:   Audit every file autonomously/);
+    assert.match(renderDetails(rows[0]), /status: running/);
+    assert.match(renderDetails(rows[0]), /requirement-1/);
   } finally { cleanup(); }
 });
 
@@ -216,8 +230,8 @@ test('unified dashboard lists active before recent runs and renders a selected-r
       filter: 'all', width: 120, height: 30,
     });
     assert.match(desktop, /1 active · 0 waiting · 1 recent/);
-    assert.match(desktop, /def345 · docs-audit/);
-    assert.match(desktop, /1 concern/);
+    assert.match(desktop, /def345 · Audit documentation freshness/);
+    assert.match(desktop, /0\/2 actions · 5m00s · finis/);
     assert.match(desktop, /Workflow timeline/);
 
     const mobile = renderDashboard({
@@ -225,8 +239,8 @@ test('unified dashboard lists active before recent runs and renders a selected-r
       filter: 'all', width: 60, height: 24,
     });
     assert.match(mobile, /Runs · all/);
-    assert.match(mobile, /abc234 · audit-files/);
-    assert.match(mobile, /def345 · docs-audit/);
+    assert.match(mobile, /abc234 · Audit every file/);
+    assert.match(mobile, /def345 · Audit documentation/);
     assert.doesNotMatch(mobile, /Workflow timeline/);
     assert.match(mobile, /Enter open · \/ filter · a active\/all/);
     const plain = mobile.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -259,7 +273,7 @@ test('all-runs ordering uses the V2 lifecycle start time and keeps the initial l
     const output = new FakeOutput();
     const running = cmdWorkflow([], { bullswarmDir: home, input, output });
     assert.match(output.text, /Runs · active/);
-    assert.match(output.text, /abc234 · audit-files/);
+    assert.match(output.text, /abc234 · Audit every file/);
     input.emit('data', Buffer.from('q'));
     assert.equal(await running, 0);
   } finally { cleanup(); }
@@ -399,8 +413,8 @@ test('tui with a run ID prints a historical text tree without a TTY', async () =
     const output = { isTTY: false, write: (chunk) => { printed += chunk; } };
     const code = await runDashboard(home, { token: 'abc234', input: { isTTY: false }, output });
     assert.equal(code, 0);
-    assert.match(printed, /bullswarm · audit-files · abc234/);
-    assert.match(printed, /action tree:/);
+    assert.match(printed, /bullswarm · abc234/);
+    assert.match(printed, /presentation stages:/);
     assert.match(printed, /Workflow timeline/);
     assert.match(printed, /── Preflight/);
     assert.doesNotMatch(printed, /Press b to go back/);
@@ -418,7 +432,7 @@ test('dashboard JSON supports listing, show, and cancellation', () => {
     assert.equal(shown.action, 'show');
     const cancelled = dashboardJson(home, { token: 'abc234', cancel: true });
     assert.equal(cancelled.action, 'cancel');
-    assert.equal(JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'state.json'))).cancelRequested, true);
+    assert.equal(JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'cancellation.json'))).requested, true);
     assert.equal(requestCancel(home, 'abc234').alreadyFinished, false);
   } finally { cleanup(); }
 });
@@ -428,411 +442,28 @@ test('dashboard JSON show includes live state and report when present', () => {
   try {
     writeFileSync(join(home, 'workflows', 'wf-test', 'report.json'), JSON.stringify({ status: 'completed' }));
     const shown = dashboardJson(home, { token: 'abc234' });
-    assert.equal(shown.state.workflow, 'audit-files');
+    assert.equal(shown.state.intent.goal, 'Audit every file autonomously.');
     assert.deepEqual(shown.report, { status: 'completed' });
   } finally { cleanup(); }
 });
 
-test('dashboard rows expose current step and active agent state', () => {
+test('dashboard rows expose the running action and its live attempt', () => {
   const { home, cleanup } = fixture();
   try {
     const statePath = join(home, 'workflows', 'wf-test', 'state.json');
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.currentPhase = { index: 0, name: 'review', total: 1 };
-    state.currentStep = { id: 'fan', type: 'fanout', phase: 'review:adaptive' };
-    state.activeAgents = { 'fan[0]': {
-      stepId: 'fan[0]', pool: 'opencode2', model: 'relay/gpt-5.6-luna', attempt: 0,
-      lastActivityAt: '2026-08-28T01:00:00.000Z', outputBytesObserved: 321,
-      eventStreamSupported: true,
-      stall: { status: 'suspected_stalled', silentForSec: 601, autoTerminate: false },
-      lastActions: [
-        { id: 'a', kind: 'read_file', status: 'completed', summary: 'src/app.js' },
-        { id: 'b', kind: 'shell_command', status: 'running', summary: 'npm test' },
-      ],
-    } };
+    Object.assign(state.attempts[0], {
+      pool: 'opencode2', model: 'relay/gpt-5.6-luna', outputBytesObserved: 321,
+      lastAgentEvent: { kind: 'shell_command', summary: 'npm test' },
+    });
     writeFileSync(statePath, JSON.stringify(state));
     const row = dashboardRows(home)[0];
-    assert.equal(row.currentStep.id, 'fan');
-    assert.equal(row.phase, 'review:adaptive');
+    assert.equal(row.currentStep.id, 'audit-files');
+    assert.equal(row.phase, 'Implementation');
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
-    assert.match(renderDetails(row), /relay\/gpt-5\.6-luna/);
-    assert.match(renderDetails(row), /output activity 2026-08-28T01:00:00\.000Z \(321 bytes observed\)/);
-    assert.match(renderDetails(row), /suspected stalled \(601s without evidence; no auto-kill\)/);
-    assert.match(renderDetails(row), /read_file · completed · src\/app\.js/);
-    assert.match(renderDetails(row), /shell_command · running · npm test/);
-  } finally { cleanup(); }
-});
-
-test('full-screen workflow view models phase, agent, and selected-agent steps', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state._doc = { phases: [
-      { name: 'discover', steps: [{ id: 'scan', type: 'run' }] },
-      { name: 'review', steps: [{ id: 'fan', type: 'fanout' }] },
-    ] };
-    state.currentPhase = { index: 1, name: 'review', total: 2 };
-    state.actionLedger = [{ id: 'fan', phase: 'review', kind: 'fanout', status: 'running', attempts: [0] }];
-    state.attempts = [{
-      actionId: 'fan', attemptNumber: 1, pool: 'grok', model: 'grok-4.6',
-      effort: 'high', status: 'running', startedAt: new Date().toISOString(),
-      usage: { tokens: { standardRead: 40, output: 12 } },
-      actionCount: 7,
-    }];
-    state.activeAgents = { fan: {
-      stepId: 'fan', pool: 'grok', model: 'grok-4.6', attempt: 1, status: 'running',
-      lastActivityAt: new Date().toISOString(), outputBytesObserved: 900,
-      actionCount: 7,
-      lastActions: [
-        { kind: 'read_file', status: 'completed', summary: 'src/app.js' },
-        { kind: 'shell_command', status: 'running', summary: 'npm test' },
-      ],
-    } };
-    writeFileSync(statePath, JSON.stringify(state));
-    const row = dashboardRows(home)[0];
-    const model = workflowPanelModel(row);
-    assert.equal(model.selectedPhase.name, 'review');
-    assert.equal(model.selectedAgent.pool, 'grok');
-    assert.equal(model.selectedAgent.action.id, 'fan');
-    const overview = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(overview, /Phases · 2/);
-    assert.match(overview, /1 ○ discover/);
-    assert.match(overview, /2 ⠋ review 0\/1/);
-    assert.match(overview, /Workflow timeline/);
-    assert.match(overview, /Live · 1 running · 0 waiting/);
-    assert.match(overview, /fan · grok · grok-4\.6/);
-    assert.match(overview, /shell command · npm test/);
-    assert.doesNotMatch(overview, /Activity/);
-
-    const agents = renderWorkflowTui(row, { width: 120, height: 30, focus: 1 });
-    assert.match(agents, /review · 0\/1 complete/);
-    assert.match(agents, /fan · grok · grok-4\.6 · #1 · \d+s · 52 tok/);
-
-    const detail = renderWorkflowTui(row, { width: 120, height: 30, focus: 2 });
-    assert.match(detail, /fan · grok/);
-    assert.match(detail, /⠋ running · grok-4\.6/);
-    assert.match(detail, /Activity/);
-    assert.match(detail, /Activity · last 2 of 7/);
-    assert.match(detail, /#6 ✓ read_file · completed/);
-    assert.match(detail, /#7 ⠋ shell_command · running/);
-     assert.match(detail, /Enter open/);
-
-    state.status = 'completed';
-    state.finishedAt = new Date().toISOString();
-    state.actionLedger[0].status = 'succeeded';
-    state.attempts[0].status = 'succeeded';
-    state.activeAgents = {};
-    state.outputs.fan = { ok: true, outputText: '{\n  "result": "verified"\n}' };
-    writeFileSync(statePath, JSON.stringify(state));
-    const completed = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, {
-      width: 120, height: 30, focus: 2,
-    });
-    assert.match(completed, /1\/1 workers · .* · done/);
-    assert.match(completed, /Outcome/);
-    assert.match(completed, /"result": "verified"/);
-    const completedOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
-    assert.match(completedOverview, /No agents running · workflow finished/);
-    assert.match(completedOverview, /Workflow finished · result ready/);
-    assert.doesNotMatch(completedOverview, /workflow is terminal|stable result envelope/);
-    state.status = 'completed_with_concerns';
-    state.outcome = { concerns: ['one', 'two'] };
-    writeFileSync(statePath, JSON.stringify(state));
-    const concernsOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
-    assert.match(concernsOverview, /No agents running · workflow finished with 2 concerns/);
-    assert.match(concernsOverview, /Workflow finished with 2 concerns · review 2 concerns in result/);
-    state.status = 'blocked';
-    writeFileSync(statePath, JSON.stringify(state));
-    const blockedOverview = renderWorkflowTui(dashboardRows(home)[0] ?? { state }, { width: 120, height: 30 });
-    assert.match(blockedOverview, /No agents running · workflow stopped with blockers/);
-    assert.match(blockedOverview, /Workflow stopped with blockers · review blockers and partial work/);
-    assert.doesNotMatch(blockedOverview, /result ready/i);
-  } finally { cleanup(); }
-});
-
-test('narrow workflow view uses one full-width phase, agent, or activity pane', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.currentPhase = { index: 0, name: 'review', total: 1 };
-    state.actionLedger = [{ id: 'fan', phase: 'review', kind: 'run', status: 'running', attempts: [0] }];
-    state.attempts = [{
-      actionId: 'fan', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'running',
-      usage: { tokens: { standardRead: 40, output: 12 } },
-      lastActions: [{ kind: 'read_file', status: 'completed', summary: 'src/app.js' }],
-    }];
-    writeFileSync(statePath, JSON.stringify(state));
-    const row = dashboardRows(home)[0];
-    const timeline = renderWorkflowTui(row, { width: 80, height: 22, focus: 0 });
-    const phases = renderWorkflowTui(row, { width: 80, height: 22, focus: 0, mobileTimeline: false });
-    const agents = renderWorkflowTui(row, { width: 80, height: 22, focus: 1 });
-    const detail = renderWorkflowTui(row, { width: 80, height: 22, focus: 2 });
-    assert.match(timeline, /Workflow timeline/);
-    assert.match(timeline, /t phases/);
-    assert.match(phases, /Phases · 1/);
-    assert.doesNotMatch(phases, /52 tok/);
-    assert.match(agents, /review · 0\/1 complete/);
-    assert.match(agents, /52 tok/);
-    assert.doesNotMatch(agents, /Activity/);
-    assert.match(detail, /fan · grok/);
-    assert.match(detail, /Activity/);
-    assert.doesNotMatch(detail, /Phases · 1/);
-    for (const screen of [timeline, phases, agents, detail]) {
-      const plain = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-      const overflow = plain.split('\n').filter((line) => line.length > 80);
-      assert.deepEqual(overflow, []);
-    }
-  } finally { cleanup(); }
-});
-
-test('autonomous TUI presents one orchestrator thread outside execution phases', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.intent.autonomous = true;
-    state.orchestration.mode = 'autonomous';
-    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
-    state.currentStep = { id: 'orchestrator', type: 'decide', phase: 'autonomous-delivery' };
-    state.steps = [];
-    state.actionLedger = [
-      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'running', attempts: [0, 2] },
-      { id: 'inspect', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [1] },
-    ];
-    state.attempts = [
-      { actionId: 'orchestrator', attemptNumber: 1, pool: 'grok', model: 'grok-4.6', status: 'succeeded' },
-      { actionId: 'inspect', attemptNumber: 1, pool: 'command-code', model: 'minimax/minimax-m3-free', status: 'succeeded' },
-      { actionId: 'orchestrator', attemptNumber: 2, pool: 'grok', model: 'grok-4.6', status: 'running' },
-    ];
-    state.decisions = [{ sequence: 1, gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Inspect then verify.' }];
-    state.orchestration.conversations = { grok: { sessionId: 'thread-123', started: true } };
-    state.activeAgents = { orchestrator: {
-      stepId: 'orchestrator', pool: 'grok', model: 'grok-4.6', status: 'running',
-      actionCount: 5,
-      lastEventAt: new Date().toISOString(),
-      outputBytesObserved: 12345,
-      lastActions: [
-        { kind: 'read_file', status: 'completed', summary: 'state.json' },
-        { kind: 'response', status: 'completed', summary: 'needs_more_work' },
-      ],
-    } };
-    writeFileSync(statePath, JSON.stringify(state));
-
-    const row = dashboardRows(home)[0];
-    const model = workflowPanelModel(row);
-    assert.equal(model.orchestrator.status, 'planning');
-    assert.equal(model.orchestrator.attempts.length, 2);
-    assert.deepEqual(model.phases.map((phase) => phase.label), ['Autonomous Delivery']);
-    assert.deepEqual(model.agents.map((agent) => agent.action.id), ['inspect']);
-
-    const tui = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(tui, /Workflow Planner/);
-    assert.match(tui, /\[Workflow Planner\].*planning/);
-    assert.match(tui, /1\/1 workers/);
-    assert.match(tui, /Autonomous Delivery 1\/1/);
-    assert.doesNotMatch(tui, /orchestrator · grok · grok-4\.6 · #/);
-    assert.match(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 1 }), /⠙ \[Workflow Planner\]/);
-
-    const control = renderWorkflowTui(row, {
-      width: 120, height: 30, controlSelected: true,
-    });
-    assert.match(control, /Workflow Planner · planning/);
-    assert.match(control, /⠋ planning · grok · grok-4\.6/);
-
-    const thread = renderWorkflowTui(row, {
-      width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
-    });
-    assert.match(thread, /Workflow Planner · overview/);
-    assert.match(thread, /Now · Choosing the next smallest useful action/);
-    assert.match(thread, /Latest action · Response · Planner decision recorded/);
-    assert.match(thread, /Live stream · event .* ago · 12345 bytes observed/);
-    assert.match(thread, /Latest decision · Continue with bounded work/);
-    assert.match(thread, /Why · Inspect then verify\./);
-    assert.match(thread, /Press v for checkpoint prompts, sessions, usage, and artifact paths/);
-    assert.doesNotMatch(thread, /Session · grok · thread-123 · resumable/);
-    assert.doesNotMatch(thread, /Current checkpoint prompt/);
-    assert.match(thread, /#4 ✓ Read file · state\.json/);
-    assert.match(thread, /#5 ✓ Response · Planner decision recorded/);
-
-    const technicalThread = renderWorkflowTui(row, {
-      width: 120, height: 60, controlSelected: true, orchestratorDetail: true,
-      orchestratorVerbose: true,
-    });
-    assert.match(technicalThread, /Workflow Planner · technical details/);
-    assert.match(technicalThread, /Technical thread/);
-    assert.match(technicalThread, /Session · grok · thread-123 · resumable/);
-    assert.match(technicalThread, /Logical thread · 2 checkpoint turns/);
-    assert.match(technicalThread, /decision: needs_more_work · Inspect then verify/);
-    assert.match(technicalThread, /#4 ✓ read_file · completed/);
-    assert.match(technicalThread, /#5 ✓ response · completed/);
-
-    state.outputs.inspect = { ok: false, why: 'verify json returned ok:false' };
-    writeFileSync(statePath, JSON.stringify(state));
-    const semanticFailure = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
-    assert.match(semanticFailure, /1 ✗ Autonomous Delivery 1\/1/);
-    const semanticFailureAgents = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30, focus: 1 });
-    assert.match(semanticFailureAgents, /✗ inspect · command-code/);
-
-    state.attempts[2].status = 'succeeded';
-    state.outputs.inspect = { ok: true, why: 'verified' };
-    state.activeAgents = { repair: {
-      stepId: 'repair', pool: 'command-code', model: 'minimax/minimax-m3-free', status: 'running',
-    } };
-    writeFileSync(statePath, JSON.stringify(state));
-    const waiting = renderWorkflowTui(dashboardRows(home)[0], {
-      width: 120, height: 30, controlSelected: true,
-    });
-    assert.match(waiting, /Workflow Planner · directing execution/);
-    assert.match(waiting, /1 ✓ Autonomous Delivery 1\/1/);
-  } finally { cleanup(); }
-});
-
-test('workflow overview separates timestamped history from live planner and worker activity', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.startedAt = '2026-08-29T00:00:00.000Z';
-    state.intent.autonomous = true;
-    state.orchestration.mode = 'autonomous';
-    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [
-      { id: 'scout', type: 'run' },
-      { id: 'orchestrator', type: 'decide' },
-    ] }] };
-    state.currentStep = { id: 'implement-b', type: 'run', phase: 'implement' };
-    state.actionLedger = [
-      { id: 'scout', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [0] },
-      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [1] },
-      { id: 'discover-a', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [2] },
-      { id: 'discover-b', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [3] },
-      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [4] },
-      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'running', attempts: [5] },
-      { id: 'verify-all', phase: 'verify', kind: 'verify', status: 'pending', dependsOn: ['implement-b'], attempts: [] },
-    ];
-    state.attempts = [
-      { actionId: 'scout', pool: 'opencode2', model: 'gpt-5.6-luna', status: 'succeeded', startedAt: '2026-08-29T00:00:10.000Z', finishedAt: '2026-08-29T00:02:10.000Z', usage: { tokens: { totalKnown: 3300 } } },
-      { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: '2026-08-29T00:02:10.000Z', finishedAt: '2026-08-29T00:03:10.000Z' },
-      { actionId: 'discover-a', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: '2026-08-29T00:03:10.000Z', finishedAt: '2026-08-29T00:04:10.000Z' },
-      { actionId: 'discover-b', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: '2026-08-29T00:03:10.000Z', finishedAt: '2026-08-29T00:04:20.000Z' },
-      { actionId: 'implement-a', pool: 'command-code', model: 'minimax-m3', status: 'succeeded', startedAt: '2026-08-29T00:04:20.000Z', finishedAt: '2026-08-29T00:05:20.000Z' },
-      { actionId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running', startedAt: '2026-08-29T00:04:20.000Z' },
-    ];
-    state.outputs = {
-      scout: { ok: true },
-      'discover-a': { ok: true },
-      'discover-b': { ok: true },
-      'implement-a': { ok: true },
-    };
-    state.decisions = [{ gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, implement, then independently verify.' }];
-    state.activeAgents = { 'implement-b': {
-      stepId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running',
-      startedAt: '2026-08-29T00:04:20.000Z', lastEventAt: new Date().toISOString(), outputBytesObserved: 83968,
-      lastActions: [{ kind: 'write_file', status: 'running', summary: 'src/workflow/result.js' }],
-    } };
-    writeFileSync(statePath, JSON.stringify(state));
-
-    const row = dashboardRows(home)[0];
-    const overview = renderWorkflowTui(row, { width: 140, height: 54 });
-    assert.match(overview, /Workflow timeline · \d+ milestones?/);
-    // the timeline names each phase once, in a segment header, instead of
-    // prefixing every event line with `[Phase: ...]`
-    assert.deepEqual(segmentLabels(overview), ['Preflight', 'Discover', 'Implement']);
-    const preflightRows = segmentRows(overview, 'Preflight').join('\n');
-    assert.match(preflightRows, /\d{2}:\d{2}  ● Scout started/);
-    assert.match(preflightRows, /\d{2}:\d{2}  ✓ Scout completed/);
-    assert.match(preflightRows, /\d{2}:\d{2}  ◆ \[Workflow Planner\] plan created/);
-    assert.match(segmentRows(overview, 'Discover').join('\n'), /\d{2}:\d{2}  ├─ started/);
-    assert.match(segmentRows(overview, 'Discover').join('\n'), /\d{2}:\d{2}  └─✓ completed/);
-    assert.match(segmentRows(overview, 'Implement').join('\n'), /\d{2}:\d{2}  ├─ started/);
-    assert.deepEqual(segmentRows(overview, 'Implement').filter((line) => line.includes('completed')), []);
-    assert.deepEqual(timelinePaneRows(overview).filter((line) => line.includes('[Phase:')), []);
-    assert.match(overview, /Live · 1 running · 1 waiting/);
-    assert.match(overview, /⧖ \[Workflow Planner\].*waiting/);
-    assert.match(overview, /⠋ implement-b · command-code · minimax-m3/);
-    assert.match(overview, /Write file · src\/workflow\/result\.js/);
-    assert.match(overview, /○ \[Phase: Verify\] · verify-all · waiting for implement-b/);
-    assert.doesNotMatch(overview, /Autonomous Delivery/);
-    // worker rows sit under their own phase segment: concurrent phases still
-    // interleave in time order
-    assert.match(segmentRows(overview, 'Discover').join('\n'), /├─✓ discover-a/);
-    assert.match(segmentRows(overview, 'Discover').join('\n'), /└─✓ discover-b/);
-    assert.match(segmentRows(overview, 'Implement').join('\n'), /├─✓ implement-a/);
-    // the header never exceeds the width, down to 20 columns
-    for (const width of [20, 28, 37]) {
-      const narrowLines = renderWorkflowTui(row, { width, height: 22 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n');
-      assert.ok(narrowLines.every((line) => [...line].length <= width), `width ${width}: ${narrowLines.find((line) => [...line].length > width)}`);
-      assert.doesNotMatch(narrowLines.at(-1), /PgUp/);
-    }
-    // a phase whose actions never started (blocked tail) still appears, labelled blocked
-    state.actionLedger.push(
-      { id: 'report', phase: 'report', kind: 'run', status: 'failed', dependsOn: ['verify-all'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
-      { id: 'verify-report', phase: 'report', kind: 'verify', status: 'failed', dependsOn: ['report'], attempts: [], finishedAt: '2026-08-29T00:06:00.000Z' },
-    );
-    state.outputs.report = { ok: false, dependencyBlocked: true };
-    state.outputs['verify-report'] = { ok: false, dependencyBlocked: true };
-    writeFileSync(statePath, JSON.stringify(state));
-    const blocked = renderWorkflowTui(dashboardRows(home)[0], { width: 140, height: 54 });
-    assert.match(segmentRows(blocked, 'Report').join('\n'), /\d{2}:\d{2}  ⊘ skipped\s+2 actions not run/);
-    assert.match(blocked, /Required earlier work did not pass; the planner chose a recovery path/);
-    assert.doesNotMatch(segmentRows(blocked, 'Report').join('\n'), /verify-report|completed/);
-    assert.deepEqual(timelinePaneRows(blocked).filter((line) => line.includes('[Phase:')), []);
-    const plain = overview.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    const plainBlocked = blocked.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    // the planner turn and the phase that follows it are separated by a segment
-    // header, never by a bare blank gap
-    for (const rendered of [overview, blocked]) {
-      const pane = timelinePaneRows(rendered);
-      pane.forEach((line, index) => {
-        if (line.trim() || index === pane.length - 1) return;
-        assert.ok(!pane[index + 1].trim() || /^─{2,}/.test(pane[index + 1]),
-          `blank timeline row ${index} is not a segment separator: ${pane[index + 1]}`);
-      });
-    }
-    assert.deepEqual(plain.split('\n').filter((line) => line.length > 140), []);
-
-    const technical = renderWorkflowTui(row, { width: 140, height: 36, workflowVerbose: true });
-    assert.match(technical, /Workflow technical details/);
-    assert.match(technical, /Action ledger/);
-    assert.match(technical, /\[Workflow Planner\] · decide/);
-  } finally { cleanup(); }
-});
-
-test('planner retries do not shift accepted decisions onto rejected attempts', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.intent.autonomous = true;
-    state.startedAt = '2026-08-29T00:00:00.000Z';
-    state.orchestration.mode = 'autonomous';
-    state._doc = { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'orchestrator', type: 'decide' }] }] };
-    state.actionLedger = [{ id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [0, 1, 2, 3] }];
-    state.attempts = [
-      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:00.000Z', finishedAt: '2026-08-29T00:00:30.000Z', outFile: '/tmp/rejected.json' },
-      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:00:31.000Z', finishedAt: '2026-08-29T00:01:00.000Z', outFile: '/tmp/accepted.json' },
-      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:01:01.000Z', finishedAt: '2026-08-29T00:01:30.000Z', outFile: '/tmp/updated.json' },
-      { actionId: 'orchestrator', status: 'succeeded', startedAt: '2026-08-29T00:01:31.000Z', finishedAt: '2026-08-29T00:02:00.000Z', outFile: '/tmp/complete.json' },
-    ];
-    state.decisions = [
-      { sequence: 1, artifact: '/tmp/accepted.json', createdAt: '2026-08-29T00:00:59.000Z', decision: 'needs_more_work', reason: 'Accepted plan belongs to the second turn.' },
-      { sequence: 2, artifact: '/tmp/updated.json', createdAt: '2026-08-29T00:01:29.000Z', decision: 'needs_more_work', reason: 'The plan gained one bounded verification action.' },
-      { sequence: 3, artifact: '/tmp/complete.json', createdAt: '2026-08-29T00:01:59.000Z', decision: 'complete', reason: 'All required work is independently verified.' },
-    ];
-    writeFileSync(statePath, JSON.stringify(state));
-    appendEvent(join(home, 'workflows', 'wf-test'), state, 'decision.rejected', {
-      gateId: 'orchestrator', why: 'First response did not match the decision schema.',
-    });
-    writeFileSync(statePath, JSON.stringify(state));
-
-    const row = dashboardRows(home)[0];
-    row.events = readEvents(join(home, 'workflows', 'wf-test'));
-    const tui = renderWorkflowTui(row, { width: 140, height: 45 });
-    assert.match(tui, /planning retry #1.*No accepted decision; correction or retry turn/s);
-    assert.match(tui, /decision rejected.*First response did not match the decision schema/s);
-    assert.match(tui, /plan created.*Accepted plan belongs to the second turn/s);
-    assert.match(tui, /plan updated #2.*The plan gained one bounded verification action/s);
-    assert.match(tui, /completion confirmed.*All required work is independently verified/s);
+    const tui = renderWorkflowTui(row, { width: 120, height: 40 });
+    assert.match(tui, /audit-files · opencode2 · relay\/gpt-5\.6-luna/);
+    assert.match(tui, /npm test/);
   } finally { cleanup(); }
 });
 
@@ -877,9 +508,9 @@ test('interactive TUI uses alternate screen and q only detaches the viewer', asy
     assert.match(output.text, /\x1b\[\?1049h/);
     assert.match(output.text, /\x1b\[\?1049l/);
     assert.match(output.text, /Agents · r refresh/);
-    assert.match(output.text, /No agent has started in this phase yet/);
-    const state = JSON.parse(readFileSync(join(home, 'workflows', 'wf-test', 'state.json')));
-    assert.equal(state.cancelRequested, undefined);
+    assert.match(output.text, /audit-files · planner-agent/);
+    // Detaching the viewer never asks the kernel to stop.
+    assert.equal(existsSync(join(home, 'workflows', 'wf-test', 'cancellation.json')), false);
   } finally { cleanup(); }
 });
 
@@ -915,7 +546,7 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     assert.equal(await running, 0);
     assert.deepEqual(input.rawModes, [true, false]);
     assert.match(output.text, /Runs · all/);
-    assert.match(output.text, /def345 · docs-audit/);
+    assert.match(output.text, /def345 · Audit documentation/);
     assert.match(output.text, /Workflow timeline/);
     assert.match(output.text, /Showing workflows matching “docs”/);
      assert.match(output.text, /Enter open · \/ filter · a active\/all · q detach/);
@@ -972,26 +603,18 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
   try {
     const statePath = join(home, 'workflows', 'wf-test', 'state.json');
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    Object.assign(state, {
-      startedAt: iso(0), finishedAt: iso(120), status: 'completed',
-      intent: { ...state.intent, autonomous: true },
-      orchestration: { ...state.orchestration, mode: 'autonomous' },
-      decisions: [{ gateId: 'orchestrator', decision: 'complete', reason: 'All phases passed.' }],
-      actionLedger: [
-        { id: 'discover-files', phase: 'discover', kind: 'run', status: 'succeeded', startedAt: iso(10), finishedAt: iso(40), attempts: [0] },
-        { id: 'verify-files', phase: 'verify', kind: 'run', status: 'succeeded', startedAt: iso(50), finishedAt: iso(110), attempts: [1] },
-      ],
-      attempts: [
-        { actionId: 'discover-files', status: 'succeeded', pool: 'luna', startedAt: iso(10), finishedAt: iso(40) },
-        { actionId: 'verify-files', status: 'succeeded', pool: 'luna', startedAt: iso(50), finishedAt: iso(110) },
-        { actionId: 'orchestrator', status: 'succeeded', pool: 'luna', startedAt: iso(1), finishedAt: iso(5) },
-      ],
-      outputs: { 'discover-files': { ok: true }, 'verify-files': { ok: true } },
-      steps: [
-        { phase: 'discover', stepId: 'discover-files', ok: true },
-        { phase: 'verify', stepId: 'verify-files', ok: true },
-      ],
-    });
+    state.lifecycle = { status: 'completed', startedAt: iso(0), finishedAt: iso(120), resultFile: null };
+    for (const action of state.actions) Object.assign(action, { status: 'succeeded', startedAt: iso(10), finishedAt: iso(110) });
+    state.attempts = [
+      { id: 'audit-files-1', actionId: 'audit-files', ordinal: 1, status: 'succeeded', pool: 'luna', startedAt: iso(10), finishedAt: iso(40) },
+      { id: 'inspect-audit-1', actionId: 'inspect-audit', ordinal: 1, status: 'succeeded', pool: 'luna', startedAt: iso(50), finishedAt: iso(110) },
+    ];
+    // Durable action events are what give each dependency level its own
+    // timeline segment to navigate between.
+    for (const action of state.actions) {
+      appendEvent(join(home, 'workflows', 'wf-test'), state, 'action.started', { actionId: action.id });
+      appendEvent(join(home, 'workflows', 'wf-test'), state, 'action.finished', { actionId: action.id, status: 'succeeded' });
+    }
     writeFileSync(statePath, JSON.stringify(state));
     class FakeInput extends EventEmitter {
       isTTY = true;
@@ -1009,6 +632,8 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     const input = new FakeInput();
     const output = new FakeOutput();
     const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
+    // A V2 run opens on the unified list; Enter drills into its overview.
+    input.emit('data', Buffer.from('\r'));
     const timelineText = output.text;
     let frameStart = output.text.length;
     input.emit('data', Buffer.from('\x1b[B')); // first target: Preflight
@@ -1036,8 +661,8 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     assert.match(preflightText, /\x1b\[7m── Preflight/);
     assert.match(preflightText, /Enter planner/);
     assert.match(plannerText, /Workflow Planner · overview/);
-    assert.match(focusedTimeline, /\x1b\[7m── Phase 1 · Discover/);
-    assert.match(agentsText, /Discover · 1\/1 complete/);
+    assert.match(focusedTimeline, /\x1b\[7m── Phase 1 · Implementation/);
+    assert.match(agentsText, /Implementation · 1\/1 complete/);
     const visibleWidths = timelineText
       .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
       .split('\n')
@@ -1050,66 +675,17 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
   } finally { cleanup(); }
 });
 
-test('completed detail shows the last phase, terminal status, and routing rationale', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.status = 'completed';
-    state.stage = 'delivered';
-    state.finishedAt = new Date().toISOString();
-    state.actionLedger = [{ id: 'fan', kind: 'run', status: 'succeeded', attempts: [0] }];
-    state.attempts = [{
-      actionId: 'fan', attemptNumber: 1, pool: 'planner-agent', model: 'planner-v1',
-      effort: 'high', status: 'succeeded',
-      routing: {
-        reason: 'approved high assignment planner-agent; eligible by capability and quota',
-        candidates: [{ pool: 'planner-agent', pace: 21 }, { pool: 'backup', pace: 8 }],
-        configuredAssignment: { pool: 'planner-agent', model: 'planner-v1' },
-        assignmentApplied: { pool: 'planner-agent', model: 'planner-v1' },
-      },
-    }];
-    writeFileSync(statePath, JSON.stringify(state));
-    const shown = dashboardJson(home, { token: 'abc234' });
-    const text = renderDetails(shown, { interactive: false });
-    assert.match(text, /phase:\s+review/);
-    assert.match(text, /current: terminal:completed/);
-    assert.match(text, /route: approved high assignment planner-agent/);
-    assert.match(text, /candidates \[planner-agent:21, backup:8\]/);
-  } finally { cleanup(); }
-});
-
-test('JSON inspection and action inspection expose the same durable state and events', () => {
+test('JSON inspection exposes the same durable state and events as the run directory', () => {
   const { home, cleanup } = fixture();
   try {
     const runDir = join(home, 'workflows', 'wf-test');
     const statePath = join(runDir, 'state.json');
     const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.actionLedger = [{ id: 'fan', kind: 'fanout', status: 'succeeded', attempts: [0] }];
-    state.attempts = [{ actionId: 'fan', attemptNumber: 1, pool: 'echo', status: 'succeeded' }];
-    appendEvent(runDir, state, 'action.completed', { actionId: 'fan' });
+    appendEvent(runDir, state, 'action.finished', { actionId: 'audit-files', status: 'succeeded' });
     writeFileSync(statePath, JSON.stringify(state));
     const shown = dashboardJson(home, { token: 'abc234' });
     assert.deepEqual(shown.state, JSON.parse(readFileSync(statePath, 'utf8')));
     assert.deepEqual(shown.events, readEvents(runDir));
-    const action = actionJson(home, 'abc234', 'fan');
-    assert.deepEqual(action.actionRecord, state.actionLedger[0]);
-    assert.deepEqual(action.attempts, [state.attempts[0]]);
-  } finally { cleanup(); }
-});
-
-test('human approval decisions are durable and visible to a resumed planner', () => {
-  const { home, cleanup } = fixture();
-  try {
-    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    state.status = 'waiting_for_approval';
-    state.approval = { gateId: 'planner', reason: 'Need human review', requestedAt: new Date().toISOString() };
-    writeFileSync(statePath, JSON.stringify(state));
-    const result = decideApproval(home, 'abc234', 'approve');
-    assert.equal(result.state.status, 'paused');
-    assert.equal(result.state.approval.status, 'approved');
-    assert.equal(readEvents(join(home, 'workflows', 'wf-test')).at(-1).type, 'approval.granted');
   } finally { cleanup(); }
 });
 
@@ -1129,481 +705,9 @@ test('a torn state.json (writer mid-write) never crashes the observation paths',
   } finally { cleanup(); }
 });
 
-test('an action being re-run reads as running, and its phase as active, despite an earlier failed round', () => {
-  const state = {
-    intent: { autonomous: true },
-    orchestration: { mode: 'autonomous' },
-    decisions: [{ gateId: 'orchestrator' }],
-    actionLedger: [
-      { id: 'verify-docs', phase: 'g:verify-docs', kind: 'verify', status: 'running', attempts: [] },
-      { id: 'verify-impl', phase: 'g:verify-impl', kind: 'verify', status: 'failed', attempts: [] },
-    ],
-    outputs: { 'verify-docs': { ok: false }, 'verify-impl': { ok: false } },
-    activeAgents: { a1: { stepId: 'verify-docs', pool: 'p1' } },
-    _doc: { phases: [] },
-  };
-  const model = workflowPanelModel({ state, events: [] });
-  const reRunning = model.phases.find((phase) => phase.name === 'g:verify-docs');
-  const trulyFailed = model.phases.find((phase) => phase.name === 'g:verify-impl');
-  // Failed round + attempt still spinning => the phase is active, not failed
-  // (user report 2026-08-29: TUI showed ✗ "2/2 complete" beside a spinner).
-  assert.equal(reRunning.status, 'active');
-  assert.equal(reRunning.completed, 0);
-  // No active agent => the failure is real and stays failed.
-  assert.equal(trulyFailed.status, 'failed');
-});
-
-test('timeline calls dependency-blocked phases skipped and excludes stale completed agents from Live', () => {
-  const startedAt = '2026-08-30T03:28:00.000Z';
-  const finishedAt = '2026-08-30T03:29:00.000Z';
-  const state = {
-    runId: 'wf-blocked', shortId: 'blk234', workflow: 'blocked-recovery', status: 'running', startedAt,
-    intent: { autonomous: true, goal: 'Recover after a rejected check.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'gpt-5.6-sol' },
-    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
-    actionLedger: [
-      { id: 'verify-full-suite', phase: 'g:acceptance', kind: 'verify', status: 'failed_terminal', finishedAt, attempts: [] },
-      { id: 'report', phase: 'g:report', kind: 'run', status: 'failed_terminal', finishedAt, attempts: [] },
-    ],
-    outputs: {
-      'verify-full-suite': { ok: false, dependencyBlocked: true },
-      report: { ok: false, dependencyBlocked: true },
-    },
-    activeAgents: {
-      stale: { stepId: 'verify-docs', pool: 'opencode2', model: 'luna', status: 'completed' },
-      live: { stepId: 'repair', pool: 'opencode2', model: 'luna', status: 'running' },
-    },
-    _doc: { phases: [] },
-  };
-  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 34 });
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Acceptance', 'Report']);
-  assert.match(segmentRows(screen, 'Acceptance').join('\n'), /⊘ skipped/);
-  assert.match(segmentRows(screen, 'Report').join('\n'), /⊘ skipped/);
-  assert.match(screen, /Required earlier work did not pass; the planner chose a recovery path/);
-  assert.deepEqual(timelinePaneRows(screen).filter((line) => /completed|\[Phase:/.test(line)), []);
-  assert.match(screen, /Live · 1 running · 1 waiting/);
-  assert.match(screen, /repair · opencode2 · luna/);
-  assert.doesNotMatch(screen, /verify-docs · opencode2/);
-});
-
-test('auto-follow starts at a timestamped milestone instead of an orphaned detail row', () => {
-  const base = Date.parse('2026-08-30T03:00:00.000Z');
-  const actions = Array.from({ length: 8 }, (_, index) => ({
-    id: `work-${index}`, phase: `g:phase-${index}`, kind: 'run', status: 'succeeded',
-    startedAt: new Date(base + index * 120_000).toISOString(),
-    finishedAt: new Date(base + index * 120_000 + 60_000).toISOString(),
-    attempts: [index],
-  }));
-  const state = {
-    runId: 'wf-scroll', shortId: 'scr234', workflow: 'scroll-test', status: 'running',
-    startedAt: new Date(base).toISOString(),
-    intent: { autonomous: true, goal: 'Render enough milestones to scroll.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
-    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
-    actionLedger: actions,
-    attempts: actions.map((action) => ({
-      actionId: action.id, status: 'succeeded', startedAt: action.startedAt, finishedAt: action.finishedAt,
-    })),
-    outputs: Object.fromEntries(actions.map((action) => [action.id, { ok: true }])),
-    activeAgents: {}, _doc: { phases: [] },
-  };
-  const screen = renderWorkflowTui({ state, events: [] }, { width: 80, height: 22 });
-  const rendered = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  const pane = timelinePaneRows(screen);
-  const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
-  assert.ok(marker >= 0, rendered);
-  // the viewport re-announces the segment it scrolled into, then resumes at a
-  // timestamped milestone rather than an orphaned detail row
-  assert.match(pane[marker + 1], /^─{2,}\s+.+ · continued\s+─{2,}/);
-  assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
-  // auto-follow still ends on the newest milestone
-  assert.match(segmentRows(screen, 'Phase 7').join('\n'), /└─✓ completed\s+1\/1/);
-  assert.doesNotMatch(rendered, /newer timeline rows/);
-});
-
 function plain(screen) {
   return screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
-
-// Modeled on the real delivered run wf-mtgr56l1-167281: an audit verification
-// that failed and was superseded by a repair, and a final verification that
-// never dispatched because that verify was still failed when it was scheduled.
-function deliveredRunWithSupersededFailure(overrides = {}) {
-  const startedAt = '2026-08-31T04:42:00.000Z';
-  const finishedAt = '2026-08-31T05:04:00.000Z';
-  const attempt = (actionId, status) => ({
-    actionId, attemptNumber: 1, pool: 'opencode2', model: 'luna', status,
-    startedAt, finishedAt,
-  });
-  return {
-    runId: 'wf-superseded', shortId: 'sup234', workflow: 'goal-delivered',
-    status: 'completed', stage: 'delivered', startedAt, finishedAt,
-    intent: { autonomous: true, goal: 'Deliver after a recovered verification failure.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'opencode2', selectedModel: 'luna' },
-    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
-    outcome: {
-      verified: true, bestEffort: false, concerns: ['One audit gap remains.'],
-      reason: 'Every requirement is independently verified.', deliveryActionId: 'verify-audit-repair-1',
-    },
-    actionLedger: [
-      { id: 'verify-audit', phase: 'g:audit-verification', kind: 'verify', status: 'succeeded', attempts: [0], startedAt, finishedAt },
-      { id: 'verify-audit-repair-1', phase: 'g:audit-verification', kind: 'run', status: 'succeeded', attempts: [1], startedAt, finishedAt },
-      {
-        id: 'verify-suite', phase: 'g:final-verification', kind: 'verify', status: 'failed_terminal',
-        attempts: [], finishedAt, dependsOn: ['verify-implementation', 'verify-audit'],
-        why: 'dynamic actions blocked by failed or unresolved dependencies',
-      },
-      { id: 'verify-completion', phase: 'g:completion-verification', kind: 'verify', status: 'succeeded', attempts: [2], startedAt, finishedAt },
-    ],
-    attempts: [
-      attempt('verify-audit', 'succeeded'),
-      attempt('verify-audit-repair-1', 'succeeded'),
-      attempt('verify-completion', 'succeeded'),
-    ],
-    outputs: {
-      'verify-implementation': { ok: true },
-      'verify-audit': { ok: false },
-      'verify-audit-repair-1': { ok: true },
-      'verify-suite': { ok: false, dependencyBlocked: true },
-      'verify-completion': { ok: true },
-    },
-    activeAgents: {}, _doc: { phases: [] },
-    ...overrides,
-  };
-}
-
-test('a delivered run states concerns and best-effort qualification from the outcome, not the status string', () => {
-  const base = {
-    runId: 'wf-outcome', shortId: 'out234', workflow: 'qualified',
-    startedAt: '2026-08-31T04:00:00.000Z', finishedAt: '2026-08-31T04:30:00.000Z',
-    status: 'completed', stage: 'delivered',
-    intent: { autonomous: true, goal: 'Deliver a qualified result.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
-    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
-    actionLedger: [{ id: 'work', phase: 'g:deliver', kind: 'run', status: 'succeeded', attempts: [0] }],
-    attempts: [{ actionId: 'work', attemptNumber: 1, pool: 'codex', model: 'sol', status: 'succeeded' }],
-    outputs: { work: { ok: true } }, activeAgents: {}, _doc: { phases: [] },
-  };
-  // A width wide enough that the terminal sentence is never pane-truncated.
-  const render = (state) => plain(renderWorkflowTui({ state, events: [] }, { width: 160, height: 30 }));
-  const result = (state) => plain(renderWorkflowTui({ state, events: [] }, {
-    width: 160, height: 30, orchestratorDetail: true,
-  }));
-
-  const clean = { ...base, outcome: { verified: true, bestEffort: false, concerns: [] } };
-  assert.match(render(clean), /✓ No agents running · workflow finished\b/);
-  assert.match(render(clean), /Workflow finished · result ready/);
-  assert.match(result(clean), /Result · Verified delivery is ready +│/);
-  assert.doesNotMatch(render(clean), /concern/);
-
-  // `completed` now carries its concerns in the outcome envelope: the count
-  // must stay visible without a `completed_with_concerns` status.
-  const concerned = { ...base, outcome: { verified: true, bestEffort: false, concerns: ['a', 'b', 'c'] } };
-  assert.match(render(concerned), /! No agents running · workflow finished with 3 concerns/);
-  assert.match(render(concerned), /Workflow finished with 3 concerns · review 3 concerns in result/);
-  assert.match(render(concerned), /! Completed with 3 concerns/);
-  assert.match(result(concerned), /Result · Verified delivery is ready · 3 concerns/);
-  assert.match(result(concerned), /Concerns · 3 recorded in the result envelope/);
-
-  const single = { ...base, outcome: { verified: true, bestEffort: false, concerns: ['only one'] } };
-  assert.match(render(single), /workflow finished with 1 concern\b/);
-
-  const bestEffort = { ...base, outcome: { verified: false, bestEffort: true, concerns: ['x', 'y'] } };
-  assert.match(render(bestEffort), /! No agents running · best-effort delivery, unverified — 2 concerns/);
-  assert.match(render(bestEffort), /! Best-effort delivery, unverified — 2 concerns · review 2 concerns in result/);
-  assert.match(render(bestEffort), /! Best-effort, unverified/);
-  assert.match(result(bestEffort), /Result · Best useful delivery is ready, unverified · 2 concerns/);
-
-  // A legacy run dir replays through the same outcome fields.
-  const legacy = { ...concerned, status: 'completed_with_concerns', stage: 'delivered_with_concerns' };
-  assert.equal(
-    render(legacy).replace(/completed_with_concerns/g, 'completed'),
-    render(concerned).replace(/ · done/g, ' · completed'),
-  );
-  // A legacy run dir with no outcome envelope keeps its qualification.
-  const legacyNoOutcome = { ...base, status: 'completed_with_concerns' };
-  assert.match(render(legacyNoOutcome), /! No agents running · workflow finished with concerns/);
-  assert.match(result(legacyNoOutcome), /Result · Best useful delivery is ready with concerns/);
-});
-
-test('a delivered run shows no phase failure marks, and a never-dispatched action names its failed dependency', () => {
-  const state = deliveredRunWithSupersededFailure();
-  const model = workflowPanelModel({ state, events: [] });
-  const audit = model.phases.find((phase) => phase.name === 'g:audit-verification');
-  const final = model.phases.find((phase) => phase.name === 'g:final-verification');
-
-  // Defect A: the audit verification failed and was superseded by its repair
-  // before the run delivered, so the phase list must not keep a ✗.
-  assert.deepEqual(model.phases.filter((phase) => phase.status === 'failed'), []);
-  assert.equal(audit.status, 'completed');
-  assert.equal(audit.completed, 2);
-
-  // Defect B: verify-suite never dispatched, so it is neither complete nor
-  // "not started yet" — it was blocked by the verify that had failed.
-  assert.equal(final.status, 'dependency_blocked');
-  assert.deepEqual([final.completed, final.total], [0, 1]);
-  assert.deepEqual(final.blockedActions, [{ id: 'verify-suite', kind: 'verify', blockedBy: ['verify-audit'] }]);
-
-  const finalIndex = model.phases.indexOf(final);
-  const phases = plain(renderWorkflowTui({ state, events: [] }, { width: 120, height: 30, phaseIndex: finalIndex }));
-  assert.match(phases, /⊘ Final Verification 0\/1/);
-  assert.doesNotMatch(phases, /✗ (Audit|Final) Verification/);
-
-  const agents = plain(renderWorkflowTui({ state, events: [] }, {
-    width: 120, height: 30, phaseIndex: finalIndex, focus: 1,
-  }));
-  assert.match(agents, /Final Verification · 0\/1 complete/);
-  assert.match(agents, /⊘ verify-suite · never dispatched · blocked by verify-audit/);
-  assert.doesNotMatch(agents, /Not started yet/);
-
-  const detail = plain(renderWorkflowTui({ state, events: [] }, {
-    width: 120, height: 30, phaseIndex: finalIndex, focus: 2,
-  }));
-  assert.match(detail, /⊘ verify-suite · verify · never dispatched/);
-  assert.match(detail, /blocked by verify-audit/);
-});
-
-test('a run that did not deliver keeps its phase failure marks, and still never counts a blocked action as complete', () => {
-  const failed = deliveredRunWithSupersededFailure({ status: 'failed', stage: 'failed', outcome: null });
-  const model = workflowPanelModel({ state: failed, events: [] });
-  const audit = model.phases.find((phase) => phase.name === 'g:audit-verification');
-  const final = model.phases.find((phase) => phase.name === 'g:final-verification');
-  assert.equal(audit.status, 'failed');
-  assert.equal(final.status, 'failed');
-  assert.deepEqual([final.completed, final.total], [0, 1]);
-  const screen = plain(renderWorkflowTui({ state: failed, events: [] }, { width: 120, height: 30 }));
-  assert.match(screen, /✗ Audit Verification 2\/2/);
-  assert.match(screen, /✗ Final Verification 0\/1/);
-});
-
-// An autonomous run with a preflight scout, one accepted planner turn, a
-// finished Discover phase, and a still-running Implement phase.
-function segmentedRunState(overrides = {}) {
-  return {
-    runId: 'wf-segments', shortId: 'seg234', workflow: 'segmented', status: 'running',
-    startedAt: iso(0),
-    intent: { autonomous: true, goal: 'Group the timeline into phase segments.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'claude-code', selectedModel: 'opus-5' },
-    currentStep: { id: 'implement-b', type: 'run', phase: 'implement' },
-    _doc: { phases: [{ name: 'autonomous-delivery', steps: [{ id: 'scout', type: 'run' }, { id: 'orchestrator', type: 'decide' }] }] },
-    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, then implement.' }],
-    actionLedger: [
-      { id: 'scout', phase: 'autonomous-delivery', kind: 'run', status: 'succeeded', attempts: [0] },
-      { id: 'orchestrator', phase: 'autonomous-delivery', kind: 'decide', status: 'succeeded', attempts: [1] },
-      { id: 'discover-a', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [2] },
-      { id: 'discover-b', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [3] },
-      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [4] },
-      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'running', attempts: [5] },
-      { id: 'verify-all', phase: 'verify', kind: 'verify', status: 'pending', dependsOn: ['implement-b'], attempts: [] },
-    ],
-    attempts: [
-      { actionId: 'scout', pool: 'opencode2', model: 'luna', status: 'succeeded', startedAt: iso(10), finishedAt: iso(130) },
-      { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: iso(130), finishedAt: iso(190) },
-      { actionId: 'discover-a', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: iso(190), finishedAt: iso(250) },
-      { actionId: 'discover-b', pool: 'grok', model: 'grok-4.6', status: 'succeeded', startedAt: iso(190), finishedAt: iso(260) },
-      { actionId: 'implement-a', pool: 'command-code', model: 'minimax-m3', status: 'succeeded', startedAt: iso(260), finishedAt: iso(320) },
-      { actionId: 'implement-b', pool: 'command-code', model: 'minimax-m3', status: 'running', startedAt: iso(320) },
-    ],
-    outputs: { scout: { ok: true }, 'discover-a': { ok: true }, 'discover-b': { ok: true }, 'implement-a': { ok: true } },
-    activeAgents: {},
-    ...overrides,
-  };
-}
-
-test('timeline segments replace per-line phase prefixes with one header per phase change', () => {
-  const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 120, height: 40 });
-  const pane = timelinePaneRows(screen);
-
-  // one header per phase change, in chronological order, and none repeated
-  // between two events of the same phase
-    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
-
-  // the event lines themselves no longer name their phase
-  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
-  assert.deepEqual(pane.filter((line) => /\[(Discover|Implement|Preflight):? ?[^\]]*\]/.test(line)), []);
-
-  // glyphs, action names, timestamps, and right-aligned durations survive
-  const discover = segmentRows(screen, 'Discover');
-  // (timestamps render in the local zone, so only their shape is asserted)
-  assert.deepEqual(discover.map(normalizeRow), [
-    'HH:MM ├─ started',
-    'HH:MM │ ├─✓ discover-a 1m00s',
-    'HH:MM │ └─✓ discover-b 1m10s',
-    'HH:MM └─✓ completed 2/2',
-  ]);
-  // four Discover events, one Discover header: no header between same-phase events
-  assert.equal(pane.filter((line) => /^─{2,}\s+Phase 1 · Discover\s/.test(line)).length, 1);
-
-  // the running phase keeps its started row and reports no completion
-  const implement = segmentRows(screen, 'Implement');
-  assert.match(implement.join('\n'), /├─ started/);
-  assert.match(implement.join('\n'), /├─✓ implement-a\s+1m00s/);
-  assert.deepEqual(implement.filter((line) => line.includes('completed')), []);
-
-  // every blank separator inside the timeline introduces a segment header
-  pane.forEach((line, index) => {
-    if (line.trim() || index === pane.length - 1) return;
-    const next = pane[index + 1];
-    assert.ok(!next.trim() || /^─{2,}/.test(next), `blank row ${index} is not a segment separator: ${next}`);
-  });
-
-  // the prefix removal is scoped to timeline event lines: the Next pane still
-  // names the phase of the pending work it announces
-  const rendered = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  assert.match(rendered, /Workflow timeline · \d+ milestones?/);
-  assert.match(rendered, /○ \[Phase: Verify\] · verify-all/);
-});
-
-test('parallel phase events stay grouped in declared phase-number order', () => {
-  const state = {
-    runId: 'wf-interleaved', shortId: 'int234', workflow: 'interleaved', status: 'completed',
-    startedAt: iso(0), finishedAt: iso(270),
-    intent: { autonomous: true, goal: 'Interleave two phases in time.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
-    decisions: [{ gateId: 'orchestrator', decision: 'complete', actions: [] }],
-    actionLedger: [
-      { id: 'implement-a', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [0] },
-      { id: 'implement-b', phase: 'implement', kind: 'run', status: 'succeeded', attempts: [1] },
-      { id: 'verify-a', phase: 'verify', kind: 'verify', status: 'succeeded', attempts: [2] },
-    ],
-    attempts: [
-      { actionId: 'implement-a', status: 'succeeded', startedAt: iso(60), finishedAt: iso(120) },
-      { actionId: 'implement-b', status: 'succeeded', startedAt: iso(210), finishedAt: iso(240) },
-      { actionId: 'verify-a', status: 'succeeded', startedAt: iso(150), finishedAt: iso(180) },
-    ],
-    outputs: { 'implement-a': { ok: true }, 'implement-b': { ok: true }, 'verify-a': { ok: true } },
-    activeAgents: {}, _doc: { phases: [] },
-  };
-  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 40 });
-
-  // Worker completion times interleave, but the human-facing phase program is
-  // stable: Phase 1 is a single block before Phase 2.
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Implement', 'Verify']);
-  assert.deepEqual(segmentRows(screen, 'Implement').map(normalizeRow), [
-    'HH:MM ├─ started',
-    'HH:MM │ ├─✓ implement-a 1m00s',
-    'HH:MM │ └─✓ implement-b 30s',
-    'HH:MM └─✓ completed 2/2',
-  ]);
-  assert.match(screen, /── Phase 1 · Implement/);
-  assert.match(screen, /── Phase 2 · Verify/);
-  assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
-});
-
-test('scout and the first planner turn share Preflight; later checkpoints open a Planner segment', () => {
-  const state = segmentedRunState({
-    status: 'completed', finishedAt: iso(280), currentStep: null,
-    decisions: [
-      { gateId: 'orchestrator', decision: 'needs_more_work', reason: 'Discover, then implement.' },
-      { gateId: 'orchestrator', decision: 'complete', reason: 'Every requirement is verified.' },
-    ],
-  });
-  state.actionLedger = state.actionLedger
-    .filter((action) => !action.id.startsWith('implement'))
-    .map((action) => (action.id === 'orchestrator' ? { ...action, attempts: [1, 6] } : action));
-  state.attempts = [
-    ...state.attempts.filter((attempt) => !attempt.actionId.startsWith('implement')),
-    { actionId: 'orchestrator', pool: 'claude-code', model: 'opus-5', status: 'succeeded', startedAt: iso(260), finishedAt: iso(270) },
-  ];
-  const screen = renderWorkflowTui({ state, events: [] }, { width: 120, height: 40 });
-
-  // one Preflight segment carries the run start, the scout, and the first plan
-  assert.equal(segmentLabels(screen).filter((label) => label === 'Preflight').length, 1);
-  assert.equal(segmentLabels(screen)[0], 'Preflight');
-  const preflight = segmentRows(screen, 'Preflight').join('\n');
-  assert.match(preflight, /● Workflow initiated/);
-  assert.match(preflight, /● Scout started/);
-  assert.match(preflight, /✓ Scout completed/);
-  assert.match(preflight, /◆ \[Workflow Planner\] plan created/);
-  // neither the scout nor the planner opens a segment of its own before work starts
-  assert.deepEqual(segmentLabels(screen).filter((label) => /^(Scout|Workflow Planner)/.test(label)), []);
-
-  // a later planner checkpoint lands in its own Planner segment, after the phase
-  assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Planner']);
-  assert.match(segmentRows(screen, 'Planner').join('\n'), /◆ \[Workflow Planner\] completion confirmed/);
-});
-
-test('finished segment headers carry elapsed time and the active segment reads running', () => {
-  const running = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 120, height: 40 });
-  const headers = Object.fromEntries(timelineSegments(running).map((segment) => [segment.label, segment.elapsed]));
-  // Preflight spans the run start through the accepted plan (0s → 3m10s)
-  assert.equal(headers.Preflight, '3m10s');
-  // Discover spans its own first and last event (00:03:10 → 00:04:20)
-  assert.equal(headers.Discover, '1m10s');
-  // the phase still executing reports running instead of a finished duration
-  assert.equal(headers.Implement, 'running');
-
-  const finished = renderWorkflowTui({
-    state: segmentedRunState({ status: 'completed', finishedAt: iso(400), currentStep: null }),
-    events: [],
-  }, { width: 120, height: 40 });
-  const finishedHeaders = timelineSegments(finished);
-  assert.deepEqual(finishedHeaders.filter((segment) => segment.elapsed === 'running'), []);
-  for (const segment of finishedHeaders) {
-    assert.match(segment.elapsed, /^\d+(?:h\d+m|m\d+s|s)$|^\d+s$/, `${segment.label} header lost its elapsed time`);
-  }
-});
-
-// A single long phase: any viewport short enough to scroll starts mid-segment.
-function longPhaseState() {
-  const actions = Array.from({ length: 12 }, (_, index) => ({
-    id: `work-${index}`, phase: 'g:implement', kind: 'run', status: 'succeeded', attempts: [index],
-  }));
-  return {
-    runId: 'wf-long', shortId: 'lng234', workflow: 'long-phase', status: 'running',
-    startedAt: iso(0),
-    intent: { autonomous: true, goal: 'Render more rows than the viewport holds.' },
-    orchestration: { mode: 'autonomous', selectedPool: 'codex', selectedModel: 'sol' },
-    currentStep: { id: 'work-11', type: 'run', phase: 'g:implement' },
-    decisions: [{ gateId: 'orchestrator', decision: 'needs_more_work', actions: [] }],
-    actionLedger: [...actions, { id: 'tail', phase: 'g:implement', kind: 'run', status: 'running', attempts: [12] }],
-    attempts: [
-      ...actions.map((action, index) => ({
-        actionId: action.id, status: 'succeeded', startedAt: iso(60 + index * 120), finishedAt: iso(120 + index * 120),
-      })),
-      { actionId: 'tail', status: 'running', startedAt: iso(60 + 12 * 120) },
-    ],
-    outputs: Object.fromEntries(actions.map((action) => [action.id, { ok: true }])),
-    activeAgents: {}, _doc: { phases: [] },
-  };
-}
-
-test('a timeline viewport that starts mid-segment re-emits a continuation header', () => {
-  const state = longPhaseState();
-  const tall = renderWorkflowTui({ state, events: [] }, { width: 100, height: 46 });
-  // with room for every row the phase is introduced once and never continued
-  assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implement']);
-
-  const short = renderWorkflowTui({ state, events: [] }, { width: 100, height: 22 });
-  const pane = timelinePaneRows(short);
-  const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
-  assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
-  // the scrolled-into segment is re-announced before its first visible event
-  assert.match(pane[marker + 1], /^─{2,}\s+Phase 1 · Implement · continued\s+─{2,}/);
-  assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
-  assert.deepEqual(segmentLabels(short), ['Implement · continued']);
-  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
-});
-
-test('narrow timeline rendering uses the same segment headers and no phase prefixes', () => {
-  // tall enough that the whole timeline fits: nothing here is a scroll artifact
-  const screen = renderWorkflowTui({ state: segmentedRunState(), events: [] }, { width: 60, height: 44 });
-   assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discover', 'Implement']);
-  const pane = timelinePaneRows(screen);
-  assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
-  assert.match(segmentRows(screen, 'Discover').join('\n'), /├─✓ discover-a/);
-   assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implement').elapsed, 'running');
-  // headers obey the narrow width like every other row
-  const overflow = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n').filter((line) => [...line].length > 60);
-  assert.deepEqual(overflow, []);
-
-  // and the narrow viewport re-emits the continuation header when it scrolls
-  const scrolled = renderWorkflowTui({ state: longPhaseState(), events: [] }, { width: 60, height: 22 });
-  const narrowPane = timelinePaneRows(scrolled);
-   const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
-  assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
-   assert.match(narrowPane[marker + 1], /^─{2,}\s+Phase 1 · Implement · continue/);
-});
 
 // ---------------------------------------------------------------------------
 // Unified application shell: the workflows list, a run, a phase, and an agent
@@ -1613,43 +717,42 @@ test('narrow timeline rendering uses the same segment headers and no phase prefi
 // geometry, hint order, or the exact wording a binding happens to use today.
 // ---------------------------------------------------------------------------
 
-function shellRunState({ runId, shortId, workflow, goal, agentId, startedAt }) {
-  return {
-    runId, shortId, workflow, status: 'running', startedAt,
-    intent: { goal },
-    orchestration: { selectedPool: 'codex', selectedModel: 'sol', selection: 'capability-and-quota' },
-    currentStep: { id: agentId, type: 'run', phase: 'implement' },
-    currentPhase: { index: 1, name: 'implement', total: 2 },
-    actionLedger: [
-      { id: 'scan', phase: 'discover', kind: 'run', status: 'succeeded', attempts: [0] },
-      { id: agentId, phase: 'implement', kind: 'run', status: 'running', attempts: [1] },
-    ],
-    attempts: [
-      {
-        actionId: 'scan', attemptNumber: 1, pool: 'opencode2', model: 'luna',
-        status: 'succeeded', startedAt, finishedAt: startedAt,
-      },
-      { actionId: agentId, attemptNumber: 1, pool: 'codex', model: 'sol', status: 'running', startedAt },
-    ],
-    activeAgents: {
-      [agentId]: { stepId: agentId, pool: 'codex', model: 'sol', attempt: 1, status: 'running', startedAt },
-    },
-    steps: [{ phase: 'discover', stepId: 'scan', ok: true }],
-    outputs: { scan: { ok: true } },
-  };
+function shellRunState({ runId, shortId, goal, agentId, startedAt }) {
+  const document = createV2GoalDocument({
+    goal, cwd: tmpdir(),
+    requirements: [{ id: 'requirement-1', text: 'The viewer is unified.', mandatory: true }],
+    settings: { scout: false },
+  });
+  let state = createV2State(document, { runId, shortId });
+  state = applyV2PlannerResponse(state, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program',
+    summary: 'Scan then build.',
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+      { id: 'scan', purpose: 'Scan the viewer', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['scan.md'], prompt: 'Scan it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['scan'] },
+      { id: agentId, purpose: 'Build the viewer', dependsOn: ['scan'], affects: ['requirement-1'], ownedFiles: ['build.md'], prompt: 'Build it.', lane: 'build', effort: 'low', evidenceFor: [], inputs: ['scan'], produces: ['build'] },
+      { id: `${agentId}-evidence`, purpose: 'Inspect the build', dependsOn: [agentId], affects: [], ownedFiles: [], prompt: 'Inspect it.', lane: 'analyze', effort: 'low', evidenceFor: ['requirement-1'], inputs: ['build'], produces: [] },
+    ] },
+  });
+  state.lifecycle = { status: 'running', startedAt, finishedAt: null, resultFile: null };
+  Object.assign(state.actions[0], { status: 'succeeded', startedAt, finishedAt: startedAt, attempts: 1 });
+  Object.assign(state.actions[1], { status: 'running', startedAt, attempts: 1 });
+  state.attempts = [
+    { id: 'scan-1', actionId: 'scan', ordinal: 1, pool: 'opencode2', model: 'luna', status: 'succeeded', startedAt, finishedAt: startedAt },
+    { id: `${agentId}-1`, actionId: agentId, ordinal: 1, pool: 'codex', model: 'sol', status: 'running', startedAt, finishedAt: null },
+  ];
+  state.runner = { pid: process.pid, lastHeartbeatAt: new Date().toISOString() };
+  return state;
 }
 
 // Two live runs of the same shape: the sibling exists at every depth, so Tab
 // has an equivalent location to land on instead of falling back to the root.
 const SHELL_RUNS = [
   {
-    runId: 'wf-alpha', shortId: 'aaa111', workflow: 'unified-shell',
-    goal: 'Unify the workflow viewer.', agentId: 'build-alpha',
+    runId: 'wf-alpha', shortId: 'aaa111', goal: 'unified-shell', agentId: 'build-alpha',
     startedAt: '2026-08-29T00:02:00.000Z',
   },
   {
-    runId: 'wf-beta', shortId: 'bbb222', workflow: 'sibling-run',
-    goal: 'Run beside the first one.', agentId: 'build-beta',
+    runId: 'wf-beta', shortId: 'bbb222', goal: 'sibling-run', agentId: 'build-beta',
     startedAt: '2026-08-29T00:01:00.000Z',
   },
 ];
@@ -1659,7 +762,12 @@ function shellFixture() {
   for (const run of SHELL_RUNS) {
     const dir = join(home, 'workflows', run.runId);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'state.json'), JSON.stringify(shellRunState(run)));
+    const state = shellRunState(run);
+    // Durable action events give each dependency level its own timeline segment.
+    appendEvent(dir, state, 'action.started', { actionId: 'scan' });
+    appendEvent(dir, state, 'action.finished', { actionId: 'scan', status: 'succeeded' });
+    appendEvent(dir, state, 'action.started', { actionId: run.agentId });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
   }
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -1721,7 +829,7 @@ test('the breadcrumb names the location at list, run, phase, and agent depth', (
     // the run depth is not an agent location
     assert.doesNotMatch(run, /build-alpha/);
     // the phase depth names the phase, the agent depth names the agent
-    assert.ok(phase.includes('implement'), `phase breadcrumb lost its phase: ${phase}`);
+    assert.ok(phase.includes('Implementation'), `phase breadcrumb lost its phase: ${phase}`);
     assert.ok(agent.endsWith('build-alpha'), `agent breadcrumb lost its agent: ${agent}`);
     // drilling in only ever extends the path it came from
     assert.ok(run.startsWith(list), `${run} does not extend ${list}`);
@@ -1737,7 +845,7 @@ test('a breadcrumb wider than the terminal drops its deepest segments first', ()
     const deepest = (width) => renderWorkflowTui(row, { width, height: 30, focus: 2 });
 
     assert.deepEqual(crumbSegments(deepest(200)),
-      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
     // the agent and its phase go before the run that contains them
     assert.deepEqual(crumbSegments(deepest(40)), ['Workflows', 'aaa111 · unified-shell']);
     // and the root survives a terminal too narrow for anything else
@@ -1835,14 +943,14 @@ test('Tab re-enters the sibling workflow at the depth it was left at', async () 
     const atAgent = session.drillToAgent();
     assert.match(atAgent, /Agent activity · r refresh/);
     assert.deepEqual(crumbSegments(atAgent),
-      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
 
     const sibling = session.press('\t');
     assert.ok(sibling.length, 'Tab repainted the screen');
     // same depth, same phase, the sibling workflow's own agent
     assert.match(sibling, /Agent activity · r refresh/);
     assert.deepEqual(crumbSegments(sibling),
-      ['Workflows', 'bbb222 · sibling-run', 'implement', 'build-beta']);
+      ['Workflows', 'bbb222 · sibling-run', 'Implementation', 'build-beta']);
     assert.equal(crumbSegments(sibling).length, crumbSegments(atAgent).length);
     assert.doesNotMatch(sibling, /build-alpha/);
 
@@ -1850,7 +958,7 @@ test('Tab re-enters the sibling workflow at the depth it was left at', async () 
     const back = session.press(`${ESC_KEY}[Z`);
     assert.match(back, /Agent activity · r refresh/);
     assert.deepEqual(crumbSegments(back),
-      ['Workflows', 'aaa111 · unified-shell', 'implement', 'build-alpha']);
+      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -2196,4 +1304,410 @@ test('attempts without a reasoning record render exactly as before', () => {
     assert.match(agentPane, /relay · attempt 1 · effort auto/);
     assert.doesNotMatch(agentPane, /reasoning/);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// Rendering behaviours that outlived the V1 executor.
+//
+// The authored-graph removal deleted the tests that drove workflowPanelModel
+// and renderWorkflowTui with a V1 state shape, but the behaviours they covered
+// are still live for V2 runs: blocked-action naming, one segment header per
+// phase change, the mid-segment continuation header, parallel work grouped in
+// declared level order, the narrow layout, and auto-follow. The fixtures below
+// rebuild those situations out of a real durable V2 state plus real durable
+// events, so the assertions are ported and the V1 state shape is not.
+// ---------------------------------------------------------------------------
+
+// appendEvent stamps committedAt from the wall clock. These fixtures run on the
+// fixed `iso()` clock instead, which each event carries in its payload, so the
+// durable JSONL is written for real and read back at its fixture time.
+function durableEvents(dir) {
+  return readEvents(dir).map((event) => ({
+    ...event,
+    committedAt: event.payload?.committedAt ?? event.committedAt,
+  }));
+}
+
+const v2Action = (overrides) => ({
+  dependsOn: [], affects: [], ownedFiles: [], prompt: 'Do it.',
+  lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+  ...overrides,
+});
+
+// One accepted V2 program on disk: durable state.json plus the two events every
+// run opens with. The caller fills in action outcomes and emits the rest.
+function newV2Run({
+  runId, shortId, goal, actions, settings = {}, summary = 'One bounded program.',
+  requirements = [{ id: 'requirement-1', text: 'The goal is delivered.', mandatory: true }],
+}) {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-v2render-'));
+  const dir = join(home, 'workflows', runId);
+  mkdirSync(dir, { recursive: true });
+  const document = createV2GoalDocument({
+    goal, cwd: home, requirements, settings: { scout: false, ...settings },
+  });
+  let state = createV2DurableState(document, { runId, shortId });
+  state = applyV2PlannerResponse(state, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary,
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+  });
+  state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+  state.planner.attempts.push({
+    ordinal: 1, turn: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna',
+    startedAt: iso(2), finishedAt: iso(10),
+  });
+  const emit = (type, committedAt, payload = {}) => appendEvent(dir, state, type, { ...payload, committedAt });
+  emit('workflow.started', iso(0));
+  emit('planner.finished', iso(10), { turn: 1, ok: true, summary });
+  const byId = Object.fromEntries(state.actions.map((action) => [action.id, action]));
+  const succeed = (id, from, to) => {
+    Object.assign(byId[id], { status: 'succeeded', startedAt: iso(from), finishedAt: iso(to), attempts: 1 });
+    state.attempts.push({
+      id: `${id}-1`, actionId: id, ordinal: 1, status: 'succeeded',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(from), finishedAt: iso(to),
+    });
+  };
+  const start = (id, from) => {
+    Object.assign(byId[id], { status: 'running', startedAt: iso(from), attempts: 1 });
+    state.attempts.push({
+      id: `${id}-1`, actionId: id, ordinal: 1, status: 'running',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(from), finishedAt: null,
+    });
+  };
+  // The row the dashboard would build for this run: durable state read back
+  // from disk, durable events read back from the JSONL.
+  const row = () => {
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const durable = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    return {
+      runId, shortId, status: durable.lifecycle.status, runDir: dir,
+      state: durable, events: durableEvents(dir),
+    };
+  };
+  return {
+    home, dir, state, byId, emit, succeed, start, row,
+    cleanup: () => rmSync(home, { recursive: true, force: true }),
+  };
+}
+
+const segmentLabels = (screen) => timelineSegments(screen).map((segment) => segment.label);
+
+// Preflight, a finished Discovery phase, and a running Implementation phase.
+// The Evidence phase is planned but never started, so it never opens a segment.
+function segmentedV2Run() {
+  const run = newV2Run({
+    runId: 'wf-segment-aaaaaa', shortId: 'sgm234',
+    goal: 'Discover, implement, then prove it.',
+    summary: 'Discover, implement, prove.',
+    actions: [
+      v2Action({ id: 'discover-a', purpose: 'Discover the inputs', lane: 'analyze', produces: ['inputs'] }),
+      v2Action({ id: 'discover-b', purpose: 'Discover the outputs', lane: 'analyze', produces: ['outputs'] }),
+      v2Action({ id: 'implement-a', purpose: 'Implement the module', ownedFiles: ['src/a.js'], dependsOn: ['discover-a'], inputs: ['inputs'], produces: ['module'], affects: ['requirement-1'] }),
+      v2Action({ id: 'implement-b', purpose: 'Implement the adapter', ownedFiles: ['src/b.js'], dependsOn: ['discover-b'], inputs: ['outputs'], produces: ['adapter'], affects: ['requirement-1'] }),
+      v2Action({ id: 'verify-all', purpose: 'Prove every requirement', lane: 'analyze', dependsOn: ['implement-a', 'implement-b'], inputs: ['module', 'adapter'], evidenceFor: ['requirement-1'] }),
+    ],
+  });
+  run.succeed('discover-a', 20, 80);
+  run.succeed('discover-b', 20, 90);
+  run.succeed('implement-a', 160, 220);
+  run.start('implement-b', 230);
+  run.state.presentation.stages[0].startedAt = iso(20);
+  run.state.presentation.stages[0].completedAt = iso(150);
+  run.state.presentation.stages[1].startedAt = iso(160);
+  run.emit('presentation.stage_started', iso(20), { stageId: 'r1-discovery', label: 'Discovery' });
+  run.emit('action.finished', iso(80), { actionId: 'discover-a', status: 'succeeded' });
+  run.emit('action.finished', iso(90), { actionId: 'discover-b', status: 'succeeded' });
+  run.emit('presentation.stage_completed', iso(150), { stageId: 'r1-discovery', label: 'Discovery', status: 'completed', completed: 2, total: 2 });
+  run.emit('presentation.stage_started', iso(160), { stageId: 'r1-implementation', label: 'Implementation' });
+  run.emit('action.finished', iso(220), { actionId: 'implement-a', status: 'succeeded' });
+  return run;
+}
+
+// One phase with more rows than any short viewport holds.
+function longPhaseV2Run() {
+  const works = Array.from({ length: 12 }, (_, index) => v2Action({
+    id: `work-${index}`, purpose: `Implement work ${index}`,
+    ownedFiles: [`src/work-${index}.js`], produces: [`artifact-${index}`], affects: ['requirement-1'],
+  }));
+  const run = newV2Run({
+    runId: 'wf-longphase-aaaaaa', shortId: 'lng234',
+    goal: 'Render more rows than the viewport holds.',
+    actions: [
+      ...works,
+      v2Action({ id: 'work-tail', purpose: 'Implement the tail', ownedFiles: ['src/tail.js'], produces: ['artifact-tail'], affects: ['requirement-1'] }),
+      v2Action({
+        id: 'verify-all', purpose: 'Prove every requirement', lane: 'analyze',
+        dependsOn: [...works.map((action) => action.id), 'work-tail'],
+        inputs: [...works.map((_, index) => `artifact-${index}`), 'artifact-tail'],
+        evidenceFor: ['requirement-1'],
+      }),
+    ],
+  });
+  run.state.presentation.stages[0].startedAt = iso(20);
+  run.emit('presentation.stage_started', iso(20), { stageId: 'r1-implementation', label: 'Implementation' });
+  works.forEach((action, index) => {
+    run.succeed(action.id, 60 + index * 120, 120 + index * 120);
+    run.emit('action.finished', iso(120 + index * 120), { actionId: action.id, status: 'succeeded' });
+  });
+  run.start('work-tail', 60 + 12 * 120);
+  return run;
+}
+
+test('a dependency level whose action never dispatched names the dependency that blocked it', () => {
+  const run = newV2Run({
+    runId: 'wf-blocked-aaaaaa', shortId: 'blk234',
+    goal: 'Harden the core after proving it.',
+    summary: 'Implement, prove, then harden.',
+    settings: { executionMode: 'program' },
+    requirements: [
+      { id: 'requirement-1', text: 'The core is correct.', mandatory: true },
+      { id: 'requirement-2', text: 'The core is hardened.', mandatory: false },
+    ],
+    actions: [
+      v2Action({ id: 'implement-core', purpose: 'Implement the core', ownedFiles: ['src/core.js'], produces: ['core'], affects: ['requirement-1'] }),
+      v2Action({ id: 'verify-core', purpose: 'Prove the core', lane: 'analyze', dependsOn: ['implement-core'], inputs: ['core'], produces: ['core-report'], evidenceFor: ['requirement-1'] }),
+      v2Action({ id: 'harden-core', purpose: 'Harden the core', ownedFiles: ['src/harden.js'], dependsOn: ['verify-core'], inputs: ['core-report'], affects: ['requirement-2'] }),
+    ],
+  });
+  try {
+    run.succeed('implement-core', 60, 120);
+    Object.assign(run.byId['verify-core'], {
+      status: 'failed', startedAt: iso(130), finishedAt: iso(190), attempts: 1,
+      lastFailure: { kind: 'verdict', message: 'the core report is not passing' },
+    });
+    run.state.attempts.push({
+      id: 'verify-core-1', actionId: 'verify-core', ordinal: 1, status: 'failed',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(130), finishedAt: iso(190),
+    });
+    // A blocked action is marked terminal without ever being started: the
+    // scheduler records finishedAt and the dependency failure, and no attempt
+    // is ever appended for it.
+    Object.assign(run.byId['harden-core'], {
+      status: 'blocked', startedAt: null, finishedAt: iso(195),
+      lastFailure: { kind: 'dependency', message: 'dependency verify-core did not succeed' },
+    });
+    run.emit('action.finished', iso(120), { actionId: 'implement-core', status: 'succeeded' });
+    run.emit('action.finished', iso(190), { actionId: 'verify-core', status: 'failed' });
+    run.emit('action.finished', iso(195), { actionId: 'harden-core', status: 'blocked', why: 'dependency verify-core did not succeed' });
+    run.state.ledger.requirements['requirement-1'].status = 'failed';
+    run.state.lifecycle = { status: 'partial', startedAt: iso(0), finishedAt: iso(200), resultFile: null };
+    const row = run.row();
+
+    const model = workflowPanelModel(row, { phaseIndex: 2 });
+    const blockedLevel = model.phases[2];
+    assert.equal(blockedLevel.label, 'Level 3 · harden-core');
+    assert.deepEqual(blockedLevel.blockedActions, [
+      { id: 'harden-core', kind: 'action', blockedBy: ['verify-core'] },
+    ]);
+    // Never dispatched means no attempt, so the agent list is empty and the
+    // pane must explain the absence rather than claim nothing started yet.
+    assert.deepEqual(model.agents, []);
+    assert.deepEqual(model.phases[0].blockedActions, []);
+    assert.deepEqual(model.phases[1].blockedActions, []);
+
+    const agents = plain(renderWorkflowTui(row, { width: 120, height: 30, phaseIndex: 2, focus: 1 }));
+    assert.match(agents, /⊘ harden-core · never dispatched · blocked by verify-core/);
+    assert.doesNotMatch(agents, /Not started yet/);
+
+    const detail = plain(renderWorkflowTui(row, { width: 120, height: 30, phaseIndex: 2, focus: 2 }));
+    assert.match(detail, /⊘ harden-core · work · never dispatched/);
+    assert.match(detail, /blocked by verify-core/);
+
+    // The timeline marks the same action with ⊘, never with the ✓ a finished
+    // action carries or the × a dispatched failure carries.
+    const timeline = timelinePaneRows(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 2 }));
+    assert.match(timeline.join('\n'), /├─⊘ harden-core/);
+    assert.match(timeline.join('\n'), /├─× verify-core/);
+  } finally { run.cleanup(); }
+});
+
+test('the timeline opens one segment header per phase change instead of prefixing every event line', () => {
+  const run = segmentedV2Run();
+  try {
+    const screen = renderWorkflowTui(run.row(), { width: 120, height: 44 });
+    const pane = timelinePaneRows(screen);
+
+    // One header per phase change, in chronological order, none repeated
+    // between two events of the same phase.
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
+    assert.equal(pane.filter((line) => /^─{2,}\s+Phase 1 · Discovery\s/.test(line)).length, 1);
+
+    // The event lines themselves no longer name their phase.
+    assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+    assert.deepEqual(pane.filter((line) => /\[(Discovery|Implementation|Preflight):? ?[^\]]*\]/.test(line)), []);
+
+    // Glyphs, action names, timestamps and right-aligned durations survive.
+    // (timestamps render in the local zone, so only their shape is asserted)
+    assert.deepEqual(segmentRows(screen, 'Discovery').map(normalizeRow), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ discover-a 1m00s',
+      'HH:MM │ ├─✓ discover-b 1m10s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+
+    // The running phase keeps its started row, shows its live worker, and
+    // reports no completion.
+    const implementation = segmentRows(screen, 'Implementation').join('\n');
+    assert.match(implementation, /├─ started/);
+    assert.match(implementation, /├─✓ implement-a\s+1m00s/);
+    assert.match(implementation, /├─.\simplement-b/);
+    assert.deepEqual(segmentRows(screen, 'Implementation').filter((line) => line.includes('completed')), []);
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Discovery').elapsed, '2m10s');
+
+    // Every blank separator inside the timeline introduces a segment header.
+    pane.forEach((line, index) => {
+      if (line.trim() || index === pane.length - 1) return;
+      const next = pane[index + 1];
+      assert.ok(!next.trim() || /^─{2,}/.test(next), `blank row ${index} is not a segment separator: ${next}`);
+    });
+
+    // A planned phase that never started opens no segment at all.
+    assert.equal(workflowPanelModel(run.row()).phases[2].label, 'Evidence');
+    assert.deepEqual(segmentLabels(screen).filter((label) => label === 'Evidence'), []);
+  } finally { run.cleanup(); }
+});
+
+test('parallel dependency levels stay grouped in declared level order', () => {
+  const run = newV2Run({
+    runId: 'wf-parallel-aaaaaa', shortId: 'par234',
+    goal: 'Interleave two dependency levels in time.',
+    summary: 'Two independent builds, then two proofs.',
+    settings: { executionMode: 'program', concurrency: 2 },
+    requirements: [
+      { id: 'requirement-1', text: 'The module works.', mandatory: true },
+      { id: 'requirement-2', text: 'The adapter works.', mandatory: true },
+    ],
+    actions: [
+      v2Action({ id: 'implement-a', purpose: 'Implement the module', ownedFiles: ['src/a.js'], produces: ['a'], affects: ['requirement-1'] }),
+      v2Action({ id: 'implement-b', purpose: 'Implement the adapter', ownedFiles: ['src/b.js'], produces: ['b'], affects: ['requirement-2'] }),
+      v2Action({ id: 'verify-a', purpose: 'Prove the module', lane: 'analyze', dependsOn: ['implement-a'], inputs: ['a'], evidenceFor: ['requirement-1'] }),
+      v2Action({ id: 'verify-b', purpose: 'Prove the adapter', lane: 'analyze', dependsOn: ['implement-b'], inputs: ['b'], evidenceFor: ['requirement-2'] }),
+    ],
+  });
+  try {
+    // Levels overlap in wall-clock time: level 2's first proof finishes before
+    // level 1's second build does.
+    run.succeed('implement-a', 60, 120);
+    run.succeed('verify-a', 150, 180);
+    run.succeed('implement-b', 210, 240);
+    run.succeed('verify-b', 250, 280);
+    run.emit('action.finished', iso(120), { actionId: 'implement-a', status: 'succeeded' });
+    run.emit('evidence.recorded', iso(180), { actionId: 'verify-a', status: 'succeeded' });
+    run.emit('action.finished', iso(240), { actionId: 'implement-b', status: 'succeeded' });
+    run.emit('evidence.recorded', iso(280), { actionId: 'verify-b', status: 'succeeded' });
+    for (const requirement of Object.values(run.state.ledger.requirements)) requirement.status = 'passed';
+    run.state.lifecycle = { status: 'completed', startedAt: iso(0), finishedAt: iso(300), resultFile: null };
+    const row = run.row();
+
+    // The durable events really are interleaved; the grouping is the renderer's.
+    assert.deepEqual(
+      row.events.filter((event) => event.payload.actionId).map((event) => event.payload.actionId),
+      ['implement-a', 'verify-a', 'implement-b', 'verify-b'],
+    );
+
+    const screen = renderWorkflowTui(row, { width: 120, height: 40 });
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Level 1 · Parallel work', 'Level 2 · Parallel analysis']);
+    assert.deepEqual(segmentRows(screen, 'Level 1 · Parallel work').map(normalizeRow), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ implement-a 1m00s',
+      'HH:MM │ ├─✓ implement-b 30s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+    assert.deepEqual(segmentRows(screen, 'Level 2 · Parallel analysis').map(normalizeRow).slice(0, 4), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ verify-a 30s',
+      'HH:MM │ ├─✓ verify-b 30s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+    // Level 2 opened while level 1 was still running: the clock column proves
+    // the rows were reordered by declared level, not by time.
+    const clock = (label, index) => segmentRows(screen, label)[index].slice(0, 5);
+    assert.ok(clock('Level 1 · Parallel work', 2) > clock('Level 2 · Parallel analysis', 0),
+      `level 1's second worker should postdate level 2's start:\n${timelinePaneRows(screen).join('\n')}`);
+    // Dependency levels are not numbered phases, so no phase prefix is added.
+    assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
+    assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /── Phase \d/);
+  } finally { run.cleanup(); }
+});
+
+test('a timeline viewport that starts mid-segment re-emits a continuation header', () => {
+  const run = longPhaseV2Run();
+  try {
+    const row = run.row();
+    // With room for every row the phase is introduced once and never continued.
+    const tall = renderWorkflowTui(row, { width: 100, height: 46 });
+    assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implementation']);
+    assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
+
+    const short = renderWorkflowTui(row, { width: 100, height: 22 });
+    const pane = timelinePaneRows(short);
+    const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
+    assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
+    // The scrolled-into segment is re-announced before its first visible event,
+    // and the first visible event is a timestamped milestone, never an orphaned
+    // detail row.
+    assert.match(pane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+    assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
+    assert.deepEqual(segmentLabels(short), ['Implementation · continued']);
+    assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+  } finally { run.cleanup(); }
+});
+
+test('the timeline auto-follows the newest event until the viewer scrolls back', () => {
+  const run = longPhaseV2Run();
+  try {
+    const row = run.row();
+    const following = renderWorkflowTui(row, { width: 100, height: 22 });
+    const pane = timelinePaneRows(following);
+    // Auto-follow ends on the newest event — the running worker — and never
+    // claims there is anything newer below the viewport.
+    assert.match(pane.filter((line) => line.trim()).at(-1), /work-tail/);
+    assert.deepEqual(pane.filter((line) => line.includes('newer timeline rows')), []);
+    assert.match(plain(following), /Timeline · auto-following newest event/);
+
+    // Scrolling back holds older rows in place and says how much is newer.
+    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 22, detailScroll: 4 }));
+    assert.match(scrolled.at(-1), /↓ 4 newer timeline rows/);
+    assert.deepEqual(scrolled.filter((line) => line.includes('work-tail')), []);
+    assert.match(scrolled[0], /↑ \d+ earlier timeline rows/);
+    // The continuation header travels with the scrolled viewport too.
+    assert.match(scrolled[1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+  } finally { run.cleanup(); }
+});
+
+test('narrow timeline rendering keeps the segment headers and never overflows the pane', () => {
+  const run = segmentedV2Run();
+  const long = longPhaseV2Run();
+  try {
+    const row = run.row();
+    // Tall enough that the whole timeline fits: nothing here is a scroll artifact.
+    const screen = renderWorkflowTui(row, { width: 60, height: 44 });
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
+    assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
+    assert.match(segmentRows(screen, 'Discovery').join('\n'), /├─✓ discover-a/);
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
+
+    // Headers obey the narrow width like every other row, on every narrow pane
+    // the viewer can open.
+    const overflow = (rendered, width) => plain(rendered)
+      .split('\n').filter((line) => [...line].length > width);
+    for (const width of [60, 52, 44]) {
+      for (const options of [
+        { focus: 0 }, { focus: 0, mobileTimeline: false }, { focus: 1 }, { focus: 2 },
+        { focus: 0, timelineSelection: 0 }, { focus: 0, orchestratorDetail: true }, { focus: 0, workflowVerbose: true },
+      ]) {
+        const narrow = renderWorkflowTui(row, { width, height: 26, ...options });
+        assert.deepEqual(overflow(narrow, width), [], `width ${width} ${JSON.stringify(options)} overflowed`);
+      }
+    }
+
+    // And the narrow viewport re-emits the continuation header when it scrolls.
+    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 22 });
+    const narrowPane = timelinePaneRows(scrolled);
+    const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
+    assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
+    assert.match(narrowPane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continue/);
+    assert.deepEqual(overflow(scrolled, 60), []);
+  } finally { run.cleanup(); long.cleanup(); }
 });
