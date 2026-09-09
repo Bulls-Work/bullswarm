@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { watchOnce, argvWithModel } from '../src/lib/watch.js';
+import { watchOnce, argvWithModel, runDelegate, BoundedCapture } from '../src/lib/watch.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 
@@ -631,6 +631,51 @@ test('a plain-stdout connector reports a usage limit as quota, not auth', async 
     assert.ok(v.quarantineUntil >= before + 2 * 60 * 60_000 - 5000);
     assert.ok(v.quarantineUntil <= Date.now() + 2 * 60 * 60_000);
     assert.doesNotMatch(v.why, /auth\/throttle signature/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('BoundedCapture keeps everything under its limit and the head plus tail above it', () => {
+  const small = new BoundedCapture(10);
+  small.push('abc');
+  small.push(Buffer.from('def'));
+  assert.equal(small.text(), 'abcdef');
+  assert.equal(small.dropped, 0);
+  assert.equal(small.tail(2), 'ef');
+
+  const big = new BoundedCapture(10);
+  big.push('0123456789');
+  big.push('ABCDEFGHIJ');
+  big.push('klmno');
+  assert.equal(big.headText, '01234');
+  assert.equal(big.tailText, 'klmno');
+  assert.equal(big.dropped, 15);
+  assert.equal(big.total, 25);
+  assert.equal(big.tail(3), 'mno');
+  assert.match(big.text(), /^01234\n…\[bullswarm: 15 characters of this stream were not kept; 25 total\]…\nklmno$/);
+});
+
+test('a worker that floods stdout cannot outgrow the kernel: the capture is bounded and nothing throws', async () => {
+  const ctx = makeCtx();
+  try {
+    writeFileSync(ctx.paths.taskFile, 'flood');
+    const script = "process.stdout.write('HEAD-MARK\\n'); const line = 'x'.repeat(1023) + '\\n'; for (let i = 0; i < 4096; i++) process.stdout.write(line); process.stdout.write('TAIL-MARK\\n');";
+    const flood = {
+      name: 'fixture-flood',
+      spawn: { cmd: ['node', '-e', script, '{taskFile}'] },
+      outputExtraction: { strategy: 'stdout' },
+    };
+    const limit = 64 * 1024;
+    const obs = await runDelegate(flood, ctx.paths.taskFile, ctx.dir, { maxCaptureBytes: limit });
+    assert.equal(obs.exitCode, 0);
+    assert.ok(obs.stdout.length < limit + 200, `kept ${obs.stdout.length} chars for a ${limit} limit`);
+    assert.match(obs.stdout, /^HEAD-MARK\n/);
+    assert.match(obs.stdout, /TAIL-MARK\n$/);
+    assert.match(obs.stdout, /characters of this stream were not kept/);
+    // 4 MiB written, 64 KiB kept: the rest is counted, not lost silently.
+    assert.ok(obs.captureTruncated.stdout > 4 * 1024 * 1024 - limit - 1024, `dropped ${obs.captureTruncated.stdout}`);
+    assert.equal(obs.captureTruncated.stderr, 0);
   } finally {
     ctx.cleanup();
   }
