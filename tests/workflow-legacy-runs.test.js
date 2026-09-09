@@ -207,6 +207,44 @@ test('every driving verb refuses a legacy run with one line, exit 2, and no writ
   } finally { f.cleanup(); }
 });
 
+// watch resolves its run through a grace window (a freshly launched detached
+// run may not have written state.json yet), so it used to report the missing
+// file and exit 1 on the 80-odd pre-0.27.0 directories that hold only a
+// workflow.json. The legacy guard decides first now, whether the directory
+// carries a V1 state.json or no state.json at all.
+test('watch refuses a legacy run with the same one line and exit 2 with or without a state.json', () => {
+  const f = fixture({ orphan: true });
+  try {
+    const beforeLegacy = inventory(f.legacyDir);
+    const beforeOrphan = inventory(f.orphanDir);
+    assert.deepEqual(beforeOrphan, ['workflow.json']);
+
+    // (a) a legacy directory whose state.json is an authored-graph state.
+    const withState = cli(f.home, ['workflow', 'watch', LEGACY_SHORT_ID]);
+    const withStatePrinted = `${withState.stdout}${withState.stderr}`.trim();
+    assert.equal(withState.status, 2, `exit ${withState.status}\n${withStatePrinted}`);
+    assert.equal(withStatePrinted, LEGACY_LINE(f.legacyDir));
+    assert.deepEqual(inventory(f.legacyDir), beforeLegacy, 'watch wrote into the legacy run directory');
+
+    // (b) a legacy directory with no state.json at all — the line names the
+    // runId, because such a directory never recorded a shortId.
+    const withoutState = cli(f.home, ['workflow', 'watch', 'wf-orphan-000001']);
+    const withoutStatePrinted = `${withoutState.stdout}${withoutState.stderr}`.trim();
+    assert.equal(withoutState.status, 2, `exit ${withoutState.status}\n${withoutStatePrinted}`);
+    assert.equal(
+      withoutStatePrinted,
+      legacyRunLine({ shortId: null, runId: 'wf-orphan-000001', runDir: f.orphanDir }),
+    );
+    assert.doesNotMatch(withoutStatePrinted, /has no state\.json/);
+    assert.deepEqual(inventory(f.orphanDir), beforeOrphan, 'watch wrote into the state-less run directory');
+
+    // A token that resolves to nothing is still a different failure.
+    const missing = cli(f.home, ['workflow', 'watch', 'wf-absent-000001']);
+    assert.equal(missing.status, 1);
+    assert.match(`${missing.stdout}${missing.stderr}`, /no run found for "wf-absent-000001"/);
+  } finally { f.cleanup(); }
+});
+
 test('--json refusals carry the machine form and still exit 2', () => {
   const f = fixture();
   try {
