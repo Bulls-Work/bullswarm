@@ -1,6 +1,7 @@
 import { loadState, updateState } from './lib/state.js';
 import { loadConnectors, buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
+import { PACING_WINDOWS } from './meters/framework.js';
 import {
   discoverAllModels, buildStrategy, normalizeExcludedModels, resolveDispatchModel,
   selectedModelsForTier, setModelTierSelection, STRATEGY_TIERS,
@@ -60,6 +61,25 @@ function numberOrNull(value, label) {
   return n;
 }
 
+/**
+ * `--quota-window` is no longer a free-text label: it selects the window that
+ * PACES this pool (src/meters/framework.js pacingWindowFor), so a value
+ * pacing cannot act on is refused instead of being stored and ignored.
+ * `unknown`/`null` clears it, exactly like the price flags, which is the way
+ * back for a pre-0.28.1 label that is neither window.
+ */
+function quotaWindowValue(value) {
+  if (value === undefined) return undefined;
+  if (value === 'unknown' || value === 'null') return null;
+  const name = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!PACING_WINDOWS.includes(name)) {
+    throw new Error(
+      `--quota-window must be ${PACING_WINDOWS.join(' or ')} (or unknown to clear)`,
+    );
+  }
+  return name;
+}
+
 function refreshHoursValue(value) {
   const hours = Number(value ?? 24);
   if (!Number.isFinite(hours) || hours <= 0) throw new Error('refresh-hours must be a positive number');
@@ -72,7 +92,10 @@ function render(report, reasoning = null) {
     const value = sub.monthlyPriceUsd == null || sub.includedValueUsd == null
       ? 'value unknown'
       : `$${sub.monthlyPriceUsd}/mo → ~$${sub.includedValueUsd} included (${sub.valueMultiple}×)`;
-    lines.push(`  ${sub.pool}: ${sub.plan ?? 'plan unknown'} · ${value} · ${sub.usedPct ?? '?'}% used · surplus ${sub.surplus ?? '?'}`);
+    // Which window paces this pool is the difference between "behind" and
+    // "overspent" for the same reading, so the line names it.
+    const paced = sub.pacingWindow ? `${sub.pacingWindow} ` : '';
+    lines.push(`  ${sub.pool}: ${sub.plan ?? 'plan unknown'} · ${value} · ${paced}${sub.usedPct ?? '?'}% used · surplus ${sub.surplus ?? '?'}`);
   }
   lines.push('', 'tier suggestions:');
   for (const [tier, suggestion] of Object.entries(report.suggestions)) {
@@ -378,6 +401,9 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
       enabled: pool.enabled !== false,
       usedPct: pool.usedPct ?? null,
       surplus: pool.pace ?? null,
+      // The window `usedPct` and `surplus` are measured in, and that routing
+      // paces this pool by (weekly | monthly | null = weekly-first default).
+      pacingWindow: pool.pacingWindow ?? null,
       // How many agents this pool is running right now, across every
       // Bullswarm process — the same count `bullswarm pools` reports.
       inflight: pool.inflight?.count ?? 0,
@@ -487,6 +513,9 @@ export async function loadStrategyInventory(bullswarmDir, {
     pool.usedPct = live.usedPct;
     pool.pace = live.surplus;
     pool.meterSource = live.meterSource;
+    // The report's numbers came from a window; carry its name with them so
+    // the inventory view does not label them with a different one.
+    pool.pacingWindow = live.pacingWindow ?? pool.pacingWindow ?? null;
   }
   // The control center previews real routing, so it reads the same live
   // in-flight ledger and spend rates every dispatch path does.
@@ -878,6 +907,7 @@ export async function cmdStrategy(args, {
       // Flag validation first, so a bad number fails before any lock is taken.
       const monthlyPriceUsd = numberOrNull(opts['monthly-usd'], 'monthly-usd');
       const includedValueUsd = numberOrNull(opts['included-usd'], 'included-usd');
+      const quotaWindow = quotaWindowValue(opts['quota-window']);
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
         fresh.strategy.subscriptions ??= {};
@@ -887,7 +917,7 @@ export async function cmdStrategy(args, {
           ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
           ...(monthlyPriceUsd !== undefined ? { monthlyPriceUsd } : {}),
           ...(includedValueUsd !== undefined ? { includedValueUsd } : {}),
-          ...(opts['quota-window'] !== undefined ? { quotaWindow: opts['quota-window'] } : {}),
+          ...(quotaWindow !== undefined ? { quotaWindow } : {}),
         };
         delete fresh.strategy.lastReport;
       });
@@ -973,7 +1003,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

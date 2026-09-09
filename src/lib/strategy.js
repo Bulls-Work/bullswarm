@@ -7,6 +7,7 @@ import { modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
 import { attemptWindow } from './spend.js';
+import { pacingWindowFor } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
@@ -550,7 +551,12 @@ function subscriptionView(pool, state) {
     includedValueUsd,
     valueMultiple: monthlyPriceUsd > 0 && includedValueUsd != null
       ? Math.round((includedValueUsd / monthlyPriceUsd) * 100) / 100 : null,
+    // `quotaWindow` is the label as declared (it may name several windows,
+    // e.g. "weekly+monthly+5h"); `pacingWindow` is the one window routing
+    // actually paces this pool by — see src/meters/framework.js.
     quotaWindow: declared.quotaWindow ?? pool.connector?.meter?.window ?? null,
+    pacingWindow: pool.pacingWindow
+      ?? pacingWindowFor({ connector, subscription: state.strategy?.subscriptions?.[pool.name] }),
     quota: monthlyQuota,
     meterSource: pool.meterSource ?? 'none',
     usedPct: pool.usedPct ?? null,

@@ -1,5 +1,87 @@
 # bullswarm changelog
 
+## 0.28.1 — summary bytes on the wire, monthly pacing
+
+- `workflow runs result <id> --summary` was budgeted by `fitResultSummary`
+  against compact `JSON.stringify(summary)` (`RESULT_SUMMARY_BYTE_BUDGET =
+  4096` in `src/workflow/v2-outcome.js`) but `jsonOut` printed
+  `JSON.stringify(obj, null, 2)`, so the bytes on the wire exceeded the
+  budget. `--summary` now prints compact single-line JSON
+  (`JSON.stringify(obj)` in `src/workflow/runs-cli.js`); `--json` without
+  `--summary` still pretty-prints the full envelope, and `--summary --json`
+  stays identical to `--summary`. Measured on
+  `tests/fixtures/real-result-ze5xz2.json` through the summariser / CLI:
+  compact `--summary` is 3,786 bytes
+  (`tests/workflow-result-summary.test.js` prints `result-summary size:
+  full=57141 summary=3786`; same figure as
+  `Buffer.byteLength(JSON.stringify(summarizeV2Result(fixture)))`); the
+  full envelope as `--json` prints it is 60,709 bytes
+  (`JSON.stringify(envelope, null, 2)` plus the trailing newline
+  `console.log` adds — `tests/workflow-result-summary.test.js` prints
+  `result-summary cli: prettyFull=60709`).
+
+- Routing paced every pool by `windows.seven_day ?? windows.monthly`
+  (`paceSnapshot` in `src/meters/framework.js`), so command-code — whose real
+  budget is a monthly credit allocation — was paced by its weekly rate-limit
+  window. Live meter, captured 2026-09-09T10:45:28Z and evaluated at
+  2026-09-09T11:09:44.982Z: weekly `used 73.1% elapsed 91.8% surplus +18.7`
+  against monthly `used 79.4% elapsed 75.3% surplus -4.1`, with 14.43 of 70
+  credits left for the 7.66 days to the 2026-09-17T03:06:55Z reset. Routing
+  therefore called it "the most-behind capable pool" and kept sending it work
+  while its monthly budget was already 4.1 points overspent. Pacing is now per
+  pool: `pacingWindowFor({connector, subscription})` resolves
+  `state.strategy.subscriptions[pool].quotaWindow`, then
+  `connector.subscription.quotaWindow`, normalised to `weekly` | `monthly` |
+  `null` (any other label — including a pre-0.28.1 free-text one — is ignored
+  for pacing and keeps the old weekly-first order). `paceSnapshot(snapshot,
+  nowMs, {pacingWindow})` takes `monthly` → `windows.monthly ??
+  windows.seven_day`, `weekly`/`null` → `windows.seven_day ??
+  windows.monthly`, and returns `pacingWindow` naming the window actually
+  used. `src/lib/config.js` `buildPools` resolves the choice once per pool
+  (where the connector and the state both are) and re-paces `usedPct`,
+  `elapsedPct`, `pace` and `paceResetsAt` off `reading.windows`, so cache,
+  stale and live readings are paced identically; the pool view carries
+  `pacingWindow`. The 5h gate is untouched: `command-code` still gates on 5h
+  `25.2%`. Connectors already declared this — `command-code` and the relay
+  pools `monthly`, `claude-code`/`codex`/`grok` `weekly`; nothing read it for
+  pacing before.
+- The spend model follows the pacing window. `WINDOW_KEYS` (framework.js)
+  gains `monthly: {snapshot: 'monthly', history: 'monthly', windowMs: null}`,
+  and `rateForWindow` (`src/lib/spend.js`) derives the bootstrap window start
+  with `meta.windowMs ?? monthlyWindowMs(resetsAtMs)` — the calendar month
+  ending at the provider's `resets_at` (M2), never an assumed 30 days.
+  `attachSpend` now writes `pool.spend.monthly` and `pool.projectedMonthlyPct`
+  next to the fiveHour/weekly fields, plus `pool.spend.pacing = {window,
+  ratePerMinute, source, samples}` and `pool.projectedPacingPct` for the
+  window that paces the pool (default `weekly`, so a pool that declares
+  nothing keeps its old numbers). `inflightLoad` (`src/lib/route.js`) charges
+  the in-flight penalty from `spend.pacing?.ratePerMinute ??
+  spend.weekly?.ratePerMinute` with that rate's own source label, so the
+  surplus and the penalty are measured in the same window; candidate rows gain
+  `pacingWindow` and `projectedPacingPct` beside the unchanged
+  `projectedWeeklyPct`.
+- Operator control and display. `bullswarm strategy set-subscription <pool>
+  --quota-window <weekly|monthly>` now selects the window that paces routing
+  (help text in `src/help.js`) and validates it: anything else exits 2 with
+  `--quota-window must be weekly or monthly (or unknown to clear)`, and
+  `unknown` clears the override back to the connector's declaration. Labels
+  already stored are ignored for pacing, never rejected on read. `bullswarm
+  pools` names the window in the meter column — `cmd-fixture    cost=5
+  lanes=chore monthly used 79.4% elapsed 75.3% [cache] surplus=-4.1
+  inflight=0 5h=25.2% ready` — and `pools --json` entries carry
+  `pacingWindow`. `strategy refresh`/`show` print the window on each
+  subscription line (`command-code: GOAT · ... · monthly 79.4% used · surplus
+  -4.1`) and carry `pacingWindow` next to the free-text `quotaWindow` label in
+  `--json`; `strategy inventory --json` carries it per provider.
+- Tests: 738 -> 750, 0 failures. The new behaviour is covered in
+  `tests/meters.test.js` (the live command-code snapshot as a fixture, the
+  helper's precedence, `buildPools` pacing), `tests/spend.test.js` (monthly
+  bootstrap window start, `spend.pacing`/`projectedPacingPct`),
+  `tests/route.test.js` (the penalty on the pacing window; weekly-only pools
+  unchanged), `tests/strategy-cli.test.js` (`--quota-window` validation) and
+  `tests/assignments.test.js` (the `pools` meter column and `--json`
+  `pacingWindow`).
+
 ## 0.28.0 — context diet
 
 - `workflow runs result <id> --summary` prints a compact status-loop
@@ -77,9 +159,10 @@
   39,288; compact `JSON.stringify` of the parsed envelope is 57,141.
   `summarizeV2Result` of that fixture is 3,786 bytes —
   `tests/workflow-result-summary.test.js` prints `result-summary size:
-  full=57141 summary=3786`. The 0.28.0 goal recorded the integrator's
-  inputs as 60,790 bytes; `wc -c` of the seven dependency out-files under
-  `.diet-inputs/` sums to 46,022 (out-surface 18,659, out-routing-cleanup
+  full=57141 summary=3786` (numbers re-measured in 0.28.1). The 0.28.0
+  goal recorded the integrator's inputs as 60,790 bytes; `wc -c` of the
+  seven dependency out-files under `.diet-inputs/` sums to 46,022
+  (out-surface 18,659, out-routing-cleanup
   10,202, out-state-bugs 7,052, out-docs 6,831, out-dead-kernel 1,377,
   out-verify-gate 974, out-dead-code 927) and the integrator task file is
   14,768 (`wc -c .diet-inputs/task-integrate-attempt-1.md`), which
