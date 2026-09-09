@@ -6,17 +6,20 @@ import { join } from 'node:path';
 import { queueSteering, readSteering, deliverSteering } from '../src/workflow/steering.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 
-function fixture({ terminal = false, decide = true } = {}) {
+function fixture({ terminal = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'bs-steer-'));
   const runId = 'wf-msteer-abcdef';
   const runDir = join(home, 'workflows', runId);
   mkdirSync(runDir, { recursive: true });
-  const state = {
-    runId, shortId: 'abc234', status: terminal ? 'completed' : 'running',
-    ...(terminal ? { finishedAt: new Date().toISOString() } : {}),
-    decisions: [], steering: [],
-    _doc: { phases: [{ name: 'p', steps: [{ id: 'gate', type: decide ? 'decide' : 'run' }] }] },
-  };
+  const goal = createV2GoalDocument({
+    goal: 'Deliver a focused change', cwd: home,
+    requirements: [{ id: 'change', text: 'the change is correct' }],
+    settings: { scout: false },
+  });
+  const state = createV2State(goal, { runId, shortId: 'abc234' });
+  state.lifecycle.status = terminal ? 'completed' : 'running';
+  if (terminal) state.lifecycle.finishedAt = new Date().toISOString();
+  state.planner.status = 'waiting';
   writeFileSync(join(runDir, 'state.json'), `${JSON.stringify(state)}\n`);
   return { home, runDir, state, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -35,15 +38,22 @@ test('steering queues durably and is delivered exactly once at a planner boundar
   } finally { f.cleanup(); }
 });
 
-test('steering refuses terminal and non-orchestrated workflows', () => {
+test('steering refuses terminal and legacy workflows', () => {
   const terminal = fixture({ terminal: true });
-  const staticRun = fixture({ decide: false });
+  const legacyHome = mkdtempSync(join(tmpdir(), 'bs-steer-legacy-'));
   try {
     assert.throws(() => queueSteering(terminal.home, 'abc234', 'too late'), /already terminal/);
-    assert.throws(() => queueSteering(staticRun.home, 'abc234', 'no gate'), /no orchestration decision gate/);
+    // A pre-0.27.0 authored-graph run has no planner boundary to steer toward.
+    const legacyDir = join(legacyHome, 'workflows', 'wf-legacy-steer01');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'state.json'), JSON.stringify({
+      runId: 'wf-legacy-steer01', shortId: 'def345', workflow: 'old', status: 'running',
+      startedAt: new Date().toISOString(), steps: [],
+    }));
+    assert.throws(() => queueSteering(legacyHome, 'def345', 'no gate'), /legacy authored-graph run/);
   } finally {
     terminal.cleanup();
-    staticRun.cleanup();
+    rmSync(legacyHome, { recursive: true, force: true });
   }
 });
 
