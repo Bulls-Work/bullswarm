@@ -27,6 +27,63 @@ import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoni
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+// A worker's stdout is an agent transcript and can run to hundreds of
+// megabytes (tool output echoed back by the CLI). Appending every chunk to one
+// string eventually throws RangeError: Invalid string length inside the data
+// handler, which kills the kernel and, with it, every worker it supervises
+// (observed twice on 2026-09-09 with a command-code worker). Nothing reads the
+// whole transcript: fatal signatures look at the last 4,000 characters, the
+// event decoder consumes chunks as they arrive, and plain-text extraction
+// wants the answer, which is never megabytes long. So keep the head and the
+// tail of each stream up to a hard cap and count what was dropped.
+export const MAX_CAPTURED_STREAM_BYTES = 32 * 1024 * 1024;
+
+export class BoundedCapture {
+  constructor(limit = MAX_CAPTURED_STREAM_BYTES) {
+    this.limit = Math.max(2, Math.floor(limit));
+    this.headLimit = Math.ceil(this.limit / 2);
+    this.tailLimit = this.limit - this.headLimit;
+    this.headText = '';
+    this.tailText = '';
+    this.dropped = 0;
+    this.total = 0;
+  }
+
+  push(chunk) {
+    const text = typeof chunk === 'string' ? chunk : chunk.toString();
+    this.total += text.length;
+    let rest = text;
+    if (this.headText.length < this.headLimit) {
+      const room = this.headLimit - this.headText.length;
+      if (rest.length <= room) { this.headText += rest; return; }
+      this.headText += rest.slice(0, room);
+      rest = rest.slice(room);
+    }
+    if (rest.length >= this.tailLimit) {
+      this.dropped += this.tailText.length + (rest.length - this.tailLimit);
+      this.tailText = rest.slice(-this.tailLimit);
+      return;
+    }
+    const combined = this.tailText + rest;
+    if (combined.length > this.tailLimit) {
+      this.dropped += combined.length - this.tailLimit;
+      this.tailText = combined.slice(-this.tailLimit);
+    } else {
+      this.tailText = combined;
+    }
+  }
+
+  /** The last n characters actually kept (contiguous). */
+  tail(n) {
+    return this.dropped ? this.tailText.slice(-n) : (this.headText + this.tailText).slice(-n);
+  }
+
+  text() {
+    if (!this.dropped) return this.headText + this.tailText;
+    return `${this.headText}\n…[bullswarm: ${this.dropped} characters of this stream were not kept; ${this.total} total]…\n${this.tailText}`;
+  }
+}
+
 export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
   return cmdTemplate.map((a) =>
     a
@@ -126,8 +183,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       throw error;
     }
 
-    let stdout = '';
-    let stderr = '';
+    const captureLimit = Number.isFinite(opts.maxCaptureBytes) && opts.maxCaptureBytes > 0
+      ? opts.maxCaptureBytes
+      : MAX_CAPTURED_STREAM_BYTES;
+    const stdoutCapture = new BoundedCapture(captureLimit);
+    const stderrCapture = new BoundedCapture(captureLimit);
+    let captureError = null;
     let timedOut = false;
     let cancelled = false;
     let fatalSignature = null;
@@ -166,14 +227,16 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       // Provider diagnostics on stderr remain safe to terminate on. Plain-text
       // connectors retain the legacy combined-stream fast-fail behavior.
       const eventStreamed = connector.outputExtraction?.strategy === 'event-stream';
-      const transport = eventStreamed ? stderr : `${stdout}\n${stderr}`;
+      const transport = eventStreamed
+        ? stderrCapture.tail(4000)
+        : `${stdoutCapture.tail(4000)}\n${stderrCapture.tail(4000)}`;
       // Quota is classified BEFORE auth and is read from the semantic channels
       // too: a provider that exhausted its window answers with the limit
       // notice as its own response/result and may never exit on its own. Some
       // connectors list a usage phrase (codex `usage_credits_required`) among
       // their auth signatures — a throttle must still be reported as quota.
       const quotaTransport = eventStreamed
-        ? [stderr.slice(-4000), responseText, (eventDecoder?.output() ?? '').slice(-4000)].join('\n')
+        ? [stderrCapture.tail(4000), responseText, (eventDecoder?.output() ?? '').slice(-4000)].join('\n')
         : transport.slice(-4000);
       const quota = findQuotaFailure(connector, quotaTransport);
       if (quota) {
@@ -203,19 +266,29 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       forceKillTimer ??= setTimeout(() => stopChild('SIGKILL'), 2000);
     }, 250) : null;
 
-    child.stdout.on('data', (d) => {
-      stdout += d;
-      const at = new Date().toISOString();
-      opts.onActivity?.({ stream: 'stdout', bytes: d.length, at });
-      eventDecoder?.push(d, 'stdout', at);
-      stopOnFatalSignature();
-    });
-    child.stderr.on('data', (d) => {
-      stderr += d;
-      const at = new Date().toISOString();
-      opts.onActivity?.({ stream: 'stderr', bytes: d.length, at });
-      eventDecoder?.push(d, 'stderr', at);
-      stopOnFatalSignature();
+    // A throw inside a stream handler is an uncaught exception that ends the
+    // kernel. Whatever goes wrong while reading a worker, the attempt fails and
+    // the kernel lives.
+    const onStream = (capture, stream) => (d) => {
+      try {
+        capture.push(d);
+        const at = new Date().toISOString();
+        opts.onActivity?.({ stream, bytes: d.length, at });
+        eventDecoder?.push(d, stream, at);
+        stopOnFatalSignature();
+      } catch (error) {
+        captureError ??= error?.message ?? String(error);
+        stopChild('SIGTERM');
+      }
+    };
+    child.stdout.on('data', onStream(stdoutCapture, 'stdout'));
+    child.stderr.on('data', onStream(stderrCapture, 'stderr'));
+    const capturedStreams = () => ({
+      stdout: stdoutCapture.text(),
+      stderr: captureError
+        ? `${stderrCapture.text()}\n[bullswarm] worker stream capture failed: ${captureError}`
+        : stderrCapture.text(),
+      captureTruncated: { stdout: stdoutCapture.dropped, stderr: stderrCapture.dropped },
     });
     child.on('error', (err) => {
       eventDecoder?.finish();
@@ -227,8 +300,8 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       resolvePromise({
         exitCode: null,
         signal: null,
-        stdout,
-        stderr: `${stderr}\n${err.message}`,
+        ...capturedStreams(),
+        stderr: `${capturedStreams().stderr}\n${err.message}`,
         timedOut,
         cancelled,
         fatalSignature,
@@ -247,7 +320,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
       resolvePromise({
-        exitCode: code, signal, stdout, stderr, timedOut, cancelled, fatalSignature,
+        exitCode: code, signal, ...capturedStreams(), timedOut, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
         providerFailureType,

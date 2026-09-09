@@ -2,6 +2,19 @@
 
 ## 0.27.0 — one workflow engine
 
+- Fixed: a worker that floods its stdout could kill the kernel. Every chunk of a
+  worker's stdout and stderr was appended to one string; a command-code worker
+  whose transcript outgrew Node's maximum string length threw
+  `RangeError: Invalid string length` inside the stream handler, the kernel died
+  as an uncaught exception, and every worker it supervised died with it (seen
+  twice on the same action in one day; the trace is in
+  `~/.bullswarm/goals/<runId>/stderr.log`). Streams are now captured through a
+  bounded buffer that keeps the first and last 16 MiB of each stream, counts what
+  it dropped (`captureTruncated` on the attempt observation), and any exception
+  raised while reading a worker now fails that attempt instead of the kernel.
+  Fatal-signature matching already looked only at the last 4,000 characters, so
+  quota and auth detection are unchanged.
+
 - There is now one workflow engine. The authored-graph verbs `workflow run`,
   `validate`, `list`, `draft`, `inspect` and `approval` are gone — each falls to
   the workflow-level unknown-verb message, exits 2 and spawns nothing — and with
@@ -59,7 +72,7 @@
   directories are never modified. The stale-owner reconciliation that used to
   run before every dispatch is gone with the V1 liveness model it served.
 
-- Tests: 818 -> 659. Six V1-only files were deleted
+- Tests: 818 -> 661. Six V1-only files were deleted
   (`workflow-adaptive`, `workflow-gaps`, `workflow-draft`, `workflow-schema`,
   `workflow-validate`, `workflow-run` — 151 tests); `workflow-runs`,
   `workflow-watch`, `assignments`, `workflow-interruption`, `workflow-steering`
