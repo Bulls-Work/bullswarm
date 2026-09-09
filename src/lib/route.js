@@ -45,8 +45,9 @@ export const LANES = ['analyze', 'build', 'chore'];
 export const INCUMBENCY_MARGIN = 10; // surplus points a challenger must beat
 
 /**
- * Surplus points charged per in-flight agent when no weekly spend rate is
- * known for the pool. It is a tie-breaker, not a measurement: three points is
+ * Surplus points charged per in-flight agent when no spend rate is known for
+ * the pool's pacing window (or, failing that, its weekly one). It is a
+ * tie-breaker, not a measurement: three points is
  * under a third of INCUMBENCY_MARGIN, so it separates pools of similar pace
  * without ever overturning a real quota difference. Callers override it with
  * opts.inflightPenaltyPct.
@@ -140,30 +141,37 @@ export function fiveHourForecast(pool, candidateMinutes = null) {
 }
 
 /**
- * Weekly cost of the work a pool is already carrying plus the work being
- * routed to it (R8 rule c). The result is subtracted from the pace surplus so
- * that, between pools of similar pace, the quieter one wins.
+ * Pacing-window cost of the work a pool is already carrying plus the work
+ * being routed to it (R8 rule c). The result is subtracted from the pace
+ * surplus so that, between pools of similar pace, the quieter one wins.
+ *
+ * The rate is read from `spend.pacing` — the rate for the window this pool is
+ * actually paced by — and falls back to `spend.weekly` when no pacing rate is
+ * known (a pool paced monthly with no monthly rate, or a producer that
+ * attached only the weekly one). Charging a weekly rate against a monthly
+ * surplus would compare points from two different windows.
  *
  * Two bases, and the larger one is charged:
- *   1. a known weekly rate: rate × each in-flight record's remainingMinutes,
+ *   1. a known rate: rate × each in-flight record's remainingMinutes,
  *      plus rate × candidateMinutes — real projected percentage points (an
  *      in-flight agent whose remaining minutes nobody recorded is charged
  *      inflightPenaltyPct instead);
  *   2. the floor: inflightPenaltyPct per in-flight agent — a documented flat
  *      default, labeled `penalty` so no reader mistakes it for a measurement.
- * The floor exists because at real weekly rates (about 0.05 points per
- * worker-minute) a six-minute agent projects to under a point, which cannot
- * spread a burst across a pace gap of a few points; the measured projection
- * only ever raises the charge above the floor.
+ * The floor exists because at real subscription-window rates (about 0.05
+ * points per worker-minute) a six-minute agent projects to under a point,
+ * which cannot spread a burst across a pace gap of a few points; the measured
+ * projection only ever raises the charge above the floor.
  *
  * Only `inflight.records[].remainingMinutes` is read: `inflight.minutes` is
  * elapsed worker-minutes (src/lib/assignments.js attachInflight), which says
  * nothing about the quota still to be spent.
  *
  * estimateSource: `none` (nothing to charge), `penalty` (the flat floor set the
- * charge), or the producer's own `spend.weekly.source` label (`history` /
- * `bootstrap`) when the measured projection exceeded the floor; null when a
- * rate was used but the producer labeled no provenance for it.
+ * charge), or the source label of the rate that was used (`history` /
+ * `bootstrap`, from `spend.pacing` or `spend.weekly`) when the measured
+ * projection exceeded the floor; null when a rate was used but the producer
+ * labeled no provenance for it.
  *
  * @returns {{count: number, penalty: number, ratePerMinute: number|null,
  *            estimateSource: string|null}}
@@ -174,13 +182,16 @@ export function inflightLoad(pool, opts = {}) {
     inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT,
   } = opts;
   const count = Math.max(0, num(pool?.inflight?.count) ?? 0);
-  const rate = num(pool?.spend?.weekly?.ratePerMinute);
+  // The pacing window's rate, or the weekly one when that window has no
+  // measured rate — the surplus and the penalty stay on the same window.
+  const paced = num(pool?.spend?.pacing?.ratePerMinute) != null
+    ? pool.spend.pacing
+    : pool?.spend?.weekly ?? null;
+  const rate = num(paced?.ratePerMinute);
   const minutes = num(candidateMinutes);
   const penaltyPct = num(inflightPenaltyPct) ?? DEFAULT_INFLIGHT_PENALTY_PCT;
   const sourceLabel =
-    typeof pool?.spend?.weekly?.source === 'string' && pool.spend.weekly.source
-      ? pool.spend.weekly.source
-      : null;
+    typeof paced?.source === 'string' && paced.source ? paced.source : null;
 
   if (rate == null) {
     return {
@@ -238,8 +249,10 @@ export function isExhausted(pool) {
  *                        attached by the caller when it tracks them:
  *                        inflight {count, minutes, records:[{remainingMinutes}]},
  *                        spend {fiveHour:{ratePerMinute, source},
- *                        weekly:{ratePerMinute, source}}, projectedFiveHourPct,
- *                        projectedWeeklyPct.
+ *                        weekly:{...}, monthly:{...},
+ *                        pacing:{window, ratePerMinute, source}},
+ *                        pacingWindow, projectedFiveHourPct,
+ *                        projectedWeeklyPct, projectedPacingPct.
  * @param {object} [opts] { callerEligible=true, callerName='claude', now,
  *                        requiredCapabilities, preferredPool, effortTier,
  *                        callerSession, candidateMinutes=null (expected minutes
@@ -333,6 +346,10 @@ export function pickPool(lane, pools, opts = {}) {
     projectedFiveHourPct: e.forecast.projected,
     forecastFiveHourPct: e.forecast.forecast == null ? null : tenth(e.forecast.forecast),
     projectedWeeklyPct: num(e.pool.projectedWeeklyPct),
+    // The window this pool is paced by, and the projection in it. Equal to
+    // the weekly pair for every pool that declares no monthly quota window.
+    pacingWindow: e.pool.pacingWindow ?? null,
+    projectedPacingPct: num(e.pool.projectedPacingPct),
     ratePerMinute: e.forecast.ratePerMinute,
     estimateSource: e.load.estimateSource,
     nearFiveHourLimit: e.tier === 1,

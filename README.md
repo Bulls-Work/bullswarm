@@ -51,7 +51,12 @@ detaches safely.
    passing verification.
 2. **Pace by meter.** The scheduling resource is the subscription window:
    elapsed% minus used%, most-behind pool wins. Pace may only promote a
-   *cheaper* pool. Lanes are work-nature, never hard-coded to pools. The
+   *cheaper* pool. Lanes are work-nature, never hard-coded to pools. Which
+   window paces one pool is the subscription window that pool's connector
+   declares (`quotaWindow`: weekly for claude-code, codex and grok; monthly
+   for command-code and the relay pools), overridable per pool with
+   `bullswarm strategy set-subscription <pool> --quota-window <weekly|monthly>`
+   — `bullswarm pools` names it in the meter column. The
    5-hour window never paces — it gates: a pool at or above 75% of it is
    chosen only when no eligible pool below that line exists, and one at or
    above 90% is not dispatched at all.

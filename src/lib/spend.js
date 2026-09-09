@@ -15,6 +15,8 @@
 
 import {
   WINDOW_KEYS,
+  monthlyWindowMs,
+  normalizePacingWindow,
   projectedUtilization,
 } from '../meters/framework.js';
 import { readMeterHistory } from '../meters/registry.js';
@@ -311,9 +313,13 @@ function rateForWindow(meta, { history, snapshot, workerMinutesBetween, nowMs })
   // 2. Bootstrap: the whole window so far — current utilization over the
   //    worker-minutes dispatched since the window opened (M2: the start comes
   //    from the provider's resets_at, never from a locally assumed start).
+  //    A window with no constant length (monthly) takes its length from that
+  //    same resets_at — the calendar month ending on it — so the start is
+  //    still the provider's, never a 30-day assumption.
   const resetsAtMs = num(Date.parse(latest?.resetsAt ?? ''));
-  if (latest && resetsAtMs != null && latest.usedPct > 0 && minutesBetween) {
-    const minutes = num(minutesBetween(resetsAtMs - meta.windowMs, nowMs));
+  const windowMs = meta.windowMs ?? (resetsAtMs != null ? monthlyWindowMs(resetsAtMs) : null);
+  if (latest && resetsAtMs != null && num(windowMs) != null && latest.usedPct > 0 && minutesBetween) {
+    const minutes = num(minutesBetween(resetsAtMs - windowMs, nowMs));
     if (minutes != null && minutes >= MIN_RATE_MINUTES) {
       return {
         ratePerMinute: round(latest.usedPct / minutes, 6),
@@ -336,7 +342,7 @@ function rateForWindow(meta, { history, snapshot, workerMinutesBetween, nowMs })
  * @param {{history?: Array<object>,
  *          workerMinutesBetween?: (fromMs: number, toMs: number) => number,
  *          nowMs?: number, snapshot?: object|null}} [opts]
- * @returns {{fiveHour: object, weekly: object}} each
+ * @returns {{fiveHour: object, weekly: object, monthly: object}} each
  *   `{ratePerMinute, source: 'history'|'bootstrap'|null, samples, windowUsedPct}`
  */
 export function spendRateFor(pool, opts = {}) {
@@ -374,10 +380,10 @@ function historyResolver({ history = null, readHistory = null, historyFor = null
 /**
  * Current utilization for one window of a pool view.
  *
- * The weekly branch reads the rate's own window utilization only: no producer
- * has ever written `pool.weeklyUsedPct` — buildPools writes `usedPct` (the
- * pacing window) and `fiveHourUsedPct` — so reading it first only made the
- * fall-through look conditional when it never was.
+ * The weekly and monthly branches read the rate's own window utilization
+ * only: no producer has ever written `pool.weeklyUsedPct` — buildPools writes
+ * `usedPct` (the pacing window) and `fiveHourUsedPct` — so reading it first
+ * only made the fall-through look conditional when it never was.
  */
 function currentUsedPct(pool, key, rate) {
   if (key === 'fiveHour') return num(pool?.fiveHourUsedPct) ?? rate.windowUsedPct ?? null;
@@ -387,8 +393,13 @@ function currentUsedPct(pool, key, rate) {
 /**
  * Attach the spend model to pool views in place:
  *
- *   pool.spend.fiveHour / pool.spend.weekly = {ratePerMinute, source, samples}
- *   pool.projectedFiveHourPct / pool.projectedWeeklyPct
+ *   pool.spend.fiveHour / .weekly / .monthly = {ratePerMinute, source, samples}
+ *   pool.spend.pacing = {window, ratePerMinute, source, samples} — the same
+ *       numbers for the window that PACES this pool (`pool.pacingWindow`,
+ *       default weekly), so the surplus routing compares and the load it
+ *       charges are measured in the same window.
+ *   pool.projectedFiveHourPct / pool.projectedWeeklyPct /
+ *   pool.projectedMonthlyPct / pool.projectedPacingPct
  *       = current utilization + rate × the remaining minutes of the pool's
  *         in-flight work (this candidate is NOT included — src/lib/route.js
  *         adds the assignment being routed on top).
@@ -428,20 +439,29 @@ export function attachSpend(pools, opts = {}) {
       remainingMinutes += remainingMinutesOf(record, nowMs) ?? 0;
     }
 
+    // The window this pool is paced by decides which rate routing charges.
+    // Default weekly: that is what every pool was paced by before 0.28.1, so
+    // a pool that declares nothing keeps exactly its old numbers.
+    const pacingWindow = normalizePacingWindow(pool?.pacingWindow) ?? 'weekly';
+    const rateOf = (key) => ({
+      ratePerMinute: rates[key].ratePerMinute,
+      source: rates[key].source,
+      samples: rates[key].samples,
+    });
+
     pool.spend = {
-      fiveHour: {
-        ratePerMinute: rates.fiveHour.ratePerMinute,
-        source: rates.fiveHour.source,
-        samples: rates.fiveHour.samples,
-      },
-      weekly: {
-        ratePerMinute: rates.weekly.ratePerMinute,
-        source: rates.weekly.source,
-        samples: rates.weekly.samples,
-      },
+      fiveHour: rateOf('fiveHour'),
+      weekly: rateOf('weekly'),
+      monthly: rateOf('monthly'),
+      pacing: { window: pacingWindow, ...rateOf(pacingWindow) },
     };
 
-    for (const [key, field] of [['fiveHour', 'projectedFiveHourPct'], ['weekly', 'projectedWeeklyPct']]) {
+    for (const [key, field] of [
+      ['fiveHour', 'projectedFiveHourPct'],
+      ['weekly', 'projectedWeeklyPct'],
+      ['monthly', 'projectedMonthlyPct'],
+      [pacingWindow, 'projectedPacingPct'],
+    ]) {
       const projection = projectedUtilization({
         usedPct: currentUsedPct(pool, key, rates[key]),
         ratePerMinute: rates[key].ratePerMinute,
