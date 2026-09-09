@@ -1,3 +1,5 @@
+> Historical (2026-08-29): accurate when written; see CHANGELOG for what changed since.
+
 # Claude ultracode dynamic workflow vs bullswarm `workflow goal` — side-by-side (2026-08-29)
 
 Status: IN PROGRESS — results sections are filled in as runs complete. Numbers

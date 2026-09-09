@@ -29,6 +29,9 @@ Dispatch it directly:
 bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
 ```
 
+An unrecognized `--flag` on any command prints `unknown flag --name` plus
+that command's synopsis and exits 2, before routing or spawning anything.
+
 Choose `build` for edits, `chore` for mechanical edits, or `analyze` for
 read-only work. Use `--task-file` instead of `--prompt` for long text or
 awkward quoting. The result's top-level fields include `ok`, `keepOnClaude`,
@@ -135,7 +138,9 @@ and stays silent while work is merely in progress; `--heartbeat` is opt-in and
 failure always prints — `⚠ ... usage limit on <pool> · paused until <deadline>
 · retrying on another pool`, then `↺ ... now on <pool> · <model>` once the
 mechanical retry lands — even without `--verbose`. Pass `--classic` for the
-older heartbeat-based watcher instead (it cannot combine with `--next`).
+older heartbeat-based watcher instead (V2 only; it cannot combine with
+`--next`). A legacy authored-graph run cannot be watched: the watcher prints
+the legacy line and exits 2.
 `watch` also exits at a durable planning pause; that is not completion.
 
 Read action outputs and actual artifacts, and probe important edge cases yourself.

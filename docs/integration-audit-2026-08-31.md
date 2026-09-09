@@ -1,3 +1,5 @@
+> Historical (2026-08-31): accurate when written; see CHANGELOG for what changed since.
+
 # Integration audit — can Codex, Claude, and Grok discover the Bullswarm skill?
 
 Read-only evidence report. Date: 2026-08-31. Repo checkout: `/Users/cowcow02/Repo/bullswarm`

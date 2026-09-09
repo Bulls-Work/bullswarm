@@ -1,3 +1,5 @@
+> Historical (2026-08-31): accurate when written; see CHANGELOG for what changed since.
+
 # Autonomous Workflow V2 Component Probes
 
 **Candidate revision:** `0030e12` plus this evidence note  

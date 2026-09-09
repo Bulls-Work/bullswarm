@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { classifyV2DispatchFailure, dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { loadState, saveState } from '../src/lib/state.js';
 
 const action = { id: 'do-work', lane: 'build', effort: 'low' };
 const connector = (name, extra = {}) => ({
@@ -29,6 +33,68 @@ function harness(verdicts, coreOverrides = {}) {
 
 const paths = { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' };
 const good = { ok: true, why: 'structured output validated', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
+
+test('a decision append never overwrites a state change made while the worker ran (D5)', async () => {
+  // No loadState/saveState injection: this exercises the REAL locked
+  // read-modify-write against a real state.json, which is where the
+  // last-writer-wins bug lived.
+  const home = mkdtempSync(join(tmpdir(), 'bs-v2-dispatch-state-'));
+  try {
+    saveState(home, {
+      version: 1, config: { depthLimit: 2 },
+      pools: { 'luna-1': { enabled: true }, beta: { enabled: true } },
+      incumbents: {}, decisionLog: [],
+    });
+    const result = await dispatchV2Action({
+      action, taskText: 'do it', targetDir: home, paths, pools: [connector('luna-1')],
+      bullswarmDir: home,
+      dependencies: {
+        watchOnce: async () => {
+          // The operator command, run while the worker is "in flight".
+          const live = loadState(home);
+          live.pools.beta.enabled = false;
+          saveState(home, live);
+          return good;
+        },
+      },
+    });
+    assert.equal(result.ok, true);
+    const state = loadState(home);
+    assert.equal(state.pools.beta.enabled, false, 'the concurrent write survived the append');
+    assert.equal(state.decisionLog.length, 1, 'and the append itself landed');
+    assert.equal(state.decisionLog[0].picked, 'luna-1');
+    assert.equal(state.decisionLog[0].source, 'workflow-v2');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a quarantine written with a decision append lands on the live file, not a stale copy (D5)', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-v2-dispatch-quarantine-'));
+  try {
+    saveState(home, {
+      version: 1, config: { depthLimit: 2 },
+      pools: { 'luna-1': { enabled: true }, beta: { enabled: true } },
+      incumbents: { build: 'luna-1' }, decisionLog: [],
+    });
+    await dispatchV2Action({
+      action, taskText: 'do it', targetDir: home, paths, pools: [connector('luna-1')],
+      bullswarmDir: home,
+      dependencies: {
+        watchOnce: async () => {
+          writeFileSync(join(home, 'marker'), 'worker ran');
+          const live = loadState(home);
+          live.pools.beta.enabled = false;
+          saveState(home, live);
+          return { ok: false, why: 'usage limit reached', failureKind: 'quota', quarantineHint: true, meta: { exitCode: 1 } };
+        },
+      },
+    });
+    assert.equal(readFileSync(join(home, 'marker'), 'utf8'), 'worker ran');
+    const state = loadState(home);
+    assert.equal(state.pools.beta.enabled, false, 'the concurrent write survived');
+    assert.equal(state.pools['luna-1'].quarantine.kind, 'quota', 'the quarantine still landed');
+    assert.equal(state.incumbents.build, undefined, 'and a quarantined pool loses incumbency');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 test('failure classification does not invent a process crash when exit metadata is absent', () => {
   assert.equal(classifyV2DispatchFailure({ ok: false, why: 'content rejected' }), 'semantic');

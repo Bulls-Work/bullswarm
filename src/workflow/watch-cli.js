@@ -9,7 +9,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine } from './short-id.js';
+import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
@@ -97,6 +97,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
   }));
   const runningAction = (state.actions ?? []).find((action) => ['running', 'waiting'].includes(action.status));
   const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(lifecycle.status);
+  const kernelStderrTail = interrupted ? readKernelStderrTail(runDir) : [];
   // A terminal run is never waiting for its caller planner, whatever a stale
   // request record says; cancellation is surfaced so the watcher knows why a
   // paused run needs one resume to finalize.
@@ -122,6 +123,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
     executionMode: state.config?.settings?.executionMode ?? 'verified',
     evidencePassed: hasPassingRequirementEvidence(state),
     terminal, timing: terminal ? timingBreakdown(state) : null,
+    ...(kernelStderrTail.length ? { kernelStderrTail } : {}),
   };
 }
 
@@ -635,6 +637,10 @@ function watchEventLine(event, { jsonl, at, runId, shortId, sequence = null }) {
   return JSON.stringify({ type, at, runId, shortId, ...(sequence == null ? {} : { sequence }), ...fields });
 }
 
+function kernelLogLines(tail = []) {
+  return tail.length ? ['kernel log:', ...tail.map((line) => `  ${line}`)] : [];
+}
+
 export async function runWorkflowWatch(bullswarmDir, token, {
   intervalMs = 2000,
   // Absent means "no periodic heartbeat"; `--heartbeat <seconds>` opts back in,
@@ -784,8 +790,12 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         }
       }
       if (snapshot.interrupted) {
-        if (eventMode && jsonl) emitLine({ type: 'interrupted', status: snapshot.status });
-        else if (!jsonl) { output.write(`outcome: interrupted; edits retained\nnext: bullswarm workflow resume ${snapshot.shortId ?? snapshot.runId}\n`); }
+        if (eventMode && jsonl) emitLine({ type: 'interrupted', status: snapshot.status, kernelStderrTail: snapshot.kernelStderrTail });
+        else if (!jsonl) {
+          output.write(`outcome: interrupted; edits retained\nnext: bullswarm workflow resume ${snapshot.shortId ?? snapshot.runId}\n`);
+          const kernelLog = kernelLogLines(snapshot.kernelStderrTail);
+          if (kernelLog.length) output.write(`${kernelLog.join('\n')}\n`);
+        }
         return oneShot ? 0 : 1;
       }
       if (snapshot.terminal || oneShot) {

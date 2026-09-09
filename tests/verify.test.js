@@ -20,8 +20,12 @@ function loadFixtures(sub) {
 
 const fixtures = [...loadFixtures('failures'), ...loadFixtures('real')];
 
-test('fixture count meets the doctrine floor (>=17)', () => {
-  assert.ok(fixtures.length >= 17, `only ${fixtures.length} fixtures`);
+test('fixture count stays exact', () => {
+  assert.equal(
+    fixtures.length,
+    25,
+    `expected exactly 25 fixtures; update this number when adding a fixture (found ${fixtures.length})`,
+  );
 });
 
 for (const fx of fixtures) {

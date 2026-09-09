@@ -3,9 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  createAgentEventDecoder, recordAgentAction, classifyAgentProgress,
-} from '../src/lib/agent-events.js';
+import { createAgentEventDecoder } from '../src/lib/agent-events.js';
 import { argvWithModel } from '../src/lib/watch.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -67,50 +65,6 @@ test('connector adapters normalize semantic tool and response actions', () => {
     if (name === 'claude-code') assert.ok(decoded.progress.some((event) => event.model === 'claude-sonnet-5'));
     if (name === 'command-code') assert.ok(decoded.progress.some((event) => event.model === 'gpt-5.6-sol'));
   }
-});
-
-test('last-three action ledger updates one logical tool and aggregates streamed response', () => {
-  const { actions } = decode('grok', [
-    { type: 'tool_call', toolCallId: 'a', toolName: 'read_file', status: 'pending', rawInput: { path: 'a.js' } },
-    { type: 'tool_call_update', toolCallId: 'a', status: 'completed' },
-    { type: 'tool_call', toolCallId: 'b', toolName: 'run_terminal_command', status: 'pending', rawInput: { command: 'npm test' } },
-    { type: 'text', data: 'Tests ' }, { type: 'text', data: 'passed.' },
-  ]);
-  const agent = {};
-  for (const event of actions) recordAgentAction(agent, event, 3);
-  assert.equal(agent.lastActions.length, 3);
-  assert.equal(agent.lastActions[0].status, 'completed');
-  assert.equal(agent.lastActions[0].kind, 'read_file');
-  assert.equal(agent.lastActions[1].summary, 'npm test');
-  assert.equal(agent.lastActions[2].summary, 'Tests passed.');
-  assert.equal(agent.actionCount, 3);
-});
-
-test('completion updates preserve evicted Grok tool identities and do not inflate action count', () => {
-  const { actions } = decode('grok', [
-    { type: 'tool_call', toolCallId: 'a', toolName: 'list_dir', status: 'pending', rawInput: { path: 'a' } },
-    { type: 'tool_call', toolCallId: 'b', toolName: 'list_dir', status: 'pending', rawInput: { path: 'b' } },
-    { type: 'tool_call', toolCallId: 'c', toolName: 'grep', status: 'pending', rawInput: { path: 'c' } },
-    { type: 'tool_call', toolCallId: 'd', toolName: 'read_file', status: 'pending', rawInput: { path: 'd' } },
-    { type: 'tool_call_update', toolCallId: 'a', status: 'completed' },
-    { type: 'tool_call_update', toolCallId: 'b', status: 'completed' },
-    { type: 'tool_call_update', toolCallId: 'c', status: 'completed' },
-  ]);
-  const agent = {};
-  for (const event of actions) recordAgentAction(agent, event, 3);
-  assert.deepEqual(agent.lastActions.map((action) => action.kind), ['list_dir', 'list_dir', 'grep']);
-  assert.deepEqual(agent.lastActions.map((action) => action.status), ['completed', 'completed', 'completed']);
-  assert.equal(agent.actionCount, 4);
-  assert.equal(Object.keys(agent).includes('_actionHistory'), false);
-});
-
-test('silence is suspected-stalled evidence and never an automatic kill', () => {
-  const startedAt = '2026-08-28T01:00:00.000Z';
-  const active = classifyAgentProgress({ startedAt }, Date.parse('2026-08-28T01:09:59.000Z'), 600);
-  const stale = classifyAgentProgress({ startedAt }, Date.parse('2026-08-28T01:10:00.000Z'), 600);
-  assert.equal(active.status, 'active');
-  assert.equal(stale.status, 'suspected_stalled');
-  assert.equal(stale.autoTerminate, false);
 });
 
 test('event stream CLI flags are connector-owned and appended to direct argv', () => {

@@ -7,9 +7,14 @@ secrets and are never written here or shipped with the CLI.
 Both datapacks are published as replaceable assets on the
 `benchmark-data-latest` GitHub Release by
 `.github/workflows/refresh-benchmarks.yml`. Installed CLIs try
-`~/.bullswarm/cache/` first, then the copy bundled in this directory, then
-that release URL. A missing network never blocks setup when a bundled file
-exists.
+`~/.bullswarm/cache/` first, then that release URL.
+
+OpenRouter is cache-or-network only: there is no bundled
+`data/openrouter-benchmarks.json`. A cache miss with no network yields an
+empty catalog (and connector metadata), and never blocks setup.
+
+Epoch keeps `data/epoch-benchmarks.json` as a bundled last-resort, so a
+missing network never blocks setup when that file exists.
 
 ## `openrouter-benchmarks.json`
 

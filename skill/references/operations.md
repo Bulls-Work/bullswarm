@@ -6,6 +6,10 @@ shape yourself — there is no preview or classifier command. Read this referenc
 only after that decision, when the task needs direct commands, workflow
 operation, or recovery.
 
+Unrecognized `--flags` are a usage error on every command: Bullswarm prints
+`unknown flag --name` plus that command's synopsis and exits 2, before
+self-initializing, routing, or spawning anything.
+
 ## Autonomous workflow execution
 
 `workflow goal` needs a program: the calling agent is the Workflow Planner
@@ -59,8 +63,9 @@ limit on <pool> · paused until <deadline> · retrying on another pool`, then
 `↺ ... now on <pool> · <model>` once the mechanical retry lands on another
 pool. Use `--verbose` only for diagnosis. `--classic` forces the older
 heartbeat-based watcher (transition-on-change snapshots plus a periodic
-heartbeat) instead of event mode; it is a no-op for legacy runs and cannot
-combine with `--next`.
+heartbeat) instead of event mode; it applies only to V2 runs. A legacy
+authored-graph run cannot be watched at all: the watcher prints the legacy
+line and exits 2 before polling. `--classic` cannot combine with `--next`.
 The result command is the stable delivery/verification envelope; do not scrape
 task files or assume the last provider response is the deliverable.
 
@@ -214,7 +219,7 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
 ```
 
 - `bullswarm assignments` is the ledger itself — no meters, no network. Each
-  record names the pool, source (`run` / `workflow-v1` / `workflow-v2`), run
+  record names the pool, source (`run` / `workflow-v2`), run
   and action, `startedAt`, `elapsedMinutes`, `expectedMinutes` and
   `remainingMinutes`. An empty list with work apparently running means the
   dispatching process never registered it; a stale-looking entry is pruned on

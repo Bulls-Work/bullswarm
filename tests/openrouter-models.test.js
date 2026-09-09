@@ -139,7 +139,6 @@ test('invalid public datapacks are rejected before cache replacement', async () 
   try {
     const catalog = await loadOpenRouterCatalog({
       bullswarmDir: f.dir,
-      bundledFile: null,
       fetchImpl: async () => response({ schemaVersion: 'wrong', models: {} }),
       now: Date.parse('2026-09-02T01:00:00Z'),
       force: true,
@@ -147,4 +146,63 @@ test('invalid public datapacks are rejected before cache replacement', async () 
     assert.equal(catalog.cache, 'miss');
     assert.match(catalog.error, /schema/);
   } finally { f.cleanup(); }
+});
+
+test('there is no bundled last-resort tier: a cold home with no network misses honestly', async () => {
+  const f = fixture();
+  try {
+    // The removed tier read data/openrouter-benchmarks.json, which no commit
+    // has ever shipped, so this branch used to hide behind a failing lookup.
+    const offline = await loadOpenRouterCatalog({
+      bullswarmDir: f.dir,
+      fetchImpl: async () => { throw new Error('offline'); },
+      now: Date.parse('2026-09-02T01:00:00Z'),
+    });
+    assert.equal(offline.cache, 'miss');
+    assert.equal(offline.error, 'offline');
+    assert.deepEqual(offline.models, {});
+    assert.equal(offline.source, 'https://github.com/cowcow02/bullswarm/releases/download/benchmark-data-latest/openrouter-benchmarks.json');
+
+    // Same with no fetch implementation available at all.
+    const noFetch = await loadOpenRouterCatalog({
+      bullswarmDir: f.dir,
+      fetchImpl: null,
+      now: Date.parse('2026-09-02T01:00:00Z'),
+    });
+    assert.equal(noFetch.cache, 'miss');
+    assert.equal(noFetch.error, 'fetch is unavailable');
+  } finally { f.cleanup(); }
+});
+
+test('a blank upstream price stays null instead of becoming a measured zero', () => {
+  // C3: the loader used bare Number(), and Number('')/Number(null) === 0 with
+  // Number(true) === 1. On HEAD this exact payload produced
+  //   pricing  { inputUsdPerMillion: 0, ... }        -- a free model
+  //   indices  { agentic: 0, coding: 0, intelligence: 1 }
+  //   ranks    { agentic: 1, coding: 1, intelligence: 1 }
+  // i.e. a top-ranked zero-cost model invented out of empty strings.
+  const catalog = buildOpenRouterDatapack({
+    capturedAt: '2026-09-02T00:00:00.000Z',
+    benchmarks: {
+      data: [{
+        source: 'artificial-analysis', model_permaslug: 'example/blank-fields',
+        display_name: 'Blank Fields', agentic_index: '', coding_index: null, intelligence_index: true,
+      }],
+      meta: { as_of: '2026-09-02T00:00:00Z', version: 'v1' },
+    },
+    models: { data: [{
+      id: 'example/blank-fields', name: 'Blank Fields', created: 1,
+      pricing: { prompt: '', completion: '   ', input_cache_read: null, input_cache_write: false },
+    }] },
+  });
+  const entry = catalog.models['example/blank-fields'];
+  assert.deepEqual(entry.pricing, {
+    inputUsdPerMillion: null,
+    cacheReadUsdPerMillion: null,
+    cacheWriteUsdPerMillion: null,
+    outputUsdPerMillion: null,
+  });
+  // No index survives, so no rank is invented either.
+  assert.deepEqual(entry.indices, {});
+  assert.deepEqual(entry.ranks, {});
 });

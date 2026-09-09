@@ -1,3 +1,5 @@
+> `bullswarm delegate` was removed in 0.26.0; its section below is historical.
+
 # Caller-first workflow CLI (design, 2026-09-06)
 
 Status: implemented (0.24.0). Breaking for `workflow goal` with no planning

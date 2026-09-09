@@ -1,3 +1,5 @@
+> Historical (2026-08-29): accurate when written; see CHANGELOG for what changed since.
+
 # Dogfood 2026-08-29 — bullswarm builds bullswarm (outputSchema + planner refactor)
 
 Observation log of the two dogfood runs that produced 0.14.0, kept verbatim

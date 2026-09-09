@@ -1,3 +1,5 @@
+> Historical (2026-08-31): accurate when written; see CHANGELOG for what changed since.
+
 # Dynamic Workflow V2 Execution Plan
 
 **Status:** execution in progress  

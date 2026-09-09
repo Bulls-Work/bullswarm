@@ -1,3 +1,5 @@
+> Historical (2026-08-27): accurate when written; see CHANGELOG for what changed since.
+
 # Workflow agent usability audit — 2026-08-27
 
 ## Executive result

@@ -39,11 +39,15 @@ JSON schema its answer must satisfy. Re-planning happens either as ordinary
 code (loops, conditionals) inside the script, or between scripts when the model
 reads a result and authors the next one. **[SPEC]**
 
-bullswarm's `workflow goal`, by contrast, runs an LLM *at every checkpoint*: a
-`decide` step proposes JSON actions, the runtime validates and executes them,
-then asks the LLM again. **[SPEC — bullswarm source]** The rest of this document
-is about which of Claude's mechanics that loop can adopt without giving up its
-one advantage — the user supplies a goal, never a graph.
+bullswarm's original `workflow goal` (pre-caller-planner, retired with the
+authored-graph engine in 0.27.0) ran an LLM *at every checkpoint*: a `decide`
+step proposed JSON actions, the runtime validated and executed them, then
+asked the LLM again. **[HISTORICAL — bullswarm source as of 2026-08-29]**
+Current `workflow goal` executes a caller-authored program (`--program`) to
+graph completion, or dispatches a planner only when the caller names
+`--orchestrator`. The rest of this document is about which of Claude's
+mechanics that older loop could adopt without giving up its then-advantage —
+the user supplies a goal, never a graph.
 
 ## 1. Mechanics, one at a time
 

@@ -76,11 +76,16 @@ const top = rich({
     { name: 'release', desc: 'create a version commit and tag' },
   ],
   options: [
-    { flag: '--yes', desc: 'bare `bullswarm` only: skip the interactive wizard and auto-initialize with discovered defaults', default: 'prompts on a TTY; auto-initializes for a non-TTY caller' },
+    { flag: '--yes', desc: 'bare `bullswarm` only: skip the interactive wizard and auto-initialize with discovered defaults. Bare `bullswarm` runs `bullswarm setup`, so it accepts every option that command documents', default: 'prompts on a TTY; auto-initializes for a non-TTY caller' },
   ],
   safety: [
     'every command below except a --help/-h/help invocation self-initializes ~/.bullswarm/state.json (or $BULLSWARM_HOME) on first use',
     '--help/-h/help never reads or writes state, calls a network endpoint, or spawns a process, on any command',
+    'an unrecognized option is a usage error on every command: Bullswarm prints "unknown flag --name" plus that '
+      + "command's synopsis and exits 2, before self-initializing, routing, or spawning anything — a typo can no "
+      + 'longer launch a run',
+    'malformed option values are rejected at the same boundary with exit 2 (for example a missing --lane, or a '
+      + '--limit that is not a positive integer)',
   ],
   examples: [
     { cmd: 'bullswarm setup --yes && bullswarm run --lane analyze "audit this repo for TODOs"', note: 'one-time initialization, then one bounded task' },
@@ -227,7 +232,7 @@ const runText = rich({
     { name: '<task text...>', desc: 'the task prompt, as trailing words; mutually exclusive with --prompt and --task-file' },
   ],
   options: [
-    { flag: '--lane <analyze|build|chore>', desc: 'which routing lane to use: analyze (exploratory/large), build (implementation), chore (small/cheap)', default: 'required; no default' },
+    { flag: '--lane <analyze|build|chore>', desc: 'which routing lane to use: analyze (exploratory/large), build (implementation), chore (small/cheap)', default: 'required — omitting it, or passing anything else, exits 2' },
     { flag: '--add-dir <dir>', desc: 'working directory the delegate operates in', default: 'current directory' },
     { flag: '--task-file <file>', desc: 'read the task text from a file instead of trailing words' },
     { flag: '--prompt <text>', desc: 'pass the task text inline as one flag value' },
@@ -236,6 +241,7 @@ const runText = rich({
     { flag: '--timeout <seconds>', desc: 'hard wall-clock kill timer for the delegate process', default: 'none — the delegate is allowed to run to completion' },
     { flag: '--heartbeat <seconds>', desc: 'print one compact progress heartbeat to stderr per interval without streaming delegate output', default: 'off' },
     { flag: '--dry-run', desc: 'print the routing decision, the forecast it was made on, and the exact command that would be spawned (including the resolved reasoning flag) without spawning it, registering an in-flight assignment, or writing the decision log', default: 'off (dispatches for real)' },
+    { flag: '--no-caller', desc: 'exclude the calling agent from routing, so the task must go to a delegate pool or fail', default: 'off — the caller competes for the lane like any other pool' },
     { flag: '--json', desc: 'print the machine-readable verdict document', default: 'human-readable summary line' },
   ],
   safety: [
@@ -299,13 +305,16 @@ const healthText = rich({
     + 'pool quarantine clustering.',
   args: [],
   options: [
-    { flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON regardless of this flag' },
+    { flag: '--json', desc: 'print the machine-readable health report', default: 'human-readable summary of the same facts' },
   ],
   safety: [
     'reads every out-* file under ~/.bullswarm/runs/ and re-runs the verify judge over each — cost scales with run history size',
     'if any pool quarantine has expired, writes the released state back to state.json (same sweep other commands perform); otherwise read-only',
   ],
-  examples: [{ cmd: 'bullswarm health' }],
+  examples: [
+    { cmd: 'bullswarm health' },
+    { cmd: 'bullswarm health --json', note: 'the same facts as a JSON document; exit 1 means unhealthy, not a crash' },
+  ],
   next: 'bullswarm pools to see current routing/quarantine state directly.',
 });
 
@@ -419,15 +428,15 @@ const strategyTuiText = rich({
   examples: [{ cmd: 'bullswarm strategy tui' }], next: 'Use bullswarm strategy routes --json to inspect the effective result.',
 });
 const strategyInventoryText = rich({
-  usage: 'bullswarm strategy inventory [--json] [--refresh]',
-  purpose: 'Return detected provider pools, models, selections, live meters, and effective routes for an agentic caller.', args: [],
-  options: [{ flag: '--json', desc: 'machine-readable inventory' }, { flag: '--refresh', desc: 'rerun model discovery and meters' }],
+  usage: 'bullswarm strategy inventory [--refresh]',
+  purpose: 'Return detected provider pools, models, selections, live meters, and effective routes for an agentic caller. The output is always JSON.', args: [],
+  options: [{ flag: '--json', desc: 'accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer', default: 'output is always JSON, with or without the flag' }, { flag: '--refresh', desc: 'rerun model discovery and meters' }],
   safety: ['read-only apart from refreshing the cached discovery report'], examples: [{ cmd: 'bullswarm strategy inventory --json --refresh' }],
   next: 'Use set-provider, set-model, or configure --file to change the policy.',
 });
 const strategyRoutesText = rich({
-  usage: 'bullswarm strategy routes [--json] [--refresh]', purpose: 'Show the live effective choice for high/analyze, medium/build, and low/chore.',
-  args: [], options: [{ flag: '--json', desc: 'machine-readable routes' }, { flag: '--refresh', desc: 'refresh meters first' }],
+  usage: 'bullswarm strategy routes [--refresh]', purpose: 'Show the live effective choice for high/analyze, medium/build, and low/chore. The output is always JSON.',
+  args: [], options: [{ flag: '--json', desc: 'accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer', default: 'output is always JSON, with or without the flag' }, { flag: '--refresh', desc: 'refresh meters first' }],
   safety: ['read-only apart from refreshing cached discovery'], examples: [{ cmd: 'bullswarm strategy routes --json' }], next: 'Run bullswarm strategy to adjust the choices.',
 });
 const strategySetProviderText = rich({
@@ -743,7 +752,7 @@ const workflowText = rich({
   ],
   examples: [
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
-    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd .', note: 'autonomous goal, launched independently' },
+    { cmd: 'bullswarm workflow goal "Audit this repository for TODOs" --cwd . --program plan.json', note: 'autonomous goal, launched independently; goal needs --program, --scout, or --orchestrator or it exits 2' },
     { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Verify it." --cwd . --program plan.json', note: 'caller-planner goal: you author the program, the kernel routes, verifies, and completes' },
     { cmd: 'bullswarm workflow runs --all --since 7d', note: 'list every run started in the last week' },
   ],
@@ -864,6 +873,16 @@ const workflowPlanValidateText = rich({
     { flag: '--cwd <dir>', desc: 'working directory the goal will execute in (must exist)', default: 'current directory' },
     { flag: '--summary <text>', desc: 'one-line summary recorded for a bare program document', default: 'derived from the action purposes' },
     { flag: '--json', desc: 'print the acceptance document ({action: "plan-valid", requirements, program, next}) or the refusal ({error: "program-invalid", issues, next}) as JSON', default: 'human summary' },
+    { flag: '--isolation', desc: 'validate against strict per-worker worktree isolation', default: 'off (shared workspace)' },
+    { flag: '--scout', desc: 'validate against a run that scouts before your program', default: 'off for a caller-authored program' },
+    { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the preview routes with', default: 'auto (routing decides per action)' },
+    { flag: '--worker-model <model|auto>', desc: 'pin the worker model the preview routes with', default: 'auto' },
+    { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level for the preview', default: 'the strategy setting for the action effort tier' },
+    { flag: '--max-agents <n>', desc: 'advisory dispatch target for the previewed run', default: '30' },
+    { flag: '--max-actions <n>', desc: 'advisory action target for the previewed run', default: '100' },
+    { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target for the previewed run', default: '2' },
+    { flag: '--concurrency <n>', desc: 'execution concurrency for the previewed run', default: '4' },
+    { flag: '--retry-attempts <0..3>', desc: 'mechanical retry allowance for the previewed run', default: '1' },
   ],
   safety: ['read-only — nothing is launched, dispatched, or written; the exit code is the verdict (0 valid, 2 invalid, 1 bad cwd)'],
   examples: [{ cmd: 'bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json' }],
@@ -922,6 +941,10 @@ const workflowPlanContractText = rich({
     { flag: '--max-expansion-rounds <n>', desc: 'advisory gap-round target recorded in the contract settings', default: '2' },
     { flag: '--concurrency <n>', desc: 'execution concurrency recorded in the contract settings', default: '4' },
     { flag: '--retry-attempts <0..3>', desc: 'mechanical retry allowance recorded in the contract settings', default: '1' },
+    { flag: '--scout', desc: 'describe a kernel scout ahead of your program and retain the flag in launch guidance', default: 'off for a caller-authored program' },
+    { flag: '--worker-pool <pool|auto>', desc: 'pin the worker pool the contract echoes back', default: 'auto (routing decides per action)' },
+    { flag: '--worker-model <model|auto>', desc: 'pin the worker model the contract echoes back', default: 'auto' },
+    { flag: '--worker-reasoning <level>', desc: 'run-wide worker thinking level the contract echoes back', default: 'the strategy setting for the action effort tier' },
   ],
   safety: [
     'read-only — derives the contract from the goal text and local state; nothing is launched, dispatched, or written',
@@ -981,7 +1004,7 @@ const workflowCapabilitiesText = rich({
   purpose: 'Report the workflow engine, current routing policy, and live '
     + 'pool/model/meter state.',
   args: [],
-  options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON regardless of this flag' }],
+  options: [{ flag: '--json', desc: 'accepted so agents can pass it uniformly; it selects nothing, because this command has no human renderer', default: 'output is always JSON, with or without the flag' }],
   safety: ['read-only — performs live pool discovery to populate pool/meter state; nothing is written'],
   examples: [{ cmd: 'bullswarm workflow capabilities' }],
   next: 'bullswarm workflow goal "<goal>" to plan and execute a workflow, or bullswarm strategy show to review model tier assignments.',
@@ -1125,7 +1148,7 @@ const workflowRunsListOptions = [
   { flag: '--name <goal>', desc: 'filter by exact goal text (a legacy row matches on its recorded workflow name)', default: 'no filter' },
   { flag: '--since <time>', desc: 'lower bound on start time (inclusive); aliases --from, --started-after', default: 'no lower bound' },
   { flag: '--until <time>', desc: 'upper bound on start time (exclusive); aliases --to, --started-before', default: 'no upper bound' },
-  { flag: '--limit <n>', desc: 'cap the number of results', default: 'no cap' },
+  { flag: '--limit <n>', desc: 'cap the number of results; must be a positive integer, and anything else exits 2', default: 'no cap' },
   { flag: '--json', desc: 'machine-readable output', default: 'human-readable one-line-per-run summary' },
 ];
 

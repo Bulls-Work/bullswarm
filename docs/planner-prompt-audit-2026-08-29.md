@@ -1,3 +1,5 @@
+> Historical (2026-08-29): accurate when written; see CHANGELOG for what changed since.
+
 # Planner prompt and context audit — 2026-08-29
 
 Question from the user: after the 0.11 → 0.14 iterations, does the instruction

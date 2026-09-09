@@ -1,3 +1,5 @@
+> Historical (2026-08-27): accurate when written; see CHANGELOG for what changed since.
+
 # Dynamic workflow acceptance evidence
 
 Verified on 2026-08-27 against the acceptance criteria in

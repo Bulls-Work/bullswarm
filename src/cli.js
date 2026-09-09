@@ -9,7 +9,7 @@ import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
 } from './lib/reasoning.js';
 import {
-  loadState, saveState, quarantinePool, sweepQuarantines,
+  loadState, quarantinePool, sweepQuarantines, updateState,
   assertDepthAllowed, childDepthEnv,
 } from './lib/state.js';
 import { buildPools, buildPoolsLive } from './lib/config.js';
@@ -25,6 +25,7 @@ import {
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { helpForArgs, usageLine } from './help.js';
+import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
 import {
@@ -60,7 +61,10 @@ export function parseArgs(argv) {
       else args[key] = true;
     } else rest.push(argv[i]);
   }
-  return { ...args, rest };
+  // `_flags` is what the caller literally typed, in order: the unknown-flag
+  // gate needs the raw names, not the normalized `args` keys (which lose the
+  // difference between an unknown flag and a value that happens to collide).
+  return { ...args, rest, _flags: flagNames(argv) };
 }
 
 // --- pools ----------------------------------------------------------------
@@ -71,11 +75,17 @@ async function cmdPools(opts) {
     force: opts.force === true,
     getReadings: getAllMeterReadings,
   });
-  const released = sweepQuarantines(state, now);
+  // The sweep is a write, so it happens on a fresh locked load (S5) and only
+  // persists when it actually released something: `pools` is an observation
+  // command and must not rewrite state.json just for being run.
+  let released = [];
+  updateState(getBullswarmDir(), (fresh) => {
+    released = sweepQuarantines(fresh, now);
+    return released.length > 0;
+  });
   if (released.length && !opts.json) {
     console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
   }
-  saveState(getBullswarmDir(), state);
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —
   // plus the spend rates that turn that load into a projected utilization.
@@ -151,7 +161,19 @@ function cmdAssignments(opts) {
 
 async function cmdRun(opts) {
   const now = Date.now();
+  // The lane picks the routing table, so a missing or misspelled one is a
+  // usage error here, not `FAIL unknown lane undefined` from the router two
+  // dozen lines later (which exited 1 and read like a routing outage).
+  const LANES = ['analyze', 'build', 'chore'];
   const lane = opts.lane;
+  if (lane === undefined || lane === true) {
+    console.error(`--lane is required (${LANES.join('|')})`);
+    return 2;
+  }
+  if (!LANES.includes(lane)) {
+    console.error(`--lane must be ${LANES.join(', ')} (got "${lane}")`);
+    return 2;
+  }
   const heartbeatSec = opts.heartbeat == null || opts.heartbeat === true ? null : Number(opts.heartbeat);
   if (opts.heartbeat === true || (heartbeatSec != null && (!Number.isFinite(heartbeatSec) || heartbeatSec < 1))) {
     console.error('--heartbeat must be a number of seconds greater than or equal to 1');
@@ -212,11 +234,21 @@ async function cmdRun(opts) {
     return 1;
   }
 
+  // A preview is a pure read (D3): `--dry-run` must not refresh strategy,
+  // because the refresh downloads a datapack and writes the recommendations it
+  // derives back into state.json. Decided here, before the refresh, not 50
+  // lines later at the dispatch fork.
+  const dryRun = opts['dry-run'] === true;
+
   // Only an explicitly approved strategy policy may change assignments.
   // Once approved, refresh capability-aware recommendations on its TTL.
-  await maybeRefreshStrategy(getBullswarmDir());
-  state = loadState(getBullswarmDir());
+  if (!dryRun) {
+    await maybeRefreshStrategy(getBullswarmDir());
+    state = loadState(getBullswarmDir());
+  }
 
+  // Routing view only: the persisted release happens under the lock, after the
+  // worker, so this copy is never written back (S5).
   sweepQuarantines(state, now);
 
   const { pools } = await buildPoolsLive(getBullswarmDir(), now, {
@@ -241,7 +273,7 @@ async function cmdRun(opts) {
   const gated = pools.filter((p) => p.burstGate);
   const ungatedPools = gated.length ? pools.filter((p) => !p.burstGate) : pools;
   const assignment = state.strategy?.assignments?.[effortTier] ?? null;
-  const eligiblePools = ungatedPools.map((pool) => ({
+  const candidatePools = ungatedPools.map((pool) => ({
     ...pool,
     modelPolicy: resolveDispatchModel(pool.connector ?? pool, effortTier, {
       assignment,
@@ -251,9 +283,13 @@ async function cmdRun(opts) {
       ],
       allowedModels: selectedModelsForTier(state.strategy, pool.name, effortTier),
     }),
-  })).filter((pool) => pool.modelPolicy.eligible);
+  }));
+  // No eligibility pre-filter here (D7): pickPool() drops model-blocked pools
+  // itself (route.js:294) and needs to see them to say WHICH stage emptied the
+  // candidate list. Filtering first left the CLI reporting the capability
+  // wording for a tier allow-list that named no model on any pool.
 
-  const route = pickPool(lane, eligiblePools, {
+  const route = pickPool(lane, candidatePools, {
     callerEligible: opts['no-caller'] !== true,
     callerName: state.config.callerName ?? 'claude-code',
     now,
@@ -266,16 +302,17 @@ async function cmdRun(opts) {
     route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
   }
 
-  const dryRun = opts['dry-run'] === true;
   if (!route.pick && route.keepOnClaude) {
     // A preview never writes: the decision log records dispatches, not what
     // an operator merely asked to see.
     if (!dryRun) {
-      logDecision(state, {
-        lane, picked: null, keepOnClaude: true, ok: null, why: route.why,
-        forecast: forecastRecord(route, null),
+      updateState(getBullswarmDir(), (fresh) => {
+        sweepQuarantines(fresh, now);
+        logDecision(fresh, {
+          lane, picked: null, keepOnClaude: true, ok: null, why: route.why,
+          forecast: forecastRecord(route, null),
+        });
       });
-      saveState(getBullswarmDir(), state);
     }
     emit({
       ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
@@ -383,38 +420,43 @@ async function cmdRun(opts) {
     if (ledgerEntry) withLedger(() => releaseAssignment(getBullswarmDir(), ledgerEntry.id));
   }
 
-  // Persist incumbency on success; quarantine hint on auth failure.
-  if (verdict.ok) {
-    state.incumbents ??= {};
-    state.incumbents[lane] = connector.name;
-  } else if (verdict.quarantineHint) {
-    // A usage limit carries its own deadline (the reset the provider named);
-    // an auth failure keeps the flat re-probe window.
-    quarantinePool(state, connector.name, verdict.why, now, {
-      until: verdict.quarantineUntil ?? null,
-      kind: verdict.failureKind === 'quota' ? 'quota' : 'auth',
+  // Everything this run changed about shared state, applied at once to a FRESH
+  // load under the lock (S5). `state` above is the routing snapshot and is now
+  // minutes old: saving it would silently undo whatever an operator did while
+  // the worker ran (D5).
+  updateState(getBullswarmDir(), (fresh) => {
+    sweepQuarantines(fresh, now);
+    // Persist incumbency on success; quarantine hint on auth failure.
+    if (verdict.ok) {
+      fresh.incumbents ??= {};
+      fresh.incumbents[lane] = connector.name;
+    } else if (verdict.quarantineHint) {
+      // A usage limit carries its own deadline (the reset the provider named);
+      // an auth failure keeps the flat re-probe window.
+      quarantinePool(fresh, connector.name, verdict.why, now, {
+        until: verdict.quarantineUntil ?? null,
+        kind: verdict.failureKind === 'quota' ? 'quota' : 'auth',
+      });
+      verdict.quarantinedUntil = fresh.pools[connector.name]?.quarantine?.until;
+    }
+    logDecision(fresh, {
+      lane,
+      picked: connector.name,
+      keepOnClaude: false,
+      ok: verdict.ok,
+      why: verdict.why,
+      wallSec: verdict.meta?.wallSec,
+      model: verdict.pick?.model ?? null,
+      reasoning,
+      usage: verdict.meta?.usage ?? null,
+      outFile: paths.outFile,
+      // The forecast this pick was made on — the numbers pickPool compared, so a
+      // later reader can replay the decision instead of re-deriving it. The full
+      // candidate list stays out of the log: 500 entries of it would bloat the
+      // state file the spend model has to read on every dispatch.
+      forecast: forecastRecord(route, connector.name),
     });
-    verdict.quarantinedUntil = state.pools[connector.name]?.quarantine?.until;
-  }
-
-  logDecision(state, {
-    lane,
-    picked: connector.name,
-    keepOnClaude: false,
-    ok: verdict.ok,
-    why: verdict.why,
-    wallSec: verdict.meta?.wallSec,
-    model: verdict.pick?.model ?? null,
-    reasoning,
-    usage: verdict.meta?.usage ?? null,
-    outFile: paths.outFile,
-    // The forecast this pick was made on — the numbers pickPool compared, so a
-    // later reader can replay the decision instead of re-deriving it. The full
-    // candidate list stays out of the log: 500 entries of it would bloat the
-    // state file the spend model has to read on every dispatch.
-    forecast: forecastRecord(route, connector.name),
   });
-  saveState(getBullswarmDir(), state);
 
   verdict.reasoning = reasoning;
   emit(verdict, opts);
@@ -472,9 +514,16 @@ function emit(verdict, opts) {
 // --- health -----------------------------------------------------------------
 
 function cmdHealth(opts) {
-  const state = loadState(getBullswarmDir());
-  const released = sweepQuarantines(state, Date.now());
-  if (released.length) saveState(getBullswarmDir(), state);
+  let state = loadState(getBullswarmDir());
+  // Same locked read-modify-write as every other writer (S5). `health` is an
+  // observation command, so it takes the lock only when a quarantine exists
+  // that could be released, and writes only when one actually was.
+  if (Object.values(state.pools ?? {}).some((pool) => pool?.quarantine)) {
+    state = updateState(
+      getBullswarmDir(),
+      (fresh) => sweepQuarantines(fresh, Date.now()).length > 0,
+    );
+  }
   const runsDir = join(getBullswarmDir(), 'runs');
   const findings = [];
 
@@ -519,7 +568,23 @@ function cmdHealth(opts) {
     quarantined,
     decisionLogSize: state.decisionLog?.length ?? 0,
   };
-  console.log(JSON.stringify(report, null, 2));
+  if (opts.json) {
+    console.log(JSON.stringify(report, null, 2));
+    return report.healthy ? 0 : 1;
+  }
+  // Same facts as the JSON document, one line each, so `--json` selects a
+  // format instead of being the inert flag it used to be.
+  console.log(`bullswarm health — ${report.healthy ? 'HEALTHY' : 'UNHEALTHY'}`);
+  console.log(`  decision log: ${report.decisionLogSize} entr${report.decisionLogSize === 1 ? 'y' : 'ies'}`);
+  console.log(`  gate failures: ${report.gateFailures.length}`);
+  for (const f of report.gateFailures) {
+    console.log(`    ✗ ${f.file}: saved ${f.savedVerdict}, re-judges ${f.rejudge} — the verify gate ate real work`);
+  }
+  console.log(`  quarantined pools: ${report.quarantined.length}${report.quarantineCluster.length ? ' (CLUSTER)' : ''}`);
+  for (const q of report.quarantined) {
+    console.log(`    ${q.pool}: until ${q.until} (${q.reason})`);
+  }
+  if (!report.healthy) console.log('  fix: bullswarm health --json for the machine-readable report');
   return report.healthy ? 0 : 1;
 }
 
@@ -647,6 +712,24 @@ async function cmdDoctor(opts) {
 
 // --- main ---------------------------------------------------------------------
 
+// Which help path explains the verb this argv is dispatching to, i.e. which
+// row of the known-flag table applies. Returns null for the verbs that own
+// their own parser (workflow/runs/strategy) and for an unrecognized verb,
+// which the dispatcher already answers with exit 2.
+function topLevelHelpPath(verb, opts) {
+  const OWN_PARSER = new Set(['workflow', 'runs', 'strategy']);
+  if (verb === undefined) return [];
+  if (verb === '--version') return ['version'];
+  if (OWN_PARSER.has(verb)) return null;
+  if (verb === 'integrate') {
+    const sub = opts.rest[0] ?? 'status';
+    return ['status', 'install', 'remove', 'retire-legacy'].includes(sub)
+      ? ['integrate', sub]
+      : ['integrate'];
+  }
+  return [verb];
+}
+
 export async function main(argv) {
   // Bare `bullswarm workflow` is the human workflow home on a terminal.
   // Non-TTY callers still receive side-effect-free help, exactly as before.
@@ -663,8 +746,21 @@ export async function main(argv) {
     console.log(help);
     return 0;
   }
-  const [verb, ...rest] = argv;
-  const opts = parseArgs(rest);
+  // A leading flag means the root command: `bullswarm --yes` is bare
+  // bullswarm with its documented option, not a verb named "--yes".
+  const [head, ...tail] = argv;
+  const verb = head !== undefined && /^--[A-Za-z]/.test(head) && head !== '--version'
+    ? undefined
+    : head;
+  const opts = parseArgs(verb === undefined && head !== undefined ? argv : tail);
+
+  // Unknown flags are a usage error before anything else happens — before
+  // setup self-initializes, before a pool is built, before a delegate is
+  // spawned. `workflow`, `runs` and `strategy` re-parse their own argv, so
+  // they run the same gate inside their own dispatchers.
+  const flagExit = unknownFlagExit(opts._flags, topLevelHelpPath(verb, opts));
+  if (flagExit !== null) return flagExit;
+
   const { ensureSetup } = await import('./setup.js');
 
   // Agent-friendly guarantee: EVERY verb works on a fresh machine. If config
@@ -690,11 +786,11 @@ export async function main(argv) {
     case 'doctor':
       return cmdDoctor(opts);
     case 'workflow':
-      return cmdWorkflow(rest);
+      return cmdWorkflow(tail);
     case 'runs':
-      return cmdWorkflow(['runs', ...rest]);
+      return cmdWorkflow(['runs', ...tail], { runsAlias: ['runs'] });
     case 'strategy':
-      return cmdStrategy(bareStrategyDashboard ? ['tui'] : rest, {
+      return cmdStrategy(bareStrategyDashboard ? ['tui'] : tail, {
         bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
       });
     case 'integrate':
