@@ -1,5 +1,74 @@
 # bullswarm changelog
 
+## 0.27.0 — one workflow engine
+
+- There is now one workflow engine. The authored-graph verbs `workflow run`,
+  `validate`, `list`, `draft`, `inspect` and `approval` are gone — each falls to
+  the workflow-level unknown-verb message, exits 2 and spawns nothing — and with
+  them the eleven V1 modules they drove: `runtime.js` (1,902 lines),
+  `runner.js` (1,304), `draft-cli.js` (434), `validate.js` (366),
+  `decision.js` (357), `tui.js` (297), `draft.js` (268), `result.js` (239),
+  `template.js` (146), `schema.js` (81) and `semaphore.js` (56). The V1 panel
+  model, timeline and orchestrator-detail twins came out of `dashboard.js`
+  (−965), the V1 branches out of `cli.js` (−291), `runs-cli.js` (−141),
+  `short-id.js` (−127) and `watch-cli.js` (−132). `src/workflow/*.js` goes from
+  16,941 lines to 10,257. Also deleted: the five saved definitions
+  `workflows/adaptive-code-review.json`, `agent-model-comparison.json`,
+  `connector-audit.json`, `smoke-two-step.json` and `verify-and-cap.json`
+  (257 lines) together with the `workflows/` entry in package.json `files`;
+  `scripts/sanity-multi-claude.mjs` (131), which only exercised `runWorkflow`;
+  and two more tools that could only reach deleted modules —
+  `bin/check-output-schema.js` (30, the V1 `outputSchema` worker preflight) and
+  `scripts/planner-contract-probe.mjs` (175, a probe for the V1 `decide`
+  planner). `workflow capabilities` now reports `engines.authoredGraphs` as
+  `{ retired: '0.27.0', command: null }` instead of advertising a verb that
+  exits 2. `bullswarm workflow --help` describes one engine.
+
+- `newRunId` moved from `runner.js` into `src/workflow/short-id.js`, same
+  behaviour, exported; `v2-runtime.js` imports it from there.
+
+- Removed the last V1 remnants that no gate caught because they named no
+  deleted symbol: the dead authored-graph planner prompt in
+  `src/workflow/goal.js` (`AUTONOMOUS_ORCHESTRATOR_PROMPT`,
+  `PLANNER_RULES_SECTION`, `PLANNER_EXAMPLES_SECTION` — 36 lines whose only
+  consumer was the deleted `runtime.js`, and which still taught `type`,
+  `stepTemplate`, `itemsFrom`, `outputSchema`, `covers` and `completion.when`
+  to a planner the V2 validator would reject), and the permanently-zero
+  `fanout: { total, ok, failed }` counter that `dashboard.js` still put on every
+  row and rendered behind an unreachable branch. `outputSchema`, `itemsFrom` and
+  `stepTemplate` now appear nowhere in `src/`. The `skill/references/operations.md`
+  "Adversarial verification" section described the removed `{ok, concerns,
+  summary}` verify verdict; it now documents the `bullswarm.workflow.evidence.v2`
+  envelope the kernel actually enforces. `AGENTS.md` doctrine item 5 pointed at
+  the deleted `runtime.js` and now points at `v2-dispatch.js`.
+
+- Historical authored-graph runs stay readable, read-only, and nothing tries to
+  drive them. A run directory whose `state.json` lacks
+  `schemaVersion: 'bullswarm.workflow.state.v2'` is a legacy run: `workflow runs`
+  (with `--all` and `--json`) lists it as one row — short id, run id, name or
+  goal, status, age — marked `legacy`, reading only those five fields and never
+  throwing on a missing one, and the workflow home lists the same row. Every
+  driving command — `runs show`, `runs result`, `watch`, `cancel`, `resume`,
+  `steer`, `action show`, `tui <runId>` — prints exactly one line, `legacy
+  authored-graph run <shortId>: its executor was removed in 0.27.0; files remain
+  under <dir>`, and exits 2 before touching anything; the workflow home shows
+  that same line in its detail pane. `events <runId>` still replays the durable
+  JSONL and `runs delete <id> --yes` still removes the directory. Historical
+  directories are never modified. The stale-owner reconciliation that used to
+  run before every dispatch is gone with the V1 liveness model it served.
+
+- Tests: 818 -> 652. Six V1-only files were deleted
+  (`workflow-adaptive`, `workflow-gaps`, `workflow-draft`, `workflow-schema`,
+  `workflow-validate`, `workflow-run` — 151 tests); `workflow-runs`,
+  `workflow-watch`, `assignments`, `workflow-interruption`, `workflow-steering`
+  and `workflow-goal` were rewritten onto the V2 kernel keeping every assertion
+  about shared behaviour; `workflow-dashboard` dropped its 19 V1-only cases; and
+  a new `workflow-legacy-runs` (10 tests) proves the legacy contract against a
+  synthetic legacy `state.json`. `tests/manual-dynamic-real.mjs` (330 lines), a
+  manual real-provider matrix for authored `run`/`decide` graphs, went with the
+  executor; it was never part of the suite count. No test dispatches a real
+  provider.
+
 ## 0.26.0 — two entry points, kinds and rungs
 
 - There are now exactly two ways to start work, and `bullswarm delegate` is
