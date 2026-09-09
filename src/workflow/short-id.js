@@ -18,10 +18,31 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
-import { writeJsonAtomic } from './fsjson.js';
 import { join } from 'node:path';
-import { appendEvent } from './events.js';
-import { aggregateUsage } from '../lib/usage.js';
+
+// The one predicate every reader uses to tell an authored-graph run from a V2
+// one. 0.27.0 removed the authored-graph executor, so a run directory whose
+// state.json lacks the V2 schemaVersion — or that has no state.json at all —
+// is history: readable, listable, deletable, never driven.
+export function isLegacyRunState(state) {
+  return state?.schemaVersion !== 'bullswarm.workflow.state.v2';
+}
+
+// Whether the run directory at `runDir` holds a legacy run. A state.json that
+// exists but will not parse is a torn read, not a legacy run: the writer is
+// mid-rename, so the caller keeps its normal path instead of being told the
+// run is history.
+export function isLegacyRunDir(runDir) {
+  const statePath = join(runDir, 'state.json');
+  if (!existsSync(statePath)) return true;
+  try { return isLegacyRunState(JSON.parse(readFileSync(statePath, 'utf8'))); }
+  catch { return false; }
+}
+
+// The single sentence every command prints when asked to drive a legacy run.
+export function legacyRunLine({ shortId = null, runId = null, runDir = null } = {}) {
+  return `legacy authored-graph run ${shortId ?? runId}: its executor was removed in 0.27.0; files remain under ${runDir}`;
+}
 
 export const SHORT_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyz';
 export const SHORT_ID_LEN = 6;
@@ -63,6 +84,12 @@ export function generateShortId({ existing = [] } = {}) {
     if (!seen.has(id)) return id;
   }
   throw new Error('failed to generate a unique short runId after many attempts');
+}
+
+// The durable run directory name. Unlike the shortId this is never typed by a
+// user; it only has to be unique and sortable-ish.
+export function newRunId() {
+  return `wf-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`;
 }
 
 /**
@@ -114,9 +141,12 @@ export function resolveRunId(bullswarmDir, token) {
 
 /**
  * Read all runs (one entry per `wf-...` subdir of `~/.bullswarm/workflows/`).
- * Each entry includes the `state.json` summary + the `report.json`
- * summary if it exists. Active states are reconciled against the persisted
- * owner PID and heartbeat before the `ongoing` field is computed.
+ *
+ * A V2 run carries its whole `state.json` plus the `result.json`/`report.json`
+ * summary. A legacy run is reduced to the five fields a read-only row needs —
+ * status, startedAt, finishedAt, name and goal — and is marked `legacy: true`.
+ * Nothing else in its state.json is read, and a missing field is never an
+ * error: 0.27.0 only has to list these runs, never interpret them.
  */
 export function listRuns(bullswarmDir) {
   const runsRoot = join(bullswarmDir, 'workflows');
@@ -127,13 +157,18 @@ export function listRuns(bullswarmDir) {
     if (!statSync(dir).isDirectory()) continue;
     if (!name.startsWith('wf-')) continue;
     const sf = join(dir, 'state.json');
+    let raw = null, torn = false;
+    if (existsSync(sf)) {
+      try { raw = JSON.parse(readFileSync(sf, 'utf8')); } catch { torn = true; }
+    }
+    if (!torn && isLegacyRunState(raw)) {
+      out.push(legacyRunEntry(name, dir, raw));
+      continue;
+    }
+    const state = withV2Cancellation(raw, dir);
     const resultFile = join(dir, 'result.json');
     const rf = existsSync(resultFile) ? resultFile : join(dir, 'report.json');
-    let state = null, report = null;
-    if (existsSync(sf)) {
-      try { state = withV2Cancellation(JSON.parse(readFileSync(sf, 'utf8')), dir); } catch { /* corrupt */ }
-    }
-    if (state) state = reconcileInterruptedRun(dir, state);
+    let report = null;
     if (existsSync(rf)) {
       try { report = JSON.parse(readFileSync(rf, 'utf8')); } catch { /* corrupt */ }
     }
@@ -141,6 +176,8 @@ export function listRuns(bullswarmDir) {
       runId: name,
       shortId: state?.shortId ?? null,
       runDir: dir,
+      dir,
+      legacy: false,
       state,
       report,
       ongoing: isOngoing(dir, state),
@@ -149,28 +186,33 @@ export function listRuns(bullswarmDir) {
   return out;
 }
 
-/**
- * An ongoing run is one whose owning process is still alive OR very
- * recently alive. We probe via `state.json`'s mtime: the runtime
- * writes state.json on every step and sends a heartbeat during dispatch.
- * A run is "ongoing" when:
- *   - `state.finishedAt` is unset, AND
- *   - `state.json` was modified within the last `ONGOING_GRACE_MS`
- *     (default 90 s).
- * The 90 s window covers long-running steps (network calls, model
- * inference) and gives a comfortable buffer between the last
- * `persist()` and the run's terminal `persist()` (which sets
- * `finishedAt`, after which the fast-path below returns false).
- *
- * Edge case: if the process is killed before writing `finishedAt`,
- * the run looks "ongoing" for up to 90 s, then falls into the
- * historical bucket. That's the right behavior — a half-finished
- * run is not the same as a completed one, and we shouldn't be
- * eager to garbage-collect it.
- */
-export const ONGOING_GRACE_MS = 90_000;
-
-const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling', 'interrupting']);
+// Only these five fields are read from a legacy state.json, and each one is
+// optional: `workflow` was a bare string in early runs and an object later, so
+// both shapes resolve to the same `name`.
+function legacyRunEntry(runId, dir, raw) {
+  const workflow = raw?.workflow;
+  const name = typeof workflow === 'string'
+    ? (workflow || null)
+    : (typeof workflow?.name === 'string' ? workflow.name : null);
+  return {
+    runId,
+    shortId: typeof raw?.shortId === 'string' ? raw.shortId : null,
+    runDir: dir,
+    dir,
+    legacy: true,
+    state: {
+      status: typeof raw?.status === 'string' ? raw.status : null,
+      startedAt: typeof raw?.startedAt === 'string' ? raw.startedAt : null,
+      finishedAt: typeof raw?.finishedAt === 'string' ? raw.finishedAt : null,
+      name,
+      goal: typeof raw?.goal === 'string' ? raw.goal : null,
+    },
+    report: null,
+    // Nothing in 0.27.0 can drive an authored-graph run, so no legacy run is
+    // ever ongoing however fresh its state.json looks.
+    ongoing: false,
+  };
+}
 
 export function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -182,94 +224,20 @@ export function isProcessAlive(pid) {
   }
 }
 
-/**
- * Convert an ownerless active state into an explicit resumable interruption.
- * This is recovery, not garbage collection: outputs and attempts remain and
- * `workflow goal --resume <id>` can continue from the durable workflow.
- */
-export function reconcileInterruptedRun(runDir, state, {
-  now = Date.now(), processAlive = isProcessAlive,
-} = {}) {
-  if (!state || state.schemaVersion === 'bullswarm.workflow.state.v2' || state.finishedAt || !ACTIVE_STATUSES.has(state.status)) return state;
-  if (state.status === 'waiting_for_approval' || state.status === 'paused') return state;
-  const statePath = join(runDir, 'state.json');
-  let modifiedAt = 0;
-  try { modifiedAt = statSync(statePath).mtimeMs; } catch { return state; }
-  const heartbeatAt = Date.parse(
-    state.runner?.lastHeartbeatAt
-      ?? Object.values(state.activeAgents ?? {}).map((agent) => agent.lastHeartbeatAt).filter(Boolean).sort().at(-1)
-      ?? '',
-  );
-  const lastLiveAt = Number.isFinite(heartbeatAt) ? heartbeatAt : modifiedAt;
-  const fresh = (now - lastLiveAt) < ONGOING_GRACE_MS;
-  const pid = state.runner?.pid ?? null;
-  const ownerAlive = pid != null && processAlive(pid);
-  // A live PID alone is insufficient because PIDs can be reused. Persisted
-  // heartbeats let us require both identity signals for modern run states.
-  if ((pid != null && ownerAlive && fresh) || (pid == null && fresh)) return state;
-
-  const reconciledAt = new Date(now).toISOString();
-  const reason = pid == null
-    ? 'runner heartbeat expired before a terminal state was persisted'
-    : `runner process ${pid} exited before a terminal state was persisted`;
-  state.status = 'interrupted';
-  state.stage = 'interrupted';
-  state.finishedAt = reconciledAt;
-  state.interruptedAt = reconciledAt;
-  state.abortReason = reason;
-  state.recovery = { resumable: true, reconciledAt, reason };
-  state.runner = { ...(state.runner ?? {}), status: 'interrupted', finishedAt: reconciledAt };
-  for (const attempt of state.attempts ?? []) {
-    if (attempt.status === 'running') {
-      attempt.status = 'abandoned';
-      attempt.finishedAt = reconciledAt;
-      attempt.why = reason;
-    }
-  }
-  for (const action of state.actionLedger ?? []) {
-    if (['running', 'retry_scheduled', 'queued'].includes(action.status)) {
-      action.status = 'interrupted';
-      action.finishedAt = reconciledAt;
-      action.why = reason;
-    }
-  }
-  state.usage = aggregateUsage(state.attempts ?? []);
-  delete state.activeAgents;
-  delete state.currentPhase;
-  delete state.currentStep;
-  appendEvent(runDir, state, 'run.interrupted_reconciled', { reason, resumable: true });
-  writeJsonAtomic(statePath, state);
-  return state;
-}
-
-export function reconcileInterruptedRuns(bullswarmDir, opts = {}) {
-  const runsRoot = join(bullswarmDir, 'workflows');
-  if (!existsSync(runsRoot)) return [];
-  const changed = [];
-  for (const name of readdirSync(runsRoot)) {
-    const runDir = join(runsRoot, name);
-    const statePath = join(runDir, 'state.json');
-    if (!name.startsWith('wf-') || !existsSync(statePath)) continue;
-    let state;
-    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { continue; }
-    const before = state.status;
-    const next = reconcileInterruptedRun(runDir, state, opts);
-    if (before !== next.status && next.status === 'interrupted') changed.push(name);
-  }
-  return changed;
-}
-
 // Statuses that claim a kernel process is doing something right now. `waiting`
 // is excluded on purpose: a caller-planner pause is durable and ownerless by
 // design, so no process is expected to be alive there.
 const V2_NEEDS_RUNNER = new Set(['queued', 'planning', 'running', 'ready-to-finalize']);
 const RUNNER_GRACE_MS = 120_000;
-const LEGACY_SILENCE_MS = 600_000;
+// A V2 run started before kernels recorded heartbeats carries no pid; only a
+// long silence can tell us it stopped.
+const NO_HEARTBEAT_SILENCE_MS = 600_000;
 
 // Whether a V2 run's kernel is still alive. A run whose process died keeps
 // saying "running" in state.json forever, so every reader has to ask.
 export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isProcessAlive, runDir = null } = {}) {
-  if (state?.schemaVersion !== 'bullswarm.workflow.state.v2') return { checked: false, alive: true, reason: null };
+  // Legacy runs are unchecked: no kernel was ever expected to own them.
+  if (isLegacyRunState(state)) return { checked: false, alive: true, reason: null };
   const status = state.lifecycle?.status;
   if (status === 'interrupted') return { checked: true, alive: false, reason: 'kernel interrupted; resume to continue preserved work' };
   if (!V2_NEEDS_RUNNER.has(status)) return { checked: false, alive: true, reason: null };
@@ -285,7 +253,7 @@ export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isPro
     let modifiedAt = 0;
     try { modifiedAt = statSync(join(runDir, 'state.json')).mtimeMs; } catch { return { checked: false, alive: true, reason: null }; }
     const silentMs = now - modifiedAt;
-    if (silentMs < LEGACY_SILENCE_MS) return { checked: false, alive: true, reason: null };
+    if (silentMs < NO_HEARTBEAT_SILENCE_MS) return { checked: false, alive: true, reason: null };
     return {
       checked: true,
       alive: false,
@@ -300,18 +268,9 @@ export function v2RunnerLiveness(state, { now = Date.now(), processAlive = isPro
 }
 
 export function isOngoing(runDir, state) {
-  if (state?.schemaVersion === 'bullswarm.workflow.state.v2') {
-    if (['completed', 'partial', 'cancelled', 'failed', 'interrupted'].includes(state.lifecycle?.status)) return false;
-    // A run whose kernel died is not ongoing, whatever state.json still claims.
-    return v2RunnerLiveness(state, { runDir }).alive;
-  }
-  if (state && state.status && state.finishedAt) return false;
-  try {
-    const sf = join(runDir, 'state.json');
-    if (!existsSync(sf)) return false;
-    const st = statSync(sf);
-    return (Date.now() - st.mtimeMs) < ONGOING_GRACE_MS;
-  } catch {
-    return false;
-  }
+  // A legacy run has no executor left to be ongoing with.
+  if (isLegacyRunState(state)) return false;
+  if (['completed', 'partial', 'cancelled', 'failed', 'interrupted'].includes(state.lifecycle?.status)) return false;
+  // A run whose kernel died is not ongoing, whatever state.json still claims.
+  return v2RunnerLiveness(state, { runDir }).alive;
 }

@@ -30,8 +30,8 @@ without initializing state or executing the command:
 
 ```bash
 bullswarm --help
-bullswarm workflow run --help
-bullswarm workflow draft step add --help
+bullswarm workflow goal --help
+bullswarm workflow runs show --help
 ```
 
 `workflow goal` launches a durable background runner, prints operating commands,
@@ -112,18 +112,10 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `pools` | Show each pool's meter state, pace position, 5-hour utilization (`5h=<n>%`, flagged `NEAR-5H-LIMIT` at or above 75%), quarantine status |
 | `strategy` | Interactive provider/model control center with live high/medium/low route previews and an agent-facing JSON API |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
-| `workflow` | Start an autonomous goal, or run / validate / draft / inspect explicit workflows and their live instances. |
+| `workflow` | Plan, execute, observe, and operate one autonomous workflow engine and its live instances. |
 | `runs` | Short alias for `workflow runs`, including list, show, result, delete, and cleanup operations. |
 | `version` / `--version` | Print the installed Bullswarm version. |
 | `release` | Run the guarded local version-bump, commit, and tag workflow used before CI publishes to npm. |
-
-Discover and validate workflow definitions without executing them:
-
-```bash
-bullswarm workflow list
-bullswarm workflow list --json
-bullswarm workflow validate workflows/my-workflow.json
-```
 
 `workflow goal --request <path>` and `--run-id <id>` are internal detached-runner
 resume plumbing. Normal callers should provide a goal or use `--resume <shortId|runId>`.
@@ -141,7 +133,7 @@ bullswarm strategy routes --json           # compact effective choices
 bullswarm strategy set-provider codex off --yes
 bullswarm strategy set-model opencode2 relay/gpt-5.6-luna \
   --tiers high,medium,low --yes
-bullswarm strategy configure --file strategy.json --yes  # atomic agent-authored policy
+bullswarm strategy configure --file strategy.json --yes  # atomic agent-created policy
 bullswarm strategy reset-tier low --yes     # restore one tier to automatic
 bullswarm strategy set-reasoning --tier high --level xhigh --yes
 bullswarm strategy set-reasoning --tier high --level high --pool codex --yes
@@ -202,8 +194,8 @@ any routing change. Press `Y` to apply them or `N` to retain the current policy.
 The analysis selects at most one default model for each provider and effort
 tier. It uses OpenRouter's agentic, coding, and intelligence indices as quality
 signals and API-equivalent pricing as the budget signal. A repository-owned
-GitHub Actions job (`.github/workflows/refresh-benchmarks.yml`) refreshes two
-public assets on the rolling `benchmark-data-latest` GitHub Release:
+benchmark refresh job refreshes two public assets on the rolling
+`benchmark-data-latest` GitHub Release:
 `openrouter-benchmarks.json` from the authenticated OpenRouter APIs, and
 `epoch-benchmarks.json` from Epoch AI's CC BY 4.0 benchmark export, which is
 what `strategy rungs` reads for per-model-per-reasoning-level evidence.
@@ -321,7 +313,7 @@ phase/step/attempt tree.
 
 ## One-command autonomous goals
 
-For normal multi-step work, give Bullswarm the goal and the program you authored
+For normal multi-step work, give Bullswarm the goal and the program you author
 for it—not a JSON graph of phases:
 
 ```bash
@@ -433,9 +425,7 @@ The planner does not author phases or declare success/failure. The kernel
 derives stable presentation stages for the TUI and computes the final V2
 result. Saved V2 runs retain their original execution and workspace policy on
 resume. V1 autonomous run directories are not migrated or resumed;
-explicitly naming one fails before any paid dispatch. Fixed JSON workflows and
-drafts remain a separate authored-graph feature with their existing step
-types.
+explicitly naming one fails before any paid dispatch.
 
 The detached response includes a short ID and exact observation commands:
 
@@ -570,33 +560,6 @@ runs still support their original gap boundaries and `--exhausted` submissions.
 the caller plans against a real survey; scout units are advisory for a caller
 planner.
 
-Use an explicit draft when the graph itself is a durable contract and should
-not be planner-defined. `bullswarm workflow draft ...` lets you assemble it one
-mutation at a time. No upfront JSON required. Drafts persist under
-`~/.bullswarm/drafts/<name>/` and become first-class workflows
-(discoverable, runnable by name) the moment they exist.
-
-```bash
-bullswarm workflow draft create audit-code \
-    --description "Audit the source code" --input targetDir=.
-bullswarm workflow draft phase add audit-code discover
-bullswarm workflow draft phase add audit-code review
-bullswarm workflow draft step add audit-code discover list-files \
-    --type run --lane chore --prompt "List every .js file in src/" \
-    --add-dir '{{inputs.targetDir}}'
-bullswarm workflow draft step add audit-code review per-file \
-    --type fanout --items-from 'outputs.list-files.outFile' \
-    --lane analyze --concurrency 2 \
-    --step-template '{"lane":"analyze","addDir":"{{inputs.targetDir}}","prompt":"Review {{item}}"}'
-bullswarm workflow draft show audit-code    # inspect the JSON
-bullswarm workflow draft run audit-code     # execute it
-bullswarm workflow draft export audit-code workflows/audit-code.json   # promote to file
-```
-
-`step add` re-validates after every mutation; partial drafts (zero
-phases, etc.) are treated as building, not invalid. `set` and
-`step set` patch fields in place. `delete` requires `--yes`.
-
 ## Operating on workflow runs
 
 Every run gets a 6-character shortId (Crockford-style alphabet,
@@ -615,10 +578,12 @@ bullswarm workflow runs show <shortId>     # state + report + summary
 bullswarm workflow runs result <shortId> --json  # stable result for the calling agent
 bullswarm runs show <shortId>              # top-level shorthand
 bullswarm workflow runs delete <shortId> --yes    # remove the run dir
-
-# Resume by shortId — runs the same logic as the full runId
-bullswarm workflow run audit-code --resume <shortId>
 ```
+
+Legacy authored-graph runs are listed as read-only rows marked `legacy`. Every
+driving command prints `legacy authored-graph run <shortId>: its executor was
+removed in 0.27.0; files remain under <dir>` and exits 2; historical directories
+are untouched.
 
 Run-history time filters always compare when the workflow was initiated
 (`startedAt`), never when it finished. `--since` is inclusive and `--until` is
@@ -635,8 +600,7 @@ usage, and verification qualification. New programs include `executionMode:
 "program"` and a `workspace` report with `changedFiles`, `baselineChangedFiles`,
 and warnings. This is a Git status inventory, not attribution to individual
 workers; files stay in the target directory. A completed program may be
-unverified and contain negative evidence. Fixed authored workflows retain their existing
-result envelope. `runs show` remains the low-level debugging surface.
+unverified and contain negative evidence. `runs show` remains the low-level debugging surface.
 Goal launch output includes an `instructions` handoff with four named paths:
 `agentInspect` for a machine-readable snapshot, `watch` for low-noise progress,
 `humanTui` for the interactive browser, and `result` for the terminal delivery.
@@ -661,10 +625,9 @@ periodic heartbeat is off unless you pass `--heartbeat <seconds>`;
 `--stall-after <seconds>` (default 300) reports a running agent that has
 gone silent. Pass `--classic` to force the older heartbeat-based watcher
 instead (the transition-on-change snapshot stream plus a periodic
-heartbeat, every 60 seconds unless `--heartbeat <seconds>` is given) —
-legacy (non-V2) runs already behave this way and `--classic` is a no-op for
-them; `--classic` cannot combine with `--next`, which exists only for event
-mode. `--next` prints no attach line and
+heartbeat, every 60 seconds unless `--heartbeat <seconds>` is given).
+`--classic` applies only to V2 runs and cannot combine with `--next`, which
+exists only for event mode. `--next` prints no attach line and
 exits after the first notable event so a background terminal can wake the
 caller; relaunch until the outcome line reports a pause or a terminal
 status (exit 0 while the run continues or delivered, 1 when it ended
@@ -684,9 +647,9 @@ prints). `--jsonl` emits one JSON object per notable event with a stable
 `interrupted`, and with `--verbose` `action.started`, `attempt.retrying`,
 `steering.delivered`); in that mode the relaunch line is not printed and
 every object instead carries the `sequence` it was emitted at, which is the
-value to pass as `--after`. `--once` still prints one current snapshot. Legacy
-(non-V2) runs keep the compact transition-plus-heartbeat stream unchanged,
-the same stream `--classic` opts a V2 run into.
+value to pass as `--after`. `--once` still prints one current snapshot. A legacy
+(pre-0.27.0 authored-graph) run cannot be watched at all: the watcher prints
+the legacy line and exits 2 before it polls anything.
 
 ```bash
 bullswarm workflow watch <shortId>
@@ -736,16 +699,14 @@ bullswarm workflow tui --json --all           # ongoing + historical runs
 bullswarm workflow tui --json <shortId>       # inspect one run
 bullswarm workflow tui --json --cancel <id>   # request cooperative stop
 bullswarm workflow capabilities --json       # pools, lanes, models, meters, limits
-bullswarm workflow inspect <file-or-name>     # workflow shape and semantics
 bullswarm workflow events --json <id> --after 20
 bullswarm workflow steer <id> --message "Prefer focused tests before another full suite"
 bullswarm workflow action show --json <id> <actionId>
-bullswarm workflow approval approve --json <id>  # then resume the run
 ```
 
 Cancellation stops active delegates and commits `cancelled`. V2 goal workflows
 keep the operator request in a separate durable file so kernel progress cannot
-overwrite it; authored V1 graphs additionally expose a `cancelling` state.
+overwrite it.
 `SIGTERM` and `SIGINT` stop delegate process groups and commit a resumable
 `interrupted` state. A V2 resume holds an exclusive kernel lease, stops recorded
 surviving delegates from the previous kernel, and finishes post-processing from
@@ -816,71 +777,6 @@ When a provider event stream reports the actual model, Bullswarm records that
 runtime value and uses its matching connector rate metadata for the attempt's
 cost estimate. Unknown or provider-hidden model identity remains explicitly
 unknown.
-
-### Authored adaptive graphs
-
-This is part of the separately authored fixed-graph engine, not the autonomous
-V2 `workflow goal` path. A graph may add an explicit `decide` step, advisory
-resource targets, and structural expansion limits:
-
-```json
-{
-  "mode": "adaptive",
-  "settings": {
-    "maxAgents": 12,
-    "maxExpansionRounds": 3,
-    "maxActions": 20,
-    "maxItemsPerExpansion": 8,
-    "maxWorkflowSeconds": 1800
-  },
-  "phases": [{
-    "name": "review",
-    "steps": [
-      { "id": "initial", "type": "run", "prompt": "Inspect the code." },
-      {
-        "id": "planner",
-        "type": "decide",
-        "requiresCapabilities": ["workflow-planning", "strong-analysis"],
-        "prompt": "Judge sufficiency and propose only bounded missing work."
-      }
-    ]
-  }]
-}
-```
-
-For an authored adaptive graph, `maxAgents`, `maxWorkflowSeconds`, and
-`maxExpansionRounds` are advisory inputs to its decide step. Approaching them
-strongly biases that step toward
-consolidating existing artifacts and returning the best useful outcome;
-crossing them is recorded but never stops a worker, skips verification, or
-fails a run. `maxActions` and `maxItemsPerExpansion` remain hard structural
-safeguards. Reaching one returns a qualified outcome when useful work exists,
-rather than discarding the run as a blanket failure. Delegates have no
-implicit wall-clock timeout; set a step's `timeoutSec` (or direct-run
-`--timeout`) only when an operator explicitly wants a hard termination timer.
-
-Within this authored-graph engine, `complete` remains strictly verified. A
-decide-step `stop` still
-delivers a completed outcome when a useful delivery exists: unresolved
-verification concerns and the stopping reason ride along as `outcome.concerns`
-and `outcome.reason`, attributes of that completed outcome rather than a
-separate terminal status. `stop` produces `blocked` only when no useful
-delivery exists. `workflow runs result` treats the completed outcome as ready
-while reporting `verified:false`. The status value `completed_with_concerns`
-still appears on some runs — including legacy ones recorded before this
-framing — and every consumer reads it exactly like `completed`: a delivered
-result with concerns to review, never a failure.
-
-The planner returns versioned JSON. It may propose `needs_more_work` with
-bounded `run`, inline-`fanout`, or `verify` actions. The deterministic runtime
-validates IDs, dependencies, operation types, capabilities, and budgets before
-appending anything. It executes ready actions, observes their durable results,
-and calls the planner again. `events.jsonl`, `state.json`, the TUI, and JSON
-inspection expose the same plan, actions, attempts, decisions, budgets, and
-artifacts. See `workflows/adaptive-code-review.json` for a complete example.
-Planner actions cannot set `pool`, `model`, `addDir`, or `taskFile`. If those need to be
-fixed by the initiator, declare them under the `decide` step's `actionDefaults`;
-otherwise eligible capable pools are ranked by live quota surplus.
 
 ## The verdict
 

@@ -70,7 +70,7 @@ const top = rich({
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
     { name: 'doctor', desc: 'report installation readiness' },
-    { name: 'workflow', desc: 'create, execute, observe, and audit workflows' },
+    { name: 'workflow', desc: 'plan, execute, observe, and audit workflows' },
     { name: 'runs', desc: 'alias for workflow runs' },
     { name: 'version', desc: 'print the installed version' },
     { name: 'release', desc: 'create a version commit and tag' },
@@ -708,15 +708,13 @@ const strategyAutoOffText = rich({
 // underlying implementation already always prints JSON. Rather than hide the
 // flag (which would make `--json` look like a parse error, and it isn't), each
 // such leaf says so explicitly: "accepted ... but has no effect". Confirmed by
-// reading src/workflow/cli.js (wfCapabilities, wfEvents, wfAction) and
-// src/workflow/dashboard.js (decideApproval's caller in wfApproval) — none of
+// reading src/workflow/cli.js (wfCapabilities, wfEvents, wfAction) — none of
 // them branch on opts.json.
 
 const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
-  purpose: 'Create, execute, observe, and audit durable multi-agent workflows: autonomous '
-    + 'V2 goals use the generic action/evidence kernel, while fixed workflow files and drafts '
-    + 'retain their authored-graph executor. With no command on a TTY, opens the unified '
+  purpose: 'Plan, execute, observe, and audit durable multi-agent workflows with the '
+    + 'single V2 action/evidence engine. With no command on a TTY, opens the unified '
     + 'full-screen workflow home.',
   argsTitle: 'Commands',
   args: [
@@ -724,11 +722,6 @@ const workflowText = rich({
     { name: 'plan ...', desc: 'you are the Workflow Planner: read the planning contract, validate a program, inspect a paused run\'s request, and submit the next program' },
     { name: 'cancel <runId>', desc: 'stop a run cooperatively; a run paused for its caller planner is finalized immediately' },
     { name: 'resume <runId>', desc: 'resume an interrupted or paused V2 run with its durable planner mode and routing' },
-    { name: 'run <file-or-name>', desc: 'run an existing workflow file or saved draft' },
-    { name: 'draft ...', desc: 'incrementally build a fixed workflow graph' },
-    { name: 'validate <file-or-name>', desc: 'validate without executing' },
-    { name: 'inspect <file-or-name>', desc: 'show the document, semantics, and validation details' },
-    { name: 'list', desc: 'list available workflow definitions' },
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
     { name: 'tui [runId]', desc: 'open the workflow home or one run timeline; bare workflow is equivalent on a TTY' },
@@ -736,19 +729,17 @@ const workflowText = rich({
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
-    { name: 'approval <approve|reject> ...', desc: 'approve or reject a waiting decision gate' },
   ],
   options: [],
   safety: [
     'bare bullswarm workflow opens a read-only active/recent run dashboard only when stdin and '
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
-    'before command dispatch, stale-owner reconciliation may mark an interrupted authored-graph '
-      + 'run resumable; autonomous V2 state is resumed only by its own kernel',
-    'goal/run/draft run dispatch real coding-agent CLI processes and write durable state under '
-      + '~/.bullswarm/workflows/<runId>/; validate/inspect/list/capabilities/tui/watch/events are '
-      + 'read-only (tui --cancel, steer, approval, and "runs delete" are the exceptions — see '
-      + 'their own --help)',
-    'plan contract and plan show are read-only; plan submit writes the accepted program into the run and relaunches its kernel',
+    'goal dispatches real coding-agent CLI processes and writes durable state under '
+      + '~/.bullswarm/workflows/<runId>/',
+    'capabilities, tui, watch, events, and action show are read-only; cancel, steer, plan submit, '
+      + 'and runs delete are the exceptions — see their own --help',
+    'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
+    'plan contract, plan validate, and plan show are read-only; plan submit writes the accepted program into the run and relaunches its kernel',
   ],
   examples: [
     { cmd: 'bullswarm workflow', note: 'open the human workflow home: runs, live preview, timeline, agents, and activity' },
@@ -985,71 +976,17 @@ const workflowPlanSubmitText = rich({
   next: 'bullswarm workflow watch <runId>, then bullswarm workflow runs result <runId> --json when terminal.',
 });
 
-const workflowRunText = rich({
-  usage: 'bullswarm workflow run <file-or-name> [--input k=v]... [--resume <shortId|runId>] [--json] [--quiet]',
-  purpose: 'Run an existing workflow file or saved draft to completion (or resume one already '
-    + 'in progress), dispatching each planned step to a delegate pool.',
-  args: [
-    { name: '<file-or-name>', desc: 'a workflow JSON file path, or a bare name resolved against ./workflows, ~/.bullswarm/workflows, and ~/.bullswarm/drafts' },
-  ],
-  options: [
-    { flag: '--input k=v', desc: 'declare or override a workflow input value; JSON-decoded when the value starts with [, {, ", or \' (repeatable)', default: 'none' },
-    { flag: '--resume <shortId|runId>', desc: 'resume a previous run of this workflow instead of starting fresh', default: 'starts a new run' },
-    { flag: '--json', desc: 'print the machine-readable report document', default: 'human-readable progress (compact TUI-style lines)' },
-    { flag: '--quiet', desc: 'suppress human progress output even without --json', default: 'off' },
-  ],
-  safety: [
-    'dispatches real coding-agent CLI processes per step (same routing/spend as bullswarm run)',
-    'writes durable workflow state under ~/.bullswarm/workflows/<runId>/',
-    'validated against live pools before running; an invalid document is rejected and nothing runs',
-    'retired autonomous V1 documents are rejected before dispatch; use workflow goal for autonomous V2',
-  ],
-  examples: [{ cmd: 'bullswarm workflow run my-workflow.json --input target=src/ --json' }],
-  next: 'bullswarm workflow runs show <shortId> to check progress, or bullswarm workflow watch <shortId> to follow it live.',
-});
-
-const workflowValidateText = rich({
-  usage: 'bullswarm workflow validate <file-or-name>',
-  purpose: 'Load a workflow file or saved draft and check it against the schema and live pool '
-    + 'names, without running anything.',
-  args: [{ name: '<file-or-name>', desc: 'same resolution as workflow run' }],
-  options: [],
-  safety: ['read-only — performs live pool discovery to check pool-name references, but nothing is dispatched or written'],
-  examples: [{ cmd: 'bullswarm workflow validate my-workflow.json' }],
-  next: 'bullswarm workflow run <file-or-name> once it reports valid.',
-});
-
-const workflowListText = rich({
-  usage: 'bullswarm workflow list [--json]',
-  purpose: 'List discoverable workflow files and drafts.',
-  args: [],
-  options: [{ flag: '--json', desc: 'print a machine-readable array of {name, path, valid, draft}', default: 'human-readable one-line-per-workflow summary' }],
-  safety: ['read-only — scans ./workflows, ~/.bullswarm/workflows, and ~/.bullswarm/drafts; nothing is written'],
-  examples: [{ cmd: 'bullswarm workflow list' }],
-  next: 'bullswarm workflow validate <name> to check one before running.',
-});
-
 const workflowCapabilitiesText = rich({
   usage: 'bullswarm workflow capabilities',
-  purpose: 'Report the autonomous V2 kernel and separate authored-graph engine, plus current '
-    + 'routing policy and live pool/model/meter state.',
+  purpose: 'Report the workflow engine, current routing policy, and live '
+    + 'pool/model/meter state.',
   args: [],
   options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON regardless of this flag' }],
   safety: ['read-only — performs live pool discovery to populate pool/meter state; nothing is written'],
   examples: [{ cmd: 'bullswarm workflow capabilities' }],
-  next: 'bullswarm workflow goal "<goal>" to use autonomous V2, workflow run <file> for a fixed authored graph, or bullswarm strategy show to review model tier assignments.',
+  next: 'bullswarm workflow goal "<goal>" to plan and execute a workflow, or bullswarm strategy show to review model tier assignments.',
 });
 
-const workflowInspectText = rich({
-  usage: 'bullswarm workflow inspect <file-or-name>',
-  purpose: 'Load a workflow document and print its structure, resolved per-step-type '
-    + 'semantics, and full validation result as JSON — deeper detail than validate.',
-  args: [{ name: '<file-or-name>', desc: 'same resolution as workflow run' }],
-  options: [],
-  safety: ['read-only — performs live pool discovery to populate availablePools; nothing is written'],
-  examples: [{ cmd: 'bullswarm workflow inspect my-workflow.json' }],
-  next: 'bullswarm workflow validate <file-or-name> for a concise pass/fail check, or bullswarm workflow run <file-or-name> to execute it.',
-});
 
 const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]',
@@ -1074,7 +1011,7 @@ const workflowTuiText = rich({
     { cmd: 'bullswarm workflow tui', note: 'compatibility alias for the bare workflow dashboard' },
     { cmd: 'bullswarm workflow tui --json --all' },
   ],
-  next: 'bullswarm workflow watch <runId> for a low-noise non-interactive follow, or bullswarm workflow approval approve <runId> if it is waiting on a decision gate.',
+  next: 'bullswarm workflow watch <runId> for a low-noise non-interactive follow, or bullswarm workflow runs result <runId> --json once it finishes.',
 });
 
 const workflowWatchText = rich({
@@ -1085,26 +1022,27 @@ const workflowWatchText = rich({
     + 'prints, verbose or not: an `⚠ ... usage limit on <pool> · paused until <deadline> · retrying on '
     + 'another pool` line, then an `↺ ... now on <pool> · <model>` line once the mechanical retry lands. '
     + '`--classic` forces the older heartbeat-based watcher instead (transition-on-change snapshots plus '
-    + 'a periodic heartbeat); legacy runs already behave this way and are unaffected. `--next` prints no '
+    + 'a periodic heartbeat); it applies only to V2 runs. A legacy authored-graph run cannot be watched at '
+    + 'all: the watcher prints the legacy line and exits 2 before polling. `--next` prints no '
     + 'attach line and returns after the first notable event, or immediately at a pause or terminal status '
     + '(event mode only — it cannot combine with `--classic`). '
     + 'Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and '
     + '`--since`; pass those two values back on the relaunch so events committed while no watcher was '
     + 'attached are printed instead of skipped and an already-reported stall does not fire again. '
-    + '`--heartbeat` is opt-in for V2; legacy runs (and `--classic`) keep the historical 60s heartbeat by '
+    + '`--heartbeat` is opt-in for event mode; `--classic` keeps the historical 60s heartbeat by '
     + 'default. Distinct from the full-screen tui and the machine-oriented events replay.',
   args: [{ name: '<runId>', desc: 'shortId or runId' }],
   options: [
-    { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; no-op for legacy runs; cannot combine with --next', default: 'off (event mode for V2 runs)' },
+    { flag: '--classic', desc: 'force the older heartbeat-based watcher (transition-on-change snapshots plus a periodic heartbeat) instead of event mode; V2 runs only; cannot combine with --next', default: 'off (event mode)' },
     { flag: '--interval <seconds>', desc: 'poll interval while following', default: '2' },
-    { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off for V2, 60 for legacy and --classic' },
+    { flag: '--heartbeat <seconds>', desc: 'print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1', default: 'off in event mode, 60 with --classic' },
     { flag: '--stall-after <seconds>', desc: 'report a running agent as silent after this many seconds without activity; must be >= 1', default: '300' },
     { flag: '--next', desc: 'print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status', default: 'off (follows until terminal or pause)' },
     { flag: '--after <sequence>', desc: 'start from this durable event sequence instead of the current high-water mark, so events committed since the previous watcher exited are printed; use the value from the previous `next:` line (in --jsonl, the `sequence` field of the last object)', default: 'attach at the current high-water mark' },
     { flag: '--since <iso-timestamp>', desc: 'the previous watcher\'s exit time; a running agent already silent at attach is reported only if its silence crossed --stall-after at or after this time, so no duplicate stall line prints (its recovery still does); use the value from the previous `next:` line', default: 'report every agent silent past --stall-after at attach' },
     { flag: '--jsonl', desc: 'emit one JSON object per line instead of human text; every object carries the `sequence` it was emitted at, and the `next:` relaunch line is not printed', default: 'off (human text)' },
     { flag: '--once', desc: 'print a single current snapshot and exit immediately instead of following', default: 'off (follows until terminal)' },
-    { flag: '--verbose', desc: 'include started, retry, and steering-delivered lines (V2) and per-agent action detail (legacy)', default: 'off (compact)' },
+    { flag: '--verbose', desc: 'include started, retry, and steering-delivered lines in event mode, and per-agent action detail with --classic', default: 'off (compact)' },
   ],
   safety: [
     'read-only — polls durable state/events on a timer; writes nothing',
@@ -1112,6 +1050,7 @@ const workflowWatchText = rich({
     '--next exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running',
     'for a V2 run, a --next exit that leaves the run going ends with `next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`; pause, terminal and interrupted exits keep their own outcome/next lines',
     '--classic --next is rejected with exit 2: --next only applies to event mode',
+    'a legacy authored-graph run exits 2 with the legacy line before any polling; nothing drives it',
   ],
   examples: [
     { cmd: 'bullswarm workflow watch ab12cd --next', note: 'print the next notable event and exit; relaunch until outcome reports a pause or a terminal status' },
@@ -1146,8 +1085,8 @@ const workflowSteerText = rich({
     { flag: '--json', desc: 'machine-readable confirmation', default: 'human-readable confirmation line' },
   ],
   safety: [
-    "appends an entry to the run's steering log; delivered only at the next not-yet-started planner/decision checkpoint — the currently active worker or step is unaffected",
-    'refuses if the run is already terminal, or has no decide step (nothing to steer)',
+    "appends an entry to the run's steering log; delivered only at the next not-yet-started planner checkpoint — the currently active worker or action is unaffected",
+    'refuses if the run is already terminal, and refuses a legacy authored-graph run with the legacy line and exit 2',
   ],
   examples: [{ cmd: 'bullswarm workflow steer ab12cd --message "Focus only on the auth module"' }],
   next: 'bullswarm workflow watch <runId> to see when the guidance takes effect.',
@@ -1178,47 +1117,12 @@ const workflowActionShowText = rich({
   next: 'bullswarm workflow watch <runId> or bullswarm workflow tui <runId> to see actions in context.',
 });
 
-const workflowApprovalText = rich({
-  usage: 'bullswarm workflow approval <approve|reject> <runId> [--json]',
-  purpose: 'Approve or reject a workflow that is paused waiting for a decision gate.',
-  argsTitle: 'Commands',
-  args: [
-    { name: 'approve <runId>', desc: "approve the waiting gate; the workflow resumes" },
-    { name: 'reject <runId>', desc: 'reject the waiting gate; the workflow is cancelled' },
-  ],
-  options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON' }],
-  safety: ["writes state.json for the target run; only valid while the run's status is waiting_for_approval"],
-  examples: [{ cmd: 'bullswarm workflow approval approve ab12cd' }],
-  next: 'bullswarm workflow watch <runId> to confirm the run resumed (or stopped).',
-});
-
-const workflowApprovalApproveText = rich({
-  usage: 'bullswarm workflow approval approve <runId> [--json]',
-  purpose: "Approve a waiting decision gate; the run's status moves to paused and continues at "
-    + 'the next orchestration step.',
-  args: [{ name: '<runId>', desc: 'shortId or runId' }],
-  options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON' }],
-  safety: ['writes state.json; fails if the run is not currently waiting_for_approval'],
-  examples: [{ cmd: 'bullswarm workflow approval approve ab12cd' }],
-  next: 'bullswarm workflow watch ab12cd to confirm it resumed.',
-});
-
-const workflowApprovalRejectText = rich({
-  usage: 'bullswarm workflow approval reject <runId> [--json]',
-  purpose: 'Reject a waiting decision gate; the run is marked cancelled and stops.',
-  args: [{ name: '<runId>', desc: 'shortId or runId' }],
-  options: [{ flag: '--json', desc: 'accepted for consistency with other commands, but has no effect', default: 'output is always JSON' }],
-  safety: ['writes state.json (status: cancelled, finishedAt set); fails if the run is not currently waiting_for_approval'],
-  examples: [{ cmd: 'bullswarm workflow approval reject ab12cd' }],
-  next: 'bullswarm workflow runs show ab12cd to review why it was rejected.',
-});
-
 // --- workflow runs ----------------------------------------------------------
 
 const workflowRunsListOptions = [
   { flag: '--all', desc: 'include both ongoing and historical runs', default: 'ongoing only' },
   { flag: '--historical', desc: 'only historical (finished) runs', default: 'ongoing only' },
-  { flag: '--name <workflow>', desc: 'filter by workflow name', default: 'no filter' },
+  { flag: '--name <goal>', desc: 'filter by exact goal text (a legacy row matches on its recorded workflow name)', default: 'no filter' },
   { flag: '--since <time>', desc: 'lower bound on start time (inclusive); aliases --from, --started-after', default: 'no lower bound' },
   { flag: '--until <time>', desc: 'upper bound on start time (exclusive); aliases --to, --started-before', default: 'no upper bound' },
   { flag: '--limit <n>', desc: 'cap the number of results', default: 'no cap' },
@@ -1228,11 +1132,14 @@ const workflowRunsListOptions = [
 const runsTimeFilterNote = 'Time filters compare each run\'s initiation timestamp and accept ISO '
   + 'timestamps, local dates (YYYY-MM-DD), today/yesterday/tomorrow/now, or relative durations '
   + 'such as 30m, 24h, 7d, 2w.';
+const legacyRunNote = 'Legacy authored-graph runs are listed as read-only rows marked `legacy`; every '
+  + 'driving command prints `legacy authored-graph run <shortId>: its executor was removed in 0.27.0; '
+  + 'files remain under <dir>` and exits 2.';
 
 const workflowRunsText = rich({
-  usage: 'bullswarm workflow runs [list] [--all|--historical] [--name <workflow>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
-  purpose: 'Search ongoing and historical workflow run instances (goals, workflow runs, and '
-    + `draft runs all share this index), or drill into one with show/result/delete. ${runsTimeFilterNote}`,
+  usage: 'bullswarm workflow runs [list] [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
+  purpose: 'Search ongoing and historical workflow run instances, including read-only legacy '
+    + `rows, or drill into one with show/result/delete. ${legacyRunNote} ${runsTimeFilterNote}`,
   argsTitle: 'Commands',
   args: [
     { name: 'list', desc: 'search/list runs (default when no subcommand is given)' },
@@ -1247,9 +1154,9 @@ const workflowRunsText = rich({
 });
 
 const workflowRunsListText = rich({
-  usage: 'bullswarm workflow runs list [--all|--historical] [--name <workflow>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
-  purpose: 'Search ongoing and/or historical workflow runs by name and initiation-time window. '
-    + `Explicit form of the runs default. ${runsTimeFilterNote}`,
+  usage: 'bullswarm workflow runs list [--all|--historical] [--name <goal>] [--since <time>] [--until <time>] [--limit <n>] [--json]',
+  purpose: 'Search ongoing and/or historical workflow runs, including read-only legacy rows, by '
+    + `name and initiation-time window. ${legacyRunNote} Explicit form of the runs default. ${runsTimeFilterNote}`,
   args: [],
   options: workflowRunsListOptions,
   safety: ['read-only'],
@@ -1259,8 +1166,8 @@ const workflowRunsListText = rich({
 
 const workflowRunsShowText = rich({
   usage: 'bullswarm workflow runs show <shortId|runId> [--json]',
-  purpose: "Show one run's durable state and status summary. Autonomous V2 reports goal, "
-    + 'requirements, and generic actions; an authored graph reports its step summary.',
+  purpose: "Show one run's durable state and status summary. V2 reports the goal, requirements, "
+    + `and generic actions; a legacy row reports its read-only status. ${legacyRunNote}`,
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
   options: [{ flag: '--json', desc: 'print the full state/report as JSON', default: 'human-readable summary lines' }],
   safety: ['read-only'],
@@ -1270,9 +1177,9 @@ const workflowRunsShowText = rich({
 
 const workflowRunsResultText = rich({
   usage: 'bullswarm workflow runs result <shortId|runId> [--json]',
-  purpose: 'Print the stable caller envelope. Autonomous V2 returns the kernel-computed goal, '
-    + 'requirement ledger, action outcomes, and unresolved gaps; an authored graph returns its '
-    + 'delivery and verification view. This is the intended integration point for scripts and agents.',
+  purpose: 'Print the stable caller envelope. V2 returns the kernel-computed goal, requirement '
+    + `ledger, action outcomes, and unresolved gaps; a legacy row remains read-only. ${legacyRunNote} `
+    + 'This is the intended integration point for scripts and agents.',
   args: [{ name: '<shortId|runId>', desc: 'run identifier' }],
   options: [{ flag: '--json', desc: 'print the full versioned result document as JSON', default: 'human-readable result summary' }],
   safety: ['read-only'],
@@ -1292,253 +1199,6 @@ const workflowRunsDeleteText = rich({
   safety: ['irreversible — recursively deletes ~/.bullswarm/workflows/<runId>/ from disk; refuses on an ongoing run unless --force is also given'],
   examples: [{ cmd: 'bullswarm workflow runs delete ab12cd --yes' }],
   next: 'bullswarm workflow runs --historical to confirm it is gone.',
-});
-
-// --- workflow draft ----------------------------------------------------------
-
-const workflowDraftText = rich({
-  usage: 'bullswarm workflow draft <command> [options]',
-  purpose: 'Incrementally build a fixed workflow graph — phases, then steps — by CLI calls '
-    + 'instead of hand-writing the whole JSON document at once, then validate and run it.',
-  argsTitle: 'Commands',
-  args: [
-    { name: 'create <name>', desc: 'start a new, empty draft' },
-    { name: 'show <name>', desc: "print a draft's current document and validation state" },
-    { name: 'list', desc: 'list saved drafts' },
-    { name: 'phase add|remove', desc: 'add or remove a phase' },
-    { name: 'step add|remove|set', desc: 'add, remove, or edit one field of a step' },
-    { name: 'set', desc: 'edit one draft-level field' },
-    { name: 'validate <name>', desc: 'validate without executing' },
-    { name: 'export <name> <out-file>', desc: "write the draft's workflow.json to a file" },
-    { name: 'delete <name>', desc: 'permanently delete a draft' },
-    { name: 'run <name>', desc: 'run the draft like workflow run' },
-  ],
-  options: [],
-  safety: [
-    'create/phase/step/set write ~/.bullswarm/drafts/<name>/ (workflow.json, meta.json) on '
-      + 'every call; each mutation re-validates and stores the result, but never rolls back a '
-      + 'resulting invalid document — fix it with more phase/step/set calls',
-    'run dispatches real coding-agent CLI processes and writes durable state under '
-      + '~/.bullswarm/workflows/<runId>/, same as workflow run',
-    'delete is irreversible',
-  ],
-  examples: [{ cmd: 'bullswarm workflow draft create audit-repo --description "Audit repo for TODOs"' }],
-  next: 'bullswarm workflow draft phase add <name> <phase> to add the first phase.',
-});
-
-const workflowDraftCreateText = rich({
-  usage: 'bullswarm workflow draft create <name> [--description <text>] [--input k=v]... [--required <keys>] [--json]',
-  purpose: 'Create a new, empty draft workflow (no phases yet) under ~/.bullswarm/drafts/<name>/.',
-  args: [{ name: '<name>', desc: 'draft name; refuses if a draft with this name already exists' }],
-  options: [
-    { flag: '--description <text>', desc: 'human-readable description stored on the document', default: '"New draft workflow — describe what it does."' },
-    { flag: '--input k=v', desc: "declare an input with a default value (repeatable); JSON-decoded when the value starts with [, {, \", or '", default: 'none' },
-    { flag: '--required <keys>', desc: 'comma-separated subset of the --input keys to mark required', default: 'none required' },
-    { flag: '--json', desc: 'machine-readable confirmation', default: 'human confirmation line' },
-  ],
-  safety: ['writes ~/.bullswarm/drafts/<name>/workflow.json and meta.json'],
-  examples: [{ cmd: 'bullswarm workflow draft create audit-repo --input target=src/ --required target' }],
-  next: 'bullswarm workflow draft phase add audit-repo <phase-name>.',
-});
-
-const workflowDraftShowText = rich({
-  usage: 'bullswarm workflow draft show <name> [--json]',
-  purpose: "Print a draft's current workflow document plus its last validation result.",
-  args: [{ name: '<name>', desc: 'draft name' }],
-  options: [{ flag: '--json', desc: 'print {doc, meta} as JSON', default: 'human-readable header plus the full document JSON' }],
-  safety: ['read-only'],
-  examples: [{ cmd: 'bullswarm workflow draft show audit-repo' }],
-  next: 'bullswarm workflow draft validate audit-repo before running it.',
-});
-
-const workflowDraftListText = rich({
-  usage: 'bullswarm workflow draft list [--json]',
-  purpose: 'List saved drafts with their phase/step counts and validity.',
-  args: [],
-  options: [{ flag: '--json', desc: 'machine-readable array', default: 'human-readable one-line-per-draft summary' }],
-  safety: ['read-only'],
-  examples: [{ cmd: 'bullswarm workflow draft list' }],
-  next: 'bullswarm workflow draft show <name> to inspect one.',
-});
-
-const workflowDraftPhaseText = rich({
-  usage: 'bullswarm workflow draft phase <add|remove> <draft> <phase> [--json]',
-  purpose: 'Add or remove a phase (an ordered group of steps) on a draft.',
-  argsTitle: 'Commands',
-  args: [
-    { name: 'add <draft> <phase>', desc: 'append a new phase' },
-    { name: 'remove <draft> <phase>', desc: 'remove a phase and its steps' },
-  ],
-  options: [{ flag: '--json', desc: 'machine-readable confirmation with the resulting validation', default: 'human confirmation line plus any validation issues/warnings' }],
-  safety: ["writes the draft's workflow.json and re-validates it (does not roll back an invalid result)"],
-  examples: [{ cmd: 'bullswarm workflow draft phase add audit-repo scan' }],
-  next: 'bullswarm workflow draft step add audit-repo scan <step-id> to add a step to the phase.',
-});
-
-const workflowDraftPhaseAddText = rich({
-  usage: 'bullswarm workflow draft phase add <draft> <phase> [--json]',
-  purpose: 'Append a new, empty phase to a draft.',
-  args: [{ name: '<draft>', desc: 'draft name' }, { name: '<phase>', desc: 'new phase name' }],
-  options: [{ flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' }],
-  safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft phase add audit-repo scan' }],
-  next: 'bullswarm workflow draft step add audit-repo scan <step-id>.',
-});
-
-const workflowDraftPhaseRemoveText = rich({
-  usage: 'bullswarm workflow draft phase remove <draft> <phase> [--json]',
-  purpose: 'Remove a phase and every step inside it from a draft.',
-  args: [{ name: '<draft>', desc: 'draft name' }, { name: '<phase>', desc: 'phase to remove' }],
-  options: [{ flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' }],
-  safety: ["writes the draft's workflow.json and re-validates it; removing a phase also deletes its steps"],
-  examples: [{ cmd: 'bullswarm workflow draft phase remove audit-repo scan' }],
-  next: 'bullswarm workflow draft show audit-repo to confirm.',
-});
-
-const workflowDraftStepText = rich({
-  usage: 'bullswarm workflow draft step <add|remove|set> <draft> <phase> <step-id> [options]',
-  purpose: "Add, remove, or edit one field of a step within a draft's phase.",
-  argsTitle: 'Commands',
-  args: [
-    { name: 'add', desc: 'add a new step to the phase' },
-    { name: 'remove', desc: 'remove a step from the phase' },
-    { name: 'set', desc: 'edit one field of an existing step' },
-  ],
-  options: [],
-  safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft step add audit-repo scan find-todos --type run --lane analyze --prompt "List every TODO with file:line"' }],
-  next: 'bullswarm workflow draft validate <draft> once every phase has steps.',
-});
-
-const workflowDraftStepAddText = rich({
-  usage: 'bullswarm workflow draft step add <draft> <phase> <step-id> [--type <run|fanout|verify|decide>] '
-    + '[--lane <lane>] [--pool <pool>] [--prompt <text>] [--task-file <path>] [--add-dir <dir>] '
-    + '[--items-from <path>] [--review <path>] [--concurrency <n>] [--timeout <n>] '
-    + '[--on-error <continue|fail|skip-phase>] [--step-template <json>] [--json]',
-  purpose: 'Add one step to an existing phase of a draft.',
-  args: [
-    { name: '<draft>', desc: 'draft name' },
-    { name: '<phase>', desc: 'phase to add the step to (must already exist)' },
-    { name: '<step-id>', desc: 'unique step id within the phase' },
-  ],
-  options: [
-    { flag: '--type <run|fanout|verify|decide>', desc: 'the step type', default: 'run' },
-    { flag: '--lane <lane>', desc: 'routing lane (analyze|build|chore) for run/fanout steps' },
-    { flag: '--pool <pool>', desc: 'pin a specific pool instead of routing by lane' },
-    { flag: '--prompt <text>', desc: 'the literal task prompt text' },
-    { flag: '--task-file <path>', desc: 'read the prompt from a file instead of --prompt' },
-    { flag: '--add-dir <dir>', desc: 'working directory the delegate operates in' },
-    { flag: '--items-from <path>', desc: 'fanout steps only — inputs.<name> or outputs.<priorStepId> supplying the array to fan out over', default: 'required for fanout' },
-    { flag: '--review <path>', desc: 'verify steps only — outputs.<priorStepId>.outFile to review', default: 'required for verify' },
-    { flag: '--concurrency <n>', desc: 'fanout steps only — max parallel dispatches', default: "falls back to the draft's settings.concurrency (4 for a fresh draft)" },
-    { flag: '--timeout <n>', desc: 'per-step wall-clock timeout in seconds', default: 'none' },
-    { flag: '--on-error <continue|fail|skip-phase>', desc: 'what to do if this step fails', default: 'continue' },
-    { flag: '--step-template <json>', desc: 'required for fanout steps — a JSON object describing the per-item step, supporting {{item}}/{{item.*}} placeholders' },
-    { flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' },
-  ],
-  safety: ["writes the draft's workflow.json and re-validates it; refuses if the phase does not exist yet"],
-  examples: [{ cmd: 'bullswarm workflow draft step add audit-repo scan find-todos --type run --lane analyze --prompt "List every TODO with file:line"' }],
-  next: 'bullswarm workflow draft validate audit-repo once the phase has the steps you want.',
-});
-
-const workflowDraftStepRemoveText = rich({
-  usage: 'bullswarm workflow draft step remove <draft> <phase> <step-id> [--json]',
-  purpose: 'Remove one step from a phase.',
-  args: [
-    { name: '<draft>', desc: 'draft name' },
-    { name: '<phase>', desc: 'phase containing the step' },
-    { name: '<step-id>', desc: 'step to remove' },
-  ],
-  options: [{ flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' }],
-  safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft step remove audit-repo scan find-todos' }],
-  next: 'bullswarm workflow draft show audit-repo to confirm.',
-});
-
-const workflowDraftStepSetText = rich({
-  usage: 'bullswarm workflow draft step set <draft> <phase> <step-id> <field> --value <text> [--json]',
-  purpose: 'Edit one field of an existing step in place, without removing and re-adding it.',
-  args: [
-    { name: '<draft>', desc: 'draft name' },
-    { name: '<phase>', desc: 'phase containing the step' },
-    { name: '<step-id>', desc: 'step to edit' },
-    { name: '<field>', desc: 'step field name, e.g. prompt, lane, pool, onError' },
-  ],
-  options: [
-    { flag: '--value <text>', desc: "the new value; JSON-decoded when it starts with [, {, \", or '", default: 'required; no default' },
-    { flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' },
-  ],
-  safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft step set audit-repo scan find-todos onError --value skip-phase' }],
-  next: 'bullswarm workflow draft show audit-repo to confirm the change.',
-});
-
-const workflowDraftSetText = rich({
-  usage: 'bullswarm workflow draft set <draft> <field> --value <text> [--json]',
-  purpose: 'Edit one draft-level field (e.g. description, settings.concurrency) in place.',
-  args: [{ name: '<draft>', desc: 'draft name' }, { name: '<field>', desc: 'draft field name' }],
-  options: [
-    { flag: '--value <text>', desc: "the new value; JSON-decoded when it starts with [, {, \", or '", default: 'required; no default' },
-    { flag: '--json', desc: 'machine-readable confirmation with validation', default: 'human confirmation line' },
-  ],
-  safety: ["writes the draft's workflow.json and re-validates it"],
-  examples: [{ cmd: 'bullswarm workflow draft set audit-repo description --value "Audit repo for TODOs"' }],
-  next: 'bullswarm workflow draft show audit-repo to confirm.',
-});
-
-const workflowDraftValidateText = rich({
-  usage: 'bullswarm workflow draft validate <name> [--json]',
-  purpose: 'Validate a draft against the schema and live pool names, without running it '
-    + '(alias behavior for workflow validate, scoped to drafts).',
-  args: [{ name: '<name>', desc: 'draft name' }],
-  options: [{ flag: '--json', desc: 'machine-readable {ok, issues|warnings}', default: 'human-readable pass/fail plus warnings' }],
-  safety: ['read-only aside from live pool discovery; nothing is written'],
-  examples: [{ cmd: 'bullswarm workflow draft validate audit-repo' }],
-  next: 'bullswarm workflow draft run audit-repo once it validates.',
-});
-
-const workflowDraftExportText = rich({
-  usage: 'bullswarm workflow draft export <name> <out-file> [--json]',
-  purpose: "Write a draft's workflow.json to a standalone file, so it can be run with workflow "
-    + 'run/validate outside the drafts directory, checked into version control, etc.',
-  args: [{ name: '<name>', desc: 'draft name' }, { name: '<out-file>', desc: 'destination file path' }],
-  options: [{ flag: '--json', desc: 'machine-readable confirmation with the written path', default: 'human confirmation line' }],
-  safety: ['writes <out-file>; does not modify or delete the draft'],
-  examples: [{ cmd: 'bullswarm workflow draft export audit-repo ./workflows/audit-repo.json' }],
-  next: 'bullswarm workflow validate ./workflows/audit-repo.json to confirm the exported copy.',
-});
-
-const workflowDraftDeleteText = rich({
-  usage: 'bullswarm workflow draft delete <name> --yes [--json]',
-  purpose: 'Permanently delete a draft.',
-  args: [{ name: '<name>', desc: 'draft name' }],
-  options: [
-    { flag: '--yes', desc: 'required — approves the deletion', default: 'none; the command refuses without it' },
-    { flag: '--json', desc: 'machine-readable confirmation', default: 'human confirmation line' },
-  ],
-  safety: ['irreversible — deletes ~/.bullswarm/drafts/<name>/ from disk'],
-  examples: [{ cmd: 'bullswarm workflow draft delete audit-repo --yes' }],
-  next: 'bullswarm workflow draft list to confirm it is gone.',
-});
-
-const workflowDraftRunText = rich({
-  usage: 'bullswarm workflow draft run <name> [--input k=v]... [--resume <shortId|runId>] [--json] [--quiet]',
-  purpose: 'Run a draft the same way workflow run executes a workflow file — dispatching each '
-    + 'step to a delegate pool.',
-  args: [{ name: '<name>', desc: 'draft name' }],
-  options: [
-    { flag: '--input k=v', desc: 'declare or override a workflow input value (repeatable)', default: 'none' },
-    { flag: '--resume <shortId|runId>', desc: 'resume a previous run of this draft instead of starting fresh', default: 'starts a new run' },
-    { flag: '--json', desc: 'print the machine-readable report document', default: 'human-readable progress' },
-    { flag: '--quiet', desc: 'suppress human progress output even without --json', default: 'off' },
-  ],
-  safety: [
-    'dispatches real coding-agent CLI processes per step (same routing/spend as bullswarm run)',
-    'writes durable workflow state under ~/.bullswarm/workflows/<runId>/',
-    'the draft is re-validated against live pools immediately before running; an invalid draft is rejected and nothing runs',
-  ],
-  examples: [{ cmd: 'bullswarm workflow draft run audit-repo --input target=src/' }],
-  next: 'bullswarm workflow runs show <shortId> to check progress.',
 });
 
 // --- HELP tree ----------------------------------------------------------------
@@ -1598,11 +1258,7 @@ const HELP = {
       show: { _text: workflowPlanShowText },
       submit: { _text: workflowPlanSubmitText },
     },
-    run: { _text: workflowRunText },
-    validate: { _text: workflowValidateText },
-    list: { _text: workflowListText },
     capabilities: { _text: workflowCapabilitiesText },
-    inspect: { _text: workflowInspectText },
     tui: { _text: workflowTuiText },
     watch: { _text: workflowWatchText },
     events: { _text: workflowEventsText },
@@ -1613,13 +1269,7 @@ const HELP = {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },
     },
-    approval: {
-      _text: workflowApprovalText,
-      approve: { _text: workflowApprovalApproveText },
-      reject: { _text: workflowApprovalRejectText },
-    },
     runs: runsHelp(),
-    draft: draftHelp(),
   },
 };
 
@@ -1687,31 +1337,6 @@ function aliasRunsHelp(node) {
       ? value.replaceAll('bullswarm workflow runs', 'bullswarm runs')
       : aliasRunsHelp(value),
   ]));
-}
-
-function draftHelp() {
-  return {
-    _text: workflowDraftText,
-    create: { _text: workflowDraftCreateText },
-    show: { _text: workflowDraftShowText },
-    list: { _text: workflowDraftListText },
-    phase: {
-      _text: workflowDraftPhaseText,
-      add: { _text: workflowDraftPhaseAddText },
-      remove: { _text: workflowDraftPhaseRemoveText },
-    },
-    step: {
-      _text: workflowDraftStepText,
-      add: { _text: workflowDraftStepAddText },
-      remove: { _text: workflowDraftStepRemoveText },
-      set: { _text: workflowDraftStepSetText },
-    },
-    set: { _text: workflowDraftSetText },
-    validate: { _text: workflowDraftValidateText },
-    export: { _text: workflowDraftExportText },
-    delete: { _text: workflowDraftDeleteText },
-    run: { _text: workflowDraftRunText },
-  };
 }
 
 function collectPaths(node, prefix = []) {

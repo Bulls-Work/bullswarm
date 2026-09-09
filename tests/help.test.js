@@ -1,5 +1,4 @@
-// Two layers of coverage, matching the split documented in
-// tests/workflow-draft.test.js:
+// Two layers of coverage:
 //   L1. In-process: walks HELP_PATHS (the same programmatic enumeration
 //       helpForArgs()/usageLine()/helpText() are built on) against
 //       helpForArgs()/helpText() directly. Fast and exhaustive — every path
@@ -41,10 +40,8 @@ test('every documented command and nested subcommand accepts --help', () => {
 });
 
 test('help remains contextual when operands precede the flag', () => {
-  assert.match(helpForArgs(['workflow', 'run', 'demo', '--help']), /workflow run <file-or-name>/);
   assert.match(helpForArgs(['workflow', 'runs', 'show', 'abc234', '-h']), /runs show <shortId\|runId>/);
   assert.match(helpForArgs(['workflow', 'runs', 'result', 'abc234', '-h']), /runs result <shortId\|runId>/);
-  assert.match(helpForArgs(['workflow', 'draft', 'step', 'add', 'd', 'p', 's', '--help']), /draft step add/);
 });
 
 test('help command syntax and aliases resolve without executing commands', () => {
@@ -70,15 +67,14 @@ test('help stays contextual with operands, flags, and quoted text ahead of --hel
 // nested subcommand" (src/help.js's collectPaths() walk of the HELP tree).
 // This is a floor, not an exact count, so adding a command doesn't break
 // this test — but a large drop (a subtree silently unwired from HELP) would.
-// The exact count at the time this test was written was 69 (verified via
-// `HELP_PATHS.length` — see tests-and-docs.md for the derivation).
+// The exact count changes as the command tree evolves.
 test('HELP_PATHS enumerates the full routed command tree', () => {
   assert.ok(
-    HELP_PATHS.length >= 65,
-    `expected at least 65 routed paths (root + every top-level and nested subcommand), got ${HELP_PATHS.length}`,
+    HELP_PATHS.length >= 60,
+    `expected at least 60 routed paths (root + every top-level and nested subcommand), got ${HELP_PATHS.length}`,
   );
   assert.deepEqual(HELP_PATHS[0], [], 'first path must be the root node');
-  assert.ok(HELP_PATHS.some((p) => p.join(' ') === 'workflow draft step add'), 'a known leaf must be present');
+  assert.ok(HELP_PATHS.some((p) => p.join(' ') === 'workflow runs result'), 'a known leaf must be present');
 });
 
 // Richness bar (item 2 of the help work): every leaf must be Usage / Purpose
@@ -198,7 +194,7 @@ test('help never spawns a delegate CLI process, even for the heaviest commands',
     ['run'],
     ['workflow', 'goal'],
     ['strategy', 'refresh'],
-    ['workflow', 'draft', 'step', 'add'],
+    ['workflow', 'runs', 'show'],
     ['pools'],
     ['setup'],
   ];
