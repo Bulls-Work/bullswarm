@@ -190,3 +190,54 @@ test('the result envelope carries each action\'s kind, and envelopes written bef
   broken.actions[0].kind = { name: 'implement' };
   assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.kind must be a non-empty string/);
 });
+
+test('result envelope carries last-attempt bytes and usage totals; missing values stay null', () => {
+  const state = plannedState();
+  state.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 2, programRevision: 1, outputFile: '/tmp/report.md', artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 1, programRevision: 1, artifactIds: [] },
+  ];
+  state.attempts = [
+    {
+      id: 'write-report-1', actionId: 'write-report', ordinal: 1, status: 'failed',
+      pool: 'alpha', model: 'alpha-sol', startedAt: '2026-08-31T01:01:00Z',
+      bytes: { taskFile: 100, authorPrompt: 40, kernel: 60, dependencyInputs: 0, output: 10 },
+    },
+    {
+      id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'succeeded',
+      pool: 'beta', model: 'beta-luna', startedAt: '2026-08-31T01:02:00Z',
+      bytes: { taskFile: 200, authorPrompt: 40, kernel: 160, dependencyInputs: 0, output: 50 },
+    },
+    {
+      id: 'check-report-1', actionId: 'check-report', ordinal: 1, status: 'succeeded',
+      pool: 'beta', model: 'beta-luna', startedAt: '2026-08-31T01:03:00Z',
+      bytes: { taskFile: 300, authorPrompt: 80, kernel: 170, dependencyInputs: 50, output: 20 },
+    },
+  ];
+  state.ledger = applyEvidence(state.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report.md matches'], concerns: [] } } });
+
+  const result = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
+  assert.deepEqual(result.actions[0].bytes, {
+    taskFile: 200, authorPrompt: 40, kernel: 160, dependencyInputs: 0, output: 50,
+  });
+  assert.deepEqual(result.actions[1].bytes, {
+    taskFile: 300, authorPrompt: 80, kernel: 170, dependencyInputs: 50, output: 20,
+  });
+  assert.deepEqual(result.usage.bytes, { taskFiles: 600, dependencyInputs: 50, outputs: 80 });
+  assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
+
+  const empty = plannedState();
+  empty.actions = [
+    { id: 'write-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: ['report'] },
+    { id: 'check-report', status: 'succeeded', attempts: 0, programRevision: 1, artifactIds: [] },
+  ];
+  empty.ledger = applyEvidence(empty.ledger, {
+    actionId: 'check-report', evidenceFor: ['report-correct'], inspectedRevision: 'initial', eventSequence: 1,
+  }, { requirements: { 'report-correct': { status: 'passed', evidence: ['report.md matches'], concerns: [] } } });
+  const without = createV2ResultEnvelope(empty, { finishedAt: '2026-08-31T01:10:00Z' });
+  assert.equal(without.actions[0].bytes, null);
+  assert.equal(without.actions[1].bytes, null);
+  assert.equal(without.usage.bytes, null);
+});

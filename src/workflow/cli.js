@@ -16,7 +16,7 @@ import { runDashboard, dashboardJson } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
-import { programAdvisories } from './action-validator.js';
+import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
 import { createV2GoalDocument, createV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import { runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './v2-runtime.js';
 import { requestCancel } from './dashboard.js';
@@ -1179,6 +1179,9 @@ async function wfCapabilities(opts) {
         stateSchema: 'bullswarm.workflow.state.v2',
         resultSchema: 'bullswarm.workflow.result.v2',
         actionModel: 'generic work and evidence actions',
+        // Reported from the validator table, not restated, so a new kind is
+        // visible to a probing agent the moment the closed list gains it.
+        actionKinds: JSON.parse(JSON.stringify(KIND_DEFAULTS)),
         completionAuthority: 'kernel action results; requirement evidence is reported separately',
         features: {
           plannerCreatesBoundedProgram: true,

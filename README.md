@@ -180,6 +180,25 @@ per pool and tier, so the tier moves off whichever model held it while that
 model keeps its other tiers. Nothing about `state.json` changed shape: rungs are
 a view over `strategy.modelTiers` and `strategy.reasoning`.
 
+The Relay-backed OpenCode pools (`opencode2`, `opencode2:relay-2`,
+`opencode2:relay-3`) express reasoning as opencode's `--variant <level>`, at the
+same five levels as `command-code`. opencode only forwards a variant its own
+config declares for that model, so bullswarm injects them: each pool is spawned
+with `OPENCODE_CONFIG_CONTENT` declaring `low`/`medium`/`high`/`xhigh`/`max` as
+`reasoningEffort` variants of `<providerId>/gpt-5.6-luna`, merged over your
+`~/.config/opencode/opencode.json` (your API keys stay in force). Without that
+injection opencode accepts `--variant` and silently drops it. Set a rung per
+pool, using that pool's own provider prefix:
+
+```bash
+bullswarm strategy set-rung opencode2:relay-2 medium \
+  --model relay-2/gpt-5.6-luna --reasoning max
+```
+
+If you set `OPENCODE_CONFIG_CONTENT` yourself in
+`~/.bullswarm/connectors/opencode2.json`, bullswarm leaves it alone and injects
+nothing — you own the variants from then on.
+
 The benchmark evidence comes from Epoch AI's benchmarking hub, used under
 CC BY 4.0: Epoch AI, 'AI Benchmarking Hub'. Published online at epoch.ai.
 Retrieved from <https://epoch.ai/benchmarks>. `blended` is the mean of the
@@ -390,11 +409,24 @@ names that nature once and derives them:
 | --- | --- | --- |
 | `mechanical` | chore | low |
 | `io-read` | analyze | low |
+| `digest` | analyze | low |
 | `check` | analyze | medium |
 | `implement` | build | medium |
 | `integration` | build | high |
 | `architecture` | analyze | high |
 | `adversarial-acceptance` | analyze | high |
+
+`digest` is the one kind whose instructions the kernel supplies in full — your
+prompt for it is focus guidance only. It condenses the
+outputs of the actions it depends on — quoting each source's delivered items,
+validation numbers, commands, unfinished work, and requests verbatim, one
+section per source, with no verdicts of its own — so an expensive consumer
+reads one artifact instead of many raw output files, and the digest entry in
+that consumer's dependency artifacts still names every digested source for
+drill-down. Use one when three or more writers feed a single integrator, or
+when a consumer's dependency outputs would exceed roughly 20 KB. A digest must
+depend on at least one action, owns no files, needs no `affects`, and no
+evidence action may depend on one: evidence reads the real artifacts.
 
 Resolution is per field: an explicit `lane` or `effort` on the action wins,
 then the kind table, then an optional program-level `defaults` object — which
@@ -439,6 +471,7 @@ bullswarm workflow runs show <shortId>
 bullswarm workflow watch <shortId>        # V2: attach, then one line per notable event
 bullswarm workflow watch <shortId> --next # print the next notable event and exit
                                           # relaunch with the --after/--since it prints
+bullswarm workflow runs result <shortId> --json --summary  # compact status-loop envelope once terminal
 bullswarm workflow                         # unified human workflow home
 bullswarm workflow tui <shortId>          # jump directly to one run timeline
 bullswarm workflow tui --json <shortId>
@@ -574,7 +607,8 @@ bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs --all --from 2026-08-20 --to 2026-08-27
 bullswarm workflow runs --limit 20         # cap the result count
 bullswarm workflow runs show <shortId>     # state + report + summary
-bullswarm workflow runs result <shortId> --json  # stable result for the calling agent
+bullswarm workflow runs result <shortId> --json --summary  # compact status-loop envelope
+bullswarm workflow runs result <shortId> --json            # full envelope (failed/partial, or before judging evidence)
 bullswarm runs show <shortId>              # top-level shorthand
 bullswarm workflow runs delete <shortId> --yes    # remove the run dir
 ```
@@ -591,8 +625,10 @@ Values accept ISO timestamps, local `YYYY-MM-DD` dates, `today`, `yesterday`,
 `tomorrow`, `now`, or relative durations such as `30m`, `24h`, `7d`, and `2w`.
 
 After a workflow reaches a terminal state, agents should consume
-`workflow runs result <id> --json` instead of probing `state.json`, task files,
-or provider-specific output. Autonomous V2 returns the versioned
+`workflow runs result <id> --json --summary` for the status loop instead of
+probing `state.json`, task files, or provider-specific output. Read the full
+envelope with `--json` alone when the run is failed or partial, or before
+judging evidence. Autonomous V2's full document is the versioned
 `bullswarm.workflow.result.v2` envelope with kernel-computed status, fresh
 requirement evidence, per-action status/failure/output files, explicit gaps,
 usage, and verification qualification. New programs include `executionMode:
@@ -608,6 +644,71 @@ otherwise the command returns after printing this handoff.
 Time filters preserve the existing scope, so use `--all` or `--historical` when
 auditing completed runs.
 
+### Context diet
+
+The kernel now measures — and can shrink — what it puts in front of a model.
+These are UTF-8 byte counts, never tokens.
+
+**Status loop.** Poll with `--summary`; it implies JSON (with or without
+`--json`) and prints `schemaVersion: "bullswarm.workflow.result-summary.v1"`:
+`runId`, `shortId`, `status`, `verified`, `executionMode`, `reason`,
+`finishedAt`, the goal's first line (120 characters) plus `goalBytes`, each
+requirement as `{ id, status, mandatory, evidenceCount, why }`, each action as
+`{ id, kind, lane, effort, status, pool, model, reasoning, wallSec, outFile,
+bytes }`, `concerns: { count, first }`, `usage`, and `next: { full, runDir, outputs }` — every output name is a basename inside `next.runDir`.
+The full `bullswarm.workflow.result.v2` envelope is unchanged and remains the
+default. Read it (`--json` alone) on a failed or partial run, or before judging
+evidence. A terminal `workflow watch` prints the same compact command as
+`next:`.
+
+```bash
+bullswarm workflow runs result <shortId> --json --summary
+bullswarm workflow runs result <shortId> --json
+```
+
+`workflow runs result --help` states `Usage: bullswarm workflow runs result
+<shortId|runId> [--json] [--summary]`; `--summary` is "print the compact JSON
+status-loop envelope; implies --json".
+
+**Bytes.** Every attempt records `bytes: { taskFile, authorPrompt, kernel,
+dependencyInputs, output }` — the task file the kernel wrote, the action's own
+prompt as authored, the remainder after subtracting that prompt and any
+embedded requirement text, the sum of the dependency output files the task
+points at (0 when there are none), and the durable out file on completion.
+The result envelope copies the last attempt's `bytes` onto `actions[]` and
+totals `usage.bytes: { taskFiles, dependencyInputs, outputs }`.
+`workflow runs show` appends `in <taskFile>/<dependencyInputs> out <output>`
+per attempt (blank when unrecorded). Missing values are null, never guessed.
+
+**Digest.** `kind: "digest"` is analyze/low. It is an extractive condensation
+of its dependencies' outputs — quoted delivered items, validation numbers,
+commands, unfinished work, and integrator requests; no verdicts of its own.
+The kernel writes the whole task; the author's prompt is focus guidance only.
+Use one when three or more writers feed a single integrator, or when a
+consumer's dependency outputs would exceed roughly 20 KB. A digest must
+depend on at least one action, owns no files, has empty `evidenceFor`, and
+needs no `affects`. Evidence must not depend on a digest: evidence reads the
+real artifacts. Consumers that depend on a digest receive that digest plus a
+`digestOf` array of `{ actionId, outputFile }` so they can drill down; those
+paths are pointers, not extra `dependencyInputs`. (The kind table above
+derives lane and effort.)
+
+```json
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    { "id": "write-a", "kind": "implement", "dependsOn": [], "ownedFiles": ["a.ts"], "affects": ["requirement-1"], "evidenceFor": [], "purpose": "Write slice A", "prompt": "Implement A and report the checks you ran." },
+    { "id": "write-b", "kind": "implement", "dependsOn": [], "ownedFiles": ["b.ts"], "affects": ["requirement-2"], "evidenceFor": [], "purpose": "Write slice B", "prompt": "Implement B and report the checks you ran." },
+    { "id": "write-c", "kind": "implement", "dependsOn": [], "ownedFiles": ["c.ts"], "affects": ["requirement-3"], "evidenceFor": [], "purpose": "Write slice C", "prompt": "Implement C and report the checks you ran." },
+    { "id": "condense", "kind": "digest", "dependsOn": ["write-a", "write-b", "write-c"], "ownedFiles": [], "affects": [], "evidenceFor": [], "purpose": "Condense the writer outputs", "prompt": "Keep every acceptance number and every shared-file request." },
+    { "id": "integrate", "kind": "integration", "dependsOn": ["condense"], "ownedFiles": [], "affects": ["requirement-1", "requirement-2", "requirement-3"], "evidenceFor": [], "purpose": "Integrate and run the gates", "prompt": "Apply every request the digest carries and run the repository gates." }
+  ]
+}
+```
+
+An evidence action for those requirements depends on `write-a`, `write-b`, and
+`write-c` — never on `condense`.
+
 ### Live workflow dashboard
 
 For ordinary observation, use the non-interactive watcher. For V2 runs it
@@ -615,8 +716,9 @@ prints one attach line, then one line per notable event as it happens
 (action finished/failed/blocked/cancelled, evidence, stage completion,
 planner turn, stall/recovery, cancellation, and the existing pause and
 terminal `outcome:` / `next:` lines) and stays silent while work is merely
-in progress. Agent starts, mechanical retries, and steering delivery print
-only with `--verbose`. A usage-limit failure (`failureKind: 'quota'`) always
+in progress. A terminal watch's `next:` line is
+`bullswarm workflow runs result <shortId> --json --summary`. Agent starts,
+mechanical retries, and steering delivery print only with `--verbose`. A usage-limit failure (`failureKind: 'quota'`) always
 prints, verbose or not: `⚠ <actionId> usage limit on <pool> · paused until
 <deadline> · retrying on another pool`, followed once the mechanical retry
 lands on another pool by `↺ <actionId> now on <pool> · <model>`. The

@@ -37,6 +37,7 @@ function runtimeFromState(state) {
     requirements: state.intent.requirements.map(({ id, mandatory }) => ({ id, mandatory })),
     knownActions: state.program.actions.map((action) => ({
       id: action.id,
+      kind: action.kind ?? null,
       dependsOn: clone(action.dependsOn),
       affects: clone(action.affects),
       ownedFiles: clone(action.ownedFiles),
@@ -174,6 +175,11 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
 // caller-facing contract, and every durable planner request read identically.
 const KIND_FIELD_RULE = `The optional per-action \`kind\` field names the nature of the work and derives both routing fields: ${Object.entries(KIND_DEFAULTS).map(([kind, { lane, effort }]) => `${kind}=${lane}/${effort}`).join(', ')}. Prefer one \`kind\` over restating lane and effort. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the optional program-level \`defaults\` object (which may set only effort and reasoning), then the per-lane default (analyze=medium, build=medium, chore=low). A kind outside that closed list is a validation error before anything runs. Two advisories are reported at validate and at launch and never change acceptance or exit codes: \`${PROGRAM_ADVISORY_CODES[0]}\` when three or more build/chore actions all sit at high effort, and \`${PROGRAM_ADVISORY_CODES[1]}\` when a build/chore action owns only *.md files at high effort.`;
 
+// The digest kind, stated once for every rendering of the contract. Extractive
+// by construction: a digest that judged its sources would be delegated
+// reasoning, and evidence must read the real artifacts.
+const DIGEST_KIND_RULE = 'A `kind: "digest"` action (analyze/low) is an extractive condensation of the outputs of the actions it depends on: the kernel supplies its whole task, which quotes each source verbatim — delivered items, validation numbers, commands and their output, unfinished work, and every shared-file or integrator request — one section per source, with no verdicts and no work of its own. Your prompt for it is focus guidance only. Insert one when three or more writers feed a single integrator, or when any consumer\'s dependency outputs would exceed roughly 20 KB, and have that consumer depend on the digest instead of the raw writers; the digest entry in its dependency artifacts still names every digested source so it can drill down. A digest must depend on at least one action, has empty evidenceFor, owns no files, and needs no `affects`. No evidence action may depend on a digest — evidence reads the real artifacts, never another agent\'s summary.';
+
 // `effort` picks the model tier; `reasoning` picks how hard that model
 // thinks. They are independent, so the contract states the field once and both
 // rule sets render the same sentence.
@@ -192,6 +198,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Plan coherent acceptance slices: keep behavior and its focused tests together. Cover each requested outcome. Scout units and numeric targets are advisory, not reasons for rejecting an otherwise useful program.',
     'Use analyze for read-only investigation or evidence, build for contextual implementation, and chore with low effort for deterministic mechanical edits. Medium is the default for ordinary analysis and implementation. Reserve high for architecture, ambiguous tradeoffs, or cross-cutting integration judgment.',
     KIND_FIELD_RULE,
+    DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
     workspaceMode === 'isolated'
       ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
@@ -217,6 +224,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'Choose effort independently from lane, using the cheapest tier sufficient for this one action. Low is for fixed-procedure checks or mechanical edits whose success is objectively decidable. Medium is the default for normal bounded analysis or implementation with local decisions. High is exceptional: use it only when architecture, ambiguous tradeoffs, cross-cutting integration, or adversarial acceptance judgment materially determines correctness. If uncertain, choose medium.',
     'Do not choose high merely because an action uses analyze, supplies evidence, affects an important requirement, mentions many files, or belongs to a difficult overall goal. Do not choose low merely because an action is short. Examples: exact file comparison or formatting update = low; ordinary scoped feature plus focused test = medium; choosing an architecture across subsystems = high; running deterministic acceptance commands = low; interpreting ambiguous cross-cutting acceptance evidence = high.',
     KIND_FIELD_RULE,
+    DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
@@ -256,7 +264,9 @@ export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
   affects: 'requirement IDs this work action directly owns a bounded acceptance slice of (empty for evidence actions)',
   ownedFiles: 'exact relative paths this action may mutate (empty for read-only or evidence actions)',
   prompt: 'self-contained worker instructions: exact scope, files, commands, and acceptance evidence',
-  kind: 'optional mechanical | io-read | check | implement | integration | architecture | adversarial-acceptance — the nature of the work; it derives lane and effort, so prefer it over restating both',
+  // Derived from the validator's closed list so the schema description cannot
+  // drift from the kinds acceptance actually admits.
+  kind: `optional ${Object.keys(KIND_DEFAULTS).join(' | ')} — the nature of the work; it derives lane and effort, so prefer it over restating both`,
   lane: 'analyze | build | chore — omit when kind supplies it',
   effort: 'high | medium | low — omit to take it from kind, program defaults, or the lane default',
   reasoning: 'optional low | medium | high | xhigh | max | default — how hard the picked model thinks on this one action; omit to use the configured level',

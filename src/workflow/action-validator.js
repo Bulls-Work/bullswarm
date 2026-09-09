@@ -18,6 +18,11 @@ export const DEFAULT_EFFORT_BY_LANE = Object.freeze({
 export const KIND_DEFAULTS = Object.freeze({
   mechanical: Object.freeze({ lane: 'chore', effort: 'low' }),
   'io-read': Object.freeze({ lane: 'analyze', effort: 'low' }),
+  // A digest reads its dependencies' outputs and re-emits them condensed and
+  // verbatim, so an expensive consumer reads one artifact instead of many raw
+  // files. It is extractive by construction: no verdicts, no recommendations,
+  // and never a source of evidence, because evidence reads the real artifacts.
+  digest: Object.freeze({ lane: 'analyze', effort: 'low' }),
   check: Object.freeze({ lane: 'analyze', effort: 'medium' }),
   implement: Object.freeze({ lane: 'build', effort: 'medium' }),
   integration: Object.freeze({ lane: 'build', effort: 'high' }),
@@ -241,7 +246,10 @@ function runtimeRequirements(runtime, issues) {
 
 function knownActionRecords(runtime, issues) {
   const value = runtime.knownActions ?? [];
-  const knownFields = new Set(['id', 'dependsOn', 'affects', 'ownedFiles', 'evidenceFor', 'produces']);
+  // `kind` is carried so a later revision still sees that an earlier action is
+  // a digest: the evidence-must-not-read-a-digest rule needs the nature, and a
+  // record written before kinds existed simply has none.
+  const knownFields = new Set(['id', 'dependsOn', 'affects', 'ownedFiles', 'evidenceFor', 'produces', 'kind']);
   if (!Array.isArray(value)) {
     issues.push('runtime knownActions must be an array');
     return [];
@@ -254,7 +262,10 @@ function knownActionRecords(runtime, issues) {
     }
     for (const key of Object.keys(raw)) if (!knownFields.has(key)) issues.push(`${at}.${key} is not allowed`);
     if (!hasId(raw.id)) issues.push(`${at}.id must be a valid kebab-case ID`);
-    const action = { id: raw.id };
+    if (raw.kind !== undefined && raw.kind !== null && !Object.hasOwn(KIND_DEFAULTS, raw.kind)) {
+      issues.push(`${at}.kind must be ${ACTION_KINDS.join('|')}`);
+    }
+    const action = { id: raw.id, kind: raw.kind ?? null };
     for (const field of ['dependsOn', 'affects', 'ownedFiles', 'evidenceFor', 'produces']) {
       if (raw[field] !== undefined) {
         action[field] = field === 'ownedFiles'
@@ -430,10 +441,19 @@ export function validateActionProgram(program, runtime = {}) {
     if (evidenceFor.length && (affects.length || ownedFiles.length)) {
       issues.push(`${at} evidence actions must have empty affects and ownedFiles`);
     }
+    // A digest exists only to condense the outputs of the actions it depends
+    // on: with no dependency it has nothing to read, and it never judges a
+    // requirement or writes a file. `affects` may be empty — a digest delivers
+    // no acceptance slice of its own.
+    if (action.kind === 'digest') {
+      if (!dependsOn.length) issues.push(`${at} digest actions must depend on at least one action; a digest condenses its dependencies' outputs`);
+      if (evidenceFor.length) issues.push(`${at} digest actions must have empty evidenceFor; evidence reads the real artifacts`);
+      if (ownedFiles.length) issues.push(`${at} digest actions are read-only and must have empty ownedFiles`);
+    }
     if (evidenceFor.length && evidencePromptOwnsOutput(action.prompt)) {
       issues.push(`${at}.prompt must describe inspection scope only; evidence output schema is supplied by the V2 kernel`);
     }
-    if (!evidenceFor.length && (ownedFiles.length || (runtime.relaxedGraph === true && ['build', 'chore'].includes(action.lane))) && !affects.length) {
+    if (action.kind !== 'digest' && !evidenceFor.length && (ownedFiles.length || (runtime.relaxedGraph === true && ['build', 'chore'].includes(action.lane))) && !affects.length) {
       issues.push(`${at} mutating actions with ownedFiles must affect a requirement`);
     }
     action.dependsOn = dependsOn;
@@ -496,6 +516,11 @@ export function validateActionProgram(program, runtime = {}) {
   }
   for (const action of actions) {
     for (const dependency of action.dependsOn) if (!byId.has(dependency)) issues.push(`${action.id}.dependsOn references unknown action "${dependency}"`);
+    // Evidence reads the real artifacts. A digest is an extractive summary
+    // written by another agent, so it can never stand in as proof.
+    if (action.evidenceFor.length) for (const dependency of action.dependsOn) {
+      if (byId.get(dependency)?.kind === 'digest') issues.push(`evidence action ${action.id} must not depend on digest ${dependency}; evidence reads the real artifacts`);
+    }
     if (action.dependsOn.includes(action.id)) issues.push(`${action.id} cannot depend on itself`);
     for (const artifact of [...action.inputs, ...action.produces]) if (!hasId(artifact)) issues.push(`${action.id} has malformed artifact ID "${artifact}"`);
     for (const artifact of action.inputs) if (!artifactProducer.has(artifact)) issues.push(`${action.id}.inputs references unknown artifact "${artifact}"`);
@@ -514,6 +539,10 @@ export function validateActionProgram(program, runtime = {}) {
       const dependencyAction = byId.get(dependency);
       if (!dependencyAction) continue;
       if (runtime.relaxedGraph === true) continue;
+      // A digest reads its dependencies' output files, and its consumer reads
+      // the digest's: the data flows through kernel-written artifacts, so
+      // neither side needs a declared artifact or an overlapping owned path.
+      if (action.kind === 'digest' || dependencyAction.kind === 'digest') continue;
       if (dependencyAction.evidenceFor.length && !action.inputs.some((artifact) => artifactProducer.get(artifact) === dependency)) {
         issues.push(`${action.id} may depend on evidence action "${dependency}" only through its input artifact`);
       } else if (!action.evidenceFor.length && !dependencyAction.evidenceFor.length) {
