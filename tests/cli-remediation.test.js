@@ -117,12 +117,18 @@ test('health rejudges saved content instead of trusting the saved exit verdict',
     const state = JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8'));
     state.decisionLog.push({ outFile, ok: false });
     writeFileSync(join(f.home, 'state.json'), `${JSON.stringify(state)}\n`);
-    const result = run(f.home, ['health']);
+    const result = run(f.home, ['health', '--json']);
     assert.equal(result.status, 1);
     const report = JSON.parse(result.stdout);
     assert.equal(report.gateFailures.length, 1);
     assert.equal(report.gateFailures[0].rejudge, 'pass');
     assert.equal(report.gateFailures[0].gateAteWork, true);
+    // Without --json the same finding is reported in human form, same exit.
+    const human = run(f.home, ['health']);
+    assert.equal(human.status, 1);
+    assert.match(human.stdout, /bullswarm health — UNHEALTHY/);
+    assert.match(human.stdout, /gate failures: 1/);
+    assert.match(human.stdout, /the verify gate ate real work/);
   } finally { f.cleanup(); }
 });
 

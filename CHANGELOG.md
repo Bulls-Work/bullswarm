@@ -1,5 +1,94 @@
 # bullswarm changelog
 
+## 0.27.1 — audit cleanup
+
+- Deleted the remaining dead symbols the 2026-09-09 audit listed as Tier A:
+  `recordAgentAction` and `classifyAgentProgress`, `aggregateUsage`,
+  `parseEvidenceOutput`, `fiveHourTier`, `REASONING_DEFAULT_TIERS`, the twelve
+  alias re-exports around `runAutonomousV2` /
+  `assertV2ResumeCompatible` / `validateEvidenceEnvelope`, and
+  `integrationBlock`. `'workflow-v1'` is no longer an assignment source.
+  `currentUsedPct` no longer reads a `weeklyUsedPct` field no producer writes,
+  and the identical `--json` ternary in `strategy-cli` collapsed to one
+  `JSON.stringify`. `fixtures/openrouter/` stays; a new
+  `tests/refresh-openrouter-benchmarks.test.js` runs the refresh script against
+  those fixtures instead of deleting them.
+
+- `state.json` is no longer last-writer-wins (D5). EVERY state writer goes
+  through one locked read-modify-write — take `state.lock`, reload FRESH,
+  mutate, atomically replace the file, release. That is `run`, `pools`,
+  `health` and the fixture migration plus the twenty-two remaining
+  load-mutate-save sites: fifteen in `strategy-cli` (set-rung, set-model,
+  reset-tier, set/reset-reasoning, configure, apply, auto off, assign,
+  clear-assignment, exclude/include-model, set-subscription and the persisted
+  refresh report), three in the strategy TUI, and four in `setup`
+  (`setup --yes`, both writing steps of the wizard, and the reasoning step).
+  `grep -n 'saveState(' src/` now finds only `src/lib/state.js`, which defines
+  it and calls it once, inside `updateState`. Waiters retry for 10 s and a lock
+  older than 30 s is taken over so a killed process cannot bench the file
+  forever. `run --dry-run` no longer refreshes strategy or hits the network
+  (D3). The fixture migration no longer force-disables a pool the operator
+  explicitly enabled (D1). Disabled pools are no longer polled (D6). When every
+  lane-capable pool was dropped by an empty tier allow-list, the routing reason
+  now says so instead of blaming missing capabilities (D7). `pools`, `health`
+  and `run --dry-run` leave `state.json` byte-for-byte alone when they have
+  nothing to change. `src/workflow/fsjson.js` — the re-export shim that carried
+  the workflow importers through the move of the atomic writer into
+  `src/lib/fsjson.js` — is deleted; both layers import `src/lib/fsjson.js`
+  directly.
+
+- The content gate no longer treats an error-shaped JSON object as an answer,
+  and long outputs are scanned at both the head and the tail for failure
+  patterns.
+
+- An unrecognized `--flag` is a usage error on every command: Bullswarm prints
+  `unknown flag --name` plus that command's synopsis and exits 2, before
+  self-initializing, routing, or spawning anything. `--lane` is required on
+  `run` (omitting it, or passing anything else, exits 2). `--limit` on
+  `workflow runs` must be a positive integer. `health --json` now selects the
+  machine-readable report; the default is a human summary of the same facts.
+  Help for `run --no-caller`, the always-JSON verbs, and the plan-contract /
+  plan-validate worker flags matches what the parsers actually accept.
+
+- A dead kernel is visible: `watch`, `runs show`, `runs result --json`, and the
+  TUI surface the last 20 lines of `stderr.log` instead of a silent stall.
+
+- Four small refactors from the audit's C1–C4 list: `TIER_LANES` is derived
+  from the 0.26 kind/effort tables so the strategy preview cannot disagree with
+  the validator; `clearTierAssignment` is the one writer of a cleared tier pin;
+  `finiteOrNull` is the one numeric coercion (blank/null prices and scores stay
+  unmeasured instead of becoming 0); quota signatures live in one table.
+
+- The OpenRouter datapack no longer pretends to have a bundled last-resort
+  file. Loaders try `~/.bullswarm/cache/` then the rolling GitHub Release; a
+  cache miss with no network yields an empty catalog. Epoch still ships
+  `data/epoch-benchmarks.json`.
+
+- Documentation made true: README no longer lists `runs cleanup`; bare
+  `bullswarm` is a TTY wizard and non-TTY callers self-initialize; the
+  OpenRouter/Epoch datapack fallback is described as it actually works; the
+  duplicated planning-targets paragraph appears once; `--name` is an exact
+  goal/name filter; `--classic` is V2-only and legacy watch exits 2;
+  `workflow-v1` is gone from the skill; `workflow goal` is no longer described
+  as an LLM-at-every-checkpoint loop; `delegate` is marked historical in the
+  2026-09-06 design note; GOAL.md and the ten dated `docs/` files that needed
+  a banner carry one.
+
+- Tests: 661 -> 713, 0 failures. Eight new files carry the new behaviour:
+  `unknown-flags` (11 — one bogus flag per parser, the two typed inputs, and a
+  drift guard that re-extracts every documented command form), `cli-run` (6 —
+  the D3/D1/D7 CLI contracts), `config` (5 — D6), `num` (4 — strict
+  `finiteOrNull`), `workflow-dead-kernel` (4), `state-race` (1 — an operator
+  write during a live run), `state-lock-sites` (3 — two real `strategy`
+  processes racing one home, four issued at once, and a `configure` document
+  that throws mid-mutation, writing nothing and freeing the lock) and
+  `refresh-openrouter-benchmarks` (1 — the refresh script against
+  `fixtures/openrouter/`). Existing files lost the
+  cases that only covered deleted symbols (`agent-events` 19 -> 13, and the
+  `fiveHourTier` case in `route`, which kept its
+  `FIVE_HOUR_NEAR_LIMIT_PCT === 75` assertion) and gained coverage for the
+  locked state writers, the fixture-migration rule, and the content gate.
+
 ## 0.27.0 — one workflow engine
 
 - Fixed: a worker that floods its stdout could kill the kernel. Every chunk of a

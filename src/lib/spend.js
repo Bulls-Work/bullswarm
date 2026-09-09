@@ -18,6 +18,9 @@ import {
   projectedUtilization,
 } from '../meters/framework.js';
 import { readMeterHistory } from '../meters/registry.js';
+// One strict numeric coercion for the whole codebase (src/lib/num.js): a
+// missing measurement stays null instead of becoming a confident zero.
+import { finiteOrNull as num } from './num.js';
 
 /**
  * Floor on any expected duration. Under-estimating an assignment's length
@@ -59,13 +62,6 @@ export const MIN_RATE_PAIRS = 2;
 export const MIN_RATE_MINUTES = MIN_EXPECTED_MINUTES;
 
 // --- small helpers -----------------------------------------------------------
-
-/** Finite number or null — a missing measurement never becomes a zero. */
-function num(value) {
-  if (value == null || value === '' || typeof value === 'boolean') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 function round(value, digits) {
   const f = 10 ** digits;
@@ -375,10 +371,17 @@ function historyResolver({ history = null, readHistory = null, historyFor = null
   };
 }
 
-/** Current utilization for one window of a pool view. */
+/**
+ * Current utilization for one window of a pool view.
+ *
+ * The weekly branch reads the rate's own window utilization only: no producer
+ * has ever written `pool.weeklyUsedPct` — buildPools writes `usedPct` (the
+ * pacing window) and `fiveHourUsedPct` — so reading it first only made the
+ * fall-through look conditional when it never was.
+ */
 function currentUsedPct(pool, key, rate) {
   if (key === 'fiveHour') return num(pool?.fiveHourUsedPct) ?? rate.windowUsedPct ?? null;
-  return num(pool?.weeklyUsedPct) ?? rate.windowUsedPct ?? null;
+  return rate.windowUsedPct ?? null;
 }
 
 /**

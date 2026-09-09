@@ -11,9 +11,16 @@
 //       substrate for burn-rate learning later.
 //   S4. Recursion depth is owned by the CORE: the guard counter lives in
 //       state, incremented by env var handshake, never trusted from args.
+//   S5. state.json is a SHARED file: every write is atomic (temp+rename) and
+//       every read-modify-write goes through updateState(), which holds a
+//       cross-process lock over a FRESH load. A command that runs for minutes
+//       must never save the copy it loaded at the start — that silently
+//       discarded a concurrent `strategy set-provider beta off --yes`
+//       (audit finding D5, 2026-09-09).
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { atomicWriteFileSync } from './fsjson.js';
 
 export const DEFAULT_STATE = {
   version: 1,
@@ -44,10 +51,98 @@ export function loadState(bullswarmDir) {
 
 export function saveState(bullswarmDir, state) {
   mkdirSync(bullswarmDir, { recursive: true });
-  writeFileSync(
+  // Temp file + rename (S5): a reader mid-write sees the previous complete
+  // file, never a truncated one.
+  atomicWriteFileSync(
     join(bullswarmDir, 'state.json'),
     `${JSON.stringify(state, null, 2)}\n`,
   );
+}
+
+// --- locked read-modify-write (S5) ----------------------------------------
+
+/** How long a lock file may exist before a waiter declares its holder dead. */
+export const STATE_LOCK_STALE_MS = 30_000;
+/** How long a waiter blocks before giving the command back to the operator. */
+export const STATE_LOCK_WAIT_MS = 10_000;
+/** Gap between acquisition attempts. */
+export const STATE_LOCK_POLL_MS = 25;
+
+export function stateLockPath(bullswarmDir) {
+  return join(bullswarmDir, 'state.lock');
+}
+
+/** Blocking sleep: the state writers are synchronous, so the wait must be too. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Take the exclusive state.json lock. `wx` makes creation the atomic test —
+ * only one process can win. Waiters retry for STATE_LOCK_WAIT_MS and then
+ * fail loudly rather than write over the holder.
+ *
+ * Stale-lock takeover: a process killed between acquire and release would
+ * otherwise bench state.json forever, so a lock file older than
+ * STATE_LOCK_STALE_MS (30 s — orders of magnitude longer than any legitimate
+ * load/mutate/write, which is a few milliseconds) is removed and retried.
+ */
+export function acquireStateLock(bullswarmDir, {
+  staleMs = STATE_LOCK_STALE_MS,
+  waitMs = STATE_LOCK_WAIT_MS,
+  pollMs = STATE_LOCK_POLL_MS,
+  sleep = sleepSync,
+} = {}) {
+  mkdirSync(bullswarmDir, { recursive: true });
+  const path = stateLockPath(bullswarmDir);
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx');
+      try {
+        writeSync(fd, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      return path;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      let ageMs = null;
+      try { ageMs = Date.now() - statSync(path).mtimeMs; } catch { ageMs = null; }
+      if (ageMs != null && ageMs > staleMs) {
+        // Best effort: if another waiter takes it over first, we just retry.
+        try { rmSync(path, { force: true }); } catch { /* raced */ }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `state.json is locked by another bullswarm process (${path}, waited ${waitMs}ms); retry the command`,
+        );
+      }
+      sleep(pollMs);
+    }
+  }
+}
+
+export function releaseStateLock(path) {
+  try { rmSync(path, { force: true }); } catch { /* already released */ }
+}
+
+/**
+ * The only safe way to change state.json (S5): lock, load FRESH, mutate,
+ * write atomically, release. The mutator mutates the state it is handed in
+ * place; returning `false` aborts the write, so an observation command can
+ * persist only the changes it actually made. Returns the state the mutator saw.
+ */
+export function updateState(bullswarmDir, mutator, opts = {}) {
+  const lock = acquireStateLock(bullswarmDir, opts);
+  try {
+    const state = loadState(bullswarmDir);
+    if (mutator(state) !== false) saveState(bullswarmDir, state);
+    return state;
+  } finally {
+    releaseStateLock(lock);
+  }
 }
 
 // --- quarantine -----------------------------------------------------------

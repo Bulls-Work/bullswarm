@@ -228,3 +228,27 @@ test('offline fetch failure never throws when a bundled datapack exists', async 
     assert.equal(catalog.records[0].model, 'bundled-model');
   } finally { f.cleanup(); }
 });
+
+test('blank CSV cells stay null and never score as a measured zero', () => {
+  // C3 pin for the shared strict finiteOrNull. `cell()` already screens blank
+  // and whitespace-only cells to null before the coercion runs, so this is the
+  // behaviour the shared helper must keep, not a behaviour change: a row whose
+  // score cell is blank is DROPPED (a missing score is not a score of 0), and
+  // blank cost/token cells stay null instead of reading as free and weightless.
+  const f = fixture();
+  try {
+    writeCsvs(f.dir, {
+      ...headers(),
+      'cursorbench_external.csv': `${headers()['cursorbench_external.csv']}`
+        + 'blank-cost-model,0.42,High,   ,,2026-01-01,Acme\n'
+        + 'blank-score-model,   ,High,1.00,100,2026-01-01,Acme\n'
+        + 'empty-score-model,,High,1.00,100,2026-01-01,Acme\n',
+    });
+    const pack = buildEpochDatapack({ inputDir: f.dir, capturedAt: '2026-09-09T00:00:00Z' });
+    assert.deepEqual(pack.records.map((row) => row.model), ['blank-cost-model']);
+    const row = pack.records[0];
+    assert.equal(row.score, 0.42);
+    assert.equal(row.costPerTask, null);
+    assert.equal(row.tokensPerTask, null);
+  } finally { f.cleanup(); }
+});

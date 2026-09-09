@@ -28,7 +28,7 @@ import { join } from 'node:path';
 export const ASSIGNMENT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 /** Sources allowed to register work; anything else is a caller bug. */
-export const ASSIGNMENT_SOURCES = Object.freeze(['run', 'workflow-v1', 'workflow-v2']);
+export const ASSIGNMENT_SOURCES = Object.freeze(['run', 'workflow-v2']);
 const EFFORTS = new Set(['high', 'medium', 'low']);
 
 /** `<BULLSWARM_HOME>/assignments` — every API below takes the HOME, not this. */

@@ -1,4 +1,4 @@
-import { loadState, saveState } from './lib/state.js';
+import { loadState, updateState } from './lib/state.js';
 import { loadConnectors, buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import {
@@ -8,27 +8,48 @@ import {
   getStrategyReasoning, setStrategyReasoning, clearStrategyReasoning,
   reasoningEffective, assertReasoningTier, assertReasoningLevel,
   rungsFor, setRung, configuredModel, formatRungEvidence,
+  TIER_LANES, clearTierAssignment,
 } from './lib/strategy.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './lib/reasoning.js';
 import { pickPool } from './lib/route.js';
 import { attachForecast, inflightPenaltyFrom } from './lib/forecast.js';
 import { expectedMinutesFor } from './lib/spend.js';
 import { helpText, usageLine } from './help.js';
+import { flagName, unknownFlagExit } from './lib/cli-flags.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
 
 function parseFlags(argv) {
-  const flags = { rest: [] };
+  const flags = { rest: [], _flags: [] };
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i];
     if (!token.startsWith('--')) { flags.rest.push(token); continue; }
+    const seen = flagName(token);
+    if (seen && !flags._flags.includes(seen)) flags._flags.push(seen);
     const [raw, inline] = token.slice(2).split(/=(.*)/s, 2);
     if (inline !== undefined) flags[raw] = inline;
     else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) flags[raw] = argv[++i];
     else flags[raw] = true;
   }
   return flags;
+}
+
+// The help path whose usage line explains this strategy verb, or null when
+// the verb has no help node — cmdStrategy already answers those with the full
+// command list and exit 2.
+function strategyHelpPath(sub, opts) {
+  if (sub === 'auto') {
+    const mode = opts.rest[0];
+    return ['status', 'off'].includes(mode) ? ['strategy', 'auto', mode] : ['strategy', 'auto'];
+  }
+  const LEAVES = [
+    'tui', 'inventory', 'routes', 'set-provider', 'set-model', 'reset-tier',
+    'set-reasoning', 'rungs', 'set-rung', 'reset-reasoning', 'configure',
+    'refresh', 'recommend', 'apply', 'show', 'assign', 'clear-assignment',
+    'exclude-model', 'include-model', 'set-subscription',
+  ];
+  return LEAVES.includes(sub) ? ['strategy', sub] : null;
 }
 
 function numberOrNull(value, label) {
@@ -214,10 +235,15 @@ export async function refreshStrategy(bullswarmDir, {
   const report = buildStrategy({
     connectors, pools, state, discoveries, openRouterCatalog: externalCatalog,
   });
-  state.strategy ??= {};
-  state.strategy.lastReport = report;
-  state.strategy.lastRefreshedAt = report.capturedAt;
-  saveState(bullswarmDir, state);
+  // Under the lock (S5): discovery and live meter calls above take seconds, so
+  // the copy loaded at the top of this function is stale by now. Only the two
+  // report fields are written, onto a FRESH load — a `strategy set-provider`
+  // that landed meanwhile survives.
+  updateState(bullswarmDir, (fresh) => {
+    fresh.strategy ??= {};
+    fresh.strategy.lastReport = report;
+    fresh.strategy.lastRefreshedAt = report.capturedAt;
+  });
   return report;
 }
 
@@ -363,7 +389,12 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
     }));
   const routes = {};
   for (const tier of STRATEGY_TIERS) {
-    const context = report.suggestions?.[tier]?.requirements ?? { lane: ({ high: 'analyze', medium: 'build', low: 'chore' })[tier], capabilities: [] };
+    // No report yet: fall back to the derived tier -> lane map (C1) rather than
+    // a third hand-written copy of it. Capabilities stay empty here on purpose
+    // — with no suggestions to read, the preview must not invent requirements
+    // that would make every pool look ineligible.
+    const context = report.suggestions?.[tier]?.requirements
+      ?? { lane: TIER_LANES[tier], capabilities: [] };
     const assignment = state.strategy?.assignments?.[tier] ?? null;
     const candidates = pools.map((pool) => ({
       ...pool,
@@ -375,7 +406,10 @@ export function strategyInventory({ pools, state, report, evidence = null }) {
         ],
         allowedModels: selectedModelsForTier(state.strategy, pool.name, tier),
       }),
-    })).filter((pool) => pool.modelPolicy.eligible);
+    }));
+    // Not pre-filtered on modelPolicy.eligible: pickPool applies that filter
+    // itself and needs the rejects to tell an empty candidate list caused by
+    // the tier allow-list apart from one caused by capabilities (D7).
     const route = pickPool(context.lane, candidates, {
       callerEligible: false,
       callerSession: false,
@@ -465,10 +499,14 @@ export async function loadStrategyInventory(bullswarmDir, {
 function setProviderEnabled(bullswarmDir, pool, enabled) {
   const connectors = loadConnectors(bullswarmDir);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-  const state = loadState(bullswarmDir);
-  state.pools[pool] ??= {};
-  state.pools[pool].enabled = enabled;
-  saveState(bullswarmDir, state);
+  // Under the lock (S5): this is the writer an operator reaches for while a
+  // run is in flight, and it is the exact out-of-band write the D5 race test
+  // uses. Loading outside the lock would let a concurrent post-worker update
+  // land between this load and its save, silently dropping one of the two.
+  updateState(bullswarmDir, (state) => {
+    state.pools[pool] ??= {};
+    state.pools[pool].enabled = enabled;
+  });
   return { action: 'provider-updated', pool, enabled };
 }
 
@@ -486,22 +524,26 @@ function materializeTier(strategy, inventory, tier) {
 function setModelTiers(bullswarmDir, pool, model, tiers, inventory) {
   const connectors = loadConnectors(bullswarmDir);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-  const state = loadState(bullswarmDir);
-  state.strategy ??= {};
   if (!tiers.length) {
-    setModelDisabled(state.strategy, pool, model, true);
-    setModelTierSelection(state.strategy, pool, model, []);
-    saveState(bullswarmDir, state);
+    updateState(bullswarmDir, (state) => {
+      state.strategy ??= {};
+      setModelDisabled(state.strategy, pool, model, true);
+      setModelTierSelection(state.strategy, pool, model, []);
+    });
     return { action: 'model-tiers-updated', pool, model, tiers: [], disabled: true };
   }
-  setModelDisabled(state.strategy, pool, model, false);
-  for (const tier of tiers) materializeTier(state.strategy, inventory, tier);
-  const selected = setModelTierSelection(state.strategy, pool, model, tiers);
-  state.strategy.configuredTiers = [...new Set([...(state.strategy.configuredTiers ?? []), ...tiers])];
-  for (const tier of tiers) {
-    if (state.strategy.assignments) delete state.strategy.assignments[tier];
-  }
-  saveState(bullswarmDir, state);
+  // The caller spent a full inventory load getting here; the selection is
+  // written under the lock (S5) on a fresh load so that wait cannot cost a
+  // concurrent operator's write.
+  let selected = [];
+  updateState(bullswarmDir, (state) => {
+    state.strategy ??= {};
+    setModelDisabled(state.strategy, pool, model, false);
+    for (const tier of tiers) materializeTier(state.strategy, inventory, tier);
+    selected = setModelTierSelection(state.strategy, pool, model, tiers);
+    state.strategy.configuredTiers = [...new Set([...(state.strategy.configuredTiers ?? []), ...tiers])];
+    for (const tier of tiers) clearTierAssignment(state.strategy, tier);
+  });
   return { action: 'model-tiers-updated', pool, model, tiers: selected };
 }
 
@@ -509,43 +551,46 @@ export function applyStrategyRecommendations(bullswarmDir, report, {
   refreshHours = 24, enableAutoRefresh = true,
 } = {}) {
   const approvedRefreshHours = enableAutoRefresh ? refreshHoursValue(refreshHours) : null;
-  const state = loadState(bullswarmDir);
-  state.strategy ??= {};
-  state.strategy.assignments ??= {};
   const applied = {};
-  for (const tier of ['high', 'medium', 'low']) {
-    const recommended = report?.suggestions?.[tier]?.recommended ?? null;
-    if (!recommended) continue;
-    state.strategy.assignments[tier] = { ...recommended };
-    applied[tier] = { ...recommended };
-  }
-  state.strategy.modelTiers = {};
-  state.strategy.configuredTiers = [...STRATEGY_TIERS];
-  for (const [pool, tiers] of Object.entries(report?.providerSuggestions ?? {})) {
-    for (const tier of STRATEGY_TIERS) {
-      const model = tiers?.[tier]?.recommended?.model ?? null;
-      if (!model) continue;
-      const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
-      setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
-    }
-  }
-  state.strategy.policy = {
-    ...(state.strategy.policy ?? {}),
-    autoApplyRecommendations: enableAutoRefresh,
-    refreshHours: approvedRefreshHours,
-    approvedAt: new Date().toISOString(),
-    source: 'explicit-user-approval',
-  };
-  state.strategy.lastAppliedAt = new Date().toISOString();
-  // Keep the persisted report aligned with the assignments just applied.
-  if (report) {
+  // Under the lock (S5): apply always follows a refresh (seconds of discovery)
+  // or a TUI session, so it rewrites assignments on a fresh load and reports
+  // the policy the mutator actually wrote.
+  const written = updateState(bullswarmDir, (state) => {
+    state.strategy ??= {};
+    state.strategy.assignments ??= {};
     for (const tier of ['high', 'medium', 'low']) {
-      if (report.suggestions?.[tier]) report.suggestions[tier].assignment = applied[tier] ?? null;
+      const recommended = report?.suggestions?.[tier]?.recommended ?? null;
+      if (!recommended) continue;
+      state.strategy.assignments[tier] = { ...recommended };
+      applied[tier] = { ...recommended };
     }
-    state.strategy.lastReport = report;
-  }
-  saveState(bullswarmDir, state);
-  return { applied, policy: state.strategy.policy };
+    state.strategy.modelTiers = {};
+    state.strategy.configuredTiers = [...STRATEGY_TIERS];
+    for (const [pool, tiers] of Object.entries(report?.providerSuggestions ?? {})) {
+      for (const tier of STRATEGY_TIERS) {
+        const model = tiers?.[tier]?.recommended?.model ?? null;
+        if (!model) continue;
+        const existing = state.strategy.modelTiers?.[pool]?.[model] ?? [];
+        setModelTierSelection(state.strategy, pool, model, [...existing, tier]);
+      }
+    }
+    state.strategy.policy = {
+      ...(state.strategy.policy ?? {}),
+      autoApplyRecommendations: enableAutoRefresh,
+      refreshHours: approvedRefreshHours,
+      approvedAt: new Date().toISOString(),
+      source: 'explicit-user-approval',
+    };
+    state.strategy.lastAppliedAt = new Date().toISOString();
+    // Keep the persisted report aligned with the assignments just applied.
+    if (report) {
+      for (const tier of ['high', 'medium', 'low']) {
+        if (report.suggestions?.[tier]) report.suggestions[tier].assignment = applied[tier] ?? null;
+      }
+      state.strategy.lastReport = report;
+    }
+  });
+  return { applied, policy: written.strategy.policy };
 }
 
 export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
@@ -565,12 +610,12 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
   } catch (err) {
     // Discovery is advisory and must never turn an otherwise routable run into
     // an outage. Keep the last approved assignments and expose the failure.
-    const failed = loadState(bullswarmDir);
-    failed.strategy ??= {};
-    failed.strategy.policy ??= policy;
-    failed.strategy.policy.lastRefreshErrorAt = new Date().toISOString();
-    failed.strategy.policy.lastRefreshError = err.message;
-    saveState(bullswarmDir, failed);
+    const failed = updateState(bullswarmDir, (state) => {
+      state.strategy ??= {};
+      state.strategy.policy ??= policy;
+      state.strategy.policy.lastRefreshErrorAt = new Date().toISOString();
+      state.strategy.policy.lastRefreshError = err.message;
+    });
     return { error: err.message, retainedAssignments: failed.strategy.assignments ?? {} };
   }
 }
@@ -578,13 +623,18 @@ export async function maybeRefreshStrategy(bullswarmDir, opts = {}) {
 export async function cmdStrategy(args, {
   bullswarmDir, input = process.stdin, output = process.stdout,
 } = {}) {
-  const [sub = 'show', ...rest] = args;
-  const opts = parseFlags(rest);
+  // A leading flag means no subcommand was given: `strategy --json` reads the
+  // default report, it does not name a subcommand called "--json".
+  const [head, ...tail] = args;
+  const sub = head === undefined || flagName(head) ? 'show' : head;
+  const opts = parseFlags(head !== undefined && flagName(head) ? args : tail);
   try {
     if (sub === 'help' || sub === '--help' || opts.help) {
       console.log(strategyUsage());
       return 0;
     }
+    const flagExit = unknownFlagExit(opts._flags, strategyHelpPath(sub, opts));
+    if (flagExit !== null) return flagExit;
     if (sub === 'tui') {
       if (!input.isTTY || !output.isTTY) throw new Error('strategy tui requires an interactive terminal');
       return await startStrategyDashboard({
@@ -628,18 +678,21 @@ export async function cmdStrategy(args, {
           throw new Error(`--reasoning must be ${[...REASONING_LEVELS, 'default'].join(', ')}`);
         }
       }
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      const known = cachedPoolModels(state, connectors[pool]);
+      // Validated before the lock is taken, on its own read of the cached
+      // discovery report: a rejected model must not make a waiter queue.
+      const known = cachedPoolModels(loadState(bullswarmDir), connectors[pool]);
       if (!known.includes(model) && opts.force !== true) {
         throw new Error(`unknown model "${model}" for pool "${pool}" — cached discovery knows `
           + `${known.length ? known.join(', ') : 'no models yet; run bullswarm strategy refresh'}`
           + '. Pass --force to select it anyway.');
       }
-      setRung(state.strategy, { pool, tier, model, reasoning: level });
-      // One atomic save: the model half and the reasoning half of a rung can
-      // never land separately.
-      saveState(bullswarmDir, state);
+      // One atomic save under the lock (S5): the model half and the reasoning
+      // half of a rung can never land separately, and the notes below report
+      // the state the mutator actually wrote.
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        setRung(fresh.strategy, { pool, tier, model, reasoning: level });
+      });
       const applied = resolveReasoningLevel({
         connector: connectors[pool], tier, model, strategy: state.strategy,
       });
@@ -681,7 +734,9 @@ export async function cmdStrategy(args, {
         force: opts.refresh === true, useOpenRouter: opts.refresh === true,
       });
       const value = sub === 'routes' ? { capturedAt: inventory.capturedAt, routes: inventory.routes } : inventory;
-      console.log(opts.json ? JSON.stringify(value, null, 2) : JSON.stringify(value, null, 2));
+      // Always JSON: `--json` is accepted for agents that pass it, but there is
+      // no human renderer for either verb, so it selects nothing.
+      console.log(JSON.stringify(value, null, 2));
       return 0;
     }
     if (sub === 'set-provider') {
@@ -709,16 +764,16 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error('reset-tier changes routing; pass --yes to approve');
       const tier = opts.rest[0];
       if (!STRATEGY_TIERS.includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'reset-tier'])}`);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      state.strategy.configuredTiers = (state.strategy.configuredTiers ?? []).filter((entry) => entry !== tier);
-      for (const [pool, models] of Object.entries(state.strategy.modelTiers ?? {})) {
-        for (const [model, tiers] of Object.entries(models)) {
-          setModelTierSelection(state.strategy, pool, model, tiers.filter((entry) => entry !== tier));
+      updateState(bullswarmDir, (state) => {
+        state.strategy ??= {};
+        state.strategy.configuredTiers = (state.strategy.configuredTiers ?? []).filter((entry) => entry !== tier);
+        for (const [pool, models] of Object.entries(state.strategy.modelTiers ?? {})) {
+          for (const [model, tiers] of Object.entries(models)) {
+            setModelTierSelection(state.strategy, pool, model, tiers.filter((entry) => entry !== tier));
+          }
         }
-      }
-      if (state.strategy.assignments) delete state.strategy.assignments[tier];
-      saveState(bullswarmDir, state);
+        clearTierAssignment(state.strategy, tier);
+      });
       console.log(JSON.stringify({ action: 'tier-reset-to-automatic', tier }, null, 2));
       return 0;
     }
@@ -726,19 +781,23 @@ export async function cmdStrategy(args, {
       if (opts.yes !== true) throw new Error(`strategy ${sub} changes routing; pass --yes to approve`);
       const pool = reasoningFlag(opts.pool, sub);
       if (pool !== null && !loadConnectors(bullswarmDir)[pool]) throw new Error(`unknown pool "${pool}"`);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
       if (sub === 'set-reasoning') {
         const tier = assertReasoningTier(reasoningFlag(opts.tier, sub));
         const level = assertReasoningLevel(reasoningFlag(opts.level, sub));
-        const reasoning = setStrategyReasoning(state.strategy, { tier, level, pool });
-        saveState(bullswarmDir, state);
+        let reasoning = null;
+        updateState(bullswarmDir, (state) => {
+          state.strategy ??= {};
+          reasoning = setStrategyReasoning(state.strategy, { tier, level, pool });
+        });
         console.log(JSON.stringify({ action: 'reasoning-updated', tier, level, pool, reasoning }, null, 2));
         return 0;
       }
       const tier = opts.tier === undefined ? null : assertReasoningTier(reasoningFlag(opts.tier, sub));
-      const reasoning = clearStrategyReasoning(state.strategy, { tier, pool });
-      saveState(bullswarmDir, state);
+      let reasoning = null;
+      updateState(bullswarmDir, (state) => {
+        state.strategy ??= {};
+        reasoning = clearStrategyReasoning(state.strategy, { tier, pool });
+      });
       console.log(JSON.stringify({ action: 'reasoning-reset', tier, pool, reasoning }, null, 2));
       return 0;
     }
@@ -750,44 +809,46 @@ export async function cmdStrategy(args, {
       const connectors = loadConnectors(bullswarmDir);
       const reasoning = validateReasoningSection(config.reasoning, connectors);
       const inventory = await loadStrategyInventory(bullswarmDir);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      for (const [pool, enabled] of Object.entries(config.providers ?? {})) {
-        if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-        if (typeof enabled !== 'boolean') throw new Error(`provider ${pool} must be true or false`);
-        state.pools[pool] ??= {};
-        state.pools[pool].enabled = enabled;
-      }
-      const configured = new Set(state.strategy.configuredTiers ?? []);
-      for (const [pool, models] of Object.entries(config.models ?? {})) {
-        if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-        const detected = new Set(inventory.providers.find((entry) => entry.name === pool)?.models.map((entry) => entry.id) ?? []);
-        for (const [model, value] of Object.entries(models ?? {})) {
-          if (!detected.has(model)) throw new Error(`unknown model "${model}" for pool "${pool}"`);
-          const tiers = value === 'off' ? [] : value;
-          if (!Array.isArray(tiers) || tiers.some((tier) => !STRATEGY_TIERS.includes(tier))) {
-            throw new Error(`model ${pool}/${model} tiers must be an array of high, medium, low or "off"`);
-          }
-          if (!tiers.length) {
-            setModelDisabled(state.strategy, pool, model, true);
-            setModelTierSelection(state.strategy, pool, model, []);
-          } else {
-            setModelDisabled(state.strategy, pool, model, false);
-            setModelTierSelection(state.strategy, pool, model, tiers);
-            for (const tier of tiers) configured.add(tier);
+      // The whole document is validated INSIDE the mutator (S5): a throw
+      // half way through aborts before updateState writes anything, so a
+      // typo in one tier still cannot leave half a policy applied — and
+      // the load it validates against is the one it writes back.
+      const written = updateState(bullswarmDir, (state) => {
+        state.strategy ??= {};
+        for (const [pool, enabled] of Object.entries(config.providers ?? {})) {
+          if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+          if (typeof enabled !== 'boolean') throw new Error(`provider ${pool} must be true or false`);
+          state.pools[pool] ??= {};
+          state.pools[pool].enabled = enabled;
+        }
+        const configured = new Set(state.strategy.configuredTiers ?? []);
+        for (const [pool, models] of Object.entries(config.models ?? {})) {
+          if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
+          const detected = new Set(inventory.providers.find((entry) => entry.name === pool)?.models.map((entry) => entry.id) ?? []);
+          for (const [model, value] of Object.entries(models ?? {})) {
+            if (!detected.has(model)) throw new Error(`unknown model "${model}" for pool "${pool}"`);
+            const tiers = value === 'off' ? [] : value;
+            if (!Array.isArray(tiers) || tiers.some((tier) => !STRATEGY_TIERS.includes(tier))) {
+              throw new Error(`model ${pool}/${model} tiers must be an array of high, medium, low or "off"`);
+            }
+            if (!tiers.length) {
+              setModelDisabled(state.strategy, pool, model, true);
+              setModelTierSelection(state.strategy, pool, model, []);
+            } else {
+              setModelDisabled(state.strategy, pool, model, false);
+              setModelTierSelection(state.strategy, pool, model, tiers);
+              for (const tier of tiers) configured.add(tier);
+            }
           }
         }
-      }
-      state.strategy.configuredTiers = [...configured];
-      for (const tier of configured) {
-        if (state.strategy.assignments) delete state.strategy.assignments[tier];
-      }
-      applyReasoningSection(state.strategy, reasoning);
-      saveState(bullswarmDir, state);
+        state.strategy.configuredTiers = [...configured];
+        for (const tier of configured) clearTierAssignment(state.strategy, tier);
+        applyReasoningSection(state.strategy, reasoning);
+      });
       console.log(JSON.stringify({
         action: 'strategy-configured',
-        configuredTiers: state.strategy.configuredTiers,
-        reasoning: getStrategyReasoning(state.strategy),
+        configuredTiers: written.strategy.configuredTiers,
+        reasoning: getStrategyReasoning(written.strategy),
       }, null, 2));
       return 0;
     }
@@ -814,21 +875,22 @@ export async function cmdStrategy(args, {
       if (!pool) throw new Error(`usage: ${usageLine(['strategy', 'set-subscription'])}`);
       const connectors = loadConnectors(bullswarmDir);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      state.strategy.subscriptions ??= {};
-      const current = state.strategy.subscriptions[pool] ?? {};
+      // Flag validation first, so a bad number fails before any lock is taken.
       const monthlyPriceUsd = numberOrNull(opts['monthly-usd'], 'monthly-usd');
       const includedValueUsd = numberOrNull(opts['included-usd'], 'included-usd');
-      state.strategy.subscriptions[pool] = {
-        ...current,
-        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
-        ...(monthlyPriceUsd !== undefined ? { monthlyPriceUsd } : {}),
-        ...(includedValueUsd !== undefined ? { includedValueUsd } : {}),
-        ...(opts['quota-window'] !== undefined ? { quotaWindow: opts['quota-window'] } : {}),
-      };
-      delete state.strategy.lastReport;
-      saveState(bullswarmDir, state);
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        fresh.strategy.subscriptions ??= {};
+        const current = fresh.strategy.subscriptions[pool] ?? {};
+        fresh.strategy.subscriptions[pool] = {
+          ...current,
+          ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
+          ...(monthlyPriceUsd !== undefined ? { monthlyPriceUsd } : {}),
+          ...(includedValueUsd !== undefined ? { includedValueUsd } : {}),
+          ...(opts['quota-window'] !== undefined ? { quotaWindow: opts['quota-window'] } : {}),
+        };
+        delete fresh.strategy.lastReport;
+      });
       console.log(JSON.stringify({ action: 'subscription-updated', pool, subscription: state.strategy.subscriptions[pool] }, null, 2));
       return 0;
     }
@@ -838,27 +900,27 @@ export async function cmdStrategy(args, {
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
       const connectors = loadConnectors(bullswarmDir);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      state.strategy.assignments ??= {};
-      state.strategy.assignments[tier] = { pool: opts.pool, model: opts.model };
-      delete state.strategy.lastReport;
-      saveState(bullswarmDir, state);
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        fresh.strategy.assignments ??= {};
+        fresh.strategy.assignments[tier] = { pool: opts.pool, model: opts.model };
+        delete fresh.strategy.lastReport;
+      });
       console.log(JSON.stringify({ action: 'tier-assigned', tier, assignment: state.strategy.assignments[tier] }, null, 2));
       return 0;
     }
     if (sub === 'exclude-model' || sub === 'include-model') {
       const model = opts.rest[0];
       if (!model) throw new Error(`usage: ${usageLine(['strategy', sub])}`);
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      const current = normalizeExcludedModels(state.strategy.excludedModels);
       const normalized = String(model).trim().toLowerCase();
-      state.strategy.excludedModels = sub === 'exclude-model'
-        ? normalizeExcludedModels([...current, normalized])
-        : current.filter((entry) => entry !== normalized);
-      delete state.strategy.lastReport;
-      saveState(bullswarmDir, state);
+      const state = updateState(bullswarmDir, (fresh) => {
+        fresh.strategy ??= {};
+        const current = normalizeExcludedModels(fresh.strategy.excludedModels);
+        fresh.strategy.excludedModels = sub === 'exclude-model'
+          ? normalizeExcludedModels([...current, normalized])
+          : current.filter((entry) => entry !== normalized);
+        delete fresh.strategy.lastReport;
+      });
       console.log(JSON.stringify({
         action: sub === 'exclude-model' ? 'model-excluded' : 'model-included',
         model: normalized,
@@ -878,27 +940,33 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'auto') {
       const mode = opts.rest[0] ?? 'status';
-      const state = loadState(bullswarmDir);
-      state.strategy ??= {};
-      state.strategy.policy ??= {};
       if (mode === 'off') {
         if (opts.yes !== true) throw new Error('strategy auto off changes routing policy; pass --yes to approve');
-        state.strategy.policy.autoApplyRecommendations = false;
-        state.strategy.policy.disabledAt = new Date().toISOString();
-        saveState(bullswarmDir, state);
-      } else if (mode !== 'status') {
-        throw new Error(`usage: ${usageLine(['strategy', 'auto'])}`);
+        const written = updateState(bullswarmDir, (state) => {
+          state.strategy ??= {};
+          state.strategy.policy ??= {};
+          state.strategy.policy.autoApplyRecommendations = false;
+          state.strategy.policy.disabledAt = new Date().toISOString();
+        });
+        console.log(JSON.stringify({ action: 'strategy-auto', policy: written.strategy.policy }, null, 2));
+        return 0;
       }
-      console.log(JSON.stringify({ action: 'strategy-auto', policy: state.strategy.policy }, null, 2));
+      if (mode !== 'status') throw new Error(`usage: ${usageLine(['strategy', 'auto'])}`);
+      // `status` writes nothing, so it stays a plain read and never queues
+      // behind the lock: the empty policy it reports is a default, not a save.
+      console.log(JSON.stringify({
+        action: 'strategy-auto',
+        policy: loadState(bullswarmDir).strategy?.policy ?? {},
+      }, null, 2));
       return 0;
     }
     if (sub === 'clear-assignment') {
       const tier = opts.rest[0];
       if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'clear-assignment'])}`);
-      const state = loadState(bullswarmDir);
-      if (state.strategy?.assignments) delete state.strategy.assignments[tier];
-      delete state.strategy?.lastReport;
-      saveState(bullswarmDir, state);
+      updateState(bullswarmDir, (state) => {
+        clearTierAssignment(state.strategy, tier);
+        delete state.strategy?.lastReport;
+      });
       console.log(JSON.stringify({ action: 'tier-assignment-cleared', tier }, null, 2));
       return 0;
     }

@@ -18,7 +18,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 
 import { randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 // The one predicate every reader uses to tell an authored-graph run from a V2
 // one. 0.27.0 removed the authored-graph executor, so a run directory whose
@@ -42,6 +42,20 @@ export function isLegacyRunDir(runDir) {
 // The single sentence every command prints when asked to drive a legacy run.
 export function legacyRunLine({ shortId = null, runId = null, runDir = null } = {}) {
   return `legacy authored-graph run ${shortId ?? runId}: its executor was removed in 0.27.0; files remain under ${runDir}`;
+}
+
+export function kernelStderrPath(runDir) {
+  return join(dirname(dirname(runDir)), 'goals', basename(runDir), 'stderr.log');
+}
+
+export function readKernelStderrTail(runDir, lineCount = 20) {
+  try {
+    const lines = readFileSync(kernelStderrPath(runDir), 'utf8').split(/\r?\n/);
+    while (lines.at(-1) === '') lines.pop();
+    return lines.slice(-lineCount);
+  } catch {
+    return [];
+  }
 }
 
 export const SHORT_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyz';

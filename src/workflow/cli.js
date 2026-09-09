@@ -29,6 +29,7 @@ import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
 import { queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
+import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -44,26 +45,42 @@ export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external impor
 
 export async function cmdWorkflow(args, {
   bullswarmDir = BULLSWARM_DIR(), input = process.stdin, output = process.stdout,
+  runsAlias = null,
 } = {}) {
-  const [sub, ...rest] = args;
-  const opts = parseFlags(rest);
+  // A leading flag means no subcommand was given: `workflow --bogus` is a
+  // flag error on the workflow root, not an unknown subcommand named
+  // "--bogus".
+  const [head, ...tail] = args;
+  const sub = flagName(head) ? undefined : head;
+  const opts = parseFlags(sub === undefined ? args : tail);
 
   if (!sub && input.isTTY && output.isTTY) {
     try { return await runDashboard(bullswarmDir, { input, output }); }
     catch (err) { console.error(`✗ ${err.message}`); return 1; }
   }
 
+  // One gate for every workflow verb whose flags are parsed here. `plan` and
+  // `runs` re-parse their own tail against their own subcommand's table, so
+  // they run the same check inside their own dispatcher instead.
+  if (sub !== 'plan' && sub !== 'runs') {
+    const path = workflowHelpPath(sub, opts);
+    if (path) {
+      const flagExit = unknownFlagExit(opts.flags, path);
+      if (flagExit !== null) return flagExit;
+    }
+  }
+
   switch (sub) {
     case 'goal':
       return wfGoal(opts);
     case 'plan':
-      return wfPlan(rest);
+      return wfPlan(tail);
     case 'cancel':
       return wfCancel(opts);
     case 'resume':
       return wfResume(opts);
     case 'runs':
-      return cmdRuns(rest);
+      return cmdRuns(tail, runsAlias ? { alias: runsAlias } : {});
     case 'capabilities':
       return wfCapabilities(opts);
     case 'tui':
@@ -771,10 +788,16 @@ async function wfGoal(opts) {
 // decision) and relaunches the paused kernel.
 
 async function wfPlan(rest) {
-  const [sub, ...tail] = rest;
-  const opts = parseFlags(tail);
+  const [head, ...tail] = rest;
+  const sub = flagName(head) ? undefined : head;
+  const opts = parseFlags(sub === undefined ? rest : tail);
   const subs = ['contract', 'validate', 'show', 'submit'];
-  if (!sub || sub === 'help' || (opts.help && !subs.includes(sub))) {
+  if (sub === undefined || sub === 'help' || (opts.help && !subs.includes(sub))) {
+    // A flag with no subcommand is a usage error on `workflow plan` itself.
+    const planFlags = sub === undefined && !opts.help
+      ? unknownFlagExit(opts.flags, ['workflow', 'plan'])
+      : null;
+    if (planFlags !== null) return planFlags;
     console.log(helpText(['workflow', 'plan']));
     return sub ? 0 : 2;
   }
@@ -1408,8 +1431,18 @@ function wfAction(opts) {
   }
 }
 
+// The help path whose usage line explains this workflow verb. Returns null
+// for a verb with no help node — the dispatcher's default branch already
+// answers those with guidance and exit 2.
+function workflowHelpPath(sub, opts) {
+  if (!sub) return ['workflow'];
+  if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
+  const LEAVES = ['goal', 'cancel', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer'];
+  return LEAVES.includes(sub) ? ['workflow', sub] : null;
+}
+
 function parseFlags(argv) {
-  const out = { inputs: {}, rest: [] };
+  const out = { inputs: {}, rest: [], flags: [] };
   const valueFlags = new Set([
     'resume', 'after', 'cwd', 'orchestrator', 'strict-orchestrator', 'orchestrator-model',
     'worker-pool', 'worker-model', 'worker-reasoning', 'planner-reasoning', 'request', 'run-id',
@@ -1424,6 +1457,10 @@ function parseFlags(argv) {
   const missingValue = (i) => argv[i + 1] === undefined || /^--./.test(argv[i + 1]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // Record every flag-shaped token exactly as typed so the unknown-flag
+    // gate sees `--porgram`, not the normalized key this switch produces.
+    const name = flagName(a);
+    if (name && !out.flags.includes(name)) out.flags.push(name);
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--no-scout') out.noScout = true;
@@ -1462,6 +1499,8 @@ function parseFlags(argv) {
 // Report flag-parsing errors for one command and return its exit code, or
 // null when the flags parsed cleanly.
 function flagErrors(opts, path) {
+  const unknown = unknownFlagExit(opts.flags, path);
+  if (unknown !== null) return unknown;
   if (!opts.errors?.length) return null;
   for (const error of opts.errors) console.error(`✗ ${error}`);
   console.error(`usage: ${usageLine(path)}`);

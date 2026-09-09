@@ -13,6 +13,8 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
+// One strict numeric coercion for the whole codebase (src/lib/num.js).
+import { finiteOrNull } from './num.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../meters/framework.js';
 import { expandClaudeAccountConnectors } from './claude-accounts.js';
 import { expandOpenCodeRelayConnectors } from './opencode-relay.js';
@@ -37,6 +39,17 @@ export function loadConnectors(bullswarmDir, opts = {}) {
 }
 
 /**
+ * Whether a connector's pool is enabled, by the one rule both buildPools and
+ * buildPoolsLive apply: a test-fixture pool is opt-IN (it must be switched on
+ * explicitly), every other pool is opt-out.
+ */
+function poolEnabled(conn, poolState) {
+  return conn?.flags?.testFixture === true
+    ? poolState?.enabled === true
+    : poolState?.enabled !== false;
+}
+
+/**
  * Build the runtime pool list: connector + state + meter reading.
  * Meter readings are injected by the caller (async — readers poll the
  * network); this function stays sync so tests can build pools without I/O.
@@ -51,7 +64,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       name,
       connector: conn,
       testFixture: conn.flags?.testFixture === true,
-      enabled: conn.flags?.testFixture === true ? ps.enabled === true : ps.enabled !== false,
+      enabled: poolEnabled(conn, ps),
       costRank: conn.costRank ?? 5,
       lanes: conn.lanes,
       capabilities: conn.capabilities ?? [],
@@ -126,13 +139,6 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
   return { state, connectors, pools };
 }
 
-/** null-safe finite coercion: null/undefined/NaN all mean "no reading". */
-function finiteOrNull(value) {
-  if (value == null) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 /**
  * 5h window fields from a meter reading. Prefers the flat fields paceSnapshot
  * produces and falls back to the raw snapshot, so a reading assembled by an
@@ -158,7 +164,16 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
 } = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir);
-  const names = Object.keys(connectors);
+  // Poll only the pools whose readings can be used (D6). The loop above
+  // already skips disabled and quarantined pools when it applies readings, so
+  // asking for theirs read a credential and called a provider usage endpoint
+  // for a number that was thrown away — on every `pools`, every `run` and
+  // every 15-second V2 refresh.
+  const names = Object.keys(connectors).filter((name) => {
+    const ps = state.pools?.[name] ?? {};
+    return poolEnabled(connectors[name], ps)
+      && !isQuarantined({ quarantine: ps.quarantine ?? null }, now);
+  });
   const readings = getReadings
     ? await getReadings(names, { force, nowMs: now, onProgress: onProviderProgress })
     : {};
