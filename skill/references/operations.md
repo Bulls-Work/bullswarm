@@ -76,9 +76,11 @@ Resume keeps the run's durable planner mode, routing pins, and settings;
 `--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected
 there (use `workflow plan submit` for a caller program). Autonomous resume is
 V2-only. An old autonomous run ID fails before dispatch; there is no migration
-or fallback executor. Fixed authored workflows and drafts remain a separate
-product surface. `bullswarm workflow goal --resume <shortId>` and
+or fallback executor. `bullswarm workflow goal --resume <shortId>` and
 `bullswarm workflow tui --cancel <shortId>` remain as aliases.
+
+Legacy authored-graph runs are listed as read-only rows marked `legacy`; driving
+commands fail closed with their short ID and retained run directory.
 
 ## Program actions: `kind`, `defaults`, and advisories
 
@@ -168,16 +170,18 @@ must list exact files in `ownedFiles`; undeclared files can fail the action and
 are not integrated. An unrestricted writer with `ownedFiles: []` is invalid.
 Existing runs preserve their saved mode on resume.
 
-## Fixed graphs, fan-out, and adversarial verification
+## Adversarial verification
 
-Use `workflow draft` only when exact phases and dependencies are user-authored
-requirements. Drafts support `run`, `fanout`, and `verify` steps. A verify must
-return JSON `{ok, concerns, summary}` and is successful only when it parses and
-`ok` is true.
-
-For data-driven fan-out, make discovery return a JSON array or a schema-backed
-object, then use `itemsFrom`. Put `outputSchema` only on worker output that a
-later action consumes structurally; ordinary prose should not have a schema.
+An action that names requirement IDs in `evidenceFor` is dispatched under the
+kernel-owned evidence contract and writes a
+`bullswarm.workflow.evidence.v2` envelope — `requirements: { <id>: { status,
+evidence, concerns } }` — to the durable path the task file names. It judges the
+artifact its dependency produced, so give it `dependsOn` and no `ownedFiles`;
+the kernel validates the envelope after dispatch and a schema-invalid one gets
+one bounded correction. Do not ask a worker to return a `{ok, concerns,
+summary}` verdict or any other hand-rolled JSON shape: the program validator
+rejects response-format directives, and that older verdict shape is refused
+outright. `kind: 'adversarial-acceptance'` routes such an action to analyze/high.
 
 ## Routing and model policy
 
@@ -215,6 +219,8 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
   `remainingMinutes`. An empty list with work apparently running means the
   dispatching process never registered it; a stale-looking entry is pruned on
   the next read once its process is gone.
+- Legacy authored-graph rows are read-only. Every driving command fails closed
+  with the executor-removed message and leaves the historical run directory untouched.
 - `bullswarm pools` carries `inflight=<n>` next to each pool's `5h=<n>%`
   reading; `--json` adds the full `inflight` block (`count`, elapsed
   `minutes`, `remainingMinutes`, `unknownExpected`, `records[]`) and each

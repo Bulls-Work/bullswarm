@@ -20,37 +20,31 @@ content. Published as `bullswarm` on npm.
 5. Workflow dispatches must honor the same guarantees as single runs:
    `BULLSWARM_DEPTH` is propagated, burst-gated pools are excluded, and
    auth verdicts quarantine the pool + append to the shared decision log
-   (R6/R7/R8 in `src/workflow/runtime.js`).
-6. Adversarial verification is a first-class primitive: a `verify` step
-   reads a prior outFile and demands a JSON `{ok, concerns, summary}`
-   verdict before downstream steps can trust the work (R-skeptic).
-7. Workflows can be built incrementally from the shell
-   (`bullswarm workflow draft create/phase/step/set/...`). Drafts are
-   stored under `~/.bullswarm/drafts/<name>/` and are runnable by name
-   without an upfront JSON. JSON is still the durable artifact — drafts
-   are JSON documents, just built one mutation at a time.
-8. New goal workflows are caller-planned programs in a shared workspace.
+   (R6/R7/R8 in `src/workflow/v2-dispatch.js`).
+6. Adversarial verification is a first-class primitive: an action naming
+   requirements in `evidenceFor` is dispatched under an evidence contract and
+   judges them from the durable artifact, so a requirement is only verified by
+   work someone else inspected (R-skeptic).
+7. New goal workflows are caller-planned programs in a shared workspace.
    `bullswarm workflow goal --program` executes the graph; `--orchestrator`
    explicitly delegates planning. File territories are advisory scheduling
    hints, and the graph finishes without automatic gap rounds. `verified`
    separately records requirement evidence. `--isolation` opts into strict
    per-worker worktrees. Saved V2 runs preserve their original semantics.
+8. Historical authored-graph runs remain visible as read-only `legacy` rows.
+   Their executor was removed in 0.27.0; driving commands fail closed before
+   dispatch and historical run directories remain untouched.
 
 ## Development
 
 ```bash
 npm test            # full suite, no network needed (meters read from cache)
 node bin/bullswarm.js doctor --json   # readiness report
-node bin/bullswarm.js workflow list   # discover workflows
+node bin/bullswarm.js workflow goal "Fix the failing tests" --program plan.json
 node bin/bullswarm.js workflow runs   # ongoing workflow instances
 node bin/bullswarm.js workflow runs --all   # including historical
-node bin/bullswarm.js workflow validate <file>  # dry-run
-BULLSWARM_HOME=/tmp/bs node bin/bullswarm.js workflow run <file>   # sandboxed run
-# Build a workflow from the shell:
-bullswarm workflow draft create my-audit
-bullswarm workflow draft phase add my-audit discover
-bullswarm workflow draft step add my-audit discover list-files --type run --prompt 'List files'
-bullswarm workflow draft run my-audit
+# Validate a caller-authored program before launch:
+bullswarm workflow plan validate "Fix the failing tests" --program plan.json
 # Operate on a run by shortId (6 chars) or full runId (`wf-...`):
 bullswarm workflow runs show <shortId>
 bullswarm workflow runs delete <shortId> --yes

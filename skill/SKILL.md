@@ -151,4 +151,4 @@ always inspect the returned status.
 
 Read [operations.md](references/operations.md) only when you need **steering,
 cancellation, resume, scouting, a dispatched planner, explicit isolation,
-routing diagnosis, or fixed drafts**. Ordinary work needs only the flow above.
+routing diagnosis**. Ordinary work needs only the flow above.
