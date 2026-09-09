@@ -4,7 +4,9 @@ import {
   parseDiscoveredModels, discoverConnectorModels, discoverAllModels, buildStrategy, resolveDispatchModel,
   selectedModelsForTier, setModelTierSelection,
   rungsFor, setRung, rungRecord, formatRungEvidence,
+  TIER_LANES, TIER_CONTEXTS, clearTierAssignment, STRATEGY_TIERS,
 } from '../src/lib/strategy.js';
+import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../src/workflow/action-validator.js';
 
 test('connector-declared parsing handles columns, bullets, and plain lines', () => {
   assert.deepEqual(parseDiscoveredModels('Header\nfoo/bar  description\ngpt-5  text\n', {
@@ -448,4 +450,58 @@ test('a rung written by setRung is the rung rungsFor reads back', () => {
   assert.equal(row.model, 'deep-2');
   assert.equal(row.reasoning.applied, 'low');
   assert.equal(row.reasoning.source, 'strategy-pool');
+});
+
+// --- C1: one lane/effort relation, three consumers --------------------------
+
+test('tier lanes are derived from the validator tables, not restated', () => {
+  // The values the hand-written table used to state, now computed.
+  assert.deepEqual(TIER_LANES, { high: 'analyze', medium: 'build', low: 'chore' });
+  // Derived, so no tier can name a lane the V2 validator does not know.
+  for (const tier of STRATEGY_TIERS) {
+    assert.ok(TIER_LANES[tier] in DEFAULT_EFFORT_BY_LANE, `${tier} -> unknown lane`);
+    assert.equal(TIER_CONTEXTS[tier].lane, TIER_LANES[tier]);
+  }
+  // Each derived lane really is a lane KIND_DEFAULTS pairs with that effort.
+  for (const tier of STRATEGY_TIERS) {
+    assert.ok(
+      Object.values(KIND_DEFAULTS).some(
+        (kind) => kind.effort === tier && kind.lane === TIER_LANES[tier],
+      ),
+      `no ${tier} kind runs on ${TIER_LANES[tier]}`,
+    );
+  }
+  // The map is total and one-to-one: three tiers, three distinct lanes.
+  assert.equal(new Set(Object.values(TIER_LANES)).size, 3);
+});
+
+test('TIER_CONTEXTS still carries the per-tier capability requirements', () => {
+  assert.deepEqual(TIER_CONTEXTS.high.capabilities, ['strong-analysis', 'workflow-planning']);
+  assert.deepEqual(TIER_CONTEXTS.medium.capabilities, ['code-reading', 'file-editing']);
+  assert.deepEqual(TIER_CONTEXTS.low.capabilities, []);
+});
+
+// --- C2: one invalidation for the overlapping pool pin ----------------------
+
+test('clearTierAssignment drops one tier pin and leaves the others alone', () => {
+  const strategy = {
+    assignments: {
+      high: { pool: 'codex', model: 'gpt-5.6-sol' },
+      medium: { pool: 'grok', model: 'grok-4.6' },
+    },
+  };
+  assert.equal(clearTierAssignment(strategy, 'high'), true);
+  assert.deepEqual(Object.keys(strategy.assignments), ['medium']);
+  // Idempotent, and honest about having changed nothing.
+  assert.equal(clearTierAssignment(strategy, 'high'), false);
+  assert.equal(clearTierAssignment(strategy, 'low'), false);
+});
+
+test('clearTierAssignment tolerates a strategy with no assignments at all', () => {
+  assert.equal(clearTierAssignment(undefined, 'high'), false);
+  assert.equal(clearTierAssignment(null, 'high'), false);
+  assert.equal(clearTierAssignment({}, 'high'), false);
+  const empty = { assignments: {} };
+  assert.equal(clearTierAssignment(empty, 'high'), false);
+  assert.deepEqual(empty.assignments, {});
 });

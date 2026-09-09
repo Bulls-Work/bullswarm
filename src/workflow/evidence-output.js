@@ -135,27 +135,6 @@ export function validateEvidenceOutput(envelope, contract) {
   };
 }
 
-export const validateV2EvidenceOutput = validateEvidenceOutput;
-export const validateEvidenceEnvelope = validateEvidenceOutput;
-
-export function parseEvidenceOutput(text, contract) {
-  const source = String(text ?? '').trim();
-  const ends = source.endsWith('```') ? source.slice(0, -3).trimEnd() : source;
-  const errors = [];
-  for (let index = 0; index < ends.length; index += 1) {
-    if (ends[index] !== '{') continue;
-    try {
-      const candidate = JSON.parse(ends.slice(index));
-      const checked = validateEvidenceOutput(candidate, contract);
-      if (checked.ok) return checked;
-      errors.push(...checked.errors);
-    } catch (error) {
-      errors.push(error.message);
-    }
-  }
-  return { ok: false, errors: errors.length ? [...new Set(errors)] : ['response did not contain a trailing JSON object'] };
-}
-
 export function readEvidenceCandidate(candidatePath, contract) {
   if (typeof candidatePath !== 'string' || !candidatePath) {
     return { ok: false, errors: ['candidatePath must be a non-empty string'] };

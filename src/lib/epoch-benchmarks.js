@@ -3,6 +3,11 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// One strict numeric coercion for the whole codebase (src/lib/num.js). The
+// local copy this replaces already rejected null and '', so behaviour here is
+// unchanged; it differed only on booleans and arrays, which cell() — the CSV
+// accessor every call goes through — cannot produce.
+import { finiteOrNull as finite } from './num.js';
 
 export const EPOCH_DATAPACK_SCHEMA = 'bullswarm.epoch.benchmarks.v1';
 export const EPOCH_DATAPACK_URL = 'https://github.com/cowcow02/bullswarm/releases/download/benchmark-data-latest/epoch-benchmarks.json';
@@ -57,12 +62,6 @@ const BENCHMARK_NAMES = BENCHMARKS.map((item) => item.name);
 
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function finite(value) {
-  if (value == null || value === '') return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function emptyToNull(value) {

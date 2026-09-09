@@ -169,5 +169,3 @@ export function captureWorkspaceManifest(root, { maxFiles = 50_000 } = {}) {
   }
   return manifest;
 }
-
-export const verifyOwnership = checkOwnership;

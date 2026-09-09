@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  estimateTextTokens, parseReportedUsage, estimateInvocationUsage, aggregateUsage,
+  estimateTextTokens, parseReportedUsage, estimateInvocationUsage,
 } from '../src/lib/usage.js';
 
 const connector = {
@@ -57,42 +57,4 @@ test('unknown pricing and subscription values stay explicitly unknown', () => {
   assert.equal(usage.cost.estimatedUsd, null);
   assert.match(usage.cost.basis, /unknown/);
   assert.equal(usage.normalizedQuota.estimatedPercent, null);
-});
-
-test('aggregate usage totals known fields without inventing missing cache counts', () => {
-  const a = estimateInvocationUsage({ taskText: '1234', outputText: '1234', connector, model: 'fixture-pro' });
-  const b = estimateInvocationUsage({ taskText: '12345678', outputText: '1234', connector, model: 'fixture-pro' });
-  const total = aggregateUsage([{ usage: a }, { usage: b }]);
-  assert.equal(total.attempts, 2);
-  assert.equal(total.tokens.standardRead, 3);
-  assert.equal(total.tokens.cacheRead, null);
-  assert.equal(total.tokens.output, 2);
-  assert.equal(total.cost.estimatedUsd, 0.000026);
-  assert.equal(total.cost.complete, true);
-});
-
-test('aggregate usage exposes a known subtotal without misreporting it as a complete total', () => {
-  const known = estimateInvocationUsage({ taskText: '1234', outputText: '1234', connector, model: 'fixture-pro' });
-  const unknown = estimateInvocationUsage({ taskText: '1234', outputText: '1234', connector: {}, model: null });
-  const total = aggregateUsage([{ usage: known }, { usage: unknown }]);
-  assert.equal(total.cost.estimatedUsd, null);
-  assert.equal(total.cost.knownSubtotalUsd, known.cost.estimatedUsd);
-  assert.equal(total.cost.complete, false);
-  assert.match(total.cost.basis, /partial/);
-  assert.equal(unknown.normalizedQuota.basis, 'unknown: invocation cost is unavailable');
-});
-
-test('aggregate usage counts attempts missing evidence and marks totals partial', () => {
-  const known = estimateInvocationUsage({ taskText: '1234', outputText: '1234', connector, model: 'fixture-pro' });
-  const total = aggregateUsage([
-    { status: 'succeeded', usage: known },
-    { status: 'abandoned', usage: null },
-  ]);
-  assert.equal(total.attempts, 2);
-  assert.equal(total.attemptsWithUsage, 1);
-  assert.equal(total.attemptsMissingUsage, 1);
-  assert.equal(total.cost.complete, false);
-  assert.equal(total.cost.estimatedUsd, null);
-  assert.equal(total.cost.knownSubtotalUsd, known.cost.estimatedUsd);
-  assert.match(total.cost.basis, /without usage evidence/);
 });

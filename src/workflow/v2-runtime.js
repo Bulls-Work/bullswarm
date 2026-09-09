@@ -1,7 +1,7 @@
 import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJsonAtomic } from './fsjson.js';
+import { writeJsonAtomic } from '../lib/fsjson.js';
 import { appendEvent } from './events.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
@@ -197,7 +197,6 @@ export function submitCallerPlannerResponse(options = {}) {
   try { return submitCallerPlannerResponseLocked(options); }
   finally { lease.release(); }
 }
-
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
 function settings(state) { return { ...DEFAULTS, ...(state.config.settings ?? {}) }; }
@@ -1304,5 +1303,3 @@ export async function runV2AutonomousWorkflow(options = {}) {
   try { return await runV2Kernel({ ...options, runId: id, lease }); }
   finally { lease.release(); }
 }
-
-export const runAutonomousV2 = runV2AutonomousWorkflow;

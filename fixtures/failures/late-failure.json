@@ -1,0 +1,6 @@
+{
+  "name": "late-failure-line",
+  "expect": "fail",
+  "exitCode": 0,
+  "output": "This report contains enough completed work to exceed the failure scan head. It documents the inspected files, summarizes the implementation, records the verification evidence, and includes the relevant test results for the completed task. The report also records the changed modules, the observed behavior, the checked edge cases, and the final acceptance criteria so the output remains comfortably beyond the short-output threshold. It lists each completed step, the files examined, the commands executed, the expected outcomes, and the evidence retained for review. Every normal result is included before the provider response was eventually unavailable.\nError: provider unavailable"
+}

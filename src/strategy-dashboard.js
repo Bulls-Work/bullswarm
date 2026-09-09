@@ -1,5 +1,7 @@
-import { loadState, saveState } from './lib/state.js';
-import { STRATEGY_TIERS, setModelDisabled, setModelTierSelection } from './lib/strategy.js';
+import { updateState } from './lib/state.js';
+import {
+  STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment,
+} from './lib/strategy.js';
 
 const ESC = '\x1b';
 const CLEAR = '\x1b[2J\x1b[H';
@@ -300,41 +302,46 @@ export function renderRecommendationReview(inventory, {
   return lines.slice(0, height).map((line) => clip(line, width)).join('\n');
 }
 
+// The TUI writers (S5). An operator sits in the dashboard for minutes between
+// keystrokes, so a keystroke must never save a state copy loaded when the
+// screen was drawn — each one mutates a fresh load under the lock.
 function persistProvider(bullswarmDir, pool, enabled) {
-  const state = loadState(bullswarmDir);
-  state.pools[pool] ??= {};
-  state.pools[pool].enabled = enabled;
-  saveState(bullswarmDir, state);
+  updateState(bullswarmDir, (state) => {
+    state.pools[pool] ??= {};
+    state.pools[pool].enabled = enabled;
+  });
 }
 
 function persistModel(bullswarmDir, inventory, pool, model, tiers, changedTier = null, disabled = false) {
-  const state = loadState(bullswarmDir);
-  state.strategy ??= {};
   if (disabled) {
-    setModelDisabled(state.strategy, pool, model, true);
-    setModelTierSelection(state.strategy, pool, model, []);
-    saveState(bullswarmDir, state);
+    updateState(bullswarmDir, (state) => {
+      state.strategy ??= {};
+      setModelDisabled(state.strategy, pool, model, true);
+      setModelTierSelection(state.strategy, pool, model, []);
+    });
     return;
   }
-  setModelDisabled(state.strategy, pool, model, false);
-  if (changedTier && !(state.strategy.configuredTiers ?? []).includes(changedTier)) {
-    for (const provider of inventory.providers) {
-      for (const candidate of provider.models) {
-        if (!candidate.effectiveTiers.includes(changedTier) || candidate.disabled) continue;
-        const existing = state.strategy.modelTiers?.[provider.name]?.[candidate.id] ?? [];
-        setModelTierSelection(state.strategy, provider.name, candidate.id, [...existing, changedTier]);
+  updateState(bullswarmDir, (state) => {
+    state.strategy ??= {};
+    setModelDisabled(state.strategy, pool, model, false);
+    if (changedTier && !(state.strategy.configuredTiers ?? []).includes(changedTier)) {
+      for (const provider of inventory.providers) {
+        for (const candidate of provider.models) {
+          if (!candidate.effectiveTiers.includes(changedTier) || candidate.disabled) continue;
+          const existing = state.strategy.modelTiers?.[provider.name]?.[candidate.id] ?? [];
+          setModelTierSelection(state.strategy, provider.name, candidate.id, [...existing, changedTier]);
+        }
       }
     }
-  }
-  setModelTierSelection(state.strategy, pool, model, tiers);
-  state.strategy.configuredTiers = [...new Set([
-    ...(state.strategy.configuredTiers ?? []),
-    ...(changedTier ? [changedTier] : STRATEGY_TIERS),
-  ])].filter((tier) => STRATEGY_TIERS.includes(tier));
-  for (const tier of (changedTier ? [changedTier] : STRATEGY_TIERS)) {
-    if (state.strategy.assignments) delete state.strategy.assignments[tier];
-  }
-  saveState(bullswarmDir, state);
+    setModelTierSelection(state.strategy, pool, model, tiers);
+    state.strategy.configuredTiers = [...new Set([
+      ...(state.strategy.configuredTiers ?? []),
+      ...(changedTier ? [changedTier] : STRATEGY_TIERS),
+    ])].filter((tier) => STRATEGY_TIERS.includes(tier));
+    for (const tier of (changedTier ? [changedTier] : STRATEGY_TIERS)) {
+      clearTierAssignment(state.strategy, tier);
+    }
+  });
 }
 
 export async function startStrategyDashboard({

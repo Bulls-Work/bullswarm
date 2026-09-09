@@ -15,6 +15,10 @@
 //   M5. Auth tokens are read from each CLI's native store; refresh
 //       write-back is best-effort so the CLI keeps working.
 
+// One strict numeric coercion for the whole codebase (src/lib/num.js): a
+// missing measurement stays null instead of becoming a confident zero.
+import { finiteOrNull as numberOrNull } from '../lib/num.js';
+
 export const WINDOW_MS = {
   '5h': 5 * 3600_000,
   weekly: 7 * 24 * 3600_000,
@@ -142,13 +146,6 @@ export function projectedUtilization({
     projectedPct: clampPct(used + rate * minutes),
     addedPct: clampPct(rate * minutes),
   };
-}
-
-/** Finite number or null — never turns a missing measurement into a zero. */
-function numberOrNull(value) {
-  if (value == null || value === '' || typeof value === 'boolean') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
 }
 
 /** UTC calendar month ending at resetsAt (Copilot/cmd period-end semantics). */

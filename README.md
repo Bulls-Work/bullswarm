@@ -88,7 +88,7 @@ re-delegating and creating recursive swarms.
 ## Quick start
 
 ```bash
-bullswarm          # first run: interactive setup wizard
+bullswarm          # first run: interactive setup wizard on a TTY; non-TTY callers self-initialize
 bullswarm setup    # interactive provider/model configuration
 bullswarm setup --wizard  # broader worktree + integration questionnaire
 bullswarm pools    # meter state, pace position, quarantine status
@@ -98,7 +98,7 @@ bullswarm run --lane analyze --add-dir ~/some-repo --prompt "Inspect the parser"
 bullswarm workflow plan contract "Fix the failing tests and verify the change" --cwd ~/some-repo --json  # you are the planner
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --program plan.json
 bullswarm workflow goal "Fix the failing tests and verify the change" --cwd ~/some-repo --orchestrator auto  # dispatch a planner agent
-bullswarm health   # re-judge saved outputs; catch gate failures
+bullswarm health --json   # re-judge saved outputs; catch gate failures (omit --json for a human summary)
 ```
 
 ## Verbs
@@ -113,7 +113,7 @@ bullswarm health   # re-judge saved outputs; catch gate failures
 | `strategy` | Interactive provider/model control center with live high/medium/low route previews and an agent-facing JSON API |
 | `doctor` | Machine-readable readiness report; self-heals on first call |
 | `workflow` | Plan, execute, observe, and operate one autonomous workflow engine and its live instances. |
-| `runs` | Short alias for `workflow runs`, including list, show, result, delete, and cleanup operations. |
+| `runs` | Short alias for `workflow runs`, including list, show, result, and delete operations. |
 | `version` / `--version` | Print the installed Bullswarm version. |
 | `release` | Run the guarded local version-bump, commit, and tag workflow used before CI publishes to npm. |
 
@@ -203,9 +203,12 @@ Installed CLIs download only those public files and never need or receive an
 OpenRouter key.
 The sources are OpenRouter's [benchmarks API](https://openrouter.ai/docs/api/api-reference/benchmarks/list-benchmarks)
 and [models API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
-The CLI caches the datapack under `~/.bullswarm/cache/`; network failure falls
-back to a stale or bundled datapack, then connector metadata, without blocking
-setup.
+The CLI caches each datapack under `~/.bullswarm/cache/`. OpenRouter is
+cache-or-network only: a fresh cache is used as-is, otherwise the rolling
+release is fetched, and a cache miss with no network yields an empty catalog
+plus connector metadata — there is no bundled `data/openrouter-benchmarks.json`.
+Epoch keeps `data/epoch-benchmarks.json` as a bundled last-resort, so a missing
+network never blocks setup when that file exists.
 
 The TUI lists every detected provider/account separately so its toggle matches
 its own quota meter. Enter drills into that provider's detected models. In the
@@ -343,7 +346,9 @@ caller asks for it by name.
 planning targets. They encourage the Workflow Planner to consolidate optional
 work, but the kernel never stops or rejects essential work merely because a
 target was reached. `--concurrency` still bounds simultaneous dispatches so
-the scheduler can batch a wider useful program safely.
+the scheduler can batch a wider useful program safely. There is no default
+wall-clock timeout: fresh semantic/transport heartbeats allow a useful worker
+to continue, while silence is inspected rather than blindly killed.
 
 The caller authors a complete program, or explicitly asks for a dispatched
 planner. The kernel validates the graph, executes it, and returns every action
@@ -502,12 +507,6 @@ per provider — the first as the primary `opencode2` pool, each additional one
 as its own `opencode2:<id>` pool — which is what the `--worker-model
 relay/gpt-5.6-luna` example above locks onto.
 
-`--max-agents`, `--max-actions`, and `--max-expansion-rounds` are soft V2
-planning targets: they guide the planner toward a small program but do not
-hard-stop useful work. `--concurrency` is the actual bound on simultaneous
-dependency-ready dispatches. There is no default wall-clock timeout: fresh
-semantic/transport heartbeats allow a useful worker to continue, while silence
-is inspected rather than blindly killed.
 New goal runs use the shared workspace regardless of the older setup
 worktree-isolation preference. Add `--isolation` to `workflow goal` when you
 explicitly want per-worker worktrees and strict ownership before integration.
@@ -569,7 +568,7 @@ no `0/1/i/l/o`). The full `wf-...` runId stays the durable handle.
 bullswarm workflow runs                    # ongoing only (default)
 bullswarm workflow runs --all              # ongoing + historical
 bullswarm workflow runs --historical       # only historical
-bullswarm workflow runs --name audit-code  # filter by workflow
+bullswarm workflow runs --name audit-code  # filter by exact goal/name
 bullswarm workflow runs --all --since 7d   # initiated in the last 7 days
 bullswarm workflow runs --historical --since yesterday --until today
 bullswarm workflow runs --all --from 2026-08-20 --to 2026-08-27

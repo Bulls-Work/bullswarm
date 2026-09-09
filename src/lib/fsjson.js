@@ -1,5 +1,10 @@
 // Atomic JSON persistence + torn-read-tolerant JSON reads.
 //
+// Lives in src/lib/ because core state (src/lib/state.js) needs the same
+// temp+rename write the workflow layer already used. One module, imported
+// directly by both layers — the src/workflow/fsjson.js re-export shim that
+// carried the workflow importers through the move is gone.
+//
 // Doctrine:
 //   F1. Every state/report/workflow artifact is written via temp+rename so a
 //       concurrent reader can NEVER observe a half-written file (earned:

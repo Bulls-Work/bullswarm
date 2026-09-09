@@ -9,6 +9,7 @@ import {
   applyIntegrationBlock,
   integrationBlockPresent,
   upgradeConnectorMetadata,
+  migrateTestFixturePools,
   autoSetup,
   ensureSetup,
   configureTierRungs,
@@ -47,17 +48,22 @@ test('setup prompt cleanup is safe after per-question readline cleanup', () => {
   assert.doesNotThrow(() => prompt.close());
 });
 
-test('existing installs migrate an accidentally enabled echo fixture once', () => {
+function legacyEchoHome(poolEntry) {
   const { d, cleanup } = tmp();
-  try {
-    mkdirSync(join(d, 'connectors'), { recursive: true });
-    writeFileSync(join(d, 'connectors', 'echo.json'), `${JSON.stringify({
-      name: 'echo', flags: { stealth: false }, lanes: ['analyze', 'build', 'chore'],
-    }, null, 2)}\n`);
-    writeFileSync(join(d, 'state.json'), `${JSON.stringify({
-      version: 1, pools: { echo: { enabled: true } }, config: {},
-    }, null, 2)}\n`);
+  mkdirSync(join(d, 'connectors'), { recursive: true });
+  writeFileSync(join(d, 'connectors', 'echo.json'), `${JSON.stringify({
+    name: 'echo', flags: { stealth: false }, lanes: ['analyze', 'build', 'chore'],
+  }, null, 2)}\n`);
+  writeFileSync(join(d, 'state.json'), `${JSON.stringify({
+    version: 1, pools: { echo: poolEntry }, config: {},
+  }, null, 2)}\n`);
+  return { d, cleanup };
+}
 
+test('existing installs migrate an unset echo fixture once', () => {
+  // No explicit `enabled` in state.json: a legacy default the migration owns.
+  const { d, cleanup } = legacyEchoHome({});
+  try {
     ensureSetup(d);
     let state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
     assert.equal(state.pools.echo.enabled, false);
@@ -68,6 +74,27 @@ test('existing installs migrate an accidentally enabled echo fixture once', () =
     ensureSetup(d);
     state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
     assert.equal(state.pools.echo.enabled, true, 'later explicit choice is preserved');
+  } finally { cleanup(); }
+});
+
+test('the fixture migration never overrides an explicit enabled: true (D1)', () => {
+  const { d, cleanup } = legacyEchoHome({ enabled: true });
+  try {
+    ensureSetup(d);
+    const state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
+    assert.equal(state.pools.echo.enabled, true, 'the operator said yes; the migration is not a veto');
+    assert.equal(state.config.testFixturesMigrated, true, 'the migration still runs exactly once');
+  } finally { cleanup(); }
+});
+
+test('the fixture migration leaves an explicit enabled: false alone too', () => {
+  const { d, cleanup } = legacyEchoHome({ enabled: false });
+  try {
+    const disabled = migrateTestFixturePools(d);
+    assert.deepEqual(disabled, [], 'nothing was changed, so nothing is reported as changed');
+    const state = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8'));
+    assert.equal(state.pools.echo.enabled, false);
+    assert.equal(state.config.testFixturesMigrated, true);
   } finally { cleanup(); }
 });
 

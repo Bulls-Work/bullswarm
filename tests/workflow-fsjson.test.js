@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { atomicWriteFileSync, writeJsonAtomic, readJsonSafe, readJsonForUpdate } from '../src/workflow/fsjson.js';
+import { atomicWriteFileSync, writeJsonAtomic, readJsonSafe, readJsonForUpdate } from '../src/lib/fsjson.js';
 
 test('atomicWriteFileSync leaves the final content and no temp remnants', () => {
   const dir = mkdtempSync(join(tmpdir(), 'bs-fsjson-'));

@@ -17,7 +17,7 @@ import {
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
-import { loadState, saveState } from './lib/state.js';
+import { loadState, updateState } from './lib/state.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
 } from './lib/strategy.js';
@@ -130,10 +130,6 @@ export function suggestRoutingTable(enabledPools) {
 }
 
 // --- integration block ------------------------------------------------------------
-
-export function integrationBlock() {
-  return awarenessBlock();
-}
 
 export function applyIntegrationBlock(filePath, { approved }) {
   return applyAwarenessBlock(filePath, { approved });
@@ -283,30 +279,44 @@ export function upgradeConnectorMetadata(bullswarmDir, {
 }
 
 // One-time safety migration for installations created before connectors could
-// identify deterministic test fixtures. Explicit choices made after this
-// migration remain respected.
+// identify deterministic test fixtures.
+//
+// The rule: a test-fixture pool is disabled only when state.json holds NO
+// explicit `enabled` boolean for it. An explicit `enabled: true` is an
+// operator decision and is left alone — the previous version overwrote it, so
+// one `bullswarm pools` silently turned an intentionally enabled echo pool off
+// (audit finding D1, 2026-09-09). The `testFixturesMigrated` flag is set
+// either way, so the migration still runs exactly once.
 export function migrateTestFixturePools(bullswarmDir) {
-  const state = loadState(bullswarmDir);
-  state.config ??= {};
-  if (state.config.testFixturesMigrated === true) return [];
+  // Cheap unlocked pre-check: this runs on the first-use path of every verb,
+  // and once the flag is set there is nothing to write and no lock to take.
+  if (loadState(bullswarmDir).config?.testFixturesMigrated === true) return [];
 
   const connectorsDir = join(bullswarmDir, 'connectors');
-  const disabled = [];
-  if (existsSync(connectorsDir)) {
-    for (const file of readdirSync(connectorsDir)) {
-      if (!file.endsWith('.json') || file.startsWith('_')) continue;
-      try {
-        const connector = JSON.parse(readFileSync(join(connectorsDir, file), 'utf8'));
-        if (connector.flags?.testFixture !== true) continue;
-        state.pools ??= {};
-        state.pools[connector.name] ??= {};
-        if (state.pools[connector.name].enabled !== false) disabled.push(connector.name);
-        state.pools[connector.name].enabled = false;
-      } catch { /* connector repair owns malformed files */ }
+  let disabled = [];
+  // One locked read-modify-write on a fresh load (S5), so the migration cannot
+  // land on top of a concurrent `run` or `strategy` write.
+  updateState(bullswarmDir, (state) => {
+    state.config ??= {};
+    if (state.config.testFixturesMigrated === true) return false; // another process got there first
+    disabled = [];
+    if (existsSync(connectorsDir)) {
+      for (const file of readdirSync(connectorsDir)) {
+        if (!file.endsWith('.json') || file.startsWith('_')) continue;
+        try {
+          const connector = JSON.parse(readFileSync(join(connectorsDir, file), 'utf8'));
+          if (connector.flags?.testFixture !== true) continue;
+          state.pools ??= {};
+          state.pools[connector.name] ??= {};
+          if (typeof state.pools[connector.name].enabled === 'boolean') continue;
+          state.pools[connector.name].enabled = false;
+          disabled.push(connector.name);
+        } catch { /* connector repair owns malformed files */ }
+      }
     }
-  }
-  state.config.testFixturesMigrated = true;
-  saveState(bullswarmDir, state);
+    state.config.testFixturesMigrated = true;
+    return true;
+  });
   return disabled;
 }
 
@@ -317,26 +327,30 @@ export function migrateTestFixturePools(bullswarmDir) {
 // `bullswarm setup` on a terminal.
 
 export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
-  const state = loadState(bullswarmDir);
   const discovered = discoverConnectors();
   const repaired = repairConnectors(bullswarmDir);
 
   const usable = discovered.filter((d) => !d.broken && d.discovered && !d.testFixture);
   const enabled = new Set(usable.map((d) => d.name));
 
-  state.pools ??= {};
-  state.config ??= {};
-  state.config.testFixturesMigrated = true;
-  for (const d of discovered.filter((x) => !x.broken)) {
-    state.pools[d.name] ??= {};
-    state.pools[d.name].enabled = enabled.has(d.name);
-  }
-
   const chosen = discovered.filter((d) => enabled.has(d.name));
   const table = suggestRoutingTable(chosen);
 
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
-  saveState(bullswarmDir, state);
+  // Under the lock (S5). This is NOT first-use only: `bullswarm setup --yes`
+  // and any non-TTY `bullswarm setup` re-run it over an existing state.json,
+  // where a concurrent run's decision-log append is exactly what a stale copy
+  // would drop. Pool entries are merged, never replaced, so a pool's
+  // quarantine and meter survive a re-run.
+  updateState(bullswarmDir, (state) => {
+    state.pools ??= {};
+    state.config ??= {};
+    state.config.testFixturesMigrated = true;
+    for (const d of discovered.filter((x) => !x.broken)) {
+      state.pools[d.name] ??= {};
+      state.pools[d.name].enabled = enabled.has(d.name);
+    }
+  });
   writeFileSync(
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
@@ -443,14 +457,16 @@ export async function configureTierRungs(bullswarmDir, prompter, {
     }
     answers[tier] = answer;
   }
-  // Re-read: the strategy autopilot step persists through its own loader, so
-  // the wizard's in-memory copy of state is stale by the time this runs.
-  const fresh = loadState(bullswarmDir);
-  fresh.strategy ??= {};
-  for (const [tier, level] of Object.entries(answers)) {
-    setStrategyReasoning(fresh.strategy, { tier, level });
-  }
-  saveState(bullswarmDir, fresh);
+  // Re-read under the lock (S5): the strategy autopilot step persists through
+  // its own loader and the questions above waited on a human, so the wizard's
+  // in-memory copy of state is stale by the time this runs. `updateState`
+  // returns the state it actually wrote, which is what gets reported.
+  const fresh = updateState(bullswarmDir, (state) => {
+    state.strategy ??= {};
+    for (const [tier, level] of Object.entries(answers)) {
+      setStrategyReasoning(state.strategy, { tier, level });
+    }
+  });
   const stored = getStrategyReasoning(fresh.strategy);
   log('  reasoning levels:');
   for (const tier of asked) {
@@ -513,14 +529,17 @@ export async function runWizard(bullswarmDir, opts = {}) {
   // 4. Write config
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
   const repaired = repairConnectors(bullswarmDir);
-  state.pools ??= {};
-  state.config ??= {};
-  state.config.testFixturesMigrated = true;
-  for (const d of discovered.filter((x) => !x.broken)) {
-    state.pools[d.name] ??= {};
-    state.pools[d.name].enabled = enabled.includes(d.name);
-  }
-  saveState(bullswarmDir, state);
+  // Under the lock (S5) on a fresh load: the pool questions above sat waiting
+  // for a human, so the copy loaded at the top of the wizard is stale.
+  updateState(bullswarmDir, (fresh) => {
+    fresh.pools ??= {};
+    fresh.config ??= {};
+    fresh.config.testFixturesMigrated = true;
+    for (const d of discovered.filter((x) => !x.broken)) {
+      fresh.pools[d.name] ??= {};
+      fresh.pools[d.name].enabled = enabled.includes(d.name);
+    }
+  });
   writeFileSync(
     join(bullswarmDir, 'routing.json'),
     `${JSON.stringify(table, null, 2)}\n`,
@@ -533,11 +552,13 @@ export async function runWizard(bullswarmDir, opts = {}) {
   const worktreeAnswer = (
     await rl.question('worktree isolation [agent/off/required] (default agent): ')
   ).trim().toLowerCase();
-  state.config ??= {};
-  state.config.worktreeIsolation = worktreeAnswer === 'required'
+  const worktreeIsolation = worktreeAnswer === 'required'
     ? 'required' : worktreeAnswer === 'off' ? 'off' : 'agent-decides';
-  saveState(bullswarmDir, state);
-  console.log(`  worktree isolation: ${state.config.worktreeIsolation}`);
+  updateState(bullswarmDir, (fresh) => {
+    fresh.config ??= {};
+    fresh.config.worktreeIsolation = worktreeIsolation;
+  });
+  console.log(`  worktree isolation: ${worktreeIsolation}`);
 
   // Strategy changes actual provider/model routing, so discovery plus daily
   // auto-application always requires an explicit setup answer.

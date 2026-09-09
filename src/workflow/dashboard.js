@@ -3,9 +3,9 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
 import { readFileSync, existsSync } from 'node:fs';
-import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from './fsjson.js';
+import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, legacyRunLine } from './short-id.js';
+import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
@@ -188,6 +188,7 @@ export function dashboardRows(bullswarmDir, { all = false } = {}) {
         ...r,
         events: readEvents(r.runDir),
         liveness,
+        kernelStderrTail: !liveness.alive ? readKernelStderrTail(r.runDir) : [],
         status: state.cancellation?.requested ? 'stopping'
           : liveness.alive ? state.lifecycle.status : 'interrupted',
         phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
@@ -413,6 +414,7 @@ function renderV2Details(row, { interactive = true } = {}) {
   lines.push('', ' recent events:');
   for (const event of (row.events ?? []).slice(-12)) lines.push(`   #${event.sequence} ${event.type}`);
   if (!(row.events ?? []).length) lines.push('   none');
+  if (row.kernelStderrTail?.length) lines.push('', ' kernel log: available');
   if (interactive) lines.push('', ` ${keyHint('out')} · c stop · r refresh · ${keyHint('detach')}`);
   return lines.join('\n');
 }
@@ -473,7 +475,7 @@ export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null }
     latestDecision: state.planner.lastDecision,
   };
   return {
-    state, stages, dependencyGroups, events: row.events ?? [], orchestrator, phases,
+    row, state, stages, dependencyGroups, events: row.events ?? [], orchestrator, phases,
     phaseIndex: selectedPhaseIndex, selectedPhase, agents,
     agentIndex: selectedAgentIndex, selectedAgent: agents[selectedAgentIndex] ?? null,
   };
@@ -1002,7 +1004,7 @@ function workflowLiveLines(model, width, spinnerFrame) {
     lines.push('');
   }
   if (!lines.length) {
-    const liveness = v2RunnerLiveness(state);
+    const liveness = model.row?.liveness ?? v2RunnerLiveness(state, { runDir: model.row?.runDir });
     lines.push(stateFinishedAt(state)
       ? `✓ No live agents · workflow ${state.lifecycle.status}`
       : liveness.alive ? '⧖ Waiting for the next dispatch'
@@ -1011,6 +1013,7 @@ function workflowLiveLines(model, width, spinnerFrame) {
       lines.push(`  resume it · bullswarm workflow resume ${state.shortId ?? state.runId}`);
     }
   }
+  if (model.row?.kernelStderrTail?.length) lines.push('  kernel log: available');
   return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0), waiting };
 }
 
