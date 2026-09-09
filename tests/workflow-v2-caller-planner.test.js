@@ -1308,7 +1308,7 @@ test('CLI: plan validate resolves lane and effort from kind and reports advisori
     const refusal = JSON.parse(rejected.stdout);
     assert.equal(refusal.error, 'program-invalid');
     assert.ok(
-      refusal.issues.some((issue) => issue.includes('kind must be mechanical|io-read|check|implement|integration|architecture|adversarial-acceptance')),
+      refusal.issues.some((issue) => issue.includes('kind must be mechanical|io-read|digest|check|implement|integration|architecture|adversarial-acceptance')),
       refusal.issues.join('; '),
     );
     assert.equal(existsSync(join(f.home, 'workflows')), false, 'validate must not create a run');

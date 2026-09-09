@@ -803,7 +803,7 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           emitLine({ type: 'finished', status: snapshot.status, delivered: isDeliveredWorkflowStatus(snapshot.status) });
         } else if (!jsonl && snapshot.terminal) {
           output.write(`outcome: ${snapshot.status}\n`);
-          output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json\n`);
+          output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json --summary\n`);
         }
         return isDeliveredWorkflowStatus(snapshot.status) || oneShot ? 0 : 1;
       }

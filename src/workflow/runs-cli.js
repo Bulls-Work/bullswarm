@@ -23,18 +23,18 @@ import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
-import { deserializeV2ResultEnvelope } from './v2-outcome.js';
+import { deserializeV2ResultEnvelope, summarizeV2Result } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
-function jsonOut(obj, opts) { if (opts.json) console.log(JSON.stringify(obj, null, 2)); }
+function jsonOut(obj, opts) { if (opts.json || opts.summary) console.log(JSON.stringify(obj, null, 2)); }
 function err(msg, code = 1) { console.error(msg); return code; }
 
 // Every command that would drive a legacy run answers with the same sentence
 // and the same exit code, so a script never has to parse a special case.
 function refuseLegacy({ runId, shortId, runDir }, opts) {
   const message = legacyRunLine({ shortId, runId, runDir });
-  if (opts.json) console.log(JSON.stringify({ legacy: true, runId, shortId: shortId ?? null, dir: runDir, message }, null, 2));
+  if (opts.json || opts.summary) console.log(JSON.stringify({ legacy: true, runId, shortId: shortId ?? null, dir: runDir, message }, null, 2));
   else console.error(message);
   return 2;
 }
@@ -106,6 +106,7 @@ function parseRunsFlags(argv) {
     const seen = flagName(a);
     if (seen && !out._flags.includes(seen)) out._flags.push(seen);
     if (a === '--json') out.json = true;
+    else if (a === '--summary') out.summary = true;
     else if (a === '--all') out.all = true;
     else if (a === '--historical') out.historical = true;
     else if (a === '--yes' || a === '-y') out.yes = true;
@@ -288,7 +289,7 @@ function runsShow(idToken, opts) {
       const reasoning = applied
         ? `  reasoning ${applied} (${attempt.reasoning.source ?? 'unknown'}${attempt.reasoning.clamped ? ', clamped' : ''})`
         : '';
-      console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}`);
+      console.log(`  ${attempt.actionId ?? '?'} #${attempt.ordinal ?? '?'}  ${attempt.status ?? '?'}  ${attempt.pool ?? '—'}  ${attempt.model ?? 'connector model'}${reasoning}${attemptBytesText(attempt.bytes)}`);
     }
   }
   printV2Advisories(state);
@@ -297,6 +298,27 @@ function runsShow(idToken, opts) {
     for (const line of kernelStderrTail) console.log(`  ${line}`);
   }
   return 0;
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value < 1024) return `${value}B`;
+  const units = ['K', 'M', 'G'];
+  let scaled = value;
+  let unit = 'B';
+  for (const next of units) {
+    scaled /= 1024;
+    unit = next;
+    if (scaled < 1024 || next === units.at(-1)) break;
+  }
+  return `${scaled.toFixed(1).replace(/\.0$/, '')}${unit}`;
+}
+
+function attemptBytesText(bytes) {
+  if (!bytes || typeof bytes !== 'object') return '';
+  const values = [bytes.taskFile, bytes.dependencyInputs, bytes.output];
+  if (!values.some((value) => Number.isFinite(value) && value >= 0)) return '';
+  return `  in ${formatBytes(bytes.taskFile)}/${formatBytes(bytes.dependencyInputs)} out ${formatBytes(bytes.output)}`;
 }
 
 function runsResult(idToken, opts) {
@@ -312,7 +334,7 @@ function runsResult(idToken, opts) {
   const kernelStderrTail = !liveness.alive ? readKernelStderrTail(runDir) : [];
   const stablePath = join(runDir, 'result.json');
   if (!existsSync(stablePath)) {
-    if (opts.json && kernelStderrTail.length) {
+    if ((opts.json || opts.summary) && kernelStderrTail.length) {
       jsonOut({ runId, shortId: resolved.shortId, status: 'interrupted', reason: liveness.reason, kernelStderrTail }, opts);
       return 1;
     }
@@ -324,6 +346,10 @@ function runsResult(idToken, opts) {
   catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
   if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
     return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
+  }
+  if (opts.summary) {
+    jsonOut(summarizeV2Result(stable, state, { runDir }), { ...opts, json: true });
+    return 0;
   }
   if (opts.json) {
     jsonOut(kernelStderrTail.length ? { ...stable, kernelStderrTail } : stable, opts);

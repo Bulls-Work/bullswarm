@@ -34,6 +34,12 @@
   "capabilities": ["strong-analysis", "code-reading", "file-editing", "workflow-planning"],
   "modelDiscovery": { "cmd": ["opencode", "models"], "parse": "lines", "includePattern": "^[^\\s]+/[^\\s]+$", "timeoutMs": 20000, "maxModels": 250 },
   "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "$comment-reasoning": "verified 2026-09-09 against opencode 1.18.25: `opencode run --help` documents `--variant  model variant (provider-specific reasoning effort, e.g., high, max, minimal)`. opencode only forwards a variant its CONFIG declares for that model, and the owner's opencode.json declares none, so on a bare install `--variant` is accepted and silently dropped. The level reaches the Relay API as `reasoning_effort` ONLY because expandOpenCodeRelayConnectors (src/lib/opencode-relay.js) injects the five variants for <providerId>/gpt-5.6-luna through env.OPENCODE_CONFIG_CONTENT on every discovered Relay pool. Probed with that variable set: `--variant bogus` (reasoningEffort bogus-level) failed at the API with `level \"bogus-level\" not supported, valid levels: low, medium, high, xhigh, max`, and `--variant max` succeeded; probed again with the flag AFTER the positional task text, exactly where bullswarm appends it (`opencode run --auto --model <id>/gpt-5.6-luna <task> --variant <level> --format json`), with the same API rejection for the bogus level, so the position is proven too. Same five levels as connectors/command-code.json, which fronts the same backend. UNVERIFIED for non-Relay opencode providers: they get no injected variants, so the flag is a no-op there rather than an error.",
+  "reasoning": {
+    "flag": "--variant",
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "defaults": { "high": "high", "medium": "medium", "low": "low" }
+  },
   "modelProfiles": [
     { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false },
     { "match": "gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "autoRecommend": true },

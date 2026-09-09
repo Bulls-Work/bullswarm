@@ -1,5 +1,163 @@
 # bullswarm changelog
 
+## 0.28.0 — context diet
+
+- `workflow runs result <id> --summary` prints a compact status-loop
+  envelope, `schemaVersion: "bullswarm.workflow.result-summary.v1"`. It
+  carries `runId`, `shortId`, `status`, `verified`, `executionMode`,
+  `reason`, `finishedAt`, the goal's first line trimmed to 120 characters
+  plus `goalBytes`, each requirement as `{ id, status, mandatory,
+  evidenceCount, why }` (`why` is the latest evidence's first line trimmed
+  to 200 characters), each action as `{ id, kind, lane, effort, status,
+  pool, model, reasoning, wallSec, outFile, bytes }`, `concerns: { count,
+  first }` (up to three one-liners), the `usage` block, and `next: { full:
+  "bullswarm workflow runs result <id> --json", outputs: [<outFile paths>]
+  }`. `--summary` implies JSON with or without `--json`; it is not
+  TTY-dependent. The full `bullswarm.workflow.result.v2` envelope is
+  unchanged and stays the default. Read the full envelope on a failed or
+  partial run, or before judging evidence. Flag, help, and example:
+  `src/lib/cli-flags.js`, `src/help.js` (`Usage: bullswarm workflow runs
+  result <shortId|runId> [--json] [--summary]`; `--summary` "print the
+  compact JSON status-loop envelope; implies --json"). A terminal `workflow
+  watch` prints `next: bullswarm workflow runs result <shortId> --json
+  --summary`.
+
+- Byte accounting on every action attempt. `state.attempts[].bytes` is
+  `{ taskFile, authorPrompt, kernel, dependencyInputs, output }` — the task
+  file the kernel wrote, the action's own prompt text as authored, the
+  remainder after subtracting that prompt and any embedded requirement
+  text, the sum of the dependency output files the task points at (0 when
+  there are none; `digestOf` drill-down paths are pointers, not inputs),
+  and the durable out file on completion. The result envelope copies the
+  last attempt's `bytes` onto `actions[]` and totals `usage.bytes: {
+  taskFiles, dependencyInputs, outputs }`. `workflow runs show` appends
+  `in <taskFile>/<dependencyInputs> out <output>` per attempt (the unit
+  fixture prints `in 3.1K/60.8K out 14.8K`); missing values stay blank /
+  null, never guessed. These are UTF-8 byte counts, never tokens.
+
+- `kind: "digest"` (analyze/low) is an extractive condensation of its
+  dependencies' outputs so an expensive consumer reads one artifact
+  instead of many raw out-files. The kernel writes the whole task: quote
+  verbatim (never paraphrase or judge) each source's delivered items,
+  validation numbers, commands and their output, unfinished work, and
+  every shared-file or integrator request; one section per source headed
+  by its absolute output path; no verdicts, no recommendations, no new
+  claims; target at most a quarter of the input bytes or 8 KB, whichever
+  is larger. The author's prompt is focus guidance only. Validation
+  (exit 2 with the reason at `workflow plan validate` and `workflow goal
+  --program`): a digest must depend on at least one action, must have
+  empty `evidenceFor`, owns no files, needs no `affects`. No evidence
+  action may list a digest in `dependsOn` — evidence reads the real
+  artifacts. Consumers that depend on a digest receive, in their
+  dependency artifacts, the digest entry plus `digestOf: [{ actionId,
+  outputFile }]` for each digested source. Use one when three or more
+  writers feed a single integrator, or when a consumer's dependency
+  outputs would exceed roughly 20 KB; never for evidence.
+
+- The planning contract states the kind. `workflow plan contract --json`
+  (`Usage: bullswarm workflow plan contract "<goal>" [--cwd <dir>]
+  [--json]`) returns 16 rules; `rules[5]` lists `digest=analyze/low` in
+  the kind table and `rules[6]` is the extractive digest rule (when to
+  insert one, `digestOf`, empty `evidenceFor` / `ownedFiles`, evidence
+  must not depend on a digest).
+
+- The packaged skill's status loop (`skill/SKILL.md`,
+  `skill/references/operations.md`) now recommends `bullswarm workflow
+  runs result <shortId> --json --summary`. Read the full envelope with
+  `--json` alone when the run is failed or partial, or before judging
+  evidence.
+
+- Measured numbers, each with its command. On the real 0.27.1 build run
+  `ze5xz2` (files under `.diet-inputs/`): `workflow runs result ze5xz2
+  --json` is 60,709 bytes on disk (`wc -c .diet-inputs/real-result-ze5xz2.json`;
+  the same file is `tests/fixtures/real-result-ze5xz2.json`). The 0.28.0
+  goal recorded that envelope's `requirements` as 39,231 bytes and `goal`
+  as 11,009 bytes. Re-measuring the same file: `Buffer.byteLength(goal)` =
+  10,996 (the summary's `goalBytes`) and `JSON.stringify(requirements)` =
+  39,288; compact `JSON.stringify` of the parsed envelope is 57,141.
+  `summarizeV2Result` of that fixture is 3,786 bytes —
+  `tests/workflow-result-summary.test.js` prints `result-summary size:
+  full=57141 summary=3786`. The 0.28.0 goal recorded the integrator's
+  inputs as 60,790 bytes; `wc -c` of the seven dependency out-files under
+  `.diet-inputs/` sums to 46,022 (out-surface 18,659, out-routing-cleanup
+  10,202, out-state-bugs 7,052, out-docs 6,831, out-dead-kernel 1,377,
+  out-verify-gate 974, out-dead-code 927) and the integrator task file is
+  14,768 (`wc -c .diet-inputs/task-integrate-attempt-1.md`), which
+  together are 60,790.
+
+- Fixture measurement, the same goal run twice under a temporary home
+  (`tests/workflow-context-diet-measurement.test.js`, which prints both
+  lines below). Three writers each padded to a few KB feed one integrator
+  directly, then the same three feed a `kind: "digest"` that feeds the
+  integrator: the integrator's `bytes.dependencyInputs` falls from
+  **12,477 bytes to 63 bytes** (`context diet: integrator dependencyInputs
+  without digest=12477 with digest=63`). The 63 is a floor, not a
+  condensation ratio — the deterministic fixture worker answers with a
+  fixed stub instead of really condensing. The ceiling is the byte target
+  the kernel writes into that digest's own task, **8,192 bytes** for this
+  input, and the test asserts the saving holds at that ceiling too
+  (8,192 < 12,477). The same run's envelopes print as `context diet: run B
+  envelope full=<n> summary=<n>` (the full envelope embeds the temporary
+  home's absolute paths, so its size varies a few bytes between runs; the
+  summary carries one `next.runDir` string plus basenames, so it does not);
+  the deterministic envelope comparison to quote is the real-run fixture
+  above (57,141 full vs the measured summary).
+
+- `workflow capabilities` now reports the closed kind list at
+  `engines.autonomousV2.actionKinds`, cloned from the validator's
+  `KIND_DEFAULTS` rather than hand-listed, so `digest` and every future
+  kind are discoverable by a probing agent
+  (`src/workflow/cli.js`). The planning contract's
+  `program.actionFields.kind` description is derived from the same table
+  (`src/workflow/v2-planner.js`).
+
+- `TIER_LANES` (`src/lib/strategy.js`) excludes kernel-owned kinds from the
+  effort-tier count, so the map stays `{ high: analyze, medium: build,
+  low: chore }`. A digest is a mechanism the kernel writes, not a nature of
+  work that should define which lane a tier routes to; counting it would
+  have flipped low from `chore` to `analyze` on the strength of an action
+  no planner has to reason about. No shipped connector's routing changes
+  either way — all six declare all three lanes.
+
+- The three Relay-backed OpenCode pools can now run gpt-5.6-luna at a
+  chosen reasoning level. `connectors/opencode2.json` declares
+  `reasoning: { flag: "--variant", levels: [low, medium, high, xhigh,
+  max], defaults: { high: high, medium: medium, low: low } }` — the same
+  five levels as `connectors/command-code.json`, which fronts the same
+  backend — so rungs for these pools stop printing `— (unsupported)`.
+  opencode only forwards a `--variant` its config declares for that
+  model, so the flag alone would be silently dropped;
+  `expandOpenCodeRelayConnectors` (`src/lib/opencode-relay.js`) therefore
+  sets `env.OPENCODE_CONFIG_CONTENT` on the base pool and on every clone
+  to the variants for that pool's OWN provider id, via the new pure
+  helper `relayVariantsConfig(providerId, model = RELAY_OPENCODE_MODEL)`:
+  `{"provider":{"relay-2":{"models":{"gpt-5.6-luna":{"variants":{"low":{"reasoningEffort":"low"},"medium":{"reasoningEffort":"medium"},"high":{"reasoningEffort":"high"},"xhigh":{"reasoningEffort":"xhigh"},"max":{"reasoningEffort":"max"}}}}}}}`.
+  opencode merges that JSON string over the config file, so the API key
+  and everything else in `~/.config/opencode/opencode.json` stays in
+  force. An `OPENCODE_CONFIG_CONTENT` the operator set by hand in the
+  installed connector is never overwritten, on the base pool or on the
+  clones. A medium/max dispatch on `opencode2:relay-2` composes
+  `opencode run --auto --model relay-2/gpt-5.6-luna <taskFile> --variant
+  max --format json`; a level already pinned in the template is replaced,
+  not duplicated. Per pool:
+  `bullswarm strategy set-rung opencode2 medium --model relay/gpt-5.6-luna --reasoning max`,
+  `bullswarm strategy set-rung opencode2:relay-2 medium --model relay-2/gpt-5.6-luna --reasoning max`,
+  `bullswarm strategy set-rung opencode2:relay-3 medium --model relay-3/gpt-5.6-luna --reasoning max`.
+  Existing installations pick the block up through
+  `upgradeConnectorMetadata` (`src/setup.js`), which backfills a missing
+  `reasoning` block and leaves a customised one alone. Non-Relay opencode
+  installations get no injected variants, so `--variant` is a no-op there
+  rather than an error — recorded in the connector's
+  `$comment-reasoning`.
+
+- Tests: 713 -> 738, 0 failures
+  (`env -u CLAUDE_CONFIG_DIR -u FORCE_COLOR -u NO_COLOR npm test`). Four
+  new files carry the new behaviour: `tests/workflow-bytes.test.js`,
+  `tests/workflow-digest.test.js`,
+  `tests/workflow-result-summary.test.js` (with the
+  `tests/fixtures/real-result-ze5xz2.json` envelope it measures) and
+  `tests/workflow-context-diet-measurement.test.js`.
+
 ## 0.27.1 — audit cleanup
 
 - Deleted the remaining dead symbols the 2026-09-09 audit listed as Tier A:

@@ -281,7 +281,9 @@ test('the planning contract documents kind, its derived table, program defaults,
   assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
   assert.deepEqual(contract.program.advisories.codes, ['all-writers-high', 'docs-at-high']);
   assert.match(contract.program.advisories.note, /never a rejection/);
-  assert.match(contract.program.actionFields.kind, /^optional mechanical \| io-read \| check \| implement \| integration \| architecture \| adversarial-acceptance/);
+  // Derived, so a new kind reaches the schema description without an edit here.
+  assert.ok(contract.program.actionFields.kind.startsWith(`optional ${Object.keys(KIND_DEFAULTS).join(' | ')} —`), contract.program.actionFields.kind);
+  assert.ok(contract.program.actionFields.kind.includes('digest'), contract.program.actionFields.kind);
   assert.match(contract.program.actionFields.lane, /omit when kind supplies it/);
   assert.match(contract.program.actionFields.effort, /omit to take it from kind/);
   const rule = contract.rules.find((entry) => entry.includes('`kind` field'));

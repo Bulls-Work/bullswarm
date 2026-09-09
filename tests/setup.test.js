@@ -192,6 +192,39 @@ test('connector metadata upgrades additive provider concurrency preferences', ()
   } finally { cleanup(); }
 });
 
+test('connector metadata backfills a missing reasoning block but never a customised one', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    // An installation that predates the opencode2 reasoning block: rungs would
+    // report `unsupported` until the upgrade hands it the packaged one.
+    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({ name: 'opencode2' }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    assert.deepEqual(installed.reasoning, {
+      flag: '--variant',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaults: { high: 'high', medium: 'medium', low: 'low' },
+    });
+    // The prose that says where the levels came from travels with the block.
+    assert.match(installed['$comment-reasoning'], /OPENCODE_CONFIG_CONTENT/);
+    assert.deepEqual(upgradeConnectorMetadata(d), [], 'idempotent');
+
+    // A block the operator customised is their answer about how deeply this
+    // CLI should think, and survives the upgrade untouched.
+    const custom = { flag: '--variant', levels: ['low', 'high'], defaults: { high: 'high' } };
+    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
+      name: 'opencode2', reasoning: custom,
+    }, null, 2)}\n`);
+    upgradeConnectorMetadata(d);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8')).reasoning,
+      custom,
+    );
+  } finally { cleanup(); }
+});
+
 test('connector metadata upgrades expensive-model recommendation guards idempotently', () => {
   const { d, cleanup } = tmp();
   try {

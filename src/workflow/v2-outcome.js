@@ -65,9 +65,31 @@ function validateResultRequirement(value, name) {
   value.evidence.forEach((entry, index) => validateResultEvidence(entry, `${name}.evidence[${index}]`));
 }
 
+function validateResultBytes(value, name) {
+  if (value === undefined || value === null) return;
+  resultObject(value, name);
+  exactFields(value, new Set(['taskFile', 'authorPrompt', 'kernel', 'dependencyInputs', 'output']), name);
+  for (const field of ['taskFile', 'authorPrompt', 'kernel', 'dependencyInputs', 'output']) {
+    if (value[field] === undefined || (value[field] !== null && (!Number.isInteger(value[field]) || value[field] < 0))) {
+      resultFail(`${name}.${field} must be null or a non-negative integer`);
+    }
+  }
+}
+
+function validateResultUsageBytes(value, name) {
+  if (value === undefined || value === null) return;
+  resultObject(value, name);
+  exactFields(value, new Set(['taskFiles', 'dependencyInputs', 'outputs']), name);
+  for (const field of ['taskFiles', 'dependencyInputs', 'outputs']) {
+    if (value[field] === undefined || (value[field] !== null && (!Number.isInteger(value[field]) || value[field] < 0))) {
+      resultFail(`${name}.${field} must be null or a non-negative integer`);
+    }
+  }
+}
+
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -80,6 +102,7 @@ function validateResultAction(value, name) {
   // Same optionality for `kind`: envelopes written before program actions
   // could state a work nature carry neither the field nor a null.
   if (value.kind !== undefined && value.kind !== null) resultString(value.kind, `${name}.kind`);
+  validateResultBytes(value.bytes, `${name}.bytes`);
 }
 
 function validateGaps(value, result) {
@@ -113,6 +136,52 @@ function stateByAction(state) {
 function lastAttemptReasoning(state, actionId) {
   const attempt = state.attempts?.findLast((entry) => entry.actionId === actionId) ?? null;
   return clone(attempt?.reasoning ?? null);
+}
+
+function normalizeBytes(value) {
+  if (value === undefined || value === null) return null;
+  return Object.fromEntries(['taskFile', 'authorPrompt', 'kernel', 'dependencyInputs', 'output']
+    .map((field) => [field, value[field] ?? null]));
+}
+
+function lastAttemptBytes(state, actionId) {
+  const attempt = state.attempts?.findLast((entry) => entry.actionId === actionId) ?? null;
+  return normalizeBytes(attempt?.bytes);
+}
+
+function allAttemptRecords(state) {
+  return [
+    ...(state.preflight?.scout?.attempts ?? []),
+    ...(state.planner?.attempts ?? []),
+    ...(state.attempts ?? []),
+  ];
+}
+
+function aggregateAttemptBytes(state) {
+  const records = allAttemptRecords(state).filter((attempt) => attempt.bytes && typeof attempt.bytes === 'object');
+  if (!records.length) return null;
+  const totals = { taskFiles: null, dependencyInputs: null, outputs: null };
+  const fields = [['taskFile', 'taskFiles'], ['dependencyInputs', 'dependencyInputs'], ['output', 'outputs']];
+  let recorded = false;
+  for (const attempt of records) {
+    for (const [source, target] of fields) {
+      const value = attempt.bytes[source];
+      if (!Number.isInteger(value) || value < 0) continue;
+      totals[target] = (totals[target] ?? 0) + value;
+      recorded = true;
+    }
+  }
+  return recorded ? totals : null;
+}
+
+function resultUsage(state) {
+  const usage = clone(state.usage);
+  usage.bytes = usage.bytes == null ? aggregateAttemptBytes(state) : {
+    taskFiles: usage.bytes.taskFiles ?? null,
+    dependencyInputs: usage.bytes.dependencyInputs ?? null,
+    outputs: usage.bytes.outputs ?? null,
+  };
+  return usage;
 }
 
 function currentEvidence(ledger, requirement) {
@@ -265,15 +334,166 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // effort are derived from it at acceptance and already visible on the
         // durable action; `kind` is what a reader needs to know WHY.
         kind: definition.kind ?? null,
+        bytes: lastAttemptBytes(state, definition.id),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
       };
     }),
     gaps: status === 'completed' && verified ? null : (progress.gaps ?? consolidateV2Gaps(state)),
-    usage: clone(state.usage),
+    usage: resultUsage(state),
     finishedAt,
   };
   validateV2ResultEnvelope(result);
   return clone(result);
+}
+
+function firstLine(value, limit) {
+  if (value === undefined || value === null) return null;
+  const line = String(value).split(/\r?\n/, 1)[0].trim().slice(0, limit);
+  return line || null;
+}
+
+function latestAttemptFor(state, actionId) {
+  return [
+    ...(state?.preflight?.scout?.attempts ?? []),
+    ...(state?.planner?.attempts ?? []),
+    ...(state?.attempts ?? []),
+  ].findLast((attempt) => attempt.actionId === actionId) ?? null;
+}
+
+function stateActionFor(state, actionId) {
+  return state?.program?.actions?.find((action) => action.id === actionId) ?? null;
+}
+
+function fallback(value, alternate) {
+  return value === undefined || value === null ? alternate ?? null : value;
+}
+
+function compactActionValue(value) {
+  return typeof value === 'string' && value.includes('/') ? value.split('/').at(-1) : value;
+}
+
+function appliedReasoning(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value.applied ?? null;
+  return value ?? null;
+}
+
+function dropNullFields(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null));
+}
+
+const RESULT_SUMMARY_BYTE_BUDGET = 4096;
+const RESULT_SUMMARY_FIT_LIMITS = [
+  [200, 160, 3], [200, 80, 3], [200, 40, 3], [200, 80, 1], [200, 40, 1], [200, 0, 0],
+  [120, 80, 3], [120, 0, 0],
+  [80, 80, 1], [80, 0, 0],
+  [40, 0, 0], [0, 0, 0],
+];
+
+function summarySize(summary) {
+  return Buffer.byteLength(JSON.stringify(summary), 'utf8');
+}
+
+function fitResultSummary(summary) {
+  const basename = (actions) => actions.map((action) => ({
+    ...action,
+    outFile: compactActionValue(action.outFile),
+  }));
+  const whyAt = (limit) => summary.requirements.map((requirement) => ({
+    ...requirement,
+    why: firstLine(requirement.why, limit),
+  }));
+  const concernsAt = (limit, count) => ({
+    count: summary.concerns.count,
+    first: summary.concerns.first.slice(0, count).map((concern) => firstLine(concern, limit)).filter(Boolean),
+  });
+  const nextFor = (actions) => ({
+    ...summary.next,
+    outputs: actions.map((action) => action.outFile).filter(Boolean),
+  });
+  const candidates = [];
+  const consider = (actions, requirements, concerns) => {
+    candidates.push({
+      ...summary,
+      actions,
+      requirements,
+      concerns,
+      next: nextFor(actions),
+    });
+  };
+
+  // Output paths are always basenames under `next.runDir`: one directory
+  // string instead of N absolute prefixes, and the summary's size no longer
+  // depends on where the home lives.
+  const named = basename(summary.actions);
+  consider(named, summary.requirements, summary.concerns);
+  const omitted = named.map(dropNullFields);
+  consider(omitted, summary.requirements, summary.concerns);
+  for (const [whyLimit, concernLimit, concernCount] of RESULT_SUMMARY_FIT_LIMITS) {
+    consider(omitted, whyAt(whyLimit), concernsAt(concernLimit, concernCount));
+  }
+
+  return candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET) ?? candidates.at(-1);
+}
+
+function runDirOf(actions, runDir) {
+  if (typeof runDir === 'string' && runDir) return runDir;
+  const sample = actions.map((action) => action.outFile).find((file) => typeof file === 'string' && file.includes('/'));
+  return sample ? sample.slice(0, sample.lastIndexOf('/')) : null;
+}
+
+export function summarizeV2Result(envelope, state = null, { runDir = null } = {}) {
+  const concerns = envelope.requirements.flatMap((requirement) =>
+    requirement.evidence.flatMap((entry) => entry.concerns ?? []));
+  const shortId = envelope.shortId ?? envelope.runId;
+  const actions = envelope.actions.map((action) => {
+    const definition = stateActionFor(state, action.id);
+    const attempt = latestAttemptFor(state, action.id);
+    return {
+      id: action.id,
+      kind: fallback(action.kind, definition?.kind),
+      lane: fallback(action.lane, definition?.lane),
+      effort: fallback(action.effort, definition?.effort),
+      status: action.status,
+      pool: fallback(action.pool, attempt?.pool),
+      model: fallback(action.model, attempt?.model),
+      reasoning: appliedReasoning(fallback(action.reasoning, attempt?.reasoning)),
+      wallSec: fallback(action.wallSec, attempt?.wallSec),
+      outFile: fallback(action.outFile, fallback(action.outputFile, attempt?.outputFile)),
+      bytes: normalizeBytes(fallback(action.bytes, attempt?.bytes)),
+    };
+  });
+  return fitResultSummary({
+    schemaVersion: 'bullswarm.workflow.result-summary.v1',
+    runId: envelope.runId,
+    shortId: envelope.shortId,
+    status: envelope.status,
+    verified: envelope.verified,
+    executionMode: envelope.executionMode ?? null,
+    reason: envelope.reason,
+    finishedAt: envelope.finishedAt,
+    goal: firstLine(envelope.goal, 120),
+    goalBytes: Buffer.byteLength(String(envelope.goal ?? ''), 'utf8'),
+    requirements: envelope.requirements.map((requirement) => ({
+      id: requirement.id,
+      status: requirement.status,
+      mandatory: requirement.mandatory,
+      evidenceCount: requirement.evidence.length,
+      why: firstLine(requirement.evidence.at(-1)?.evidence?.[0], 200),
+    })),
+    actions,
+    concerns: {
+      count: concerns.length,
+      first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
+    },
+    usage: clone(envelope.usage),
+    next: {
+      full: `bullswarm workflow runs result ${shortId} --json`,
+      // Every entry of `outputs` (and every action's outFile) is a basename
+      // inside this directory.
+      runDir: runDirOf(actions, runDir),
+      outputs: actions.map((action) => action.outFile).filter(Boolean),
+    },
+  });
 }
 
 export function validateV2ResultEnvelope(result) {
@@ -293,7 +513,8 @@ export function validateV2ResultEnvelope(result) {
   if (new Set(result.requirements.map((entry) => entry.id)).size !== result.requirements.length) resultFail('requirement ids must be unique');
   if (new Set(result.actions.map((entry) => entry.id)).size !== result.actions.length) resultFail('action ids must be unique');
   resultObject(result.usage, 'usage');
-  exactFields(result.usage, new Set(['total', 'byPool']), 'usage');
+  exactFields(result.usage, new Set(['total', 'byPool', 'bytes']), 'usage');
+  validateResultUsageBytes(result.usage.bytes, 'usage.bytes');
   if (!Number.isFinite(result.usage.total) || result.usage.total < 0) resultFail('usage.total must be non-negative');
   resultObject(result.usage.byPool, 'usage.byPool');
   for (const [pool, total] of Object.entries(result.usage.byPool)) {

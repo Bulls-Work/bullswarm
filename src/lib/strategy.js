@@ -665,9 +665,18 @@ function recommendationModels(pool, discovery) {
  * DEFAULT_EFFORT_BY_LANE supplies the lane universe, so a lane the validator
  * does not know can never appear in a tier context.
  */
+// Kernel-owned kinds are excluded from the count above. A `digest` is written
+// from a kernel template rather than an author's prompt, so it describes a
+// mechanism, not a nature of work that should define which lane a tier routes
+// to; counting it would flip low from chore to analyze on the strength of an
+// action no planner has to reason about.
+const KERNEL_OWNED_KINDS = new Set(['digest']);
+
 function deriveTierLane(tier) {
   const lanes = new Set(Object.keys(DEFAULT_EFFORT_BY_LANE));
-  const kinds = Object.values(KIND_DEFAULTS).filter((kind) => lanes.has(kind.lane));
+  const kinds = Object.entries(KIND_DEFAULTS)
+    .filter(([name, kind]) => !KERNEL_OWNED_KINDS.has(name) && lanes.has(kind.lane))
+    .map(([, kind]) => kind);
   const totalKinds = (lane) => kinds.filter((kind) => kind.lane === lane).length;
   const atTier = new Map();
   for (const kind of kinds) {

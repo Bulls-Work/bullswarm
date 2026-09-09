@@ -66,8 +66,9 @@ artifacts; ordinary dependencies do not need them. Never put provider/model
 fields into the program.
 
 Set `kind` on every action and it fills `lane` and `effort`: `mechanical`
-(chore/low), `io-read` (analyze/low), `check` (analyze/medium), `implement`
-(build/medium), `integration` (build/high), `architecture` (analyze/high),
+(chore/low), `io-read` (analyze/low), `digest` (analyze/low), `check`
+(analyze/medium), `implement` (build/medium), `integration` (build/high),
+`architecture` (analyze/high),
 `adversarial-acceptance` (analyze/high). An explicit `lane` or `effort` still
 wins, then the kind table, then an optional program-level `defaults` object
 (`effort` and `reasoning` only), then the per-lane default. A kind outside that
@@ -84,6 +85,15 @@ Author the graph around these rules:
   writers, add a sole integrator depending on all of them, with `lane: "build"`
   and `ownedFiles: []`. It reads their outputs, handles shared-file requests,
   and runs repository acceptance checks. This unrestricted integrator runs alone.
+- **Optional digest:** `kind: "digest"` condenses its dependencies' outputs into
+  one artifact so an expensive consumer reads a digest instead of many raw
+  files. It is extractive — the kernel writes the task and it quotes verbatim,
+  never judges. Add one when three or more writers feed a single integrator, or
+  when any consumer's dependency outputs exceed roughly 20 KB. It needs at least
+  one `dependsOn`, empty `evidenceFor` and empty `ownedFiles`; `affects` may be
+  empty. Never let an evidence action depend on a digest — evidence reads the
+  real artifacts, and the validator exits 2 if it does. Consumers still get a
+  `digestOf` list naming each digested source, so they can drill down.
 - **Self-contained work:** each prompt names the exact workspace, outcome,
   relevant files, and concrete checks. Use `medium` effort for ordinary build
   or analysis, `low` for mechanical chores, and `high` for difficult judgment.
@@ -121,8 +131,10 @@ validate again. A valid launch detaches and returns `shortId`; report it.
 ```bash
 bullswarm workflow watch <shortId> --next
 bullswarm workflow watch <shortId> --next --after <sequence> --since <iso-timestamp>
-bullswarm workflow runs result <shortId> --json
+bullswarm workflow runs result <shortId> --json --summary
 ```
+
+Use the compact summary in the status loop. Read the full envelope with `--json` alone when the run is failed or partial, or before judging evidence.
 
 When the user asked you to complete the work, follow the run through its result.
 Launch `bullswarm workflow watch <shortId> --next` in a background terminal, act

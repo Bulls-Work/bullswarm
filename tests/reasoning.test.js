@@ -22,6 +22,7 @@ const claude = packaged('claude-code');
 const codex = packaged('codex');
 const grok = packaged('grok');
 const commandCode = packaged('command-code');
+const opencode2 = packaged('opencode2');
 const echo = packaged('echo');
 
 test('the common scale is the five levels, weakest to strongest, plus the literal default', () => {
@@ -49,7 +50,20 @@ test('packaged connectors declare reasoning from their real CLIs', () => {
   assert.deepEqual(grok.reasoning.levels, ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.equal(grok.reasoning.flag, '--reasoning-effort');
   assert.equal(commandCode.reasoning.flag, '--effort');
-  for (const connector of [claude, codex, grok, commandCode]) {
+  // opencode says the same five levels through `--variant`, which only means
+  // anything because src/lib/opencode-relay.js injects matching model variants
+  // through OPENCODE_CONFIG_CONTENT on every Relay pool.
+  assert.deepEqual(opencode2.reasoning, {
+    flag: '--variant',
+    levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaults: { high: 'high', medium: 'medium', low: 'low' },
+  });
+  assert.deepEqual(
+    resolveReasoningLevel({ connector: opencode2, tier: 'medium', runOverride: 'max' }),
+    { requested: 'max', applied: 'max', source: 'run', clamped: false },
+  );
+  assert.deepEqual(reasoningArgs(opencode2, 'max'), ['--variant', 'max']);
+  for (const connector of [claude, codex, grok, commandCode, opencode2]) {
     // Every block must say where its values came from, so an unverified
     // accepted-value list can never masquerade as a measured one.
     assert.match(connector['$comment-reasoning'], /verified/i, connector.name);
