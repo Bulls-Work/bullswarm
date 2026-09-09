@@ -51,20 +51,27 @@
   driving command — `runs show`, `runs result`, `watch`, `cancel`, `resume`,
   `steer`, `action show`, `tui <runId>` — prints exactly one line, `legacy
   authored-graph run <shortId>: its executor was removed in 0.27.0; files remain
-  under <dir>`, and exits 2 before touching anything; the workflow home shows
+  under <dir>`, and exits 2 before touching anything — including on the older
+  directories that hold only a `workflow.json` and never had a `state.json` at
+  all; the workflow home shows
   that same line in its detail pane. `events <runId>` still replays the durable
   JSONL and `runs delete <id> --yes` still removes the directory. Historical
   directories are never modified. The stale-owner reconciliation that used to
   run before every dispatch is gone with the V1 liveness model it served.
 
-- Tests: 818 -> 652. Six V1-only files were deleted
+- Tests: 818 -> 659. Six V1-only files were deleted
   (`workflow-adaptive`, `workflow-gaps`, `workflow-draft`, `workflow-schema`,
   `workflow-validate`, `workflow-run` — 151 tests); `workflow-runs`,
   `workflow-watch`, `assignments`, `workflow-interruption`, `workflow-steering`
   and `workflow-goal` were rewritten onto the V2 kernel keeping every assertion
-  about shared behaviour; `workflow-dashboard` dropped its 19 V1-only cases; and
-  a new `workflow-legacy-runs` (10 tests) proves the legacy contract against a
-  synthetic legacy `state.json`. `tests/manual-dynamic-real.mjs` (330 lines), a
+  about shared behaviour; `workflow-dashboard` went from 48 cases to 35 — 21
+  V1-only cases removed and 2 added with the rewrite, then 6 re-added against V2
+  fixtures for the rendering behaviours the removal had dropped (blocked-action
+  naming, one segment header per phase or dependency level, the mid-segment
+  continuation header, parallel levels grouped in declared order, the narrow
+  layout, and auto-follow); and a new `workflow-legacy-runs` (11 tests) proves
+  the legacy contract against a synthetic legacy `state.json`.
+  `tests/manual-dynamic-real.mjs` (330 lines), a
   manual real-provider matrix for authored `run`/`decide` graphs, went with the
   executor; it was never part of the suite count. No test dispatches a real
   provider.

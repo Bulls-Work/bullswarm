@@ -226,7 +226,12 @@ async function resolveRunWithGrace(bullswarmDir, token, waitForRunMs, intervalMs
     if (resolved && existsSync(join(resolved.runDir, 'state.json'))) return resolved;
     if (Date.now() >= deadline) {
       if (!resolved) throw new Error(`no run found for "${token}"`);
-      throw new Error(`run "${token}" has no state.json`);
+      // The grace window is spent and there is still no state.json: by the one
+      // rule every other reader uses (isLegacyRunDir) that directory is legacy
+      // history, so hand it back and let the caller's legacy guard answer with
+      // the same sentence the other driving verbs print. Reporting a missing
+      // file here would jump the guard and exit 1 instead of 2.
+      return resolved;
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(50, intervalMs))));
   }

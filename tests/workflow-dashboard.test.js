@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
-import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
+import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
 function v2Actions() {
@@ -1304,4 +1304,410 @@ test('attempts without a reasoning record render exactly as before', () => {
     assert.match(agentPane, /relay · attempt 1 · effort auto/);
     assert.doesNotMatch(agentPane, /reasoning/);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// Rendering behaviours that outlived the V1 executor.
+//
+// The authored-graph removal deleted the tests that drove workflowPanelModel
+// and renderWorkflowTui with a V1 state shape, but the behaviours they covered
+// are still live for V2 runs: blocked-action naming, one segment header per
+// phase change, the mid-segment continuation header, parallel work grouped in
+// declared level order, the narrow layout, and auto-follow. The fixtures below
+// rebuild those situations out of a real durable V2 state plus real durable
+// events, so the assertions are ported and the V1 state shape is not.
+// ---------------------------------------------------------------------------
+
+// appendEvent stamps committedAt from the wall clock. These fixtures run on the
+// fixed `iso()` clock instead, which each event carries in its payload, so the
+// durable JSONL is written for real and read back at its fixture time.
+function durableEvents(dir) {
+  return readEvents(dir).map((event) => ({
+    ...event,
+    committedAt: event.payload?.committedAt ?? event.committedAt,
+  }));
+}
+
+const v2Action = (overrides) => ({
+  dependsOn: [], affects: [], ownedFiles: [], prompt: 'Do it.',
+  lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+  ...overrides,
+});
+
+// One accepted V2 program on disk: durable state.json plus the two events every
+// run opens with. The caller fills in action outcomes and emits the rest.
+function newV2Run({
+  runId, shortId, goal, actions, settings = {}, summary = 'One bounded program.',
+  requirements = [{ id: 'requirement-1', text: 'The goal is delivered.', mandatory: true }],
+}) {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-v2render-'));
+  const dir = join(home, 'workflows', runId);
+  mkdirSync(dir, { recursive: true });
+  const document = createV2GoalDocument({
+    goal, cwd: home, requirements, settings: { scout: false, ...settings },
+  });
+  let state = createV2DurableState(document, { runId, shortId });
+  state = applyV2PlannerResponse(state, {
+    schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary,
+    program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+  });
+  state.lifecycle = { status: 'running', startedAt: iso(0), finishedAt: null, resultFile: null };
+  state.planner.attempts.push({
+    ordinal: 1, turn: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna',
+    startedAt: iso(2), finishedAt: iso(10),
+  });
+  const emit = (type, committedAt, payload = {}) => appendEvent(dir, state, type, { ...payload, committedAt });
+  emit('workflow.started', iso(0));
+  emit('planner.finished', iso(10), { turn: 1, ok: true, summary });
+  const byId = Object.fromEntries(state.actions.map((action) => [action.id, action]));
+  const succeed = (id, from, to) => {
+    Object.assign(byId[id], { status: 'succeeded', startedAt: iso(from), finishedAt: iso(to), attempts: 1 });
+    state.attempts.push({
+      id: `${id}-1`, actionId: id, ordinal: 1, status: 'succeeded',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(from), finishedAt: iso(to),
+    });
+  };
+  const start = (id, from) => {
+    Object.assign(byId[id], { status: 'running', startedAt: iso(from), attempts: 1 });
+    state.attempts.push({
+      id: `${id}-1`, actionId: id, ordinal: 1, status: 'running',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(from), finishedAt: null,
+    });
+  };
+  // The row the dashboard would build for this run: durable state read back
+  // from disk, durable events read back from the JSONL.
+  const row = () => {
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const durable = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    return {
+      runId, shortId, status: durable.lifecycle.status, runDir: dir,
+      state: durable, events: durableEvents(dir),
+    };
+  };
+  return {
+    home, dir, state, byId, emit, succeed, start, row,
+    cleanup: () => rmSync(home, { recursive: true, force: true }),
+  };
+}
+
+const segmentLabels = (screen) => timelineSegments(screen).map((segment) => segment.label);
+
+// Preflight, a finished Discovery phase, and a running Implementation phase.
+// The Evidence phase is planned but never started, so it never opens a segment.
+function segmentedV2Run() {
+  const run = newV2Run({
+    runId: 'wf-segment-aaaaaa', shortId: 'sgm234',
+    goal: 'Discover, implement, then prove it.',
+    summary: 'Discover, implement, prove.',
+    actions: [
+      v2Action({ id: 'discover-a', purpose: 'Discover the inputs', lane: 'analyze', produces: ['inputs'] }),
+      v2Action({ id: 'discover-b', purpose: 'Discover the outputs', lane: 'analyze', produces: ['outputs'] }),
+      v2Action({ id: 'implement-a', purpose: 'Implement the module', ownedFiles: ['src/a.js'], dependsOn: ['discover-a'], inputs: ['inputs'], produces: ['module'], affects: ['requirement-1'] }),
+      v2Action({ id: 'implement-b', purpose: 'Implement the adapter', ownedFiles: ['src/b.js'], dependsOn: ['discover-b'], inputs: ['outputs'], produces: ['adapter'], affects: ['requirement-1'] }),
+      v2Action({ id: 'verify-all', purpose: 'Prove every requirement', lane: 'analyze', dependsOn: ['implement-a', 'implement-b'], inputs: ['module', 'adapter'], evidenceFor: ['requirement-1'] }),
+    ],
+  });
+  run.succeed('discover-a', 20, 80);
+  run.succeed('discover-b', 20, 90);
+  run.succeed('implement-a', 160, 220);
+  run.start('implement-b', 230);
+  run.state.presentation.stages[0].startedAt = iso(20);
+  run.state.presentation.stages[0].completedAt = iso(150);
+  run.state.presentation.stages[1].startedAt = iso(160);
+  run.emit('presentation.stage_started', iso(20), { stageId: 'r1-discovery', label: 'Discovery' });
+  run.emit('action.finished', iso(80), { actionId: 'discover-a', status: 'succeeded' });
+  run.emit('action.finished', iso(90), { actionId: 'discover-b', status: 'succeeded' });
+  run.emit('presentation.stage_completed', iso(150), { stageId: 'r1-discovery', label: 'Discovery', status: 'completed', completed: 2, total: 2 });
+  run.emit('presentation.stage_started', iso(160), { stageId: 'r1-implementation', label: 'Implementation' });
+  run.emit('action.finished', iso(220), { actionId: 'implement-a', status: 'succeeded' });
+  return run;
+}
+
+// One phase with more rows than any short viewport holds.
+function longPhaseV2Run() {
+  const works = Array.from({ length: 12 }, (_, index) => v2Action({
+    id: `work-${index}`, purpose: `Implement work ${index}`,
+    ownedFiles: [`src/work-${index}.js`], produces: [`artifact-${index}`], affects: ['requirement-1'],
+  }));
+  const run = newV2Run({
+    runId: 'wf-longphase-aaaaaa', shortId: 'lng234',
+    goal: 'Render more rows than the viewport holds.',
+    actions: [
+      ...works,
+      v2Action({ id: 'work-tail', purpose: 'Implement the tail', ownedFiles: ['src/tail.js'], produces: ['artifact-tail'], affects: ['requirement-1'] }),
+      v2Action({
+        id: 'verify-all', purpose: 'Prove every requirement', lane: 'analyze',
+        dependsOn: [...works.map((action) => action.id), 'work-tail'],
+        inputs: [...works.map((_, index) => `artifact-${index}`), 'artifact-tail'],
+        evidenceFor: ['requirement-1'],
+      }),
+    ],
+  });
+  run.state.presentation.stages[0].startedAt = iso(20);
+  run.emit('presentation.stage_started', iso(20), { stageId: 'r1-implementation', label: 'Implementation' });
+  works.forEach((action, index) => {
+    run.succeed(action.id, 60 + index * 120, 120 + index * 120);
+    run.emit('action.finished', iso(120 + index * 120), { actionId: action.id, status: 'succeeded' });
+  });
+  run.start('work-tail', 60 + 12 * 120);
+  return run;
+}
+
+test('a dependency level whose action never dispatched names the dependency that blocked it', () => {
+  const run = newV2Run({
+    runId: 'wf-blocked-aaaaaa', shortId: 'blk234',
+    goal: 'Harden the core after proving it.',
+    summary: 'Implement, prove, then harden.',
+    settings: { executionMode: 'program' },
+    requirements: [
+      { id: 'requirement-1', text: 'The core is correct.', mandatory: true },
+      { id: 'requirement-2', text: 'The core is hardened.', mandatory: false },
+    ],
+    actions: [
+      v2Action({ id: 'implement-core', purpose: 'Implement the core', ownedFiles: ['src/core.js'], produces: ['core'], affects: ['requirement-1'] }),
+      v2Action({ id: 'verify-core', purpose: 'Prove the core', lane: 'analyze', dependsOn: ['implement-core'], inputs: ['core'], produces: ['core-report'], evidenceFor: ['requirement-1'] }),
+      v2Action({ id: 'harden-core', purpose: 'Harden the core', ownedFiles: ['src/harden.js'], dependsOn: ['verify-core'], inputs: ['core-report'], affects: ['requirement-2'] }),
+    ],
+  });
+  try {
+    run.succeed('implement-core', 60, 120);
+    Object.assign(run.byId['verify-core'], {
+      status: 'failed', startedAt: iso(130), finishedAt: iso(190), attempts: 1,
+      lastFailure: { kind: 'verdict', message: 'the core report is not passing' },
+    });
+    run.state.attempts.push({
+      id: 'verify-core-1', actionId: 'verify-core', ordinal: 1, status: 'failed',
+      pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(130), finishedAt: iso(190),
+    });
+    // A blocked action is marked terminal without ever being started: the
+    // scheduler records finishedAt and the dependency failure, and no attempt
+    // is ever appended for it.
+    Object.assign(run.byId['harden-core'], {
+      status: 'blocked', startedAt: null, finishedAt: iso(195),
+      lastFailure: { kind: 'dependency', message: 'dependency verify-core did not succeed' },
+    });
+    run.emit('action.finished', iso(120), { actionId: 'implement-core', status: 'succeeded' });
+    run.emit('action.finished', iso(190), { actionId: 'verify-core', status: 'failed' });
+    run.emit('action.finished', iso(195), { actionId: 'harden-core', status: 'blocked', why: 'dependency verify-core did not succeed' });
+    run.state.ledger.requirements['requirement-1'].status = 'failed';
+    run.state.lifecycle = { status: 'partial', startedAt: iso(0), finishedAt: iso(200), resultFile: null };
+    const row = run.row();
+
+    const model = workflowPanelModel(row, { phaseIndex: 2 });
+    const blockedLevel = model.phases[2];
+    assert.equal(blockedLevel.label, 'Level 3 · harden-core');
+    assert.deepEqual(blockedLevel.blockedActions, [
+      { id: 'harden-core', kind: 'action', blockedBy: ['verify-core'] },
+    ]);
+    // Never dispatched means no attempt, so the agent list is empty and the
+    // pane must explain the absence rather than claim nothing started yet.
+    assert.deepEqual(model.agents, []);
+    assert.deepEqual(model.phases[0].blockedActions, []);
+    assert.deepEqual(model.phases[1].blockedActions, []);
+
+    const agents = plain(renderWorkflowTui(row, { width: 120, height: 30, phaseIndex: 2, focus: 1 }));
+    assert.match(agents, /⊘ harden-core · never dispatched · blocked by verify-core/);
+    assert.doesNotMatch(agents, /Not started yet/);
+
+    const detail = plain(renderWorkflowTui(row, { width: 120, height: 30, phaseIndex: 2, focus: 2 }));
+    assert.match(detail, /⊘ harden-core · work · never dispatched/);
+    assert.match(detail, /blocked by verify-core/);
+
+    // The timeline marks the same action with ⊘, never with the ✓ a finished
+    // action carries or the × a dispatched failure carries.
+    const timeline = timelinePaneRows(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 2 }));
+    assert.match(timeline.join('\n'), /├─⊘ harden-core/);
+    assert.match(timeline.join('\n'), /├─× verify-core/);
+  } finally { run.cleanup(); }
+});
+
+test('the timeline opens one segment header per phase change instead of prefixing every event line', () => {
+  const run = segmentedV2Run();
+  try {
+    const screen = renderWorkflowTui(run.row(), { width: 120, height: 44 });
+    const pane = timelinePaneRows(screen);
+
+    // One header per phase change, in chronological order, none repeated
+    // between two events of the same phase.
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
+    assert.equal(pane.filter((line) => /^─{2,}\s+Phase 1 · Discovery\s/.test(line)).length, 1);
+
+    // The event lines themselves no longer name their phase.
+    assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+    assert.deepEqual(pane.filter((line) => /\[(Discovery|Implementation|Preflight):? ?[^\]]*\]/.test(line)), []);
+
+    // Glyphs, action names, timestamps and right-aligned durations survive.
+    // (timestamps render in the local zone, so only their shape is asserted)
+    assert.deepEqual(segmentRows(screen, 'Discovery').map(normalizeRow), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ discover-a 1m00s',
+      'HH:MM │ ├─✓ discover-b 1m10s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+
+    // The running phase keeps its started row, shows its live worker, and
+    // reports no completion.
+    const implementation = segmentRows(screen, 'Implementation').join('\n');
+    assert.match(implementation, /├─ started/);
+    assert.match(implementation, /├─✓ implement-a\s+1m00s/);
+    assert.match(implementation, /├─.\simplement-b/);
+    assert.deepEqual(segmentRows(screen, 'Implementation').filter((line) => line.includes('completed')), []);
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Discovery').elapsed, '2m10s');
+
+    // Every blank separator inside the timeline introduces a segment header.
+    pane.forEach((line, index) => {
+      if (line.trim() || index === pane.length - 1) return;
+      const next = pane[index + 1];
+      assert.ok(!next.trim() || /^─{2,}/.test(next), `blank row ${index} is not a segment separator: ${next}`);
+    });
+
+    // A planned phase that never started opens no segment at all.
+    assert.equal(workflowPanelModel(run.row()).phases[2].label, 'Evidence');
+    assert.deepEqual(segmentLabels(screen).filter((label) => label === 'Evidence'), []);
+  } finally { run.cleanup(); }
+});
+
+test('parallel dependency levels stay grouped in declared level order', () => {
+  const run = newV2Run({
+    runId: 'wf-parallel-aaaaaa', shortId: 'par234',
+    goal: 'Interleave two dependency levels in time.',
+    summary: 'Two independent builds, then two proofs.',
+    settings: { executionMode: 'program', concurrency: 2 },
+    requirements: [
+      { id: 'requirement-1', text: 'The module works.', mandatory: true },
+      { id: 'requirement-2', text: 'The adapter works.', mandatory: true },
+    ],
+    actions: [
+      v2Action({ id: 'implement-a', purpose: 'Implement the module', ownedFiles: ['src/a.js'], produces: ['a'], affects: ['requirement-1'] }),
+      v2Action({ id: 'implement-b', purpose: 'Implement the adapter', ownedFiles: ['src/b.js'], produces: ['b'], affects: ['requirement-2'] }),
+      v2Action({ id: 'verify-a', purpose: 'Prove the module', lane: 'analyze', dependsOn: ['implement-a'], inputs: ['a'], evidenceFor: ['requirement-1'] }),
+      v2Action({ id: 'verify-b', purpose: 'Prove the adapter', lane: 'analyze', dependsOn: ['implement-b'], inputs: ['b'], evidenceFor: ['requirement-2'] }),
+    ],
+  });
+  try {
+    // Levels overlap in wall-clock time: level 2's first proof finishes before
+    // level 1's second build does.
+    run.succeed('implement-a', 60, 120);
+    run.succeed('verify-a', 150, 180);
+    run.succeed('implement-b', 210, 240);
+    run.succeed('verify-b', 250, 280);
+    run.emit('action.finished', iso(120), { actionId: 'implement-a', status: 'succeeded' });
+    run.emit('evidence.recorded', iso(180), { actionId: 'verify-a', status: 'succeeded' });
+    run.emit('action.finished', iso(240), { actionId: 'implement-b', status: 'succeeded' });
+    run.emit('evidence.recorded', iso(280), { actionId: 'verify-b', status: 'succeeded' });
+    for (const requirement of Object.values(run.state.ledger.requirements)) requirement.status = 'passed';
+    run.state.lifecycle = { status: 'completed', startedAt: iso(0), finishedAt: iso(300), resultFile: null };
+    const row = run.row();
+
+    // The durable events really are interleaved; the grouping is the renderer's.
+    assert.deepEqual(
+      row.events.filter((event) => event.payload.actionId).map((event) => event.payload.actionId),
+      ['implement-a', 'verify-a', 'implement-b', 'verify-b'],
+    );
+
+    const screen = renderWorkflowTui(row, { width: 120, height: 40 });
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Level 1 · Parallel work', 'Level 2 · Parallel analysis']);
+    assert.deepEqual(segmentRows(screen, 'Level 1 · Parallel work').map(normalizeRow), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ implement-a 1m00s',
+      'HH:MM │ ├─✓ implement-b 30s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+    assert.deepEqual(segmentRows(screen, 'Level 2 · Parallel analysis').map(normalizeRow).slice(0, 4), [
+      'HH:MM ├─ started',
+      'HH:MM │ ├─✓ verify-a 30s',
+      'HH:MM │ ├─✓ verify-b 30s',
+      'HH:MM └─✓ completed 2/2',
+    ]);
+    // Level 2 opened while level 1 was still running: the clock column proves
+    // the rows were reordered by declared level, not by time.
+    const clock = (label, index) => segmentRows(screen, label)[index].slice(0, 5);
+    assert.ok(clock('Level 1 · Parallel work', 2) > clock('Level 2 · Parallel analysis', 0),
+      `level 1's second worker should postdate level 2's start:\n${timelinePaneRows(screen).join('\n')}`);
+    // Dependency levels are not numbered phases, so no phase prefix is added.
+    assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
+    assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /── Phase \d/);
+  } finally { run.cleanup(); }
+});
+
+test('a timeline viewport that starts mid-segment re-emits a continuation header', () => {
+  const run = longPhaseV2Run();
+  try {
+    const row = run.row();
+    // With room for every row the phase is introduced once and never continued.
+    const tall = renderWorkflowTui(row, { width: 100, height: 46 });
+    assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implementation']);
+    assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
+
+    const short = renderWorkflowTui(row, { width: 100, height: 22 });
+    const pane = timelinePaneRows(short);
+    const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
+    assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
+    // The scrolled-into segment is re-announced before its first visible event,
+    // and the first visible event is a timestamped milestone, never an orphaned
+    // detail row.
+    assert.match(pane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+    assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
+    assert.deepEqual(segmentLabels(short), ['Implementation · continued']);
+    assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
+  } finally { run.cleanup(); }
+});
+
+test('the timeline auto-follows the newest event until the viewer scrolls back', () => {
+  const run = longPhaseV2Run();
+  try {
+    const row = run.row();
+    const following = renderWorkflowTui(row, { width: 100, height: 22 });
+    const pane = timelinePaneRows(following);
+    // Auto-follow ends on the newest event — the running worker — and never
+    // claims there is anything newer below the viewport.
+    assert.match(pane.filter((line) => line.trim()).at(-1), /work-tail/);
+    assert.deepEqual(pane.filter((line) => line.includes('newer timeline rows')), []);
+    assert.match(plain(following), /Timeline · auto-following newest event/);
+
+    // Scrolling back holds older rows in place and says how much is newer.
+    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 22, detailScroll: 4 }));
+    assert.match(scrolled.at(-1), /↓ 4 newer timeline rows/);
+    assert.deepEqual(scrolled.filter((line) => line.includes('work-tail')), []);
+    assert.match(scrolled[0], /↑ \d+ earlier timeline rows/);
+    // The continuation header travels with the scrolled viewport too.
+    assert.match(scrolled[1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+  } finally { run.cleanup(); }
+});
+
+test('narrow timeline rendering keeps the segment headers and never overflows the pane', () => {
+  const run = segmentedV2Run();
+  const long = longPhaseV2Run();
+  try {
+    const row = run.row();
+    // Tall enough that the whole timeline fits: nothing here is a scroll artifact.
+    const screen = renderWorkflowTui(row, { width: 60, height: 44 });
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
+    assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
+    assert.match(segmentRows(screen, 'Discovery').join('\n'), /├─✓ discover-a/);
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
+
+    // Headers obey the narrow width like every other row, on every narrow pane
+    // the viewer can open.
+    const overflow = (rendered, width) => plain(rendered)
+      .split('\n').filter((line) => [...line].length > width);
+    for (const width of [60, 52, 44]) {
+      for (const options of [
+        { focus: 0 }, { focus: 0, mobileTimeline: false }, { focus: 1 }, { focus: 2 },
+        { focus: 0, timelineSelection: 0 }, { focus: 0, orchestratorDetail: true }, { focus: 0, workflowVerbose: true },
+      ]) {
+        const narrow = renderWorkflowTui(row, { width, height: 26, ...options });
+        assert.deepEqual(overflow(narrow, width), [], `width ${width} ${JSON.stringify(options)} overflowed`);
+      }
+    }
+
+    // And the narrow viewport re-emits the continuation header when it scrolls.
+    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 22 });
+    const narrowPane = timelinePaneRows(scrolled);
+    const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
+    assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
+    assert.match(narrowPane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continue/);
+    assert.deepEqual(overflow(scrolled, 60), []);
+  } finally { run.cleanup(); long.cleanup(); }
 });

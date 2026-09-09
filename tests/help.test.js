@@ -70,8 +70,8 @@ test('help stays contextual with operands, flags, and quoted text ahead of --hel
 // The exact count changes as the command tree evolves.
 test('HELP_PATHS enumerates the full routed command tree', () => {
   assert.ok(
-    HELP_PATHS.length >= 45,
-    `expected at least 45 routed paths (root + every top-level and nested subcommand), got ${HELP_PATHS.length}`,
+    HELP_PATHS.length >= 60,
+    `expected at least 60 routed paths (root + every top-level and nested subcommand), got ${HELP_PATHS.length}`,
   );
   assert.deepEqual(HELP_PATHS[0], [], 'first path must be the root node');
   assert.ok(HELP_PATHS.some((p) => p.join(' ') === 'workflow runs result'), 'a known leaf must be present');
