@@ -173,6 +173,35 @@ test('strategy argument errors use usage exit code 2', async () => {
   }
 });
 
+test('--quota-window selects the pacing window and refuses anything else', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    // command-code's real budget is its monthly credit allocation.
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', 'monthly']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].quotaWindow, 'monthly');
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', 'Weekly']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].quotaWindow, 'weekly');
+
+    // A label pacing cannot act on is refused, and nothing is written.
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', 'fortnight']), 2);
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', '5h']), 2);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].quotaWindow, 'weekly');
+
+    // `unknown` clears it back to the connector's own declaration.
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', 'unknown']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].quotaWindow, null);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    f.cleanup();
+  }
+});
+
 test('agent-facing model configuration is multi-select and clears legacy tier pins', async () => {
   const f = fixture();
   const originalLog = console.log;

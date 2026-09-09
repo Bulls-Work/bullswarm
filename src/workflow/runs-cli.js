@@ -27,7 +27,11 @@ import { deserializeV2ResultEnvelope, summarizeV2Result } from './v2-outcome.js'
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
-function jsonOut(obj, opts) { if (opts.json || opts.summary) console.log(JSON.stringify(obj, null, 2)); }
+function jsonOut(obj, opts) {
+  if (!(opts.json || opts.summary)) return;
+  // Summary is budgeted against compact JSON.stringify; --json alone stays pretty.
+  console.log(opts.summary ? JSON.stringify(obj) : JSON.stringify(obj, null, 2));
+}
 function err(msg, code = 1) { console.error(msg); return code; }
 
 // Every command that would drive a legacy run answers with the same sentence

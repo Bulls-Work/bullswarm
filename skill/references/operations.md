@@ -249,8 +249,17 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
 - `bullswarm pools` carries `inflight=<n>` next to each pool's `5h=<n>%`
   reading; `--json` adds the full `inflight` block (`count`, elapsed
   `minutes`, `remainingMinutes`, `unknownExpected`, `records[]`) and each
-  pool's `spend.fiveHour` / `spend.weekly` rates with
-  `projectedFiveHourPct` / `projectedWeeklyPct`.
+  pool's `spend.fiveHour` / `spend.weekly` / `spend.monthly` / `spend.pacing`
+  rates with `projectedFiveHourPct` / `projectedWeeklyPct` /
+  `projectedMonthlyPct` / `projectedPacingPct`.
+- The meter column names the window the pool is paced by, e.g.
+  `command-code   cost=1 lanes=analyze/build/chore monthly used 79.4% elapsed
+  75.3% [cache] surplus=-4.1 ...`. That window is the connector's declared
+  `quotaWindow` (monthly for command-code and the relay pools, weekly for
+  claude-code, codex and grok), overridable with `bullswarm strategy
+  set-subscription <pool> --quota-window <weekly|monthly>`; `pools --json`
+  carries it as `pacingWindow`, and `used%`/`elapsed%`/`surplus` are that
+  window's. The 5h reading still only gates.
 - `bullswarm strategy rungs --json` answers "what would this pool actually run
   on this tier, and what did it cost last time" in one row per pool and effort
   tier: the effective model and its source, the effective reasoning level and

@@ -519,3 +519,76 @@ test('a loaded incumbent forfeits margin and cost guard against a quieter challe
   });
   assert.equal(pickPool('build', [incumbent, busyChallenger], opts).pick.pool, 'wati');
 });
+
+test('the in-flight penalty is charged at the PACING window rate, not always the weekly one', () => {
+  // command-code is paced by its monthly window, where it burns 0.5 points per
+  // worker-minute; its weekly rate (0.05) would under-charge the same work by
+  // a factor of ten and leave the burst stacked on an overspent pool.
+  const monthly = pool('command-code', {
+    pace: -4.1,
+    pacingWindow: 'monthly',
+    inflight: { count: 1, minutes: 30, records: [{ remainingMinutes: 60 }] },
+    spend: {
+      weekly: { ratePerMinute: 0.05, source: 'history' },
+      monthly: { ratePerMinute: 0.5, source: 'history' },
+      pacing: { window: 'monthly', ratePerMinute: 0.5, source: 'history' },
+    },
+  });
+  const other = pool('codex', { pace: -20 });
+  const r = pickPool('build', [monthly, other], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  const c = r.candidates.find((x) => x.pool === 'command-code');
+  // 0.5 × 60 = 30 > floor 3 → −4.1 − 30 = −34.1, below codex's −20.
+  assert.deepEqual([c.effectiveSurplus, c.estimateSource, c.pacingWindow], [-34.1, 'history', 'monthly']);
+  assert.equal(r.pick.pool, 'codex');
+
+  // Same pool, same records, paced weekly: 0.05 × 60 = 3, floor 1 × 3 = 3.
+  const weekly = pool('command-code', {
+    pace: -4.1,
+    pacingWindow: 'weekly',
+    inflight: { count: 1, minutes: 30, records: [{ remainingMinutes: 60 }] },
+    spend: {
+      weekly: { ratePerMinute: 0.05, source: 'history' },
+      monthly: { ratePerMinute: 0.5, source: 'history' },
+      pacing: { window: 'weekly', ratePerMinute: 0.05, source: 'history' },
+    },
+  });
+  const w = pickPool('build', [weekly, other], {
+    callerEligible: false, callerSession: false, now: NOW,
+  }).candidates.find((x) => x.pool === 'command-code');
+  assert.deepEqual([w.effectiveSurplus, w.pacingWindow], [-7.1, 'weekly']);
+});
+
+test('a pool with only a weekly spend rate is charged exactly as before', () => {
+  const before = pool('wati', {
+    pace: 22, fiveHourUsedPct: 30,
+    inflight: { count: 1, minutes: 5, records: [{ remainingMinutes: 100 }] },
+    spend: { weekly: { ratePerMinute: 0.5, source: 'history' } },
+  });
+  const r = pickPool('build', [before], { callerEligible: false, callerSession: false, now: NOW });
+  // Unchanged from the pre-0.28.1 assertion: 0.5 × 100 = 50 > floor 3.
+  assert.deepEqual([r.candidates[0].effectiveSurplus, r.candidates[0].estimateSource], [-28, 'history']);
+  assert.equal(r.candidates[0].pacingWindow, null);
+  assert.equal(r.candidates[0].projectedPacingPct, null);
+
+  // A pacing block with no measured rate falls back to the weekly one rather
+  // than dropping to the flat penalty.
+  const pacedButUnmeasured = pool('wati', {
+    pace: 22, fiveHourUsedPct: 30,
+    inflight: { count: 1, minutes: 5, records: [{ remainingMinutes: 100 }] },
+    pacingWindow: 'monthly',
+    spend: {
+      weekly: { ratePerMinute: 0.5, source: 'history' },
+      monthly: { ratePerMinute: null, source: null },
+      pacing: { window: 'monthly', ratePerMinute: null, source: null },
+    },
+  });
+  const fallback = pickPool('build', [pacedButUnmeasured], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.deepEqual(
+    [fallback.candidates[0].effectiveSurplus, fallback.candidates[0].estimateSource],
+    [-28, 'history'],
+  );
+});

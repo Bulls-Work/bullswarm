@@ -74,8 +74,9 @@ export function attachForecast(pools, bullswarmDir, opts = {}) {
 }
 
 /**
- * The flat surplus points charged per in-flight agent when no weekly spend
- * rate is known, from core state when an operator configured one.
+ * The flat surplus points charged per in-flight agent when no spend rate is
+ * known for the pool's pacing window, from core state when an operator
+ * configured one.
  * `config.inflightPenaltyPct: 0` disables the tie-breaker entirely; anything
  * unusable falls back to route.js's documented default.
  */

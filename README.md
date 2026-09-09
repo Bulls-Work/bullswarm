@@ -51,7 +51,12 @@ detaches safely.
    passing verification.
 2. **Pace by meter.** The scheduling resource is the subscription window:
    elapsed% minus used%, most-behind pool wins. Pace may only promote a
-   *cheaper* pool. Lanes are work-nature, never hard-coded to pools. The
+   *cheaper* pool. Lanes are work-nature, never hard-coded to pools. Which
+   window paces one pool is the subscription window that pool's connector
+   declares (`quotaWindow`: weekly for claude-code, codex and grok; monthly
+   for command-code and the relay pools), overridable per pool with
+   `bullswarm strategy set-subscription <pool> --quota-window <weekly|monthly>`
+   — `bullswarm pools` names it in the meter column. The
    5-hour window never paces — it gates: a pool at or above 75% of it is
    chosen only when no eligible pool below that line exists, and one at or
    above 90% is not dispatched at all.
@@ -656,6 +661,10 @@ These are UTF-8 byte counts, never tokens.
 requirement as `{ id, status, mandatory, evidenceCount, why }`, each action as
 `{ id, kind, lane, effort, status, pool, model, reasoning, wallSec, outFile,
 bytes }`, `concerns: { count, first }`, `usage`, and `next: { full, runDir, outputs }` — every output name is a basename inside `next.runDir`.
+`--summary` is single-line JSON (`JSON.stringify`), so the bytes on the wire
+match the 4,096-byte fitter budget. As printed by the CLI on
+`tests/fixtures/real-result-ze5xz2.json`, the compact summary is 3,786 bytes
+and the pretty full envelope (`--json` alone) is 60,709 bytes.
 The full `bullswarm.workflow.result.v2` envelope is unchanged and remains the
 default. Read it (`--json` alone) on a failed or partial run, or before judging
 evidence. A terminal `workflow watch` prints the same compact command as

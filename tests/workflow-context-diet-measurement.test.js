@@ -148,10 +148,15 @@ test('a digest cuts what the integrator reads, measured on the same goal run twi
       env: { ...process.env, BULLSWARM_HOME: home.bullswarmDir, BULLSWARM_DEPTH: '0' },
     });
     assert.equal(executed.status, 0, executed.stderr || executed.stdout);
-    return Buffer.byteLength(executed.stdout, 'utf8');
+    return executed.stdout;
   };
-  const fullBytes = envelope(['--json']);
-  const summaryBytes = envelope(['--summary']);
+  const fullOut = envelope(['--json']);
+  const summaryOut = envelope(['--summary']);
+  const fullBytes = Buffer.byteLength(fullOut, 'utf8');
+  const summaryBytes = Buffer.byteLength(summaryOut, 'utf8');
+  const summaryLine = summaryOut.replace(/\n$/, '');
+  assert.equal(summaryLine.split('\n').length, 1, '--summary must print one JSON line');
+  assert.ok(Buffer.byteLength(summaryLine, 'utf8') < 4096, `summary ${Buffer.byteLength(summaryLine, 'utf8')} must stay under 4096`);
   assert.ok(summaryBytes < fullBytes, `summary ${summaryBytes} must be smaller than full ${fullBytes}`);
 
   // The numbers CHANGELOG.md 0.28.0 quotes.

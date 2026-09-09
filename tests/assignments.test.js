@@ -550,6 +550,83 @@ test('bullswarm pools reports inflight=<n> per pool', () => {
   }
 });
 
+test('bullswarm pools names the window each pool is paced by', () => {
+  const home = tempHome();
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    // Two fixture pools with the two real declarations: command-code buys a
+    // monthly credit allocation, claude-code/codex/grok a weekly one.
+    const connector = (name, quotaWindow, window) => writeFileSync(
+      join(home, 'connectors', `${name}.json`),
+      JSON.stringify({
+        name,
+        bin: 'node',
+        spawn: { cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
+        outputExtraction: { strategy: 'stdout' },
+        meter: { type: 'reader', window },
+        costRank: 5,
+        lanes: ['chore'],
+        capabilities: ['code-reading'],
+        subscription: { plan: null, monthlyPriceUsd: null, includedValueUsd: null, quotaWindow },
+        flags: { testFixture: true },
+      }, null, 2),
+    );
+    connector('cmd-fixture', 'monthly', 'weekly+monthly+5h');
+    connector('week-fixture', 'weekly', 'weekly');
+    writeFileSync(join(home, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: { 'cmd-fixture': { enabled: true }, 'week-fixture': { enabled: true } },
+      incumbents: {},
+      decisionLog: [],
+      config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+    }, null, 2));
+
+    // Cached readings: fresh, so no reader is ever called. The utilizations
+    // are the live command-code numbers of 2026-09-09T10:45:28Z.
+    const now = Date.now();
+    mkdirSync(join(home, 'meters'), { recursive: true });
+    const snapshot = (name, extra) => writeFileSync(
+      join(home, 'meters', `${name}.json`),
+      JSON.stringify({
+        captured_at: new Date(now - 30_000).toISOString(),
+        pool: name,
+        five_hour: { utilization: 25.2222, resets_at: new Date(now + 2 * 3600_000).toISOString() },
+        seven_day: { utilization: 73.11298889657142, resets_at: new Date(now + 13 * 3600_000).toISOString() },
+        ...extra,
+      }, null, 2),
+    );
+    snapshot('cmd-fixture', {
+      monthly: { utilization: 79.38571428571429, resets_at: new Date(now + 7.66 * 24 * 3600_000).toISOString() },
+    });
+    snapshot('week-fixture', {});
+
+    const human = cli(home, ['pools']);
+    assert.equal(human.status, 0, human.stderr);
+    // e.g. `cmd-fixture    cost=5 lanes=chore monthly used 79.4% elapsed 75.3% [cache] surplus=-4.1 ...`
+    assert.match(
+      human.stdout,
+      /^cmd-fixture\s+cost=5 lanes=chore monthly used 79\.4% elapsed \d+(\.\d)?% \[cache\] surplus=-?\d+(\.\d)?/m,
+    );
+    assert.match(
+      human.stdout,
+      /^week-fixture\s+cost=5 lanes=chore weekly used 73\.1% elapsed \d+(\.\d)?% \[cache\] surplus=-?\d+(\.\d)?/m,
+    );
+
+    const json = cli(home, ['pools', '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const byName = Object.fromEntries(JSON.parse(json.stdout).pools.map((p) => [p.name, p]));
+    assert.equal(byName['cmd-fixture'].pacingWindow, 'monthly');
+    assert.equal(byName['cmd-fixture'].usedPct, 79.4);
+    assert.equal(byName['week-fixture'].pacingWindow, 'weekly');
+    assert.equal(byName['week-fixture'].usedPct, 73.1);
+    // The 5h gate reads the same 5h window for both, whatever paces them.
+    assert.equal(byName['cmd-fixture'].fiveHourUsedPct, 25.2222);
+    assert.equal(byName['week-fixture'].fiveHourUsedPct, 25.2222);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('bullswarm assignments --help is documented and side-effect free', () => {
   const home = join(tempHome(), 'must-not-be-created');
   const help = cli(home, ['assignments', '--help']);

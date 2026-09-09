@@ -23,9 +23,13 @@ function cli(home, args) {
 test('summary is a compact schema-checked status envelope', () => {
   validateV2ResultEnvelope(fixture);
   const summary = summarizeV2Result(fixture);
+  const compact = JSON.stringify(summary);
   const fullBytes = Buffer.byteLength(JSON.stringify(fixture), 'utf8');
-  const summaryBytes = Buffer.byteLength(JSON.stringify(summary), 'utf8');
+  const summaryBytes = Buffer.byteLength(compact, 'utf8');
+  const prettyFullBytes = Buffer.byteLength(`${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
   console.log(`result-summary size: full=${fullBytes} summary=${summaryBytes}`);
+  console.log(`result-summary cli: prettyFull=${prettyFullBytes}`);
+  assert.equal(compact.includes('\n'), false, 'summariser compact serialisation is one line');
   assert.ok(summaryBytes < 4096, `summary ${summaryBytes} bytes must stay below 4096; full envelope is ${fullBytes} bytes`);
   assert.ok(fullBytes > 50_000, `full envelope is only ${fullBytes} bytes`);
   assert.deepEqual(Object.keys(summary).sort(), [
@@ -74,7 +78,7 @@ test('runs result --summary and --summary --json produce the same completed JSON
   const runDir = join(home, 'workflows', fixture.runId);
   mkdirSync(runDir, { recursive: true });
   try {
-    writeFileSync(join(runDir, 'state.json'), JSON.stringify({
+    const state = {
       schemaVersion: 'bullswarm.workflow.state.v2',
       runId: fixture.runId,
       shortId: fixture.shortId,
@@ -86,7 +90,8 @@ test('runs result --summary and --summary --json produce the same completed JSON
         finishedAt: fixture.finishedAt,
         resultFile: join(runDir, 'result.json'),
       },
-    }));
+    };
+    writeFileSync(join(runDir, 'state.json'), JSON.stringify(state));
     writeFileSync(join(runDir, 'result.json'), JSON.stringify(fixture));
     const implicit = cli(home, ['workflow', 'runs', 'result', fixture.shortId, '--summary']);
     const explicit = cli(home, ['workflow', 'runs', 'result', fixture.shortId, '--summary', '--json']);
@@ -95,7 +100,16 @@ test('runs result --summary and --summary --json produce the same completed JSON
     assert.equal(implicit.stderr, '');
     assert.equal(explicit.stderr, '');
     assert.equal(implicit.stdout, explicit.stdout);
+    const summary = summarizeV2Result(fixture, state, { runDir });
+    const compact = JSON.stringify(summary);
+    assert.equal(implicit.stdout, `${compact}\n`);
+    assert.equal(implicit.stdout.replace(/\n$/, '').split('\n').length, 1);
+    assert.equal(Buffer.byteLength(compact, 'utf8'), Buffer.byteLength(JSON.stringify(summary), 'utf8'));
+    assert.ok(Buffer.byteLength(compact, 'utf8') < 4096, `CLI --summary ${Buffer.byteLength(compact, 'utf8')} bytes must stay below 4096`);
     assert.equal(JSON.parse(implicit.stdout).schemaVersion, 'bullswarm.workflow.result-summary.v1');
+    const full = cli(home, ['workflow', 'runs', 'result', fixture.shortId, '--json']);
+    assert.equal(full.status, 0, full.stderr);
+    assert.equal(full.stdout, `${JSON.stringify(fixture, null, 2)}\n`);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

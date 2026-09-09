@@ -10,6 +10,7 @@ import {
 import { extractCredentials } from '../src/meters/claude.js';
 import {
   windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
+  pacingWindowFor, normalizePacingWindow,
 } from '../src/meters/framework.js';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
@@ -334,6 +335,244 @@ test('declared meter loses to provider reading; surplus from resets_at (M1/M2)',
     assert.equal(g.meterSource, 'live');           // reading wins over declaration
     assert.equal(g.usedPct, 1);                    // NOT the stale 95%
     assert.equal(g.pace, 56.1);                    // surplus from resets_at math
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- M3: WHICH window paces one pool ----------------------------------------
+//
+// The command-code meter, read live at 2026-09-09T10:45:28Z. command-code
+// buys a MONTHLY credit allocation (55.57 of 70 credits used, 14.43 left for
+// the 7.7 days to 2026-09-17T03:06:55Z) and rate-limits weekly, so pacing it
+// by its weekly window reported surplus +18.7 — "most behind, send it work" —
+// while its real budget was already 4.1 points overspent.
+const CMD_SNAPSHOT = {
+  captured_at: '2026-09-09T10:45:28.000Z',
+  pool: 'command-code',
+  five_hour: { utilization: 25.2222, resets_at: '2026-09-09T13:24:01.942Z' },
+  seven_day: { utilization: 73.11298889657142, resets_at: '2026-09-10T00:54:20.169Z' },
+  monthly: { utilization: 79.38571428571429, resets_at: '2026-09-17T03:06:55.000Z' },
+  monthly_quota: { used: 55.57, limit: 70, remaining: 14.43, unit: 'credits' },
+  plan_type: 'GOAT',
+};
+const CMD_NOW = Date.parse('2026-09-09T11:09:44.982Z');
+
+test('pace snapshot: a monthly-paced pool paces by its monthly window', () => {
+  const monthly = paceSnapshot(CMD_SNAPSHOT, CMD_NOW, { pacingWindow: 'monthly' });
+  assert.deepEqual(monthly.pacing, {
+    usedPct: 79.4,
+    elapsedPct: 75.3,
+    surplus: -4.1,
+    resetsAt: '2026-09-17T03:06:55.000Z',
+  });
+  assert.equal(monthly.pacingWindow, 'monthly');
+  // The 31-day window length comes from the provider's resets_at (M2).
+  assert.equal(monthlyWindowMs(Date.parse('2026-09-17T03:06:55.000Z')), 31 * 24 * 3600_000);
+  // The 5h gate is untouched by the pacing window.
+  assert.equal(monthly.fiveHourUsedPct, 25.2222);
+  assert.equal(monthly.nearFiveHourLimit, false);
+  assert.equal(monthly.burstGate, false);
+
+  // 'weekly' and no declaration are the historical numbers, unchanged.
+  const weekly = paceSnapshot(CMD_SNAPSHOT, CMD_NOW, { pacingWindow: 'weekly' });
+  const dflt = paceSnapshot(CMD_SNAPSHOT, CMD_NOW);
+  for (const r of [weekly, dflt]) {
+    assert.deepEqual(r.pacing, {
+      usedPct: 73.1,
+      elapsedPct: 91.8,
+      surplus: 18.7,
+      resetsAt: '2026-09-10T00:54:20.169Z',
+    });
+    assert.equal(r.pacingWindow, 'weekly');
+  }
+  // Both windows are always reported; only the choice between them changes.
+  assert.equal(dflt.windows.monthly.surplus, -4.1);
+  assert.equal(monthly.windows.seven_day.surplus, 18.7);
+});
+
+test('pace snapshot: the chosen window falls back when the provider omits it', () => {
+  const weeklyOnly = {
+    seven_day: { utilization: 40, resets_at: new Date(NOW + 3 * 24 * 3600_000).toISOString() },
+    monthly: { utilization: null, resets_at: null },
+  };
+  const paced = paceSnapshot(weeklyOnly, NOW, { pacingWindow: 'monthly' });
+  assert.equal(paced.pacing.usedPct, 40);
+  // pacingWindow names the window actually used, not the one asked for.
+  assert.equal(paced.pacingWindow, 'weekly');
+
+  const monthlyOnly = {
+    monthly: { utilization: 41.6, resets_at: new Date(NOW + 10 * 24 * 3600_000).toISOString() },
+  };
+  const asWeekly = paceSnapshot(monthlyOnly, NOW, { pacingWindow: 'weekly' });
+  assert.equal(asWeekly.pacing.usedPct, 41.6);
+  assert.equal(asWeekly.pacingWindow, 'monthly');
+
+  // Nothing to pace by at all: no window, no name.
+  const gateOnly = paceSnapshot({
+    five_hour: { utilization: 3, resets_at: new Date(NOW + 3600_000).toISOString() },
+  }, NOW, { pacingWindow: 'monthly' });
+  assert.equal(gateOnly.pacing, null);
+  assert.equal(gateOnly.pacingWindow, null);
+  assert.equal(paceSnapshot(null, NOW).pacingWindow, null);
+});
+
+test('pacingWindowFor: the operator overrides the connector; unknown labels pace by default', () => {
+  const connector = { subscription: { quotaWindow: 'monthly' } };
+  // Connector alone (command-code ships quotaWindow: "monthly").
+  assert.equal(pacingWindowFor({ connector }), 'monthly');
+  assert.equal(pacingWindowFor({ connector: { subscription: { quotaWindow: 'weekly' } } }), 'weekly');
+  // state.strategy.subscriptions[pool] wins over the connector.
+  assert.equal(pacingWindowFor({ connector, subscription: { quotaWindow: 'weekly' } }), 'weekly');
+  assert.equal(
+    pacingWindowFor({ connector: { subscription: { quotaWindow: 'weekly' } }, subscription: { quotaWindow: 'MONTHLY' } }),
+    'monthly',
+  );
+  // A stored label that is neither is ignored for pacing (default order),
+  // never rejected on read — pre-0.28.1 state holds free-text labels.
+  assert.equal(pacingWindowFor({ connector, subscription: { quotaWindow: 'fortnight' } }), null);
+  assert.equal(pacingWindowFor({ connector: { subscription: { quotaWindow: 'weekly+monthly+5h' } } }), null);
+  // Nothing declared anywhere.
+  assert.equal(pacingWindowFor({}), null);
+  assert.equal(pacingWindowFor(), null);
+  assert.equal(pacingWindowFor({ connector: { subscription: { quotaWindow: null } } }), null);
+
+  assert.equal(normalizePacingWindow('  Weekly '), 'weekly');
+  assert.equal(normalizePacingWindow(7), null);
+  assert.equal(normalizePacingWindow(null), null);
+});
+
+test('buildPools: a monthly-paced pool paces monthly with no operator setting', async () => {
+  const { buildPools } = await import('../src/lib/config.js');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'bs-pacing-'));
+  try {
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    // Exactly what connectors/command-code.json and connectors/claude-code.json declare.
+    writeFileSync(join(dir, 'connectors/command-code.json'), JSON.stringify({
+      name: 'command-code', costRank: 1, lanes: ['analyze', 'build', 'chore'],
+      meter: { type: 'reader', window: 'weekly+monthly+5h' },
+      subscription: { plan: null, quotaWindow: 'monthly' },
+    }));
+    writeFileSync(join(dir, 'connectors/claude-code.json'), JSON.stringify({
+      name: 'claude-code', costRank: 2, lanes: ['analyze', 'build', 'chore'],
+      meter: { type: 'reader', window: 'weekly' },
+      subscription: { plan: null, quotaWindow: 'weekly' },
+    }));
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: { 'command-code': { enabled: true }, 'claude-code': { enabled: true } },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+    }));
+
+    const claudeSnapshot = {
+      captured_at: '2026-09-09T10:45:28.000Z',
+      five_hour: { utilization: 10, resets_at: '2026-09-09T13:24:01.942Z' },
+      seven_day: { utilization: 20, resets_at: '2026-09-10T00:54:20.169Z' },
+    };
+    const readings = {
+      // The cache path and the live path are paced identically: the choice is
+      // made where the connector and the state are, not in the reader.
+      'command-code': { ...paceSnapshot(CMD_SNAPSHOT, CMD_NOW), source: 'cache', snapshot: CMD_SNAPSHOT },
+      'claude-code': { ...paceSnapshot(claudeSnapshot, CMD_NOW), source: 'live', snapshot: claudeSnapshot },
+    };
+    const { pools } = buildPools(dir, CMD_NOW, readings);
+    const byName = Object.fromEntries(pools.map((pool) => [pool.name, pool]));
+
+    const cmd = byName['command-code'];
+    assert.equal(cmd.pacingWindow, 'monthly');
+    assert.equal(cmd.usedPct, 79.4);
+    assert.equal(cmd.elapsedPct, 75.3);
+    assert.equal(cmd.pace, -4.1);           // NOT the weekly +18.7
+    assert.equal(cmd.paceResetsAt, '2026-09-17T03:06:55.000Z');
+    // The 5h gate still reads the 5h window.
+    assert.equal(cmd.fiveHourUsedPct, 25.2222);
+
+    // A weekly pool with a weekly reading is untouched.
+    const claude = byName['claude-code'];
+    assert.equal(claude.pacingWindow, 'weekly');
+    assert.equal(claude.usedPct, 20);
+    assert.equal(claude.pace, 71.8);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildPools: the operator setting overrides the connector window', async () => {
+  const { buildPools } = await import('../src/lib/config.js');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'bs-pacing-override-'));
+  try {
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    writeFileSync(join(dir, 'connectors/command-code.json'), JSON.stringify({
+      name: 'command-code', costRank: 1, lanes: ['chore'],
+      meter: { type: 'reader', window: 'weekly+monthly+5h' },
+      subscription: { quotaWindow: 'monthly' },
+    }));
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: { 'command-code': { enabled: true } },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+      strategy: { subscriptions: { 'command-code': { quotaWindow: 'weekly' } } },
+    }));
+    const readings = {
+      'command-code': { ...paceSnapshot(CMD_SNAPSHOT, CMD_NOW), source: 'live', snapshot: CMD_SNAPSHOT },
+    };
+    const [pool] = buildPools(dir, CMD_NOW, readings).pools;
+    assert.equal(pool.pacingWindow, 'weekly');
+    assert.equal(pool.pace, 18.7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildPools: a reading with no windows keeps its pacing, and an unmetered pool keeps its declaration', async () => {
+  const { buildPools } = await import('../src/lib/config.js');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'bs-pacing-legacy-'));
+  try {
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    writeFileSync(join(dir, 'connectors/legacy.json'), JSON.stringify({
+      name: 'legacy', costRank: 2, lanes: ['chore'],
+      meter: { type: 'reader', window: 'weekly' },
+      subscription: { quotaWindow: 'monthly' },
+    }));
+    writeFileSync(join(dir, 'connectors/quiet.json'), JSON.stringify({
+      name: 'quiet', costRank: 2, lanes: ['chore'],
+      meter: { type: 'none' },
+      subscription: { quotaWindow: 'monthly' },
+    }));
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      version: 1, pools: { legacy: { enabled: true }, quiet: { enabled: true } },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+    }));
+    // A hand-built reading with `pacing` and no `windows` (an older code
+    // path): its numbers are used as-is rather than dropped.
+    const readings = {
+      legacy: {
+        source: 'live',
+        pacing: { usedPct: 12, elapsedPct: 50, surplus: 38, resetsAt: '2026-09-10T00:54:20.169Z' },
+        burstGate: false,
+      },
+    };
+    const byName = Object.fromEntries(
+      buildPools(dir, CMD_NOW, readings).pools.map((pool) => [pool.name, pool]),
+    );
+    assert.equal(byName.legacy.pace, 38);
+    assert.equal(byName.legacy.pacingWindow, 'monthly');
+    // No reading at all: the declared window still says how this pool is paced.
+    assert.equal(byName.quiet.meterSource, 'none');
+    assert.equal(byName.quiet.pacingWindow, 'monthly');
+    assert.equal(byName.quiet.pace, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
