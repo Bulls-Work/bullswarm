@@ -564,10 +564,14 @@ function cmdHealth(opts) {
     .map(([k, v]) => ({ pool: k, until: v.quarantine.until, reason: v.quarantine.reason }));
 
   const report = {
+    // Healthy is the absence of the two defects this command can actually
+    // see: a verify gate that ate real work, and a quarantine cluster. An
+    // empty decision log means nothing has been dispatched yet, which is a
+    // fresh home rather than a fault, so it is reported (below) but never
+    // counted against health.
     healthy:
       findings.every((f) => !f.gateAteWork) &&
-      quarantined.length < 2 &&
-      (state.decisionLog?.length ?? 0) > 0,
+      quarantined.length < 2,
     gateFailures: findings.filter((f) => f.gateAteWork),
     quarantineCluster: quarantined.length >= 2 ? quarantined : [],
     quarantined,

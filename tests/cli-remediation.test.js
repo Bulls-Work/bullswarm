@@ -132,6 +132,43 @@ test('health rejudges saved content instead of trusting the saved exit verdict',
   } finally { f.cleanup(); }
 });
 
+test('health calls a fresh home with an empty decision log healthy', () => {
+  const f = sandbox();
+  try {
+    const result = run(f.home, ['health', '--json']);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.healthy, true);
+    assert.equal(report.decisionLogSize, 0);
+    assert.equal(report.gateFailures.length, 0);
+    assert.equal(report.quarantined.length, 0);
+    // The human summary must agree with the document, and the fix hint only
+    // belongs on a report that has something to fix.
+    const human = run(f.home, ['health']);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /bullswarm health — HEALTHY/);
+    assert.match(human.stdout, /decision log: 0 entries/);
+    assert.doesNotMatch(human.stdout, /fix:/);
+  } finally { f.cleanup(); }
+});
+
+test('health still flags a quarantine cluster when the decision log is empty', () => {
+  const f = sandbox();
+  try {
+    const state = JSON.parse(readFileSync(join(f.home, 'state.json'), 'utf8'));
+    const until = Date.now() + 10 * 60_000;
+    state.pools['local-agent'].quarantine = { until, reason: 'auth', kind: 'auth' };
+    state.pools.other = { enabled: true, quarantine: { until, reason: 'auth', kind: 'auth' } };
+    writeFileSync(join(f.home, 'state.json'), `${JSON.stringify(state)}\n`);
+    const result = run(f.home, ['health', '--json']);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.healthy, false);
+    assert.equal(report.decisionLogSize, 0);
+    assert.equal(report.quarantineCluster.length, 2);
+  } finally { f.cleanup(); }
+});
+
 test('version bumping is deterministic and dry-run release behavior is safe', () => {
   assert.equal(bumpVersion('0.10.7', 'patch'), '0.10.8');
   assert.equal(bumpVersion('0.10.7', 'minor'), '0.11.0');
