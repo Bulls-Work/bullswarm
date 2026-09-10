@@ -15,10 +15,12 @@
 //   R6. A pool at 100% used is exhausted; quarantined pools are ineligible
 //       until their quarantine expires (the re-probe path).
 //   R7. 5h headroom outranks pace: a pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of
-//       its 5h window is chosen only when no eligible pool below the threshold
-//       exists for the lane. Like quarantine and burst gates, this outranks an
-//       explicit assignment and incumbency — a near-limit pool that is picked
-//       anyway spends the run's next attempt on a quota failure.
+//       its 5h window AND above that window's elapsed share (R10 — the
+//       threshold is clock-relative, not a fixed line) is chosen only when no
+//       eligible pool below the threshold exists for the lane. Like quarantine
+//       and burst gates, this outranks an explicit assignment and incumbency —
+//       a near-limit pool that is picked anyway spends the run's next attempt
+//       on a quota failure.
 //   R8. Route on the FORECAST, not on the reading. A reading is already old at
 //       the moment it is read: work dispatched seconds ago has spent quota the
 //       meter has not seen, and the assignment being routed will spend more.
@@ -34,8 +36,27 @@
 //   R9. Load beats incumbency: an incumbent carrying more in-flight agents
 //       than a challenger keeps neither its margin nor its cost guard; the
 //       quieter pool wins as soon as its effective surplus is higher.
+//  R10. The near-limit line is clock-relative. R7's tier is for a pool that
+//       will hit its 5h wall mid-run, and that danger is time-shaped: 88%
+//       projected with 23 minutes left in the window is a pool spending at its
+//       own pace that is about to be handed a fresh window; 77% with four
+//       hours left is a pool heading for the wall. So a pool is deprioritized
+//       only when its forecast is at/above FIVE_HOUR_NEAR_LIMIT_PCT *and*
+//       above the percentage of the 5h window already elapsed. (Observed
+//       2026-09-10T22:19Z: claude-code:wati, 81% used with 23 minutes left —
+//       92.3% of its window elapsed — was tiered down for a forecast of 88.1%,
+//       so a high-tier integrator went to the one account already ahead of its
+//       weekly pace while wati's quota, 34% of the week unspent with 13% of
+//       the week left, expired unused.) Spend that lands after the reset
+//       belongs to the NEXT window: the candidate's minutes and each in-flight
+//       record's remaining minutes are clipped at resets_at before they are
+//       charged to the 5h forecast — the weekly/monthly pacing penalty is
+//       never clipped, that spend does count against its window. No
+//       resets_at, an unparsable one, or a reset already in the past means no
+//       clock: R7 keeps its fixed line and nothing is clipped, because a pool
+//       is never treated differently for a number nobody produced (R8).
 
-import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT } from '../meters/framework.js';
+import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
@@ -100,36 +121,115 @@ function tenth(value) {
   return Math.round(Number(value) * 10) / 10;
 }
 
+/** The 5h window, in minutes — 300. */
+export const FIVE_HOUR_WINDOW_MINUTES = WINDOW_MS['5h'] / 60_000;
+
+/**
+ * Minutes left before this pool's 5h window resets, from the provider's
+ * `fiveHourResetsAt` (src/lib/config.js, straight off the meter reading).
+ *
+ * null when there is no reading, when it cannot be parsed, or when the reset
+ * is already at/behind `now` — an outrun deadline is unknown, not a
+ * zero-length window (R8/R10).
+ */
+export function minutesUntilFiveHourReset(pool, now = Date.now()) {
+  const resetsAtMs = Date.parse(pool?.fiveHourResetsAt ?? '');
+  if (!Number.isFinite(resetsAtMs)) return null;
+  const minutes = (resetsAtMs - now) / 60_000;
+  return minutes > 0 ? minutes : null;
+}
+
+/**
+ * How much of the 5h window has already elapsed, 0–100, or null when the
+ * reset time is unknown (R10). elapsed = 100 × (300 − minutes left) / 300.
+ */
+export function fiveHourElapsedPct(pool, now = Date.now()) {
+  const left = minutesUntilFiveHourReset(pool, now);
+  if (left == null) return null;
+  const elapsed = (100 * (FIVE_HOUR_WINDOW_MINUTES - left)) / FIVE_HOUR_WINDOW_MINUTES;
+  return Math.max(0, Math.min(100, elapsed));
+}
+
+/**
+ * In-flight minutes that fall PAST the 5h reset, summed over the records the
+ * producer already charged to this window (R10). Only these minutes are
+ * credited back from the projection — the rest of the record still spends
+ * inside the window being forecast.
+ */
+function inflightOverflowMinutes(pool, minutesToReset) {
+  const records = Array.isArray(pool?.inflight?.records) ? pool.inflight.records : [];
+  let overflow = 0;
+  for (const record of records) {
+    const m = num(record?.remainingMinutes);
+    if (m == null) continue;
+    overflow += Math.max(0, Math.max(0, m) - minutesToReset);
+  }
+  return overflow;
+}
+
 /**
  * 5h forecast for one pool and the assignment being routed (R8 rule a):
  *
  *   forecast = (projectedFiveHourPct ?? fiveHourUsedPct)
- *              + fiveHour.ratePerMinute × candidateMinutes
+ *              − ratePerMinute × in-flight minutes past the reset
+ *              + ratePerMinute × min(candidateMinutes, minutes to the reset)
  *
  * with the candidate term added only when both of its numbers exist; anything
  * else falls back to the best available reading, and a pool with no reading
  * at all forecasts null (unknown — never gated, never deprioritized).
+ *
+ * R10 clipping: quota spent after `fiveHourResetsAt` lands in the NEXT 5h
+ * window and cannot overflow this one, so the candidate's minutes are clipped
+ * at the reset, and the in-flight minutes the producer charged past the reset
+ * are credited back out of its projection (never below the pool's own
+ * reading). This clip is the 5h forecast's alone — the pacing-window charge in
+ * inflightLoad() is deliberately left unclipped, because that spend does count
+ * against the weekly/monthly window whichever side of the 5h reset it lands
+ * on. With no parsable reset time nothing is clipped at all.
  *
  * `forecasted` records whether the number is more than the raw reading. Only a
  * real projection input (a producer-supplied projectedFiveHourPct, or a rate ×
  * candidateMinutes term) turns a reading into a forecast; a bare reading keeps
  * exactly its old meaning so nothing changes for callers that attach no model.
  *
+ * `nearLimit` is the raw R7 test (forecast >= FIVE_HOUR_NEAR_LIMIT_PCT);
+ * `underClock` is R10's exemption from it — near the limit, but no further
+ * into the window's quota than into the window's time.
+ *
  * @param {object} pool
  * @param {number|null} [candidateMinutes] expected minutes of this assignment
+ * @param {number} [now]
  * @returns {{raw: number|null, projected: number|null,
  *            ratePerMinute: number|null, candidateAdd: number|null,
- *            forecast: number|null, forecasted: boolean}}
+ *            forecast: number|null, forecasted: boolean,
+ *            minutesToReset: number|null, elapsedPct: number|null,
+ *            inflightCreditPct: number, nearLimit: boolean,
+ *            underClock: boolean}}
  */
-export function fiveHourForecast(pool, candidateMinutes = null) {
+export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()) {
   const raw = num(pool?.fiveHourUsedPct);
   const projected = num(pool?.projectedFiveHourPct);
   const ratePerMinute = num(pool?.spend?.fiveHour?.ratePerMinute);
   const minutes = num(candidateMinutes);
-  const base = projected ?? raw;
+  const minutesToReset = minutesUntilFiveHourReset(pool, now);
+  const clip = (m) => (minutesToReset == null ? m : Math.min(m, minutesToReset));
   const candidateAdd =
-    ratePerMinute != null && minutes != null ? ratePerMinute * minutes : null;
+    ratePerMinute != null && minutes != null ? ratePerMinute * clip(minutes) : null;
+  // Credit back only what the producer charged past the reset; a zero credit
+  // leaves the projection byte-for-byte what it was before R10.
+  const overflowMinutes =
+    minutesToReset == null || ratePerMinute == null
+      ? 0
+      : inflightOverflowMinutes(pool, minutesToReset);
+  const inflightCreditPct = overflowMinutes > 0 ? ratePerMinute * overflowMinutes : 0;
+  const base =
+    projected == null ? raw
+    : inflightCreditPct > 0
+      ? Math.max(raw ?? projected - inflightCreditPct, projected - inflightCreditPct)
+      : projected;
   const forecast = base == null ? null : base + (candidateAdd ?? 0);
+  const elapsedPct = fiveHourElapsedPct(pool, now);
+  const nearLimit = forecast != null && forecast >= FIVE_HOUR_NEAR_LIMIT_PCT;
   return {
     raw,
     projected,
@@ -137,6 +237,13 @@ export function fiveHourForecast(pool, candidateMinutes = null) {
     candidateAdd,
     forecast,
     forecasted: projected != null || candidateAdd != null,
+    minutesToReset,
+    elapsedPct,
+    inflightCreditPct,
+    nearLimit,
+    // R10: at/above the line but no further through its quota than through its
+    // window — the reset arrives before the wall does.
+    underClock: nearLimit && elapsedPct != null && forecast <= elapsedPct,
   };
 }
 
@@ -166,6 +273,12 @@ export function fiveHourForecast(pool, candidateMinutes = null) {
  * Only `inflight.records[].remainingMinutes` is read: `inflight.minutes` is
  * elapsed worker-minutes (src/lib/assignments.js attachInflight), which says
  * nothing about the quota still to be spent.
+ *
+ * These minutes are NOT clipped at the 5h reset (R10). This charge is the
+ * pacing window's — weekly or monthly — and an agent still running an hour
+ * after the 5h window rolls over goes on spending the same weekly quota. Only
+ * the 5h forecast in fiveHourForecast() clips at `fiveHourResetsAt`, and it
+ * computes that separately from this number.
  *
  * estimateSource: `none` (nothing to charge), `penalty` (the flat floor set the
  * charge), or the source label of the rate that was used (`history` /
@@ -307,7 +420,7 @@ export function pickPool(lane, pools, opts = {}) {
   const eligible = laneCapable.filter((p) => p.modelPolicy?.eligible !== false);
 
   const scored = eligible.map((p) => {
-    const forecast = fiveHourForecast(p, candidateMins);
+    const forecast = fiveHourForecast(p, candidateMins, now);
     const load = inflightLoad(p, { candidateMinutes: candidateMins, inflightPenaltyPct });
     const pace = paceScore(p, now);
     return {
@@ -319,8 +432,10 @@ export function pickPool(lane, pools, opts = {}) {
       effective: pace - load.penalty,
       load,
       forecast,
-      // R8b: R7's tier, applied to the forecast instead of the reading.
-      tier: forecast.forecast != null && forecast.forecast >= FIVE_HOUR_NEAR_LIMIT_PCT ? 1 : 0,
+      // R8b: R7's tier, applied to the forecast instead of the reading — and
+      // R10: only for a pool further through its 5h quota than through its 5h
+      // window. A pool at 88% with 23 minutes left keeps its tier 0.
+      tier: forecast.nearLimit && !forecast.underClock ? 1 : 0,
       // A pool is gated only by a FORECAST at/above the burst line — a bare
       // reading keeps its current meaning (dispatch owns that gate), so pools
       // without a spend model behave exactly as before.
@@ -345,6 +460,9 @@ export function pickPool(lane, pools, opts = {}) {
     fiveHourUsedPct: e.forecast.raw,
     projectedFiveHourPct: e.forecast.projected,
     forecastFiveHourPct: e.forecast.forecast == null ? null : tenth(e.forecast.forecast),
+    // R10: how far into the 5h window this reading sits; null when the
+    // provider reported no reset time, in which case the fixed line applies.
+    fiveHourElapsedPct: e.forecast.elapsedPct == null ? null : tenth(e.forecast.elapsedPct),
     projectedWeeklyPct: num(e.pool.projectedWeeklyPct),
     // The window this pool is paced by, and the projection in it. Equal to
     // the weekly pair for every pool that declares no monthly quota window.
@@ -555,9 +673,15 @@ function routingReason(
       [winnerEntry.pool.name, note, inflight].filter(Boolean).join(', ')
     })`;
   } else {
-    base = `most-behind capable pool${
-      note ? (winnerEntry.tier === 0 ? ' with 5h headroom' : ' near its 5h limit') : ''
-    } (${detail})`;
+    // Three states, not two (R10): headroom, near the limit and tiered down,
+    // or near the limit but under the window's clock — where the note itself
+    // carries the explanation, so the label stays out of its way.
+    const standing =
+      !note ? ''
+      : winnerEntry.tier === 1 ? ' near its 5h limit'
+      : winnerEntry.forecast.underClock ? ''
+      : ' with 5h headroom';
+    base = `most-behind capable pool${standing} (${detail})`;
   }
   const clauses = [base];
   if (skippedNearLimit.length) {
@@ -583,21 +707,42 @@ function routingReason(
   return clauses.join(' · ');
 }
 
-/** `<pool> <pct>%` using the forecast when one exists, else the raw reading. */
+/**
+ * `<pool> <pct>%` using the forecast when one exists, else the raw reading —
+ * and, for a pool at/above the near-limit line, where its 5h window stands
+ * (R10): `claude-code:wati 88.1% (92.3% elapsed)`. The clock is what decided
+ * the tier, so the number that decided it is named.
+ */
 function poolPctLabel(entry) {
   const pct = entry.forecast.forecasted ? entry.forecast.forecast : entry.forecast.raw;
-  return `${entry.pool.name}${pct == null ? '' : ` ${tenth(pct)}%`}`;
+  const clock = entry.forecast.nearLimit ? elapsedText(entry.forecast.elapsedPct) : null;
+  return `${entry.pool.name}${pct == null ? '' : ` ${tenth(pct)}%`}${clock ? ` (${clock})` : ''}`;
 }
 
-/** `5h used 30%` or, when a forecast adds to it, `5h used 30% -> 41% projected`. */
+/** `92.3% elapsed`, or null when the provider reported no 5h reset time. */
+function elapsedText(elapsedPct) {
+  return elapsedPct == null ? null : `${Number(elapsedPct).toFixed(1)}% elapsed`;
+}
+
+/**
+ * `5h used 30%` or, when a forecast adds to it, `5h used 30% -> 41% projected`.
+ *
+ * A forecast at/above the near-limit line also carries its window's clock —
+ * `, under the clock (92.3% elapsed)` when R10 exempts it from the tier,
+ * `, 20.0% elapsed` when the clock is what put it there.
+ */
 function fiveHourNote(entry) {
-  const { raw, forecast, forecasted } = entry.forecast;
+  const { raw, forecast, forecasted, nearLimit, underClock, elapsedPct } = entry.forecast;
+  const clock = nearLimit ? elapsedText(elapsedPct) : null;
+  const suffix = clock ? `, ${underClock ? `under the clock (${clock})` : clock}` : '';
   if (raw == null) {
-    return forecasted && forecast != null ? `5h projected ${tenth(forecast)}%` : null;
+    return forecasted && forecast != null ? `5h projected ${tenth(forecast)}%${suffix}` : null;
   }
   const reading = `5h used ${tenth(raw)}%`;
-  if (!forecasted || forecast == null || tenth(forecast) === tenth(raw)) return reading;
-  return `${reading} -> ${tenth(forecast)}% projected`;
+  if (!forecasted || forecast == null || tenth(forecast) === tenth(raw)) {
+    return `${reading}${suffix}`;
+  }
+  return `${reading} -> ${tenth(forecast)}% projected${suffix}`;
 }
 
 /** `2 in flight`, or null when the caller tracks no in-flight work here. */
