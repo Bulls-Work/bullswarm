@@ -5,167 +5,120 @@ description: Delegate bounded work through Bullswarm to one quota-routed coding 
 
 # Bullswarm
 
-You supply the task or dependency graph. Bullswarm routes workers by quota and
-capability, runs them, and saves their outputs. For workflows, **you are the
-planner by default**: write the graph once; the kernel executes it to the end.
+You write the task. Bullswarm picks a worker by quota and capability, runs it,
+and saves the output. For a workflow you are the planner: write the program
+once and the kernel runs it to the end.
 
 Keep the user's scope and working directory. Delegate only authorized work;
 permission to delegate does not authorize messages, releases, or other external
-writes. If `BULLSWARM_DEPTH` is set, do the assigned work directly unless the
-task explicitly requires nested delegation.
+writes. If `BULLSWARM_DEPTH` is set you are already a worker: do the assigned
+work directly unless it explicitly requires nested delegation.
 
-## 1. Choose the shape yourself
+## 1. Choose the shape
 
-Use one agent for a bounded outcome such as a review or localized fix. Use a
-workflow for parallel territories, integration, or implementation followed by
-independent acceptance. There is no preview or classifier step — decide from
-the request itself and go directly to the matching mode below.
+One agent for one bounded outcome: a review, a localized fix, a study with one
+deliverable. A workflow when the work splits into parallel territories, needs
+integration, or needs independent acceptance. Decide from the request itself;
+there is no classifier command.
 
 ## 2a. One agent
-
-Dispatch it directly:
 
 ```bash
 bullswarm run --lane=analyze --add-dir=<abs-dir> --prompt='<task>' --json
 ```
 
-An unrecognized `--flag` on any command prints `unknown flag --name` plus
-that command's synopsis and exits 2, before routing or spawning anything.
-
-Choose `build` for edits, `chore` for mechanical edits, or `analyze` for
-read-only work. Use `--task-file` instead of `--prompt` for long text or
-awkward quoting. The result's top-level fields include `ok`, `keepOnClaude`,
-`pick` (the chosen `{pool, model, command}`), `outFile`, and `why`:
-
-- `keepOnClaude: true`: do the work yourself, even if `ok` is true.
-- Otherwise, when `ok: true`, read `outFile` and check its content before using it.
-- `ok: false`: inspect and report the failure; a successful CLI exit is not
-  proof that the work succeeded.
-
-Do not run `doctor` unless dispatch reports a readiness problem.
+Lanes: `build` edits, `chore` mechanical edits, `analyze` read-only. Use
+`--task-file` for long text. Read the result: `keepOnClaude: true` means do it
+yourself; `ok: true` means read `outFile` and check its content before using
+it; `ok: false` means inspect and report the failure. A clean exit code is not
+proof of success. Do not run `doctor` unless dispatch reports a readiness
+problem.
 
 ## 2b. A workflow
 
-Get the planning contract:
+The program format lives in [program.md](references/program.md): fields, kinds,
+requirement IDs, enforced rules, and one example. This section is how to
+author the graph.
+
+- **Decompose.** One action per bounded outcome a single worker can finish
+  alone. Every writer gets an `ownedFiles` territory. All workers share one
+  tree, so tell each to preserve others' edits and to report any file it needs
+  outside its territory instead of editing it.
+- **Dependencies are inputs, not phases.** `dependsOn` lists the actions whose
+  outputs this action reads. Everything with no unmet dependency runs at once.
+  A phase is simply the set of actions that become ready together; never add a
+  dependency to fake one.
+- **Integrate after parallel writers.** One `integration` action that depends
+  on all of them, directly or through a digest, with `ownedFiles: []`, which
+  on a build-lane action means no territory limit. It reads their outputs,
+  resolves shared-file requests, and runs the repository's acceptance checks.
+  It runs alone.
+- **Check independently when acceptance matters.** One `adversarial-acceptance`
+  action with empty `affects` and `ownedFiles`, `evidenceFor` set to the
+  requirement IDs it judges, depending on every writer that affects them.
+  Describe what to inspect; the kernel supplies the evidence format. A
+  requirement may be covered by evidence alone: a "verification" deliverable
+  is the evidence report in the run result, not a file.
+- **Digest when outputs pile up.** A `digest` action when three or more outputs
+  feed one reader, or a reader's inputs exceed about 20 KB. The reader depends
+  on the digest instead of the raw writers and gets `digestOf` links to them;
+  the digest keeps every shared-file request. Evidence never depends on a
+  digest.
+- **Effort.** Writers are `implement`. High belongs to exactly three kinds:
+  `integration` (the sole writer after parallel work), `architecture` (a
+  read-only judgment whose report a later action consumes), and
+  `adversarial-acceptance` (independent evidence). A study that reads code and
+  writes markdown is `implement`. When a judgment must land in a file, keep it
+  `implement`, or split it into an `architecture` action plus a writer that
+  records its report. Never set `defaults.effort` to `high`, and do not
+  restate `lane` or `effort` on an action that has a `kind`.
+- **Prompts are self-contained.** Each names the absolute workspace path
+  (nothing is substituted), the outcome, the relevant files, the dependency
+  outputs to read, and the concrete checks to run.
+
+### Validate, read, adjust, then launch
+
+Keep the goal in a file and pass it as `"$(cat goal.txt)"` to both commands,
+so validate and launch get identical text, apostrophes and line breaks
+included.
 
 ```bash
-bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
+bullswarm workflow plan validate "$(cat goal.txt)" --cwd=<abs-dir> --program=<abs-dir>/plan.json --json
 ```
 
-Use exactly the same goal when validating and launching. Keep `--cwd` fixed to
-the absolute target directory even when generating the plan elsewhere. Preserve
-the requested outcomes; numbered deliverables produce separate requirement IDs. The contract
-contains the current schema, IDs, rules, and a worked program example.
-
-Write `plan.json` from the contract's worked example. The bare program has
-`schemaVersion: "bullswarm.workflow.program.v2"` and a populated `actions` array.
-Each action needs `id`, `purpose`, `dependsOn`, `affects`, `ownedFiles`,
-`prompt`, and `evidenceFor`, plus either `kind` or an explicit `lane`. Copy
-requirement IDs from the contract. Optional `inputs`/`produces` describe actual
-artifacts; ordinary dependencies do not need them. Never put provider/model
-fields into the program.
-
-Set `kind` on every action and it fills `lane` and `effort`: `mechanical`
-(chore/low), `io-read` (analyze/low), `digest` (analyze/low), `check`
-(analyze/medium), `implement` (build/medium), `integration` (build/high),
-`architecture` (analyze/high),
-`adversarial-acceptance` (analyze/high). An explicit `lane` or `effort` still
-wins, then the kind table, then an optional program-level `defaults` object
-(`effort` and `reasoning` only), then the per-lane default. A kind outside that
-list is rejected before anything runs. `plan validate` and `workflow goal` also
-print non-blocking `advisory:` lines — `all-writers-high` and `docs-at-high` —
-which never change acceptance or the exit code.
-
-Author the graph around these rules:
-
-- **Shared tree:** give each writer an intended `ownedFiles` territory. New
-  files survive; territories guide scheduling, not file rejection. Tell workers
-  others share the tree, preserve their edits, and report shared-file requests.
-- **Real dependencies:** independent actions run concurrently. After parallel
-  writers, add a sole integrator depending on all of them, with `lane: "build"`
-  and `ownedFiles: []`. It reads their outputs, handles shared-file requests,
-  and runs repository acceptance checks. This unrestricted integrator runs alone.
-- **Optional digest:** `kind: "digest"` condenses its dependencies' outputs into
-  one artifact so an expensive consumer reads a digest instead of many raw
-  files. It is extractive — the kernel writes the task and it quotes verbatim,
-  never judges. Add one when three or more writers feed a single integrator, or
-  when any consumer's dependency outputs exceed roughly 20 KB. It needs at least
-  one `dependsOn`, empty `evidenceFor` and empty `ownedFiles`; `affects` may be
-  empty. Never let an evidence action depend on a digest — evidence reads the
-  real artifacts, and the validator exits 2 if it does. Consumers still get a
-  `digestOf` list naming each digested source, so they can drill down.
-- **Self-contained work:** each prompt names the exact workspace, outcome,
-  relevant files, and concrete checks. Use `medium` effort for ordinary build
-  or analysis, `low` for mechanical chores, and `high` for difficult judgment.
-- **Optional evidence:** an independent check uses `lane: "analyze"`, empty
-  `affects`/`ownedFiles`, and `evidenceFor` requirement IDs. Depend on every
-  writer affecting those requirements. Describe the checks; the kernel adds
-  the evidence JSON instructions. Evidence is optional for graph completion.
-- **Optional reasoning depth:** `effort` picks the model tier; the optional
-  `reasoning` field picks how hard that model thinks. Values are
-  `low|medium|high|xhigh|max`, or `default` to pass nothing and let the worker
-  CLI's own setting decide. It applies to that one action and outranks every
-  configured level for it — so a `low`-effort integrator can still get `xhigh`
-  thinking. Omit it and the configured level applies; it never changes the
-  pool, model, or effort tier, and a connector that does not accept the exact
-  level gets the nearest level it supports. Set it only when an action needs
-  deeper thinking than its tier implies (a tricky shared-file integrator,
-  ambiguous acceptance judgment) or cheaper thinking for mechanical work.
-  For the whole run instead of one action, pass
-  `--worker-reasoning <level>` (and `--planner-reasoning <level>` with
-  `--orchestrator`) to `workflow goal`; the contract's `reasoning` block
-  echoes what a launch will apply.
-
-Validate, then launch:
+Exit 2 means the program is invalid: the JSON lists `issues`; fix them and
+validate again. Exit 0 always carries an `advisories` array. Each entry names
+an action whose effort is above what its work warrants (`all-writers-high`,
+`docs-at-high`): lower that action's kind and validate again, or write the
+reason it needs high into its `purpose`. An empty array means launch now, with
+the same goal, `--cwd` and absolute `--program` (validate's `next.launch` line
+is this command):
 
 ```bash
-bullswarm workflow plan validate '<goal>' --cwd=<abs-dir> --program=plan.json --json
-bullswarm workflow goal '<goal>' --cwd=<abs-dir> --program=plan.json --json
+bullswarm workflow goal "$(cat goal.txt)" --cwd=<abs-dir> --program=<abs-dir>/plan.json --json
 ```
 
-An invalid program exits 2 and launches nothing. Fix the reported issues and
-validate again. A valid launch detaches and returns `shortId`; report it.
+The launch detaches and returns `shortId`; report it.
 
-## 3. Observe and judge the result
+## 3. Observe and judge
 
 ```bash
 bullswarm workflow watch <shortId> --next
-bullswarm workflow watch <shortId> --next --after <sequence> --since <iso-timestamp>
 bullswarm workflow runs result <shortId> --json --summary
 ```
 
-Use the compact summary in the status loop. Read the full envelope with `--json` alone when the run is failed or partial, or before judging evidence.
+Run `watch --next` in a background terminal. When it exits, act on the printed
+event and relaunch with the exact `next: bullswarm workflow watch <shortId>
+--next --after <sequence> --since <iso>` line it printed, until the outcome
+line reports a pause or a terminal status. A pause is not completion.
 
-When the user asked you to complete the work, follow the run through its result.
-Launch `bullswarm workflow watch <shortId> --next` in a background terminal, act
-on the printed event when it exits, and relaunch until the outcome line reports
-a pause or a terminal status. Each exit that leaves the run going ends with
-`next: bullswarm workflow watch <shortId> --next --after <sequence> --since <iso>`:
-relaunch with exactly those two values, so events committed while you were
-acting are printed instead of skipped and a stall you already saw does not
-report twice. In `--jsonl` mode there is no such line — take `--after` from the
-`sequence` field of the last object. V2 watch prints one line per notable event
-and stays silent while work is merely in progress; `--heartbeat` is opt-in and
-`--stall-after` (default 300s) reports a silent running agent. A usage-limit
-failure always prints — `⚠ ... usage limit on <pool> · paused until <deadline>
-· retrying on another pool`, then `↺ ... now on <pool> · <model>` once the
-mechanical retry lands — even without `--verbose`. Pass `--classic` for the
-older heartbeat-based watcher instead (V2 only; it cannot combine with
-`--next`). A legacy authored-graph run cannot be watched: the watcher prints
-the legacy line and exits 2.
-`watch` also exits at a durable planning pause; that is not completion.
+Then read the real outputs and artifacts and probe the important edge cases
+yourself. `completed` means the graph ran. `verified` means evidence passed,
+which can still miss bugs. `partial` exposes failed or skipped branches; author
+follow-up work explicitly when the outcome still needs repair. Shared files
+remain after failure or cancellation. Exit 0 can mean launched, paused, or
+completed, so always inspect the returned status.
 
-Read action outputs and actual artifacts, and probe important edge cases yourself.
-`completed` means the graph succeeded; `verified` means the evidence agents
-returned passing verdicts, which can still miss bugs. A `partial` result
-exposes failed or skipped branches. Negative evidence remains negative and does
-not trigger automatic gap-planning rounds. Author follow-up work explicitly
-when the requested outcome still needs repairs.
-
-Shared files remain after failure or cancellation. Saved older runs keep their
-original execution behavior. Exit 0 can mean launched, paused, or completed;
-always inspect the returned status.
-
-Read [operations.md](references/operations.md) only when you need **steering,
-cancellation, resume, scouting, a dispatched planner, explicit isolation,
-routing diagnosis**. Ordinary work needs only the flow above.
+[operations.md](references/operations.md) covers steering, cancellation,
+resume, scouting, a dispatched planner, isolation, watch flags, reasoning
+depth, digest details, the live planning contract, and routing diagnosis.
