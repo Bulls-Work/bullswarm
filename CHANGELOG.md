@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.2 — terminal glyph fallback, issue watcher, health on a fresh home
 
 - `bullswarm workflow` repainted flashing `?` characters on macOS
   Terminal.app. Cause is font coverage, not encoding: parsing the `cmap` of
