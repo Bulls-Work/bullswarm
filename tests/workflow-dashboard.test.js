@@ -1719,3 +1719,24 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     assert.deepEqual(overflow(scrolled, 60), []);
   } finally { run.cleanup(); long.cleanup(); }
 });
+
+test('a narrow terminal wraps the agent detail pane to its full width, not the sidebar remainder', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const row = dashboardRows(home)[0];
+    const contentWidths = (screen) => plain(screen).split('\n')
+      .filter((line) => line.startsWith('│') && line.endsWith('│'))
+      .map((line) => line.slice(1, -1).trimEnd().length);
+    const narrow = renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 });
+    assert.match(plain(narrow), /audit-files · planner-agent/);
+    const widest = Math.max(...contentWidths(narrow));
+    // 60 columns minus the 34-column sidebar minus padding is 22: the width the
+    // detail used to wrap at even though the narrow pane spans the whole screen.
+    assert.ok(widest > 22, `narrow detail still wraps at ${widest} columns`);
+    assert.ok(widest <= 58, `narrow detail overflows the panel: ${widest} columns`);
+    const wide = plain(renderWorkflowTui(row, { width: 120, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 }));
+    assert.match(wide, /audit-files · planner-agent/);
+    // Wide layout is unchanged: two panels side by side on every body row.
+    assert.ok(wide.split('\n').some((line) => /^│.*││.*│$/.test(line)));
+  } finally { cleanup(); }
+});
