@@ -572,16 +572,15 @@ export function renderWorkflowTui(row, {
   // readable and explicit back navigation preserves the same hierarchy.
   const leftWidth = Math.min(SIDEBAR_WIDTH, Math.max(1, width - 3));
   const rightWidth = Math.max(1, width - leftWidth);
-  const orchestrationLines = orchestratorDetailLines(
-    model,
-    Math.max(20, (orchestratorDetail ? width : rightWidth) - 4),
-    spinnerFrame,
-    { verbose: orchestratorVerbose },
-  );
-  const detail = orchestratorDetail
-    ? orchestrationLines
-    : agentDetailLines(model, Math.max(20, rightWidth - 4), spinnerFrame);
-  const technical = workflowTechnicalLines(model, Math.max(20, rightWidth - 4));
+  // The detail text is wrapped once, before the layout below picks a body, so
+  // it must wrap to the pane it will actually occupy: the full width on a
+  // narrow terminal (one pane at a time), the right column beside the sidebar
+  // otherwise. Wrapping to the right column on a 60-column phone left every
+  // line at 22 characters inside a 58-character panel.
+  const paneWidth = Math.max(20, (narrow ? width : rightWidth) - 4);
+  const orchestrationLines = orchestratorDetailLines(model, paneWidth, spinnerFrame, { verbose: orchestratorVerbose });
+  const detail = orchestratorDetail ? orchestrationLines : agentDetailLines(model, paneWidth, spinnerFrame);
+  const technical = workflowTechnicalLines(model, paneWidth);
   const contentHeight = bodyHeight - 2;
   const scrollSource = workflowVerbose ? technical : detail;
   const maxScroll = Math.max(0, scrollSource.length - contentHeight);
