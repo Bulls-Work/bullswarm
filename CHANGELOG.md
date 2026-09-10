@@ -2,19 +2,15 @@
 
 ## Unreleased
 
-- command-code: profile `deepseek/deepseek-v4.1-flash` as tier `medium`,
-  `qualityRank` 4 — the maintainer's assessment, since it runs the medium
-  and low rungs on this pool; OpenRouter has no v4.1-flash indices yet, its
-  predecessor deepseek-v4-flash scores within two points of gpt-5.6-luna on
-  all three indices, and core never invents benchmark comparisons. With the
-  profile, `strategy refresh` suggests it for command-code's medium tier,
-  which had no candidate before. Off-peak
-  pricing from https://commandcode.ai/docs/resources/pricing-limits
-  (2026-09-11): input $0.15, cache read $0.003, output $0.60 per million
-  tokens. Discovery had to be refreshed by hand (`bullswarm strategy
-  refresh`) before `strategy set-rung` would accept the model, because
-  model discovery is only re-run by `strategy refresh` and the owner's
-  autopilot is off.
+- command-code: a profile entry for `deepseek/deepseek-v4.1-flash` that
+  carries the model's own pricing from
+  https://commandcode.ai/docs/resources/pricing-limits (2026-09-11): input
+  $0.15, cache read $0.003, output $0.60 per million tokens off peak (the
+  peak window is documented in the entry). Tier and rank stay exactly what the
+  generic flash catch-all gives; this is not a recommendation, and none will
+  be packaged without benchmark evidence. Note for operators: model discovery
+  is only re-run by `bullswarm strategy refresh`, so a model a CLI added since
+  the last refresh is rejected by `strategy set-rung` until you refresh.
 - Connector upgrades now insert packaged `modelProfiles` entries that the
   installed connector lacks (keyed by `match` or `id`) at the position the
   packaged order implies: before the installed generic catch-all a specific

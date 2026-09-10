@@ -258,9 +258,9 @@
     },
     {
       "match": "^deepseek/deepseek-v4\\.1-flash$",
-      "tier": "medium",
-      "qualityRank": 4,
-      "$comment-deepseek": "Tier and rank are the maintainer's assessment (2026-09-11): the model runs the medium and low rungs on this pool; OpenRouter publishes no indices for it yet, and its predecessor deepseek-v4-flash scores within two points of gpt-5.6-luna on all three indices. Pricing is the off-peak rate (17 h/day); peak is $0.30 input / $1.20 output during 01–04 and 06–10 UTC Monday–Friday.",
+      "tier": "low",
+      "qualityRank": 2,
+      "$comment-deepseek": "Facts only, no recommendation: tier and rank are exactly what the generic flash catch-all below would give, kept here so the entry carries the model's own pricing. OpenRouter publishes no indices for this model yet; raise nothing here without benchmark evidence. Pricing is the off-peak rate (17 h/day); peak is $0.30 input / $1.20 output during 01–04 and 06–10 UTC Monday–Friday.",
       "pricing": {
         "inputUsdPerMillion": 0.15,
         "cacheReadUsdPerMillion": 0.003,
