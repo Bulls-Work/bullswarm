@@ -10,6 +10,7 @@ import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
+import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 
 const ESC = '\x1b[';
 const SIDEBAR_WIDTH = 34;
@@ -422,7 +423,6 @@ function renderV2Details(row, { interactive = true } = {}) {
 const TERMINAL_ACTIONS = new Set([
   'succeeded', 'failed', 'failed_retryable', 'failed_terminal', 'skipped', 'cancelled',
 ]);
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null } = {}) {
   const state = row.state;
@@ -548,7 +548,7 @@ export function renderWorkflowTui(row, {
     if (blockedActions.length) {
       for (const blocked of blockedActions) {
         agentLines.push(dimLine(
-          `⊘ ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`,
+          `${glyphs().blocked} ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`,
           width,
         ));
       }
@@ -850,17 +850,17 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
       lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])],
     });
   };
-  add(state.lifecycle.startedAt, '● Workflow initiated', '', model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance', 'Preflight');
+  add(state.lifecycle.startedAt, `${glyphs().ongoing} Workflow initiated`, '', model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance', 'Preflight');
   const eventByType = new Map();
   for (const event of model.events) {
     if (!eventByType.has(event.type)) eventByType.set(event.type, []);
     eventByType.get(event.type).push(event);
   }
-  for (const event of eventByType.get('preflight.scout_started') ?? []) add(event.committedAt, '● Scout started', '', event.payload?.purpose, 'Preflight');
+  for (const event of eventByType.get('preflight.scout_started') ?? []) add(event.committedAt, `${glyphs().ongoing} Scout started`, '', event.payload?.purpose, 'Preflight');
   for (const event of eventByType.get('preflight.scout_finished') ?? []) {
     const attempt = state.preflight.scout.attempts.at(-1);
     const detail = [attempt?.pool, attempt?.model, tokenText(attempt?.usage)].filter(Boolean).join(' · ');
-    add(event.committedAt, `${event.payload?.status === 'succeeded' ? '✓' : '×'} Scout ${event.payload?.status === 'succeeded' ? 'completed' : 'could not complete'}`, durationText(state.preflight.scout.startedAt, state.preflight.scout.finishedAt), detail, 'Preflight');
+    add(event.committedAt, `${event.payload?.status === 'succeeded' ? glyphs().ok : '×'} Scout ${event.payload?.status === 'succeeded' ? 'completed' : 'could not complete'}`, durationText(state.preflight.scout.startedAt, state.preflight.scout.finishedAt), detail, 'Preflight');
   }
   for (const event of eventByType.get('planner.finished') ?? []) {
     const turn = Number(event.payload?.turn ?? 1);
@@ -870,7 +870,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
     const attempt = state.planner.attempts.findLast((item) => item.turn === turn);
     add(
       event.committedAt,
-      `${event.payload?.ok ? '◇' : '×'} ${label}`,
+      `${event.payload?.ok ? glyphs().plan : '×'} ${label}`,
       attempt ? durationText(attempt.startedAt, attempt.finishedAt) : '',
       event.payload?.summary ?? event.payload?.why,
       turn === 1 ? 'Preflight' : 'Planner',
@@ -892,13 +892,13 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
       const actionId = event.payload?.actionId;
       const runtime = state.actions.find((action) => action.id === actionId);
       const stage = model.stages.find((item) => item.actionIds.includes(actionId));
-      const status = runtime?.status === 'succeeded' ? '✓' : runtime?.status === 'blocked' ? '⊘' : '×';
+      const status = runtime?.status === 'succeeded' ? glyphs().ok : runtime?.status === 'blocked' ? glyphs().blocked : '×';
       add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work');
     }
     if (!model.dependencyGroups && event.type === 'presentation.stage_completed') {
       const stage = stageById.get(event.payload?.stageId);
       const ok = event.payload?.status === 'completed';
-      add(event.committedAt, `└─${ok ? '✓' : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
+      add(event.committedAt, `└─${ok ? glyphs().ok : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
     }
   }
   // A worker that is still running has no durable finish event yet, so the
@@ -921,12 +921,12 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
     const at = [stage.completedAt, ...model.events.filter((event) =>
       ['action.finished', 'evidence.recorded'].includes(event.type) && stage.actionIds.includes(event.payload?.actionId))
       .map((event) => event.committedAt)].filter(Boolean).sort().at(-1);
-    add(at, `└─${progress.successful ? '✓' : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
+    add(at, `└─${progress.successful ? glyphs().ok : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
     const finalSegment = model.stages.findLast((stage) => stage.startedAt)?.label ?? 'Workflow';
-    add(state.lifecycle.finishedAt, `${status === 'completed' ? '✓' : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, finalSegment);
+    add(state.lifecycle.finishedAt, `${status === 'completed' ? glyphs().ok : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, finalSegment);
   }
   return groupedTimeline(rows, model, width, state.lifecycle.finishedAt);
 }
@@ -987,7 +987,7 @@ function workflowLiveLines(model, width, spinnerFrame) {
     lines.push(alignRight(`${statusIcon(status, spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`, status, width));
     lines.push(plannerRunning ? '   Choosing the next bounded program' : `   Waiting for ${runningAttempts.length} worker${runningAttempts.length === 1 ? '' : 's'}`);
     const event = plannerRunning?.lastAgentEvent;
-    if (event) lines.push(`   ↳ ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`);
+    if (event) lines.push(`   ${glyphs().detail} ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`);
     const stream = streamActivityLine(plannerRunning);
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
@@ -997,8 +997,8 @@ function workflowLiveLines(model, width, spinnerFrame) {
     lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''}`, durationText(attempt.startedAt), width));
     const event = attempt.lastAgentEvent;
     lines.push(event
-      ? `   ↳ ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
-      : '   ↳ waiting for the first semantic action event');
+      ? `   ${glyphs().detail} ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
+      : `   ${glyphs().detail} waiting for the first semantic action event`);
     const stream = streamActivityLine(attempt);
     if (stream) lines.push(`   ${stream}`);
     lines.push('');
@@ -1006,9 +1006,9 @@ function workflowLiveLines(model, width, spinnerFrame) {
   if (!lines.length) {
     const liveness = model.row?.liveness ?? v2RunnerLiveness(state, { runDir: model.row?.runDir });
     lines.push(stateFinishedAt(state)
-      ? `✓ No live agents · workflow ${state.lifecycle.status}`
-      : liveness.alive ? '⧖ Waiting for the next dispatch'
-      : `✗ Kernel not running · ${liveness.reason}`);
+      ? `${glyphs().ok} No live agents · workflow ${state.lifecycle.status}`
+      : liveness.alive ? `${glyphs().waiting} Waiting for the next dispatch`
+      : `${glyphs().fail} Kernel not running · ${liveness.reason}`);
     if (!stateFinishedAt(state) && !liveness.alive) {
       lines.push(`  resume it · bullswarm workflow resume ${state.shortId ?? state.runId}`);
     }
@@ -1019,17 +1019,17 @@ function workflowLiveLines(model, width, spinnerFrame) {
 
 function workflowNextLines(model, width) {
   const { state } = model;
-  if (stateFinishedAt(state)) return [truncate(`✓ Workflow ${state.lifecycle.status === 'completed' ? 'complete' : state.lifecycle.status} - result is ready`, width)];
+  if (stateFinishedAt(state)) return [truncate(`${glyphs().ok} Workflow ${state.lifecycle.status === 'completed' ? 'complete' : state.lifecycle.status} - result is ready`, width)];
   const running = state.attempts.filter((attempt) => attempt.status === 'running');
-  if (running.length) return [truncate(`○ Waiting for ${running.length} worker${running.length === 1 ? '' : 's'}`, width)];
-  if (state.planner.status === 'running') return ['○ Workflow Planner is creating the next bounded program'];
+  if (running.length) return [truncate(`${glyphs().pending} Waiting for ${running.length} worker${running.length === 1 ? '' : 's'}`, width)];
+  if (state.planner.status === 'running') return [`${glyphs().pending} Workflow Planner is creating the next bounded program`];
   if (state.planner.awaiting) {
     const token = state.shortId ?? state.runId;
-    if (state.cancellation?.requested) return [truncate(`⧖ Cancellation requested while paused · bullswarm workflow cancel ${token} finalizes it`, width)];
-    return [truncate(`⧖ Waiting for the caller planner (${state.planner.awaiting.boundary}) · bullswarm workflow plan show ${token}`, width)];
+    if (state.cancellation?.requested) return [truncate(`${glyphs().waiting} Cancellation requested while paused · bullswarm workflow cancel ${token} finalizes it`, width)];
+    return [truncate(`${glyphs().waiting} Waiting for the caller planner (${state.planner.awaiting.boundary}) · bullswarm workflow plan show ${token}`, width)];
   }
-  if (state.actions.some((action) => ['pending', 'ready'].includes(action.status))) return ['○ Starting the next dependency-ready actions'];
-  return ['○ Workflow Planner will reassess remaining gaps'];
+  if (state.actions.some((action) => ['pending', 'ready'].includes(action.status))) return [`${glyphs().pending} Starting the next dependency-ready actions`];
+  return [`${glyphs().pending} Workflow Planner will reassess remaining gaps`];
 }
 
 function workflowTechnicalLines(model, width) {
@@ -1175,7 +1175,7 @@ function agentDetailLines(model, width, spinnerFrame) {
     for (const action of model.selectedPhase.actions) {
       const blocked = (model.selectedPhase.blockedActions ?? []).find((entry) => entry.id === action.id);
       lines.push(blocked
-        ? `⊘ ${action.id} · ${actionRoleLabel(action)} · never dispatched`
+        ? `${glyphs().blocked} ${action.id} · ${actionRoleLabel(action)} · never dispatched`
         : `${statusIcon(action.status, spinnerFrame)} ${action.id} · ${actionRoleLabel(action)} · ${action.status}`);
       if (blocked) {
         lines.push(`  blocked by ${blocked.blockedBy.length ? blocked.blockedBy.join(', ') : 'a failed dependency'}`);
@@ -1202,7 +1202,7 @@ function agentDetailLines(model, width, spinnerFrame) {
   if (attempt?.finishedAt) lines.push(`Finished: ${attempt.finishedAt}`);
   if (active?.lastActivityAt) lines.push(`Last activity: ${active.lastActivityAt} · ${active.outputBytesObserved ?? 0} bytes`);
   if (active?.stall?.status === 'suspected_stalled') {
-    lines.push(`⚠ Suspected stalled: ${active.stall.silentForSec}s without evidence; never auto-killed`);
+    lines.push(`${glyphs().warn} Suspected stalled: ${active.stall.silentForSec}s without evidence; never auto-killed`);
   }
   if (attempt?.failureReason) lines.push(`Failure: ${attempt.failureReason}`);
   const taskFile = attempt?.taskFile ?? active?.taskFile;
@@ -1242,7 +1242,7 @@ function compactAgentPreviewLines(model, width, spinnerFrame) {
   if (!agent) return [
     `${model.selectedPhase.label} · ${model.selectedPhase.completed}/${model.selectedPhase.total} complete`,
     ...(model.selectedPhase.blockedActions ?? []).map((blocked) =>
-      `⊘ ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.join(', ')}`),
+      `${glyphs().blocked} ${blocked.id} · never dispatched · blocked by ${blocked.blockedBy.join(', ')}`),
     ...agentDetailLines(model, width, spinnerFrame),
   ];
   const liveActions = agent.active?.lastActions ?? agent.attempt?.lastActions ?? [];
@@ -1317,18 +1317,18 @@ function workflowStatusIcon(state, spinnerFrame = 0) {
 
 function statusIcon(status, spinnerFrame = 0) {
   const value = String(status ?? '').toLowerCase();
-  if (value === 'completed' || value.startsWith('succeeded')) return '✓';
+  if (value === 'completed' || value.startsWith('succeeded')) return glyphs().ok;
   if (value === 'completed_with_concerns') return '!'; // legacy runs
-  if (value === 'dependency_blocked') return '⊘';
-  if (value.startsWith('failed') || value === 'cancelled' || value === 'interrupted') return '✗';
+  if (value === 'dependency_blocked') return glyphs().blocked;
+  if (value.startsWith('failed') || value === 'cancelled' || value === 'interrupted') return glyphs().fail;
   if (value === 'running' || value === 'active' || value === 'planning') {
-    return SPINNER_FRAMES[Math.abs(Number(spinnerFrame) || 0) % SPINNER_FRAMES.length];
+    return spinnerGlyph(spinnerFrame);
   }
   if (value.includes('waiting') || value === 'queued' || value === 'paused'
     || value === 'blocked' || value === 'starting' || value === 'reviewing evidence'
-    || value === 'directing execution') return '⧖';
+    || value === 'directing execution') return glyphs().waiting;
   if (value === 'skipped') return '–';
-  return '○';
+  return glyphs().pending;
 }
 
 function durationText(startedAt, finishedAt) {
@@ -1594,7 +1594,7 @@ export async function runDashboard(bullswarmDir, {
   paint();
   const timer = setInterval(refresh, refreshMs);
   const spinnerTimer = setInterval(() => {
-    ui.spinnerFrame = (ui.spinnerFrame + 1) % SPINNER_FRAMES.length;
+    ui.spinnerFrame = (ui.spinnerFrame + 1) % glyphs().spinner.length;
     if (detail || rows[selected]?.ongoing) paint();
   }, Math.max(50, Number(spinnerMs) || 400));
   return new Promise((resolve) => {

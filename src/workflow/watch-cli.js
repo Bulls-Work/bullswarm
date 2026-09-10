@@ -10,6 +10,7 @@ import { withV2Cancellation } from './v2-cancellation.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveRunId, v2RunnerLiveness, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
+import { glyphs } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
@@ -178,13 +179,13 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
         : snapshot.awaitingPlanner
           ? `waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary, turn ${snapshot.awaitingPlanner.turn})`
           : `${snapshot.runningCount} running, ${snapshot.waitingCount} waiting`;
-      return `${snapshot.terminal || snapshot.awaitingPlanner ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
+      return `${snapshot.terminal || snapshot.awaitingPlanner ? glyphs().stopped : heartbeat ? glyphs().heartbeat : glyphs().ongoing} +${formatDuration(snapshot.elapsedSec)} ${state} · ` +
         `${events.length} new events` +
         (snapshot.latestAction ? ` · latest: ${snapshot.latestAction}` : '') +
         ` · quiet ${formatDuration(snapshot.quietForSec)}` +
         (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
     }
-    const line = `${snapshot.terminal ? '■' : heartbeat ? '♡' : '●'} +${formatDuration(snapshot.elapsedSec)} ` +
+    const line = `${snapshot.terminal ? glyphs().stopped : heartbeat ? glyphs().heartbeat : glyphs().ongoing} +${formatDuration(snapshot.elapsedSec)} ` +
       `${snapshot.status}/${snapshot.stage ?? '?'} ${location} · ${events.length} events, ${actions} actions · ` +
       `quiet ${formatDuration(snapshot.quietForSec)}` +
       (snapshot.transportQuietForSec == null ? '' : ` · agent output ${formatDuration(snapshot.transportQuietForSec)} ago`);
@@ -193,7 +194,7 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
     }
     return line;
   }
-  const marker = snapshot.terminal ? '■' : heartbeat ? '♡' : '●';
+  const marker = snapshot.terminal ? glyphs().stopped : heartbeat ? glyphs().heartbeat : glyphs().ongoing;
   const lines = [
     `${marker} +${formatDuration(snapshot.elapsedSec)} ${snapshot.status}/${snapshot.stage ?? '?'} ` +
       `${location} · dispatch ${snapshot.dispatchesUsed}/${target} · ` +
@@ -203,8 +204,8 @@ export function renderWatchSnapshot(snapshot, { heartbeat = false, verbose = fal
   for (const agent of snapshot.agents) {
     const model = agent.model ? `/${agent.model}` : '';
     const silence = agent.silentForSec == null ? '' : ` · quiet ${formatDuration(agent.silentForSec)}`;
-    const stall = agent.stall === 'suspected_stalled' ? ' ⚠ suspected stalled' : '';
-    lines.push(`  ⟡ ${agent.stepId} · ${agent.pool ?? '?'}${model} · ${formatDuration(agent.elapsedSec)}${silence}${stall}`);
+    const stall = agent.stall === 'suspected_stalled' ? ` ${glyphs().warn} suspected stalled` : '';
+    lines.push(`  ${glyphs().agent} ${agent.stepId} · ${agent.pool ?? '?'}${model} · ${formatDuration(agent.elapsedSec)}${silence}${stall}`);
     for (const action of agent.lastActions) {
       lines.push(`    ${action.kind}:${action.status}${action.summary ? ` · ${action.summary}` : ''}`);
     }
@@ -586,42 +587,42 @@ export function notableWatchEvents({
 export function renderWatchEvent(event, { now = Date.now() } = {}) {
   switch (event.type) {
     case 'attach':
-      return `● watching ${event.shortId ?? event.runId} · ${event.status} · ` +
+      return `${glyphs().ongoing} watching ${event.shortId ?? event.runId} · ${event.status} · ` +
         `${event.running} running, ${event.waiting} waiting · +${formatDuration(event.elapsedSec)}`;
     case 'action.finished':
-      if (event.status === 'succeeded') return `✓ ${event.actionId} finished · ${formatDuration(event.durationSec)}`;
-      if (event.status === 'blocked') return `⊘ ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
-      if (event.status === 'cancelled') return `✗ ${event.actionId} cancelled · ${formatDuration(event.durationSec)}`;
-      return `✗ ${event.actionId} ${event.status} · ${event.failureKind ?? 'unknown'}: ` +
+      if (event.status === 'succeeded') return `${glyphs().ok} ${event.actionId} finished · ${formatDuration(event.durationSec)}`;
+      if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
+      if (event.status === 'cancelled') return `${glyphs().fail} ${event.actionId} cancelled · ${formatDuration(event.durationSec)}`;
+      return `${glyphs().fail} ${event.actionId} ${event.status} · ${event.failureKind ?? 'unknown'}: ` +
         `${event.why ?? 'no reason recorded'} · ${formatDuration(event.durationSec)}`;
     case 'evidence.recorded':
-      return `◆ ${event.actionId} evidence · ` +
+      return `${glyphs().evidence} ${event.actionId} evidence · ` +
         (event.requirements.map((item) => `${item.id} ${item.status}`).join(', ') || 'no requirements');
     case 'stage.completed':
       return event.status === 'completed'
-        ? `✓ ${event.label} completed · ${event.completed}/${event.total}`
-        : `✗ ${event.label} ended · ${event.completed}/${event.total}`;
+        ? `${glyphs().ok} ${event.label} completed · ${event.completed}/${event.total}`
+        : `${glyphs().fail} ${event.label} ended · ${event.completed}/${event.total}`;
     case 'planner.finished':
       if (!event.ok) return `× planning attempt rejected · ${event.why}`;
       return event.turn === 1
-        ? `◇ plan created (turn 1) · ${event.summary ?? event.kind ?? 'no summary'}`
-        : `◇ plan updated #${event.turn} · ${event.summary ?? event.kind ?? 'no summary'}`;
+        ? `${glyphs().plan} plan created (turn 1) · ${event.summary ?? event.kind ?? 'no summary'}`
+        : `${glyphs().plan} plan updated #${event.turn} · ${event.summary ?? event.kind ?? 'no summary'}`;
     case 'agent.stalled':
-      return `⚠ ${event.actionId} silent for ${formatDuration(event.silentSec)} · ` +
+      return `${glyphs().warn} ${event.actionId} silent for ${formatDuration(event.silentSec)} · ` +
         `${event.pool ?? '?'}/${event.model ?? '?'} · still running, not auto-killed`;
     case 'agent.recovered':
-      return `↻ ${event.actionId} active again after ${formatDuration(event.silentSec)}`;
+      return `${glyphs().retry} ${event.actionId} active again after ${formatDuration(event.silentSec)}`;
     case 'cancellation.requested':
-      return '⧖ cancellation requested';
+      return `${glyphs().waiting} cancellation requested`;
     case 'action.started':
-      return `▶ ${event.actionId} started · ${event.pool ?? '?'}/${event.model ?? '?'} · attempt ${event.attempt ?? '?'}`;
+      return `${glyphs().started} ${event.actionId} started · ${event.pool ?? '?'}/${event.model ?? '?'} · attempt ${event.attempt ?? '?'}`;
     case 'attempt.retrying':
-      return `↺ ${event.actionId} retrying · ${event.failureKind}`;
+      return `${glyphs().reroute} ${event.actionId} retrying · ${event.failureKind}`;
     case 'attempt.quota':
-      return `⚠ ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
+      return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
         `paused until ${formatDeadline(event.until, now)} · retrying on another pool`;
     case 'attempt.moved':
-      return `↺ ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
+      return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
     case 'steering.delivered':
       return '→ steering delivered';
     default:
