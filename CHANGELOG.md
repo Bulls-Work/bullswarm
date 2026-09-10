@@ -1,5 +1,20 @@
 # bullswarm changelog
 
+## Unreleased
+
+- skill: the method and the schema are now separate files. `skill/SKILL.md`
+  (1,345 → 914 words) keeps only what the kernel cannot check: choosing the
+  shape, decomposing into territories, dependencies as inputs rather than
+  phases, the integrator, evidence, the effort rule (writers are `implement`;
+  high belongs to `integration`, `architecture`, `adversarial-acceptance`;
+  never `defaults.effort: high`), and an explicit validate → read `advisories`
+  → adjust → launch sequence. The new `skill/references/program.md` holds the
+  program format: fields, kinds, requirement-ID derivation, enforced rules and
+  one example that validates with no advisories. `plan contract` is no longer a
+  step in the default flow; operations.md documents it as the live fallback
+  and the dispatched planner's brief. Reasoning depth, digest details and the
+  watch flags live in operations.md only.
+
 ## 0.28.3 — connector upgrades learn new packaged profiles
 
 - command-code: a profile entry for `deepseek/deepseek-v4.1-flash` that
