@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pickPool, paceScore, isQuarantined, isExhausted,
+  pickPool, paceScore, isQuarantined, isExhausted, fiveHourForecast,
   DEFAULT_INFLIGHT_PENALTY_PCT,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
@@ -591,4 +591,166 @@ test('a pool with only a weekly spend rate is charged exactly as before', () => 
     [fallback.candidates[0].effectiveSurplus, fallback.candidates[0].estimateSource],
     [-28, 'history'],
   );
+});
+
+// --- R10: the near-limit line is clock-relative --------------------------------
+
+const MIN = 60_000;
+
+/**
+ * The three pools exactly as they read at 2026-09-10T22:19Z, when a high-tier
+ * integrator was routed to `claude-code` and both accounts with quota about to
+ * expire were skipped with `skipped near 5h limit (projected):
+ * claude-code:wati 88.1%, claude-code:petsona 75.3%`.
+ *
+ * 5h rates are the ones that reproduce that decision's forecasts for the
+ * 16-minute candidate it was routing: 81 + 0.44375×16 = 88.1,
+ * 64 + 0.70625×16 = 75.3, 25 + 0.725×16 = 36.6. The weekly readings are the
+ * ones behind each surplus (wati: 66% used of 87.4% elapsed → +21.4).
+ */
+function realDecisionPools(over = {}) {
+  const make = (name, fiveHourUsedPct, resetsInMin, ratePerMinute, weeklyUsedPct, weeklyElapsedPct) =>
+    pool(name, {
+      pace: Math.round((weeklyElapsedPct - weeklyUsedPct) * 10) / 10,
+      usedPct: weeklyUsedPct,
+      elapsedPct: weeklyElapsedPct,
+      fiveHourUsedPct,
+      fiveHourResetsAt: new Date(NOW + (over[name] ?? resetsInMin) * MIN).toISOString(),
+      spend: { fiveHour: { ratePerMinute, source: 'history' } },
+    });
+  return [
+    make('claude-code:wati', 81, 23, 0.44375, 66, 87.4),
+    make('claude-code:petsona', 64, 43, 0.70625, 74.6, 78),
+    make('claude-code', 25, 83, 0.725, 76.9, 72.3),
+  ];
+}
+
+test('a near-limit pool under its 5h clock keeps the lane (R10, 2026-09-10 replay)', () => {
+  const r = pickPool('build', realDecisionPools(), {
+    now: NOW, candidateMinutes: 16, callerEligible: false,
+  });
+  // wati is at 88.1% projected of a window that is 92.3% elapsed: it is
+  // spending no faster than the clock, and the reset lands in 23 minutes —
+  // before this 16-minute task could hit the wall.
+  assert.equal(r.pick.pool, 'claude-code:wati');
+  assert.equal(
+    r.why,
+    'most-behind capable pool (surplus 21.4, 5h used 81% -> 88.1% projected, '
+      + 'under the clock (92.3% elapsed))',
+  );
+  assert.deepEqual(
+    r.candidates.map((c) => [
+      c.pool, c.pace, c.forecastFiveHourPct, c.fiveHourElapsedPct, c.nearFiveHourLimit,
+    ]),
+    [
+      ['claude-code:wati', 21.4, 88.1, 92.3, false],
+      ['claude-code:petsona', 3.4, 75.3, 85.7, false],
+      ['claude-code', -4.6, 36.6, 72.3, false],
+    ],
+  );
+});
+
+test('the same 88.1% forecast four hours from the reset is still tiered down', () => {
+  // Only the clock changed: 20% of the window elapsed, 88.1% of the quota
+  // spent — this pool WILL hit the wall mid-run.
+  const r = pickPool('build', realDecisionPools({ 'claude-code:wati': 240 }), {
+    now: NOW, candidateMinutes: 16, callerEligible: false,
+  });
+  const wati = r.candidates.find((c) => c.pool === 'claude-code:wati');
+  assert.deepEqual([wati.nearFiveHourLimit, wati.fiveHourElapsedPct], [true, 20]);
+  assert.match(
+    r.why,
+    /skipped near 5h limit \(projected\): claude-code:wati 88\.1% \(20\.0% elapsed\)/,
+  );
+  // petsona, still 85.7% through its own window, keeps the lane.
+  assert.equal(r.pick.pool, 'claude-code:petsona');
+
+  // With both near-limit pools moved off their clocks the pre-R10 routing is
+  // reproduced exactly: the task lands on the one account already ahead of its
+  // weekly pace, and both skips name the clock that put them there.
+  const both = pickPool('build', realDecisionPools({ 'claude-code:wati': 240, 'claude-code:petsona': 240 }), {
+    now: NOW, candidateMinutes: 16, callerEligible: false,
+  });
+  assert.equal(both.pick.pool, 'claude-code');
+  assert.equal(
+    both.why,
+    'most-behind capable pool with 5h headroom (surplus -4.6, 5h used 25% -> 36.6% projected)'
+      + ' · skipped near 5h limit (projected): claude-code:wati 88.1% (20.0% elapsed),'
+      + ' claude-code:petsona 75.3% (20.0% elapsed)',
+  );
+});
+
+test('no 5h reset time means no clock, and the fixed 75% line applies', () => {
+  const near = pool('wati', { pace: 60, fiveHourUsedPct: 88 });
+  const headroom = pool('codex', { pace: 2, fiveHourUsedPct: 3 });
+  const r = pickPool('build', [near, headroom], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(r.pick.pool, 'codex');
+  const c = r.candidates.find((x) => x.pool === 'wati');
+  assert.deepEqual([c.nearFiveHourLimit, c.fiveHourElapsedPct], [true, null]);
+  assert.match(r.why, /skipped near 5h limit: wati 88%/);   // no elapsed clause to add
+
+  // A reset the clock has already passed is unknown too, not a full window.
+  const stale = pool('wati', {
+    pace: 60, fiveHourUsedPct: 88, fiveHourResetsAt: new Date(NOW - MIN).toISOString(),
+  });
+  const past = pickPool('build', [stale, headroom], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(past.pick.pool, 'codex');
+  assert.equal(past.candidates.find((x) => x.pool === 'wati').fiveHourElapsedPct, null);
+});
+
+test('the burst gate ignores the clock: 90% projected is gated whatever the hour', () => {
+  // 98.3% of the window elapsed — as far under its clock as a pool can be —
+  // and still gated: the wall is 90%, and this pool is past it now.
+  const gated = pool('wati', {
+    pace: 80, fiveHourUsedPct: 70, projectedFiveHourPct: 90.5,
+    fiveHourResetsAt: new Date(NOW + 5 * MIN).toISOString(),
+  });
+  const open = pool('codex', { pace: -5, fiveHourUsedPct: 10 });
+  const r = pickPool('build', [gated, open], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(r.pick.pool, 'codex');
+  assert.deepEqual(r.forecast.gated, ['wati']);
+  const c = r.candidates.find((x) => x.pool === 'wati');
+  assert.deepEqual([c.forecastGated, c.nearFiveHourLimit, c.fiveHourElapsedPct], [true, false, 98.3]);
+  assert.match(r.why, /forecast-gated at\/above 90%: wati 90\.5% \(98\.3% elapsed\)/);
+});
+
+test('5h spend is clipped at the reset; the pacing-window charge is not', () => {
+  // 10 minutes left in the 5h window, 0.5 points per minute, one agent with 30
+  // minutes to run, and a 40-minute candidate. Only 10 of each set of minutes
+  // can land inside this window.
+  const clipped = pool('wati', {
+    pace: 40,
+    fiveHourUsedPct: 20,
+    projectedFiveHourPct: 35,            // what the producer charged: 20 + 0.5×30
+    fiveHourResetsAt: new Date(NOW + 10 * MIN).toISOString(),
+    inflight: { count: 1, minutes: 10, records: [{ remainingMinutes: 30 }] },
+    spend: {
+      fiveHour: { ratePerMinute: 0.5, source: 'history' },
+      weekly: { ratePerMinute: 0.5, source: 'history' },
+    },
+  });
+  const f = fiveHourForecast(clipped, 40, NOW);
+  assert.equal(f.candidateAdd, 5);       // 0.5 × min(40, 10), not 0.5 × 40 = 20
+  assert.equal(f.inflightCreditPct, 10); // 0.5 × the 20 in-flight minutes past the reset
+  assert.equal(f.forecast, 30);          // 20 + 5 in flight + 5 candidate
+  assert.equal(f.minutesToReset, 10);
+
+  const c = pickPool('build', [clipped], {
+    callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 40,
+  }).candidates[0];
+  assert.equal(c.forecastFiveHourPct, 30);
+  assert.equal(c.fiveHourElapsedPct, 96.7);   // 10 of the 300 minutes left
+  // The weekly window keeps every minute: 0.5 × (30 in flight + 40 candidate)
+  // = 35 points off the surplus of 40, clipped nowhere.
+  assert.deepEqual([c.effectiveSurplus, c.estimateSource], [5, 'history']);
+
+  // Same pool with no reset time: nothing is clipped, exactly as before R10.
+  delete clipped.fiveHourResetsAt;
+  assert.equal(fiveHourForecast(clipped, 40, NOW).forecast, 55); // 35 + 0.5 × 40
 });

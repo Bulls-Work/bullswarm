@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { pickPool } from './lib/route.js';
+import { fiveHourElapsedPct, pickPool } from './lib/route.js';
 import { argvWithModel, watchOnce } from './lib/watch.js';
 import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
@@ -113,9 +113,13 @@ async function cmdPools(opts) {
     const projectedPct = p.projectedFiveHourPct == null
       ? null
       : Math.round(p.projectedFiveHourPct * 10) / 10;
+    // R10: the same reading means different things at different points in the
+    // window, so show where the window stands when the provider reported it.
+    const elapsed = fiveHourElapsedPct(p);
+    const clock = elapsed == null ? '' : ` (${Math.round(elapsed)}% elapsed)`;
     const fiveHour = readingPct == null
-      ? (projectedPct == null ? '' : ` 5h=?->${projectedPct}%`)
-      : ` 5h=${readingPct}%${projectedPct != null && projectedPct !== readingPct ? `->${projectedPct}%` : ''}`;
+      ? (projectedPct == null ? '' : ` 5h=?->${projectedPct}%${clock}`)
+      : ` 5h=${readingPct}%${projectedPct != null && projectedPct !== readingPct ? `->${projectedPct}%` : ''}${clock}`;
     const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
     const status = !p.enabled
       ? 'disabled'

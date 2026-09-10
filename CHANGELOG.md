@@ -1,5 +1,31 @@
 # bullswarm changelog
 
+## Unreleased
+
+- routing: the 5-hour near-limit line is now clock-relative. A pool is
+  deprioritized only when its 5h forecast is at/above 75% AND ahead of the
+  share of the 5h window that has already elapsed. On 2026-09-10 at 22:19Z a
+  high-tier integrator skipped `claude-code:wati` (81% used, 23 minutes to the
+  reset — 92.3% of the window elapsed, 88.1% projected) and
+  `claude-code:petsona` (75.3% projected, 85.7% elapsed) and went to the one
+  account already ahead of its weekly pace, while wati still held 34% of its
+  weekly quota unspent with 13% of the week left to spend it. Both pools now keep the lane:
+  88.1% with 23 minutes left is a pool spending at the clock's pace, not a pool
+  about to hit a wall. Pools with no `resets_at`, an unparsable one, or a reset
+  already past keep the fixed 75% line, and the 90% burst gate is unchanged —
+  it ignores the clock. The routing reason and the `candidates[]` rows say
+  which case applied: `5h used 81% -> 88.1% projected, under the clock (92.3%
+  elapsed)`, `skipped near 5h limit (projected): claude-code:wati 88.1% (20.0%
+  elapsed)`, and a new `fiveHourElapsedPct` field. `bullswarm pools` shows the
+  same clock: `5h=81% (92% elapsed)`.
+- routing: 5-hour spend is clipped at the reset. Quota spent after the window
+  rolls over lands in the next window, so the candidate's minutes and each
+  in-flight record's remaining minutes are charged to the 5h forecast only up
+  to `fiveHourResetsAt` — 10 minutes from a reset, a 40-minute task at 0.5
+  points per minute adds 5 points to the forecast, not 20. The weekly/monthly
+  pacing charge is deliberately not clipped: that spend counts against its
+  window whichever side of the 5h reset it lands on.
+
 ## 0.28.5 — narrow-terminal detail panes use the whole screen
 
 - tui: on a narrow terminal (under 100 columns, e.g. a phone over SSH) the
