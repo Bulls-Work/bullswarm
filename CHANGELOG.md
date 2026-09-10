@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.5 — narrow-terminal detail panes use the whole screen
 
 - tui: on a narrow terminal (under 100 columns, e.g. a phone over SSH) the
   agent detail, workflow technical details and planner overview panes wrapped
