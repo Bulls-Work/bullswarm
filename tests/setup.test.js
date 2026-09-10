@@ -480,8 +480,8 @@ test('connector metadata upgrades insert packaged model profiles the installed c
     const installed = JSON.parse(readFileSync(join(dir, 'command-code.json'), 'utf8'));
     const specific = installed.modelProfiles.find((p) => p.match === '^deepseek/deepseek-v4\\.1-flash$');
     assert.ok(specific, 'the packaged deepseek-v4.1-flash profile was added');
-    assert.equal(specific.tier, 'medium');
-    assert.equal(specific.qualityRank, 4);
+    assert.equal(specific.tier, 'low');
+    assert.equal(specific.qualityRank, 2);
     // New entries land before the installed ones, so first-match picks the
     // specific profile over the generic catch-all.
     assert.ok(

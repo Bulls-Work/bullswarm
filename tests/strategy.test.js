@@ -53,8 +53,9 @@ test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on 
   });
   const v41 = result.models.find((m) => m.id === 'deepseek/deepseek-v4.1-flash');
   const v4 = result.models.find((m) => m.id === 'deepseek/deepseek-v4-flash');
-  assert.equal(v41.tier, 'medium');
-  assert.equal(v41.qualityRank, 4);
+  // Same tier and rank as the generic catch-all: the entry adds pricing, not a recommendation.
+  assert.equal(v41.tier, 'low');
+  assert.equal(v41.qualityRank, 2);
   assert.deepEqual(v41.pricing, {
     inputUsdPerMillion: 0.15,
     cacheReadUsdPerMillion: 0.003,
