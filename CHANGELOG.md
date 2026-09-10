@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.6 — the 5-hour near-limit line reads the clock
 
 - routing: the 5-hour near-limit line is now clock-relative. A pool is
   deprioritized only when its 5h forecast is at/above 75% AND ahead of the
