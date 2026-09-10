@@ -14,6 +14,9 @@ import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 // otherwise follows the developer's terminal and would fall back to ascii
 // when the suite runs inside Apple Terminal.
 process.env.BULLSWARM_UNICODE = '1';
+// BULLSWARM_ASCII outranks it, and it is the workaround the README hands
+// an affected user, so a contributor may well have it in their shell.
+delete process.env.BULLSWARM_ASCII;
 
 function v2Actions() {
   return [
