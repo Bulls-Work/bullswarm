@@ -17,6 +17,11 @@ import {
 } from '../src/strategy-dashboard.js';
 import { loadEpochBenchmarks, rungEvidence } from '../src/lib/epoch-benchmarks.js';
 
+// These tests assert the unicode presentation, so pin it: the glyph table
+// otherwise follows the developer's terminal and would fall back to ascii
+// when the suite runs inside Apple Terminal.
+process.env.BULLSWARM_UNICODE = '1';
+
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'bullswarm-strategy-cli-'));
   autoSetup(dir, { reason: 'test' });
