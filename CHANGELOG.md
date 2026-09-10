@@ -1,5 +1,14 @@
 # bullswarm changelog
 
+## Unreleased
+
+- tui: on a narrow terminal (under 100 columns, e.g. a phone over SSH) the
+  agent detail, workflow technical details and planner overview panes wrapped
+  their text to the width they would have beside the 34-column sidebar, so a
+  60-column screen showed 22-character lines inside a 58-character panel. The
+  text now wraps to the pane it occupies: full width when narrow, the right
+  column otherwise. Regression test at 60 columns.
+
 ## 0.28.4 — the skill says how, the schema file says what
 
 - skill: the method and the schema are now separate files. `skill/SKILL.md`
