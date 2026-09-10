@@ -10,6 +10,11 @@ import { cmdWorkflow } from '../src/workflow/cli.js';
 import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 
+// These tests assert the unicode presentation, so pin it: the glyph table
+// otherwise follows the developer's terminal and would fall back to ascii
+// when the suite runs inside Apple Terminal.
+process.env.BULLSWARM_UNICODE = '1';
+
 function v2Actions() {
   return [
     { id: 'audit-files', purpose: 'Audit every file', dependsOn: [], affects: ['requirement-1'], ownedFiles: ['audit.md'], prompt: 'Audit them.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: ['audit'] },

@@ -1,5 +1,49 @@
 # bullswarm changelog
 
+## Unreleased — ascii glyph fallback for terminals that cannot draw the spinner
+
+- `bullswarm workflow` repainted flashing `?` characters on macOS
+  Terminal.app. Cause is font coverage, not encoding: parsing the `cmap` of
+  every monospace face Terminal.app offers shows **zero** glyphs in the
+  Braille block `U+2800-U+28FF` — Andale Mono, Menlo, SF Mono, Monaco and
+  Courier New are all 0/256 — and none of the five has `⧖` (`U+29D6`) or `⟡`
+  (`U+27E1`). The dashboard's 10-frame Braille spinner advances every 400ms,
+  so every repaint drew a question mark that flashed; the static `✓ ✗ ⊘ ◇ ↳
+  ⚠ ● ○ ■ ♡ ◆ ↻ ↺ ▶ ⚙` icons beside it were the steady ones. Terminal.app
+  does not substitute another face for these ranges.
+- New `src/lib/glyphs.js` holds one table per mode and the detection order:
+  `BULLSWARM_ASCII` forces ASCII, `BULLSWARM_UNICODE` forces Unicode and
+  overrides detection, then a non-UTF-8 locale, `TERM=dumb`/`TERM=linux`, and
+  `TERM_PROGRAM=Apple_Terminal` select ASCII. Every replacement is one column
+  of printable ASCII, because panel width maths uses `String#length` and a
+  wide substitute would shear the borders. Box drawing, `· › × … ≈ ≥ █` are in
+  all five fonts and are left alone, so panels keep their borders.
+- Wired through the three live-refreshing renderers only:
+  `src/workflow/dashboard.js`, `src/workflow/watch-cli.js` and
+  `src/strategy-dashboard.js`. One-shot `✓`/`✗` message prefixes in
+  `src/workflow/cli.js`, `src/help.js`, `src/integrate.js`,
+  `src/workflow/runs-cli.js`, `src/strategy-cli.js` and
+  `src/lib/cli-flags.js` are untouched — they do not flash and are a separate
+  change.
+- `spinnerGlyph` now parks a non-finite frame counter on frame 0. The previous
+  expression `SPINNER_FRAMES[Math.abs(Number(f) || 0) % SPINNER_FRAMES.length]`
+  returned `undefined` for `Infinity`, so a repaint could have painted the
+  string "undefined" into the frame.
+- `tests/glyphs.test.js` covers the detection matrix (including that `''`,
+  `'0'` and `'false'` do not switch tables, and that `LC_ALL` outranks
+  `LANG`), asserts every Unicode entry has a one-column pure-ASCII twin that
+  is never `?`, and renders both dashboards, `renderWatchSnapshot`,
+  `renderWatchEvent` over 15 event shapes and `renderAnalysisProgress` at five
+  spinner frames, asserting no substituted glyph survives in ASCII mode while
+  the Braille spinner still appears in Unicode mode.
+- `tests/strategy-cli.test.js`, `tests/workflow-dashboard.test.js` and
+  `tests/workflow-watch.test.js` assert the Unicode presentation, so they now
+  pin `BULLSWARM_UNICODE=1`; without it the suite's own output depended on
+  which terminal the developer ran it in.
+- The four arrows `↑ ↓ ← →` are deliberately not substituted. They are only
+  missing from Monaco, and they live in the frozen `DASHBOARD_KEYS` constant,
+  which binds at import time — before any env pin could apply.
+
 ## 0.28.1 — summary bytes on the wire, monthly pacing
 
 - `workflow runs result <id> --summary` was budgeted by `fitResultSummary`
