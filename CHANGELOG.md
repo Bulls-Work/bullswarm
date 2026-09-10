@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.4 — the skill says how, the schema file says what
 
 - skill: the method and the schema are now separate files. `skill/SKILL.md`
   (1,345 → 914 words) keeps only what the kernel cannot check: choosing the
