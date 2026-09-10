@@ -38,8 +38,11 @@
   the Braille spinner still appears in Unicode mode.
 - `tests/strategy-cli.test.js`, `tests/workflow-dashboard.test.js` and
   `tests/workflow-watch.test.js` assert the Unicode presentation, so they now
-  pin `BULLSWARM_UNICODE=1`; without it the suite's own output depended on
-  which terminal the developer ran it in.
+  pin `BULLSWARM_UNICODE=1` and `delete process.env.BULLSWARM_ASCII`; without
+  the pin the suite's own output depended on which terminal the developer ran
+  it in, and without the delete an ambient `BULLSWARM_ASCII=1` — the very
+  workaround the README hands an affected user — outranked the pin and broke
+  22 tests.
 - The four arrows `↑ ↓ ← →` are deliberately not substituted. They are only
   missing from Monaco, and they live in the frozen `DASHBOARD_KEYS` constant,
   which binds at import time — before any env pin could apply.
