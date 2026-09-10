@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.3 — connector upgrades learn new packaged profiles
 
 - command-code: a profile entry for `deepseek/deepseek-v4.1-flash` that
   carries the model's own pricing from
