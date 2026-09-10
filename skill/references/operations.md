@@ -91,6 +91,20 @@ commands fail closed with their short ID and retained run directory.
 
 ## Program actions: `kind`, `defaults`, and advisories
 
+The program format itself — fields, kinds, requirement IDs, enforced rules
+and an example — is in [program.md](program.md). The same rules are also served
+live by the running kernel:
+
+```bash
+bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
+```
+
+That contract carries the goal's derived requirement IDs, the exact validate
+and launch commands with goal and `--cwd` filled in, and any run-wide
+`reasoning` override. It is the brief a dispatched planner receives, and the
+fallback for a caller whose `plan validate` rejects field names or kinds after
+an upgrade.
+
 An action's `kind` names what the work IS and derives its `lane` and `effort`,
 so a program states the nature once instead of re-deciding two routing fields:
 
