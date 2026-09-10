@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased — ascii glyph fallback for terminals that cannot draw the spinner
+## Unreleased
 
 - `bullswarm workflow` repainted flashing `?` characters on macOS
   Terminal.app. Cause is font coverage, not encoding: parsing the `cmap` of
@@ -46,6 +46,21 @@
 - The four arrows `↑ ↓ ← →` are deliberately not substituted. They are only
   missing from Monaco, and they live in the frozen `DASHBOARD_KEYS` constant,
   which binds at import time — before any env pin could apply.
+- `scripts/issue-watcher/` — a durable GitHub issue watcher for this
+  repository, installed as a launchd agent
+  (`node scripts/issue-watcher/install.mjs`). Idle costs ZERO model tokens:
+  a pass is one `gh issue list` and nothing else. Only when an issue appears
+  that is new since install does it delegate — one
+  `bullswarm run --lane analyze` to triage (label + plain-words comment),
+  and for a bug it judged fixable at confidence >= 0.7 one
+  `bullswarm run --lane build` to fix, which the watcher then verifies
+  itself (test suite green in its own clone, diff non-empty) before pushing
+  `fix/issue-<n>` and opening a pull request. Both delegations run on the
+  owner's subscriptions through normal bullswarm routing, never API tokens.
+  Capped at 6 triages and 2 fix attempts per UTC day, one fix attempt per
+  issue; guarded by a pass lock, a `paused` file, and a 3-attempt triage
+  retry cap. Delegates get no GitHub credentials and issue text is quoted as
+  untrusted data. It never merges, closes, or releases — a maintainer does.
 
 ## 0.28.1 — summary bytes on the wire, monthly pacing
 
