@@ -2,6 +2,7 @@ import { updateState } from './lib/state.js';
 import {
   STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment,
 } from './lib/strategy.js';
+import { glyphs, spinnerGlyph } from './lib/glyphs.js';
 
 const ESC = '\x1b';
 const CLEAR = '\x1b[2J\x1b[H';
@@ -57,10 +58,10 @@ function visibleLength(value) {
 function providerLines(inventory, selected, width) {
   const lines = inventory.providers.flatMap((provider, index) => {
     const marker = index === selected ? '›' : ' ';
-    const enabled = provider.enabled ? '●' : '○';
+    const enabled = provider.enabled ? glyphs().ongoing : glyphs().pending;
     // Usage is what the meter last reported; in-flight is what this pool is
     // running right now, which routing subtracts before it compares pools.
-    const load = provider.inflight ? ` ·${provider.inflight}⚙` : '';
+    const load = provider.inflight ? ` ·${provider.inflight}${glyphs().inflight}` : '';
     const meter = `${provider.usedPct == null ? 'usage ?' : `${provider.usedPct}% used`}${load}`;
     const cellWidth = Math.max(7, Math.floor((width - 10) / STRATEGY_TIERS.length));
     const selections = STRATEGY_TIERS.map((tier) => {
@@ -76,7 +77,7 @@ function providerLines(inventory, selected, width) {
     ];
   });
   const selectedFinish = selected === inventory.providers.length;
-  lines.push(`${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}✓ Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
+  lines.push(`${selectedFinish ? '›' : ' '} ${selectedFinish ? INVERSE_ON : ''}${glyphs().ok} Finish setup${selectedFinish ? INVERSE_OFF : ''}`);
   return lines;
 }
 
@@ -97,7 +98,7 @@ export function visibleModels(provider, query = '') {
 
 function tierCell(model, tier, selected) {
   const enabled = effectiveModelTiers(model).includes(tier);
-  const label = `${enabled ? '✓' : ' '} ${tier[0].toUpperCase()}${tier.slice(1)}`;
+  const label = `${enabled ? glyphs().ok : ' '} ${tier[0].toUpperCase()}${tier.slice(1)}`;
   const cell = `[${label}]`;
   return selected ? `${INVERSE_ON}${cell}${INVERSE_OFF}` : cell;
 }
@@ -207,7 +208,7 @@ export function renderAnalysisProgress({
   startedAt = Date.now(), width = 100, height = 30,
 } = {}) {
   const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-  const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][seconds % 10];
+  const spinner = spinnerGlyph(seconds);
   const lines = [
     title,
     '',

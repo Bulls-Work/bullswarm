@@ -800,6 +800,25 @@ to toggle Timeline and Phases, then use Enter/Esc for agents and activity.
 bullswarm workflow tui
 ```
 
+#### Terminal glyphs
+
+The live views draw a Braille spinner and symbol status icons. macOS
+Terminal.app cannot render them: Andale Mono, Menlo, SF Mono, Monaco and
+Courier New all have zero glyphs in `U+2800-U+28FF`, and none has `⧖`, so the
+dashboard repaints a flashing `?` where each one should be. Apple Terminal is
+detected and given a one-column ASCII table instead (`|/-\` spinner, `+`
+succeeded, `x` failed, `:` waiting, `#` blocked). Panel borders are unchanged —
+box drawing is present in every one of those fonts.
+
+Override the detection either way:
+
+```bash
+BULLSWARM_ASCII=1 bullswarm workflow      # force ascii (any terminal showing ?)
+BULLSWARM_UNICODE=1 bullswarm workflow    # force unicode (font does have them)
+```
+
+A non-UTF-8 locale, `TERM=dumb` and `TERM=linux` also select ASCII.
+
 The same dashboard is agent-friendly and never requires a TTY when used with
 JSON/control flags:
 
