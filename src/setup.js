@@ -269,6 +269,34 @@ export function upgradeConnectorMetadata(bullswarmDir, {
           changed = true;
         }
       }
+      // A packaged profile the installed connector has never seen (keyed by
+      // its `match` pattern or `id`) is inserted where the packaged order puts
+      // it: right before the first installed entry that comes later in the
+      // packaged list, else at the end. So a new specific entry lands ahead of
+      // the packaged generic catch-all it was written to precede, but never
+      // ahead of a profile the operator authored themselves. Entries the
+      // installed connector already holds, edited or not, are never touched;
+      // recommendation guards were handled above.
+      if (Array.isArray(installed.modelProfiles) && Array.isArray(packaged.modelProfiles)) {
+        const keyOf = (profile) => (profile?.match != null ? `match:${profile.match}`
+          : profile?.id != null ? `id:${profile.id}` : null);
+        // Guards are prepended by policy above, so they never anchor order.
+        const packagedIndex = new Map(packaged.modelProfiles
+          .map((profile, index) => [keyOf(profile), index])
+          .filter(([key], index) => key != null && typeof packaged.modelProfiles[index].autoRecommend !== 'boolean'));
+        packaged.modelProfiles.forEach((profile, index) => {
+          const key = keyOf(profile);
+          if (key == null || typeof profile.autoRecommend === 'boolean') return;
+          if (installed.modelProfiles.some((entry) => keyOf(entry) === key)) return;
+          let at = installed.modelProfiles.length;
+          for (let j = 0; j < installed.modelProfiles.length; j += 1) {
+            const laterInPackage = packagedIndex.get(keyOf(installed.modelProfiles[j]));
+            if (laterInPackage != null && laterInPackage > index) { at = j; break; }
+          }
+          installed.modelProfiles.splice(at, 0, profile);
+          changed = true;
+        });
+      }
       if (changed) {
         writeFileSync(dst, `${JSON.stringify(installed, null, 2)}\n`);
         upgraded.push(f);
