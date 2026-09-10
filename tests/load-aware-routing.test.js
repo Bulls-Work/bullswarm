@@ -236,6 +236,19 @@ test('a measured spend rate skips a pool as near-limit before its reading gets t
 
     assert.equal(verdict.pick.pool, 'beta');
     assert.match(verdict.why, /skipped near 5h limit \(projected\): alpha \d+(\.\d+)?%/);
+
+    // R10 end-to-end: the elapsed share of the 5h window travels from the
+    // snapshot's resets_at through buildPools into the candidate row and the
+    // skip label. The fixture places both pools half way through the window,
+    // so alpha's ~78% forecast is genuinely ahead of its own clock and stays
+    // tiered down; only a pool whose forecast sits BELOW its elapsed share is
+    // exempt.
+    assert.ok(
+      alpha.fiveHourElapsedPct >= 50 && alpha.fiveHourElapsedPct < 55,
+      `half of alpha's 5h window should have elapsed, got ${alpha.fiveHourElapsedPct}`,
+    );
+    assert.ok(alpha.forecastFiveHourPct > alpha.fiveHourElapsedPct, 'ahead of its clock');
+    assert.match(verdict.why, /skipped near 5h limit \(projected\): alpha \d+(\.\d+)?% \(5\d\.\d% elapsed\)/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -264,7 +277,8 @@ test('pools and assignments report the same live load the router used', () => {
     const table = cli(home, ['pools']);
     assert.equal(table.status, 0, table.stderr);
     assert.match(table.stdout, /alpha\s+.*inflight=2/);
-    assert.match(table.stdout, /beta\s+.*inflight=0 5h=30%/);
+    // R10: the 5-hour column carries how much of the window has already run.
+    assert.match(table.stdout, /beta\s+.*inflight=0 5h=30% \(5\d% elapsed\)/);
 
     const listed = cli(home, ['assignments', '--json']);
     assert.equal(listed.status, 0, listed.stderr);

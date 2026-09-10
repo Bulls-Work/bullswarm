@@ -324,7 +324,9 @@ const poolsText = rich({
     + 'pace surplus, in-flight assignment count, projected 5-hour utilization, and '
     + 'quarantine/burst-gate status. The 5-hour column reads `5h=<reading>%` alone when '
     + 'nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is '
-    + 'expected to push the window further; routing decides on the right-hand number.',
+    + 'expected to push the window further; routing decides on the right-hand number. '
+    + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
+    + 'routing only deprioritizes a near-limit pool whose usage is ahead of its clock.',
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
