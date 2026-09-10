@@ -202,7 +202,7 @@ function fixture({
   }, null, 2)}\n`);
 
   const testCommand = testCommandExit === 0
-    ? `sh -c 'echo ran >> ${testMarker}; echo "# tests 751"; echo "# pass 751"; exit 0'`
+    ? `sh -c 'echo ran >> ${testMarker}; echo "ok 1 - first test"; echo "# tests 751"; echo "# pass 751"; exit 0'`
     : `sh -c 'echo ran >> ${testMarker}; echo "1 failing" >&2; exit 1'`;
 
   const env = {

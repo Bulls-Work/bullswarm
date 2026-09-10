@@ -488,10 +488,13 @@ function cleanClone(cfg) {
 }
 
 function testLineFrom(output) {
-  for (const raw of String(output).split('\n')) {
-    const line = raw.trimEnd();
-    if (/^(# tests\b|ok\b)/.test(line)) return line.trim();
-  }
+  // Prefer the TAP totals line ("# tests N"); a per-test "ok N - ..." line is
+  // only a fallback, since it names one test rather than the whole run.
+  const lines = String(output).split('\n').map((raw) => raw.trimEnd());
+  const totals = lines.find((line) => /^# tests\b/.test(line));
+  if (totals) return totals.trim();
+  const first = lines.find((line) => /^ok\b/.test(line));
+  if (first) return first.trim();
   return 'exit 0, no TAP summary line';
 }
 
