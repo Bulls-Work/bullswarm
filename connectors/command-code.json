@@ -257,6 +257,19 @@
       "qualityRank": 3
     },
     {
+      "match": "^deepseek/deepseek-v4\\.1-flash$",
+      "tier": "low",
+      "qualityRank": 2,
+      "$comment-deepseek": "Facts only, no recommendation: tier and rank are exactly what the generic flash catch-all below would give, kept here so the entry carries the model's own pricing. OpenRouter publishes no indices for this model yet; raise nothing here without benchmark evidence. Pricing is the off-peak rate (17 h/day); peak is $0.30 input / $1.20 output during 01–04 and 06–10 UTC Monday–Friday.",
+      "pricing": {
+        "inputUsdPerMillion": 0.15,
+        "cacheReadUsdPerMillion": 0.003,
+        "outputUsdPerMillion": 0.6
+      },
+      "pricingSource": "https://commandcode.ai/docs/resources/pricing-limits",
+      "pricingUpdatedAt": "2026-09-11"
+    },
+    {
       "match": "(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)",
       "tier": "low",
       "qualityRank": 2

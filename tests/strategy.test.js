@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   parseDiscoveredModels, discoverConnectorModels, discoverAllModels, buildStrategy, resolveDispatchModel,
   selectedModelsForTier, setModelTierSelection,
@@ -36,6 +37,35 @@ test('model discovery merges live, fallback, and configured models with profiles
   assert.deepEqual(result.models.map((m) => m.id), ['live-model', 'fallback-model', 'configured-model']);
   assert.equal(result.models[0].tier, 'high');
   assert.equal(result.models[0].autoRecommend, false);
+});
+
+test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on the generic flash catch-all', () => {
+  // modelProfile (src/lib/usage.js) walks modelProfiles in order and returns
+  // the first regex match, so the v4.1 entry must sit before the generic
+  // `(?:flash|...|luna|free)` catch-all or it would inherit qualityRank 2
+  // and no pricing.
+  const commandCode = JSON.parse(readFileSync(new URL('../connectors/command-code.json', import.meta.url), 'utf8'));
+  const result = discoverConnectorModels(commandCode, {
+    executor: () => [
+      'deepseek/deepseek-v4.1-flash   V4.1 hybrid-attention reasoning with vision',
+      'deepseek/deepseek-v4-flash   predecessor flash',
+    ].join('\n'),
+  });
+  const v41 = result.models.find((m) => m.id === 'deepseek/deepseek-v4.1-flash');
+  const v4 = result.models.find((m) => m.id === 'deepseek/deepseek-v4-flash');
+  // Same tier and rank as the generic catch-all: the entry adds pricing, not a recommendation.
+  assert.equal(v41.tier, 'low');
+  assert.equal(v41.qualityRank, 2);
+  assert.deepEqual(v41.pricing, {
+    inputUsdPerMillion: 0.15,
+    cacheReadUsdPerMillion: 0.003,
+    outputUsdPerMillion: 0.6,
+  });
+  assert.equal(v41.pricingSource, 'https://commandcode.ai/docs/resources/pricing-limits');
+  assert.equal(v41.pricingUpdatedAt, '2026-09-11');
+  assert.equal(v4.tier, 'low');
+  assert.equal(v4.qualityRank, 2);
+  assert.equal(v4.pricing, null);
 });
 
 test('model discovery executes an identical provider command only once across account clones', () => {

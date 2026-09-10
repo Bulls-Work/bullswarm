@@ -459,3 +459,44 @@ test('connector metadata upgrades backfill a packaged reasoning block without to
     assert.deepEqual(upgradeConnectorMetadata(d, { packagedDir }), [], 'idempotent');
   } finally { cleanup(); }
 });
+
+test('connector metadata upgrades insert packaged model profiles the installed connector lacks, in packaged order', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const dir = join(d, 'connectors');
+    mkdirSync(dir, { recursive: true });
+    // An installation whose command-code connector predates the specific
+    // deepseek-v4.1-flash profile but already holds (and customised) the
+    // generic flash catch-all. The old rule copied modelProfiles only when
+    // the field was missing entirely, so this connector never learned the
+    // new entry.
+    // The packaged generic catch-all, verbatim pattern, operator-customised rank.
+    const generic = { match: '(?:flash|(?:^|[/.-])mini(?:$|[/.-])|luna|free)', tier: 'low', qualityRank: 1 };
+    const own = { match: '^my-company/.*$', tier: 'high', qualityRank: 9 };
+    writeFileSync(join(dir, 'command-code.json'), `${JSON.stringify({
+      name: 'command-code', modelProfiles: [own, generic],
+    }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['command-code.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'command-code.json'), 'utf8'));
+    const specific = installed.modelProfiles.find((p) => p.match === '^deepseek/deepseek-v4\\.1-flash$');
+    assert.ok(specific, 'the packaged deepseek-v4.1-flash profile was added');
+    assert.equal(specific.tier, 'low');
+    assert.equal(specific.qualityRank, 2);
+    // New entries land before the installed ones, so first-match picks the
+    // specific profile over the generic catch-all.
+    assert.ok(
+      installed.modelProfiles.indexOf(specific) < installed.modelProfiles.indexOf(installed.modelProfiles.find((p) => p.match === generic.match)),
+      'specific profile precedes the installed generic one',
+    );
+    // The operator's own entries are untouched, customised rank included, and
+    // no inserted packaged entry jumps ahead of the operator-authored profile
+    // (only the pre-existing recommendation guards sit above it).
+    assert.deepEqual(installed.modelProfiles.find((p) => p.match === generic.match), generic);
+    const ownAt = installed.modelProfiles.findIndex((p) => p.match === own.match);
+    assert.deepEqual(installed.modelProfiles[ownAt], own);
+    for (const [i, p] of installed.modelProfiles.entries()) {
+      if (i < ownAt) assert.equal(typeof p.autoRecommend, 'boolean', `only guards precede the operator's entry, found ${p.match}`);
+    }
+    assert.deepEqual(upgradeConnectorMetadata(d), [], 'idempotent');
+  } finally { cleanup(); }
+});
