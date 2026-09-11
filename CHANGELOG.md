@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.7 — pools about to reset spend their leftover first
 
 - routing: quota that expires sooner is worth more. A pool whose pacing window
   resets within 24 hours (weekly) or 3 days (monthly) is now ranked on urgency
