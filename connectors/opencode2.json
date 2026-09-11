@@ -7,7 +7,8 @@
     "cwdMode": "pwd",
     "$comment-cwdMode": "QUIRK: resolves its project from $PWD, not the spawn cwd. The watcher MUST set env.PWD and spawn with cwd inside the target repo, or it will silently analyse the wrong repository and answer confidently about it."
   },
-  "authSignatures": ["No cookie auth credentials found", "unauthorized"],
+  "$comment-authSignatures": "The first two are opencode's own wording. The rest are the UPSTREAM's: opencode relays through api.relay.com, which relays through a pool of Codex OAuth accounts, and when that pool was invalidated on 2026-09-11 12:24 UTC the error event carried `auth_unavailable` / `authentication_error` / `invalidated oauth token` (and, for non-GPT models on the same host, `No available channel for model <name> under group default`). None of them was in any auth list, so every attempt was reported as a generic provider stream error, no pool was benched, and the next attempt picked another name for the same dead credential. The same four phrases are DEFAULT_AUTH_SIGNATURES in src/lib/auth-signatures.js, which every connector gets on a provider stream error; they are declared here as well so they also apply to this connector's plain-output and stderr fast-fail paths.",
+  "authSignatures": ["No cookie auth credentials found", "unauthorized", "auth_unavailable", "authentication_error", "invalidated oauth token", "no available channel for model"],
   "$comment-quotaSignatures": "empty on purpose: provider quota errors reach opencode from the upstream API in generic form (insufficient_quota, rate limit exceeded, too many requests), which DEFAULT_QUOTA_SIGNATURES in src/lib/quota.js already matches.",
   "quotaSignatures": [],
   "outputExtraction": { "strategy": "event-stream" },

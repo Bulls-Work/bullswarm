@@ -68,6 +68,7 @@ const TABLE = {
   assignments: ['json'],
   doctor: ['json'],
   version: [],
+  update: ['check', 'json'],
   release: ['dry-run'],
 
   // --- src/integrate.js ---------------------------------------------------
@@ -98,7 +99,7 @@ const TABLE = {
   'strategy clear-assignment': [],
   'strategy exclude-model': [],
   'strategy include-model': [],
-  'strategy set-subscription': ['plan', 'monthly-usd', 'included-usd', 'quota-window'],
+  'strategy set-subscription': ['plan', 'monthly-usd', 'included-usd', 'quota-window', 'resets-at'],
   'strategy auto': ['yes'],
   'strategy auto status': [],
   'strategy auto off': ['yes'],

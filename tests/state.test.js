@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  loadState, saveState, updateState, quarantinePool, sweepQuarantines,
+  loadState, saveState, updateState, quarantinePool, quarantineUpstreamSiblings,
+  sweepQuarantines, upstreamGroupOf,
   acquireStateLock, releaseStateLock, stateLockPath, STATE_LOCK_STALE_MS,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
 } from '../src/lib/state.js';
@@ -254,4 +255,74 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// --- upstream siblings ------------------------------------------------------
+
+const GROUP = 'relay:api.relay.com';
+const relayPools = () => ([
+  { name: 'opencode2', enabled: true, connector: { upstreamGroup: GROUP } },
+  { name: 'opencode2:relay-2', enabled: true, connector: { upstreamGroup: GROUP } },
+  { name: 'opencode2:relay-3', enabled: true, connector: { upstreamGroup: GROUP } },
+  { name: 'claude-code', enabled: true, connector: {} },
+  { name: 'opencode2:retired', enabled: false, connector: { upstreamGroup: GROUP } },
+]);
+
+test('an upstream group is read from a pool view or a bare connector', () => {
+  assert.equal(upstreamGroupOf({ name: 'x', connector: { upstreamGroup: GROUP } }), GROUP);
+  assert.equal(upstreamGroupOf({ name: 'x', upstreamGroup: GROUP }), GROUP);
+  assert.equal(upstreamGroupOf({ name: 'x' }), null);
+  assert.equal(upstreamGroupOf({ name: 'x', upstreamGroup: '' }), null);
+  assert.equal(upstreamGroupOf(null), null);
+});
+
+test('an auth failure benches the whole upstream group on one deadline (2026-09-11)', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-11T12:24:00Z');
+  const until = quarantinePool(s, 'opencode2:relay-3', 'upstream auth failure', now, { kind: 'auth' });
+  const benched = quarantineUpstreamSiblings(s, relayPools(), {
+    pool: 'opencode2:relay-3', group: GROUP, reason: 'upstream auth failure', now, until, kind: 'auth',
+  });
+  assert.deepEqual(benched, ['opencode2', 'opencode2:relay-2']);
+  assert.equal(s.pools.opencode2.quarantine.until, until);
+  assert.equal(s.pools.opencode2.quarantine.kind, 'auth');
+  assert.equal(s.pools.opencode2.quarantine.reason, 'sibling of opencode2:relay-3: upstream auth failure');
+  assert.equal(until - now, 10 * 60_000, 'the flat auth re-probe window');
+  assert.equal(s.pools['claude-code']?.quarantine, undefined, 'another credential is untouched');
+  assert.equal(s.pools['opencode2:retired']?.quarantine, undefined, 'a disabled pool is not benched');
+  // The whole group returns to service together when the window expires.
+  assert.deepEqual(
+    sweepQuarantines(s, now + 10 * 60_000).sort(),
+    ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3'],
+  );
+});
+
+test('a quota quarantine never spreads, and a sibling deadline is never shortened', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.parse('2026-09-11T12:24:00Z');
+  // A usage limit is one pool's empty window; the siblings still have theirs.
+  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), {
+    pool: 'opencode2:relay-3', group: GROUP, reason: 'usage limit', now, until: now + 3 * 3600_000, kind: 'quota',
+  }), []);
+  assert.equal(s.pools.opencode2?.quarantine, undefined);
+
+  // A sibling already out on its own 3-hour quota reset keeps that deadline:
+  // a borrowed 10-minute auth window must not put it back to work early.
+  const ownReset = now + 3 * 3600_000;
+  quarantinePool(s, 'opencode2', 'usage limit reached', now, { until: ownReset, kind: 'quota' });
+  const benched = quarantineUpstreamSiblings(s, relayPools(), {
+    pool: 'opencode2:relay-3', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
+  });
+  assert.deepEqual(benched, ['opencode2:relay-2']);
+  assert.equal(s.pools.opencode2.quarantine.until, ownReset);
+  assert.equal(s.pools.opencode2.quarantine.kind, 'quota');
+});
+
+test('benching the group is a no-op without a group, a pool, or any members', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.now();
+  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: 'opencode2', group: null, now }), []);
+  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: null, group: GROUP, now }), []);
+  assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'opencode2', group: GROUP, now }), []);
+  assert.deepEqual(Object.keys(s.pools), []);
 });

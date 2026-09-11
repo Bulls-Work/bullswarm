@@ -10,7 +10,7 @@ import {
 import { extractCredentials } from '../src/meters/claude.js';
 import {
   windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
-  pacingWindowFor, normalizePacingWindow,
+  pacingWindowFor, normalizePacingWindow, rollResetForward, declaredResetPacing,
 } from '../src/meters/framework.js';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
@@ -573,6 +573,145 @@ test('buildPools: a reading with no windows keeps its pacing, and an unmetered p
     assert.equal(byName.quiet.meterSource, 'none');
     assert.equal(byName.quiet.pacingWindow, 'monthly');
     assert.equal(byName.quiet.pace, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- declared reset (M2, operator path) --------------------------------------
+
+test('rollResetForward: a future anchor is itself; a passed one steps by whole windows', () => {
+  const now = Date.parse('2026-09-11T06:48:54Z');
+  // Not yet passed: used exactly as declared.
+  assert.equal(
+    rollResetForward(Date.parse('2026-09-17T01:46:01Z'), 'monthly', now),
+    Date.parse('2026-09-17T01:46:01Z'),
+  );
+  // Passed: the next calendar month, same day and time.
+  assert.equal(
+    rollResetForward(Date.parse('2026-08-17T01:46:01Z'), 'monthly', now),
+    Date.parse('2026-09-17T01:46:01Z'),
+  );
+  // Months count from the anchor, so a 31st does not drift to the 28th.
+  assert.equal(
+    rollResetForward(Date.parse('2026-01-31T00:00:00Z'), 'monthly', Date.parse('2026-03-01T00:00:00Z')),
+    Date.parse('2026-03-31T00:00:00Z'),
+  );
+  // Weekly steps are 7 days.
+  assert.equal(rollResetForward(now - 10 * 24 * 3600_000, 'weekly', now), now + 4 * 24 * 3600_000);
+  // Nothing usable is NaN, never a guess.
+  assert.ok(Number.isNaN(rollResetForward(NaN, 'monthly', now)));
+  assert.ok(Number.isNaN(rollResetForward(now - 1, '5h', now)));
+});
+
+test('declaredResetPacing: provider usage with no reset paces from the declared date, labeled', () => {
+  const now = Date.parse('2026-09-11T06:48:54Z');
+  // The Relay reader's shape for a never-expiring token: usage, no reset.
+  const snap = { monthly: { utilization: 73.765296, resets_at: null } };
+  // paceSnapshot alone cannot pace this — no reset, no elapsed (M2).
+  assert.equal(paceSnapshot(snap, now).pacing, null);
+
+  const r = declaredResetPacing(snap, { pacingWindow: 'monthly', resetsAt: '2026-09-17T01:46:01Z', nowMs: now });
+  assert.equal(r.window, 'monthly');
+  assert.equal(r.resetSource, 'declared');
+  assert.equal(r.pacing.usedPct, 73.8);
+  assert.equal(r.pacing.resetsAt, '2026-09-17T01:46:01.000Z');
+  // Aug 17 → Sep 17 is 31 days; elapsed is the share of it already run.
+  const windowMs = 31 * 24 * 3600_000;
+  const elapsedRaw = ((now - (Date.parse('2026-09-17T01:46:01Z') - windowMs)) / windowMs) * 100;
+  assert.equal(r.pacing.elapsedPct, Math.round(elapsedRaw * 10) / 10);
+  assert.equal(r.pacing.surplus, Math.round((elapsedRaw - 73.765296) * 10) / 10);
+});
+
+test('declaredResetPacing: a provider-dated window is left alone; no declaration means no pacing', () => {
+  const now = Date.parse('2026-09-11T06:48:54Z');
+  const dated = { monthly: { utilization: 26.9, resets_at: '2026-09-30T07:12:10.000Z' } };
+  assert.equal(
+    declaredResetPacing(dated, { pacingWindow: 'monthly', resetsAt: '2026-09-29T07:12:02Z', nowMs: now }),
+    null,
+  );
+  const undated = { monthly: { utilization: 10.7, resets_at: null } };
+  assert.equal(declaredResetPacing(undated, { pacingWindow: 'monthly', resetsAt: null, nowMs: now }), null);
+  assert.equal(declaredResetPacing(undated, { pacingWindow: 'monthly', resetsAt: 'someday', nowMs: now }), null);
+  assert.equal(declaredResetPacing(null, { pacingWindow: 'monthly', resetsAt: '2026-09-17T01:46:01Z', nowMs: now }), null);
+});
+
+test('buildPools: an operator-declared reset paces a reading the provider left undated', async () => {
+  const { buildPools } = await import('../src/lib/config.js');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const now = Date.parse('2026-09-11T06:48:54Z');
+  const dir = mkdtempSync(join(tmpdir(), 'bs-declared-reset-'));
+  try {
+    mkdirSync(join(dir, 'connectors'), { recursive: true });
+    for (const name of ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3']) {
+      writeFileSync(join(dir, `connectors/${name}.json`), JSON.stringify({
+        name, costRank: 1, lanes: ['analyze', 'build', 'chore'],
+        meter: { type: 'reader' },
+        subscription: { plan: 'relay-wallet', quotaWindow: 'monthly' },
+      }));
+    }
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: {
+        opencode2: { enabled: true },
+        'opencode2:relay-2': { enabled: true },
+        'opencode2:relay-3': { enabled: true },
+      },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+      strategy: {
+        subscriptions: {
+          // Declared for a pool the provider leaves undated …
+          opencode2: { resetsAt: '2026-09-17T01:46:01.000Z' },
+          // … and for one the provider DOES date (a day apart), to prove the
+          // provider's wins. relay-3 declares nothing.
+          'opencode2:relay-2': { resetsAt: '2026-09-29T07:12:02.000Z' },
+        },
+      },
+    }));
+    const snapshotFor = (pool, utilization, resets_at = null) => ({
+      captured_at: '2026-09-11T06:46:26.341Z', pool,
+      five_hour: { utilization: null, resets_at: null },
+      seven_day: { utilization: null, resets_at: null },
+      monthly: { utilization, resets_at },
+    });
+    const readings = {};
+    for (const [pool, u, reset] of [
+      ['opencode2', 73.765296, null],
+      ['opencode2:relay-2', 26.918544, '2026-09-30T07:12:10.000Z'],
+      ['opencode2:relay-3', 10.661976, null],
+    ]) {
+      const snapshot = snapshotFor(pool, u, reset);
+      readings[pool] = { ...paceSnapshot(snapshot, now), source: 'live', snapshot };
+    }
+    const { pools } = buildPools(dir, now, readings);
+    const byName = Object.fromEntries(pools.map((pool) => [pool.name, pool]));
+
+    const declared = byName.opencode2;
+    assert.equal(declared.meterSource, 'live');      // the used% is still the provider's
+    assert.equal(declared.resetSource, 'declared');
+    assert.equal(declared.pacingWindow, 'monthly');
+    assert.equal(declared.usedPct, 73.8);
+    assert.equal(declared.paceResetsAt, '2026-09-17T01:46:01.000Z');
+    assert.ok(declared.elapsedPct > 80 && declared.elapsedPct < 82, `elapsed ${declared.elapsedPct}`);
+    assert.ok(Math.abs(declared.pace - (declared.elapsedPct - declared.usedPct)) <= 0.11, `pace ${declared.pace}`);
+
+    // Provider truth first: the declared date is ignored when the meter dates
+    // the window itself.
+    const dated = byName['opencode2:relay-2'];
+    assert.equal(dated.resetSource, 'provider');
+    assert.equal(dated.paceResetsAt, '2026-09-30T07:12:10.000Z');
+    assert.equal(dated.usedPct, 26.9);
+
+    // No declaration: the same undated reading stays unmetered — no reset, no
+    // elapsed, no invented window (M2).
+    const plain = byName['opencode2:relay-3'];
+    assert.equal(plain.meterSource, 'none');
+    assert.equal(plain.resetSource, null);
+    assert.equal(plain.usedPct, null);
+    assert.equal(plain.pace, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

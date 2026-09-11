@@ -9,6 +9,13 @@
 // from the provider's resets_at. Declared meters fall back to the local
 // elapsed estimate and are visibly labeled.
 //
+// Declared reset (doctrine M2, operator path): a provider reading that
+// carries usage but no reset for the pacing window is paced from
+// `state.strategy.subscriptions[pool].resetsAt` when the operator declared
+// one (`strategy set-subscription --resets-at`). The used% stays the
+// provider's; only the window's end is declared, and `p.resetSource` says
+// 'declared' (else 'provider') so every view can label it.
+//
 // Pacing window (doctrine M3): WHICH window paces a pool is the pool's own
 // subscription window — `state.strategy.subscriptions[pool].quotaWindow`,
 // else `connector.subscription.quotaWindow` — resolved here, where both the
@@ -22,7 +29,9 @@ import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
 import { finiteOrNull } from './num.js';
-import { FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow } from '../meters/framework.js';
+import {
+  FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
+} from '../meters/framework.js';
 import { expandClaudeAccountConnectors } from './claude-accounts.js';
 import { expandOpenCodeRelayConnectors } from './opencode-relay.js';
 
@@ -86,6 +95,8 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       usedPct: null,
       elapsedPct: null,
       pace: null,
+      // Where the pacing reset came from: 'provider' | 'declared' | null.
+      resetSource: null,
       // The subscription window that paces this pool, before any reading:
       // the operator's setting, else the connector's declaration, else null
       // (default order). Replaced below by the window a reading really used.
@@ -126,10 +137,18 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
       p.fiveHourResetsAt = fiveHour.resetsAt;
       p.nearFiveHourLimit = fiveHour.nearLimit;
     }
-    const paced = pacedReading(reading, p.pacingWindow);
+    const paced = pacedReading(reading, p.pacingWindow)
+      // Provider usage with no provider reset: the operator-declared reset
+      // ends the window (M2, operator path). Provider truth stays first.
+      ?? declaredResetPacing(reading?.snapshot, {
+        pacingWindow: p.pacingWindow,
+        resetsAt: p.subscription?.resetsAt ?? null,
+        nowMs: now,
+      });
     if (paced) {
       // Provider-truth path (M1/M2)
       p.meterSource = reading.source; // live | cache | stale
+      p.resetSource = paced.resetSource ?? 'provider';
       p.usedPct = paced.pacing.usedPct;
       p.elapsedPct = paced.pacing.elapsedPct;
       p.pace = paced.pacing.surplus; // surplus = elapsed − used

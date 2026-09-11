@@ -38,7 +38,9 @@ npm i -g bullswarm
 bullswarm setup
 ```
 
-Requires Node.js 18 or later. `bullswarm setup` walks through detecting your
+Later, `bullswarm update` upgrades that install to the latest published
+version in place (`bullswarm update --check` only reports). Requires Node.js
+18 or later. `bullswarm setup` walks through detecting your
 installed agent CLIs, showing their quota state, and writing a routing
 configuration. See
 [Getting started](https://cowcow02.github.io/bullswarm/guide/getting-started/)

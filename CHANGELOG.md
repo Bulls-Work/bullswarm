@@ -1,5 +1,60 @@
 # bullswarm changelog
 
+## Unreleased
+
+- routing: an upstream auth failure reported inside a provider's event stream
+  is now the `auth` failure kind with a quarantine hint, and it benches every
+  pool that shares the same upstream credential. On 2026-09-11 the pooled Codex
+  OAuth account behind `https://api.relay.com` was invalidated at 12:24 UTC and
+  answered every request with
+  `{"error":{"message":"Encountered invalidated oauth token for user, failing
+  request","type":"authentication_error","code":"auth_unavailable"}}` (401) or
+  `auth_unavailable: no auth available (providers=codex, model=gpt-5.6-luna; …)`
+  (503); non-GPT models on the same host answered `No available channel for
+  model <name> under group default`. `src/lib/watch.js` turned any stream
+  `error` event into a bare `provider` verdict before the auth gate ran, so no
+  pool was ever benched: a failed action's retry walked
+  `opencode2:relay-3` → `opencode2:relay-2` → `opencode2` — three names for the
+  one dead credential — and runs m4xiva and ytdsii ended `partial` with their
+  integrate/verify actions blocked (failures at 12:24, 12:25, 12:52, 12:53,
+  12:54; last good dispatch 11:22). Four upstream phrases now ship as
+  `DEFAULT_AUTH_SIGNATURES` (`src/lib/auth-signatures.js`), matched only on a
+  stream that already declared a failure and only on an error-shaped line or
+  the raw JSON error event itself, so an agent that merely reads auth code is
+  still never quarantined. Connectors may declare `upstreamGroup`;
+  `src/lib/opencode-relay.js` sets `relay:<host>` on every expanded Relay pool,
+  and an auth quarantine now spreads to that group on one shared 10-minute
+  deadline in both dispatch paths. Claude account pools get no group — separate
+  seats are separate credentials — and a `quota` quarantine never spreads,
+  because a sibling's own window still has work in it.
+
+- cli: `bullswarm update [--check] [--json]` upgrades the installation in
+  place — the verb a teammate reached for and found missing (2026-09-11). It
+  reads the latest version from the npm registry, tells the install shape
+  from the running package's real path rather than from `which` or `npm root
+  -g` (which can name a different Node install), and acts accordingly: a
+  global install gets `npm install -g bullswarm@<latest> --prefix <its own
+  prefix>`; a source checkout, including a global `npm link` into one, gets
+  `git pull --ff-only` and is refused while it has local changes; anything
+  else prints the manual command and exits 1. Success is verified by
+  re-reading package.json on disk, never by npm's exit code, and a shell
+  whose `bullswarm` resolves elsewhere is called out. `--check` compares
+  without changing anything.
+- meters: a pool whose provider reports usage but no reset date can be paced
+  from a reset the operator declares —
+  `bullswarm strategy set-subscription <pool> --resets-at <iso|unknown>`.
+  The Relay token API stopped returning `expires_at` for the `1` and `Moham`
+  wallets on 2026-09-03 (the fleetlens log holds 28 dated snapshots between
+  2026-08-31 and 2026-09-03, then only nulls), so `opencode2` and
+  `opencode2:relay-3` printed `unmetered` at 73.8% and 10.7% of their $50
+  wallets and ranked as neutral. With a declared reset the used% stays the
+  provider's, elapsed% runs to the declared date, the date rolls forward one
+  calendar month (or week) at a time once it passes, and `bullswarm pools`
+  labels the row `[live declared-reset]`; `pools --json` and
+  `strategy show` carry `resetSource` (`provider` | `declared`). A window
+  the provider does date is never overridden. Doctrine M2 in
+  `src/meters/framework.js` and the guide's rule 2 record the operator path.
+
 ## 0.28.8 — a README for visitors and a documentation site
 
 - docs: README rewritten for external visitors landing on the GitHub page —

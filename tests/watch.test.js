@@ -680,3 +680,162 @@ test('a worker that floods stdout cannot outgrow the kernel: the capture is boun
     ctx.cleanup();
   }
 });
+
+// --- upstream auth failure inside a provider error event --------------------
+// The real Relay bodies of 2026-09-11, captured from the incident artifacts
+// (~/.bullswarm/workflows/wf-mtwyg33h-a19ccd/out-cli-attempt-1.md for the 503).
+// The whole event is ONE JSONL line on stdout, and the upstream body it wraps
+// is the only place the credential failure is ever stated.
+
+const RELAY_401_EVENT = {
+  type: 'error',
+  timestamp: 1789130671000,
+  sessionID: 'ses_f6f7a4d33ffexfyPWv6ovkXBUh',
+  error: {
+    name: 'APIError',
+    data: {
+      message: 'Encountered invalidated oauth token for user, failing request',
+      statusCode: 401,
+      isRetryable: false,
+      responseBody: '{"error":{"message":"Encountered invalidated oauth token for user, failing request","type":"authentication_error","param":"","code":"auth_unavailable"}}',
+      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+    },
+  },
+};
+
+const RELAY_503_EVENT = {
+  type: 'error',
+  timestamp: 1789131157930,
+  sessionID: 'ses_f6f7a4d33ffexfyPWv6ovkXBUh',
+  error: {
+    name: 'APIError',
+    data: {
+      message: 'auth_unavailable: no auth available (providers=codex, model=gpt-5.6-luna; last upstream error: auth_unavailable: Encountered invalidated oauth token: [REDACTED])',
+      statusCode: 503,
+      isRetryable: true,
+      responseBody: '{"error":{"message":"auth_unavailable: no auth available (providers=codex, model=gpt-5.6-luna; last upstream error: auth_unavailable: Encountered invalidated oauth token: [REDACTED])","type":"server_error","param":"","code":"internal_server_error"}}',
+      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+    },
+  },
+};
+
+const RELAY_NO_CHANNEL_EVENT = {
+  type: 'error',
+  error: {
+    name: 'APIError',
+    data: {
+      message: 'No available channel for model claude-fable-5-1 under group default (distributor)',
+      statusCode: 503,
+      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+    },
+  },
+};
+
+// The SHIPPED connector, with only its command replaced: the phrases the
+// verdict matches are the ones the installation really carries.
+const packagedOpenCode2 = JSON.parse(
+  readFileSync(join(REPO_ROOT, 'connectors/opencode2.json'), 'utf8'),
+);
+// `--` closes node's own option list: the connector appends its real
+// event-stream args (`--format json`), which node would otherwise reject.
+const streamingEvent = (event, overrides = {}) => ({
+  ...packagedOpenCode2,
+  spawn: {
+    ...packagedOpenCode2.spawn,
+    cmd: [process.execPath, '-e', `console.log(${JSON.stringify(JSON.stringify(event))}); process.exit(1)`, '--'],
+  },
+  ...overrides,
+});
+
+test('a provider error event carrying the real Relay 401 body is an auth failure with a quarantine hint', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'auth');
+    assert.equal(verdict.quarantineHint, true);
+    assert.equal(verdict.why, 'upstream auth failure: "auth_unavailable" (provider stream error)');
+    assert.ok(verdict.why.length <= 160, `why is ${verdict.why.length} chars`);
+    // Still recorded as what the stream said, so the incident stays readable.
+    assert.equal(verdict.meta.providerFailureType, 'error');
+    assert.equal(verdict.contentUsableDespiteExit, false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('the Relay 503 no-auth-available body is the same auth failure, not a retryable provider blip', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingEvent(RELAY_503_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.failureKind, 'auth');
+    assert.equal(verdict.quarantineHint, true);
+    assert.match(verdict.why, /^upstream auth failure: "auth_unavailable"/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a model the relay has no channel for is an auth failure too, by its own wording', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(streamingEvent(RELAY_NO_CHANNEL_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.failureKind, 'auth');
+    assert.equal(verdict.quarantineHint, true);
+    assert.equal(verdict.why, 'upstream auth failure: "no available channel for model" (provider stream error)');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('the shared default phrases match even when the connector declares none of them', async () => {
+  const ctx = makeCtx();
+  try {
+    const verdict = await watchOnce(
+      streamingEvent(RELAY_401_EVENT, { authSignatures: [] }),
+      'Do the thing.', ctx.dir, ctx.paths, {},
+    );
+    assert.equal(verdict.failureKind, 'auth');
+    assert.equal(verdict.quarantineHint, true);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a provider error event with unrelated wording stays a provider failure with no quarantine hint', async () => {
+  const ctx = makeCtx();
+  try {
+    const event = {
+      type: 'error',
+      error: { name: 'APIError', data: { message: 'stream disconnected before completion', statusCode: 502 } },
+    };
+    const verdict = await watchOnce(streamingEvent(event), 'Do the thing.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.failureKind, 'provider');
+    assert.equal(verdict.quarantineHint, undefined);
+    assert.equal(verdict.why, 'provider stream reported error');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('an agent that merely reads auth source is not an upstream failure: no error event, no hint', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'text', part: { text: 'Inspected the matcher: an auth_unavailable body from the relay is an authentication_error, and src/lib/auth-signatures.js matches it only on a provider error event. All requested checks were completed and verified.' } },
+    ];
+    const connectorWithoutError = {
+      ...packagedOpenCode2,
+      spawn: {
+        ...packagedOpenCode2.spawn,
+        cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`, '--'],
+      },
+    };
+    const verdict = await watchOnce(connectorWithoutError, 'Inspect the matcher.', ctx.dir, ctx.paths, {});
+    assert.equal(verdict.ok, true);
+    assert.equal(verdict.quarantineHint, undefined);
+  } finally {
+    ctx.cleanup();
+  }
+});

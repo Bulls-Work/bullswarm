@@ -562,6 +562,11 @@ function subscriptionView(pool, state) {
     usedPct: pool.usedPct ?? null,
     elapsedPct: pool.elapsedPct ?? null,
     surplus: pool.pace ?? null,
+    // The reset the pacing ran to and where it came from: 'provider' when the
+    // meter reported it, 'declared' when the operator did (--resets-at).
+    resetsAt: pool.paceResetsAt ?? null,
+    resetSource: pool.resetSource ?? null,
+    declaredResetsAt: declared.resetsAt ?? null,
     valueSource: state.strategy?.subscriptions?.[pool.name]
       ? 'user-declared' : connector.subscription ? 'connector-default' : 'unknown',
   };

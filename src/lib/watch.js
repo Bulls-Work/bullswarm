@@ -14,6 +14,10 @@
 //   W5. A usage limit is reported as its own failure kind `quota` with the
 //       reset deadline it announced. It is never `process` merely because the
 //       CLI exited non-zero, and never `auth` merely because it throttled.
+//   W6. A provider error event that names an upstream auth failure is `auth`
+//       with a quarantine hint, not the generic `provider` kind. A dead
+//       credential fails every following attempt on that pool in seconds; a
+//       verdict that carries no hint sends the next attempt straight back.
 
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
@@ -23,6 +27,7 @@ import { judgeContent } from './verify.js';
 import { estimateInvocationUsage } from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
+import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -375,6 +380,28 @@ function matchLikelyAuthFailure(connector, text) {
 }
 
 /**
+ * How much of each raw stream a provider-stream failure is judged on, at each
+ * end. A transcript runs to megabytes; a provider failure is always in the
+ * head (it failed before working) or the tail (it failed after working).
+ */
+const PROVIDER_ERROR_SCAN_CHARS = 12000;
+
+/**
+ * The text an upstream auth failure is looked for in: the raw streams, not the
+ * extracted output. Event-stream extraction keeps only the connector's
+ * declared text parts, so the `{"type":"error",…}` event carrying the upstream
+ * body never reaches `extractOutput`'s result at all.
+ */
+function providerErrorText(obs) {
+  const bounded = (value) => {
+    const text = String(value ?? '');
+    if (text.length <= PROVIDER_ERROR_SCAN_CHARS * 2) return text;
+    return `${text.slice(0, PROVIDER_ERROR_SCAN_CHARS)}\n${text.slice(-PROVIDER_ERROR_SCAN_CHARS)}`;
+  };
+  return `${bounded(obs.stdout)}\n${bounded(obs.stderr)}`;
+}
+
+/**
  * Watch one delegation end-to-end. Returns the standard verdict.
  */
 export async function watchOnce(connector, taskText, targetDir, paths, opts = {}) {
@@ -399,6 +426,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)
+  //   a provider error event naming an upstream auth phrase -> fail + auth +
+  //     quarantine hint (W6), unless the same event is really a usage limit:
+  //     a throttle keeps its own kind and its real reset deadline (W5).
   //   a quota-shaped usage-limit line -> fail + quarantine until the reset
   //     (checked before auth: a throttle is not a broken credential).
   //   an error-shaped auth signature in the extracted semantic response ->
@@ -413,6 +443,14 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const authHit = fatalKind === 'auth'
     ? obs.fatalSignature.signature
     : quotaFailure ? null : matchLikelyAuthFailure(connector, head);
+  // Read from the transport, and only once the provider itself declared a
+  // stream failure: an upstream credential dies inside the error event, where
+  // the semantic-output gates above can never see it (2026-09-11 — three pool
+  // names fronting one dead Relay OAuth pool, re-picked attempt after attempt
+  // because a stream error carried no quarantine hint).
+  const upstreamAuth = obs.providerFailureType
+    ? findUpstreamAuthFailure(connector, providerErrorText(obs))
+    : null;
   const quotaDeadline = quotaFailure
     ? quotaQuarantineUntil({
         text: quotaFailure.context ?? quotaFailure.line ?? '',
@@ -429,6 +467,16 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
     verdict = { ok: false, why: `spawn failed: ${obs.stderr.trim().split('\n')[0]}` };
+  } else if (upstreamAuth && !quotaFailure) {
+    // The phrase is sliced so the whole sentence stays inside the 160-character
+    // budget every `why` is held to, with the matched phrase named in full for
+    // anything short enough to be a real signature.
+    verdict = {
+      ok: false,
+      failureKind: 'auth',
+      quarantineHint: true,
+      why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`,
+    };
   } else if (obs.providerFailureType) {
     verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
   } else if (quotaFailure) {
@@ -488,6 +536,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     !obs.spawnError &&
     !obs.timedOut &&
     !authHit &&
+    !upstreamAuth &&
     !quotaFailure &&
     obs.exitCode !== 0 &&
     judgeContent(output, {

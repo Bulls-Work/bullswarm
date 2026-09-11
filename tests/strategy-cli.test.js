@@ -819,3 +819,32 @@ test('a rung whose model the bundled Epoch datapack covers carries the real evid
 test('an empty rung table says what to configure instead of printing nothing', () => {
   assert.match(renderRungs([]), /^no rungs yet: enable a provider pool and configure an effort tier/);
 });
+
+test('--resets-at declares the reset a provider does not report, as ISO-8601, and refuses junk', async () => {
+  const f = fixture();
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    const run = (args) => cmdStrategy(args, { bullswarmDir: f.dir });
+    assert.equal(await run(['set-subscription', 'command-code', '--resets-at', '2026-09-17T01:46:01Z']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].resetsAt, '2026-09-17T01:46:01.000Z');
+
+    // Not a date: refused, and the stored value is untouched.
+    assert.equal(await run(['set-subscription', 'command-code', '--resets-at', 'next tuesday']), 2);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].resetsAt, '2026-09-17T01:46:01.000Z');
+
+    // Other fields on the same subscription survive a reset-only update.
+    assert.equal(await run(['set-subscription', 'command-code', '--quota-window', 'monthly']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].resetsAt, '2026-09-17T01:46:01.000Z');
+
+    // `unknown` clears it.
+    assert.equal(await run(['set-subscription', 'command-code', '--resets-at', 'unknown']), 0);
+    assert.equal(loadState(f.dir).strategy.subscriptions['command-code'].resetsAt, null);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    f.cleanup();
+  }
+});

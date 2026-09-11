@@ -27,6 +27,8 @@ bullswarm strategy apply --yes --refresh-hours 24
 bullswarm strategy auto status
 bullswarm strategy set-subscription command-code \
   --plan GOAT --monthly-usd 10 --included-usd 70 --quota-window monthly
+bullswarm strategy set-subscription opencode2 \
+  --resets-at 2026-09-17T01:46:01Z   # usage is reported, the refill date is not
 bullswarm strategy assign high --pool claude-code --model claude-opus-4-6
 bullswarm strategy exclude-model claude-fable-5
 bullswarm run --effort high --lane analyze --task-file /tmp/task.md --json

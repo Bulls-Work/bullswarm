@@ -138,3 +138,31 @@ agent report that merely discusses usage limits, or tool output that quotes
 them, is not a limit: detection is shape-gated to lines that look like a
 provider notice. (`bullswarm workflow watch` surfaces this live — see
 [Dashboard](./dashboard.md).)
+
+## Quarantine on an upstream auth failure
+
+A relayed credential fails upstream, not in the CLI. When a provider's event
+stream reports an error whose payload names an upstream auth phrase —
+`auth_unavailable`, `authentication_error`, `invalidated oauth token`, `no
+available channel for model`, plus anything the connector declares in
+`authSignatures` — the verdict is the `auth` kind with a quarantine hint, not
+the generic `provider` kind, and the pool is benched for the flat 10-minute
+re-probe window. Those phrases are read only on a stream that already declared
+a failure, and only on an error-shaped line or on the raw JSON error event
+itself, so an agent that merely reads or discusses auth code is still never
+quarantined.
+
+Some pools are several names for one credential. A connector may declare an
+`upstreamGroup`, and every pool sharing that string is benched together on the
+same deadline when one of them hits an upstream auth failure — the quarantine
+reason reads `sibling of <pool>: <why>`. The three Relay pools (`opencode2`,
+`opencode2:relay-2`, `opencode2:relay-3`) get `relay:api.relay.com` from
+`src/lib/opencode-relay.js`: they relay through one host, which relays through
+one pool of OAuth accounts. On 2026-09-11 that account was invalidated at
+12:24 UTC and the retry of a failed action walked from one of those names to
+the next, burning both attempts on the same dead credential and blocking the
+dependent actions. Claude account pools deliberately have no group — each home
+is its own subscription, and one seat's auth failure says nothing about the
+next. A quota quarantine never spreads either: a sibling's window is its own,
+and an existing quarantine with a later deadline is never shortened by a
+borrowed one.
