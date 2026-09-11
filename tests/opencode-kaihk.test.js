@@ -8,10 +8,12 @@ import {
   discoverRelayProviders,
   expandOpenCodeRelayConnectors,
   isRelayBaseUrl,
+  relayUpstreamGroup,
   relayVariantsConfig,
   poolNameForRelayProvider,
   retargetOpenCodeModel,
 } from '../src/lib/opencode-relay.js';
+import { expandClaudeAccountConnectors } from '../src/lib/claude-accounts.js';
 import { parseRelayUsage } from '../src/meters/relay.js';
 import { resolveReasoningLevel, reasoningArgs } from '../src/lib/reasoning.js';
 import { argvWithModel } from '../src/lib/watch.js';
@@ -94,6 +96,31 @@ test('expandOpenCodeRelayConnectors clones opencode2 per extra Relay provider', 
   assert.equal(extra.spawn.cmd.includes('relay-2/gpt-5.6-luna'), true);
   assert.equal(extra.flags.isCaller, false);
   assert.equal(extra.profile.providerId, 'relay-2');
+});
+
+test('every Relay pool declares the one upstream it shares, so auth failures bench them together', () => {
+  // 2026-09-11: these three names front ONE relayed Codex OAuth pool. When it
+  // was invalidated, a retry walked from one name to the next and burned both
+  // attempts on the same dead credential.
+  const connectors = expandPackaged();
+  assert.equal(relayUpstreamGroup('https://api.relay.com/v1'), 'relay:api.relay.com');
+  for (const name of ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3']) {
+    assert.equal(connectors[name].upstreamGroup, 'relay:api.relay.com', `${name} joins the group`);
+  }
+  // The host is part of the id: another relay is another group, never this one.
+  assert.equal(relayUpstreamGroup('https://api.other-relay.example/v1'), 'relay:api.other-relay.example');
+  // A Claude seat is a separate subscription with a separate credential and
+  // must never be benched because a relay lost its token.
+  const claude = { 'claude-code': { name: 'claude-code', bin: 'claude', spawn: { cmd: ['claude'] } } };
+  expandClaudeAccountConnectors(claude, {
+    accounts: [
+      { slug: null, configDir: '/home/op/.claude', pool: 'claude-code', command: 'claude' },
+      { slug: 'alt', configDir: '/home/op/.claude-alt', pool: 'claude-code:alt', command: 'claude' },
+    ],
+  });
+  assert.ok(claude['claude-code:alt'], 'the second seat expanded');
+  assert.equal(claude['claude-code:alt'].upstreamGroup, undefined);
+  assert.equal(claude['claude-code'].upstreamGroup, undefined);
 });
 
 // --- reasoning: --variant + the injected opencode variants ------------------

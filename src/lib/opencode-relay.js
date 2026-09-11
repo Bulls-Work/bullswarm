@@ -53,6 +53,24 @@ export function relayVariantsConfig(providerId, model = RELAY_OPENCODE_MODEL) {
   return JSON.stringify({ provider: { [providerId]: { models: { [model]: { variants } } } } });
 }
 
+/**
+ * The shared-credential group every Relay pool belongs to.
+ *
+ * All three Relay pools relay through ONE upstream host, which relays through
+ * ONE pool of Codex OAuth accounts. When that credential died (2026-09-11) the
+ * three pool names were three doors into the same outage, so they are benched
+ * together on an auth failure (see quarantineUpstreamSiblings in
+ * src/lib/state.js). The host is part of the group id so a second Relay-shaped
+ * relay on another host would form its own group rather than joining this one.
+ * A provider record discovered without a parseable baseURL is Relay by
+ * construction and falls back to the canonical host.
+ */
+export function relayUpstreamGroup(baseURL) {
+  let host = RELAY_BASE_HOST;
+  try { host = new URL(baseURL).hostname || RELAY_BASE_HOST; } catch { /* fall back */ }
+  return `relay:${host}`;
+}
+
 export function poolNameForRelayProvider(providerId, index) {
   return index === 0 ? 'opencode2' : `opencode2:${providerId}`;
 }
@@ -148,6 +166,7 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
   const primary = providers[0];
   pinModel(base, primary.id);
   injectVariants(base, primary.id);
+  base.upstreamGroup = relayUpstreamGroup(primary.baseURL);
   base.profile = {
     providerId: primary.id,
     command: primary.command,
@@ -165,6 +184,7 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
     clone.name = extra.pool;
     pinModel(clone, extra.id);
     injectVariants(clone, extra.id);
+    clone.upstreamGroup = relayUpstreamGroup(extra.baseURL);
     clone.flags = { ...(base.flags ?? {}), isCaller: false };
     clone.profile = {
       providerId: extra.id,

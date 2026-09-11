@@ -188,6 +188,10 @@ export function expandClaudeAccountConnectors(connectors, opts = {}) {
     if (connectors[name]) continue;
     const clone = structuredClone(base);
     clone.name = name;
+    // No upstreamGroup, deliberately: each home is a SEPARATE subscription with
+    // its own credential and its own window. One seat's auth failure says
+    // nothing about the next one, so these pools are never benched together
+    // (contrast src/lib/opencode-relay.js, where three pools share one relay).
     clone.env = { ...(base.env ?? {}), CLAUDE_CONFIG_DIR: account.configDir };
     clone.configDirs = [account.configDir];
     clone.flags = { ...(base.flags ?? {}), isCaller: false };

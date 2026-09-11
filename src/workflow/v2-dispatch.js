@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pickPool, isQuarantined } from '../lib/route.js';
-import { assertDepthAllowed, childDepthEnv, loadState, quarantinePool, updateState } from '../lib/state.js';
+import {
+  assertDepthAllowed, childDepthEnv, loadState, quarantinePool, quarantineUpstreamSiblings,
+  updateState, upstreamGroupOf,
+} from '../lib/state.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
@@ -118,9 +121,21 @@ function appendDecision(bullswarmDir, record, { updateCoreState, quarantine = nu
     state.decisionLog ??= [];
     state.decisionLog.push(record);
     if (quarantine) {
-      quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
+      const kind = quarantine.kind ?? 'auth';
+      const until = quarantinePool(state, quarantine.pool, quarantine.reason, quarantine.now, {
         until: quarantine.until ?? null,
-        kind: quarantine.kind ?? 'auth',
+        kind,
+      });
+      // Siblings of a dead credential are benched inside the SAME locked
+      // update, on the deadline quarantinePool just computed — one upstream,
+      // one deadline, no second window opened a millisecond later.
+      quarantineUpstreamSiblings(state, quarantine.groupPools ?? [], {
+        pool: quarantine.pool,
+        group: quarantine.group ?? null,
+        reason: quarantine.reason,
+        now: quarantine.now,
+        until,
+        kind,
       });
     }
   });
@@ -235,6 +250,10 @@ export async function dispatchV2Action({
     { decisionLog: coreDecisionLog() },
   );
   let candidates = prepare(pools);
+  // The unfiltered list, kept current across refreshes: a sibling benched for
+  // a shared upstream may itself be ineligible for THIS action (wrong lane,
+  // blocked model) and still has to be taken out of service for every other.
+  let allPools = pools;
   const configuredAssignment = pools.find((pool) => pool.strategyAssignments?.[effort])
     ?.strategyAssignments?.[effort] ?? null;
   const effectivePreferredPool = preferredPool ?? configuredAssignment?.pool ?? null;
@@ -261,6 +280,7 @@ export async function dispatchV2Action({
       catch { refreshed = null; }
       forceRefresh = false;
       if (Array.isArray(refreshed) && refreshed.length) {
+        allPools = refreshed;
         candidates = prepare(refreshed);
         remaining.length = 0;
         // A pool deliberately re-queued for a same-pool retry survives the
@@ -359,6 +379,17 @@ export async function dispatchV2Action({
     }
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict);
+    // One dead upstream credential is ONE outage however many pool names front
+    // it. The in-memory candidate list predates the quarantine written below,
+    // and a refresher is optional, so the group is dropped here as well — the
+    // next attempt of THIS action must not walk relay-3 → relay-2 → opencode2
+    // into the same failure, as it did on 2026-09-11.
+    const benchedGroup = verdict.quarantineHint && kind === 'auth' ? upstreamGroupOf(pool) : null;
+    if (benchedGroup) {
+      for (let i = remaining.length - 1; i >= 0; i -= 1) {
+        if (upstreamGroupOf(remaining[i]) === benchedGroup) remaining.splice(i, 1);
+      }
+    }
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
     const canCorrectSchema = kind === 'schema' && !correctionUsed && typeof correctionTask === 'function';
     const canRetryMechanically = MECHANICAL_KINDS.has(kind)
@@ -404,6 +435,7 @@ export async function dispatchV2Action({
         pool: pool.name, reason: verdict.why, now: now(),
         until: verdict.quarantineUntil ?? null,
         kind: kind === 'quota' ? 'quota' : 'auth',
+        group: upstreamGroupOf(pool), groupPools: allPools,
       } : null,
     });
     // A quota failure invalidates this run's meter picture: poll live before

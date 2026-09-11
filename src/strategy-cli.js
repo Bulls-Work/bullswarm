@@ -80,6 +80,26 @@ function quotaWindowValue(value) {
   return name;
 }
 
+/**
+ * `--resets-at` declares WHEN this pool's quota window ends, for a provider
+ * that reports usage but no reset (the Relay wallets after 2026-09-03).
+ * Stored as ISO-8601; pacing rolls it forward one window at a time once it
+ * passes (src/meters/framework.js rollResetForward) and labels the result
+ * declared-reset. `unknown`/`null` clears it. A provider-reported reset is
+ * never overridden by this.
+ */
+function resetsAtValue(value) {
+  if (value === undefined) return undefined;
+  if (value === 'unknown' || value === 'null') return null;
+  const ms = typeof value === 'string' ? Date.parse(value.trim()) : NaN;
+  if (!Number.isFinite(ms)) {
+    throw new Error(
+      '--resets-at must be an ISO-8601 date-time such as 2026-09-17T01:46:01Z (or unknown to clear)',
+    );
+  }
+  return new Date(ms).toISOString();
+}
+
 function refreshHoursValue(value) {
   const hours = Number(value ?? 24);
   if (!Number.isFinite(hours) || hours <= 0) throw new Error('refresh-hours must be a positive number');
@@ -95,7 +115,10 @@ function render(report, reasoning = null) {
     // Which window paces this pool is the difference between "behind" and
     // "overspent" for the same reading, so the line names it.
     const paced = sub.pacingWindow ? `${sub.pacingWindow} ` : '';
-    lines.push(`  ${sub.pool}: ${sub.plan ?? 'plan unknown'} · ${value} · ${paced}${sub.usedPct ?? '?'}% used · surplus ${sub.surplus ?? '?'}`);
+    // A reset the operator declared (the provider reported none) is named so
+    // the surplus is read as running to that date, not a provider's.
+    const reset = sub.resetSource === 'declared' ? ` · declared reset ${sub.resetsAt}` : '';
+    lines.push(`  ${sub.pool}: ${sub.plan ?? 'plan unknown'} · ${value} · ${paced}${sub.usedPct ?? '?'}% used · surplus ${sub.surplus ?? '?'}${reset}`);
   }
   lines.push('', 'tier suggestions:');
   for (const [tier, suggestion] of Object.entries(report.suggestions)) {
@@ -908,6 +931,7 @@ export async function cmdStrategy(args, {
       const monthlyPriceUsd = numberOrNull(opts['monthly-usd'], 'monthly-usd');
       const includedValueUsd = numberOrNull(opts['included-usd'], 'included-usd');
       const quotaWindow = quotaWindowValue(opts['quota-window']);
+      const resetsAt = resetsAtValue(opts['resets-at']);
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};
         fresh.strategy.subscriptions ??= {};
@@ -918,6 +942,7 @@ export async function cmdStrategy(args, {
           ...(monthlyPriceUsd !== undefined ? { monthlyPriceUsd } : {}),
           ...(includedValueUsd !== undefined ? { includedValueUsd } : {}),
           ...(quotaWindow !== undefined ? { quotaWindow } : {}),
+          ...(resetsAt !== undefined ? { resetsAt } : {}),
         };
         delete fresh.strategy.lastReport;
       });
@@ -1003,7 +1028,7 @@ export async function cmdStrategy(args, {
     throw new Error(strategyUsage());
   } catch (err) {
     console.error(`✗ ${err.message}`);
-    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
+    const usage = /^(usage:|missing |assignment needs |--apply changes|(?:strategy )?(?:apply|auto off|configure|set-provider|set-model|reset-tier|set-reasoning|reset-reasoning) changes|--tiers? must be|--level must be|--reasoning must be|--quota-window must be|--resets-at must be|reasoning(?:\.|\s)|refresh-hours must be|.* must be a non-negative number|unknown phase|unknown command|unknown pool|unknown tier|unknown model)/i.test(err.message);
     return usage ? 2 : 1;
   }
 }

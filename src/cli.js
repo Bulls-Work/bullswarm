@@ -11,14 +11,15 @@ import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
 } from './lib/reasoning.js';
 import {
-  loadState, quarantinePool, sweepQuarantines, updateState,
-  assertDepthAllowed, childDepthEnv,
+  loadState, quarantinePool, quarantineUpstreamSiblings, sweepQuarantines, updateState,
+  assertDepthAllowed, childDepthEnv, upstreamGroupOf,
 } from './lib/state.js';
 import { buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { judgeContent } from './lib/verify.js';
 import { getVersion } from './lib/version.js';
 import { release } from './lib/release.js';
+import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
 import { DEFAULT_EFFORT_BY_LANE } from './workflow/action-validator.js';
 import {
@@ -47,7 +48,7 @@ export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
   'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
-  'wizard',
+  'wizard', 'check',
 ]);
 
 export function parseArgs(argv) {
@@ -103,9 +104,12 @@ async function cmdPools(opts) {
     // routing compares is this window's. Only a real window reading is
     // labeled — a declared meter has a number but no window.
     const window = p.pacingWindow && p.elapsedPct != null ? `${p.pacingWindow} ` : '';
+    // A window whose end the operator declared (the provider reported none)
+    // is paced from that date and says so; the used% is still the provider's.
+    const resetTag = p.resetSource === 'declared' ? ' declared-reset' : '';
     const meter = src === 'none'
       ? 'unmetered'
-      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}]`;
+      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}${resetTag}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it. When in-flight work makes
@@ -452,11 +456,23 @@ async function cmdRun(opts) {
     } else if (verdict.quarantineHint) {
       // A usage limit carries its own deadline (the reset the provider named);
       // an auth failure keeps the flat re-probe window.
-      quarantinePool(fresh, connector.name, verdict.why, now, {
+      const kind = verdict.failureKind === 'quota' ? 'quota' : 'auth';
+      const until = quarantinePool(fresh, connector.name, verdict.why, now, {
         until: verdict.quarantineUntil ?? null,
-        kind: verdict.failureKind === 'quota' ? 'quota' : 'auth',
+        kind,
       });
       verdict.quarantinedUntil = fresh.pools[connector.name]?.quarantine?.until;
+      // A relayed credential is shared: the pools that front the same upstream
+      // are just as dead, and go out on the same deadline. Quota never spreads.
+      const siblings = quarantineUpstreamSiblings(fresh, pools, {
+        pool: connector.name,
+        group: upstreamGroupOf(poolView),
+        reason: verdict.why,
+        now,
+        until,
+        kind,
+      });
+      if (siblings.length) verdict.quarantinedSiblings = siblings;
     }
     logDecision(fresh, {
       lane,
@@ -824,6 +840,12 @@ export async function main(argv) {
       return 0;
     case 'release':
       return cmdRelease(opts);
+    case 'update':
+      // Registry, npm and git are the sources of truth; the exit code says
+      // whether the package is at the latest published version afterwards.
+      return runUpdate({
+        check: opts.check === true, json: opts.json === true, currentVersion: getVersion(),
+      });
     default:
       console.error(`unknown verb "${verb}". Run "bullswarm --help" for the list of commands.`);
       return 2;

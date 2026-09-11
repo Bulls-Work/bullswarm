@@ -513,3 +513,94 @@ test('the attempt.started notification carries the resolved reasoning record', a
   });
   assert.deepEqual(started, [{ requested: 'medium', applied: 'medium', source: 'connector', clamped: false }]);
 });
+
+// --- one dead upstream credential, three pool names -------------------------
+// 2026-09-11: the OAuth pool behind api.relay.com was invalidated at 12:24 UTC.
+// The three Relay pools are three names for it, and the retry of a failed
+// action walked relay-3 → relay-2 → opencode2, burning both attempts on the
+// same dead credential and blocking every dependent action.
+
+const RELAY_GROUP = 'relay:api.relay.com';
+const relayPool = (name) => connector(name, { upstreamGroup: RELAY_GROUP });
+const upstreamAuthVerdict = () => ({
+  ok: false,
+  failureKind: 'auth',
+  quarantineHint: true,
+  why: 'upstream auth failure: "auth_unavailable" (provider stream error)',
+  meta: { exitCode: 1, providerFailureType: 'error', wallSec: 0.9 },
+});
+const HARNESS_T0 = Date.parse('2026-08-31T01:00:00Z');
+
+test('an upstream auth failure benches every pool on that credential and the retry leaves the group', async () => {
+  const h = harness([upstreamAuthVerdict(), good]);
+  const pools = [
+    relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2'),
+    connector('command-code'),
+  ];
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths, pools,
+    // The refresher hands back the SAME, still-unquarantined pool objects: the
+    // group has to stay out of service on the strength of live state alone.
+    refreshPools: async () => pools,
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3', 'command-code']);
+  const quarantine = (name) => h.core.pools[name]?.quarantine;
+  for (const name of ['opencode2:relay-3', 'opencode2:relay-2', 'opencode2']) {
+    assert.ok(quarantine(name), `${name} is benched`);
+    assert.equal(quarantine(name).kind, 'auth');
+  }
+  // One upstream, one deadline — the siblings do not open a second window.
+  assert.equal(quarantine('opencode2:relay-2').until, quarantine('opencode2:relay-3').until);
+  assert.equal(quarantine('opencode2').until, quarantine('opencode2:relay-3').until);
+  const ahead = quarantine('opencode2:relay-3').until - HARNESS_T0;
+  assert.ok(ahead > 600_000 && ahead <= 630_000, `re-probe window is ${ahead}ms after t0`);
+  assert.equal(
+    quarantine('opencode2:relay-2').reason,
+    'sibling of opencode2:relay-3: upstream auth failure: "auth_unavailable" (provider stream error)',
+  );
+  assert.equal(quarantine('command-code'), undefined, 'a pool on its own credential keeps working');
+});
+
+test('a group sibling is unreachable for the next attempt even without a refresher', async () => {
+  // Two attempts, both auth: with the group benched there is nowhere left to
+  // go, and the action must fail instead of burning the second attempt on
+  // another name for the same credential.
+  const h = harness([upstreamAuthVerdict(), upstreamAuthVerdict(), good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.failureKind, 'auth');
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3']);
+  assert.equal(result.attempts[0].status, 'failed', 'no recovery was promised that the group could not deliver');
+});
+
+test('a usage limit benches only the pool that hit it, never its upstream siblings', async () => {
+  const h = harness([quotaVerdict(), good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3', 'opencode2:relay-2']);
+  assert.equal(h.core.pools['opencode2:relay-3'].quarantine.kind, 'quota');
+  assert.equal(h.core.pools['opencode2:relay-2']?.quarantine, undefined, 'a sibling window is its own');
+  assert.equal(h.core.pools.opencode2?.quarantine, undefined);
+});
+
+test('an auth failure on a pool with no upstream group benches nothing else', async () => {
+  const h = harness([upstreamAuthVerdict(), good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('claude-code:alt'), connector('claude-code')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(h.core.pools['claude-code:alt'].quarantine);
+  assert.equal(h.core.pools['claude-code']?.quarantine, undefined, 'a separate seat is a separate credential');
+});

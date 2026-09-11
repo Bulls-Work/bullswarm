@@ -11,6 +11,7 @@ Requires Node.js 18 or later.
 npm install -g bullswarm   # or: node bin/bullswarm.js directly from a checkout
 bullswarm setup            # detect installed agent CLIs, show quota, write routing config
 bullswarm integrate install --agents codex,claude,grok --yes
+bullswarm update            # later: upgrade in place to the latest published version
 ```
 
 `bullswarm setup` is the human starting point. The integration command

@@ -20,7 +20,11 @@ agent.
    declares (`quotaWindow`: weekly for claude-code, codex and grok; monthly
    for command-code and the relay pools), overridable per pool with
    `bullswarm strategy set-subscription <pool> --quota-window <weekly|monthly>`
-   — `bullswarm pools` names it in the meter column. The
+   — `bullswarm pools` names it in the meter column. A provider that reports
+   usage but no reset date (the Relay wallets since 2026-09-03) is paced from
+   a reset the operator declares with `--resets-at <iso>`, rolled forward one
+   window at a time once it passes; `bullswarm pools` marks that row
+   `declared-reset`, and a reset the provider does report always wins. The
    5-hour window never paces — it gates. A pool whose 5-hour forecast is at
    or above 75% *and* ahead of the share of that window already elapsed is
    chosen only when no eligible pool below that line exists; a pool whose

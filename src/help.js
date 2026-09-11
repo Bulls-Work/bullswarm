@@ -73,6 +73,7 @@ const top = rich({
     { name: 'workflow', desc: 'plan, execute, observe, and audit workflows' },
     { name: 'runs', desc: 'alias for workflow runs' },
     { name: 'version', desc: 'print the installed version' },
+    { name: 'update', desc: 'upgrade the installed package to the latest published version' },
     { name: 'release', desc: 'create a version commit and tag' },
   ],
   options: [
@@ -273,6 +274,32 @@ const versionText = rich({
   next: 'bullswarm doctor to check installation readiness.',
 });
 
+const updateText = rich({
+  usage: 'bullswarm update [--check] [--json]',
+  purpose: 'Upgrade this installation of bullswarm to the latest version published on npm, in '
+    + 'place. A global npm install is upgraded with `npm install -g bullswarm@<latest> --prefix '
+    + '<its own prefix>`, so the copy that is running is the one replaced even when several Node '
+    + 'installs are on PATH. A source checkout (a clone, or a global install that is an `npm link` '
+    + 'into one) is pulled with `git pull --ff-only` instead and is refused while it has local '
+    + 'changes. The result is verified by re-reading package.json on disk, never by npm\'s exit code.',
+  args: [],
+  options: [
+    { flag: '--check', desc: 'only compare the installed version with the latest published one; changes nothing', default: 'off (upgrades)' },
+    { flag: '--json', desc: 'machine-readable result: install {kind, root, prefix}, before, latest, after, upToDate, updated, error, notes[]', default: 'human-readable lines' },
+  ],
+  safety: [
+    'reads https://registry.npmjs.org/bullswarm/latest (8s timeout); without --check, runs npm install -g into the running install\'s own prefix, or git pull --ff-only in a source checkout',
+    'a source checkout with uncommitted changes is left untouched and the exit is 1',
+    'exit 0 = at the latest published version afterwards (or --check reported); exit 1 = registry, npm or git refused, or the install shape is unknown',
+    'the running process keeps its old version; the next bullswarm command runs the new one',
+  ],
+  examples: [
+    { cmd: 'bullswarm update --check', note: 'is a newer version published?' },
+    { cmd: 'bullswarm update', note: 'upgrade in place' },
+  ],
+  next: 'bullswarm version to confirm, then bullswarm integrate status if a skill link looks stale.',
+});
+
 const releaseText = rich({
   usage: 'bullswarm release <patch|minor|major> [--dry-run]',
   purpose: 'Bump the package.json version, commit that change, and create an annotated git '
@@ -334,7 +361,7 @@ const poolsText = rich({
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
-    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
+    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, resetSource (provider | declared | null), and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
@@ -666,19 +693,24 @@ const strategyIncludeModelText = rich({
 });
 
 const strategySetSubscriptionText = rich({
-  usage: 'bullswarm strategy set-subscription <pool> [--plan <name>] [--monthly-usd <n|unknown>] [--included-usd <n|unknown>] [--quota-window <weekly|monthly|unknown>]',
+  usage: 'bullswarm strategy set-subscription <pool> [--plan <name>] [--monthly-usd <n|unknown>] [--included-usd <n|unknown>] [--quota-window <weekly|monthly|unknown>] [--resets-at <iso|unknown>]',
   purpose: "Record known subscription pricing for a pool so refresh's value-multiple math "
-    + '(included value vs. monthly cost) is accurate, and choose the quota window '
-    + 'routing paces this pool by.',
+    + '(included value vs. monthly cost) is accurate, choose the quota window '
+    + 'routing paces this pool by, and declare when that window ends for a '
+    + 'provider that reports usage but no reset date.',
   args: [{ name: '<pool>', desc: 'connector/pool name to record economics for' }],
   options: [
     { flag: '--plan <name>', desc: 'plan label to record', default: 'unchanged' },
     { flag: '--monthly-usd <n|unknown>', desc: 'monthly subscription price', default: 'unchanged' },
     { flag: '--included-usd <n|unknown>', desc: 'estimated included usage value', default: 'unchanged' },
     { flag: '--quota-window <weekly|monthly>', desc: 'the subscription window that PACES routing for this pool (used% vs elapsed% of it); unknown clears it back to the connector default', default: 'unchanged' },
+    { flag: '--resets-at <iso|unknown>', desc: 'the date-time this pool\'s quota window next ends, used ONLY when the provider reports usage but no reset (the Relay wallets since 2026-09-03); pacing rolls it forward one window at a time once it passes and bullswarm pools labels the row declared-reset. A provider-reported reset always wins; unknown clears it', default: 'unchanged' },
   ],
   safety: ['writes state.strategy.subscriptions[pool] and invalidates the cached report'],
-  examples: [{ cmd: 'bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000' }],
+  examples: [
+    { cmd: 'bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000' },
+    { cmd: 'bullswarm strategy set-subscription opencode2 --resets-at 2026-09-17T01:46:01Z', note: 'a wallet whose usage is reported but whose refill date is not' },
+  ],
   next: 'bullswarm strategy refresh to recompute recommendations with the new economics.',
 });
 
@@ -1255,6 +1287,7 @@ const HELP = {
   assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
   version: { _text: versionText },
+  update: { _text: updateText },
   release: { _text: releaseText },
   strategy: {
     _text: strategyText,

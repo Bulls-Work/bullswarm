@@ -165,6 +165,47 @@ export function quarantinePool(state, poolName, reason, now = Date.now(), {
   return deadline;
 }
 
+/** The shared-credential group a pool view or a bare connector declares. */
+export function upstreamGroupOf(pool) {
+  const connector = pool?.connector ?? pool;
+  const group = connector?.upstreamGroup;
+  return typeof group === 'string' && group ? group : null;
+}
+
+/**
+ * Bench every pool that shares the failing pool's upstream credential.
+ *
+ * Three Relay pools are three names for ONE relayed OAuth account. When it was
+ * invalidated (2026-09-11 12:24 UTC) the retry of a failed action walked
+ * relay-3 → relay-2 → opencode2 and burned both attempts on the same dead
+ * credential, blocking every dependent action. Quota is deliberately NOT
+ * shared: a sibling with its own window still has work in it (Q1), so only an
+ * auth quarantine spreads.
+ *
+ * @param {object[]} pools pool views (or bare connectors) to consider
+ * @returns {string[]} the pools benched here, in list order
+ */
+export function quarantineUpstreamSiblings(state, pools, {
+  pool, group, reason, now = Date.now(), until = null, kind = 'auth',
+} = {}) {
+  if (kind !== 'auth' || !group || !pool) return [];
+  const benched = [];
+  for (const candidate of pools ?? []) {
+    const name = candidate?.name;
+    if (!name || name === pool || benched.includes(name)) continue;
+    if (candidate.enabled === false) continue;
+    if (upstreamGroupOf(candidate) !== group) continue;
+    // An existing quarantine is that pool's own, truthful deadline — a quota
+    // reset outlasts a 10-minute auth re-probe. A borrowed reason never
+    // shortens it.
+    const existing = state.pools?.[name]?.quarantine;
+    if (existing && Number.isFinite(existing.until) && existing.until > now) continue;
+    quarantinePool(state, name, `sibling of ${pool}: ${reason}`, now, { until, kind });
+    benched.push(name);
+  }
+  return benched;
+}
+
 export function releaseIfProbeDue(state, poolName, now = Date.now()) {
   const q = state.pools[poolName]?.quarantine;
   if (!q) return true;

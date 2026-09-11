@@ -5,7 +5,12 @@
 //       declarations when a reader exists. Declared meters are the last
 //       resort and are labeled as such.
 //   M2. elapsed% derives from the provider's resets_at minus the window
-//       length — never from a locally assumed window start.
+//       length — never from a locally assumed window start. A provider that
+//       reports usage but no reset (the Relay wallets since 2026-09-03) may
+//       be paced from a reset the OPERATOR declared (`strategy
+//       set-subscription <pool> --resets-at`), rolled forward one window at
+//       a time once it passes; that pacing is labeled `declared-reset`
+//       wherever it shows (declaredResetPacing below).
 //   M3. Weekly/monthly windows pace routing; 5h windows are gates only
 //       (they never pace): >= BURST_BLOCK_PCT blocks dispatch outright and
 //       >= FIVE_HOUR_NEAR_LIMIT_PCT deprioritizes the pool while any pool
@@ -158,6 +163,16 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
 }
 
 /**
+ * The order windows are tried for pacing: the pool's declared window first,
+ * the other one as fallback. Each entry is [snapshot key, window name].
+ */
+function pacingOrder(requested) {
+  return normalizePacingWindow(requested) === 'monthly'
+    ? [['monthly', 'monthly'], ['seven_day', 'weekly']]
+    : [['seven_day', 'weekly'], ['monthly', 'monthly']];
+}
+
+/**
  * The paced window out of a `windows` map, honouring the pool's declared
  * window and falling back to the other one when the provider did not report
  * the declared one (a reading with only a weekly window still paces).
@@ -167,10 +182,7 @@ export function paceSnapshot(snapshot, nowMs = Date.now(), opts = {}) {
  * @returns {{pacing: object|null, window: 'weekly'|'monthly'|null}}
  */
 export function pickPacingWindow(windows = {}, requested = null) {
-  const order = normalizePacingWindow(requested) === 'monthly'
-    ? [['monthly', 'monthly'], ['seven_day', 'weekly']]
-    : [['seven_day', 'weekly'], ['monthly', 'monthly']];
-  for (const [key, name] of order) {
+  for (const [key, name] of pacingOrder(requested)) {
     const pacing = windows?.[key] ?? null;
     if (pacing) return { pacing, window: name };
   }
@@ -231,6 +243,73 @@ export function monthlyWindowMs(resetsAtMs) {
   const start = new Date(reset);
   start.setUTCMonth(start.getUTCMonth() - 1);
   return Math.max(3600_000, reset.getTime() - start.getTime());
+}
+
+/** `date` moved by whole UTC calendar months, day-of-month clamped. */
+function addUtcMonths(date, months) {
+  const total = date.getUTCMonth() + months;
+  const year = date.getUTCFullYear() + Math.floor(total / 12);
+  const month = ((total % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return Date.UTC(
+    year, month, Math.min(date.getUTCDate(), lastDay),
+    date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds(),
+  );
+}
+
+/**
+ * The first occurrence of a declared reset anchor still ahead of `nowMs`: the
+ * anchor itself while it has not passed, else the anchor stepped forward by
+ * whole windows — 7 days for weekly, one UTC calendar month for monthly.
+ * Months are counted from the anchor, not from the previous step, so a
+ * 31st never drifts to the 28th. NaN when the anchor or window is unusable:
+ * a reset that cannot be derived is not guessed (M2).
+ */
+export function rollResetForward(anchorMs, window, nowMs = Date.now()) {
+  if (!Number.isFinite(anchorMs) || !Number.isFinite(nowMs)) return NaN;
+  const name = normalizePacingWindow(window);
+  if (!name) return NaN;
+  if (anchorMs > nowMs) return anchorMs;
+  if (name === 'weekly') {
+    const steps = Math.floor((nowMs - anchorMs) / WINDOW_MS.weekly) + 1;
+    return anchorMs + steps * WINDOW_MS.weekly;
+  }
+  const anchor = new Date(anchorMs);
+  // Bounded at two centuries so a corrupt anchor still terminates.
+  for (let n = 1; n <= 2400; n += 1) {
+    const candidate = addUtcMonths(anchor, n);
+    if (candidate > nowMs) return candidate;
+  }
+  return NaN;
+}
+
+/**
+ * Pace a snapshot whose provider reported utilization but NO reset for the
+ * window, from a reset the operator declared (`strategy set-subscription
+ * <pool> --resets-at`). The used% stays the provider's; only the window's end
+ * is declared, and the result says so (`resetSource: 'declared'`) so every
+ * view can label it. Windows are tried in the pool's pacing order; a window
+ * the provider DID date is skipped — paceSnapshot already paced it and
+ * provider truth wins (M1/M2). Null when nothing applies: no snapshot, no
+ * declaration, no undated utilization.
+ *
+ * @param {object|null} snapshot
+ * @param {{pacingWindow?: string|null, resetsAt?: string|null, nowMs?: number}} [opts]
+ * @returns {{pacing: object, window: 'weekly'|'monthly', resetSource: 'declared'}|null}
+ */
+export function declaredResetPacing(snapshot, { pacingWindow = null, resetsAt = null, nowMs = Date.now() } = {}) {
+  const anchorMs = typeof resetsAt === 'string' ? Date.parse(resetsAt) : NaN;
+  if (!snapshot || !Number.isFinite(anchorMs)) return null;
+  for (const [key, name] of pacingOrder(pacingWindow)) {
+    const w = snapshot[key];
+    const used = numberOrNull(w?.utilization);
+    if (used == null || w?.resets_at) continue;
+    const resetsAtMs = rollResetForward(anchorMs, name, nowMs);
+    const windowMs = name === 'monthly' ? monthlyWindowMs(resetsAtMs) : WINDOW_MS.weekly;
+    const pacing = windowPace({ usedPct: used, resetsAtMs, windowMs, nowMs });
+    if (pacing) return { pacing, window: name, resetSource: 'declared' };
+  }
+  return null;
 }
 
 // --- snapshot cache ---------------------------------------------------------
