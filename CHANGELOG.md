@@ -1,5 +1,20 @@
 # bullswarm changelog
 
+## Unreleased
+
+- docs: README rewritten for external visitors landing on the GitHub page —
+  pitch, why it exists, install, quick start, how routing picks a pool, and
+  what a run gives back — with the detailed reference material moved to a
+  GitHub Pages site under `docs/`: `guide/entry-points`, `guide/doctrine`,
+  `guide/getting-started`, `guide/strategy`, `guide/workflows`,
+  `guide/operations`, `guide/dashboard`, `guide/repository-operations`, and
+  `guide/routing`. Terms a newcomer would trip on (pool, lane, kernel,
+  envelope, rung) are defined on first use; the 5-hour gate is documented as
+  clock-relative. The site needs the repository owner to enable Pages
+  (Settings → Pages → deploy from branch `main`, folder `/docs`) before
+  `https://cowcow02.github.io/bullswarm/` serves it; until then the same pages
+  are readable directly under `docs/guide/` in the repository.
+
 ## 0.28.7 — pools about to reset spend their leftover first
 
 - routing: quota that expires sooner is worth more. A pool whose pacing window

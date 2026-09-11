@@ -11,7 +11,7 @@
 //       accepted by the table for its own command path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -153,10 +153,15 @@ test('the known-flag table and src/help.js cannot drift apart', () => {
 // A flag that is real, used, and simply missing from a table would turn a
 // documented command into exit 2 — the one regression this change could cause.
 test('every command form README/SKILL/operations.md documents is accepted', () => {
+  const guideDir = join(ROOT, 'docs', 'guide');
   const sources = [
     'README.md',
     join('skill', 'SKILL.md'),
     join('skill', 'references', 'operations.md'),
+    join('docs', 'index.md'),
+    ...readdirSync(guideDir)
+      .filter((name) => name.endsWith('.md'))
+      .map((name) => join('docs', 'guide', name)),
   ];
   const helpKeys = new Set(HELP_PATHS.map((p) => p.join(' ')));
   let checked = 0;
