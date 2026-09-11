@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.29.0 — a declared reset date, `bullswarm update`, and benching a dead upstream together
 
 - routing: an upstream auth failure reported inside a provider's event stream
   is now the `auth` failure kind with a quarantine hint, and it benches every
