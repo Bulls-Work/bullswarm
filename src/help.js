@@ -326,11 +326,15 @@ const poolsText = rich({
     + 'nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is '
     + 'expected to push the window further; routing decides on the right-hand number. '
     + 'A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run: '
-    + 'routing only deprioritizes a near-limit pool whose usage is ahead of its clock.',
+    + 'routing only deprioritizes a near-limit pool whose usage is ahead of its clock. '
+    + 'A pool whose weekly window resets within 24 hours, or whose monthly window resets '
+    + 'within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON '
+    + 'urgency=<n>`: quota about to be lost, scored as surplus divided by the fraction '
+    + 'of the window still to run, which is what routing ranks it on.',
   args: [],
   options: [
     { flag: '--force', desc: 'bypass the meter cache and re-read live usage for every pool', default: 'off (cached meter readings reused within their TTL)' },
-    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
+    { flag: '--json', desc: 'machine-readable pool array, each entry carrying inflight {count, minutes, remainingMinutes, unknownExpected, records[]}, spend {fiveHour, weekly, monthly, pacing} rates with their source and sample count, pacingWindow, paceResetsAt, and projectedFiveHourPct / projectedWeeklyPct / projectedMonthlyPct / projectedPacingPct', default: 'human-readable aligned table' },
   ],
   safety: [
     'calls each connector\'s live usage meter (network request per metered pool) to compute used/elapsed percentages',
