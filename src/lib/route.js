@@ -55,6 +55,42 @@
 //       resets_at, an unparsable one, or a reset already in the past means no
 //       clock: R7 keeps its fixed line and nothing is clipped, because a pool
 //       is never treated differently for a number nobody produced (R8).
+//  R11. Quota that expires sooner is worth more ("expiring soon"). A pace
+//       surplus is a difference in points and says nothing about how long the
+//       pool has left to spend it. (Observed 2026-09-11T04:26Z: grok held
+//       +13.8 weekly points with 2h02m left in its week — 1.2% of the window —
+//       while claude-code:wati held +22.9 with 13h33m left (8.1%). R2 sent the
+//       run to wati on 22.9 > 13.8, and grok's 15 points expired two hours
+//       later; the owner had been pinning grok by hand.) So a pool whose
+//       PACING window resets within a fixed lead time — EXPIRING_SOON_MS: 24
+//       hours weekly, 3 days monthly, the owner's chosen values, about a
+//       seventh of a week and a tenth of a month — is ranked on
+//       urgency = effective surplus / the fraction of its window still to run
+//       (floored at MIN_WINDOW_LEFT_FRACTION so a reset seconds away cannot
+//       divide by zero) instead of on the surplus alone. Three states:
+//         urgent   — surplus still to spend and a pacing forecast (the
+//                    reading, plus in-flight work and this candidate, each
+//                    clipped at the pacing reset exactly as R10 clips the 5h
+//                    window) below PACING_FORECAST_BLOCK_PCT; with no measured
+//                    rate the reading must also sit 5 points under that line,
+//                    because an unmeasured pool's forecast is only its
+//                    reading. Ranks ahead of every pool not expiring soon.
+//         draining — forecast at/above the line: ranked after every normal
+//                    pool and chosen only when nothing else is eligible, so a
+//                    pool about to be emptied is not fed one more run that
+//                    would push it over the wall.
+//         normal   — expiring soon but on or ahead of pace: ranked with
+//                    everyone else on effective surplus, exactly as today.
+//       Urgency outranks incumbency (R3/R4/R9) and a configured effort
+//       assignment (preferredPool) by the same mechanism R7's tier uses —
+//       selection happens among the urgent pools while one exists — so an
+//       urgent challenger needs neither the 10-point margin nor the cost
+//       guard. It never overrides a strict pin (workflow strictPool filters
+//       the pool list before pickPool ever sees it), and never the 5h rules:
+//       a pool tiered down by R7/R10 or gated by R8 is not rescued by
+//       urgency. No pacing window, no parsable paceResetsAt, a reset already
+//       in the past, or any window other than weekly/monthly means there is
+//       no lead time to measure and nothing about the pool changes (R8).
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
@@ -74,6 +110,40 @@ export const INCUMBENCY_MARGIN = 10; // surplus points a challenger must beat
  * opts.inflightPenaltyPct.
  */
 export const DEFAULT_INFLIGHT_PENALTY_PCT = 3;
+
+/**
+ * R11 lead times: how close a pacing window's reset has to be before the pool
+ * counts as "expiring soon". The owner's chosen values — roughly a seventh of
+ * a week and a tenth of a month — long enough that a run dispatched now can
+ * still use the quota, short enough that the pool really is about to lose it.
+ * Any window that is not one of these keys is never expiring soon.
+ */
+export const EXPIRING_SOON_MS = {
+  weekly: 24 * 3600_000,
+  monthly: 72 * 3600_000,
+};
+
+/**
+ * Pacing-window forecast at/above which an expiring-soon pool is `draining`
+ * rather than `urgent`: its window is about to close AND about to be emptied,
+ * so one more run spends the run's next attempt on a quota failure.
+ */
+export const PACING_FORECAST_BLOCK_PCT = 95;
+
+/**
+ * Smallest window-left fraction urgency will divide by (0.5% of the window).
+ * A reset thirty seconds away is 0.005% of a week: without a floor the score
+ * would be Infinity-shaped and one pool would swallow every lane.
+ */
+export const MIN_WINDOW_LEFT_FRACTION = 0.005;
+
+/**
+ * Points of headroom an UNMEASURED expiring-soon pool needs below
+ * PACING_FORECAST_BLOCK_PCT to be called urgent. With no spend rate its
+ * forecast is only its reading plus a flat penalty, so the last few points
+ * before the line are exactly where that estimate is least trustworthy.
+ */
+export const UNMEASURED_URGENT_HEADROOM_PCT = 5;
 
 export function elapsedPct(meter, now = Date.now()) {
   if (!meter || meter.type === 'none') return 0;
@@ -297,9 +367,7 @@ export function inflightLoad(pool, opts = {}) {
   const count = Math.max(0, num(pool?.inflight?.count) ?? 0);
   // The pacing window's rate, or the weekly one when that window has no
   // measured rate — the surplus and the penalty stay on the same window.
-  const paced = num(pool?.spend?.pacing?.ratePerMinute) != null
-    ? pool.spend.pacing
-    : pool?.spend?.weekly ?? null;
+  const paced = pacingRateBlock(pool);
   const rate = num(paced?.ratePerMinute);
   const minutes = num(candidateMinutes);
   const penaltyPct = num(inflightPenaltyPct) ?? DEFAULT_INFLIGHT_PENALTY_PCT;
@@ -340,6 +408,201 @@ export function inflightLoad(pool, opts = {}) {
     : measured === 0 && untimed > 0 && minutes == null ? 'penalty'
     : sourceLabel;
   return { count, penalty, ratePerMinute: rate, estimateSource };
+}
+
+/**
+ * The spend block whose rate paces this pool: `spend.pacing` when it carries a
+ * measured rate, else `spend.weekly`. Charging a weekly rate against a monthly
+ * surplus would compare points from two different windows, so this is the only
+ * fallback — and it is the one inflightLoad() has always used, shared here so
+ * the pacing forecast (R11) charges the same rate the ranking charges.
+ */
+function pacingRateBlock(pool) {
+  return num(pool?.spend?.pacing?.ratePerMinute) != null
+    ? pool.spend.pacing
+    : pool?.spend?.weekly ?? null;
+}
+
+/**
+ * Minutes until this pool's PACING window (weekly or monthly) resets, from
+ * `pool.paceResetsAt` (src/lib/config.js, straight off the meter reading).
+ *
+ * null when there is no reading, when it cannot be parsed, or when the reset
+ * is already at/behind `now` — an outrun deadline is unknown, not a
+ * zero-length window (R8/R11). The 5h twin is minutesUntilFiveHourReset().
+ */
+export function minutesUntilPacingReset(pool, now = Date.now()) {
+  const resetsAtMs = Date.parse(pool?.paceResetsAt ?? '');
+  if (!Number.isFinite(resetsAtMs)) return null;
+  const minutes = (resetsAtMs - now) / 60_000;
+  return minutes > 0 ? minutes : null;
+}
+
+/** `5d22h`, `2h02m`, `45m` — how long a window has left, for humans (R11). */
+export function formatResetsIn(minutes) {
+  const total = Math.max(0, Math.round(num(minutes) ?? 0));
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
+  const mins = total % 60;
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${String(mins).padStart(2, '0')}m`;
+  return `${mins}m`;
+}
+
+/**
+ * In-flight minutes that fall INSIDE the pacing window still to run — the
+ * complement of inflightOverflowMinutes(). Everything after the reset is the
+ * next window's problem (R11, mirroring R10).
+ */
+function inflightMinutesWithin(pool, minutesToReset) {
+  const records = Array.isArray(pool?.inflight?.records) ? pool.inflight.records : [];
+  let inside = 0;
+  for (const record of records) {
+    const m = num(record?.remainingMinutes);
+    if (m == null) continue;
+    const kept = Math.max(0, m);
+    inside += minutesToReset == null ? kept : Math.min(kept, minutesToReset);
+  }
+  return inside;
+}
+
+/**
+ * What this pool's PACING window (weekly or monthly) will read once the work
+ * it is already carrying and the assignment being routed have landed (R11):
+ *
+ *   forecast = (projectedPacingPct ?? usedPct)
+ *              − ratePerMinute × in-flight minutes past the pacing reset
+ *              + ratePerMinute × min(candidateMinutes, minutes to the reset)
+ *
+ * Spend that lands after the reset belongs to the NEXT window, so both terms
+ * are clipped at `paceResetsAt` exactly as fiveHourForecast() clips at the 5h
+ * one: the producer's projection (src/lib/spend.js) charges every remaining
+ * in-flight minute to this window, and the minutes past the reset are credited
+ * back out of it — never below the pool's own reading. When the producer
+ * attached no projection the same in-flight minutes are added to the reading
+ * instead, which is the identical number by another route.
+ *
+ * With no measured rate there is nothing to multiply by: the forecast is the
+ * reading plus the flat per-agent penalty inflightLoad() already charges, and
+ * a pool with no reading at all forecasts null (unknown — R8).
+ *
+ * @returns {{raw: number|null, projected: number|null,
+ *            ratePerMinute: number|null, candidateAdd: number|null,
+ *            inflightCreditPct: number, minutesToReset: number|null,
+ *            forecast: number|null}}
+ */
+export function pacingForecast(pool, candidateMinutes = null, now = Date.now(), opts = {}) {
+  const { inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT } = opts;
+  const raw = num(pool?.usedPct);
+  const projected = num(pool?.projectedPacingPct);
+  const ratePerMinute = num(pacingRateBlock(pool)?.ratePerMinute);
+  const minutes = num(candidateMinutes);
+  const minutesToReset = minutesUntilPacingReset(pool, now);
+  const base = projected ?? raw;
+  const empty = {
+    raw, projected, ratePerMinute, candidateAdd: null, inflightCreditPct: 0, minutesToReset,
+  };
+  if (base == null) return { ...empty, forecast: null };
+  if (ratePerMinute == null) {
+    const count = Math.max(0, num(pool?.inflight?.count) ?? 0);
+    const penaltyPct = num(inflightPenaltyPct) ?? DEFAULT_INFLIGHT_PENALTY_PCT;
+    return { ...empty, forecast: base + count * penaltyPct };
+  }
+  const clip = (m) => (minutesToReset == null ? m : Math.min(m, minutesToReset));
+  const candidateAdd = minutes == null ? 0 : ratePerMinute * clip(Math.max(0, minutes));
+  const overflowMinutes =
+    minutesToReset == null ? 0 : inflightOverflowMinutes(pool, minutesToReset);
+  const inflightCreditPct = overflowMinutes > 0 ? ratePerMinute * overflowMinutes : 0;
+  const carried =
+    projected == null
+      ? raw + ratePerMinute * inflightMinutesWithin(pool, minutesToReset)
+      : inflightCreditPct > 0
+        ? Math.max(raw ?? projected - inflightCreditPct, projected - inflightCreditPct)
+        : projected;
+  return {
+    ...empty,
+    candidateAdd,
+    inflightCreditPct,
+    forecast: carried + candidateAdd,
+  };
+}
+
+/**
+ * R11 view of one pool: is its pacing window about to close, how urgent is the
+ * quota it still holds, and what will that window read once in-flight work and
+ * this candidate land.
+ *
+ * `effective` is the ranking's own `pace − load.penalty`; pickPool passes the
+ * number it already computed, and any other caller (bullswarm pools) lets this
+ * recompute it from the pool.
+ *
+ * `windowLeftFraction` is (100 − elapsedPct) / 100, floored at
+ * MIN_WINDOW_LEFT_FRACTION. A pool whose reading carries no elapsedPct has no
+ * measured window position, so the fraction is 1 and urgency is just the
+ * surplus — never inflated for a number nobody produced (R8).
+ *
+ * @returns {{expiringSoon: boolean, window: string|null,
+ *            minutesToReset: number|null, windowLeftFraction: number|null,
+ *            effective: number|null, urgency: number|null,
+ *            forecast: number|null, ratePerMinute: number|null,
+ *            state: 'urgent'|'normal'|'draining'|null}}
+ */
+export function expiringSoonView(pool, opts = {}) {
+  const {
+    now = Date.now(),
+    candidateMinutes = null,
+    inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT,
+    effective = null,
+  } = opts;
+  const window = pool?.pacingWindow ?? null;
+  const leadMs = EXPIRING_SOON_MS[window] ?? null;
+  const minutesToReset = minutesUntilPacingReset(pool, now);
+  const notSoon = {
+    expiringSoon: false,
+    window,
+    minutesToReset,
+    windowLeftFraction: null,
+    effective: null,
+    urgency: null,
+    forecast: null,
+    ratePerMinute: null,
+    state: null,
+  };
+  if (leadMs == null || minutesToReset == null || minutesToReset * 60_000 > leadMs) {
+    return notSoon;
+  }
+
+  const eff =
+    num(effective)
+    ?? paceScore(pool, now) - inflightLoad(pool, { candidateMinutes, inflightPenaltyPct }).penalty;
+  const elapsed = num(pool?.elapsedPct);
+  const windowLeftFraction = Math.max(
+    MIN_WINDOW_LEFT_FRACTION,
+    elapsed == null ? 1 : (100 - elapsed) / 100,
+  );
+  const pacing = pacingForecast(pool, candidateMinutes, now, { inflightPenaltyPct });
+  const forecast = pacing.forecast;
+  const used = num(pool?.usedPct);
+  // An unmeasured pool's forecast is its reading: demand real headroom before
+  // handing it the lane ahead of everyone else.
+  const trusted =
+    pacing.ratePerMinute != null ||
+    (used != null && used <= PACING_FORECAST_BLOCK_PCT - UNMEASURED_URGENT_HEADROOM_PCT);
+  const state =
+    forecast != null && forecast >= PACING_FORECAST_BLOCK_PCT ? 'draining'
+    : eff > 0 && forecast != null && trusted ? 'urgent'
+    : 'normal';
+  return {
+    expiringSoon: true,
+    window,
+    minutesToReset,
+    windowLeftFraction,
+    effective: eff,
+    urgency: eff / windowLeftFraction,
+    forecast,
+    ratePerMinute: pacing.ratePerMinute,
+    state,
+  };
 }
 
 export function isExhausted(pool) {
@@ -423,15 +686,25 @@ export function pickPool(lane, pools, opts = {}) {
     const forecast = fiveHourForecast(p, candidateMins, now);
     const load = inflightLoad(p, { candidateMinutes: candidateMins, inflightPenaltyPct });
     const pace = paceScore(p, now);
+    // R8c: pace minus the quota this pool's in-flight work and this
+    // assignment are expected to spend. Equals pace when nothing is in
+    // flight and no rate applies.
+    const effective = pace - load.penalty;
+    // R11: the same surplus, divided by how much of the pacing window is left
+    // to spend it in. All-null for a pool whose window is not about to close.
+    const expiring = expiringSoonView(p, {
+      now, candidateMinutes: candidateMins, inflightPenaltyPct, effective,
+    });
     return {
       pool: p,
       pace,
-      // R8c: pace minus the quota this pool's in-flight work and this
-      // assignment are expected to spend. Equals pace when nothing is in
-      // flight and no rate applies.
-      effective: pace - load.penalty,
+      effective,
       load,
       forecast,
+      expiring,
+      // urgent first, draining last, everything else in the middle — the tier
+      // R11 adds under R7's 5h tier and above the pace comparison.
+      urgencyRank: expiring.state === 'urgent' ? 0 : expiring.state === 'draining' ? 2 : 1,
       // R8b: R7's tier, applied to the forecast instead of the reading — and
       // R10: only for a pool further through its 5h quota than through its 5h
       // window. A pool at 88% with 23 minutes left keeps its tier 0.
@@ -442,11 +715,18 @@ export function pickPool(lane, pools, opts = {}) {
       gated: forecast.forecasted && forecast.forecast != null && forecast.forecast >= BURST_BLOCK_PCT,
     };
   });
-  // R8 before R7 before R2: forecast-gated pools last, then 5h headroom, then
-  // most-behind-after-load within the tier. The candidate list is reported in
-  // this exact preference order.
+  // R8 before R7 before R11 before R2: forecast-gated pools last, then 5h
+  // headroom, then urgent < normal < draining, then the group's own score —
+  // urgency among the urgent, most-behind-after-load everywhere else. The
+  // candidate list is reported in this exact preference order.
   scored.sort(
-    (a, b) => (a.gated ? 1 : 0) - (b.gated ? 1 : 0) || a.tier - b.tier || b.effective - a.effective,
+    (a, b) =>
+      (a.gated ? 1 : 0) - (b.gated ? 1 : 0) ||
+      a.tier - b.tier ||
+      a.urgencyRank - b.urgencyRank ||
+      (a.urgencyRank === 0
+        ? b.expiring.urgency - a.expiring.urgency
+        : b.effective - a.effective),
   );
 
   const candidates = scored.map((e) => ({
@@ -472,6 +752,16 @@ export function pickPool(lane, pools, opts = {}) {
     estimateSource: e.load.estimateSource,
     nearFiveHourLimit: e.tier === 1,
     forecastGated: e.gated,
+    // R11: when the pacing window resets, whether that is close enough to
+    // count, and the urgency/forecast that decided the pool's standing. Every
+    // field but the first is null for a pool whose window is not about to
+    // close — nothing changes for a number nobody produced (R8).
+    paceResetsInMinutes:
+      e.expiring.minutesToReset == null ? null : tenth(e.expiring.minutesToReset),
+    expiringSoon: e.expiring.expiringSoon,
+    urgency: e.expiring.urgency == null ? null : tenth(e.expiring.urgency),
+    forecastPacingPct: e.expiring.forecast == null ? null : tenth(e.expiring.forecast),
+    urgencyState: e.expiring.state,
   }));
   const gatedNames = scored.filter((e) => e.gated).map((e) => e.pool.name);
   const forecastReport = { candidateMinutes: candidateMins, gated: gatedNames };
@@ -511,6 +801,7 @@ export function pickPool(lane, pools, opts = {}) {
 
   let winnerEntry;
   let skippedNearLimit = [];
+  let skippedDraining = [];
   if (allGated) {
     winnerEntry = [...scored].sort(
       (a, b) =>
@@ -520,8 +811,20 @@ export function pickPool(lane, pools, opts = {}) {
   } else {
     // R7: selection happens only among pools with 5h headroom while any exists.
     const withHeadroom = open.filter((e) => e.tier === 0);
-    const selectable = withHeadroom.length ? withHeadroom : open;
+    const headroomSet = withHeadroom.length ? withHeadroom : open;
     skippedNearLimit = withHeadroom.length ? open.filter((e) => e.tier === 1) : [];
+
+    // R11, by the same mechanism and one rung below it: while any pool's
+    // quota is about to expire with room to spend it, that pool is the only
+    // selectable one — which is what puts urgency ahead of incumbency and of
+    // a configured effort assignment, both of which are resolved inside
+    // `selectable` below. A draining pool is the mirror image: out of
+    // selection until nothing else is left.
+    const urgentSet = headroomSet.filter((e) => e.urgencyRank === 0);
+    const notDraining = headroomSet.filter((e) => e.urgencyRank !== 2);
+    const selectable =
+      urgentSet.length ? urgentSet : notDraining.length ? notDraining : headroomSet;
+    skippedDraining = notDraining.length ? headroomSet.filter((e) => e.urgencyRank === 2) : [];
 
     const preferredEntry = preferredPool
       ? selectable.find((entry) => entry.pool.name === preferredPool)
@@ -577,6 +880,7 @@ export function pickPool(lane, pools, opts = {}) {
     preferred: !allGated && Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
     effortTier: opts.effortTier,
     skippedNearLimit,
+    skippedDraining,
     gated: allGated ? [] : gatedEntries,
     gatedFallback: allGated,
     yieldedBusier,
@@ -653,6 +957,7 @@ function routingReason(
     preferred,
     effortTier,
     skippedNearLimit = [],
+    skippedDraining = [],
     gated = [],
     gatedFallback = false,
     yieldedBusier = [],
@@ -672,6 +977,11 @@ function routingReason(
     base = `configured ${effortTier ?? 'effort'} assignment (${
       [winnerEntry.pool.name, note, inflight].filter(Boolean).join(', ')
     })`;
+  } else if (winnerEntry.urgencyRank === 0) {
+    // R11: this pool did not win on the size of its surplus but on how little
+    // time is left to spend it, so the reason names the clock, the fraction of
+    // the window still to run, and the forecast that kept it out of draining.
+    base = urgencyClause(winnerEntry, [note, inflight].filter(Boolean).join(', '));
   } else {
     // Three states, not two (R10): headroom, near the limit and tiered down,
     // or near the limit but under the window's clock — where the note itself
@@ -697,6 +1007,15 @@ function routingReason(
       `forecast-gated at/above ${BURST_BLOCK_PCT}%: ${gated.map((e) => poolPctLabel(e)).join(', ')}`,
     );
   }
+  if (skippedDraining.length) {
+    // R11: a pool whose window is about to close was passed over anyway,
+    // because the run would spend what little it has left through the wall.
+    clauses.push(
+      `expiring but draining (forecast >= ${PACING_FORECAST_BLOCK_PCT}%): ${skippedDraining
+        .map((e) => `${e.pool.name} ${pacingPctText(e)}`)
+        .join(', ')}`,
+    );
+  }
   if (yieldedBusier.length) {
     clauses.push(
       `preferred over busier: ${yieldedBusier
@@ -705,6 +1024,31 @@ function routingReason(
     );
   }
   return clauses.join(' · ');
+}
+
+/**
+ * R11's reason for an urgent winner:
+ * `expiring soon: grok resets in 2h02m, surplus 13.8 over 1.2% of the week
+ * left → urgency 1140, forecast 91.0%`. Urgency reads as a whole number: at
+ * this scale a tenth of a point is noise, and the candidate row carries the
+ * rounded value for anything that needs it.
+ */
+function urgencyClause(entry, detail) {
+  const { minutesToReset, windowLeftFraction, urgency, window } = entry.expiring;
+  const word = window === 'monthly' ? 'month' : 'week';
+  const left = tenth(windowLeftFraction * 100);
+  const tail = detail ? ` (${detail})` : '';
+  return (
+    `expiring soon: ${entry.pool.name} resets in ${formatResetsIn(minutesToReset)}, `
+    + `surplus ${tenth(entry.effective)} over ${left}% of the ${word} left `
+    + `→ urgency ${Math.round(urgency)}, forecast ${pacingPctText(entry)}${tail}`
+  );
+}
+
+/** `91.0%` — an expiring-soon pool's pacing forecast, or `?%` with no reading. */
+function pacingPctText(entry) {
+  const pct = entry.expiring.forecast;
+  return pct == null ? '?%' : `${Number(pct).toFixed(1)}%`;
 }
 
 /**
