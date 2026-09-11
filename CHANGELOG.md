@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.28.8 — a README for visitors and a documentation site
 
 - docs: README rewritten for external visitors landing on the GitHub page —
   pitch, why it exists, install, quick start, how routing picks a pool, and
