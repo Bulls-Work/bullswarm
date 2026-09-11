@@ -1,5 +1,29 @@
 # bullswarm changelog
 
+## Unreleased
+
+- routing: quota that expires sooner is worth more. A pool whose pacing window
+  resets within 24 hours (weekly) or 3 days (monthly) is now ranked on urgency
+  — its effective surplus divided by the fraction of the window still to run —
+  ahead of every pool whose window is not about to close, instead of on the
+  surplus alone. At 2026-09-11 12:26 HKT the medium lane went to
+  `claude-code:wati` (+22.9 points, 13h33m and 8.1% of its week left) over
+  `grok` (+13.8 points, 2h02m and 1.2% left, urgency ~1150 against wati's
+  ~283), and grok's points expired unspent two hours later; the owner had been
+  pinning grok by hand for such runs. Three states for an expiring pool:
+  `urgent` (surplus still to spend and a pacing forecast — the reading plus
+  in-flight work plus this candidate, each clipped at the reset — below 95%,
+  with 5 points of extra headroom demanded when no spend rate was measured),
+  which outranks incumbency and a configured effort assignment but never a
+  strict pin or the 5-hour rules; `draining` (forecast at/above 95%), ranked
+  behind every normal pool so a window about to be emptied is not fed one more
+  run; and `normal` (on or ahead of pace), ranked exactly as today. A pool with
+  no parsable `paceResetsAt`, a reset already past, or any other window is
+  never expiring soon and nothing about it changes. `bullswarm pools` ends an
+  expiring pool's line with `resets in 2h02m EXPIRING-SOON urgency=1150`, and
+  each routing candidate row carries `paceResetsInMinutes`, `expiringSoon`,
+  `urgency`, `forecastPacingPct` and `urgencyState`.
+
 ## 0.28.6 — the 5-hour near-limit line reads the clock
 
 - routing: the 5-hour near-limit line is now clock-relative. A pool is

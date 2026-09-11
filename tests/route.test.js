@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pickPool, paceScore, isQuarantined, isExhausted, fiveHourForecast,
-  DEFAULT_INFLIGHT_PENALTY_PCT,
+  pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
 
@@ -753,4 +753,356 @@ test('5h spend is clipped at the reset; the pacing-window charge is not', () => 
   // Same pool with no reset time: nothing is clipped, exactly as before R10.
   delete clipped.fiveHourResetsAt;
   assert.equal(fiveHourForecast(clipped, 40, NOW).forecast, 55); // 35 + 0.5 × 40
+});
+
+// --- R11: quota that expires sooner is worth more ------------------------------
+
+const WEEK_MINUTES = 7 * 24 * 60;
+const MONTH_MINUTES = 30 * 24 * 60;
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+/**
+ * A pool the way src/lib/config.js sets it from a paced meter reading:
+ * `usedPct` / `elapsedPct` / `pace` / `paceResetsAt` / `pacingWindow`, with
+ * elapsed and surplus rounded to a tenth exactly as windowPace() rounds them.
+ */
+function pacedPool(name, window, usedPct, minutesLeft, over = {}) {
+  const span = window === 'monthly' ? MONTH_MINUTES : WEEK_MINUTES;
+  const elapsed = round1((100 * (span - minutesLeft)) / span);
+  return pool(name, {
+    pacingWindow: window,
+    usedPct,
+    elapsedPct: elapsed,
+    pace: round1(elapsed - usedPct),
+    paceResetsAt: new Date(NOW + minutesLeft * MIN).toISOString(),
+    ...over,
+  });
+}
+
+/**
+ * The six pools exactly as they read at 2026-09-11 12:26 HKT (04:26Z), when
+ * the medium lane went to claude-code:wati on 22.9 > 13.8 and grok's 15
+ * weekly points expired two hours later:
+ *
+ *   grok                weekly   85%   resets 2h02m  98.8% elapsed  +13.8
+ *   claude-code:wati    weekly   69%   resets 13h33m 91.9% elapsed  +22.9
+ *   opencode2:relay-2   monthly  26.3% resets 19d2h  36.4% elapsed  +10.1
+ *   command-code        monthly  79.6% resets 5d22h  80.3% elapsed   +0.7
+ *   claude-code:petsona weekly   43%   resets 4d     42.9% elapsed   −0.1
+ *   claude-code         weekly   58%   resets 3d7h   53.0% elapsed   −5.0
+ *
+ * grok's pacing rate is the one that makes an 8-minute candidate cost 6
+ * points: 0.75 per worker-minute, so its window forecasts 85 + 6 = 91.0%.
+ */
+function septemberPools(over = {}) {
+  const rated = {
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0.75, source: 'history' } },
+  };
+  const grok = over.grok ?? {};
+  return [
+    pacedPool('grok', 'weekly', grok.usedPct ?? 85, grok.minutesLeft ?? 122,
+      grok.spend === null ? {} : rated),
+    pacedPool('claude-code:wati', 'weekly', 69, 13 * 60 + 33),
+    pacedPool('opencode2:relay-2', 'monthly', 26.3, 19 * 24 * 60 + 2 * 60),
+    pacedPool('command-code', 'monthly', 79.6, 5 * 24 * 60 + 22 * 60),
+    pacedPool('claude-code:petsona', 'weekly', 43, 4 * 24 * 60),
+    pacedPool('claude-code', 'weekly', 58, 3 * 24 * 60 + 7 * 60),
+  ];
+}
+
+const septemberOpts = { now: NOW, candidateMinutes: 8, callerEligible: false };
+
+test('expiring soon: grok wins the lane it lost on surplus (R11, 2026-09-11 replay)', () => {
+  const r = pickPool('build', septemberPools(), septemberOpts);
+  assert.equal(r.pick.pool, 'grok');
+
+  const g = r.candidates[0];
+  assert.equal(g.pool, 'grok');
+  assert.equal(g.expiringSoon, true);
+  assert.equal(g.urgencyState, 'urgent');
+  assert.equal(g.paceResetsInMinutes, 122);
+  assert.equal(g.effectiveSurplus, 7.8);   // 13.8 − 0.75 × 8 minutes of candidate
+  assert.equal(g.forecastPacingPct, 91);   // 85 + 6
+  assert.equal(g.urgency, 650);            // 7.8 / ((100 − 98.8) / 100)
+  assert.match(r.why, /expiring soon: grok resets in 2h/);
+  assert.equal(
+    r.why,
+    'expiring soon: grok resets in 2h02m, surplus 7.8 over 1.2% of the week left'
+      + ' → urgency 650, forecast 91.0%',
+  );
+
+  // wati's window closes inside the 24h lead too, so it is urgent as well —
+  // just far less so: 22.9 over the 8.1% of its week still to run.
+  const w = r.candidates[1];
+  assert.deepEqual(
+    [w.pool, w.urgencyState, w.urgency, w.forecastPacingPct],
+    ['claude-code:wati', 'urgent', 282.7, 69],
+  );
+  // Both urgent pools rank ahead of relay-2's +10.1, whose month has 19 days.
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pool, c.urgencyState]),
+    [
+      ['grok', 'urgent'],
+      ['claude-code:wati', 'urgent'],
+      ['opencode2:relay-2', null],
+      ['command-code', null],
+      ['claude-code:petsona', null],
+      ['claude-code', null],
+    ],
+  );
+
+  // The same table with no candidate to charge is the owner's own arithmetic:
+  // 13.8 over 1.2% of the week left → 1150, the 1140 of the 12:26 note (that
+  // number is the unrounded 98.7897% elapsed). Routing charges the candidate's
+  // own 6 points to the surplus it ranks on, which is why the assertion above
+  // reads 7.8 / 650 rather than 13.8 / 1150.
+  const bare = pickPool('build', septemberPools(), { now: NOW, callerEligible: false });
+  const bareGrok = bare.candidates.find((c) => c.pool === 'grok');
+  assert.equal(bare.pick.pool, 'grok');
+  assert.equal(bareGrok.urgency, 1150);
+  assert.ok(Math.abs(bareGrok.urgency - 1140) <= 10);
+  assert.match(
+    bare.why,
+    /surplus 13\.8 over 1\.2% of the week left → urgency 1150, forecast 85\.0%/,
+  );
+});
+
+test('an expiring pool forecast through the 95% line is draining, not urgent', () => {
+  // Same grok, same 0.75/min rate, 90% of the week already spent: the
+  // 8-minute candidate lands it at 96%. Feeding it one more run would spend
+  // the run's next attempt on a quota failure.
+  const pools = septemberPools({ grok: { usedPct: 90 } });
+  const r = pickPool('build', pools, septemberOpts);
+  const g = r.candidates.find((c) => c.pool === 'grok');
+  assert.deepEqual(
+    [g.expiringSoon, g.urgencyState, g.forecastPacingPct, g.effectiveSurplus],
+    [true, 'draining', 96, 2.8],   // 8.8 − 6
+  );
+  assert.equal(r.pick.pool, 'claude-code:wati');
+  assert.match(r.why, /expiring but draining \(forecast >= 95%\): grok 96/);
+  assert.equal(r.candidates.at(-1).pool, 'grok');  // ranked behind everyone
+
+  // Only when nothing else is eligible is a draining pool still named:
+  // returning no pick would strand the action.
+  const alone = pickPool('build', [pools[0]], septemberOpts);
+  assert.equal(alone.pick.pool, 'grok');
+});
+
+test('outside the lead time nothing changes: grok 30h from its reset ranks as today', () => {
+  const r = pickPool('build', septemberPools({ grok: { minutesLeft: 30 * 60 } }), septemberOpts);
+  const g = r.candidates.find((c) => c.pool === 'grok');
+  assert.deepEqual(
+    [g.expiringSoon, g.urgency, g.urgencyState, g.forecastPacingPct],
+    [false, null, null, null],
+  );
+  assert.equal(g.paceResetsInMinutes, 1800);      // reported even when not soon
+  assert.equal(r.pick.pool, 'claude-code:wati');  // today's ordering: 22.9 on top
+  assert.deepEqual(
+    r.candidates.map((c) => [c.pool, c.effectiveSurplus]),
+    [
+      ['claude-code:wati', 22.9],   // still urgent itself (13h33m), still first
+      ['opencode2:relay-2', 10.1],
+      ['command-code', 0.7],
+      ['claude-code:petsona', -0.1],
+      ['claude-code', -5],
+      // 30 hours from the reset is 82.1% of the week elapsed against 85%
+      // used: −2.9, less the candidate's 6 points. Last on pace, as today.
+      ['grok', -8.9],
+    ],
+  );
+});
+
+test('the lead time is per window: 24h weekly, 3 days monthly', () => {
+  const soon = pacedPool('opencode2:relay-2', 'monthly', 83.3, 2 * 24 * 60);
+  const later = pacedPool('opencode2:relay-2', 'monthly', 76.7, 4 * 24 * 60);
+  const opts = { now: NOW, callerEligible: false, callerSession: false };
+
+  // 93.3% of the month elapsed, 83.3% used → +10 with two days to spend it.
+  const two = pickPool('build', [soon], opts).candidates[0];
+  assert.deepEqual(
+    [two.expiringSoon, two.urgencyState, two.urgency, two.forecastPacingPct],
+    [true, 'urgent', 149.3, 83.3],   // 10 / 0.067
+  );
+  assert.match(
+    pickPool('build', [soon], opts).why,
+    /expiring soon: opencode2:relay-2 resets in 2d0h, surplus 10 over 6\.7% of the month left/,
+  );
+
+  // The same +10 four days out is outside the monthly lead time.
+  const four = pickPool('build', [later], opts).candidates[0];
+  assert.deepEqual([four.expiringSoon, four.urgencyState, four.urgency], [false, null, null]);
+
+  // A weekly pool four days out is outside its own (shorter) lead time too,
+  // while the same reset 23 hours out is inside it.
+  const weekLater = pacedPool('grok', 'weekly', 43, 4 * 24 * 60);
+  const weekSoon = pacedPool('grok', 'weekly', 43, 23 * 60);
+  assert.equal(pickPool('build', [weekLater], opts).candidates[0].expiringSoon, false);
+  assert.equal(pickPool('build', [weekSoon], opts).candidates[0].expiringSoon, true);
+});
+
+test('no parsable pacing reset means no lead time, and nothing changes (R8)', () => {
+  const opts = { now: NOW, callerEligible: false, callerSession: false };
+  const none = pool('grok', { pacingWindow: 'weekly', usedPct: 85, elapsedPct: 98.8, pace: 13.8 });
+  const junk = pacedPool('grok', 'weekly', 85, 122, { paceResetsAt: 'whenever' });
+  const past = pacedPool('grok', 'weekly', 85, 122, {
+    paceResetsAt: new Date(NOW - MIN).toISOString(),
+  });
+  // A window nobody paces by is never expiring soon either.
+  const fortnight = pacedPool('grok', 'fortnight', 85, 122);
+  for (const p of [none, junk, past, fortnight]) {
+    const c = pickPool('build', [p], opts).candidates[0];
+    assert.deepEqual(
+      [c.expiringSoon, c.urgency, c.urgencyState, c.forecastPacingPct, c.paceResetsInMinutes],
+      [false, null, null, null, p === junk || p === none ? null : c.paceResetsInMinutes],
+    );
+    assert.equal(c.effectiveSurplus, 13.8);
+  }
+  assert.equal(pickPool('build', [none], opts).candidates[0].paceResetsInMinutes, null);
+  assert.equal(pickPool('build', [past], opts).candidates[0].paceResetsInMinutes, null);
+});
+
+test('urgency outranks incumbency: no margin, no cost guard (R11 over R3/R4)', () => {
+  // wati holds the lane 15 points ahead of grok and is the cheaper pool; its
+  // week still has 30 hours to run, grok's has two.
+  const wati = pacedPool('claude-code:wati', 'weekly', 69, 30 * 60, {
+    incumbent: true, costRank: 2,
+  });
+  const grok = pacedPool('grok', 'weekly', 85, 122, {
+    costRank: 4,
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0.75, source: 'history' } },
+  });
+  const r = pickPool('build', [wati, grok], septemberOpts);
+  assert.equal(r.pick.pool, 'grok');
+  assert.equal(r.candidates.find((c) => c.pool === 'claude-code:wati').effectiveSurplus, 13.1);
+  assert.equal(r.candidates.find((c) => c.pool === 'grok').effectiveSurplus, 7.8);
+
+  // A grok 30 hours from its reset — outside the lead time — ahead of wati on
+  // pace but short of the 10-point margin, and pricier: incumbency holds, as
+  // it does today. Urgency is the only thing that moved the lane above.
+  const notSoon = pacedPool('grok', 'weekly', 60, 30 * 60, {
+    costRank: 4,
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0.75, source: 'history' } },
+  });
+  const held = pickPool('build', [wati, notSoon], septemberOpts);
+  assert.equal(held.candidates.find((c) => c.pool === 'grok').effectiveSurplus, 16.1);
+  assert.equal(held.pick.pool, 'claude-code:wati');
+});
+
+test('urgency outranks a configured effort assignment, the way R7 does', () => {
+  const pools = septemberPools();
+  const assigned = pickPool('build', pools, {
+    ...septemberOpts, preferredPool: 'claude-code:petsona', effortTier: 'medium',
+  });
+  assert.equal(assigned.pick.pool, 'grok');
+  assert.match(assigned.why, /expiring soon: grok/);
+
+  // With no pool expiring soon the assignment is honored exactly as today.
+  const calm = septemberPools({ grok: { minutesLeft: 30 * 60 } })
+    .filter((p) => p.name !== 'claude-code:wati');
+  const honored = pickPool('build', calm, {
+    ...septemberOpts, preferredPool: 'claude-code:petsona', effortTier: 'medium',
+  });
+  assert.equal(honored.pick.pool, 'claude-code:petsona');
+  assert.match(honored.why, /configured medium assignment/);
+});
+
+test('an unmeasured expiring pool needs 5 points of headroom to be urgent', () => {
+  const opts = { now: NOW, callerEligible: false, callerSession: false };
+  // 92% used, no spend rate: its forecast IS its reading, and the reading is
+  // inside the last five points before the 95% line.
+  const tight = pacedPool('grok', 'weekly', 92, 122);
+  const c = pickPool('build', [tight], opts).candidates[0];
+  assert.deepEqual(
+    [c.expiringSoon, c.effectiveSurplus, c.forecastPacingPct, c.urgencyState, c.urgency],
+    [true, 6.8, 92, 'normal', 566.7],   // 6.8 / 0.012
+  );
+  // Exactly at the floor (90%) it is urgent again.
+  const atLine = pickPool('build', [pacedPool('grok', 'weekly', 90, 122)], opts).candidates[0];
+  assert.deepEqual([atLine.forecastPacingPct, atLine.urgencyState], [90, 'urgent']);
+
+  // The same 92% reading with a measured rate is judged on the forecast, not
+  // on the headroom floor: 92 + 0.05 × 8 = 92.4, still under the line.
+  const measured = pacedPool('grok', 'weekly', 92, 122, {
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0.05, source: 'history' } },
+  });
+  const m = pickPool('build', [measured], { ...opts, candidateMinutes: 8 }).candidates[0];
+  assert.deepEqual([m.forecastPacingPct, m.urgencyState], [92.4, 'urgent']);
+});
+
+test('a reset seconds away divides by the floor, never by zero', () => {
+  // 30 seconds left of the week: 99.995% elapsed, 97.995% used → +2.
+  const edge = pacedPool('grok', 'weekly', 97.995, 0.5, { elapsedPct: 99.995, pace: 2 });
+  const r = pickPool('build', [edge], { now: NOW, callerEligible: false, callerSession: false });
+  const c = r.candidates[0];
+  assert.equal(c.urgency, 400);           // 2 / 0.005, not 2 / 0.00005
+  // 98% of the week spent with seconds to go: expiring, and draining with it.
+  assert.deepEqual([c.expiringSoon, c.urgencyState, c.forecastPacingPct], [true, 'draining', 98]);
+  for (const [key, value] of Object.entries(c)) {
+    assert.ok(
+      typeof value !== 'number' || Number.isFinite(value),
+      `${key} is ${value}`,
+    );
+  }
+  assert.equal(r.pick.pool, 'grok');      // nothing else is eligible
+});
+
+test('pacing spend is clipped at the pacing reset, like the 5h forecast at its own', () => {
+  // 10 minutes left in the week, 0.5 points per minute, one agent with 30
+  // minutes to run, and a 40-minute candidate: only 10 of each set of minutes
+  // can land inside this window.
+  const clipped = pacedPool('grok', 'weekly', 20, 10, {
+    elapsedPct: 99.9,
+    pace: 79.9,
+    projectedPacingPct: 35,              // what the producer charged: 20 + 0.5×30
+    inflight: { count: 1, minutes: 10, records: [{ remainingMinutes: 30 }] },
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0.5, source: 'history' } },
+  });
+  const f = pacingForecast(clipped, 40, NOW);
+  assert.equal(f.candidateAdd, 5);       // 0.5 × min(40, 10), not 0.5 × 40 = 20
+  assert.equal(f.inflightCreditPct, 10); // 0.5 × the 20 in-flight minutes past the reset
+  assert.equal(f.forecast, 30);          // 20 + 5 in flight + 5 candidate
+  assert.equal(f.minutesToReset, 10);
+
+  // With no producer projection the same minutes are added to the reading
+  // instead of credited back out of it — the identical number by the other route.
+  const unprojected = { ...clipped, projectedPacingPct: null };
+  assert.equal(pacingForecast(unprojected, 40, NOW).forecast, 30);
+
+  const c = pickPool('build', [clipped], {
+    now: NOW, callerEligible: false, callerSession: false, candidateMinutes: 40,
+  }).candidates[0];
+  assert.equal(c.forecastPacingPct, 30);
+  // The surplus charge is NOT clipped (R10): 0.5 × (30 + 40) = 35 off 79.9.
+  assert.equal(c.effectiveSurplus, 44.9);
+  assert.equal(c.urgencyState, 'urgent');
+
+  // No parsable reset: nothing is clipped, and nothing is expiring soon.
+  const unclipped = { ...clipped, paceResetsAt: null };
+  assert.equal(pacingForecast(unclipped, 40, NOW).forecast, 55);  // 35 + 0.5 × 40
+});
+
+test('the 5h rules are never rescued by urgency', () => {
+  const opts = { now: NOW, callerEligible: false, callerSession: false, candidateMinutes: 8 };
+  // grok is expiring soon AND over its 5h line, ahead of that window's clock:
+  // R7/R10 tier it down and R11 does not lift it back up.
+  const tiered = pacedPool('grok', 'weekly', 85, 122, {
+    fiveHourUsedPct: 88,
+    fiveHourResetsAt: new Date(NOW + 240 * MIN).toISOString(),
+  });
+  const calm = pacedPool('claude-code', 'weekly', 58, 3 * 24 * 60 + 7 * 60, { fiveHourUsedPct: 3 });
+  const r = pickPool('build', [tiered, calm], opts);
+  assert.equal(r.pick.pool, 'claude-code');
+  const g = r.candidates.find((c) => c.pool === 'grok');
+  assert.deepEqual([g.nearFiveHourLimit, g.urgencyState], [true, 'urgent']);
+  assert.match(r.why, /skipped near 5h limit: grok 88%/);
+
+  // Gated by the burst line at/above 90% of the 5h window: same answer.
+  const gated = pacedPool('grok', 'weekly', 85, 122, {
+    fiveHourUsedPct: 70,
+    projectedFiveHourPct: 91,
+  });
+  const blocked = pickPool('build', [gated, calm], opts);
+  assert.equal(blocked.pick.pool, 'claude-code');
+  assert.deepEqual(blocked.forecast.gated, ['grok']);
 });
