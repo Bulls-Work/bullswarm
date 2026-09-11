@@ -3,7 +3,9 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { fiveHourElapsedPct, pickPool } from './lib/route.js';
+import {
+  expiringSoonView, fiveHourElapsedPct, formatResetsIn, pickPool,
+} from './lib/route.js';
 import { argvWithModel, watchOnce } from './lib/watch.js';
 import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
@@ -121,13 +123,21 @@ async function cmdPools(opts) {
       ? (projectedPct == null ? '' : ` 5h=?->${projectedPct}%${clock}`)
       : ` 5h=${readingPct}%${projectedPct != null && projectedPct !== readingPct ? `->${projectedPct}%` : ''}${clock}`;
     const nearLimit = p.nearFiveHourLimit === true ? ' NEAR-5H-LIMIT' : '';
+    // R11: a pacing window about to reset is quota about to be lost, so say
+    // when it closes and how urgent what is left has become. Pools whose
+    // window is not closing soon print nothing extra.
+    const expiring = expiringSoonView(p, { now });
+    const expiringNote = expiring.expiringSoon
+      ? ` resets in ${formatResetsIn(expiring.minutesToReset)} EXPIRING-SOON`
+        + ` urgency=${Math.round(expiring.urgency)}`
+      : '';
     const status = !p.enabled
       ? 'disabled'
       : p.quarantine
         ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
         : `ready${burst}${nearLimit}`;
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour} ${status}`,
+      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour} ${status}${expiringNote}`,
     );
   }
   return 0;
