@@ -31,7 +31,6 @@ function run(argv) {
         ...process.env,
         BULLSWARM_HOME: home,
         BULLSWARM_DISABLE_CLAUDE_PROFILES: '1',
-        BULLSWARM_DISABLE_OPENCODE_RELAY: '1',
       },
       encoding: 'utf8',
       input: '',

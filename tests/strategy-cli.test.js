@@ -30,6 +30,8 @@ function fixture() {
   autoSetup(dir, { reason: 'test' });
   // Strategy tests must not depend on whichever agent CLIs happen to be on
   // the host PATH. Enable one real packaged connector without dispatching it.
+  // command-code is a contrib provider: its pools exist only once enabled.
+  writeFileSync(join(dir, 'providers.json'), `${JSON.stringify({ enabled: ['command-code'] })}\n`);
   const state = loadState(dir);
   state.pools.codex ??= {};
   state.pools.codex.enabled = true;
@@ -288,7 +290,7 @@ test('strategy setup sorts providers and hides disabled test fixtures', () => {
   });
   const inventory = strategyInventory({
     pools: [
-      pool('opencode2:relay-2'),
+      pool('relay:b'),
       pool('echo', { enabled: false, testFixture: true }),
       pool('claude-code:acme'),
       pool('claude-code'),
@@ -297,7 +299,7 @@ test('strategy setup sorts providers and hides disabled test fixtures', () => {
     report: { capturedAt: new Date().toISOString(), discoveries: {}, suggestions: {} },
   });
   assert.deepEqual(inventory.providers.map((provider) => provider.name), [
-    'claude-code', 'claude-code:acme', 'opencode2:relay-2',
+    'claude-code', 'claude-code:acme', 'relay:b',
   ]);
   const screen = renderStrategyDashboard(inventory, { width: 70, height: 30 });
   assert.doesNotMatch(screen, /echo/);
@@ -579,7 +581,7 @@ function rungFixture() {
     bin: 'node',
     configDirs: [],
     spawn: {
-      cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'],
+      cmd: ['node', '{bullswarmDir}/src/providers/echo/echo-worker.mjs', '{taskFile}'],
       cwdMode: 'task-file-dir',
     },
     outputExtraction: { strategy: 'stdout' },

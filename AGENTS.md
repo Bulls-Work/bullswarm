@@ -14,7 +14,9 @@ content. Published as `bullswarm` on npm.
 2. Pace by meter surplus = elapsed% (from provider resets_at) − used%.
    Weekly/monthly windows pace; 5h windows are burst gates only (M1–M5 in
    `src/meters/framework.js`).
-3. Connector quirks live in `connectors/*.json`, never in core logic.
+3. Provider quirks live in the provider's directory (`src/providers/<name>/`,
+   `providers/contrib/<name>/`, or `~/.bullswarm/providers/<name>/`), never in
+   core logic (see `docs/guide/providers.md`).
 4. Quarantine always auto-releases; recursion depth is core-owned via env
    (`BULLSWARM_DEPTH`).
 5. Workflow dispatches must honor the same guarantees as single runs:
@@ -61,7 +63,8 @@ author (`bullswarm workflow plan contract` returns the schema). There is no
 classifier or preview step. The skill is published alongside the package and
 is the canonical reference for the CLI surface.
 
-- Zero runtime dependencies. Node >= 18. Tests must never require network:
+- Zero runtime dependencies. Node >= 22.12 (providers load synchronously
+  through `require` of ES modules). Tests must never require network:
   prime `~/.bullswarm/meters/*.json` caches with fresh timestamps if needed.
 - Every verb must work non-interactively (no TTY). The interactive wizard is
   a human convenience, never a requirement.
@@ -70,14 +73,19 @@ is the canonical reference for the CLI surface.
   `git push --tags`
   — CI publishes through npm trusted publishing (OIDC), no tokens.
 
-## Adding a connector
+## Adding a provider
 
-Copy an existing file in `connectors/`, set: bin name, configDirs for
-discovery, spawn argv template (`{taskFile}` `{cwd}` `{bullswarmDir}`
-substitutions), authSignatures (output strings meaning auth/throttle
-failure), outputExtraction strategy, meter type, costRank, lanes. Add a
-meter reader in `src/meters/` only if the provider exposes a usage API —
-declared meters are the fallback, never the goal.
+A provider is a directory holding `connector.json` (a pool template checked
+against `src/providers/_schema.json`) and/or `provider.mjs`. First-class
+providers live in `src/providers/<name>/`, contrib providers in
+`providers/contrib/<name>/` (enabled per machine through
+`~/.bullswarm/providers.json`), and a user's own in
+`~/.bullswarm/providers/<name>/`. Start from
+`bullswarm provider scaffold <name> [--from <template>]`, then
+`bullswarm provider validate` and `bullswarm provider probe <pool>`. Write a
+`readUsage` export only if the vendor exposes a usage API — declared meters
+are the fallback, never the goal. The contract is `docs/guide/providers.md`;
+the authoring method is `skill/references/providers.md`.
 
 ## Releasing
 

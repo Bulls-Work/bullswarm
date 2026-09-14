@@ -787,7 +787,7 @@ function pacedPool(name, window, usedPct, minutesLeft, over = {}) {
  *
  *   grok                weekly   85%   resets 2h02m  98.8% elapsed  +13.8
  *   claude-code:acme    weekly   69%   resets 13h33m 91.9% elapsed  +22.9
- *   opencode2:relay-2   monthly  26.3% resets 19d2h  36.4% elapsed  +10.1
+ *   relay:b             monthly  26.3% resets 19d2h  36.4% elapsed  +10.1
  *   command-code        monthly  79.6% resets 5d22h  80.3% elapsed   +0.7
  *   claude-code:initech weekly   43%   resets 4d     42.9% elapsed   −0.1
  *   claude-code         weekly   58%   resets 3d7h   53.0% elapsed   −5.0
@@ -804,7 +804,7 @@ function septemberPools(over = {}) {
     pacedPool('grok', 'weekly', grok.usedPct ?? 85, grok.minutesLeft ?? 122,
       grok.spend === null ? {} : rated),
     pacedPool('claude-code:acme', 'weekly', 69, 13 * 60 + 33),
-    pacedPool('opencode2:relay-2', 'monthly', 26.3, 19 * 24 * 60 + 2 * 60),
+    pacedPool('relay:b', 'monthly', 26.3, 19 * 24 * 60 + 2 * 60),
     pacedPool('command-code', 'monthly', 79.6, 5 * 24 * 60 + 22 * 60),
     pacedPool('claude-code:initech', 'weekly', 43, 4 * 24 * 60),
     pacedPool('claude-code', 'weekly', 58, 3 * 24 * 60 + 7 * 60),
@@ -839,13 +839,13 @@ test('expiring soon: grok wins the lane it lost on surplus (R11, 2026-09-11 repl
     [w.pool, w.urgencyState, w.urgency, w.forecastPacingPct],
     ['claude-code:acme', 'urgent', 282.7, 69],
   );
-  // Both urgent pools rank ahead of relay-2's +10.1, whose month has 19 days.
+  // Both urgent pools rank ahead of relay:b's +10.1, whose month has 19 days.
   assert.deepEqual(
     r.candidates.map((c) => [c.pool, c.urgencyState]),
     [
       ['grok', 'urgent'],
       ['claude-code:acme', 'urgent'],
-      ['opencode2:relay-2', null],
+      ['relay:b', null],
       ['command-code', null],
       ['claude-code:initech', null],
       ['claude-code', null],
@@ -902,7 +902,7 @@ test('outside the lead time nothing changes: grok 30h from its reset ranks as to
     r.candidates.map((c) => [c.pool, c.effectiveSurplus]),
     [
       ['claude-code:acme', 22.9],   // still urgent itself (13h33m), still first
-      ['opencode2:relay-2', 10.1],
+      ['relay:b', 10.1],
       ['command-code', 0.7],
       ['claude-code:initech', -0.1],
       ['claude-code', -5],
@@ -914,8 +914,8 @@ test('outside the lead time nothing changes: grok 30h from its reset ranks as to
 });
 
 test('the lead time is per window: 24h weekly, 3 days monthly', () => {
-  const soon = pacedPool('opencode2:relay-2', 'monthly', 83.3, 2 * 24 * 60);
-  const later = pacedPool('opencode2:relay-2', 'monthly', 76.7, 4 * 24 * 60);
+  const soon = pacedPool('relay:b', 'monthly', 83.3, 2 * 24 * 60);
+  const later = pacedPool('relay:b', 'monthly', 76.7, 4 * 24 * 60);
   const opts = { now: NOW, callerEligible: false, callerSession: false };
 
   // 93.3% of the month elapsed, 83.3% used → +10 with two days to spend it.
@@ -926,7 +926,7 @@ test('the lead time is per window: 24h weekly, 3 days monthly', () => {
   );
   assert.match(
     pickPool('build', [soon], opts).why,
-    /expiring soon: opencode2:relay-2 resets in 2d0h, surplus 10 over 6\.7% of the month left/,
+    /expiring soon: relay:b resets in 2d0h, surplus 10 over 6\.7% of the month left/,
   );
 
   // The same +10 four days out is outside the monthly lead time.

@@ -27,6 +27,7 @@ import {
 } from './strategy-cli.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
+import { cmdProvider } from './provider-cli.js';
 import { helpForArgs, usageLine } from './help.js';
 import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
@@ -75,6 +76,7 @@ export function parseArgs(argv) {
 async function cmdPools(opts) {
   const now = Date.now();
   const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
+    packaged: true,
     force: opts.force === true,
     getReadings: getAllMeterReadings,
   });
@@ -275,6 +277,7 @@ async function cmdRun(opts) {
   sweepQuarantines(state, now);
 
   const { pools } = await buildPoolsLive(getBullswarmDir(), now, {
+    packaged: true,
     getReadings: getAllMeterReadings,
   });
   for (const p of pools) {
@@ -710,6 +713,7 @@ async function cmdDoctor(opts) {
 
   try {
     const { pools } = await buildPoolsLive(getBullswarmDir(), Date.now(), {
+    packaged: true,
       getReadings: getAllMeterReadings,
     });
     const live = pools.filter((p) => p.meterSource === 'live' || p.meterSource === 'cache');
@@ -753,10 +757,10 @@ async function cmdDoctor(opts) {
 
 // Which help path explains the verb this argv is dispatching to, i.e. which
 // row of the known-flag table applies. Returns null for the verbs that own
-// their own parser (workflow/runs/strategy) and for an unrecognized verb,
+// their own parser (workflow/runs/strategy/provider) and for an unrecognized verb,
 // which the dispatcher already answers with exit 2.
 function topLevelHelpPath(verb, opts) {
-  const OWN_PARSER = new Set(['workflow', 'runs', 'strategy']);
+  const OWN_PARSER = new Set(['workflow', 'runs', 'strategy', 'provider']);
   if (verb === undefined) return [];
   if (verb === '--version') return ['version'];
   if (OWN_PARSER.has(verb)) return null;
@@ -795,7 +799,7 @@ export async function main(argv) {
 
   // Unknown flags are a usage error before anything else happens — before
   // setup self-initializes, before a pool is built, before a delegate is
-  // spawned. `workflow`, `runs` and `strategy` re-parse their own argv, so
+  // spawned. `workflow`, `runs`, `strategy` and `provider` re-parse their own argv, so
   // they run the same gate inside their own dispatchers.
   const flagExit = unknownFlagExit(opts._flags, topLevelHelpPath(verb, opts));
   if (flagExit !== null) return flagExit;
@@ -834,6 +838,8 @@ export async function main(argv) {
       });
     case 'integrate':
       return cmdIntegrate(opts);
+    case 'provider':
+      return cmdProvider(tail, { bullswarmDir: getBullswarmDir() });
     case 'version':
     case '--version':
       console.log(getVersion());

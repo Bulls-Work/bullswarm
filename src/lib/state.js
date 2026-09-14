@@ -165,19 +165,25 @@ export function quarantinePool(state, poolName, reason, now = Date.now(), {
   return deadline;
 }
 
-/** The shared-credential group a pool view or a bare connector declares. */
+/**
+ * The credential group a pool view or a bare connector declares:
+ * `credentialGroup`, else the legacy spelling `upstreamGroup`. Pools in one
+ * credential group share one upstream credential.
+ */
 export function upstreamGroupOf(pool) {
   const connector = pool?.connector ?? pool;
-  const group = connector?.upstreamGroup;
-  return typeof group === 'string' && group ? group : null;
+  for (const group of [connector?.credentialGroup, connector?.upstreamGroup]) {
+    if (typeof group === 'string' && group) return group;
+  }
+  return null;
 }
 
 /**
- * Bench every pool that shares the failing pool's upstream credential.
+ * Bench every pool in the failing pool's credential group.
  *
- * Three Relay pools are three names for ONE relayed OAuth account. When it was
- * invalidated (2026-09-11 12:24 UTC) the retry of a failed action walked
- * relay-3 → relay-2 → opencode2 and burned both attempts on the same dead
+ * Several pools can be names for ONE relayed account. When that credential was
+ * invalidated (2026-09-11 12:24 UTC) the retry of a failed action walked three
+ * sibling pools of the same group and burned both attempts on the same dead
  * credential, blocking every dependent action. Quota is deliberately NOT
  * shared: a sibling with its own window still has work in it (Q1), so only an
  * auth quarantine spreads.

@@ -23,7 +23,7 @@ function echoHome() {
   const home = mkdtempSync(join(tmpdir(), 'bs-state-race-'));
   mkdirSync(join(home, 'connectors'), { recursive: true });
   for (const file of ['echo.json', 'echo-worker.mjs']) {
-    writeFileSync(join(home, 'connectors', file), readFileSync(join(REPO, 'connectors', file)));
+    writeFileSync(join(home, 'connectors', file), readFileSync(join(REPO, 'src', 'providers', 'echo', file === 'echo.json' ? 'connector.json' : file)));
   }
   writeFileSync(join(home, 'state.json'), `${JSON.stringify({
     version: 1,
@@ -59,7 +59,7 @@ test('an operator write during a long run survives the run (D5)', async () => {
     const run = spawn(process.execPath, [
       BIN, 'run', '--lane', 'chore', '--no-caller', '--json',
       '--prompt', 'SLEEP_MS:3000 report the race',
-    ], { env: { ...process.env, BULLSWARM_HOME: f.home }, stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     run.stdout.on('data', (c) => { stdout += c; });
@@ -70,7 +70,7 @@ test('an operator write during a long run survives the run (D5)', async () => {
     // The operator command the audit used, run for real against the same home
     // while the worker is still going.
     const off = spawnSync(process.execPath, [BIN, 'strategy', 'set-provider', 'echo', 'off', '--yes'], {
-      env: { ...process.env, BULLSWARM_HOME: f.home }, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' }, encoding: 'utf8', timeout: 30_000,
     });
     assert.equal(off.status, 0, off.stderr);
     assert.equal(readState(f.home).pools.echo.enabled, false, 'the operator write landed mid-run');

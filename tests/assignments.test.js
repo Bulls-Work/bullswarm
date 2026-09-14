@@ -378,7 +378,7 @@ test('the V2 dispatcher registers an assignment around a real echo dispatch', as
     for (const file of ['echo.json', 'echo-worker.mjs']) {
       writeFileSync(
         join(bullswarmDir, 'connectors', file),
-        readFileSync(join(ROOT, 'connectors', file)),
+        readFileSync(join(ROOT, 'src', 'providers', 'echo', file === 'echo.json' ? 'connector.json' : file)),
       );
     }
     writeFileSync(join(bullswarmDir, 'state.json'), JSON.stringify({
@@ -388,8 +388,8 @@ test('the V2 dispatcher registers an assignment around a real echo dispatch', as
       decisionLog: [],
       config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
     }, null, 2));
-    const connector = JSON.parse(readFileSync(join(ROOT, 'connectors', 'echo.json'), 'utf8'));
-    connector.spawn.cmd = ['node', join(ROOT, 'connectors', 'echo-worker.mjs'), '{taskFile}'];
+    const connector = JSON.parse(readFileSync(join(ROOT, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
+    connector.spawn.cmd = ['node', join(ROOT, 'src', 'providers', 'echo', 'echo-worker.mjs'), '{taskFile}'];
     const pools = [{
       name: 'echo', connector, enabled: true, costRank: 5,
       lanes: ['analyze', 'build', 'chore'], meter: { type: 'none' },
@@ -435,7 +435,7 @@ test('the V2 dispatcher registers an assignment around a real echo dispatch', as
 function cli(home, args) {
   return spawnSync(process.execPath, [BIN, ...args], {
     cwd: ROOT,
-    env: { ...process.env, BULLSWARM_HOME: home },
+    env: { ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' },
     encoding: 'utf8',
   });
 }
@@ -447,7 +447,7 @@ function fixtureHome() {
   writeFileSync(join(home, 'connectors', 'echo.json'), JSON.stringify({
     name: 'echo',
     bin: 'node',
-    spawn: { cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
+    spawn: { cmd: ['node', '{bullswarmDir}/src/providers/echo/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
     outputExtraction: { strategy: 'stdout' },
     meter: { type: 'none' },
     costRank: 5,
@@ -561,7 +561,7 @@ test('bullswarm pools names the window each pool is paced by', () => {
       JSON.stringify({
         name,
         bin: 'node',
-        spawn: { cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
+        spawn: { cmd: ['node', '{bullswarmDir}/src/providers/echo/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
         outputExtraction: { strategy: 'stdout' },
         meter: { type: 'reader', window },
         costRank: 5,

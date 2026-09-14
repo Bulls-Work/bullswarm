@@ -39,7 +39,7 @@ function fixtureHome(t) {
   mkdirSync(workspace);
   const workerPath = join(root, 'worker.mjs');
   writeFileSync(workerPath, PADDING_WORKER);
-  const connector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+  const connector = JSON.parse(readFileSync(join(REPO, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
   connector.name = 'local';
   connector.spawn = { cmd: ['node', workerPath, '{taskFile}'], cwdMode: 'task-file-dir' };
   writeFileSync(join(bullswarmDir, 'connectors', 'local.json'), JSON.stringify(connector));

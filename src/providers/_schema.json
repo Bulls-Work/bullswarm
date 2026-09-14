@@ -1,0 +1,181 @@
+{
+  "$comment": "Provider pool template schema (src/providers/<name>/connector.json, and every pool a provider.mjs returns). Every per-CLI quirk lives HERE, never in core logic. See docs/guide/providers.md.",
+  "name": "pool name: the provider name, or <provider>:<suffix> for extra pools a provider returns",
+  "bin": "binary on PATH to probe for discovery",
+  "configDirs": [
+    "~/.example",
+    "~/.config/example"
+  ],
+  "spawn": {
+    "$comment": "argv template; {taskFile} {cwd} {sessionId} {bullswarmDir} are substituted ({bullswarmDir} is the package root)",
+    "cmd": [
+      "example-cli",
+      "--task",
+      "{taskFile}"
+    ],
+    "cwdMode": "add-dir|task-file-dir",
+    "$comment-cwd": "cwdMode documents how the CLI resolves its project: 'pwd' means the CLI resolves from $PWD so the watcher MUST set PWD and spawn inside --add-dir"
+  },
+  "authSignatures": [
+    "strings in output that mean auth/throttle failure"
+  ],
+  "quotaSignatures": [
+    "strings in output that mean this credential is out of quota RIGHT NOW (usage/rate limit hit)"
+  ],
+  "$comment-quotaSignatures": "Optional. Merged on top of DEFAULT_QUOTA_SIGNATURES (src/lib/quota.js), matched case-insensitively, and only honored when the matched line is quota-shaped (<=300 chars and the phrase starts in the first 40 chars or the line is error-shaped) so agent prose and tool output that merely discuss limits are never killed. A hit is classified as the mechanical failure kind `quota` (checked before authSignatures), kills the attempt, and quarantines the pool until the reset time parsed from the message, else the pool's cached five_hour.resets_at, else 30 minutes.",
+  "outputExtraction": {
+    "$comment": "how to get the real answer out of stdout+stderr+files",
+    "strategy": "stdout|stdout-tail|json-field|file|event-stream",
+    "field": "optional json field path or file glob"
+  },
+  "eventStream": {
+    "$comment": "Optional declarative JSONL adapter. Provider quirks stay here; core emits normalized semantic actions.",
+    "format": "jsonl",
+    "args": [
+      "CLI flags that enable machine-readable streaming"
+    ],
+    "modelPaths": [
+      "provider model-id paths in priority order"
+    ],
+    "silenceThresholdSec": 600,
+    "rules": [
+      {
+        "rootMatch": {
+          "path": "provider.event.type",
+          "equals": "tool_started"
+        },
+        "forEach": "optional.array.path",
+        "match": {
+          "path": "nested.type",
+          "equals": "tool_use"
+        },
+        "idPaths": [
+          "provider action id paths in priority order"
+        ],
+        "kindPaths": [
+          "tool or response kind paths"
+        ],
+        "summaryPaths": [
+          "safe command/path/text scalar paths"
+        ],
+        "status": "queued|running|streaming|completed|failed",
+        "statusPath": "optional provider status path",
+        "statusMap": {
+          "provider-status": "normalized-status"
+        },
+        "aggregate": "consecutive",
+        "summaryMode": "replace|concat"
+      }
+    ],
+    "output": [
+      {
+        "match": {
+          "path": "provider.event.type",
+          "equals": "final"
+        },
+        "path": "provider final response scalar path",
+        "mode": "last|concat",
+        "separator": "optional separator"
+      }
+    ]
+  },
+  "meter": {
+    "$comment": "none | declared (manual) | reader (programmatic: the owning provider exports readUsage)",
+    "type": "none|declared|reader",
+    "window": "5h|weekly|monthly|none (for declared/reader)"
+  },
+  "costRank": 2,
+  "lanes": [
+    "analyze",
+    "build",
+    "chore"
+  ],
+  "capabilities": [
+    "strong-analysis",
+    "code-reading",
+    "file-editing",
+    "workflow-planning"
+  ],
+  "modelDiscovery": {
+    "$comment": "Optional local CLI model listing. Parsing quirks stay connector-owned.",
+    "cmd": [
+      "example-cli",
+      "--list-models"
+    ],
+    "parse": "lines|columns|bullets",
+    "includePattern": "optional regex",
+    "ignorePattern": "optional regex",
+    "timeoutMs": 20000,
+    "maxModels": 250
+  },
+  "knownModels": [
+    "fallback-model-id"
+  ],
+  "modelProfiles": [
+    {
+      "match": "connector-owned regex",
+      "tier": "high|medium|low",
+      "qualityRank": 1,
+      "benchmark": {
+        "name": "optional",
+        "score": null,
+        "source": null,
+        "updatedAt": null
+      },
+      "pricing": {
+        "inputUsdPerMillion": null,
+        "cacheReadUsdPerMillion": null,
+        "outputUsdPerMillion": null
+      },
+      "pricingSource": "optional dated primary source",
+      "pricingUpdatedAt": "YYYY-MM-DD",
+      "autoRecommend": true,
+      "free": false
+    }
+  ],
+  "modelSelection": {
+    "flag": "--model",
+    "mode": "replace-or-append"
+  },
+  "reasoning": {
+    "$comment": "Optional. How THIS CLI expresses a thinking level. Omit the block entirely when the CLI has no such control: core then appends nothing and reports source 'unsupported'. Declare exactly one of flag/args.",
+    "flag": "--effort",
+    "args": [
+      "-c",
+      "model_reasoning_effort={level}"
+    ],
+    "$comment-form": "flag: appended as `<flag> <level>` with replace-or-append semantics, so a level already pinned in spawn.cmd is replaced rather than duplicated. args: appended verbatim with {level} substituted, for CLIs whose control is a config override rather than a flag.",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "$comment-levels": "the subset of the common scale (low, medium, high, xhigh, max — weakest to strongest, src/lib/reasoning.js) that this CLI accepts, weakest first. A requested level outside the subset is clamped to the strongest supported level not above it, or to the weakest supported level when the request is below all of them, and the clamp is recorded.",
+    "defaults": {
+      "high": "xhigh",
+      "medium": "high",
+      "low": "medium"
+    },
+    "$comment-defaults": "the level to use for each effort tier when nothing else asked. Last layer of the precedence chain: action override > run override > strategy per-pool > strategy per-tier > THESE > nothing appended. The literal 'default' at any layer means 'append nothing, let the CLI's own configuration decide'.",
+    "skipModels": [
+      "^model-id-regex-that-rejects-the-flag"
+    ],
+    "$comment-skipModels": "Optional connector-owned regexes. A selected model matching one gets no level appended (source 'skipped-model'), for CLIs whose flag is only valid on some models."
+  },
+  "$comment-reasoning": "Optional prose companion. Say which command's output the block was read from, and mark anything the CLI does not actually print as UNVERIFIED — never invent an accepted value.",
+  "subscription": {
+    "plan": null,
+    "monthlyPriceUsd": null,
+    "includedValueUsd": null,
+    "quotaWindow": "weekly"
+  },
+  "credentialGroup": "optional shared-credential group id, e.g. relay:relay.example",
+  "$comment-credentialGroup": "Pools with the same credentialGroup share one upstream credential: an auth failure on one benches its siblings and dispatch avoids retrying the group. `upstreamGroup` is the accepted legacy spelling of this field.",
+  "flags": {
+    "stealth": false,
+    "$comment-stealth": "stealth=true: prompts/completions retained by an anonymous provider — opt-in only, never a default"
+  },
+  "$comment-timeout": "Delegates have no implicit wall-clock timeout; use direct --timeout or workflow step.timeoutSec as an explicit opt-in"
+}

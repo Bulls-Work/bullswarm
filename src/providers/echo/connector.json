@@ -3,7 +3,7 @@
   "bin": "node",
   "configDirs": [],
   "spawn": {
-    "cmd": ["node", "{bullswarmDir}/connectors/echo-worker.mjs", "{taskFile}"],
+    "cmd": ["node", "{bullswarmDir}/src/providers/echo/echo-worker.mjs", "{taskFile}"],
     "cwdMode": "task-file-dir"
   },
   "authSignatures": ["Authentication failed", "unauthorized"],

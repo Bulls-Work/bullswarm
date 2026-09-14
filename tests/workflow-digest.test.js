@@ -121,7 +121,7 @@ function echoHome(t, { worker = null } = {}) {
   const workspace = join(root, 'repo');
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
   mkdirSync(workspace);
-  const connector = JSON.parse(readFileSync(join(REPO, 'connectors', 'echo.json'), 'utf8'));
+  const connector = JSON.parse(readFileSync(join(REPO, 'src', 'providers', 'echo', 'connector.json'), 'utf8'));
   if (worker) {
     const workerPath = join(root, 'worker.mjs');
     writeFileSync(workerPath, worker);

@@ -16,7 +16,7 @@ function sandbox() {
   mkdirSync(join(home, 'connectors'), { recursive: true });
   writeFileSync(join(home, 'connectors', 'local-agent.json'), JSON.stringify({
     name: 'local-agent', costRank: 1, lanes: ['analyze', 'build', 'chore'],
-    spawn: { cmd: ['node', join(REPO, 'connectors', 'echo-worker.mjs'), '{taskFile}'], cwdMode: 'task-file-dir' },
+    spawn: { cmd: ['node', join(REPO, 'src', 'providers', 'echo', 'echo-worker.mjs'), '{taskFile}'], cwdMode: 'task-file-dir' },
     authSignatures: [], outputExtraction: { strategy: 'stdout' },
     meter: { type: 'none' }, flags: { stealth: false }, timeoutSec: 60,
   }));
@@ -32,7 +32,7 @@ function sandbox() {
 
 function run(home, args) {
   return spawnSync(process.execPath, [BIN, ...args], {
-    env: { ...process.env, BULLSWARM_HOME: home },
+    env: { ...process.env, BULLSWARM_HOME: home, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' },
     encoding: 'utf8',
     timeout: 30_000,
   });

@@ -25,7 +25,7 @@ function echoHome() {
   const home = mkdtempSync(join(tmpdir(), 'bs-lock-sites-'));
   mkdirSync(join(home, 'connectors'), { recursive: true });
   for (const file of ['echo.json', 'echo-worker.mjs']) {
-    writeFileSync(join(home, 'connectors', file), readFileSync(join(REPO, 'connectors', file)));
+    writeFileSync(join(home, 'connectors', file), readFileSync(join(REPO, 'src', 'providers', 'echo', file === 'echo.json' ? 'connector.json' : file)));
   }
   writeFileSync(join(home, 'state.json'), `${JSON.stringify({
     version: 1,

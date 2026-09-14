@@ -24,7 +24,7 @@ function echoHome(t, prefix = 'bullswarm-bytes-') {
   const workspace = join(root, 'repo');
   mkdirSync(join(bullswarmDir, 'connectors'), { recursive: true });
   mkdirSync(workspace);
-  writeFileSync(join(bullswarmDir, 'connectors', 'echo.json'), readFileSync(join(REPO, 'connectors', 'echo.json')));
+  writeFileSync(join(bullswarmDir, 'connectors', 'echo.json'), readFileSync(join(REPO, 'src', 'providers', 'echo', 'connector.json')));
   writeFileSync(join(bullswarmDir, 'state.json'), `${JSON.stringify({
     version: 1, pools: { echo: { enabled: true } }, incumbents: {}, decisionLog: [],
     config: { depthLimit: 2, callerName: 'claude-code' },

@@ -1,8 +1,10 @@
 // bullswarm setup wizard — the front door.
 //
 // Doctrine:
-//   U1. Discovery = binary on PATH + config dir present + (never) credential
-//       entry. Burn rate starts EMPTY and is labeled "learning".
+//   U1. Discovery = every loaded provider (src/lib/providers.js), judged by its
+//       own doctor() when it exports one, else binary on PATH + config dir
+//       present + (never) credential entry. A provider that failed to load is
+//       listed with its error. Burn rate starts EMPTY and is labeled "learning".
 //   U2. The wizard suggests a routing table as an EDITABLE ARTIFACT, never a
 //       questionnaire.
 //   U3. Cross-agent skill/instruction integration requires explicit approval,
@@ -14,14 +16,15 @@ import { execFileSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, copyFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input } from 'node:process';
 import { loadState, updateState } from './lib/state.js';
 import {
   STRATEGY_TIERS, getStrategyReasoning, setStrategyReasoning, rungsFor, formatRungEvidence,
 } from './lib/strategy.js';
-import { buildPools } from './lib/config.js';
+import { buildPools, loadPoolProviders } from './lib/config.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
 import {
   awarenessBlock, applyAwarenessBlock, awarenessBlockPresent,
@@ -70,6 +73,7 @@ export class Prompter {
 // --- discovery ---------------------------------------------------------------
 
 function onPath(bin) {
+  if (typeof bin !== 'string' || bin === '') return false;
   try {
     execFileSync('which', [bin], { stdio: 'pipe' });
     return true;
@@ -82,34 +86,81 @@ function expandHome(p) {
   return p.startsWith('~') ? join(process.env.HOME ?? '', p.slice(1)) : p;
 }
 
-export function discoverConnectors() {
-  const dir = join(REPO_ROOT, 'connectors');
-  const found = [];
-  for (const f of readdirSync(dir).sort()) {
-    if (!f.endsWith('.json') || f.startsWith('_')) continue;
-    let conn;
+function defaultBullswarmDir() {
+  const h = process.env.BULLSWARM_HOME?.trim();
+  return h || join(homedir(), '.bullswarm');
+}
+
+/**
+ * Readiness of one loaded provider: its doctor() when exported, else `bin` on
+ * PATH (installed) and any `configDirs` entry present (loggedIn).
+ */
+function providerHealth(entry, pool) {
+  if (entry.hasDoctor) {
     try {
-      conn = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-    } catch {
-      found.push({ file: f, broken: true });
-      continue;
+      const report = entry.module.doctor({ ...entry.ctx });
+      return {
+        health: 'doctor',
+        installed: report?.installed === true,
+        loggedIn: typeof report?.loggedIn === 'boolean' ? report.loggedIn : null,
+        hint: typeof report?.hint === 'string' ? report.hint : null,
+      };
+    } catch (err) {
+      return { health: 'doctor', installed: false, loggedIn: null, hint: `doctor() threw: ${err?.message ?? err}` };
     }
-    const binFound = onPath(conn.bin);
-    const cfgFound = (conn.configDirs ?? []).some((d) => existsSync(expandHome(d)));
-    found.push({
-      file: f,
-      name: conn.name,
-      bin: conn.bin,
-      binFound,
-      cfgFound,
-      discovered: binFound || cfgFound,
-      meter: conn.meter?.type ?? 'none',
-      costRank: conn.costRank,
-      lanes: conn.lanes,
-      testFixture: conn.flags?.testFixture === true,
-    });
   }
-  return found;
+  const configDirs = Array.isArray(pool.configDirs) ? pool.configDirs : [];
+  return {
+    health: 'default',
+    installed: onPath(pool.bin),
+    loggedIn: configDirs.some((d) => typeof d === 'string' && existsSync(expandHome(d))),
+    hint: null,
+  };
+}
+
+/**
+ * One entry per provider the loader found, in load order: tier, enabled,
+ * pools, skipped pools and load error, plus readiness. `discovered` means
+ * the provider is enabled, loaded, contributed a pool, and is installed or
+ * logged in. A provider whose every pool lost to an earlier one of the same
+ * name (an installed copy of a shipped template) is `shadowed`.
+ */
+export function discoverConnectors(bullswarmDir = defaultBullswarmDir(), opts = {}) {
+  // Discovery is about what ships with the package plus what the operator
+  // installed, so the packaged tiers load even under node:test; a caller may
+  // still override by passing its own `packaged` or `dirs`.
+  const { connectors, providers } = loadPoolProviders(bullswarmDir, { packaged: true, ...opts });
+  return providers.map((entry) => {
+    const base = {
+      file: basename(entry.dir),
+      name: entry.name,
+      displayName: entry.displayName,
+      tier: entry.tier,
+      enabled: entry.enabled,
+      pools: [...entry.pools],
+      skipped: entry.skipped.map((x) => ({ ...x })),
+      error: entry.error,
+    };
+    if (entry.error) return { ...base, broken: true, discovered: false };
+    const pool = connectors[entry.pools[0]] ?? entry.template ?? {};
+    const shadowed = entry.pools.length === 0 && entry.skipped.length > 0
+      && entry.skipped.every((x) => x.reason === 'duplicate');
+    const health = entry.enabled && entry.pools.length
+      ? providerHealth(entry, pool)
+      : { health: null, installed: null, loggedIn: null, hint: null };
+    return {
+      ...base,
+      broken: false,
+      shadowed,
+      bin: pool.bin,
+      ...health,
+      discovered: health.installed === true || health.loggedIn === true,
+      meter: pool.meter?.type ?? 'none',
+      costRank: pool.costRank,
+      lanes: pool.lanes,
+      testFixture: pool.flags?.testFixture === true,
+    };
+  });
 }
 
 // --- routing suggestion --------------------------------------------------------
@@ -145,6 +196,9 @@ export function repairConnectors(bullswarmDir) {
   const target = join(bullswarmDir, 'connectors');
   mkdirSync(target, { recursive: true });
   const repaired = [];
+  // Shipped templates now live in provider directories; without a packaged
+  // connectors/ there is nothing to copy.
+  if (!existsSync(join(REPO_ROOT, 'connectors'))) return repaired;
   for (const f of readdirSync(join(REPO_ROOT, 'connectors'))) {
     if (!f.endsWith('.json') || f.startsWith('_')) continue;
     const dst = join(target, f);
@@ -169,19 +223,47 @@ export function repairConnectors(bullswarmDir) {
 // Forward-compatible metadata migration for existing installations. Preserve
 // user-edited spawn commands and other connector quirks; only fill fields that
 // did not exist in older published connector documents.
+/**
+ * The packaged connectors an installed `<home>/connectors/<name>.json` can be
+ * upgraded from, as [filename, absolute path] pairs. They used to sit in one
+ * flat `connectors/` directory; they now live one per provider directory
+ * across the first-class and contrib tiers, so the provider's own directory
+ * name supplies the `<name>.json` an operator's legacy file is matched by.
+ */
+function packagedConnectorSources() {
+  const out = [];
+  for (const base of [join(REPO_ROOT, 'src', 'providers'), join(REPO_ROOT, 'providers', 'contrib')]) {
+    if (!existsSync(base)) continue;
+    for (const entry of readdirSync(base).sort()) {
+      if (entry.startsWith('_') || entry.startsWith('.')) continue;
+      const file = join(base, entry, 'connector.json');
+      if (existsSync(file)) out.push([`${entry}.json`, file]);
+    }
+  }
+  return out;
+}
+
 export function upgradeConnectorMetadata(bullswarmDir, {
-  packagedDir = join(REPO_ROOT, 'connectors'),
+  packagedDir = null,
 } = {}) {
   const target = join(bullswarmDir, 'connectors');
   if (!existsSync(target)) return [];
+  // `packagedDir` keeps the flat one-directory-of-json form for any caller
+  // that supplies its own source; the default now walks the provider tiers.
+  const sources = packagedDir
+    ? (existsSync(packagedDir)
+      ? readdirSync(packagedDir)
+        .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
+        .map((f) => [f, join(packagedDir, f)])
+      : [])
+    : packagedConnectorSources();
   const upgraded = [];
-  for (const f of readdirSync(packagedDir)) {
-    if (!f.endsWith('.json') || f.startsWith('_')) continue;
+  for (const [f, packagedPath] of sources) {
     const dst = join(target, f);
     if (!existsSync(dst)) continue;
     try {
       const installed = JSON.parse(readFileSync(dst, 'utf8'));
-      const packaged = JSON.parse(readFileSync(join(packagedDir, f), 'utf8'));
+      const packaged = JSON.parse(readFileSync(packagedPath, 'utf8'));
       let changed = false;
       if (Array.isArray(packaged.capabilities)) {
         const existing = Array.isArray(installed.capabilities) ? installed.capabilities : [];
@@ -355,7 +437,7 @@ export function migrateTestFixturePools(bullswarmDir) {
 // `bullswarm setup` on a terminal.
 
 export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
-  const discovered = discoverConnectors();
+  const discovered = discoverConnectors(bullswarmDir);
   const repaired = repairConnectors(bullswarmDir);
 
   const usable = discovered.filter((d) => !d.broken && d.discovered && !d.testFixture);
@@ -374,7 +456,7 @@ export function autoSetup(bullswarmDir, { reason = 'auto' } = {}) {
     state.pools ??= {};
     state.config ??= {};
     state.config.testFixturesMigrated = true;
-    for (const d of discovered.filter((x) => !x.broken)) {
+    for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
       state.pools[d.name] ??= {};
       state.pools[d.name].enabled = enabled.has(d.name);
     }
@@ -453,7 +535,9 @@ export async function configureTierRungs(bullswarmDir, prompter, {
   log = console.log, evidence,
 } = {}) {
   const state = loadState(bullswarmDir);
-  const { pools, connectors } = buildPools(bullswarmDir);
+  // Setup configures the rungs of what ships with the package, so the packaged
+  // tiers load here for the same reason discoverConnectors asks for them.
+  const { pools, connectors } = buildPools(bullswarmDir, Date.now(), {}, { packaged: true });
   const rungs = rungsFor({
     pools,
     connectors,
@@ -507,7 +591,7 @@ export async function configureTierRungs(bullswarmDir, prompter, {
 
 export async function runWizard(bullswarmDir, opts = {}) {
   const state = loadState(bullswarmDir);
-  const discovered = discoverConnectors();
+  const discovered = discoverConnectors(bullswarmDir);
 
   if (opts.json) {
     console.log(JSON.stringify({ discovered, state: !!state.pools }, null, 2));
@@ -521,7 +605,12 @@ export async function runWizard(bullswarmDir, opts = {}) {
   console.log('Discovered agent CLIs:');
   for (const d of discovered) {
     if (d.broken) {
-      console.log(`  ${d.file.padEnd(22)} BROKEN (will repair)`);
+      console.log(`  ${String(d.name ?? d.file).padEnd(14)} FAILED TO LOAD (${d.tier}): ${d.error}`);
+      continue;
+    }
+    if (d.shadowed) continue;
+    if (!d.enabled) {
+      console.log(`  ${d.name.padEnd(14)} not enabled (${d.tier} provider)`);
       continue;
     }
     const meter =
@@ -529,7 +618,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
         ? 'quota: unmetered'
         : `quota: ${d.meter} window (burn rate: learning)`;
     console.log(
-      `  ${d.name.padEnd(14)} ${d.discovered ? 'found' : 'not found'}  ${meter}${d.testFixture ? '  TEST FIXTURE' : ''}`,
+      `  ${d.name.padEnd(14)} ${d.discovered ? 'found' : 'not found'}  ${meter}${d.testFixture ? '  TEST FIXTURE' : ''}${d.hint ? `  (${d.hint})` : ''}`,
     );
   }
   console.log('');
@@ -563,7 +652,7 @@ export async function runWizard(bullswarmDir, opts = {}) {
     fresh.pools ??= {};
     fresh.config ??= {};
     fresh.config.testFixturesMigrated = true;
-    for (const d of discovered.filter((x) => !x.broken)) {
+    for (const d of discovered.filter((x) => !x.broken && !x.shadowed)) {
       fresh.pools[d.name] ??= {};
       fresh.pools[d.name].enabled = enabled.includes(d.name);
     }

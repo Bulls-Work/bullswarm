@@ -1,0 +1,7 @@
+{
+  "name": "echo",
+  "spawn": { "cmd": ["node", "{bullswarmDir}/src/providers/echo/echo-worker.mjs", "{taskFile}"] },
+  "outputExtraction": { "strategy": "stdout" },
+  "model": "echo",
+  "flags": { "testFixture": true }
+}

@@ -183,7 +183,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     state.attempts.push({ id: 'implement-result-1', actionId: 'implement-result', ordinal: 1, status: 'succeeded', pool: 'relay', model: 'gpt-5.6-luna', startedAt: iso(2), finishedAt: iso(5) });
     state.presentation.stages[1].startedAt = iso(6);
     Object.assign(state.actions[1], { status: 'running', startedAt: iso(6), attempts: 1 });
-    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay-2', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null, lastActivityAt: iso(7), outputBytesObserved: 42, lastAgentEvent: { at: iso(7), kind: 'tool', summary: 'node --test' } });
+    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay:b', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null, lastActivityAt: iso(7), outputBytesObserved: 42, lastAgentEvent: { at: iso(7), kind: 'tool', summary: 'node --test' } });
     const emit = (type, committedAt, payload) => appendEvent(dir, state, type, { ...payload, committedAt });
     emit('workflow.started', iso(0), {});
     emit('planner.finished', iso(1), { turn: 1, ok: true, summary: 'Implement then collect independent evidence.' });
@@ -200,7 +200,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
     assert.match(screen, /── Phase 2 · Evidence/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
-    assert.match(screen, /check-result · relay-2 · gpt-5\.6-luna/);
+    assert.match(screen, /check-result · relay:b · gpt-5\.6-luna/);
     assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
     assert.match(screen, /Waiting for 1 worker/);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
@@ -1177,7 +1177,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     // the worker starts 65 seconds ago and is still running
     const startedAt = new Date(Date.now() - 65_000).toISOString();
     Object.assign(state.actions[1], { status: 'running', startedAt, attempts: 1 });
-    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay-2', model: 'gpt-5.6-luna', startedAt, finishedAt: null, lastActivityAt: startedAt, outputBytesObserved: 42 });
+    state.attempts.push({ id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running', pool: 'relay:b', model: 'gpt-5.6-luna', startedAt, finishedAt: null, lastActivityAt: startedAt, outputBytesObserved: 42 });
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const running = renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 0 });
@@ -1193,7 +1193,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
 
     // the agent pane leads with the elapsed time; token usage only exists once the attempt finishes
     const agents = renderWorkflowTui(row, { width: 130, height: 22, focus: 1, spinnerFrame: 0 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    assert.match(agents, /check-result · relay-2 · gpt-5\.6-luna · #1 · 1m0[5-9]s/);
+    assert.match(agents, /check-result · relay:b · gpt-5\.6-luna · #1 · 1m0[5-9]s/);
     assert.doesNotMatch(agents, /#1 · pending/);
     assert.match(agents, /Tokens · pending/);
 
@@ -1247,14 +1247,14 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     // Running attempt: the run-wide level was clamped to what the connector takes.
     state.attempts.push({
       id: 'check-result-1', actionId: 'check-result', ordinal: 1, status: 'running',
-      pool: 'relay-2', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null,
+      pool: 'relay:b', model: 'gpt-5.6-luna', startedAt: iso(6), finishedAt: null,
       reasoning: { requested: 'xhigh', applied: 'high', source: 'run', clamped: true },
     });
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const live = renderWorkflowTui(row, { width: 120, height: 30 });
     // The live row shows the level the running worker is actually thinking at.
-    assert.match(live, /check-result · relay-2 · gpt-5\.6-luna · high/);
+    assert.match(live, /check-result · relay:b · gpt-5\.6-luna · high/);
     // Phase 1 holds the finished attempt; its own override reads next to the model.
     const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(phaseOne, /implement-result · relay · gpt-5\.6-luna · max · #1/);

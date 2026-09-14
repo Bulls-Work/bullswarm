@@ -1,0 +1,251 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import {
+  accountSlugForConfigDir,
+  connectors,
+  discoverClaudeAccounts,
+  discoverClaudeConfigDirs,
+  keychainServiceForConfigDir,
+  poolNameForSlug,
+  profileCommand,
+  readUsage,
+} from '../src/providers/claude-code/provider.mjs';
+import { readUsage as readCodexUsage } from '../src/providers/codex/provider.mjs';
+import { readUsage as readGrokUsage } from '../src/providers/grok/provider.mjs';
+import { loadProviders, REPO_ROOT } from '../src/lib/providers.js';
+
+const FIRST_CLASS = join(REPO_ROOT, 'src', 'providers');
+
+function makeHome() {
+  return mkdtempSync(join(tmpdir(), 'bs-claude-homes-'));
+}
+
+function touchClaudeHome(dir, extras = {}) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'settings.json'), '{}\n');
+  for (const [name, body] of Object.entries(extras)) {
+    writeFileSync(join(dir, name), body);
+  }
+}
+
+function twoLogins(home) {
+  const future = Date.now() + 3_600_000;
+  touchClaudeHome(join(home, '.claude'), {
+    '.credentials.json': JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-default', expiresAt: future },
+    }),
+  });
+  touchClaudeHome(join(home, '.claude-work'), {
+    '.credentials.json': JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-work', expiresAt: future },
+    }),
+  });
+}
+
+test('default home uses unsuffixed keychain service; extra homes hash the abs path', () => {
+  assert.equal(
+    keychainServiceForConfigDir('/Users/me/.claude', '/Users/me'),
+    'Claude Code-credentials',
+  );
+  assert.equal(
+    keychainServiceForConfigDir('/Users/me/.claude-work', '/Users/me'),
+    'Claude Code-credentials-1e91dd84',
+  );
+});
+
+test('slug and pool names come from the directory, never a hardcoded profile list', () => {
+  assert.equal(accountSlugForConfigDir('/Users/me/.claude', '/Users/me'), null);
+  assert.equal(accountSlugForConfigDir('/Users/me/.claude-work', '/Users/me'), 'work');
+  assert.equal(poolNameForSlug(null), 'claude-code');
+  assert.equal(poolNameForSlug('work'), 'claude-code:work');
+  assert.equal(
+    profileCommand('/Users/me/.claude-work'),
+    'CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude',
+  );
+});
+
+test('discoverClaudeConfigDirs finds ~/.claude-<slug> and skips unrelated .claude-* dirs', () => {
+  const home = makeHome();
+  try {
+    touchClaudeHome(join(home, '.claude'));
+    touchClaudeHome(join(home, '.claude-work'));
+    mkdirSync(join(home, '.claude-harness'), { recursive: true });
+    writeFileSync(join(home, '.claude-harness', 'HARNESS-PLAN.md'), 'x');
+    const dirs = discoverClaudeConfigDirs({ homeDir: home, envConfigDir: '' });
+    assert.deepEqual(dirs, [
+      resolve(join(home, '.claude')),
+      resolve(join(home, '.claude-work')),
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('discoverClaudeAccounts returns one usable login per distinct token', () => {
+  const home = makeHome();
+  try {
+    twoLogins(home);
+    const accounts = discoverClaudeAccounts({
+      homeDir: home,
+      // A shell that exports CLAUDE_CONFIG_DIR (every worker spawned on an
+      // extra Claude login does) must not leak a real login into the fixture.
+      envConfigDir: '',
+      platform: 'linux',
+      nowMs: Date.now(),
+    });
+    assert.deepEqual(accounts.map((a) => a.slug), [null, 'work']);
+    assert.deepEqual(accounts.map((a) => a.pool), ['claude-code', 'claude-code:work']);
+    assert.equal(accounts[1].command, `CLAUDE_CONFIG_DIR=${resolve(join(home, '.claude-work'))} claude`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('connectors(ctx) returns the packaged connector once per login', () => {
+  const home = makeHome();
+  try {
+    twoLogins(home);
+    const template = {
+      name: 'claude-code',
+      bin: 'claude',
+      spawn: { cmd: ['claude', '-p', '{taskFile}'] },
+      flags: { isCaller: true },
+    };
+    const pools = connectors({
+      template,
+      home,
+      env: {},
+      opts: { accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }) },
+    });
+    assert.deepEqual(pools.map((p) => p.name), ['claude-code', 'claude-code:work']);
+    const [base, extra] = pools;
+    assert.equal(base.env.CLAUDE_CONFIG_DIR, resolve(join(home, '.claude')));
+    assert.equal(base.flags.isCaller, true);
+    assert.equal(extra.env.CLAUDE_CONFIG_DIR, resolve(join(home, '.claude-work')));
+    assert.deepEqual(extra.configDirs, [resolve(join(home, '.claude-work'))]);
+    assert.equal(extra.flags.isCaller, false);
+    assert.equal(extra.profile.slug, 'work');
+    assert.match(extra.profile.command, /CLAUDE_CONFIG_DIR=/);
+    // Separate subscriptions: never benched together.
+    assert.equal(extra.credentialGroup, undefined);
+    assert.equal(extra.upstreamGroup, undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('connectors(ctx) does not scan real homes under node:test without injection', () => {
+  const template = { name: 'claude-code', spawn: { cmd: ['claude', '{taskFile}'] } };
+  const pools = connectors({ template, home: '/nonexistent', env: { NODE_TEST_CONTEXT: 'child' }, opts: {} });
+  assert.deepEqual(pools, [template]);
+  assert.equal(pools[0].env, undefined);
+});
+
+test('the four first-class providers load from src/providers through the loader', () => {
+  const home = makeHome();
+  const empty = mkdtempSync(join(tmpdir(), 'bs-providers-empty-'));
+  try {
+    twoLogins(home);
+    const { connectors: pools, providers } = loadProviders(empty, {
+      dirs: { firstClass: FIRST_CLASS, contrib: join(empty, 'contrib'), local: join(empty, 'local'), legacy: join(empty, 'legacy') },
+      enabled: [],
+      homeDir: home,
+      accounts: discoverClaudeAccounts({ homeDir: home, envConfigDir: '', platform: 'linux' }),
+    });
+    const byName = Object.fromEntries(providers.map((p) => [p.name, p]));
+    for (const name of ['claude-code', 'codex', 'grok', 'echo']) {
+      assert.equal(byName[name]?.tier, 'first-class', name);
+      assert.equal(byName[name].error, null, `${name}: ${byName[name].error}`);
+    }
+    assert.deepEqual(byName['claude-code'].pools, ['claude-code', 'claude-code:work']);
+    assert.deepEqual(
+      Object.fromEntries(['claude-code', 'codex', 'grok', 'echo'].map((n) => [n, [byName[n].displayName, byName[n].hasReadUsage]])),
+      { 'claude-code': ['Claude', true], codex: ['Codex', true], grok: ['Grok', true], echo: ['echo', false] },
+    );
+    assert.equal(pools['claude-code:work'].env.CLAUDE_CONFIG_DIR, resolve(join(home, '.claude-work')));
+    for (const name of ['codex', 'grok', 'echo']) assert.deepEqual(byName[name].pools, [name]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test('echo is json-only and its worker runs from the new {bullswarmDir} path', () => {
+  assert.equal(existsSync(join(FIRST_CLASS, 'echo', 'provider.mjs')), false);
+  const template = JSON.parse(readFileSync(join(FIRST_CLASS, 'echo', 'connector.json'), 'utf8'));
+  const dir = mkdtempSync(join(tmpdir(), 'bs-echo-'));
+  try {
+    const taskFile = join(dir, 'task.md');
+    writeFileSync(taskFile, 'say hi\n');
+    // Same substitution src/lib/watch.js applies: {bullswarmDir} is the package root.
+    const argv = template.spawn.cmd.map((a) => a.replaceAll('{bullswarmDir}', REPO_ROOT).replaceAll('{taskFile}', taskFile));
+    assert.equal(argv[1], join(REPO_ROOT, 'src', 'providers', 'echo', 'echo-worker.mjs'));
+    const out = spawnSync(argv[0] === 'node' ? process.execPath : argv[0], argv.slice(1), { encoding: 'utf8' });
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout, /## Completed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readUsage reports a missing login without touching the network', async () => {
+  const home = makeHome();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('network must not be reached'); };
+  try {
+    await assert.rejects(
+      readUsage('claude-code:work', { home, env: {}, opts: { envConfigDir: '' } }),
+      (err) => err.code === 'no_token' && /claude-code:work/.test(err.message),
+    );
+    await assert.rejects(
+      readCodexUsage('codex', { home, env: { CODEX_HOME: join(home, '.codex') } }),
+      (err) => err.code === 'no_auth',
+    );
+    await assert.rejects(
+      readGrokUsage('grok', { home, env: { GROK_HOME: join(home, '.grok') } }),
+      (err) => err.code === 'no_auth',
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('grok readUsage refreshes an expired OAuth token and rewrites auth.json', async () => {
+  const home = makeHome();
+  const grokHome = join(home, '.grok');
+  mkdirSync(grokHome, { recursive: true });
+  const authFile = join(grokHome, 'auth.json');
+  writeFileSync(authFile, JSON.stringify({
+    'xai-grok-cli': { key: 'old-token', refresh_token: 'rt-1', expires_at: new Date(Date.now() - 60_000).toISOString() },
+  }));
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), auth: init.headers?.Authorization ?? null });
+    if (String(url).startsWith('https://auth.x.ai/')) {
+      return new Response(JSON.stringify({ access_token: 'new-token', refresh_token: 'rt-2', expires_in: 3600 }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      config: { creditUsagePercent: 42, currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end: '2026-09-20T00:00:00Z' } },
+    }), { status: 200 });
+  };
+  try {
+    const snap = await readGrokUsage('grok', { home, env: { GROK_HOME: grokHome } });
+    assert.equal(snap.pool, 'grok');
+    assert.deepEqual(snap.seven_day, { utilization: 42, resets_at: '2026-09-20T00:00:00.000Z' });
+    assert.deepEqual(snap.five_hour, { utilization: null, resets_at: null });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].auth, 'Bearer new-token');
+    const rewritten = JSON.parse(readFileSync(authFile, 'utf8'))['xai-grok-cli'];
+    assert.equal(rewritten.key, 'new-token');
+    assert.equal(rewritten.refresh_token, 'rt-2');
+  } finally {
+    globalThis.fetch = realFetch;
+    rmSync(home, { recursive: true, force: true });
+  }
+});

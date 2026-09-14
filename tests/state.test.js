@@ -217,7 +217,7 @@ test('top-level CLI uses BULLSWARM_HOME at invocation time', async () => {
 });
 
 test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { spawnSync } = await import('node:child_process');
@@ -225,9 +225,7 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-cli-home-'));
   try {
     mkdirSync(join(home, 'connectors'), { recursive: true });
-    for (const file of ['echo.json', 'echo-worker.mjs']) {
-      writeFileSync(join(home, 'connectors', file), readFileSync(join(repo, 'connectors', file)));
-    }
+    // echo ships first-class (src/providers/echo), so the home needs no copy.
     // No explicit `enabled` for echo: the fixture migration owns that legacy
     // default and disables it, which is what `pools --json` reports below.
     writeFileSync(join(home, 'state.json'), JSON.stringify({
@@ -238,11 +236,12 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
     const doctor = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'doctor', '--json'], {
       env, encoding: 'utf8',
     });
-    assert.equal(doctor.status, 1, doctor.stderr);
     const doctorJson = JSON.parse(doctor.stdout);
     assert.equal(doctorJson.configured, true);
-    assert.equal(doctorJson.ok, false);
-    assert.equal(doctorJson.checks.find((check) => check.id === 'offload-capable').ok, false);
+    // First-class providers load in every home, so whether one is offload
+    // capable depends on the host's installed CLIs; the exit code must agree.
+    assert.equal(doctor.status, doctorJson.ok ? 0 : 1, doctor.stderr);
+    assert.equal(typeof doctorJson.checks.find((check) => check.id === 'offload-capable').ok, 'boolean');
     assert.match(doctorJson.checks[0].detail, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
     const pools = spawnSync('node', [join(repo, 'bin/bullswarm.js'), 'pools', '--json'], {
@@ -250,8 +249,9 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
     });
     assert.equal(pools.status, 0, pools.stderr);
     const poolsJson = JSON.parse(pools.stdout);
-    assert.deepEqual(poolsJson.pools.map((p) => p.name), ['echo']);
-    assert.equal(poolsJson.pools[0].enabled, false);
+    const echo = poolsJson.pools.find((p) => p.name === 'echo');
+    assert.ok(echo, `echo is listed: ${poolsJson.pools.map((p) => p.name).join(', ')}`);
+    assert.equal(echo.enabled, false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -259,17 +259,21 @@ test('top-level doctor and pools honor BULLSWARM_HOME in subprocesses', async ()
 
 // --- upstream siblings ------------------------------------------------------
 
-const GROUP = 'relay:api.relay.com';
+const GROUP = 'relay:relay.example';
 const relayPools = () => ([
-  { name: 'opencode2', enabled: true, connector: { upstreamGroup: GROUP } },
-  { name: 'opencode2:relay-2', enabled: true, connector: { upstreamGroup: GROUP } },
-  { name: 'opencode2:relay-3', enabled: true, connector: { upstreamGroup: GROUP } },
+  { name: 'relay', enabled: true, connector: { credentialGroup: GROUP } },
+  { name: 'relay:b', enabled: true, connector: { credentialGroup: GROUP } },
+  { name: 'relay:c', enabled: true, connector: { credentialGroup: GROUP } },
   { name: 'claude-code', enabled: true, connector: {} },
-  { name: 'opencode2:retired', enabled: false, connector: { upstreamGroup: GROUP } },
+  { name: 'relay:retired', enabled: false, connector: { credentialGroup: GROUP } },
 ]);
 
 test('an upstream group is read from a pool view or a bare connector', () => {
+  assert.equal(upstreamGroupOf({ name: 'x', connector: { credentialGroup: GROUP } }), GROUP);
+  assert.equal(upstreamGroupOf({ name: 'x', credentialGroup: GROUP }), GROUP);
+  // `upstreamGroup` is the accepted legacy spelling; the contract name wins.
   assert.equal(upstreamGroupOf({ name: 'x', connector: { upstreamGroup: GROUP } }), GROUP);
+  assert.equal(upstreamGroupOf({ name: 'x', credentialGroup: GROUP, upstreamGroup: 'other' }), GROUP);
   assert.equal(upstreamGroupOf({ name: 'x', upstreamGroup: GROUP }), GROUP);
   assert.equal(upstreamGroupOf({ name: 'x' }), null);
   assert.equal(upstreamGroupOf({ name: 'x', upstreamGroup: '' }), null);
@@ -279,21 +283,21 @@ test('an upstream group is read from a pool view or a bare connector', () => {
 test('an auth failure benches the whole upstream group on one deadline (2026-09-11)', () => {
   const s = loadState('/nonexistent-bullswarm-test');
   const now = Date.parse('2026-09-11T12:24:00Z');
-  const until = quarantinePool(s, 'opencode2:relay-3', 'upstream auth failure', now, { kind: 'auth' });
+  const until = quarantinePool(s, 'relay:c', 'upstream auth failure', now, { kind: 'auth' });
   const benched = quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'opencode2:relay-3', group: GROUP, reason: 'upstream auth failure', now, until, kind: 'auth',
+    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until, kind: 'auth',
   });
-  assert.deepEqual(benched, ['opencode2', 'opencode2:relay-2']);
-  assert.equal(s.pools.opencode2.quarantine.until, until);
-  assert.equal(s.pools.opencode2.quarantine.kind, 'auth');
-  assert.equal(s.pools.opencode2.quarantine.reason, 'sibling of opencode2:relay-3: upstream auth failure');
+  assert.deepEqual(benched, ['relay', 'relay:b']);
+  assert.equal(s.pools.relay.quarantine.until, until);
+  assert.equal(s.pools.relay.quarantine.kind, 'auth');
+  assert.equal(s.pools.relay.quarantine.reason, 'sibling of relay:c: upstream auth failure');
   assert.equal(until - now, 10 * 60_000, 'the flat auth re-probe window');
   assert.equal(s.pools['claude-code']?.quarantine, undefined, 'another credential is untouched');
-  assert.equal(s.pools['opencode2:retired']?.quarantine, undefined, 'a disabled pool is not benched');
+  assert.equal(s.pools['relay:retired']?.quarantine, undefined, 'a disabled pool is not benched');
   // The whole group returns to service together when the window expires.
   assert.deepEqual(
     sweepQuarantines(s, now + 10 * 60_000).sort(),
-    ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3'],
+    ['relay', 'relay:b', 'relay:c'],
   );
 });
 
@@ -302,27 +306,27 @@ test('a quota quarantine never spreads, and a sibling deadline is never shortene
   const now = Date.parse('2026-09-11T12:24:00Z');
   // A usage limit is one pool's empty window; the siblings still have theirs.
   assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'opencode2:relay-3', group: GROUP, reason: 'usage limit', now, until: now + 3 * 3600_000, kind: 'quota',
+    pool: 'relay:c', group: GROUP, reason: 'usage limit', now, until: now + 3 * 3600_000, kind: 'quota',
   }), []);
-  assert.equal(s.pools.opencode2?.quarantine, undefined);
+  assert.equal(s.pools.relay?.quarantine, undefined);
 
   // A sibling already out on its own 3-hour quota reset keeps that deadline:
   // a borrowed 10-minute auth window must not put it back to work early.
   const ownReset = now + 3 * 3600_000;
-  quarantinePool(s, 'opencode2', 'usage limit reached', now, { until: ownReset, kind: 'quota' });
+  quarantinePool(s, 'relay', 'usage limit reached', now, { until: ownReset, kind: 'quota' });
   const benched = quarantineUpstreamSiblings(s, relayPools(), {
-    pool: 'opencode2:relay-3', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
+    pool: 'relay:c', group: GROUP, reason: 'upstream auth failure', now, until: now + 10 * 60_000, kind: 'auth',
   });
-  assert.deepEqual(benched, ['opencode2:relay-2']);
-  assert.equal(s.pools.opencode2.quarantine.until, ownReset);
-  assert.equal(s.pools.opencode2.quarantine.kind, 'quota');
+  assert.deepEqual(benched, ['relay:b']);
+  assert.equal(s.pools.relay.quarantine.until, ownReset);
+  assert.equal(s.pools.relay.quarantine.kind, 'quota');
 });
 
 test('benching the group is a no-op without a group, a pool, or any members', () => {
   const s = loadState('/nonexistent-bullswarm-test');
   const now = Date.now();
-  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: 'opencode2', group: null, now }), []);
+  assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: 'relay', group: null, now }), []);
   assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: null, group: GROUP, now }), []);
-  assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'opencode2', group: GROUP, now }), []);
+  assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'relay', group: GROUP, now }), []);
   assert.deepEqual(Object.keys(s.pools), []);
 });

@@ -1,0 +1,6 @@
+{
+  "name": "relaykit",
+  "spawn": { "cmd": ["relaykit", "{taskFile}"] },
+  "outputExtraction": { "strategy": "stdout" },
+  "model": "rk-1"
+}

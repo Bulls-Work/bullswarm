@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseCodexWhamUsage, needsRefresh, accessTokenExpiresAtMs,
-} from '../src/meters/codex.js';
-import { parseGrokCreditsConfig } from '../src/meters/grok.js';
+} from '../src/providers/codex/provider.mjs';
+import { parseGrokCreditsConfig } from '../src/providers/grok/provider.mjs';
 import {
   parseCommandCodeCredits, parseCommandCodeWindows, computeMonthly, planMonthlyCredits,
-} from '../src/meters/command-code.js';
-import { extractCredentials } from '../src/meters/claude.js';
+} from '../providers/contrib/command-code/provider.mjs';
+import { extractCredentials } from '../src/providers/claude-code/provider.mjs';
 import {
   windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
   pacingWindowFor, normalizePacingWindow, rollResetForward, declaredResetPacing,
@@ -524,7 +524,8 @@ test('buildPools: the operator setting overrides the connector window', async ()
     const readings = {
       'command-code': { ...paceSnapshot(CMD_SNAPSHOT, CMD_NOW), source: 'live', snapshot: CMD_SNAPSHOT },
     };
-    const [pool] = buildPools(dir, CMD_NOW, readings).pools;
+    // First-class providers load alongside the home's connector, so find it by name.
+    const pool = buildPools(dir, CMD_NOW, readings).pools.find((candidate) => candidate.name === 'command-code');
     assert.equal(pool.pacingWindow, 'weekly');
     assert.equal(pool.pace, 18.7);
   } finally {
@@ -606,7 +607,7 @@ test('rollResetForward: a future anchor is itself; a passed one steps by whole w
 
 test('declaredResetPacing: provider usage with no reset paces from the declared date, labeled', () => {
   const now = Date.parse('2026-09-11T06:48:54Z');
-  // The Relay reader's shape for a never-expiring token: usage, no reset.
+  // A reseller wallet reader's shape for a never-expiring token: usage, no reset.
   const snap = { monthly: { utilization: 73.765296, resets_at: null } };
   // paceSnapshot alone cannot pace this — no reset, no elapsed (M2).
   assert.equal(paceSnapshot(snap, now).pacing, null);
@@ -646,7 +647,7 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
   const dir = mkdtempSync(join(tmpdir(), 'bs-declared-reset-'));
   try {
     mkdirSync(join(dir, 'connectors'), { recursive: true });
-    for (const name of ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3']) {
+    for (const name of ['relay', 'relay:b', 'relay:c']) {
       writeFileSync(join(dir, `connectors/${name}.json`), JSON.stringify({
         name, costRank: 1, lanes: ['analyze', 'build', 'chore'],
         meter: { type: 'reader' },
@@ -656,18 +657,18 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
     writeFileSync(join(dir, 'state.json'), JSON.stringify({
       version: 1,
       pools: {
-        opencode2: { enabled: true },
-        'opencode2:relay-2': { enabled: true },
-        'opencode2:relay-3': { enabled: true },
+        relay: { enabled: true },
+        'relay:b': { enabled: true },
+        'relay:c': { enabled: true },
       },
       incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
       strategy: {
         subscriptions: {
           // Declared for a pool the provider leaves undated …
-          opencode2: { resetsAt: '2026-09-17T01:46:01.000Z' },
+          relay: { resetsAt: '2026-09-17T01:46:01.000Z' },
           // … and for one the provider DOES date (a day apart), to prove the
-          // provider's wins. relay-3 declares nothing.
-          'opencode2:relay-2': { resetsAt: '2026-09-29T07:12:02.000Z' },
+          // provider's wins. relay:c declares nothing.
+          'relay:b': { resetsAt: '2026-09-29T07:12:02.000Z' },
         },
       },
     }));
@@ -679,9 +680,9 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
     });
     const readings = {};
     for (const [pool, u, reset] of [
-      ['opencode2', 73.765296, null],
-      ['opencode2:relay-2', 26.918544, '2026-09-30T07:12:10.000Z'],
-      ['opencode2:relay-3', 10.661976, null],
+      ['relay', 73.765296, null],
+      ['relay:b', 26.918544, '2026-09-30T07:12:10.000Z'],
+      ['relay:c', 10.661976, null],
     ]) {
       const snapshot = snapshotFor(pool, u, reset);
       readings[pool] = { ...paceSnapshot(snapshot, now), source: 'live', snapshot };
@@ -689,7 +690,7 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
     const { pools } = buildPools(dir, now, readings);
     const byName = Object.fromEntries(pools.map((pool) => [pool.name, pool]));
 
-    const declared = byName.opencode2;
+    const declared = byName.relay;
     assert.equal(declared.meterSource, 'live');      // the used% is still the provider's
     assert.equal(declared.resetSource, 'declared');
     assert.equal(declared.pacingWindow, 'monthly');
@@ -700,14 +701,14 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
 
     // Provider truth first: the declared date is ignored when the meter dates
     // the window itself.
-    const dated = byName['opencode2:relay-2'];
+    const dated = byName['relay:b'];
     assert.equal(dated.resetSource, 'provider');
     assert.equal(dated.paceResetsAt, '2026-09-30T07:12:10.000Z');
     assert.equal(dated.usedPct, 26.9);
 
     // No declaration: the same undated reading stays unmetered — no reset, no
     // elapsed, no invented window (M2).
-    const plain = byName['opencode2:relay-3'];
+    const plain = byName['relay:c'];
     assert.equal(plain.meterSource, 'none');
     assert.equal(plain.resetSource, null);
     assert.equal(plain.usedPct, null);
@@ -717,17 +718,36 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
   }
 });
 
-test('Relay plan total: declared subscription wins, then RELAY_PLAN_USD, then $50', async () => {
-  const { relayIncludedUsd, declaredIncludedUsd } = await import('../src/meters/registry.js');
-  // The 2026-09-12 newcomer wallet is $20 while the older ones are $50.
-  assert.equal(relayIncludedUsd({ includedUsd: 20, env: { RELAY_PLAN_USD: '50' } }), 20);
-  assert.equal(relayIncludedUsd({ includedUsd: null, env: { RELAY_PLAN_USD: '35' } }), 35);
-  assert.equal(relayIncludedUsd({ env: {} }), 50);
-  // Garbage never becomes a denominator.
-  assert.equal(relayIncludedUsd({ includedUsd: 0, env: { RELAY_PLAN_USD: 'abc' } }), 50);
-  assert.equal(relayIncludedUsd({ includedUsd: -5, env: { RELAY_PLAN_USD: '0' } }), 50);
-  const subs = { 'opencode2:relay-4': { includedValueUsd: 20 }, opencode2: { includedValueUsd: null } };
-  assert.equal(declaredIncludedUsd(subs, 'opencode2:relay-4'), 20);
-  assert.equal(declaredIncludedUsd(subs, 'opencode2'), null);
-  assert.equal(declaredIncludedUsd(undefined, 'opencode2:relay-2'), null);
+test('plan total: the declared subscription reaches the provider reader as its denominator', async () => {
+  const { declaredSubscription, readerFor } = await import('../src/meters/registry.js');
+  const { loadProviders } = await import('../src/lib/providers.js');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  // A newcomer wallet can be $20 while the older ones are $50.
+  const subs = { 'relay:b': { includedValueUsd: 20 }, relay: { includedValueUsd: null } };
+  assert.deepEqual(declaredSubscription(subs, 'relay:b'), { includedValueUsd: 20 });
+  assert.deepEqual(declaredSubscription(subs, 'relay'), { includedValueUsd: null });
+  assert.equal(declaredSubscription(undefined, 'relay:c'), null);
+  assert.equal(declaredSubscription({ relay: 'garbage' }, 'relay'), null);
+
+  // The contract's relay fixture reports $12.50 spent from its wallet.
+  const fixtures = fileURLToPath(new URL('./fixtures/providers/', import.meta.url));
+  const home = mkdtempSync(join(tmpdir(), 'bs-plan-total-'));
+  try {
+    const { providers } = loadProviders(home, {
+      dirs: { local: join(fixtures, 'local'), legacy: join(home, 'connectors') },
+    });
+    const utilization = async (pool, opts) => (await readerFor(pool, { providers, ...opts })()).monthly.utilization;
+    assert.equal(await utilization('relay:b', { subscriptions: subs }), 62.5);
+    assert.equal(await utilization('relay:b', { subscription: { includedValueUsd: 50 } }), 25);
+    // No declared plan total means no denominator, never a guessed one.
+    assert.equal(await utilization('relay', { subscriptions: subs }), null);
+    assert.equal(await utilization('relay:b', {}), null);
+    assert.equal(readerFor('nobody-owns-this', { providers }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

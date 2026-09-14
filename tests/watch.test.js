@@ -23,14 +23,14 @@ function makeCtx() {
 }
 
 const connector = JSON.parse(
-  readFileSync(join(REPO_ROOT, 'connectors/echo.json'), 'utf8'),
+  readFileSync(join(REPO_ROOT, 'src/providers/echo/connector.json'), 'utf8'),
 );
 const BULLSWARM_DIR = REPO_ROOT;
 
 // The connector cmd references {bullswarmDir}; substitute for tests.
 connector.spawn.cmd = [
   'node',
-  join(BULLSWARM_DIR, 'connectors/echo-worker.mjs'),
+  join(BULLSWARM_DIR, 'src/providers/echo/echo-worker.mjs'),
   '{taskFile}',
 ];
 
@@ -682,7 +682,7 @@ test('a worker that floods stdout cannot outgrow the kernel: the capture is boun
 });
 
 // --- upstream auth failure inside a provider error event --------------------
-// The real Relay bodies of 2026-09-11, captured from the incident artifacts
+// The real relay bodies of 2026-09-11, captured from the incident artifacts
 // (~/.bullswarm/workflows/wf-mtwyg33h-a19ccd/out-cli-attempt-1.md for the 503).
 // The whole event is ONE JSONL line on stdout, and the upstream body it wraps
 // is the only place the credential failure is ever stated.
@@ -698,7 +698,7 @@ const RELAY_401_EVENT = {
       statusCode: 401,
       isRetryable: false,
       responseBody: '{"error":{"message":"Encountered invalidated oauth token for user, failing request","type":"authentication_error","param":"","code":"auth_unavailable"}}',
-      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+      metadata: { url: 'https://relay.example/v1/chat/completions' },
     },
   },
 };
@@ -714,7 +714,7 @@ const RELAY_503_EVENT = {
       statusCode: 503,
       isRetryable: true,
       responseBody: '{"error":{"message":"auth_unavailable: no auth available (providers=codex, model=gpt-5.6-luna; last upstream error: auth_unavailable: Encountered invalidated oauth token: [REDACTED])","type":"server_error","param":"","code":"internal_server_error"}}',
-      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+      metadata: { url: 'https://relay.example/v1/chat/completions' },
     },
   },
 };
@@ -726,7 +726,7 @@ const RELAY_NO_CHANNEL_EVENT = {
     data: {
       message: 'No available channel for model claude-fable-5-1 under group default (distributor)',
       statusCode: 503,
-      metadata: { url: 'https://api.relay.com/v1/chat/completions' },
+      metadata: { url: 'https://relay.example/v1/chat/completions' },
     },
   },
 };
@@ -734,7 +734,7 @@ const RELAY_NO_CHANNEL_EVENT = {
 // The SHIPPED connector, with only its command replaced: the phrases the
 // verdict matches are the ones the installation really carries.
 const packagedOpenCode2 = JSON.parse(
-  readFileSync(join(REPO_ROOT, 'connectors/opencode2.json'), 'utf8'),
+  readFileSync(join(REPO_ROOT, 'providers/contrib/opencode2/connector.json'), 'utf8'),
 );
 // `--` closes node's own option list: the connector appends its real
 // event-stream args (`--format json`), which node would otherwise reject.
@@ -747,7 +747,7 @@ const streamingEvent = (event, overrides = {}) => ({
   ...overrides,
 });
 
-test('a provider error event carrying the real Relay 401 body is an auth failure with a quarantine hint', async () => {
+test('a provider error event carrying the real relay 401 body is an auth failure with a quarantine hint', async () => {
   const ctx = makeCtx();
   try {
     const verdict = await watchOnce(streamingEvent(RELAY_401_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
@@ -764,7 +764,7 @@ test('a provider error event carrying the real Relay 401 body is an auth failure
   }
 });
 
-test('the Relay 503 no-auth-available body is the same auth failure, not a retryable provider blip', async () => {
+test('the relay 503 no-auth-available body is the same auth failure, not a retryable provider blip', async () => {
   const ctx = makeCtx();
   try {
     const verdict = await watchOnce(streamingEvent(RELAY_503_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
@@ -776,13 +776,21 @@ test('the Relay 503 no-auth-available body is the same auth failure, not a retry
   }
 });
 
-test('a model the relay has no channel for is an auth failure too, by its own wording', async () => {
+test('a model the relay has no channel for is an auth failure once its provider declares that wording', async () => {
   const ctx = makeCtx();
   try {
-    const verdict = await watchOnce(streamingEvent(RELAY_NO_CHANNEL_EVENT), 'Do the thing.', ctx.dir, ctx.paths, {});
+    // One reseller's own outage wording is not a shared default: the provider
+    // that fronts it declares the phrase through `authSignatures`.
+    const declared = { authSignatures: ['no available channel for model'] };
+    const verdict = await watchOnce(streamingEvent(RELAY_NO_CHANNEL_EVENT, declared), 'Do the thing.', ctx.dir, ctx.paths, {});
     assert.equal(verdict.failureKind, 'auth');
     assert.equal(verdict.quarantineHint, true);
     assert.equal(verdict.why, 'upstream auth failure: "no available channel for model" (provider stream error)');
+    const undeclared = await watchOnce(
+      streamingEvent(RELAY_NO_CHANNEL_EVENT, { authSignatures: [] }), 'Do the thing.', ctx.dir, ctx.paths, {},
+    );
+    assert.notEqual(undeclared.failureKind, 'auth');
+    assert.notEqual(undeclared.quarantineHint, true);
   } finally {
     ctx.cleanup();
   }
