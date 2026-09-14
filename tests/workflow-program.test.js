@@ -405,35 +405,23 @@ process.stdout.write('Completed ' + id + ': delivered the requested files or ins
   assert.equal(state.attempts.length, 6);
 });
 
-test('steering waits for active siblings before pausing and resumes without losing their results', async (t) => {
+test('caller steering never waits for siblings or holds the finish; a run that finishes first hands it back unread', async (t) => {
   const f = fixture(t);
-  const paused = await run(f, [action('fast'), action('slow')], async (options, files) => {
+  const finished = await run(f, [action('fast'), action('slow')], async (options, files) => {
     const runDir = dirname(files.outFile);
     if (options.action.id === 'fast') queueSteering(f.bullswarmDir, basename(runDir), 'Add the integration output after both workers.');
     else {
       await new Promise((resolve) => setImmediate(resolve));
       const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
-      assert.equal(state.actions[0].status, 'succeeded');
-      assert.equal(state.planner.awaiting, null, 'planner must not replace state while a sibling still runs');
+      assert.equal(state.planner.awaiting, null, 'steering never replaces state while a sibling still runs');
     }
   });
-  assert.equal(paused.result, null);
-  assert.equal(paused.awaiting.boundary, 'steering');
-  assert.deepEqual(paused.state.actions.map((entry) => entry.status), ['succeeded', 'succeeded']);
-  const submitted = submitCallerPlannerResponse({
-    bullswarmDir: f.bullswarmDir, runId: paused.runId,
-    response: program([action('integrate', { dependsOn: ['fast', 'slow'], ownedFiles: [] })]),
-  });
-  assert.equal(submitted.ok, true);
-  const seen = [];
-  const resumed = await runV2AutonomousWorkflow({
-    bullswarmDir: f.bullswarmDir, resumeRunId: paused.runId, pools: [],
-    dependencies: { dispatchV2Action: dispatcher(async ({ action: current }) => { seen.push(current.id); }) },
-  });
-  assert.deepEqual(seen, ['integrate']);
-  assert.equal(resumed.result.status, 'completed');
-  assert.equal(resumed.state.steering.length, 1);
-  assert.equal(resumed.state.planner.turns, 2);
+  assert.equal(finished.result.status, 'completed');
+  assert.deepEqual(finished.state.actions.map((entry) => entry.status), ['succeeded', 'succeeded']);
+  assert.deepEqual(finished.result.handback.unreadSteering.map((entry) => entry.message), ['Add the integration output after both workers.']);
+  assert.equal(finished.state.steering.length, 0, 'unread steering stays pending for a later revision');
+  assert.equal(finished.state.planner.turns, 1);
+  assert.equal(readEvents(finished.runDir).filter((event) => event.type === 'workflow.finished').at(-1).payload.unreadSteering, 1);
 });
 
 test('resume recovers an already published program result after interrupted final state persistence', async (t) => {

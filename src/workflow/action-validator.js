@@ -30,9 +30,10 @@ export const KIND_DEFAULTS = Object.freeze({
   'adversarial-acceptance': Object.freeze({ lane: 'analyze', effort: 'high' }),
 });
 export const ACTION_KINDS = Object.freeze(Object.keys(KIND_DEFAULTS));
-// Exactly two advisory codes. Advisories are advice about effort choices; they
-// never affect validity, exit codes, or dispatch.
-export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high']);
+// Exactly three advisory codes: two about effort choices, one about a
+// requirement no step checks. Advisories never affect validity, exit codes, or
+// dispatch.
+export const PROGRAM_ADVISORY_CODES = Object.freeze(['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
 const PROGRAM_FIELDS = new Set(['schemaVersion', 'actions', 'defaults']);
 const PROGRAM_DEFAULT_FIELDS = new Set(['effort', 'reasoning']);
 const ACTION_FIELDS = new Set([
@@ -83,7 +84,7 @@ const isMarkdown = (file) => typeof file === 'string' && /\.md$/i.test(file);
  * never change validity, exit codes, or dispatch; they are printed and stored
  * so an author can see a routing smell it is still free to keep.
  */
-export function programAdvisories(program) {
+export function programAdvisories(program, { requirements = null } = {}) {
   if (!isObject(program) || !Array.isArray(program.actions)) return [];
   const defaults = isObject(program.defaults) ? program.defaults : {};
   const resolved = program.actions.filter(isObject).map((action) => ({
@@ -108,6 +109,24 @@ export function programAdvisories(program) {
       actionId: action.id,
       message: `owns only markdown files (${action.ownedFiles.join(', ')}) at high effort; documentation edits rarely need the high tier`,
     });
+  }
+  // A requirement no step gives evidence for can never pass, so the run can
+  // finish but never be verified. Said at launch, not discovered at the end.
+  if (Array.isArray(requirements) && requirements.length) {
+    const checked = new Set(program.actions.filter(isObject)
+      .flatMap((action) => (Array.isArray(action.evidenceFor) ? action.evidenceFor : [])));
+    const ids = requirements.map((requirement) => (typeof requirement === 'string' ? requirement : requirement?.id)).filter(Boolean);
+    const unchecked = ids.filter((id) => !checked.has(id));
+    if (unchecked.length) {
+      const named = unchecked.length > 4 ? `${unchecked.slice(0, 3).join(', ')} and ${unchecked.length - 3} more` : unchecked.join(', ');
+      advisories.push({
+        code: 'requirement-unchecked',
+        actionId: null,
+        message: checked.size
+          ? `no step gives evidence for ${named}; the run can finish but ${unchecked.length === 1 ? 'that requirement stays' : 'those requirements stay'} unverified, so add ${unchecked.length === 1 ? 'it' : 'them'} to an adversarial-acceptance step's evidenceFor`
+          : `no step checks any requirement (${named}); the run can finish but never be verified, so add an adversarial-acceptance step, or use bullswarm run for one bounded task`,
+      });
+    }
   }
   return advisories;
 }
@@ -164,6 +183,13 @@ function normalizeOwnedFiles(value, at, issues) {
     }
     if (raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\')) {
       issues.push(`${at}[${index}] must be relative`);
+      continue;
+    }
+    // The kernel checks ownership against exact files. A trailing slash or a
+    // glob used to pass here (normalized away) and then stop the kernel right
+    // after launch, leaving a run that never started (2026-09-10).
+    if (/[\\/]$/.test(raw) || raw.includes('*') || raw.includes('?')) {
+      issues.push(`${at}[${index}] must name one exact file, not a directory or glob ("${raw}")`);
       continue;
     }
     const parts = raw.split(/[\\/]/);

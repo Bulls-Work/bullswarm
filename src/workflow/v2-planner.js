@@ -379,6 +379,7 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
         codes: [...PROGRAM_ADVISORY_CODES],
         'all-writers-high': 'three or more build/chore actions and none below high effort',
         'docs-at-high': 'a build/chore action whose ownedFiles are all *.md at high effort',
+        'requirement-unchecked': 'a requirement no action lists in evidenceFor: the run can finish but that requirement is never verified',
         note: 'advice only: printed by plan validate and workflow goal, stored on the run, and never a rejection or a non-zero exit',
       },
       validation: isProgramWorkflow(goalDocument) ? [

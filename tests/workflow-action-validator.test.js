@@ -332,8 +332,35 @@ test('a program without kind or defaults normalizes to byte-identical actions', 
   );
 });
 
+test('ownedFiles name exact files, and a requirement no step checks is an advisory', () => {
+  const writer = (ownedFiles, over = {}) => ({
+    id: 'w', purpose: 'Write it', dependsOn: [], affects: ['result'], ownedFiles, prompt: 'Write the file.',
+    lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [], ...over,
+  });
+  const programOf = (...actions) => ({ schemaVersion: 'bullswarm.workflow.program.v2', actions });
+  // A directory or glob used to pass here and then stop the kernel right after launch.
+  for (const bad of ['src/', 'src\\', 'src/*.js', 'file?.txt']) {
+    assert.throws(
+      () => validateActionProgram(programOf(writer([bad])), relaxed),
+      (error) => error.issues.some((issue) => issue.includes(`must name one exact file, not a directory or glob ("${bad}")`)),
+      bad,
+    );
+  }
+  assert.equal(validateActionProgram(programOf(writer(['src/index.js'])), relaxed).actions[0].ownedFiles[0], 'src/index.js');
+
+  const requirements = [{ id: 'result', text: 'x' }, { id: 'docs', text: 'y' }];
+  const none = programAdvisories(programOf(writer(['a.txt'])), { requirements });
+  assert.deepEqual(none.map((advisory) => [advisory.code, advisory.actionId]), [['requirement-unchecked', null]]);
+  assert.match(none[0].message, /^no step checks any requirement \(result, docs\); the run can finish but never be verified/);
+  const checker = writer([], { id: 'check', lane: 'analyze', affects: [], evidenceFor: ['result'] });
+  const one = programAdvisories(programOf(writer(['a.txt']), checker), { requirements });
+  assert.match(one[0].message, /^no step gives evidence for docs; the run can finish but that requirement stays unverified/);
+  assert.deepEqual(programAdvisories(programOf(writer(['a.txt']), { ...checker, evidenceFor: ['result', 'docs'] }), { requirements }), []);
+  assert.deepEqual(programAdvisories(programOf(writer(['a.txt']))), [], 'no requirements given, no advisory');
+});
+
 test('advisories report the two effort smells and never change validity', () => {
-  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high']);
+  assert.deepEqual([...PROGRAM_ADVISORY_CODES], ['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
   const writers = (efforts) => ({
     schemaVersion: 'bullswarm.workflow.program.v2',
     actions: efforts.map((effort, index) => kindWork('implement', { id: `w-${index}`, effort })),

@@ -357,7 +357,7 @@ test('a finished run is reopened by a revision and finishes again with the exten
   assert.equal(eventsOf(f, runId, 'workflow.finished').length, 2);
 });
 
-test('caller steering never halts running work, wakes watchers, and holds the finish until a revision acknowledges it', async (t) => {
+test('caller steering never halts running work or holds the finish; a revision after the finish reopens the run and consumes it', async (t) => {
   const f = fixture(t);
   const ctl = controller();
   const releaseA = ctl.hold('a');
@@ -368,9 +368,11 @@ test('caller steering never halts running work, wakes watchers, and holds the fi
   await until(() => eventsOf(f, runId, 'steering.received').length === 1, { what: 'steering announced' });
   assert.equal(readState(f, runId).lifecycle.status, 'running');
   releaseA();
-  const paused = await kernel;
+  const finished = await kernel;
   assert.equal(ctl.count('b'), 1, 'queued steering did not stop b from starting');
-  assert.equal(paused.awaiting.boundary, 'steering', 'unread steering holds the finish');
+  assert.equal(finished.result.status, 'completed', 'unread steering never holds the finish');
+  assert.deepEqual(finished.result.handback.unreadSteering.map((entry) => entry.message), ['Mention the release date in every file.']);
+  assert.equal(finished.state.planner.awaiting, null);
 
   const request = revisionFrom(f, runId, (doc) => {
     doc.summary = 'Acknowledge the release-date guidance';
@@ -378,12 +380,13 @@ test('caller steering never halts running work, wakes watchers, and holds the fi
   }, { rerun: ['b'] });
   const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request, waitMs: 0 });
   assert.equal(revised.status, 'applied');
-  assert.equal(revised.state.planner.awaiting, null);
+  assert.equal(revised.reopened.previousStatus, 'completed');
   assert.equal(revised.state.steering.length, 1);
   assert.equal(eventsOf(f, runId, 'steering.delivered')[0].payload.source, 'revision');
 
   const result = await resume(f, runId, ctl);
   assert.equal(result.result.status, 'completed');
+  assert.deepEqual(result.result.handback.unreadSteering, [], 'the revision consumed it');
   assert.equal(ctl.count('b'), 2);
 });
 

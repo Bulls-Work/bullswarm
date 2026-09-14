@@ -161,7 +161,7 @@ test('a caller-supplied initial program runs to a kernel-verified result with ze
   } finally { f.cleanup(); }
 });
 
-test('an invalid initial program pauses with a correction request instead of dispatching anything', async () => {
+test('an invalid initial program finishes at once and hands the issues back without dispatching anything', async () => {
   const f = setup();
   try {
     const dispatch = fakeDispatch(evidenceHandler());
@@ -171,52 +171,55 @@ test('an invalid initial program pauses with a correction request instead of dis
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller2-abcdef',
       initialPlannerResponse: bad, dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(result.result, null);
     assert.equal(dispatch.calls(), 0);
-    assert.equal(result.awaiting.boundary, 'initial');
-    assert.equal(result.awaiting.turn, 1);
-    assert.match(result.awaiting.correction.issues.join('\n'), /mandatory requirement "report-correct" has no evidence action/);
+    assert.equal(result.awaiting, undefined, 'nothing waits for the caller');
+    assert.equal(result.result.status, 'partial');
+    assert.match(result.result.reason, /^the supplied program was not accepted, so nothing ran: .*mandatory requirement "report-correct" has no evidence action/);
+    assert.match(result.result.reason, /plan revise \S+ --program <file\.json>, or start a new run$/);
+    assert.deepEqual(result.result.handback.unfinished, []);
+    assert.deepEqual(result.result.handback.unresolvedRequirements.map((entry) => entry.id), ['report-correct']);
     const state = deserializeV2DurableState(readFileSync(join(result.runDir, 'state.json'), 'utf8'));
-    assert.equal(state.lifecycle.status, 'waiting');
-    assert.equal(state.planner.status, 'waiting');
-    assert.equal(state.planner.awaiting.requestPath, join(result.runDir, 'planner-request-turn-1.json'));
-    const request = JSON.parse(readFileSync(state.planner.awaiting.requestPath, 'utf8'));
-    assert.equal(request.schemaVersion, 'bullswarm.workflow.planner-request.v2');
-    assert.equal(request.boundary, 'initial');
-    assert.deepEqual(request.correction.issues, result.awaiting.correction.issues);
-    assert.equal(request.context.schemaVersion, 'bullswarm.workflow.planner-context.v2');
-    assert.equal(readEvents(result.runDir).at(-1).type, 'planner.awaiting_caller');
-    assert.equal(existsSync(join(result.runDir, 'result.json')), false, 'a paused run has no result yet');
+    assert.equal(state.lifecycle.status, 'partial');
+    assert.equal(state.planner.awaiting, null);
+    const events = readEvents(result.runDir);
+    const handed = events.find((event) => event.type === 'planner.handed_back');
+    assert.equal(handed.payload.boundary, 'initial');
+    assert.ok(handed.payload.issues.some((issue) => /has no evidence action/.test(issue)));
+    assert.equal(events.at(-1).type, 'workflow.finished');
+    assert.equal(existsSync(join(result.runDir, 'initial-planner-response.json')), false, 'a rejected program is never replayed by a resume');
   } finally { f.cleanup(); }
 });
 
-test('gap boundary pauses durably; a submitted program resumes and completes; resume without submission is idempotent', async () => {
+test('a gap finishes the run and hands it back; resume changes nothing; a run an older version left waiting still takes a submission', async () => {
   const f = setup();
   try {
     // First evidence fails the requirement so the kernel consolidates a gap.
     let evidenceStatus = 'failed';
     const dispatch = fakeDispatch(async (options, calls, files) => evidenceHandler({ status: evidenceStatus })(options, calls, files));
-    const paused = await runV2AutonomousWorkflow({
+    const finished = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller3-abcdef',
       initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(paused.result, null);
-    assert.equal(paused.awaiting.boundary, 'gaps');
-    assert.equal(paused.awaiting.turn, 2);
+    assert.equal(finished.result.status, 'partial');
+    assert.equal(finished.result.verified, false);
+    assert.match(finished.result.reason, /^requirements are still open and no step is left to run: .*report-correct=failed/);
+    assert.deepEqual(
+      finished.result.handback.unresolvedRequirements.map((entry) => [entry.id, entry.status, entry.why]),
+      [['report-correct', 'failed', 'report-correct inspected']],
+    );
+    assert.deepEqual(finished.result.handback.unfinished, []);
+    assert.equal(finished.state.planner.awaiting, null);
     assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report']);
-    const request = JSON.parse(readFileSync(paused.awaiting.requestPath, 'utf8'));
-    assert.equal(request.context.boundary, 'gaps');
-    assert.match(request.context.gaps.summary, /report-correct=failed/);
-    assert.equal(request.context.knownActions.length, 2);
-    assert.ok(request.rules.some((rule) => /consolidated gap boundary/.test(rule)));
-    assert.match(request.submit.command, /bullswarm workflow plan submit .* --program <file.json>/);
+    assert.equal(readEvents(finished.runDir).filter((event) => event.type === 'planner.awaiting_caller').length, 0);
 
-    // Resuming without a submission re-pauses on the same request (no new turn, no dispatch).
+    // Resuming a finished run with nothing to retry returns its result and dispatches nothing.
     const again = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller3-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(again.result, null);
-    assert.equal(again.awaiting.turn, 2);
-    assert.equal(again.awaiting.requestPath, paused.awaiting.requestPath);
+    assert.deepEqual(again.result, finished.result);
     assert.equal(dispatch.calls(), 2);
+
+    // A run an older kernel left waiting at this gap still accepts a program.
+    const paused = { runDir: finished.runDir, ...holdLikeOlderVersion(finished.runDir) };
+    assert.equal(paused.turn, 2);
 
     // A submission that re-uses a known action ID is rejected and leaves state unchanged.
     const collision = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller3-abcdef', response: envelope() });
@@ -246,10 +249,10 @@ test('gap boundary pauses durably; a submitted program resumes and completes; re
     assert.equal(submitted.state.program.actions.length, 4);
     assert.equal(submitted.state.lifecycle.status, 'running');
     assert.ok(existsSync(submitted.candidatePath));
-    const finished = readEvents(paused.runDir).filter((event) => event.type === 'planner.finished');
-    assert.equal(finished.length, 2);
-    assert.equal(finished[1].payload.source, 'caller');
-    assert.equal(finished[1].payload.boundary, 'gaps');
+    const turns = readEvents(paused.runDir).filter((event) => event.type === 'planner.finished');
+    assert.equal(turns.length, 2);
+    assert.equal(turns[1].payload.source, 'caller');
+    assert.equal(turns[1].payload.boundary, 'gaps');
 
     const resumed = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller3-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
     assert.equal(resumed.result.status, 'completed');
@@ -260,15 +263,16 @@ test('gap boundary pauses durably; a submitted program resumes and completes; re
   } finally { f.cleanup(); }
 });
 
-test('a submitted exhausted decision survives resume and finalizes a partial result with gaps', async () => {
+test('a run an older version left waiting: a submitted exhausted decision survives resume and finalizes a partial result with gaps', async () => {
   const f = setup();
   try {
     const dispatch = fakeDispatch(evidenceHandler({ status: 'failed' }));
-    const paused = await runV2AutonomousWorkflow({
+    const finished = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller4-abcdef',
       initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(paused.awaiting.boundary, 'gaps');
+    assert.equal(finished.result.status, 'partial');
+    assert.equal(holdLikeOlderVersion(finished.runDir).boundary, 'gaps');
     const submitted = submitCallerPlannerResponse({
       bullswarmDir: f.bullswarmDir, runId: 'wf-caller4-abcdef',
       response: normalizeCallerPlannerResponse({ kind: 'exhausted' }, { exhaustedReason: 'the fixture cannot satisfy READY' }),
@@ -284,7 +288,7 @@ test('a submitted exhausted decision survives resume and finalizes a partial res
   } finally { f.cleanup(); }
 });
 
-test('caller mode without a program scouts first, then pauses at the initial boundary with advisory units', async () => {
+test('caller mode without a program scouts first, then finishes and hands the scout report back', async () => {
   const f = setup({ scout: true });
   try {
     const scoutReport = [
@@ -298,11 +302,18 @@ test('caller mode without a program scouts first, then pauses at the initial bou
       const structured = options.outputValidator(scoutReport);
       return { ok: true, status: 'succeeded', verdict: { ok: true, structured, outFile: files.outFile, meta: { exitCode: 0 } } };
     });
-    const paused = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller5-abcdef', dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(paused.result, null);
-    assert.equal(paused.awaiting.boundary, 'initial');
+    const finished = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller5-abcdef', dependencies: { dispatchV2Action: dispatch } });
     assert.equal(dispatch.calls(), 1);
-    const request = JSON.parse(readFileSync(paused.awaiting.requestPath, 'utf8'));
+    assert.equal(finished.result.status, 'partial');
+    assert.equal(finished.state.planner.awaiting, null);
+    const scoutFile = finished.state.preflight.scout.outputFile;
+    assert.match(readFileSync(scoutFile, 'utf8'), /UNITS OF WORK/);
+    assert.ok(finished.result.reason.startsWith(`no program to run (the scout report is at ${scoutFile}). Add steps with bullswarm workflow plan revise `), finished.result.reason);
+
+    // A run an older version left waiting at the initial boundary: plan show
+    // composes the request, and a program need not mirror the scout's units.
+    holdLikeOlderVersion(finished.runDir, { boundary: 'initial' });
+    const request = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller5-abcdef' }).request;
     assert.deepEqual(request.context.scoutUnits, ['report-unit']);
     assert.equal(request.scoutUnitsAdvisory, true);
     assert.match(request.context.scout, /UNITS OF WORK/);
@@ -420,8 +431,29 @@ function cli(f, args) {
 
 const GOAL = '1. Create done.txt containing exactly caller-complete followed by a newline.';
 
-// Legacy saved requests intentionally omit executionMode. Exercise their real
-// CLI recovery path without requiring new launches to retain gap gating.
+// Runs no longer wait for their caller, but runs an older version left waiting
+// are still on disk. Recreate one from a finished run: the held state that
+// kernel wrote, with no result yet and no request document (plan show
+// composes it).
+function holdLikeOlderVersion(runDir, { boundary = 'gaps' } = {}) {
+  const statePath = join(runDir, 'state.json');
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const turn = state.planner.turns + 1;
+  state.lifecycle = { ...state.lifecycle, status: 'waiting', finishedAt: null, resultFile: null };
+  state.planner.status = 'waiting';
+  state.planner.awaiting = {
+    boundary, turn, since: new Date().toISOString(),
+    requestPath: join(runDir, `planner-request-turn-${turn}.json`),
+    candidatePath: join(runDir, `candidate-workflow-planner-turn-${turn}.json`),
+  };
+  rmSync(join(runDir, 'result.json'), { force: true });
+  writeFileSync(statePath, JSON.stringify(state));
+  return { runId: state.runId, shortId: state.shortId, boundary, turn };
+}
+
+// Legacy saved requests intentionally omit executionMode. The run finishes
+// partial at its gap and is then turned into the held run an older version
+// would have left, to exercise the real CLI recovery path.
 function launchLegacyGoal(f, programPath, cwd = f.target) {
   const runId = 'wf-legacy-abcdef';
   const requestPath = join(f.root, 'legacy-request.json');
@@ -434,7 +466,10 @@ function launchLegacyGoal(f, programPath, cwd = f.target) {
     schemaVersion: 'bullswarm.goal.request.v2', runId, document,
     initialPlannerResponse: normalizeCallerPlannerResponse(JSON.parse(readFileSync(programPath, 'utf8'))),
   }));
-  return cli(f, ['workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json']);
+  const finished = cli(f, ['workflow', 'goal', '--request', requestPath, '--run-id', runId, '--foreground', '--json']);
+  assert.equal(finished.status, 1, finished.stderr || finished.stdout);
+  assert.equal(JSON.parse(finished.stdout).status, 'partial');
+  return holdLikeOlderVersion(join(f.home, 'workflows', runId));
 }
 
 function cliProgram(workId = 'create-done') {
@@ -540,13 +575,9 @@ test('CLI legacy recovery: a gap pauses the run; plan show explains it; plan sub
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const awaiting = JSON.parse(launched.stdout);
-    assert.equal(awaiting.action, 'planner-awaiting');
+    const awaiting = launchLegacyGoal(f, programPath);
     assert.equal(awaiting.boundary, 'gaps');
     assert.equal(awaiting.turn, 2);
-    assert.match(awaiting.next.submit, /workflow plan submit/);
     const token = awaiting.shortId;
 
     const watch = cli(f, ['workflow', 'watch', token, '--once']);
@@ -555,7 +586,7 @@ test('CLI legacy recovery: a gap pauses the run; plan show explains it; plan sub
 
     const resultCmd = cli(f, ['workflow', 'runs', 'result', token, '--json']);
     assert.equal(resultCmd.status, 1);
-    assert.match(resultCmd.stderr, /waiting for its caller planner \(gaps boundary\)/);
+    assert.match(resultCmd.stderr, /left waiting for its caller planner by an older version \(gaps boundary\); bullswarm workflow resume \S+ finishes it/);
 
     const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
     assert.equal(show.status, 0, show.stderr);
@@ -596,7 +627,7 @@ test('CLI legacy recovery: a gap pauses the run; plan show explains it; plan sub
     assert.equal(state.budget.expansions, 1);
     assert.equal(state.planner.attempts.length, 0);
     const events = readEvents(join(f.home, 'workflows', report.runId));
-    assert.equal(events.filter((event) => event.type === 'planner.awaiting_caller').length, 1);
+    assert.equal(events.filter((event) => event.type === 'planner.handed_back').length, 1, 'the first finish handed the gap back');
     assert.equal(events.filter((event) => event.type === 'planner.finished' && event.payload.source === 'caller').length, 2);
 
     const done = cli(f, ['workflow', 'plan', 'submit', token, '--program', fixPath, '--json']);
@@ -610,9 +641,7 @@ test('CLI legacy recovery: plan submit --exhausted finalizes a partial result', 
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const token = JSON.parse(launched.stdout).shortId;
+    const token = launchLegacyGoal(f, programPath).shortId;
     const missingReason = cli(f, ['workflow', 'plan', 'submit', token, '--exhausted']);
     assert.equal(missingReason.status, 2);
     const submitted = cli(f, ['workflow', 'plan', 'submit', token, '--exhausted', '--reason', 'fixture cannot produce the file', '--foreground', '--json']);
@@ -635,7 +664,7 @@ test('CLI: detached program returns negative evidence durably without another pl
     assert.equal(launch.action, 'goal-launched');
     assert.equal(launch.plannerMode, 'caller');
     assert.equal(launch.requestedOrchestrator, 'caller');
-    assert.match(launch.observe.plan, /workflow plan show/);
+    assert.match(launch.observe.plan, /workflow plan export \S+ --out plan\.json/);
     assert.ok(launch.instructions.callerPlanner);
     const statePath = join(f.home, 'workflows', launch.runId, 'state.json');
     let state = null;
@@ -661,15 +690,17 @@ test('CLI: detached program returns negative evidence durably without another pl
 
 // --- review fixes: pause record hygiene, cancellation, steering, durability ---
 
-test('cancellation while paused refuses submissions; one resume finalizes cancelled and clears the pause record', async () => {
+test('a run an older version left waiting: cancellation refuses submissions; one resume finalizes cancelled and clears the pause record', async () => {
   const f = setup();
   try {
     const dispatch = fakeDispatch(evidenceHandler({ status: 'failed' }));
-    const paused = await runV2AutonomousWorkflow({
+    const first = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller8-abcdef',
       initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(paused.awaiting.boundary, 'gaps');
+    assert.equal(first.result.status, 'partial');
+    const paused = { runDir: first.runDir, ...holdLikeOlderVersion(first.runDir) };
+    assert.equal(paused.boundary, 'gaps');
     const cancelled = requestCancel(f.bullswarmDir, 'wf-caller8-abcdef', { source: 'test' });
     assert.equal(cancelled.alreadyFinished, false);
     assert.ok(cancelled.state.planner.awaiting, 'the pause record survives the cancellation request');
@@ -699,35 +730,29 @@ test('cancellation while paused refuses submissions; one resume finalizes cancel
   } finally { f.cleanup(); }
 });
 
-test('steering queued while paused is surfaced on the same boundary, consumed by the submission, and never lost', async () => {
+test('a run an older version left waiting: plan show surfaces steering queued since, a submission consumes only what was shown, and later steering never holds the run', async () => {
   const f = setup();
   try {
     let evidenceStatus = 'failed';
     const dispatch = fakeDispatch(async (options, calls, files) => evidenceHandler({ status: evidenceStatus })(options, calls, files));
-    const paused = await runV2AutonomousWorkflow({
+    const first = await runV2AutonomousWorkflow({
       bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-caller9-abcdef',
       initialPlannerResponse: envelope(), dependencies: { dispatchV2Action: dispatch },
     });
-    assert.equal(paused.awaiting.boundary, 'gaps');
-    assert.equal(paused.awaiting.turn, 2);
-    assert.deepEqual(JSON.parse(readFileSync(paused.awaiting.requestPath, 'utf8')).pendingSteering, []);
+    assert.equal(first.result.status, 'partial');
+    const paused = { runDir: first.runDir, ...holdLikeOlderVersion(first.runDir) };
+    assert.equal(paused.turn, 2);
 
-    // Steering arrives while the kernel is away; a resume keeps the gaps
-    // boundary and turn, refreshes the request, and does not consume it.
+    // Steering arrives while no kernel runs; plan show's reader composes the
+    // request with it and does not consume it.
     queueSteering(f.bullswarmDir, 'wf-caller9-abcdef', 'Prefer a single rewrite action.');
-    const again = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller9-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(again.awaiting.boundary, 'gaps');
-    assert.equal(again.awaiting.turn, 2);
-    assert.equal(again.awaiting.requestPath, paused.awaiting.requestPath);
-    assert.equal(again.state.steering.length, 0, 'steering is peeked, not delivered, while paused');
-    const refreshed = JSON.parse(readFileSync(paused.awaiting.requestPath, 'utf8'));
-    assert.equal(refreshed.boundary, 'gaps');
-    assert.match(refreshed.context.gaps.summary, /report-correct=failed/, 'gap context is preserved');
-    assert.equal(refreshed.pendingSteering.length, 1);
-    assert.deepEqual(refreshed.context.steering, ['Prefer a single rewrite action.']);
-    const events = readEvents(paused.runDir);
-    assert.equal(events.filter((event) => event.type === 'planner.awaiting_caller').length, 1);
-    assert.equal(events.filter((event) => event.type === 'planner.request_updated').length, 1);
+    const composed = readCallerPlannerRequest({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef' });
+    assert.equal(composed.refreshed, true);
+    assert.equal(composed.request.boundary, 'gaps');
+    assert.match(composed.request.context.gaps.summary, /report-correct=failed/, 'gap context is preserved');
+    assert.equal(composed.request.pendingSteering.length, 1);
+    assert.deepEqual(composed.request.context.steering, ['Prefer a single rewrite action.']);
+    assert.equal(composed.state.steering.length, 0, 'steering is peeked, not delivered');
     assert.equal(dispatch.calls(), 2);
 
     // plan show's reader refreshes the request for steering queued since.
@@ -756,40 +781,17 @@ test('steering queued while paused is surfaced on the same boundary, consumed by
     assert.equal(delivered.length, 2);
     assert.ok(delivered.every((event) => event.payload.source === 'caller'));
 
-    // The resumed kernel opens a steering boundary for the unseen instruction
-    // before running new work, and that pause is idempotent too.
-    const steeringPause = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller9-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(steeringPause.result, null);
-    assert.equal(steeringPause.awaiting.boundary, 'steering');
-    assert.equal(steeringPause.awaiting.turn, 3);
-    assert.equal(dispatch.calls(), 2, 'no work ran before the steering was handled');
-    const steeringRequest = JSON.parse(readFileSync(steeringPause.awaiting.requestPath, 'utf8'));
-    assert.deepEqual(steeringRequest.pendingSteering.map((entry) => entry.message), ['Late instruction the caller never saw.']);
-    assert.ok(steeringRequest.rules.some((rule) => /material user-steering boundary/.test(rule)));
-    const samePause = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller9-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
-    assert.equal(samePause.awaiting.boundary, 'steering');
-    assert.equal(samePause.awaiting.turn, 3);
-    assert.equal(samePause.awaiting.requestPath, steeringPause.awaiting.requestPath);
-    // Exhausted is not a valid answer to steering.
-    const notHere = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef', response: normalizeCallerPlannerResponse({ kind: 'exhausted' }, { exhaustedReason: 'nothing to do' }) });
-    assert.equal(notHere.ok, false);
-    assert.ok(notHere.issues.some((issue) => /only at a real gap boundary/.test(issue)));
-
-    const update = {
-      schemaVersion: 'bullswarm.workflow.program.v2',
-      actions: [
-        { id: 'final-inspect', purpose: 'Final independent inspection honoring the late steering', dependsOn: ['rewrite-report'], affects: [], ownedFiles: [], prompt: 'Inspect report.md once more.', lane: 'analyze', effort: 'low', evidenceFor: ['report-correct'], inputs: [], produces: [] },
-      ],
-    };
-    const updated = submitCallerPlannerResponse({ bullswarmDir: f.bullswarmDir, runId: 'wf-caller9-abcdef', response: normalizeCallerPlannerResponse(update, { summary: 'Honor the late steering' }) });
-    assert.equal(updated.ok, true, JSON.stringify(updated.issues ?? null));
-    assert.equal(updated.state.steering.length, 3);
-    assert.equal(updated.state.planner.turns, 3);
-    assert.equal(updated.state.budget.expansions, 1, 'a steering turn is not an expansion round');
+    // The resumed kernel runs the new work without stopping for the unseen
+    // instruction, and the result hands it back as not acted on.
     const done = await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, resumeRunId: 'wf-caller9-abcdef', pools: [], dependencies: { dispatchV2Action: dispatch } });
     assert.equal(done.result.status, 'completed');
-    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report', 'rewrite-report', 'reinspect-report', 'final-inspect']);
+    assert.equal(done.result.verified, true);
+    assert.deepEqual(dispatch.seen(), ['write-report', 'inspect-report', 'rewrite-report', 'reinspect-report']);
+    assert.deepEqual(done.result.handback.unreadSteering.map((entry) => entry.message), ['Late instruction the caller never saw.']);
+    assert.equal(readEvents(paused.runDir).filter((event) => event.type === 'steering.received').length, 1);
     assert.equal(done.state.planner.awaiting, null);
+    assert.equal(done.state.planner.turns, 2, 'no steering boundary was opened');
+    assert.equal(done.state.steering.length, 2);
   } finally { f.cleanup(); }
 });
 
@@ -864,21 +866,20 @@ test('CLI: bare value flags are usage errors, and plan contract rejects flags th
   } finally { f.cleanup(); }
 });
 
-test('CLI: the exhausted hint appears only at a gaps boundary, and plan show reports a finished run as not waiting', () => {
+test('CLI: a run an older version left waiting at the initial boundary gets no exhausted hint, and plan show reports it as not waiting once finished', () => {
   const f = cliFixture();
   try {
     const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const awaiting = JSON.parse(launched.stdout);
-    assert.equal(awaiting.boundary, 'initial');
-    assert.equal(awaiting.next.exhausted, undefined);
-    assert.equal(awaiting.cancellation, null);
+    assert.equal(launched.status, 1, launched.stderr || launched.stdout);
+    const scouted = JSON.parse(launched.stdout);
+    assert.equal(scouted.status, 'partial');
+    const awaiting = holdLikeOlderVersion(join(f.home, 'workflows', scouted.runId), { boundary: 'initial' });
     const token = awaiting.shortId;
     const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
     assert.equal(show.status, 0, show.stderr);
     const request = JSON.parse(show.stdout);
     assert.equal(request.submit.exhausted, undefined);
-    assert.equal(request.requestRefreshed, false);
+    assert.equal(request.requestRefreshed, true, 'the first show composes the request an older kernel would have written');
     assert.deepEqual(request.pendingSteering, []);
     assert.ok(request.rules.some((rule) => /Scout units and numeric targets are advisory/.test(rule)));
     const human = cli(f, ['workflow', 'plan', 'show', token]);
@@ -907,9 +908,7 @@ test('CLI legacy recovery: plan submit refuses a vanished goal directory before 
     mkdirSync(target);
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath, target);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const awaiting = JSON.parse(launched.stdout);
+    const awaiting = launchLegacyGoal(f, programPath, target);
     assert.equal(awaiting.boundary, 'gaps');
     rmSync(target, { recursive: true, force: true });
     const fixPath = join(f.root, 'plan-2.json');
@@ -929,9 +928,7 @@ test('CLI legacy recovery: cancelling a paused run refuses submissions, points a
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const token = JSON.parse(launched.stdout).shortId;
+    const token = launchLegacyGoal(f, programPath).shortId;
     const cancel = cli(f, ['workflow', 'tui', '--cancel', token, '--json']);
     assert.equal(cancel.status, 0, cancel.stderr);
     const cancelDoc = JSON.parse(cancel.stdout);
@@ -979,9 +976,7 @@ test('CLI legacy recovery: steering queued while paused shows in plan show and i
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const { shortId: token, runId } = JSON.parse(launched.stdout);
+    const { shortId: token, runId } = launchLegacyGoal(f, programPath);
     const steer = cli(f, ['workflow', 'steer', token, '--message', 'Create the file with a single write.']);
     assert.equal(steer.status, 0, steer.stderr);
     const show = cli(f, ['workflow', 'plan', 'show', token, '--json']);
@@ -1025,7 +1020,7 @@ test('CLI legacy recovery: steering queued while paused shows in plan show and i
     assert.equal(readFileSync(join(f.target, 'done.txt'), 'utf8'), 'caller-complete\n');
     const events = readEvents(join(f.home, 'workflows', runId));
     assert.equal(events.filter((event) => event.type === 'steering.delivered').length, 1);
-    assert.equal(events.filter((event) => event.type === 'planner.awaiting_caller').length, 1);
+    assert.equal(events.filter((event) => event.type === 'planner.handed_back').length, 1, 'only the first finish handed back');
   } finally { f.cleanup(); }
 });
 
@@ -1109,21 +1104,25 @@ test('CLI: plan validate accepts a good program without creating a run', () => {
   } finally { f.cleanup(); }
 });
 
-test('CLI: --scout alone surveys first and pauses at the initial boundary for the caller', () => {
+test('CLI: --scout alone surveys first, then finishes and hands the scout report back with the options', () => {
   const f = cliFixture();
   try {
     const launched = cli(f, ['workflow', 'goal', GOAL, '--cwd', f.target, '--scout', '--foreground', '--json']);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const awaiting = JSON.parse(launched.stdout);
-    assert.equal(awaiting.action, 'planner-awaiting');
-    assert.equal(awaiting.boundary, 'initial');
-    assert.equal(awaiting.plannerMode, 'caller');
-    const state = JSON.parse(readFileSync(join(f.home, 'workflows', awaiting.runId, 'state.json'), 'utf8'));
+    assert.equal(launched.status, 1, launched.stderr || launched.stdout);
+    const result = JSON.parse(launched.stdout);
+    assert.equal(result.status, 'partial');
+    const state = JSON.parse(readFileSync(join(f.home, 'workflows', result.runId, 'state.json'), 'utf8'));
     assert.equal(state.preflight.scout.status, 'succeeded', 'the kernel scout must have run');
     assert.equal(state.planner.attempts.length, 0, 'no planner process may be dispatched');
-    const request = JSON.parse(readFileSync(awaiting.requestPath, 'utf8'));
-    assert.equal(request.scoutUnitsAdvisory, true);
-    assert.ok(request.context.scout.includes('UNITS OF WORK'));
+    assert.equal(state.planner.awaiting, null);
+    assert.ok(result.reason.includes(`the scout report is at ${state.preflight.scout.outputFile}`), result.reason);
+    assert.ok(readFileSync(state.preflight.scout.outputFile, 'utf8').includes('UNITS OF WORK'));
+    const watch = cli(f, ['workflow', 'watch', result.shortId]);
+    assert.match(watch.stdout, /outcome: partial · not verified\n/);
+    assert.match(watch.stdout, /reason: no program to run/);
+    assert.match(watch.stdout, /your call:\n\s+continue\s+bullswarm workflow plan export \S+ --out plan\.json/);
+    assert.match(watch.stdout, /\n\s+restart\s+start a new run/);
+    assert.doesNotMatch(watch.stdout, /\n\s+retry\s/, 'nothing failed, so there is nothing to retry');
   } finally { f.cleanup(); }
 });
 
@@ -1159,9 +1158,7 @@ test('CLI legacy recovery: workflow cancel finalizes a paused caller run and is 
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const { shortId: token, runId } = JSON.parse(launched.stdout);
+    const { shortId: token, runId } = launchLegacyGoal(f, programPath);
 
     const cancelled = cli(f, ['workflow', 'cancel', token, '--json']);
     assert.equal(cancelled.status, 0, cancelled.stderr);
@@ -1189,9 +1186,7 @@ test('CLI legacy recovery: workflow resume is the verb form of goal --resume and
   try {
     const programPath = join(f.root, 'plan.json');
     writeFileSync(programPath, JSON.stringify(cliProgram('skip-work')));
-    const launched = launchLegacyGoal(f, programPath);
-    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-    const { shortId: token, runId } = JSON.parse(launched.stdout);
+    const { shortId: token, runId } = launchLegacyGoal(f, programPath);
 
     for (const args of [['--program', programPath], ['--orchestrator', 'auto'], ['--scout']]) {
       const refused = cli(f, ['workflow', 'resume', token, ...args]);
@@ -1202,15 +1197,23 @@ test('CLI legacy recovery: workflow resume is the verb form of goal --resume and
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /no run found/);
 
-    // Resuming a paused run re-pauses on the same request, changing nothing.
+    // Resuming a run an older version left waiting finishes it and hands the
+    // decision back, dispatching nothing new.
     const resumed = cli(f, ['workflow', 'resume', token, '--foreground', '--json']);
-    assert.equal(resumed.status, 0, resumed.stderr || resumed.stdout);
-    const awaiting = JSON.parse(resumed.stdout);
-    assert.equal(awaiting.action, 'planner-awaiting');
-    assert.equal(awaiting.turn, 2);
+    assert.equal(resumed.status, 1, resumed.stderr || resumed.stdout);
+    const result = JSON.parse(resumed.stdout);
+    assert.equal(result.status, 'partial');
+    assert.match(result.reason, /^requirements are still open and no step is left to run/);
+    assert.deepEqual(result.handback.unresolvedRequirements.map((entry) => entry.id), ['requirement-1']);
     const state = JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8'));
     assert.equal(state.planner.turns, 1);
-    assert.equal(state.attempts.length, 2, 'no new dispatch may happen on a re-pause');
+    assert.equal(state.planner.awaiting, null);
+    assert.equal(state.attempts.length, 2, 'finishing a held run dispatches nothing');
+    // Resume on the finished run has nothing a retry fixes: it says so and relaunches nothing.
+    const retry = cli(f, ['workflow', 'resume', token]);
+    assert.equal(retry.status, 1, retry.stdout);
+    assert.match(retry.stderr, /nothing to retry in \S+ \(partial\)/);
+    assert.equal(JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8')).lifecycle.status, 'partial');
   } finally { f.cleanup(); }
 });
 

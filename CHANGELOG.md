@@ -1,5 +1,65 @@
 # bullswarm changelog
 
+## 0.30.0 — a run never waits: it finishes and hands back what is left
+
+- workflow: a run no longer waits for anyone. Every point where a
+  caller-planned run used to hold now finishes it and hands the decision
+  back: a `--scout` run with no program, a launch program the kernel could not
+  accept, requirements still open with nothing left to run, and steering still
+  unread when the last step ended. In a study of 41 caller runs on a real
+  project (2026-09-14), one run sat 197 minutes waiting for a caller that had
+  moved on.
+- result: a new optional `handback` field lists every unfinished step with its
+  failure kind, its reason, whether a plain resume runs it again, and
+  `retryAfter` when every pool that could run it was paused; every open
+  requirement with its latest reason; and steering nobody acted on.
+  `runs result --summary` adds `handback.options`, one command each to
+  continue (plan revise), retry (resume), take over, or restart. Results
+  written before 0.30.0 still validate, and their summaries derive the same
+  view.
+- result: the reason line says what happened. "all program actions finished
+  successfully; consult evidence for verification" read as success on runs
+  whose check had failed the work. It now reads, for example, "all 4 steps
+  succeeded, but not verified: requirement-2 failed — requirement-2: …" or "2
+  of 5 steps did not succeed: build-api failed (stalled), …". A long finding
+  quoted there is cut between words and ends in `…`; the full text is in the
+  requirement's `why`.
+- summary: an open requirement's `why` is no longer blanked to fit the 4 KB
+  budget. Concerns, per-step detail and output names shrink first, and a
+  passed requirement carries no `why`. The same study found `why` blank in 6
+  of 10 unverified runs.
+- watch: a finished run prints `outcome: <status> · verified|not verified`,
+  `reason:`, one line per unfinished step and open requirement, unread
+  steering, and `your call:` with the command for each option. A `--jsonl`
+  `finished` object carries `verified`, `reason` and `handback`.
+- resume: `workflow resume` on a finished run is a retry. It reopens the run
+  for pending and cancelled steps, failed steps whose kind a retry fixes
+  (`provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`,
+  `runtime`, `schema`, `stalled`) and the steps blocked behind them, moves the
+  result to `result-before-resume-<n>.json`, and relaunches. With nothing
+  retryable it prints `nothing to retry`, starts nothing, and exits 1.
+- dispatch: with no pool able to run a step, the step fails at once and says
+  which case it is: every capable pool is paused until a time (recorded as
+  `retryAfter`), the pinned pool cannot run that lane and effort, or no enabled
+  pool has a model on that tier.
+- workers: a worker that writes nothing for 60 minutes is stopped and fails as
+  `stalled`, a mechanical failure retried once. The clock restarts on every
+  byte, so a long step that keeps working is never cut off.
+  `BULLSWARM_WORKER_SILENCE_SEC` sets the limit.
+- kernel: a kernel that throws marks its run `interrupted` with `kernel
+  stopped on an error: <message>` instead of leaving it claiming to run, and
+  `runs show` reports a run whose kernel died as `interrupted`, with the
+  reason and the resume command.
+- validate: an `ownedFiles` entry naming a directory (`src/`, or an existing
+  `src`) or a glob is refused by `plan validate`, `workflow goal` and
+  `plan revise`; it used to pass and then stop the kernel right after launch.
+  A pinned worker pool that cannot run a step's lane and effort is refused
+  before launch. A new advisory, `requirement-unchecked`, names requirements
+  no step checks.
+- legacy: runs an older version left waiting still accept `plan show` and
+  `plan submit`; `workflow resume` now finishes them with a handback instead
+  of pausing again.
+
 ## 0.29.1 — a revised cancelled run runs its cancelled steps again
 
 - workflow: revising a cancelled run reopened it but left every step the

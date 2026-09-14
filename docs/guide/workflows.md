@@ -161,7 +161,7 @@ Manage a run with first-class verbs:
 bullswarm workflow plan export <shortId> --out plan.json      # the live plan, editable
 bullswarm workflow plan revise <shortId> --program plan.json  # change the plan while it runs
 bullswarm workflow pause  <shortId> [--now]                   # start nothing new; resume continues
-bullswarm workflow resume <shortId> --watch                   # lift a pause; verb form of goal --resume
+bullswarm workflow resume <shortId> --watch                   # lift a pause, or retry a finished run's retryable steps
 bullswarm workflow steer  <shortId> --message "<guidance>"    # guidance for whoever plans the run
 bullswarm workflow cancel <shortId> --json                    # a run with no kernel is finalized here
 ```
@@ -197,6 +197,33 @@ Revising a finished run reopens it: the earlier `result.json` is archived as
 lets running agents finish and starts nothing new (`--now` stops them and runs
 those steps again after resume); revisions apply while paused, and only
 `workflow resume` continues the run.
+
+### A run never waits: it finishes and hands back
+
+No run waits for its caller. When nothing more can run on its own (every step
+has finished, failed, or is blocked behind a failure; no pool can take a step;
+a `--scout` run has no program yet; steering arrived after the last step), the
+run finishes `completed` or `partial`, and its result carries a `handback`:
+each unfinished step with its failure kind, reason, whether a plain resume runs
+it again, and `retryAfter` when every pool that could run it was paused; each
+open requirement with its reason; and steering nobody acted on.
+`watch` prints the same as `step …`, `requirement …` and `steering not acted
+on:` lines, then `your call:` with one command per option:
+
+- **continue**: export, edit and revise the plan (a failed check needs a fix
+  step added to the check's `dependsOn`);
+- **retry**: `workflow resume <shortId>` reruns steps that failed for a reason
+  a retry fixes (`provider`, `quota`, `auth`, `process`, `unavailable`,
+  `interrupted`, `runtime`, `schema`, `stalled`), plus pending and cancelled
+  steps and the steps blocked behind them; with none it prints `nothing to
+  retry` and exits 1;
+- **take over**: do the rest yourself from `runs result <shortId> --json`;
+- **restart**: start a new `workflow goal`.
+
+A step no pool can take fails at once instead of waiting for a pool to come
+back, and a worker that writes nothing for 60 minutes is stopped as `stalled`
+(`BULLSWARM_WORKER_SILENCE_SEC` changes the limit). The only stop that holds a
+run is `workflow pause`, which you choose.
 
 
 `--orchestrator <pool>` expresses a preference and immediately falls back to
@@ -279,33 +306,31 @@ bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd 
 #   → dry run against that contract; exit 0 valid, exit 2 with the issues; nothing launches
 bullswarm workflow goal "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --watch
 #   → validated before launch; executes with zero planner/scout dispatches
-bullswarm workflow plan show <shortId> --json      # initial scout or explicit steering pause
-bullswarm workflow plan submit <shortId> --program plan-2.json --watch
+bullswarm workflow runs result <shortId> --json --summary   # outcome, reason, handback
 ```
 
-Exit codes are a contract: **0** done or paused durably for you (nothing is
-running), **1** the run ended without completing, **2** usage or validation
-error with nothing launched. Every refusal names the commands that come next.
+Exit codes are a contract: **0** completed, or stopped by `workflow pause`
+(nothing is running), **1** the run finished without completing, **2** usage or
+validation error with nothing launched. Every refusal names the commands that
+come next.
 
-For foreground execution, exit 0 means the graph ran successfully or paused
-durably; it does not imply independent verification. An independent launch
+For foreground execution, exit 0 means the graph ran successfully or was
+paused; it does not imply independent verification. An independent launch
 also returns 0 before the workers finish. Consume its eventual result.
 
 `--program` accepts the planner response envelope or a bare
 `bullswarm.workflow.program.v2` document. An invalid program exits 2 with the
-validator's issues and nothing is launched. When the kernel reaches a planning
-boundary (an initial plan, or a run about to finish with queued steering still
-unread), it writes `planner-request-turn-N.json`, sets the run to `waiting`,
-exits, and `watch` prints the `plan show` command. A submitted program contains
-only new actions and is validated against the exact durable state at that
-boundary. Steering queued while work is still running does not stop it: watch
-prints `steering received` and the caller answers with `plan revise` (see
-[Changing the plan of a live run](#changing-the-plan-of-a-live-run)). Older saved V2
-runs still support their original gap boundaries and `--exhausted` submissions.
-`--scout` without
-`--program` runs the kernel scout first and pauses at the initial boundary so
-the caller plans against a real survey; scout units are advisory for a caller
-planner.
+validator's issues and nothing is launched. Validate also refuses an
+`ownedFiles` entry that is a directory or a glob, and a pinned pool that cannot
+run a step. Steering queued while work is still running does not stop it:
+watch prints `steering received` and the caller answers with `plan revise` (see
+[Changing the plan of a live run](#changing-the-plan-of-a-live-run)). A run
+an older version left waiting for its caller (`planner-request-turn-N.json`,
+status `waiting`) still accepts `plan show` and `plan submit`, including
+`--exhausted` at a gaps boundary; `workflow resume` finishes it with a handback
+instead. `--scout` without `--program` runs the kernel scout and finishes
+partial with the report, which the caller plans from and adds with `plan
+revise`; scout units are advisory for a caller planner.
 
 An action's result envelope is covered in [Operations](./operations.md#result-envelope);
 the JSON example program shape (writers, a digest, and one integrator) is in

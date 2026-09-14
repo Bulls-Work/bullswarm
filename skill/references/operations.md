@@ -17,7 +17,7 @@ unless it asks for a dispatched one. The three ways to start:
 
 ```bash
 bullswarm workflow goal '<goal>' --cwd=<abs-dir> --program plan.json --json  # you plan (see below)
-bullswarm workflow goal '<goal>' --cwd=<abs-dir> --scout                     # kernel surveys, then pauses for your program
+bullswarm workflow goal '<goal>' --cwd=<abs-dir> --scout                     # kernel surveys, then finishes and hands you the report
 bullswarm workflow goal '<goal>' --cwd=<abs-dir> --orchestrator auto \
   --suggested-plan='<conceptual plan>' --json                                # dispatch a planner agent
 ```
@@ -69,7 +69,11 @@ heartbeat) instead of event mode; it applies only to V2 runs. A legacy
 authored-graph run cannot be watched at all: the watcher prints the legacy
 line and exits 2 before polling. `--classic` cannot combine with `--next`.
 The result command is the stable delivery/verification envelope; do not scrape
-task files or assume the last provider response is the deliverable.
+task files or assume the last provider response is the deliverable. A finished
+run's watch output ends with `outcome: <status> · verified|not verified`,
+`reason:`, the handback lines and `your call:` options (see "When a run
+finishes" below); under `--jsonl` the `finished` object carries `verified`,
+`reason` and `handback`.
 
 Manage a live run:
 
@@ -77,14 +81,14 @@ Manage a live run:
 bullswarm workflow plan export <shortId> --out plan.json           # the live plan as an editable revision document
 bullswarm workflow plan revise <shortId> --program plan.json --json # replace the plan at any time (see below)
 bullswarm workflow pause   <shortId> [--now]                       # start nothing new; --now also stops running agents
-bullswarm workflow resume  <shortId> [--foreground|--watch]        # lift a pause; verb form of goal --resume
+bullswarm workflow resume  <shortId> [--foreground|--watch]        # lift a pause, continue an interrupted run, or retry a finished one
 bullswarm workflow steer   <shortId> --message '<guidance>'        # guidance for whoever plans the run
 bullswarm workflow cancel  <shortId> --json                        # cooperative; a run with no kernel is finalized here
 ```
 
 Resume keeps the run's durable planner mode, routing pins, and settings;
 `--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected
-there (use `workflow plan submit` for a caller program). Autonomous resume is
+there (change the plan with `plan revise`). Autonomous resume is
 V2-only. An old autonomous run ID fails before dispatch; there is no migration
 or fallback executor. `bullswarm workflow goal --resume <shortId>` and
 `bullswarm workflow tui --cancel <shortId>` remain as aliases.
@@ -147,10 +151,11 @@ digest gets the digest entry in its `Dependency artifacts` list plus a
 `digestOf` array naming each digested source, so it can still open the
 originals.
 
-Two advisories report effort smells and never reject anything.
-`all-writers-high` fires when three or more `build`/`chore` actions run and none
-is below high effort; `docs-at-high` fires when a `build`/`chore` action owns
-only `*.md` files at high effort. `plan validate --json` carries them under
+Three advisories, none of which rejects anything. `all-writers-high` fires
+when three or more `build`/`chore` actions run and none is below high effort;
+`docs-at-high` fires when a `build`/`chore` action owns only `*.md` files at
+high effort; `requirement-unchecked` fires when a requirement is in no action's
+`evidenceFor`, so the run can finish but never verify it. `plan validate --json` carries them under
 `advisories` and its human output prints `advisory:` lines; `workflow goal`
 prints the same lines at launch. Exit codes are unchanged, and the kernel stores
 them on the run, so `workflow runs show` lists them afterwards. `runs result`,
@@ -159,8 +164,8 @@ them on the run, so `workflow runs show` lists them afterwards. `runs result`,
 ## Revising a live plan
 
 `plan revise` replaces the plan of a caller-planned program run at any moment:
-while agents run, while it is paused, while it waits at a planning boundary, or
-after it finished. Start from the export so kept actions compare equal:
+while agents run, while it is paused, or after it finished. Start from the
+export so kept actions compare equal:
 
 ```bash
 bullswarm workflow plan export <shortId> --out plan.json         # or --json for status + document
@@ -212,7 +217,7 @@ kernel detached, unless the run is paused. A finished run is reopened: its
 `workflow.reopened` event is written, and the new plan runs to a new result.
 Steps a cancellation stopped return to pending (`reopened.requeued`); failed
 steps stay failed unless the revision names them in `rerun`. A revision also
-clears a caller-planner wait, so it can replace `plan submit`.
+answers a run an older version left waiting for its caller.
 
 Stopping a process does not undo its edits in the shared tree. When a stopped
 or removed step's partial changes must go, amend it or add a step whose prompt
@@ -241,57 +246,76 @@ refused.
 `steering received`; the caller decides what the message means and revises.
 `plan export` lists undelivered steering under `pendingSteering` (with `--json`)
 and puts its ids in the document's `steeringIds`, so a revision from the export
-marks it delivered (`steering.delivered`, `source: revision`). When the graph
-would otherwise finish with steering still unread, the run pauses at a
-`steering` boundary instead; answer it with a revision (an acknowledgement-only
-revision is enough when the guidance needs no plan change) or with `plan
-submit`.
+marks it delivered (`steering.delivered`, `source: revision`). A run never
+waits for steering: if the graph finishes first, the result lists it under
+`handback.unreadSteering` and watch prints `steering not acted on`. Revise the
+finished run from a fresh export to deliver it; that reopens the run.
 
-## Submitting work at a planning pause
+## When a run finishes: the handback
 
-Use these commands when `watch` reports a caller-planner pause:
+A run never waits: not for its caller, not for a paused pool, not for a silent
+worker. It finishes as soon as nothing more can happen on its own. The result
+carries a `handback` whenever it is not verified or has steering nobody acted
+on:
 
-```bash
-bullswarm workflow plan show <shortId> --json
-bullswarm workflow plan submit <shortId> --program plan-2.json --watch
-```
+- `handback.unfinished[]`: `{id, status, failureKind, why, retryAfter?,
+  retryable}` for every step that did not succeed. `retryable` says whether
+  `workflow resume` would run it again. `retryAfter` is set when every pool
+  able to run the step was paused: the earliest time one is back.
+- `handback.unresolvedRequirements[]`: `{id, status, why}` with the latest
+  evidence line, or `no evidence recorded for the current work`.
+- `handback.unreadSteering[]`: `{id, message, queuedAt}`.
 
-Read the current request and author only new actions; existing action IDs can
-be dependencies. `plan revise` is accepted at the same pause when the answer
-also changes, removes, or reruns existing actions. New shared programs pause
-for opt-in scouting or, in a run about to finish, unread steering, not negative
-evidence. A submission is validated before modifying the run. Resuming without
-a submission preserves the pause.
+`runs result --summary` adds `handback.options`, one command per choice
+(`continue`, `retry` when a step is retryable, `takeOver`, `restart`). An open
+requirement keeps its `why` for as long as the 4 KB budget allows; concerns and
+per-step detail shrink first. The `workflow.finished` event carries
+`unfinished` and `unreadSteering` counts. The reason line says what happened:
+`all 4 steps succeeded, but no step checked the requirements, so the result is
+not verified`, or `2 of 5 steps did not succeed: build-api failed (stalled), …`.
 
-Older saved runs can also pause for requirement gaps and accept
-`plan submit <shortId> --exhausted --reason '<why>'` there. Do not use
-`--exhausted` for a new program or a steering request.
+Where a run used to wait, it now finishes:
 
-Pause hygiene, all kernel-enforced:
+| Situation | What happens |
+|---|---|
+| `--scout` with no program | `partial`: `no program to run (the scout report is at …)`; add steps with `plan revise` |
+| a launch program the kernel cannot accept | `partial`: the reason lists the issues; nothing ran |
+| requirements open with nothing left to run (older verified-mode runs) | `partial` with gaps |
+| steering unread when the last step ends | the run finishes; `unreadSteering` lists it |
+| every pool able to run a step is paused | the step fails at once (`unavailable` or `quota`) with `retryAfter` |
+| a worker writes nothing for 60 minutes | stopped as `stalled`, retried once mechanically, then handed back |
+| the kernel throws | the run is marked `interrupted` with `kernel stopped on an error: …`; `resume` continues it |
 
-- The pause is authoritative. A resume keeps the recorded boundary and turn
-  even when steering was queued meanwhile; the request is refreshed to list the
-  pending steering (`pendingSteering`, also merged into `context.steering`).
-  `plan show` performs the same refresh (`requestRefreshed: true`) without
-  changing run state. A submission marks exactly the listed steering
-  delivered (`steering.delivered` events tagged `source: caller`); steering
-  queued after the request was shown stays pending and opens a `steering`
-  boundary after the resume. A steering boundary needs at least one new action
-  (`--exhausted` is valid only at a `gaps` boundary and is only advertised
-  there).
-- `workflow cancel <id>` on a paused run finalizes it inline: no kernel is
-  alive to honor a cooperative request, so the cancelled result envelope is
-  written and the pause record cleared in that one command. If cancellation was
-  recorded some other way (`tui --cancel`), `plan submit` refuses every
-  submission and `plan show`/`watch` print `bullswarm workflow cancel <id>
-  --json`. Finalizing always clears `planner.awaiting`; a terminal state that
-  still claims to be waiting is rejected by the state validator.
-- A `--program` supplied at launch is kept as `initial-planner-response.json`
-  in the run directory until applied, so an interruption during an opt-in
-  `--scout` does not lose it.
-- Bare value flags (`--program` with no file, `--orchestrator` with no pool)
-  are usage errors (exit 2); nothing launches in a different mode. `plan submit`
-  checks the goal directory before touching state.
+Resume on a finished run is a retry. It reopens the run for pending and
+cancelled steps, failed steps whose kind a retry fixes (`provider`, `quota`,
+`auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`,
+`stalled`), and the steps blocked behind them; moves `result.json` to
+`result-before-resume-<n>.json`; writes `workflow.reopened` with `source:
+resume`; and relaunches the kernel. A step that failed for any other reason
+(the worker reported failure, `ownership`) stays failed: change the plan with
+`plan revise`. With nothing retryable, resume prints `nothing to retry`, lists
+the steps that need you, starts nothing, and exits 1.
+
+The silence cutoff is `BULLSWARM_WORKER_SILENCE_SEC` (default 3600). It
+measures silence, not run time: every byte a worker writes restarts it.
+
+A `--program` supplied at launch is kept as `initial-planner-response.json` in
+the run directory until applied, so an interruption during an opt-in `--scout`
+does not lose it. Bare value flags (`--program` with no file, `--orchestrator`
+with no pool) are usage errors (exit 2); nothing launches in a different mode.
+
+### Runs an older version left waiting
+
+Runs started before 0.30.0 may still sit at a planning boundary; `watch`
+prints `waiting for the caller planner`. Either answer it (`plan show
+<shortId> --json`, then `plan submit <shortId> --program plan-2.json`, or
+`--exhausted --reason '<why>'` at a `gaps` boundary; a `plan revise` also
+answers it), or run `workflow resume <shortId>`, which finishes it and hands
+back what is left. `plan show` refreshes the request with steering queued
+since, and a submission marks exactly the listed steering delivered.
+`workflow cancel <id>` finalizes a waiting run inline; once cancellation is
+recorded, `plan submit` refuses every submission. `plan submit` checks the goal
+directory before touching state.
 
 ## Workspace and concurrency options
 
@@ -460,11 +484,17 @@ document and writes nothing.
   killed at once, the pool is quarantined until the reset the message named
   (else its cached 5-hour `resets_at`, else 30 minutes), and the action moves
   to a pool that still has quota. The quarantine holds across runs until it
-  expires. Discussing usage limits in a report is not a usage limit.
+  expires. When no pool able to run the step is left, the step fails at once
+  with `retryAfter` and the run hands it back; nothing waits for the reset.
+  Discussing usage limits in a report is not a usage limit.
 - A quota-gated preferred orchestrator falls back unless it was strictly pinned
   for QA.
-- Silence is evidence to inspect, not automatic proof of a hang. Check the TUI
-  or JSON activity and stall fields before cancellation.
+- A worker silent for `BULLSWARM_WORKER_SILENCE_SEC` (default 60 minutes) is
+  stopped as `stalled`. Shorter silence is evidence to inspect, not proof of a
+  hang: check the TUI or JSON activity and stall fields before cancelling.
+- `ownedFiles` naming a directory or a glob is refused at `plan validate` and
+  at launch, and so is a pinned pool that cannot run a step's lane and effort.
+  Both used to fail only after launch.
 - A malformed V2 planner program receives one compact deterministic correction
   request. Repeated invalidity ends planning before worker budget is spent.
 - Schema-invalid evidence receives a bounded correction in the same physical
