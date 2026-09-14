@@ -417,7 +417,7 @@ export async function dispatchV2Action({
     onAttempt?.('finished', clone(record), verdict);
     appendDecision(bullswarmDir, {
       ts: finishedAt, lane: action.lane ?? 'chore', picked: pool.name,
-      keepOnClaude: false, ok: verdict.ok, why: verdict.why ?? null,
+      keepOnClaude: false, ok: verdict.ok, failureKind: verdict.ok ? null : kind, why: verdict.why ?? null,
       wallSec: verdict.meta?.wallSec ?? null, model: record.model,
       reasoning: clone(reasoning),
       usage: verdict.meta?.usage ?? null, routing: record.routing,

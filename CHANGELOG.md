@@ -1,5 +1,27 @@
 # bullswarm changelog
 
+## 0.29.1 — a revised cancelled run runs its cancelled steps again
+
+- workflow: revising a cancelled run reopened it but left every step the
+  cancellation had stopped as `cancelled`, so the kernel finalized `partial`
+  in the same second and nothing ran. Found on a real claude-code run
+  (`pxkr7s`, revision 7). Reopening now returns those steps to pending, lists
+  them as `reopened.requeued` in the revise output and the `workflow.reopened`
+  event, and never counts their earlier attempts as completion. Failed steps
+  still wait for an explicit `--rerun`.
+- watch: a run waiting for its caller planner now also prints the
+  `plan export` / `plan revise` commands next to `plan show`.
+- workflow: an attempt stopped by a plan revision or a pause now records
+  `failureKind: superseded` or `paused` on the attempt and in
+  `attempt.finished`, the same kind `action.finished` already carried. It was
+  recorded as a plain `cancelled`, which made deliberate steering look like
+  worker failures.
+- strategy: `strategy rungs` no longer counts a stopped dispatch against a
+  pool's "% ok". On 2026-09-14 all 11 claude-code dispatches recorded as not
+  ok were workflow cancellations, plan revisions or pauses, none a worker
+  failure. Dispatch records now carry `failureKind`. The share was display
+  only; routing never read it.
+
 ## 0.29.0 — steer a running workflow, providers become directories, a declared reset date
 
 - workflow: the plan of a caller-planned program run can be changed at any

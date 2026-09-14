@@ -174,7 +174,9 @@ Rules that matter when you edit:
   must not remain, give a new or amended step the job of reverting or repairing
   them.
 - Revising a finished run (`completed`, `partial`, `cancelled`) reopens it: the
-  new plan runs and the run finishes again with a new result.
+  new plan runs and the run finishes again with a new result. Steps a
+  cancellation stopped run again; failed steps run again only when named in
+  `rerun`.
 - To think without new work starting, pause first: `bullswarm workflow pause
   <shortId>` starts nothing new and lets running agents finish (`--now` stops
   them; they run again after resume). Export and revise while paused, then

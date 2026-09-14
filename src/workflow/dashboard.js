@@ -452,7 +452,9 @@ export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null }
       agents.push({
         key: `attempt:${attempt.id}`, action, attempt: { ...attempt, attemptNumber: attempt.ordinal, outFile: attempt.outputFile },
         active: attempt.status === 'running' ? { ...attempt, stepId: action.id, attempt: attempt.ordinal, outFile: attempt.outputFile } : null,
-        pool: attempt.pool ?? 'unassigned', model: attempt.model ?? 'connector model', status: attempt.status,
+        pool: attempt.pool ?? 'unassigned', model: attempt.model ?? 'connector model',
+        // A worker stopped by a plan revision or a pause did not fail; say why it stopped.
+        status: attempt.status === 'cancelled' && ['superseded', 'paused'].includes(attempt.failureKind) ? attempt.failureKind : attempt.status,
       });
     }
   }
@@ -1326,7 +1328,7 @@ function statusIcon(status, spinnerFrame = 0) {
   if (value.includes('waiting') || value === 'queued' || value === 'paused'
     || value === 'blocked' || value === 'starting' || value === 'reviewing evidence'
     || value === 'directing execution') return glyphs().waiting;
-  if (value === 'skipped' || value === 'removed') return '–';
+  if (value === 'skipped' || value === 'removed' || value === 'superseded') return '–';
   return glyphs().pending;
 }
 
