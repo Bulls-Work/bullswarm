@@ -146,23 +146,16 @@ test('schema correction is bounded and resumes one physical planner session', as
   assert.equal(result.session.sessionId, 'session-fixed');
 });
 
-test('independent evidence avoids ancestor pool when another is eligible', async () => {
-  const h = harness([good]);
-  const result = await dispatchV2Action({ action: { ...action, lane: 'analyze' }, taskText: 'inspect', targetDir: '/tmp', paths, pools: [connector('luna-1'), connector('luna-2')], avoidPools: ['luna-1'], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
-  assert.equal(result.attempts[0].pool, 'luna-2');
-});
-
-test('strict evidence routing reuses its pinned ancestor instead of deadlocking on unrelated pools', async () => {
+test('a strict pool pin dispatches only to that pool while other pools are eligible', async () => {
   const h = harness([good]);
   const result = await dispatchV2Action({
     action: { ...action, lane: 'analyze' },
     taskText: 'inspect',
     targetDir: '/tmp',
     paths,
-    pools: [connector('pinned-luna'), connector('unrelated-luna')],
-    preferredPool: 'pinned-luna',
+    // unrelated-luna first and no preferredPool: only the strict pin can keep dispatch off it.
+    pools: [connector('unrelated-luna'), connector('pinned-luna')],
     strictPool: 'pinned-luna',
-    avoidPools: ['pinned-luna'],
     bullswarmDir: '/tmp/bs',
     dependencies: h.dependencies,
   });
@@ -182,7 +175,8 @@ test('provider-qualified model pins cannot run under another credential pool lab
   });
   const result = await dispatchV2Action({
     action: { ...action, lane: 'analyze' }, taskText: 'inspect', targetDir: '/tmp', paths,
-    pools: [primary, second], avoidPools: ['relay'],
+    // relay:b first: with nothing pinning the model, dispatch would pick it.
+    pools: [second, primary],
     preferredModel: 'a/gpt-5.6-luna', bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(result.ok, true);

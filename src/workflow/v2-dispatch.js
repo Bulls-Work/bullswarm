@@ -46,7 +46,7 @@ function providerIdFromModel(model) {
 }
 
 function preparePools(pools, action, effort, {
-  avoidPools = [], preferredModel = null, strictPool = null, now = Date.now(),
+  preferredModel = null, strictPool = null, now = Date.now(),
   liveQuarantine = null,
 } = {}) {
   const available = [];
@@ -79,16 +79,10 @@ function preparePools(pools, action, effort, {
     if (!modelPolicy.eligible) continue;
     available.push({ ...pool, modelPolicy });
   }
-  // A strict pin defines the complete dispatch universe. Apply it before the
-  // evidence-independence preference so unrelated eligible pools cannot make
-  // the pinned ancestor disappear and then leave an empty candidate set.
-  const scoped = strictPool
+  // A strict pin defines the complete dispatch universe.
+  return strictPool
     ? available.filter((pool) => pool.name === strictPool)
     : available;
-  const preferred = scoped.filter((pool) => !avoidPools.includes(pool.name));
-  // Evidence independence is preferred, never a deadlock: reuse an ancestor
-  // pool only when no independent eligible pool exists.
-  return preferred.length ? preferred : scoped;
 }
 
 /**
@@ -188,7 +182,6 @@ export async function dispatchV2Action({
   preferredPool = null,
   preferredModel = null,
   strictPool = null,
-  avoidPools = [],
   reasoningOverride = null,
   runReasoning = null,
   outputValidator = null,
@@ -231,7 +224,7 @@ export async function dispatchV2Action({
   const prepare = (poolList) => {
     const live = liveQuarantines();
     return preparePools(poolList, action, effort, {
-      avoidPools, preferredModel, strictPool, now: now(),
+      preferredModel, strictPool, now: now(),
       liveQuarantine: (name) => live[name]?.quarantine ?? null,
     });
   };

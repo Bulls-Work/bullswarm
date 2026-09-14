@@ -33,6 +33,14 @@
 - setup: `BULLSWARM_NO_PACKAGED_PROVIDERS=1` forces the packaged tiers off, for
   tests that spawn the real CLI against a fixture home and assert an exact pool
   list. Never set it in production.
+- workflow: evidence actions are routed like any other action. They used to be
+  steered away from the pools that did the work, which bought little
+  independence (the judging model is chosen by tier, not by pool) and overrode
+  pacing. The `avoidPools` dispatch option is gone.
+- codex: the connector runs `codex exec -s danger-full-access`. Codex sandboxes
+  writes to its workspace, so a workflow evidence action could do the work and
+  still fail with EPERM writing its candidate file into the run's state
+  directory under the bullswarm home.
 
 ## 0.28.9 — a declared reset date, `bullswarm update`, and benching a dead upstream together
 
