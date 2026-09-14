@@ -39,27 +39,56 @@ function claudeReaderFor(pool) {
   };
 }
 
-function relayReaderFor(pool) {
+/**
+ * The wallet total a Relay used-USD figure is read against, in this order:
+ * the pool's declared subscription (`strategy set-subscription <pool>
+ * --included-usd <n>`), then the RELAY_PLAN_USD environment variable, then
+ * $50. The wallets differ — the 2026-09-12 newcomer plan on relay-4 is $20 —
+ * so one host-wide number would report a $10 spend on it as 20% used instead
+ * of 50%. Anything that is not a positive finite number is skipped, and a
+ * result that is still not positive is null, so the reader records used USD
+ * without inventing a utilization.
+ */
+export function relayIncludedUsd({ includedUsd = null, env = process.env } = {}) {
+  for (const candidate of [includedUsd, env?.RELAY_PLAN_USD, 50]) {
+    if (candidate == null || candidate === '') continue;
+    const n = Number(candidate);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/** The operator-declared plan total for one pool, or null when none is recorded. */
+export function declaredIncludedUsd(subscriptions, pool) {
+  const n = Number(subscriptions?.[pool]?.includedValueUsd);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function relayReaderFor(pool, { includedUsd = null } = {}) {
   return async () => {
     const providers = discoverRelayProviders();
     const hit = providers.find((p) => p.pool === pool);
     if (!hit) {
       throw new RelayMeterError(`No Relay key configured in OpenCode for pool ${pool}.`, 'no_token');
     }
-    const includedUsd = Number(process.env.RELAY_PLAN_USD ?? 50);
     return fetchRelayUsage(hit.apiKey, {
       pool,
-      includedUsd: Number.isFinite(includedUsd) && includedUsd > 0 ? includedUsd : null,
+      includedUsd: relayIncludedUsd({ includedUsd }),
     });
   };
 }
 
-export function readerFor(pool) {
+/**
+ * @param {string} pool
+ * @param {{includedUsd?: number|null}} [readerOpts] per-pool facts the reader
+ *   cannot discover on its own — today the declared wallet total for Relay.
+ */
+export function readerFor(pool, readerOpts = {}) {
   if (pool === 'claude-code' || pool === 'claude' || pool.startsWith('claude-code:')) {
     return claudeReaderFor(pool);
   }
   if (pool === 'opencode2' || pool.startsWith('opencode2:')) {
-    return relayReaderFor(pool);
+    return relayReaderFor(pool, readerOpts);
   }
   return READERS[pool] ?? null;
 }
@@ -73,7 +102,9 @@ export function readerFor(pool) {
  * reading history (see appendMeterHistory) so spend rates have a series.
  *
  * opts.reader overrides the registered reader — used by tests to exercise the
- * live path without touching a provider.
+ * live path without touching a provider. opts.subscriptions is
+ * state.strategy.subscriptions, so a pool's declared plan total reaches the
+ * reader that needs it (Relay).
  */
 export async function getMeterReading(pool, opts = {}) {
   const { force = false, nowMs = Date.now() } = opts;
@@ -84,7 +115,9 @@ export async function getMeterReading(pool, opts = {}) {
     return { snapshot: cached, source: 'cache', ...paceSnapshot(cached, nowMs) };
   }
 
-  const reader = opts.reader ?? readerFor(pool);
+  const reader = opts.reader ?? readerFor(pool, {
+    includedUsd: declaredIncludedUsd(opts.subscriptions, pool),
+  });
   if (!reader) {
     // No programmatic reader for this pool. A cached snapshot is still a real
     // recorded reading, so a FORCED refresh must not blank it — that call is

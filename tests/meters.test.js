@@ -716,3 +716,18 @@ test('buildPools: an operator-declared reset paces a reading the provider left u
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Relay plan total: declared subscription wins, then RELAY_PLAN_USD, then $50', async () => {
+  const { relayIncludedUsd, declaredIncludedUsd } = await import('../src/meters/registry.js');
+  // The 2026-09-12 newcomer wallet is $20 while the older ones are $50.
+  assert.equal(relayIncludedUsd({ includedUsd: 20, env: { RELAY_PLAN_USD: '50' } }), 20);
+  assert.equal(relayIncludedUsd({ includedUsd: null, env: { RELAY_PLAN_USD: '35' } }), 35);
+  assert.equal(relayIncludedUsd({ env: {} }), 50);
+  // Garbage never becomes a denominator.
+  assert.equal(relayIncludedUsd({ includedUsd: 0, env: { RELAY_PLAN_USD: 'abc' } }), 50);
+  assert.equal(relayIncludedUsd({ includedUsd: -5, env: { RELAY_PLAN_USD: '0' } }), 50);
+  const subs = { 'opencode2:relay-4': { includedValueUsd: 20 }, opencode2: { includedValueUsd: null } };
+  assert.equal(declaredIncludedUsd(subs, 'opencode2:relay-4'), 20);
+  assert.equal(declaredIncludedUsd(subs, 'opencode2'), null);
+  assert.equal(declaredIncludedUsd(undefined, 'opencode2:relay-2'), null);
+});

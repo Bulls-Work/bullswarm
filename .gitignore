@@ -6,3 +6,4 @@ bullswarm-*.tgz
 .commandcode/
 .relay-api-key*
 .openrouter-api-key
+.relay*-key
