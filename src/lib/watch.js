@@ -264,6 +264,22 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       stopChild('SIGTERM');
       forceKillTimer = setTimeout(() => stopChild('SIGKILL'), 2000);
     }, timeoutMs);
+    // Silence, not run time: the clock restarts on every byte the worker
+    // writes, so only a worker that has gone completely quiet is stopped.
+    const silenceMs = Number(opts.silenceTimeoutSec) > 0 ? Number(opts.silenceTimeoutSec) * 1000 : null;
+    let stalled = false;
+    let silenceTimer = null;
+    const armSilence = () => {
+      if (silenceMs == null || stalled) return;
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        stalled = true;
+        stopChild('SIGTERM');
+        forceKillTimer ??= setTimeout(() => stopChild('SIGKILL'), 2000);
+      }, silenceMs);
+      silenceTimer.unref?.();
+    };
+    armSilence();
     const cancelPoll = typeof opts.shouldCancel === 'function' ? setInterval(() => {
       if (cancelled || !opts.shouldCancel()) return;
       cancelled = true;
@@ -277,6 +293,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     const onStream = (capture, stream) => (d) => {
       try {
         capture.push(d);
+        armSilence();
         const at = new Date().toISOString();
         opts.onActivity?.({ stream, bytes: d.length, at });
         eventDecoder?.push(d, stream, at);
@@ -298,6 +315,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     child.on('error', (err) => {
       eventDecoder?.finish();
       if (timer) clearTimeout(timer);
+      if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -308,6 +326,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         ...capturedStreams(),
         stderr: `${capturedStreams().stderr}\n${err.message}`,
         timedOut,
+        stalled,
         cancelled,
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
@@ -317,15 +336,16 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       });
     });
     child.on('close', (code, signal) => {
-      if (opts.processGroup && (cancelled || timedOut || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
+      if (opts.processGroup && (cancelled || timedOut || stalled || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
       eventDecoder?.finish();
       if (timer) clearTimeout(timer);
+      if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
       if (fatalForceKillTimer) clearTimeout(fatalForceKillTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       if (cancelPoll) clearInterval(cancelPoll);
       resolvePromise({
-        exitCode: code, signal, ...capturedStreams(), timedOut, cancelled, fatalSignature,
+        exitCode: code, signal, ...capturedStreams(), timedOut, stalled, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
         providerFailureType,
@@ -463,6 +483,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   let structured = null;
   if (obs.cancelled) {
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
+  } else if (obs.stalled) {
+    const quiet = Number(opts.silenceTimeoutSec) >= 60 ? `${Math.round(Number(opts.silenceTimeoutSec) / 60)} min` : `${opts.silenceTimeoutSec} s`;
+    verdict = { ok: false, why: `stalled: the worker wrote nothing for ${quiet} and was stopped`, failureKind: 'stalled' };
   } else if (obs.timedOut) {
     verdict = { ok: false, why: `timeout after ${opts.timeoutSec}s` };
   } else if (obs.spawnError) {
@@ -535,6 +558,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     typeof opts.outputValidator !== 'function' &&
     !obs.spawnError &&
     !obs.timedOut &&
+    !obs.stalled &&
     !authHit &&
     !upstreamAuth &&
     !quotaFailure &&
@@ -556,6 +580,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       exitCode: obs.exitCode,
       signal: obs.signal,
       timedOut: obs.timedOut,
+      stalled: obs.stalled ?? false,
       cancelled: obs.cancelled,
       providerFailureType: obs.providerFailureType,
       wallSec,

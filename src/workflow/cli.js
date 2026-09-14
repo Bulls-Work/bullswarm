@@ -20,8 +20,10 @@ import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
 import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
 import {
   runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
-  pauseV2Run, reviseV2Program, unpauseV2Run,
+  pauseV2Run, reopenV2RunForRetry, reviseV2Program, unpauseV2Run,
 } from './v2-runtime.js';
+import { formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { prepareV2DispatchPools, workerSilenceTimeoutSec } from './v2-dispatch.js';
 import {
   createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
 } from './v2-revision.js';
@@ -275,12 +277,6 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
     else if (!opts.quiet) console.log(`workflow ${token} paused; nothing new starts until: ${paused.next}`);
     return 0;
   }
-  if (!result.result && result.awaiting) {
-    const awaiting = plannerAwaitingDocument({ ...result, cancellation: result.state?.cancellation ?? null });
-    if (opts.json) console.log(JSON.stringify(awaiting, null, 2));
-    else if (!opts.quiet) printPlannerAwaiting(awaiting);
-    return 0;
-  }
   if (opts.json) console.log(JSON.stringify(result.result, null, 2));
   else if (!opts.quiet) {
     console.log(`workflow ${result.shortId ?? result.runId} ${result.result.status}; result: bullswarm workflow runs result ${result.shortId ?? result.runId} --json`);
@@ -288,6 +284,8 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
       console.log(`verification: ${result.result.verified ? 'all mandatory requirements have passing evidence' : 'not independently verified; inspect action outputs and evidence'}`);
       console.log(`workspace: ${result.result.workspace?.cwd ?? doc.intent.cwd}`);
     }
+    console.log(`reason: ${result.result.reason}`);
+    for (const line of formatV2HandbackLines(summarizeV2Result(result.result, result.state, { runDir: result.runDir }))) console.log(line);
   }
   return result.result.status === 'completed' ? 0 : 1;
 }
@@ -364,7 +362,7 @@ function goalObserveCommands(token, { callerPlanner = false } = {}) {
     events: `bullswarm workflow events --json ${token} --after 0`,
     steer: `bullswarm workflow steer ${token} --message "<guidance>"`,
     cancel: `bullswarm workflow cancel ${token} --json`,
-    ...(callerPlanner ? { plan: `bullswarm workflow plan show ${token} --json` } : {}),
+    ...(callerPlanner ? { plan: `bullswarm workflow plan export ${token} --out plan.json` } : {}),
   };
 }
 
@@ -464,7 +462,7 @@ function goalLaunchInstructions(observe) {
   return {
     ...(observe.plan ? {
       callerPlanner: {
-        purpose: 'When the run pauses at a planning boundary, read the durable planner request, author the next program, and submit it.',
+        purpose: 'Change the running plan at any time: export it, edit it, then plan revise. The run never waits for you; when it finishes, its result hands back whatever is left.',
         command: observe.plan,
       },
     } : {}),
@@ -481,11 +479,11 @@ function goalLaunchInstructions(observe) {
       command: observe.dashboard,
     },
     result: {
-      purpose: 'After completion, obtain the stable delivery and verification envelope.',
+      purpose: 'After it finishes, obtain the stable result: verification, and a handback of anything left with your options (continue, retry, take over, restart).',
       command: observe.result,
     },
     cancel: {
-      purpose: 'Stop the run cooperatively; a run paused for its caller planner is finalized immediately.',
+      purpose: 'Stop the run cooperatively; a paused run is finalized immediately.',
       command: observe.cancel,
     },
   };
@@ -681,6 +679,41 @@ function previewValidateInitialProgram(doc, response) {
   return validateV2PlannerResponse(response, preview, { boundary: 'initial', requiredScoutUnits: [] });
 }
 
+// The validator cannot see the workspace. A directory named as an owned file
+// passes it, and then every write the step makes fails as out of scope.
+function ownedDirectoryIssues(program, cwd) {
+  const issues = [];
+  (program?.actions ?? []).forEach((action, index) => {
+    (Array.isArray(action?.ownedFiles) ? action.ownedFiles : []).forEach((file, fileIndex) => {
+      if (typeof file !== 'string' || !file) return;
+      let directory = false;
+      try { directory = statSync(resolve(cwd, file)).isDirectory(); } catch { directory = false; }
+      if (directory) issues.push(`program.actions[${index}].ownedFiles[${fileIndex}] names a directory ("${file}"); list the exact files step ${action.id} may change`);
+    });
+  });
+  return issues;
+}
+
+// A pinned pool with no model on a step's tier fails that step within a second
+// as "no eligible pool". Say so before anything launches. Pool pauses are not
+// counted here: they end, and the run reports them if they still matter.
+function pinnedPoolIssues(doc, program, pools) {
+  const routing = doc.config?.workerRouting ?? {};
+  const strictPool = routing.strictPool ?? routing.pool ?? null;
+  if (!strictPool || !Array.isArray(pools) || !pools.length) return [];
+  const issues = [];
+  program.actions.forEach((action, index) => {
+    const effort = action.effort ?? 'medium';
+    const capable = prepareV2DispatchPools(pools, action, effort, {
+      preferredModel: routing.model ?? routing.preferredModel ?? null, strictPool, ignoreQuarantine: true,
+    });
+    if (!capable.length) {
+      issues.push(`program.actions[${index}] (${action.id}) is ${action.lane}/${effort} work, which the pinned pool ${strictPool} cannot run (disabled, or no model on the ${effort} tier); change the step's effort or pin another pool`);
+    }
+  });
+  return issues;
+}
+
 // Advisories are advice, never a rejection: they go to stderr so a --json
 // caller keeps a clean stdout document, and the exit code is untouched.
 function printAdvisories(advisories, { stream = console.error } = {}) {
@@ -788,9 +821,14 @@ async function wfGoal(opts) {
       if (err instanceof V2PlannerValidationError) return refuseProgramInvalid(doc.intent.goal, opts, err.issues);
       throw err;
     }
+    const workspaceIssues = [
+      ...ownedDirectoryIssues(previewed.program, doc.intent.cwd),
+      ...pinnedPoolIssues(doc, previewed.program, pools),
+    ];
+    if (workspaceIssues.length) return refuseProgramInvalid(doc.intent.goal, opts, workspaceIssues);
     // The same lines `plan validate` prints, at the moment the program is
     // actually launched. The kernel also stores them on the run state.
-    printAdvisories(programAdvisories(previewed.program));
+    printAdvisories(programAdvisories(previewed.program, { requirements: doc.intent.requirements }));
   }
 
   if (!opts.foreground && !resumeRunId && !opts.request) {
@@ -890,7 +928,7 @@ function planContract(opts) {
 
 // Dry-run a caller program against the contract: the same validator and the
 // same preview state a launch uses, without creating a run.
-function planValidate(opts) {
+async function planValidate(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'plan', 'validate'])); return 0; }
   if (!opts.program) { console.error(`usage: ${usageLine(['workflow', 'plan', 'validate'])}`); return 2; }
   const built = planningGoalDocument(opts, ['workflow', 'plan', 'validate'], { allowProgram: true });
@@ -903,6 +941,14 @@ function planValidate(opts) {
     console.error(`✗ ${err.message}`);
     return 2;
   }
+  // Everything a launch refuses, validate refuses too.
+  const workspaceIssues = ownedDirectoryIssues(accepted.program, doc.intent.cwd);
+  const routing = doc.config?.workerRouting ?? {};
+  if (routing.strictPool ?? routing.pool) {
+    const { pools } = await livePoolNames();
+    workspaceIssues.push(...pinnedPoolIssues(doc, accepted.program, pools));
+  }
+  if (workspaceIssues.length) return refuseProgramInvalid(goal, opts, workspaceIssues, { message: 'program invalid against the contract (nothing launched)' });
   const next = goalNextCommands(goal, doc.intent.cwd, opts);
   const payload = {
     action: 'plan-valid',
@@ -920,7 +966,7 @@ function planValidate(opts) {
     },
     // Advice about the accepted program. Present (possibly empty) on every
     // valid program so a caller can read it without probing for the key.
-    advisories: programAdvisories(accepted.program),
+    advisories: programAdvisories(accepted.program, { requirements: doc.intent.requirements }),
     next: { launch: next.launch },
   };
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
@@ -1215,6 +1261,10 @@ async function planRevise(opts) {
   catch (err) { console.error(`✗ cannot read the run state: ${err.message}`); return 1; }
   const precheck = planV2Revision(current, body, { pendingSteeringIds: peekSteering(current, run.runDir).map((entry) => entry.id) });
   const id = current.shortId ?? current.runId;
+  if (precheck.ok) {
+    const directories = ownedDirectoryIssues(body.program, doc.intent.cwd);
+    if (directories.length) Object.assign(precheck, { ok: false, issues: directories });
+  }
   if (!precheck.ok) {
     if (opts.json) console.log(JSON.stringify({ action: 'plan-revise', status: 'rejected', runId: current.runId, shortId: current.shortId ?? null, programRevision: current.program.revision, issues: precheck.issues }, null, 2));
     printValidationIssues(`revision rejected against ${id} at revision ${current.program.revision} (run unchanged)`, precheck.issues);
@@ -1360,6 +1410,49 @@ async function wfCancel(opts) {
   return 0;
 }
 
+// Returns null (the run is not finished), the reopen outcome, or an exit code
+// after printing why nothing was relaunched.
+function reopenFinishedRun(resolvedRun, opts) {
+  let current = null;
+  try { current = JSON.parse(readFileSync(join(resolvedRun.runDir, 'state.json'), 'utf8')); } catch { return null; }
+  if (!['completed', 'partial', 'cancelled', 'failed'].includes(current?.lifecycle?.status)) return null;
+  const id = resolvedRun.shortId ?? resolvedRun.runId;
+  let outcome;
+  try { outcome = reopenV2RunForRetry({ bullswarmDir: BULLSWARM_DIR(), runId: resolvedRun.runId }); }
+  catch (err) { console.error(`✗ cannot reopen ${id}: ${err.message}`); return 1; }
+  if (outcome.status === 'live') { console.error(`✗ a kernel is still finishing ${id}; watch it with bullswarm workflow watch ${id} --next`); return 1; }
+  if (outcome.status === 'not-finished') return null;
+  if (outcome.status === 'nothing-to-retry') {
+    const program = isProgramWorkflow(current);
+    const payload = {
+      action: 'resume', status: 'nothing-to-retry', runId: resolvedRun.runId, shortId: resolvedRun.shortId ?? null,
+      runStatus: current.lifecycle.status, needsCaller: outcome.needsCaller ?? [],
+      next: {
+        result: `bullswarm workflow runs result ${id} --json --summary`,
+        ...(program ? { revise: `bullswarm workflow plan export ${id} --out plan.json, then bullswarm workflow plan revise ${id} --program plan.json --rerun <step ids>` } : {}),
+      },
+    };
+    if (opts.json) console.log(JSON.stringify(payload, null, 2));
+    else {
+      console.error(`✗ nothing to retry in ${id} (${current.lifecycle.status}): no step stopped for a reason a plain retry fixes; nothing was relaunched`);
+      for (const entry of payload.needsCaller) console.error(`  ${entry.id}  ${entry.status}${entry.failureKind ? ` (${entry.failureKind})` : ''}`);
+      if (payload.next.revise) console.error(`  change the plan: ${payload.next.revise}`);
+      console.error(`  result: ${payload.next.result}`);
+    }
+    return 1;
+  }
+  // A step that failed because its pool was paused fails again at once while
+  // that pool is still paused. Say so; the caller chose to retry now.
+  const retryNow = Date.now();
+  const stillPaused = (current.actions ?? []).filter((action) => outcome.requeued.includes(action.id)
+    && Date.parse(action.lastFailure?.retryAfter ?? '') > retryNow);
+  if (!opts.json) {
+    console.log(`✓ reopened the ${outcome.previousStatus} run ${id}; running again: ${outcome.requeued.join(', ')}`);
+    for (const action of stillPaused) console.log(`  note: ${action.id} waited on a pool paused until ${action.lastFailure.retryAfter}; while it is still paused the step fails again straight away`);
+  }
+  return outcome;
+}
+
 async function wfResume(opts) {
   if (opts.help) { console.log(helpText(['workflow', 'resume'])); return 0; }
   const flagExit = flagErrors(opts, ['workflow', 'resume']);
@@ -1368,7 +1461,7 @@ async function wfResume(opts) {
   if (!token) { console.error(`usage: ${usageLine(['workflow', 'resume'])}`); return 2; }
   if (opts.watch && (opts.foreground || opts.json)) { console.error('✗ --watch cannot combine with --foreground or --json'); return 2; }
   if (opts.program || opts.orchestrator !== undefined || opts['strict-orchestrator'] !== undefined || opts.scout || opts['suggested-plan'] !== undefined || opts.isolation !== undefined) {
-    console.error(`✗ a resumed run keeps its durable planner mode and routing; to submit a caller program use: ${callerPlannerSubmitCommand(token)}`);
+    console.error(`✗ a resumed run keeps its durable planner mode and routing; to change its plan use: bullswarm workflow plan revise ${token} --program <file.json>`);
     return 2;
   }
   const legacy = legacyRunRefusal(token, opts);
@@ -1401,6 +1494,10 @@ async function wfResume(opts) {
       }
     }
   } catch (err) { console.error(`✗ cannot lift the pause on ${resolvedRun.runId}: ${err.message}`); return 1; }
+  // Resume on a finished run is a retry: it reopens the run for the steps a
+  // plain retry can fix, or says there are none and launches nothing.
+  const reopened = reopenFinishedRun(resolvedRun, opts);
+  if (typeof reopened === 'number') return reopened;
   if (opts.foreground) {
     const { pools } = await livePoolNames();
     return executeGoalDocument({ doc, pools, opts, resumeRunId: resolvedRun.runId });
@@ -1408,6 +1505,7 @@ async function wfResume(opts) {
   let launch;
   try { launch = await launchDetachedResume(doc, resolvedRun.runId, opts); }
   catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  if (reopened) launch.reopened = { previousStatus: reopened.previousStatus, requeued: reopened.requeued, archivedResult: reopened.archivedResult };
   if (opts.json) console.log(JSON.stringify(launch, null, 2));
   else {
     console.log(`✓ workflow ${launch.shortId ?? resolvedRun.runId} resumed independently (${launch.status})`);
@@ -1455,9 +1553,15 @@ async function wfCapabilities(opts) {
           programRequired: true,
           livePlanRevisions: true,
           pauseAndResume: true,
+          // A run never waits for its caller, a pool, or a silent worker: it
+          // finishes and its result hands back what is left.
+          runsNeverWait: true,
+          resultHandback: true,
+          resumeRetriesFinishedRuns: true,
+          workerSilenceTimeoutSec: workerSilenceTimeoutSec(),
         },
         plannerModes: {
-          caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan show|submit); the kernel pauses durably at each boundary and never dispatches a planner',
+          caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan export|revise); the kernel never dispatches a planner and never waits for the caller: a run that needs a decision finishes, and its result hands the decision back',
           dispatched: 'explicit --orchestrator auto|<pool>: the kernel routes a Workflow Planner agent process at each planning boundary',
         },
         defaults: { concurrency: 4, maxAgents: 30, maxActions: 100, maxExpansionRounds: 2, plannerMode: 'caller', executionMode: 'program', workspaceMode: 'shared' },

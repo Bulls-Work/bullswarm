@@ -10,6 +10,41 @@ const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', ...TE
 const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked']);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
+// Failure kinds a plain retry can fix: the work itself was never judged (no
+// pool, a paused pool, a crashed or silent worker, unreadable output). A step
+// that failed for any other reason (the worker reported failure, it wrote
+// outside its files) needs the caller to change something before it reruns.
+export const V2_RETRYABLE_FAILURE_KINDS = Object.freeze([
+  'provider', 'quota', 'auth', 'process', 'unavailable', 'interrupted', 'runtime', 'schema', 'stalled',
+]);
+const RETRYABLE_FAILURE_KINDS = new Set(V2_RETRYABLE_FAILURE_KINDS);
+const RERUN_STATUSES = new Set(['pending', 'ready', 'waiting', 'running', 'cancelled', 'interrupted']);
+
+// Which unfinished steps `workflow resume` runs again on a finished run:
+// steps that never ran or were stopped, steps whose failure a retry can fix,
+// and blocked steps once something they wait on runs again. Everything else is
+// listed as needing the caller.
+export function v2RetryPlan(state) {
+  const runtimeById = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  const rerun = [];
+  const blocked = [];
+  const needsCaller = [];
+  for (const definition of state.program?.actions ?? []) {
+    const runtime = runtimeById.get(definition.id);
+    const status = runtime?.status ?? 'pending';
+    const failureKind = runtime?.lastFailure?.kind ?? null;
+    if (status === 'succeeded' || status === 'removed') continue;
+    if (RERUN_STATUSES.has(status) || (status === 'failed' && RETRYABLE_FAILURE_KINDS.has(failureKind))) rerun.push(definition.id);
+    else if (status === 'blocked') blocked.push(definition.id);
+    else needsCaller.push({ id: definition.id, status, failureKind });
+  }
+  if (!rerun.length) {
+    for (const id of blocked) needsCaller.push({ id, status: 'blocked', failureKind: runtimeById.get(id)?.lastFailure?.kind ?? 'dependency' });
+    return { rerun, blocked: [], needsCaller };
+  }
+  return { rerun, blocked, needsCaller };
+}
+
 function resultFail(message) { throw new TypeError(`Invalid V2 result envelope: ${message}`); }
 function resultObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) resultFail(`${name} must be an object`);
@@ -124,6 +159,114 @@ function validateGaps(value, result) {
     stringArray(entry.evidenceFor, `gaps.actions[${index}].evidenceFor`);
     if (entry.failure !== null) failureSummary(entry.failure, `gaps.actions[${index}].failure`);
   });
+}
+
+function nullableString(value, name) {
+  if (value !== null && (typeof value !== 'string' || !value)) resultFail(`${name} must be null or a non-empty string`);
+}
+
+function validateHandback(value) {
+  resultObject(value, 'handback');
+  exactFields(value, new Set(['unfinished', 'unresolvedRequirements', 'unreadSteering']), 'handback');
+  for (const key of ['unfinished', 'unresolvedRequirements', 'unreadSteering']) {
+    if (!Array.isArray(value[key])) resultFail(`handback.${key} must be an array`);
+  }
+  value.unfinished.forEach((entry, index) => {
+    const name = `handback.unfinished[${index}]`;
+    resultObject(entry, name);
+    exactFields(entry, new Set(['id', 'status', 'failureKind', 'why', 'retryAfter', 'retryable']), name);
+    resultString(entry.id, `${name}.id`);
+    if (!ACTION_STATUSES.has(entry.status)) resultFail(`${name}.status is invalid`);
+    nullableString(entry.failureKind, `${name}.failureKind`);
+    nullableString(entry.why, `${name}.why`);
+    if (entry.retryAfter !== undefined && (typeof entry.retryAfter !== 'string' || Number.isNaN(Date.parse(entry.retryAfter)))) resultFail(`${name}.retryAfter must be an ISO-compatible timestamp`);
+    if (typeof entry.retryable !== 'boolean') resultFail(`${name}.retryable must be a boolean`);
+  });
+  value.unresolvedRequirements.forEach((entry, index) => {
+    const name = `handback.unresolvedRequirements[${index}]`;
+    resultObject(entry, name);
+    exactFields(entry, new Set(['id', 'status', 'why']), name);
+    resultString(entry.id, `${name}.id`);
+    if (!REQUIREMENT_STATUSES.has(entry.status) || entry.status === 'passed') resultFail(`${name}.status is invalid`);
+    nullableString(entry.why, `${name}.why`);
+  });
+  value.unreadSteering.forEach((entry, index) => {
+    const name = `handback.unreadSteering[${index}]`;
+    resultObject(entry, name);
+    exactFields(entry, new Set(['id', 'message', 'queuedAt']), name);
+    resultString(entry.id, `${name}.id`);
+    if (typeof entry.message !== 'string') resultFail(`${name}.message must be a string`);
+    nullableString(entry.queuedAt, `${name}.queuedAt`);
+  });
+}
+
+// What a finished run hands back to its caller: every step that did not
+// succeed and whether a plain resume reruns it, every requirement still open
+// with its latest reason, and guidance that arrived too late to act on. The
+// caller decides what happens next; the run never waits for that decision.
+function buildV2Handback(state, { unreadSteering = [] } = {}) {
+  const runtimeStates = stateByAction(state);
+  const plan = v2RetryPlan(state);
+  const rerun = new Set([...plan.rerun, ...plan.blocked]);
+  const unfinished = state.program.actions.map((definition) => {
+    const runtime = runtimeStates.get(definition.id);
+    const status = runtime?.status ?? 'pending';
+    if (status === 'succeeded' || status === 'removed') return null;
+    const failure = runtime?.lastFailure ?? null;
+    return {
+      id: definition.id,
+      status,
+      failureKind: typeof failure?.kind === 'string' && failure.kind ? failure.kind : null,
+      why: firstLine(failure?.message, 300),
+      ...(typeof failure?.retryAfter === 'string' && !Number.isNaN(Date.parse(failure.retryAfter)) ? { retryAfter: failure.retryAfter } : {}),
+      retryable: rerun.has(definition.id),
+    };
+  }).filter(Boolean);
+  const unresolvedRequirements = state.intent.requirements.map((intentRequirement) => {
+    const requirement = state.ledger.requirements[intentRequirement.id];
+    if (requirement.status === 'passed') return null;
+    const latest = currentEvidence(state.ledger, requirement).at(-1);
+    return {
+      id: requirement.id,
+      status: requirement.status,
+      why: firstLine(latest?.evidence?.[0] ?? latest?.mechanicalFailure?.message, 300) ?? 'no evidence recorded for the current work',
+    };
+  }).filter(Boolean);
+  return {
+    unfinished,
+    unresolvedRequirements,
+    unreadSteering: unreadSteering.map((entry) => ({
+      id: String(entry.id),
+      message: String(entry.message ?? '').slice(0, 500),
+      queuedAt: typeof entry.queuedAt === 'string' && entry.queuedAt ? entry.queuedAt : null,
+    })),
+  };
+}
+
+function describeSteps(actions, runtimeStates, limit = 3) {
+  const named = actions.slice(0, limit).map((action) => {
+    const runtime = runtimeStates.get(action.id);
+    const status = runtime?.status ?? 'pending';
+    const kind = runtime?.lastFailure?.kind;
+    return `${action.id} ${status}${kind && kind !== status ? ` (${kind})` : ''}`;
+  });
+  return actions.length > limit ? `${named.join(', ')} and ${actions.length - limit} more` : named.join(', ');
+}
+
+// Say what actually happened in words a caller can act on. "All program
+// actions finished successfully" read as success on runs whose verify step
+// had failed the work, and callers stopped there (2026-09 caller study).
+function succeededProgramReason(state, count) {
+  const steps = `all ${count} step${count === 1 ? '' : 's'} succeeded`;
+  if (hasPassingRequirementEvidence(state)) return `${steps} and every mandatory requirement passed its check`;
+  const checked = new Set(state.program.actions.flatMap((action) => action.evidenceFor ?? []));
+  if (!checked.size) return `${steps}, but no step checked the requirements, so the result is not verified`;
+  const open = Object.values(state.ledger.requirements).filter((requirement) => requirement.mandatory && requirement.status !== 'passed');
+  if (!open.length) return `${steps}, but no mandatory requirement has passing evidence, so the result is not verified`;
+  const named = open.slice(0, 3).map((requirement) => `${requirement.id} ${requirement.status}${checked.has(requirement.id) ? '' : ' (no step checks it)'}`);
+  const first = open.find((requirement) => checked.has(requirement.id));
+  const why = first ? clipAtWord(firstLine(currentEvidence(state.ledger, first).at(-1)?.evidence?.[0], 400), 160) : null;
+  return `${steps}, but not verified: ${named.join(', ')}${open.length > 3 ? ` and ${open.length - 3} more` : ''}${why ? ` — ${first.id}: ${why}` : ''}`;
 }
 
 function stateByAction(state) {
@@ -274,10 +417,11 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   }
   if (isProgramWorkflow(state)) {
     // An action a plan revision removed no longer counts toward the result.
-    const unsuccessful = state.program.actions.filter((action) => !['succeeded', 'removed'].includes(runtimeStates.get(action.id)?.status));
+    const live = state.program.actions.filter((action) => runtimeStates.get(action.id)?.status !== 'removed');
+    const unsuccessful = live.filter((action) => runtimeStates.get(action.id)?.status !== 'succeeded');
     return unsuccessful.length
-      ? { status: 'partial', terminal: true, reason: `program finished with ${unsuccessful.length} unsuccessful action(s)`, gaps: consolidateV2Gaps(state) }
-      : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all program actions finished successfully; consult evidence for verification' };
+      ? { status: 'partial', terminal: true, reason: `${unsuccessful.length} of ${live.length} step${live.length === 1 ? '' : 's'} did not succeed: ${describeSteps(unsuccessful, runtimeStates)}`, gaps: consolidateV2Gaps(state) }
+      : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: succeededProgramReason(state, live.length) };
   }
   if (!unresolvedMandatory.length) {
     return { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all mandatory requirements have fresh passing evidence' };
@@ -289,7 +433,7 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   return { status: 'needs-planner', terminal: false, boundary: 'gaps', reason: gaps.summary, gaps };
 }
 
-export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null } = {}) {
+export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null, unreadSteering = [] } = {}) {
   validateV2DurableState(state);
   const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
   if (!['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
@@ -342,6 +486,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     gaps: status === 'completed' && verified ? null : (progress.gaps ?? consolidateV2Gaps(state)),
     usage: resultUsage(state),
     finishedAt,
+    // Anything short of a verified run with no unread guidance is handed back.
+    ...(status === 'completed' && verified && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering }) }),
   };
   validateV2ResultEnvelope(result);
   return clone(result);
@@ -351,6 +497,15 @@ function firstLine(value, limit) {
   if (value === undefined || value === null) return null;
   const line = String(value).split(/\r?\n/, 1)[0].trim().slice(0, limit);
   return line || null;
+}
+
+// A reason line is read by a person: cut it between words and mark the cut,
+// so "It contains no menti" never reads as the whole finding.
+function clipAtWord(text, limit) {
+  if (!text || text.length <= limit) return text;
+  const head = text.slice(0, limit - 1);
+  const space = head.lastIndexOf(' ');
+  return `${(space > limit / 2 ? head.slice(0, space) : head).replace(/[\s,;:—-]+$/, '')}…`;
 }
 
 function latestAttemptFor(state, actionId) {
@@ -383,11 +538,24 @@ function dropNullFields(value) {
 }
 
 const RESULT_SUMMARY_BYTE_BUDGET = 4096;
-const RESULT_SUMMARY_FIT_LIMITS = [
-  [200, 160, 3], [200, 80, 3], [200, 40, 3], [200, 80, 1], [200, 40, 1], [200, 0, 0],
-  [120, 80, 3], [120, 0, 0],
-  [80, 80, 1], [80, 0, 0],
-  [40, 0, 0], [0, 0, 0],
+// Shrink order when a summary is over budget: concerns first, then per-action
+// detail, and an open requirement's `why` last. That one line is what a caller
+// acts on; when it was blanked, callers went reading run files instead (6 of
+// 10 unverified Kipwise runs, 2026-09).
+const RESULT_SUMMARY_FIT_STEPS = [
+  { actions: 'named', why: 200, concern: 160, concerns: 3, handbackWhy: 160, handbackCount: 8 },
+  { actions: 'full', why: 200, concern: 160, concerns: 3, handbackWhy: 160, handbackCount: 8 },
+  { actions: 'full', why: 200, concern: 80, concerns: 3, handbackWhy: 160, handbackCount: 8 },
+  { actions: 'full', why: 200, concern: 80, concerns: 1, handbackWhy: 120, handbackCount: 8 },
+  { actions: 'routing', why: 200, concern: 0, concerns: 0, handbackWhy: 120, handbackCount: 8 },
+  { actions: 'status', why: 200, concern: 0, concerns: 0, handbackWhy: 120, handbackCount: 6 },
+  // Output names go before the reasons do: the full result still lists them.
+  { actions: 'bare', why: 200, concern: 0, concerns: 0, handbackWhy: 80, handbackCount: 6 },
+  { actions: 'bare', why: 160, concern: 0, concerns: 0, handbackWhy: 80, handbackCount: 4 },
+  { actions: 'bare', why: 120, concern: 0, concerns: 0, handbackWhy: 0, handbackCount: 4 },
+  { actions: 'bare', why: 80, concern: 0, concerns: 0, handbackWhy: 0, handbackCount: 2 },
+  { actions: 'bare', why: 40, concern: 0, concerns: 0, handbackWhy: 0, handbackCount: 0 },
+  { actions: 'bare', why: 0, concern: 0, concerns: 0, handbackWhy: 0, handbackCount: 0 },
 ];
 
 function summarySize(summary) {
@@ -395,11 +563,18 @@ function summarySize(summary) {
 }
 
 function fitResultSummary(summary) {
-  const basename = (actions) => actions.map((action) => ({
-    ...action,
-    outFile: compactActionValue(action.outFile),
-  }));
-  const whyAt = (limit) => summary.requirements.map((requirement) => ({
+  const actionsAt = (level) => summary.actions.map((action) => {
+    // Output paths are always basenames under `next.runDir`: one directory
+    // string instead of N absolute prefixes, and the summary's size no longer
+    // depends on where the home lives.
+    const named = { ...action, outFile: compactActionValue(action.outFile) };
+    if (level === 'named') return named;
+    if (level === 'full') return dropNullFields(named);
+    if (level === 'routing') return dropNullFields({ ...named, bytes: null });
+    if (level === 'status') return dropNullFields({ id: named.id, status: named.status, outFile: named.outFile ?? null });
+    return { id: named.id, status: named.status };
+  });
+  const requirementsAt = (limit) => summary.requirements.map((requirement) => ({
     ...requirement,
     why: firstLine(requirement.why, limit),
   }));
@@ -407,33 +582,102 @@ function fitResultSummary(summary) {
     count: summary.concerns.count,
     first: summary.concerns.first.slice(0, count).map((concern) => firstLine(concern, limit)).filter(Boolean),
   });
-  const nextFor = (actions) => ({
-    ...summary.next,
-    outputs: actions.map((action) => action.outFile).filter(Boolean),
-  });
-  const candidates = [];
-  const consider = (actions, requirements, concerns) => {
-    candidates.push({
+  const handbackAt = (limit, count) => {
+    const { unfinished, unreadSteering } = summary.handback;
+    return {
+      ...summary.handback,
+      unfinished: unfinished.slice(0, count).map((entry) => dropNullFields({ ...entry, why: firstLine(entry.why, limit) })),
+      ...(unfinished.length > count ? { unfinishedOmitted: unfinished.length - count } : {}),
+      unreadSteering: unreadSteering.map((entry) => ({ ...entry, message: firstLine(entry.message, Math.max(limit, 80)) ?? '' })),
+    };
+  };
+  const candidates = RESULT_SUMMARY_FIT_STEPS.map((step) => {
+    const actions = actionsAt(step.actions);
+    return {
       ...summary,
       actions,
-      requirements,
-      concerns,
-      next: nextFor(actions),
-    });
-  };
-
-  // Output paths are always basenames under `next.runDir`: one directory
-  // string instead of N absolute prefixes, and the summary's size no longer
-  // depends on where the home lives.
-  const named = basename(summary.actions);
-  consider(named, summary.requirements, summary.concerns);
-  const omitted = named.map(dropNullFields);
-  consider(omitted, summary.requirements, summary.concerns);
-  for (const [whyLimit, concernLimit, concernCount] of RESULT_SUMMARY_FIT_LIMITS) {
-    consider(omitted, whyAt(whyLimit), concernsAt(concernLimit, concernCount));
-  }
-
+      requirements: requirementsAt(step.why),
+      concerns: concernsAt(step.concern, step.concerns),
+      ...(summary.handback ? { handback: handbackAt(step.handbackWhy, step.handbackCount) } : {}),
+      next: { ...summary.next, outputs: actions.map((action) => action.outFile).filter(Boolean) },
+    };
+  });
   return candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET) ?? candidates.at(-1);
+}
+
+// Results written before 0.30.0 carry no handback; derive the same view from
+// what they do carry, so every unfinished run reads the same way.
+function legacyHandback(envelope) {
+  if (envelope.status === 'completed' && envelope.verified) return null;
+  const unfinished = envelope.actions
+    .filter((action) => action.status !== 'succeeded' && action.status !== 'removed')
+    .map((action) => ({ id: action.id, status: action.status, failureKind: action.failure?.kind ?? null, why: firstLine(action.failure?.message, 300) }));
+  const rerunnable = (entry) => RERUN_STATUSES.has(entry.status) || (entry.status === 'failed' && RETRYABLE_FAILURE_KINDS.has(entry.failureKind));
+  const anyRerun = unfinished.some(rerunnable);
+  return {
+    unfinished: unfinished.map((entry) => ({ ...entry, retryable: rerunnable(entry) || (anyRerun && entry.status === 'blocked') })),
+    unresolvedRequirements: envelope.requirements
+      .filter((requirement) => requirement.status !== 'passed')
+      .map((requirement) => ({ id: requirement.id, status: requirement.status, why: firstLine(requirement.evidence.at(-1)?.evidence?.[0], 300) })),
+    unreadSteering: [],
+  };
+}
+
+function summaryHandback(envelope, handback, token) {
+  const retryable = handback.unfinished.filter((entry) => entry.retryable);
+  const waits = retryable.map((entry) => Date.parse(entry.retryAfter ?? '')).filter(Number.isFinite);
+  // Named only when every step to retry is waiting on a paused pool: resume
+  // gets through once the first of them is back.
+  const retryAfter = retryable.length && waits.length === retryable.length ? new Date(Math.min(...waits)).toISOString() : null;
+  const rerunIds = retryable.map((entry) => entry.id);
+  return {
+    unfinished: handback.unfinished.map((entry) => ({
+      id: entry.id,
+      status: entry.status,
+      failureKind: entry.failureKind ?? null,
+      why: firstLine(entry.why, 160),
+      ...(entry.retryAfter ? { retryAfter: entry.retryAfter } : {}),
+      retryable: entry.retryable,
+    })),
+    unreadSteering: handback.unreadSteering.map((entry) => ({ id: entry.id, message: firstLine(entry.message, 160) ?? '' })),
+    // Every option the caller has, as a command. Which one to take is theirs.
+    options: {
+      ...(envelope.executionMode === 'program'
+        ? { continue: `bullswarm workflow plan export ${token} --out plan.json, edit it, then bullswarm workflow plan revise ${token} --program plan.json (--rerun <step ids> runs finished steps again)` }
+        : {}),
+      ...(retryable.length
+        ? { retry: `bullswarm workflow resume ${token}${retryAfter ? ` after ${retryAfter}` : ''} (reruns ${rerunIds.slice(0, 4).join(', ')}${rerunIds.length > 4 ? ` and ${rerunIds.length - 4} more` : ''})` }
+        : {}),
+      takeOver: `do the unfinished work yourself; bullswarm workflow runs result ${token} --json names every step's output`,
+      restart: 'start a new run: bullswarm workflow goal "<goal>" --cwd <dir> --program <file.json>',
+    },
+  };
+}
+
+// Plain lines for whoever reads watch or launch output: what is left, why, and
+// the command behind each option.
+export function formatV2HandbackLines(summary) {
+  const handback = summary?.handback;
+  if (!handback) return [];
+  const lines = [];
+  for (const entry of handback.unfinished) {
+    const kind = entry.failureKind && entry.failureKind !== entry.status ? ` (${entry.failureKind})` : '';
+    lines.push(`  step ${entry.id}: ${entry.status}${kind}${entry.why ? ` — ${entry.why}` : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
+  }
+  if (handback.unfinishedOmitted) lines.push(`  … and ${handback.unfinishedOmitted} more unfinished step(s)`);
+  const open = (summary.requirements ?? []).filter((requirement) => requirement.status !== 'passed');
+  for (const requirement of open.slice(0, 6)) {
+    lines.push(`  requirement ${requirement.id}: ${requirement.status}${requirement.why ? ` — ${requirement.why}` : ''}`);
+  }
+  if (open.length > 6) lines.push(`  … and ${open.length - 6} more open requirement(s)`);
+  for (const entry of handback.unreadSteering) lines.push(`  steering not acted on: ${entry.message}`);
+  const labels = { continue: 'continue', retry: 'retry', takeOver: 'take over', restart: 'restart' };
+  const options = Object.entries(handback.options ?? {});
+  if (options.length) {
+    lines.push('your call:');
+    for (const [key, text] of options) lines.push(`  ${(labels[key] ?? key).padEnd(9)} ${text}`);
+  }
+  return lines;
 }
 
 function runDirOf(actions, runDir) {
@@ -463,6 +707,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
       bytes: normalizeBytes(fallback(action.bytes, attempt?.bytes)),
     };
   });
+  const handback = envelope.handback ?? legacyHandback(envelope);
   return fitResultSummary({
     schemaVersion: 'bullswarm.workflow.result-summary.v1',
     runId: envelope.runId,
@@ -479,7 +724,12 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
       status: requirement.status,
       mandatory: requirement.mandatory,
       evidenceCount: requirement.evidence.length,
-      why: firstLine(requirement.evidence.at(-1)?.evidence?.[0], 200),
+      // Only an open requirement carries a reason: that line is what the
+      // caller acts on. A passed requirement's evidence is in the full result.
+      why: requirement.status === 'passed'
+        ? null
+        : firstLine(requirement.evidence.at(-1)?.evidence?.[0], 200)
+          ?? firstLine(handback?.unresolvedRequirements?.find((entry) => entry.id === requirement.id)?.why, 200),
     })),
     actions,
     concerns: {
@@ -487,6 +737,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
       first: concerns.slice(0, 3).map((concern) => firstLine(concern, 160)).filter(Boolean),
     },
     usage: clone(envelope.usage),
+    ...(handback ? { handback: summaryHandback(envelope, handback, shortId) } : {}),
     next: {
       full: `bullswarm workflow runs result ${shortId} --json`,
       // Every entry of `outputs` (and every action's outFile) is a basename
@@ -499,7 +750,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
 
 export function validateV2ResultEnvelope(result) {
   resultObject(result, 'result');
-  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace']);
+  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace', 'handback']);
   exactFields(result, allowed, 'result');
   if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) resultFail(`schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
   if (!['completed', 'partial', 'cancelled'].includes(result.status)) resultFail('status is invalid');
@@ -534,6 +785,8 @@ export function validateV2ResultEnvelope(result) {
     resultString(result.workspace.cwd, 'workspace.cwd');
     for (const key of ['changedFiles', 'baselineChangedFiles', 'warnings']) stringArray(result.workspace[key], `workspace.${key}`);
   }
+  // Optional: results written before 0.30.0 carry none.
+  if (result.handback !== undefined) validateHandback(result.handback);
   return true;
 }
 

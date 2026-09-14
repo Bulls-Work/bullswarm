@@ -23,7 +23,7 @@ import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
-import { deserializeV2ResultEnvelope, summarizeV2Result } from './v2-outcome.js';
+import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
@@ -277,7 +277,12 @@ function runsShow(idToken, opts) {
   console.log(`# run  ${runId}  (${resolved.shortId ?? 'no shortId'})`);
   console.log(`# dir  ${runDir}`);
   console.log(`# goal  ${state.intent?.goal ?? '?'}`);
-  console.log(`# status  ${state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : '(terminal)'}`);
+  // A run whose kernel died still says "running" on disk. Report what is
+  // true: it stopped, why, and how to continue it.
+  const terminal = ['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle?.status);
+  const stopped = !terminal && liveness.checked && !liveness.alive;
+  console.log(`# status  ${stopped ? 'interrupted' : state.lifecycle?.status ?? 'unknown'}  ${ongoing ? '(ongoing)' : terminal ? '(terminal)' : '(stopped)'}`);
+  if (stopped) console.log(`# kernel  ${liveness.reason}; continue with bullswarm workflow resume ${resolved.shortId ?? runId}`);
   console.log(`# started  ${state.lifecycle?.startedAt ?? '?'}`);
   console.log(`# finished ${state.lifecycle?.finishedAt ?? '—'}`);
   console.log(`# requirements  ${Object.values(state.ledger?.requirements ?? {}).filter((requirement) => requirement.status === 'passed').length}/${Object.keys(state.ledger?.requirements ?? {}).length} passed`);
@@ -343,7 +348,10 @@ function runsResult(idToken, opts) {
       jsonOut({ runId, shortId: resolved.shortId, status: 'interrupted', reason: liveness.reason, kernelStderrTail }, opts);
       return 1;
     }
-    if (state.planner?.awaiting) return err(`workflow ${resolved.shortId ?? runId} is waiting for its caller planner (${state.planner.awaiting.boundary} boundary); next: bullswarm workflow plan show ${resolved.shortId ?? runId} --json`);
+    if (state.planner?.awaiting) {
+      const token = resolved.shortId ?? runId;
+      return err(`workflow ${token} was left waiting for its caller planner by an older version (${state.planner.awaiting.boundary} boundary); bullswarm workflow resume ${token} finishes it and hands back what is left, or bullswarm workflow plan submit ${token} --program <file.json> answers it`);
+    }
     return err(ongoing ? `workflow ${resolved.shortId ?? runId} is still running; watch it with bullswarm workflow watch ${resolved.shortId ?? runId}` : `V2 result is unavailable for ${resolved.shortId ?? runId}`);
   }
   let stable;
@@ -366,6 +374,7 @@ function runsResult(idToken, opts) {
   console.log(`# outcome  ${stable.reason}`);
   console.log(`# requirements  ${stable.requirements.filter((requirement) => requirement.status === 'passed').length}/${stable.requirements.length} passed`);
   if (stable.gaps?.summary) console.log(`# gaps  ${stable.gaps.summary}`);
+  for (const line of formatV2HandbackLines(summarizeV2Result(stable, state, { runDir }))) console.log(line);
   // The stable envelope records outcomes, not routing. The durable state
   // next to it holds the accepted program, so the routing each action ran
   // on — including its `kind` — is reported from there.

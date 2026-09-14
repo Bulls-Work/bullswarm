@@ -91,12 +91,17 @@ bullswarm workflow plan validate "$(cat goal.txt)" --cwd=<abs-dir> --program=<ab
 ```
 
 Exit 2 means the program is invalid: the JSON lists `issues`; fix them and
-validate again. Exit 0 always carries an `advisories` array. Each entry names
-an action whose effort is above what its work warrants (`all-writers-high`,
-`docs-at-high`): lower that action's kind and validate again, or write the
-reason it needs high into its `purpose`. An empty array means launch now, with
-the same goal, `--cwd` and absolute `--program` (validate's `next.launch` line
-is this command):
+validate again. Validate also refuses what would only fail after launch: an
+`ownedFiles` entry that is a directory or a glob (name exact files), and, with
+a pinned pool, a step that pool cannot run. Exit 0 always carries an
+`advisories` array. `all-writers-high` and `docs-at-high` name an action whose
+effort is above what its work warrants: lower that action's kind, or write the
+reason it needs high into its `purpose`. `requirement-unchecked` names a
+requirement no step lists in `evidenceFor`: the run can finish but never
+verify it, so add it to an `adversarial-acceptance` step, or launch knowing the
+result will be unverified. An empty array means launch now, with the same
+goal, `--cwd` and absolute `--program` (validate's `next.launch` line is this
+command):
 
 ```bash
 bullswarm workflow goal "$(cat goal.txt)" --cwd=<abs-dir> --program=<abs-dir>/plan.json --json
@@ -106,28 +111,60 @@ The launch detaches and returns `shortId`; report it.
 
 ## 3. Observe and judge
 
+A run never waits for you. It runs until nothing more can happen on its own,
+then finishes, and its result hands back whatever is left with your options.
+What happens next is your decision.
+
 ```bash
 bullswarm workflow watch <shortId> --next
 bullswarm workflow runs result <shortId> --json --summary
 ```
 
-Run `watch --next` in a background terminal. When it exits, act on the printed
-event and relaunch with the exact `next: bullswarm workflow watch <shortId>
---next --after <sequence> --since <iso>` line it printed, until the outcome
-line reports a pause or a terminal status. A pause is not completion.
+Run `watch --next` in a background terminal and wait for it to exit. Do not
+poll in a loop and do not read files in the run directory. When it exits on an
+event, act on it and relaunch with the exact `next: bullswarm workflow watch
+<shortId> --next --after <sequence> --since <iso>` line it printed. When it
+exits on an `outcome:` line, the run has finished, paused, or been
+interrupted, and the output already holds what you need to decide.
 
-Each wake-up is a decision point: read the output of the step that just
+Each event is a decision point: read the output of the step that just
 finished (`bullswarm workflow action show <shortId> <actionId>` names its
 `outputFile`) and decide whether the rest of the plan still fits. If it does,
 relaunch the watcher. If it does not, revise the plan (section 4) before
 relaunching.
 
+### When it finishes
+
+`outcome:` gives `completed`, `partial` or `cancelled` and whether the run is
+verified; `reason:` says why in one line. `completed` means every step
+succeeded. `verified` means every mandatory requirement passed its check,
+which can still miss bugs. Anything short of verified is followed by what is
+left: `step <id>: <status> (<kind>) — <why>` for each unfinished step,
+`requirement <id>: <status> — <why>` for each open requirement, and `steering
+not acted on:` for guidance that arrived too late. Then `your call:` gives one
+command per option:
+
+| Option | When | What to do |
+|---|---|---|
+| continue | the plan needs a fix, a new step, or a step redone | export, edit, and revise the plan (section 4) |
+| retry | a step stopped for a reason a retry fixes: no pool, a paused pool, a crashed or silent worker | `bullswarm workflow resume <shortId>` |
+| take over | the rest is small, or needs something only you have (a logged-in browser, a credential, a decision for the user) | do it yourself; `runs result <shortId> --json` names every step's output |
+| restart | the goal or the approach was wrong | start a new `workflow goal` run |
+
+`retry` appears only when a step is retryable. `resume` on a finished run
+reruns exactly those steps and the steps blocked behind them. When nothing is
+retryable it prints `nothing to retry`, starts nothing, and exits 1. A step
+whose pools were all paused shows `its pool is back at <time>`; resuming
+before then fails it again at once.
+
+A failed check is a plan problem, not a retry. When the check step reports a
+requirement failed, keep the same run: export the plan, add a step that fixes
+what the evidence names, and add that step's id to the check's `dependsOn`.
+The changed check runs again after the fix, and the run finishes again.
+
 Then read the real outputs and artifacts and probe the important edge cases
-yourself. `completed` means the graph ran. `verified` means evidence passed,
-which can still miss bugs. `partial` exposes failed or skipped branches; revise
-the plan to repair them (a revision reopens a finished run). Shared files
-remain after failure or cancellation. Exit 0 can mean launched, paused, or
-completed, so always inspect the returned status.
+yourself. Shared files remain after failure or cancellation. Exit 0 can mean
+launched, paused, or completed, so always inspect the returned status.
 
 ## 4. Steer a running workflow
 
@@ -185,7 +222,9 @@ Rules that matter when you edit:
   and `steering received`. Steering a person queued never halts work: decide
   what it means for the plan and revise. The exported file lists pending
   steering in `steeringIds`, and a revision from that file marks it delivered.
-  A run about to finish with unread steering pauses for it instead.
+  A run that finishes before you act on steering lists it as `steering not
+  acted on`; revising the finished run from a fresh export delivers it and
+  reopens the run.
 
 [operations.md](references/operations.md) covers the revision details, pause
 and resume, cancellation, scouting, a dispatched planner, isolation, watch

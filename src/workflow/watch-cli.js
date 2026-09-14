@@ -15,6 +15,7 @@ import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-po
 import { readEvents } from './events.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { isDeliveredWorkflowStatus } from './status.js';
+import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -687,6 +688,16 @@ function kernelLogLines(tail = []) {
   return tail.length ? ['kernel log:', ...tail.map((line) => `  ${line}`)] : [];
 }
 
+function terminalSummary(runDir, state) {
+  try {
+    const envelope = deserializeV2ResultEnvelope(readFileSync(join(runDir, 'result.json'), 'utf8'));
+    return summarizeV2Result(envelope, state, { runDir });
+  } catch {
+    // An unreadable result still ends the watch; runs result reports why.
+    return null;
+  }
+}
+
 export async function runWorkflowWatch(bullswarmDir, token, {
   intervalMs = 2000,
   // Absent means "no periodic heartbeat"; `--heartbeat <seconds>` opts back in,
@@ -845,10 +856,19 @@ export async function runWorkflowWatch(bullswarmDir, token, {
         return oneShot ? 0 : 1;
       }
       if (snapshot.terminal || oneShot) {
+        // A finished run hands its caller what is left and the options, right
+        // here, so deciding what to do next needs no second command.
+        const summary = snapshot.terminal ? terminalSummary(resolved.runDir, state) : null;
         if (eventMode && jsonl && snapshot.terminal) {
-          emitLine({ type: 'finished', status: snapshot.status, delivered: isDeliveredWorkflowStatus(snapshot.status) });
+          emitLine({
+            type: 'finished', status: snapshot.status, delivered: isDeliveredWorkflowStatus(snapshot.status),
+            ...(summary ? { verified: summary.verified, reason: summary.reason, ...(summary.handback ? { handback: summary.handback } : {}) } : {}),
+          });
         } else if (!jsonl && snapshot.terminal) {
-          output.write(`outcome: ${snapshot.status}\n`);
+          output.write(`outcome: ${snapshot.status}${summary ? ` · ${summary.verified ? 'verified' : 'not verified'}` : ''}\n`);
+          if (summary?.reason) output.write(`reason: ${summary.reason}\n`);
+          const handback = formatV2HandbackLines(summary);
+          if (handback.length) output.write(`${handback.join('\n')}\n`);
           output.write(`next: bullswarm workflow runs result ${snapshot.shortId ?? snapshot.runId} --json --summary\n`);
         }
         return isDeliveredWorkflowStatus(snapshot.status) || oneShot ? 0 : 1;
@@ -868,7 +888,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           output.write(snapshot.cancellationRequested
             ? `next: cancellation requested; bullswarm workflow cancel ${runToken} --json finalizes it\n`
             : `next: bullswarm workflow plan show ${runToken} --json\n`
-              + `  or revise: bullswarm workflow plan export ${runToken} --out plan.json, then bullswarm workflow plan revise ${runToken} --program plan.json\n`);
+              + `  or revise: bullswarm workflow plan export ${runToken} --out plan.json, then bullswarm workflow plan revise ${runToken} --program plan.json\n`
+              + `  or finish it: bullswarm workflow resume ${runToken} (it finishes and hands back what is left)\n`);
         }
         return 0;
       }

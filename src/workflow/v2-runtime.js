@@ -25,7 +25,7 @@ import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
 import {
-  createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress,
+  consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, v2RetryPlan,
 } from './v2-outcome.js';
 import { dispatchV2Action } from './v2-dispatch.js';
 import { createPoolRefresher } from './pool-refresh.js';
@@ -294,6 +294,54 @@ function commitRevisionUnderLease(runDir, request, { now }) {
   writeRunState(runDir, state);
   removeStaleReceipts(runDir, committed.staleReceipts);
   return { status: 'applied', record: committed.record, state, reopened };
+}
+
+/**
+ * Reopen a finished program run so `workflow resume` runs its unfinished steps
+ * again: steps that never ran or were stopped, steps whose failure a retry can
+ * fix (no pool, a paused pool, a crashed or silent worker), and the steps
+ * blocked behind them. Steps the caller has to change first stay as they are.
+ * Resolves {status: reopened | nothing-to-retry | not-finished | live, ...};
+ * only `reopened` changes the run.
+ */
+export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date().toISOString() } = {}) {
+  const runDir = runDirFor(bullswarmDir, runId);
+  const lease = tryRunLease(runDir);
+  if (!lease) return { status: 'live' };
+  try {
+    const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+    if (!TERMINAL.has(state.lifecycle.status)) return { status: 'not-finished', state };
+    const plan = v2RetryPlan(state);
+    if (!isProgramWorkflow(state) || !plan.rerun.length) return { status: 'nothing-to-retry', state, needsCaller: plan.needsCaller };
+    const at = now();
+    const previousStatus = state.lifecycle.status;
+    const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
+    const earlier = readdirSync(runDir).filter((name) => /^result-before-resume-\d+\.json$/.test(name)).length;
+    const archived = join(runDir, `result-before-resume-${earlier + 1}.json`);
+    const hadResult = existsSync(resultFile);
+    if (hadResult) renameSync(resultFile, archived);
+    Object.assign(state.lifecycle, { status: 'running', finishedAt: null, resultFile: null });
+    if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
+    rmSync(join(runDir, 'cancellation.json'), { force: true });
+    if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
+    const requeued = [...plan.rerun, ...plan.blocked];
+    const retrying = new Set(requeued);
+    for (const action of state.actions) {
+      if (!retrying.has(action.id) || action.status === 'pending') continue;
+      // Earlier attempts stay on record but never count as this step's
+      // completion, and a stale completion receipt cannot replay them.
+      Object.assign(action, {
+        status: 'pending', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [],
+        lastFailure: null, supersededAttempts: action.attempts,
+      });
+      rmSync(join(runDir, `completion-${action.id}.json`), { force: true });
+    }
+    state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
+    const archivedResult = hadResult ? archived : null;
+    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, source: 'resume', archivedResult, requeued });
+    writeRunState(runDir, state);
+    return { status: 'reopened', state, previousStatus, requeued, archivedResult, needsCaller: plan.needsCaller };
+  } finally { lease.release(); }
 }
 
 /**
@@ -1020,59 +1068,32 @@ async function runV2Kernel({
     return result;
   };
 
-  // Caller-planner mode: the kernel never dispatches a planner process. It
-  // leaves a durable request describing the boundary and pauses; the caller
-  // (a frontier agent driving Bullswarm directly) authors the program and
-  // submits it, which relaunches this runtime through the normal resume path.
-  // Steering is surfaced to the caller (peeked, never consumed) inside the
-  // request; it is marked delivered only when a program is submitted against
-  // that request, so a caller never loses guidance it was not shown.
-  const buildCallerRequest = ({ boundary, turn, requestPath, candidatePath, correction, pendingSteering }) =>
-    composeCallerPlannerRequest(state, { boundary, turn, requestPath, candidatePath, correction, pendingSteering, scoutReport });
-
-  const awaitCallerPlanner = (boundary, { correction = null } = {}) => {
-    const turn = state.planner.turns + 1;
-    const existing = state.planner.awaiting;
-    const pendingSteering = peekSteering(state, runDir);
-    if (existing && existing.boundary === boundary && existing.turn === turn && !correction) {
-      // Same boundary and turn: the durable request stands. Refresh it only
-      // when steering arrived while the run was paused, so the caller sees the
-      // new guidance under the same request instead of a replaced boundary.
-      let surfaced = null;
-      try { surfaced = JSON.parse(readFileSync(existing.requestPath, 'utf8')).pendingSteering ?? []; } catch { surfaced = null; }
-      const surfacedIds = new Set((surfaced ?? []).map((entry) => entry.id));
-      const stale = surfaced == null || pendingSteering.some((entry) => !surfacedIds.has(entry.id));
-      state.planner.status = 'waiting';
-      state.lifecycle.status = 'waiting';
-      if (stale) {
-        const { request } = buildCallerRequest({
-          boundary, turn, requestPath: existing.requestPath, candidatePath: existing.candidatePath,
-          correction: existing.correction ?? null, pendingSteering,
-        });
-        writeJsonAtomic(existing.requestPath, request);
-        emit('planner.request_updated', { turn, boundary, requestPath: existing.requestPath, steering: pendingSteering.length });
-      } else {
-        persist();
-      }
-      return { ok: false, status: 'awaiting-caller', awaiting: clone(existing) };
+  // Caller-planner mode: the kernel never dispatches a planner process, and it
+  // never waits for its caller either. At a point only the caller can decide
+  // (no program, a program it could not accept, requirements still open with
+  // nothing left to run), the run finishes with what it has and the result
+  // hands that decision back: continue it (plan revise), retry it (resume),
+  // take the work over, or start again. A held run looked stuck; one sat 197
+  // minutes waiting for a caller that had moved on (Kipwise, 2026-09).
+  const handBackToCaller = (boundary, { issues = null } = {}) => {
+    const token = state.shortId ?? id;
+    const scout = state.preflight?.scout ?? {};
+    let reason;
+    if (issues) {
+      const shown = issues.slice(0, 3).join('; ');
+      reason = `the supplied program was not accepted, so nothing ran: ${shown}${issues.length > 3 ? `; and ${issues.length - 3} more` : ''}. Fix it and add it with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run`;
+    } else if (boundary === 'initial') {
+      const scouted = scout.status === 'succeeded' && scout.outputFile
+        ? ` (the scout report is at ${scout.outputFile})`
+        : scout.status === 'failed' ? ` (the scout failed: ${scout.lastFailure?.message ?? scout.lastFailure?.kind ?? 'unknown'})` : '';
+      reason = `no program to run${scouted}. Add steps with bullswarm workflow plan revise ${token} --program <file.json>, or start a new run with --program`;
+    } else if (boundary === 'gaps') {
+      reason = `requirements are still open and no step is left to run: ${consolidateV2Gaps(state).summary}`;
+    } else {
+      reason = 'guidance arrived that the current plan does not cover';
     }
-    const requestPath = join(runDir, `planner-request-turn-${turn}.json`);
-    const candidatePath = join(runDir, `candidate-workflow-planner-turn-${turn}.json`);
-    const { request, context } = buildCallerRequest({ boundary, turn, requestPath, candidatePath, correction, pendingSteering });
-    writeJsonAtomic(requestPath, request);
-    state.planner.awaiting = {
-      boundary, turn, requestPath, candidatePath, since: now(),
-      ...(correction ? { correction: clone(correction) } : {}),
-    };
-    state.planner.status = 'waiting';
-    state.lifecycle.status = 'waiting';
-    persist();
-    emit('planner.awaiting_caller', {
-      turn, boundary, requestPath, candidatePath,
-      gaps: context.gaps?.summary ?? null, correction: correction ? clone(correction) : null,
-      steering: pendingSteering.length,
-    });
-    return { ok: false, status: 'awaiting-caller', awaiting: clone(state.planner.awaiting) };
+    emit('planner.handed_back', { boundary, reason, ...(issues ? { issues: [...issues] } : {}) });
+    return { ok: false, status: 'handed-back', reason };
   };
 
   const applyInitialCallerProgram = (boundary) => {
@@ -1083,7 +1104,8 @@ async function runV2Kernel({
       accepted = validateV2PlannerResponse(response, state, { boundary, requiredScoutUnits: [] });
     } catch (error) {
       if (!(error instanceof V2PlannerValidationError)) throw error;
-      return awaitCallerPlanner(boundary, { correction: { issues: [...error.issues], attempt: 1 } });
+      rmSync(pendingInitialPath, { force: true });
+      return handBackToCaller(boundary, { issues: [...error.issues] });
     }
     const turn = state.planner.turns + 1;
     writeJsonAtomic(join(runDir, `candidate-workflow-planner-turn-${turn}.json`), accepted);
@@ -1096,7 +1118,7 @@ async function runV2Kernel({
   const runPlanner = async (boundary) => {
     if (callerPlanner) {
       if (pendingInitialResponse && boundary === 'initial') return applyInitialCallerProgram(boundary);
-      return awaitCallerPlanner(boundary);
+      return handBackToCaller(boundary);
     }
     const deliveredSteering = deliverSteering(state, runDir);
     for (const entry of deliveredSteering) {
@@ -1376,9 +1398,17 @@ async function runV2Kernel({
       runtime.lastFailure = interrupted
         ? { kind: 'interrupted', message: 'kernel interrupted; work retained for resume' }
         : stop ? { kind: stop.kind, message: stop.message }
-          : { kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed' };
+          : {
+            kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed',
+            // When the only pools that can run it are paused: the earliest
+            // time a resume can get through. The run does not wait for it.
+            ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+          };
       persist();
-      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: stop?.kind ?? result.failureKind, why: stop?.message ?? result.verdict?.why ?? null });
+      emit('action.finished', {
+        actionId: action.id, status: runtime.status, failureKind: stop?.kind ?? result.failureKind, why: stop?.message ?? result.verdict?.why ?? null,
+        ...(!stop && !interrupted && result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+      });
       releaseWorkspace();
       completePresentationStages();
       return;
@@ -1437,19 +1467,17 @@ async function runV2Kernel({
     } finally { releaseWorkspace(); }
   };
 
-  const pauseForCaller = (awaiting) => {
-    persist();
-    return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: null, awaiting: clone(awaiting) };
-  };
-
   const finalize = () => {
     const finishedAt = now();
+    // Guidance nobody acted on no longer holds a run open: the result lists
+    // it, and the caller decides whether it still matters.
+    const unreadSteering = peekSteering(state, runDir);
     const workspace = programExecution ? buildWorkspaceReport(state.intent.cwd, workspaceBaseline, state.program.actions, captureStatus) : null;
     const retainedRoot = join(runDir, 'workspaces');
     if (workspace && existsSync(retainedRoot)) for (const entry of readdirSync(retainedRoot, { withFileTypes: true })) {
       if (entry.isDirectory()) workspace.warnings.push(`Inspect retained isolated work at ${join(retainedRoot, entry.name)} before retrying.`);
     }
-    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace });
+    const result = createV2ResultEnvelope(state, { finishedAt, plannerExhausted, limitsExhausted, terminalReason, workspace, unreadSteering });
     const resultPath = join(runDir, 'result.json');
     writeResultAtomic(resultPath, result);
     state.lifecycle.status = result.status;
@@ -1464,7 +1492,10 @@ async function runV2Kernel({
     state.pause = null;
     rmSync(join(runDir, 'pause.json'), { force: true });
     persist();
-    emit('workflow.finished', { status: result.status, verified: result.verified, resultFile: resultPath, reason: result.reason });
+    emit('workflow.finished', {
+      status: result.status, verified: result.verified, resultFile: resultPath, reason: result.reason,
+      ...(result.handback ? { unfinished: result.handback.unfinished.length, unreadSteering: result.handback.unreadSteering.length } : {}),
+    });
     return { runId: id, shortId: state.shortId, runDir, state: clone(state), result };
   };
 
@@ -1512,7 +1543,7 @@ async function runV2Kernel({
       const pause = readPauseRequest();
       if (pause ? !state.pause || state.pause.mode !== pauseMode(pause.mode) : Boolean(state.pause && !state.pause.pausedAt)) return true;
       if (programExecution && pendingRevisionRequests(state, runDir).length) return true;
-      if (callerPlanner && programExecution && peekSteering(state, runDir).some((entry) => !announcedSteeringIds().has(entry.id))) return true;
+      if (callerPlanner && peekSteering(state, runDir).some((entry) => !announcedSteeringIds().has(entry.id))) return true;
     } catch { /* the next poll retries */ }
     return false;
   };
@@ -1675,12 +1706,17 @@ async function runV2Kernel({
       const paused = await honorPause();
       if (paused) return paused;
       if (state.pause) continue;
-      // Caller-planner mode: a durable pause is authoritative. Whatever changed
-      // on disk while the kernel was away (steering queued, a resume without a
-      // submission), the run stays at its recorded boundary and turn until the
-      // caller submits; the request is refreshed with any new steering.
+      // A run left waiting for its caller by a version before 0.30.0. Resuming
+      // it without a submission finishes it and hands the decision back, like
+      // every other point that needs the caller (plan submit still answers it).
       if (callerPlanner && state.planner.awaiting) {
-        return pauseForCaller(awaitCallerPlanner(state.planner.awaiting.boundary).awaiting);
+        const { boundary } = state.planner.awaiting;
+        state.planner.awaiting = null;
+        if (state.lifecycle.status === 'waiting') state.lifecycle.status = state.program.actions.length ? 'running' : 'planning';
+        const handed = handBackToCaller(boundary);
+        plannerExhausted = true;
+        terminalReason = handed.reason;
+        continue;
       }
       if (state.preflight.scout.status === 'pending') {
         const scouted = await runScout();
@@ -1707,16 +1743,15 @@ async function runV2Kernel({
         }
       }
       const pendingSteering = peekSteering(state, runDir);
-      // A caller planning a program run can revise the live plan at any time,
-      // so steering no longer halts its work: it is announced once (a --next
-      // watcher wakes on it) and stays pending until a revision or submission
-      // consumes it. It still keeps the run from finishing unread (below).
-      if (pendingSteering.length && callerPlanner && programExecution) announceSteering(pendingSteering);
+      // A caller can revise the live plan at any time, so steering never halts
+      // its run: it is announced once (a --next watcher wakes on it) and stays
+      // pending until a revision consumes it. A run that finishes first lists
+      // it in the result as not acted on.
+      if (pendingSteering.length && callerPlanner) announceSteering(pendingSteering);
       else if (pendingSteering.length && state.program.actions.length) {
         if (activeTasks.size) { await waitForProgress(); continue; }
         const planned = await runPlanner('steering');
         if (!planned.ok) {
-          if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
           if (planned.status === 'cancelled') continue;
           limitsExhausted = true;
           terminalReason = `the workflow planner could not incorporate queued steering: ${planned.verdict?.why ?? planned.failureKind}`;
@@ -1724,20 +1759,15 @@ async function runV2Kernel({
         continue;
       }
       const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
-      if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
-        // Guidance nobody acted on keeps a caller-planned run from finishing:
-        // it pauses at a steering boundary so the caller revises or submits.
-        if (progress.status !== 'cancelled' && callerPlanner && programExecution && peekSteering(state, runDir).length) {
-          const planned = await runPlanner('steering');
-          if (!planned.ok && planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
-          continue;
-        }
-        return finalize();
-      }
+      if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
       if (progress.status === 'needs-planner') {
         const planned = await runPlanner(progress.boundary);
         if (!planned.ok) {
-          if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
+          if (planned.status === 'handed-back') {
+            plannerExhausted = true;
+            terminalReason = planned.reason;
+            continue;
+          }
           if (planned.status === 'cancelled') continue;
           limitsExhausted = true;
           terminalReason = `the workflow planner could not produce a mechanically valid program: ${planned.verdict?.why ?? planned.failureKind}`;
@@ -1788,5 +1818,30 @@ export async function runV2AutonomousWorkflow(options = {}) {
   mkdirSync(runDir, { recursive: true });
   const lease = acquireKernelLease(runDir);
   try { return await runV2Kernel({ ...options, runId: id, lease }); }
+  catch (error) {
+    markKernelStopped(runDir, lease, error);
+    throw error;
+  }
   finally { lease.release(); }
+}
+
+// A kernel that throws must not leave its run claiming to be running: that
+// run looked alive to nobody and finished for nobody (dskxrs, 2026-09-10).
+// Record the error where watch and runs show read it; the run resumes like any
+// interrupted run.
+function markKernelStopped(runDir, lease, error) {
+  try {
+    lease.assertOwner();
+    if (!existsSync(statePath(runDir))) return;
+    const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+    if (TERMINAL.has(state.lifecycle.status) || ['interrupted', 'paused'].includes(state.lifecycle.status)) return;
+    const message = String(error?.message ?? error).split(/\r?\n/, 1)[0].slice(0, 500) || 'unknown error';
+    const at = new Date().toISOString();
+    state.lifecycle.status = 'interrupted';
+    for (const action of state.actions) if (action.status === 'running') {
+      Object.assign(action, { status: 'interrupted', finishedAt: at, lastFailure: { kind: 'runtime', message: `kernel stopped: ${message}` } });
+    }
+    appendEvent(runDir, state, 'workflow.interrupted', { reason: `kernel stopped on an error: ${message}` });
+    writeRunState(runDir, state);
+  } catch { /* readers still report the dead kernel through its liveness check */ }
 }

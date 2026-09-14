@@ -15,9 +15,21 @@ import {
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
-const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema']);
+const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
 /** Kinds that make the SAME pool unusable, so a retry must move elsewhere. */
 const POOL_FATAL_KINDS = new Set(['auth', 'quota']);
+
+// A worker that writes nothing at all for this long is stalled: its process is
+// stopped and the attempt fails as `stalled`, a mechanical failure that retries
+// once and otherwise hands the run back. It bounds silence, not run time: the
+// clock restarts on every byte, so an agent that keeps working is never cut off.
+// Without it one hung worker kept its whole run open forever.
+export const DEFAULT_WORKER_SILENCE_SEC = 60 * 60;
+
+export function workerSilenceTimeoutSec(env = process.env) {
+  const raw = Number(env?.BULLSWARM_WORKER_SILENCE_SEC);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_WORKER_SILENCE_SEC;
+}
 
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -31,6 +43,7 @@ function classifyFailure(verdict) {
   // it carries a real reset deadline.
   if (verdict?.failureKind === 'quota') return 'quota';
   if (verdict?.quarantineHint) return 'auth';
+  if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
   if (verdict?.failureKind === 'process' || (verdict?.meta?.exitCode != null && verdict.meta.exitCode !== 0)) return 'process';
@@ -48,13 +61,17 @@ function providerIdFromModel(model) {
 function preparePools(pools, action, effort, {
   preferredModel = null, strictPool = null, now = Date.now(),
   liveQuarantine = null,
+  // Which pools COULD run this action were none of them paused: used to say
+  // when work can be retried, and to refuse a pin that can never run it.
+  ignoreQuarantine = false,
 } = {}) {
   const available = [];
   for (const pool of pools) {
-    if (pool.enabled === false || pool.burstGate === true || isQuarantined(pool, now)) continue;
+    if (pool.enabled === false || pool.burstGate === true) continue;
+    if (!ignoreQuarantine && isQuarantined(pool, now)) continue;
     // The pool object may predate a quarantine written by another action or
     // another run. Core state is the shared record, so consult it directly.
-    const live = typeof liveQuarantine === 'function' ? liveQuarantine(pool.name) : null;
+    const live = !ignoreQuarantine && typeof liveQuarantine === 'function' ? liveQuarantine(pool.name) : null;
     if (live && isQuarantined({ quarantine: live }, now)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
@@ -188,6 +205,7 @@ export async function dispatchV2Action({
   correctionTask = null,
   currentSession = null,
   maxMechanicalRetries = 1,
+  silenceTimeoutSec = workerSilenceTimeoutSec(parentEnv),
   shouldCancel = null,
   onAttempt = null,
   onSpawn = null,
@@ -355,6 +373,7 @@ export async function dispatchV2Action({
       reasoning,
       conversation: session?.invocation ?? null,
       shouldCancel,
+      silenceTimeoutSec,
       processGroup: true,
       onSpawn: (pid) => {
         workerPid = pid;
@@ -461,12 +480,40 @@ export async function dispatchV2Action({
     }
   }
 
+  // The step fails now rather than waiting for a pool: a run never sits open
+  // on quota. When every pool that can run it is paused, say when the first one
+  // comes back, so the caller knows when `workflow resume` will get through.
+  const lane = action.lane ?? 'chore';
+  const capable = preparePools(allPools, action, effort, {
+    preferredModel, strictPool, now: now(), ignoreQuarantine: true,
+  });
+  const live = liveQuarantines();
+  let comesBack = null;
+  for (const pool of capable) {
+    const deadlines = [pool.quarantine?.until, live[pool.name]?.quarantine?.until]
+      .map((value) => (typeof value === 'string' ? Date.parse(value) : Number(value)))
+      .filter((value) => Number.isFinite(value) && value > now());
+    // A capable pool that is not paused gives no single time to wait for.
+    if (!deadlines.length) { comesBack = null; break; }
+    const back = Math.max(...deadlines);
+    comesBack = comesBack == null ? back : Math.min(comesBack, back);
+  }
+  const retryAfter = comesBack == null ? null : new Date(comesBack).toISOString();
+  const failureKind = last ? classifyFailure(last) : 'unavailable';
+  const why = !capable.length
+    ? strictPool
+      ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`
+      : `no eligible pool: no enabled pool has a model on the ${effort} tier for ${lane} work`
+    : retryAfter
+      ? `no eligible pool: every pool that can run this step is paused until ${retryAfter}`
+      : 'no eligible pool';
   return {
     ok: false,
     status: 'failed',
-    failureKind: last ? classifyFailure(last) : 'unavailable',
+    failureKind,
+    ...(retryAfter && ['quota', 'auth', 'unavailable'].includes(failureKind) ? { retryAfter } : {}),
     attempts,
-    verdict: last ?? { ok: false, why: 'no eligible pool', meta: { exitCode: null } },
+    verdict: last ?? { ok: false, why, meta: { exitCode: null } },
   };
 }
 

@@ -142,8 +142,9 @@ durable instruction that is delivered only to the next not-yet-started
 `decide` checkpoint; the active worker continues unchanged. In a caller-planned
 program run it never halts work: watchers print `steering received`, and the
 caller acts on it with `workflow plan revise`, which can stop, amend, add,
-remove, or rerun steps while the run continues; only a run about to finish with
-the guidance still unread pauses for it. Steering remains
+remove, or rerun steps while the run continues. A run that finishes before
+anyone acts on the guidance lists it as `steering not acted on`, and revising
+the finished run delivers it and reopens the run. Steering remains
 inside the original goal and authorization boundary and cannot bypass runtime
 validation or required verification. Static workflows and terminal runs reject
 steering because they have no future orchestration checkpoint.
