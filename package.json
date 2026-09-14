@@ -8,12 +8,13 @@
     "bullswarm-mcp": "./mcp/server.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12"
   },
   "files": [
     "bin/",
     "src/",
     "connectors/",
+    "providers/",
     "skill/",
     "mcp/",
     "fixtures/",

@@ -1,10 +1,16 @@
-// bullswarm command-code meter — Command Code alpha billing endpoints
-// (the same ones the CLI's /usage overlay calls). Monthly credits plus
-// 5-hour and weekly rate-limit windows.
+// bullswarm contrib provider: command-code — Command Code alpha billing
+// endpoints (the same ones the CLI's /usage overlay calls). Monthly credits
+// plus 5-hour and weekly rate-limit windows. The pool itself is
+// connector.json; this module adds the meter.
 
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { MeterError } from '../../../src/provider-kit.js';
+
+export const name = 'command-code';
+export const displayName = 'Command Code';
 
 const DEFAULT_API_BASE = 'https://api.commandcode.ai';
 const CREDITS_PATH = '/alpha/billing/credits';
@@ -32,21 +38,20 @@ const PLAN_CREDITS = {
   'teams-pro': 40,
 };
 
-export class CommandCodeMeterError extends Error {
+export class CommandCodeMeterError extends MeterError {
   constructor(message, code) {
-    super(message);
-    this.code = code; // no_auth | http | parse | network
+    super(message, code); // no_auth | http | parse | network
+    this.name = 'CommandCodeMeterError';
   }
 }
 
-function authPath() {
-  const home =
-    process.env.COMMANDCODE_HOME?.trim() || path.join(os.homedir(), '.commandcode');
-  return path.join(home, 'auth.json');
+function authPath({ env = process.env, home = os.homedir() } = {}) {
+  const dir = env?.COMMANDCODE_HOME?.trim() || path.join(home, '.commandcode');
+  return path.join(dir, 'auth.json');
 }
 
-export function loadApiKey() {
-  const p = authPath();
+export function loadApiKey(ctx) {
+  const p = authPath(ctx);
   if (!existsSync(p)) {
     throw new CommandCodeMeterError('Command Code not logged in. Run `cmd login`.', 'no_auth');
   }
@@ -180,9 +185,15 @@ async function fetchJson(url, key) {
   return { status: res.status, body };
 }
 
-export async function fetchCommandCodeUsage() {
-  const key = loadApiKey();
-  const base = (process.env.COMMANDCODE_API_URL?.trim() || DEFAULT_API_BASE).replace(/\/$/, '');
+/**
+ * Provider meter. `pool` is the pool name (a pool object is accepted too);
+ * `ctx.env` and `ctx.home` locate the CLI's auth.json and API base.
+ */
+export async function readUsage(pool = name, ctx = {}) {
+  const poolName = typeof pool === 'string' ? pool : (pool?.name ?? name);
+  const env = ctx.env ?? process.env;
+  const key = loadApiKey({ env, home: ctx.home ?? os.homedir() });
+  const base = (env?.COMMANDCODE_API_URL?.trim() || DEFAULT_API_BASE).replace(/\/$/, '');
 
   const creditsRes = await fetchJson(`${base}${CREDITS_PATH}`, key);
   if (creditsRes.status === 401 || creditsRes.status === 403) {
@@ -208,7 +219,7 @@ export async function fetchCommandCodeUsage() {
   const monthly = computeMonthly({ credits, subscription });
   return {
     captured_at: new Date().toISOString(),
-    pool: 'command-code',
+    pool: poolName,
     five_hour: windows.five_hour,
     seven_day: windows.seven_day,
     monthly: monthly.monthly,

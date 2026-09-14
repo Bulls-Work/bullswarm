@@ -44,7 +44,7 @@ test('command-code profiles deepseek-v4.1-flash specifically; v4-flash stays on 
   // the first regex match, so the v4.1 entry must sit before the generic
   // `(?:flash|...|luna|free)` catch-all or it would inherit qualityRank 2
   // and no pricing.
-  const commandCode = JSON.parse(readFileSync(new URL('../connectors/command-code.json', import.meta.url), 'utf8'));
+  const commandCode = JSON.parse(readFileSync(new URL('../providers/contrib/command-code/connector.json', import.meta.url), 'utf8'));
   const result = discoverConnectorModels(commandCode, {
     executor: () => [
       'deepseek/deepseek-v4.1-flash   V4.1 hybrid-attention reasoning with vision',
@@ -294,26 +294,26 @@ test('account-cloned providers recommend only models belonging to that account',
     name, profile: { providerId }, lanes: ['analyze'],
     capabilities: ['strong-analysis', 'workflow-planning'],
   });
-  const primary = connector('opencode2', 'relay');
-  const second = connector('opencode2:relay-2', 'relay-2');
+  const primary = connector('relay', 'a');
+  const second = connector('relay:b', 'b');
   const models = [
-    { id: 'relay/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
-    { id: 'relay-2/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+    { id: 'a/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
+    { id: 'b/gpt-5.6-sol', tier: 'high', qualityRank: 6 },
   ];
   const report = buildStrategy({
-    connectors: { opencode2: primary, 'opencode2:relay-2': second },
+    connectors: { relay: primary, 'relay:b': second },
     pools: [
-      { name: 'opencode2', connector: primary, enabled: true, pace: 0, costRank: 1 },
-      { name: 'opencode2:relay-2', connector: second, enabled: true, pace: 0, costRank: 1 },
+      { name: 'relay', connector: primary, enabled: true, pace: 0, costRank: 1 },
+      { name: 'relay:b', connector: second, enabled: true, pace: 0, costRank: 1 },
     ],
     state: {},
     discoveries: {
-      opencode2: { models },
-      'opencode2:relay-2': { models },
+      relay: { models },
+      'relay:b': { models },
     },
   });
-  assert.deepEqual(report.providerSuggestions.opencode2.high.recommended, { model: 'relay/gpt-5.6-sol' });
-  assert.deepEqual(report.providerSuggestions['opencode2:relay-2'].high.recommended, { model: 'relay-2/gpt-5.6-sol' });
+  assert.deepEqual(report.providerSuggestions.relay.high.recommended, { model: 'a/gpt-5.6-sol' });
+  assert.deepEqual(report.providerSuggestions['relay:b'].high.recommended, { model: 'b/gpt-5.6-sol' });
 });
 
 // --- rungs -------------------------------------------------------------------

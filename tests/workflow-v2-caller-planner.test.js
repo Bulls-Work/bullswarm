@@ -5,6 +5,7 @@
 // deterministic connector so no planner task can ever reach a worker.
 
 import { test } from 'node:test';
+import { loadProviders } from '../src/lib/providers.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -396,8 +397,15 @@ function cliFixture() {
     timeoutSec: 30,
   };
   writeFileSync(join(home, 'connectors', 'caller-agent.json'), `${JSON.stringify(connector, null, 2)}\n`);
+  // First-class providers load in every home and their pools default to
+  // enabled, so disable each one: the goal may only route to the fixture
+  // worker, never to a real provider CLI on the developer's machine.
+  const pools = { 'caller-agent': { enabled: true } };
+  for (const provider of loadProviders(home).providers) {
+    for (const name of provider.pools ?? []) pools[name] ??= { enabled: false };
+  }
   writeFileSync(join(home, 'state.json'), `${JSON.stringify({
-    version: 1, pools: { 'caller-agent': { enabled: true } }, incumbents: {}, decisionLog: [],
+    version: 1, pools, incumbents: {}, decisionLog: [],
     config: { depthLimit: 2, callerName: 'claude-code', worktreeIsolation: 'off' },
   }, null, 2)}\n`);
   return { root, home, target, cleanup: () => rmSync(root, { recursive: true, force: true }) };

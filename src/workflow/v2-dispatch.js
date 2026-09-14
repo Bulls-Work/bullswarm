@@ -382,8 +382,9 @@ export async function dispatchV2Action({
     // One dead upstream credential is ONE outage however many pool names front
     // it. The in-memory candidate list predates the quarantine written below,
     // and a refresher is optional, so the group is dropped here as well — the
-    // next attempt of THIS action must not walk relay-3 → relay-2 → opencode2
-    // into the same failure, as it did on 2026-09-11.
+    // next attempt of THIS action must not walk from one pool name to the next
+    // sibling on the same credential into the same failure, as it did on
+    // 2026-09-11.
     const benchedGroup = verdict.quarantineHint && kind === 'auth' ? upstreamGroupOf(pool) : null;
     if (benchedGroup) {
       for (let i = remaining.length - 1; i >= 0; i -= 1) {

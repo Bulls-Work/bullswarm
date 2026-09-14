@@ -23,8 +23,6 @@
 // paced identically. `p.pacingWindow` names the window the numbers on the
 // pool view actually came from.
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { loadState } from './state.js';
 import { paceScore, isQuarantined } from './route.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js).
@@ -32,26 +30,25 @@ import { finiteOrNull } from './num.js';
 import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
 } from '../meters/framework.js';
-import { expandClaudeAccountConnectors } from './claude-accounts.js';
-import { expandOpenCodeRelayConnectors } from './opencode-relay.js';
+import { loadProviders } from './providers.js';
 
+/**
+ * Every pool by name, from every loaded provider (src/lib/providers.js).
+ * A provider that fails to load contributes nothing and never crashes a run;
+ * `bullswarm setup` and `bullswarm provider list` surface its error.
+ */
 export function loadConnectors(bullswarmDir, opts = {}) {
-  const dir = join(bullswarmDir, 'connectors');
-  if (!existsSync(dir)) return {};
-  const out = {};
-  for (const f of readdirSync(dir).sort()) {
-    if (!f.endsWith('.json') || f.startsWith('_')) continue;
-    try {
-      const c = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      out[c.name] = c;
-    } catch {
-      // broken connector files surface in `bullswarm setup` repair,
-      // never crash a run
-    }
-  }
-  expandClaudeAccountConnectors(out, opts);
-  expandOpenCodeRelayConnectors(out, opts);
-  return out;
+  return loadProviders(bullswarmDir, opts).connectors;
+}
+
+/**
+ * The same load as loadConnectors, keeping the provider entries (tier,
+ * enabled, pools, error, displayName) for callers that report per provider.
+ *
+ * @returns {{ connectors: Record<string, object>, providers: object[] }}
+ */
+export function loadPoolProviders(bullswarmDir, opts = {}) {
+  return loadProviders(bullswarmDir, opts);
 }
 
 /**
@@ -70,9 +67,9 @@ function poolEnabled(conn, poolState) {
  * Meter readings are injected by the caller (async — readers poll the
  * network); this function stays sync so tests can build pools without I/O.
  */
-export function buildPools(bullswarmDir, now = Date.now(), readings = {}) {
+export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts = {}) {
   const state = loadState(bullswarmDir);
-  const connectors = loadConnectors(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir, opts);
   const pools = [];
   for (const [name, conn] of Object.entries(connectors)) {
     const ps = state.pools[name] ?? {};
@@ -217,10 +214,10 @@ function fiveHourFromReading(reading) {
  * Async variant that fetches live readings for pools with readers.
  */
 export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
-  force = false, getReadings, onProviderProgress,
+  force = false, getReadings, onProviderProgress, packaged = false,
 } = {}) {
   const state = loadState(bullswarmDir);
-  const connectors = loadConnectors(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir, { packaged });
   // Poll only the pools whose readings can be used (D6). The loop above
   // already skips disabled and quarantined pools when it applies readings, so
   // asking for theirs read a credential and called a provider usage endpoint
@@ -234,10 +231,15 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
   const readings = getReadings
     ? await getReadings(names, {
       force, nowMs: now, onProgress: onProviderProgress,
-      // A pool's declared plan total (set-subscription --included-usd) is the
-      // denominator its meter reads used USD against; see relayIncludedUsd.
+      // A pool's declared subscription (set-subscription) reaches its
+      // provider's readUsage as ctx.subscription, e.g. the plan total a
+      // used-USD figure is read against; see readerFor.
       subscriptions: state.strategy?.subscriptions ?? {},
+      bullswarmDir,
     })
     : {};
-  return buildPools(bullswarmDir, now, readings);
+  // Forward the loader options: the pool list this returns must come from the
+  // same tiers the polling decision above was made against, or a caller that
+  // asked for the packaged tiers would poll them and then get none back.
+  return buildPools(bullswarmDir, now, readings, { packaged });
 }

@@ -26,6 +26,7 @@ is the nature of the work: `analyze` (read-only), `build` (edits), or
 | [Dashboard](./guide/dashboard/) | `workflow watch`, the interactive TUI, terminal glyph fallback |
 | [Repository operations](./guide/repository-operations/) | The issue-watcher launchd agent |
 | [Routing](./guide/routing/) | How a pool is picked: pace, 5-hour headroom, expiring-soon urgency, load, quarantine |
+| [Providers](./guide/providers/) | The provider plugin contract: tiers, `provider.mjs` exports, the kit, the snapshot, every pool field and its reader |
 
 ## Internal notes and studies
 

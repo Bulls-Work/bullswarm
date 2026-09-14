@@ -69,6 +69,7 @@ const top = rich({
     { name: 'pools', desc: 'show routing pools, meters, in-flight load, and quarantine state' },
     { name: 'assignments', desc: 'list the work in flight right now across every Bullswarm process' },
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
+    { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
     { name: 'doctor', desc: 'report installation readiness' },
     { name: 'workflow', desc: 'plan, execute, observe, and audit workflows' },
     { name: 'runs', desc: 'alias for workflow runs' },
@@ -476,14 +477,14 @@ const strategySetProviderText = rich({
   usage: 'bullswarm strategy set-provider <pool> <on|off> --yes', purpose: 'Enable or disable one detected provider/account as a whole.',
   args: [{ name: '<pool>', desc: 'exact pool name from strategy inventory' }, { name: '<on|off>', desc: 'new state' }],
   options: [{ flag: '--yes', desc: 'required approval' }], safety: ['changes routing immediately for new dispatches'],
-  examples: [{ cmd: 'bullswarm strategy set-provider opencode2:relay-2 off --yes' }], next: 'Use strategy routes --json to confirm.',
+  examples: [{ cmd: 'bullswarm strategy set-provider relay:b off --yes' }], next: 'Use strategy routes --json to confirm.',
 });
 const strategySetModelText = rich({
   usage: 'bullswarm strategy set-model <pool> <model> --tiers <high,medium,low|off> --yes', purpose: 'Assign one model to one or more effort tiers.',
   args: [{ name: '<pool>', desc: 'exact pool name' }, { name: '<model>', desc: 'exact detected model ID' }],
   options: [{ flag: '--tiers <list|off>', desc: 'comma-separated multi-selection or off' }, { flag: '--yes', desc: 'required approval' }],
   safety: ['a configured tier becomes an allow-list; leaving it with no enabled models makes that tier unavailable'],
-  examples: [{ cmd: 'bullswarm strategy set-model opencode2 relay/gpt-5.6-luna --tiers high,medium,low --yes' }], next: 'Use strategy routes --json to confirm.',
+  examples: [{ cmd: 'bullswarm strategy set-model relay a/gpt-5.6-sol --tiers high,medium,low --yes' }], next: 'Use strategy routes --json to confirm.',
 });
 const strategyConfigureText = rich({
   usage: 'bullswarm strategy configure --file <json> --yes',
@@ -704,7 +705,7 @@ const strategySetSubscriptionText = rich({
     { flag: '--monthly-usd <n|unknown>', desc: 'monthly subscription price', default: 'unchanged' },
     { flag: '--included-usd <n|unknown>', desc: 'estimated included usage value', default: 'unchanged' },
     { flag: '--quota-window <weekly|monthly>', desc: 'the subscription window that PACES routing for this pool (used% vs elapsed% of it); unknown clears it back to the connector default', default: 'unchanged' },
-    { flag: '--resets-at <iso|unknown>', desc: 'the date-time this pool\'s quota window next ends, used ONLY when the provider reports usage but no reset (the Relay wallets since 2026-09-03); pacing rolls it forward one window at a time once it passes and bullswarm pools labels the row declared-reset. A provider-reported reset always wins; unknown clears it', default: 'unchanged' },
+    { flag: '--resets-at <iso|unknown>', desc: 'the date-time this pool\'s quota window next ends, used ONLY when the provider reports usage but no reset (for example a reseller wallet whose usage endpoint reports no reset date); pacing rolls it forward one window at a time once it passes and bullswarm pools labels the row declared-reset. A provider-reported reset always wins; unknown clears it', default: 'unchanged' },
   ],
   safety: ['writes state.strategy.subscriptions[pool] and invalidates the cached report'],
   examples: [
@@ -857,7 +858,7 @@ const workflowGoalText = rich({
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch', note: 'you are the planner: author plan.json from `workflow plan contract`, then the kernel routes, owns, verifies, and completes' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --scout', note: 'kernel surveys first, then pauses at the initial boundary for your program' },
     { cmd: 'bullswarm workflow goal "Audit this repo for TODOs and file a one-page summary" --cwd . --orchestrator auto', note: 'dispatch a Workflow Planner agent instead of planning yourself' },
-    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool opencode2 --worker-model relay/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
+    { cmd: 'bullswarm workflow goal "Implement and verify the change" --cwd . --orchestrator codex --orchestrator-strict --orchestrator-model gpt-5.6-sol --worker-pool relay --worker-model a/gpt-5.6-luna', note: 'controlled Sol-planner/Luna-worker run' },
     { cmd: 'bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --worker-reasoning high --json', note: 'every worker thinks at high unless an action sets its own reasoning field' },
   ],
   next: 'bullswarm workflow watch <shortId> to follow progress, bullswarm workflow plan show <shortId> when a caller-planner run pauses, or bare bullswarm workflow for the interactive workflow home.',
@@ -1271,6 +1272,114 @@ const workflowRunsDeleteText = rich({
 
 // --- HELP tree ----------------------------------------------------------------
 
+// --- provider -----------------------------------------------------------------
+
+const providerText = rich({
+  usage: 'bullswarm provider <list|enable|disable|validate|scaffold|probe> [options]',
+  purpose: 'Manage providers, the plugins that define pools. A provider is a directory with a connector.json '
+    + 'and/or a provider.mjs: first-class ones ship in src/providers/, contrib ones in providers/contrib/ and load '
+    + 'only once enabled, local ones live in ~/.bullswarm/providers/. Bare `bullswarm provider` runs list.',
+  argsTitle: 'Commands',
+  args: [
+    { name: 'list', desc: 'every provider with its tier, loading state, pools, skipped pools, and load error' },
+    { name: 'enable', desc: 'load a contrib provider (writes ~/.bullswarm/providers.json)' },
+    { name: 'disable', desc: 'stop loading a contrib provider' },
+    { name: 'validate', desc: 'check a provider directory against the contract and the pool schema' },
+    { name: 'scaffold', desc: 'write a commented provider directory to start from' },
+    { name: 'probe', desc: 'spawn one pool with a one-word task and read its usage once' },
+  ],
+  options: [
+    { flag: '--json', desc: 'machine-readable output where the subcommand supports it' },
+  ],
+  safety: [
+    'enable and disable write only ~/.bullswarm/providers.json (or $BULLSWARM_HOME), never state.json',
+    'loading is not routing: whether a loaded pool gets work stays bullswarm strategy set-provider <pool> on|off --yes',
+    'probe spawns a real agent CLI once and reads its usage meter once',
+  ],
+  examples: [
+    { cmd: 'bullswarm provider list', note: 'see what loaded and what failed' },
+    { cmd: 'bullswarm provider scaffold relay && bullswarm provider validate relay && bullswarm provider probe relay', note: 'author a local provider' },
+  ],
+  next: 'bullswarm provider <command> --help for its arguments and options.',
+});
+const providerListText = rich({
+  usage: 'bullswarm provider list [--json]',
+  purpose: 'Show every provider, first-class, contrib, and local, with its tier, whether it is loaded, the pools it '
+    + 'returned, the pools the loader skipped (name outside its prefix, or already defined), its load error, and '
+    + 'whether it exports readUsage.',
+  args: [],
+  options: [{ flag: '--json', desc: 'print the report as JSON', default: 'human table' }],
+  safety: ['read-only; loads every provider module and calls connectors() for the loaded ones'],
+  examples: [{ cmd: 'bullswarm provider list --json' }],
+  next: 'bullswarm provider enable <name> for a contrib provider, or bullswarm provider validate <name> for one that failed.',
+});
+const providerEnableText = rich({
+  usage: 'bullswarm provider enable <name>',
+  purpose: 'Load a contrib provider: add its directory name to ~/.bullswarm/providers.json. Its pools appear on the '
+    + 'next bullswarm start.',
+  args: [{ name: '<name>', desc: 'a directory name under providers/contrib/' }],
+  options: [],
+  safety: [
+    'writes ~/.bullswarm/providers.json (or $BULLSWARM_HOME) only; state.json is never touched',
+    'refuses a name with no contrib directory, and a name a local provider already claims',
+    'enabling loads the pools; routing them stays bullswarm strategy set-provider <pool> on|off --yes',
+  ],
+  examples: [{ cmd: 'bullswarm provider enable command-code' }],
+  next: 'bullswarm provider list to confirm its pools loaded.',
+});
+const providerDisableText = rich({
+  usage: 'bullswarm provider disable <name>',
+  purpose: 'Stop loading a contrib provider: remove its name from ~/.bullswarm/providers.json.',
+  args: [{ name: '<name>', desc: 'a contrib provider name listed in providers.json' }],
+  options: [],
+  safety: ['writes ~/.bullswarm/providers.json (or $BULLSWARM_HOME) only; a name that is not listed writes nothing'],
+  examples: [{ cmd: 'bullswarm provider disable command-code' }],
+  next: 'bullswarm provider list to confirm.',
+});
+const providerValidateText = rich({
+  usage: 'bullswarm provider validate <dir|name> [--json]',
+  purpose: 'Import a provider directory, check name and the export types, call connectors() with the real shipped '
+    + 'templates, and check the prefix rule and every returned pool against src/providers/_schema.json (required '
+    + 'fields and allowed values), reporting per pool.',
+  args: [{ name: '<dir|name>', desc: 'a provider directory path, or a provider name looked up in the local, contrib, then first-class directories' }],
+  options: [{ flag: '--json', desc: 'print the report as JSON', default: 'human report' }],
+  safety: ['runs the provider\'s module and its connectors(); never spawns the CLI or reads usage', 'exits 2 on any failure; warnings alone exit 0'],
+  examples: [{ cmd: 'bullswarm provider validate ~/.bullswarm/providers/relay' }],
+  next: 'bullswarm provider probe <pool> to run it for real.',
+});
+const providerScaffoldText = rich({
+  usage: 'bullswarm provider scaffold <name> [--from <template>] [--dir <path>]',
+  purpose: 'Write a commented provider directory: a provider.mjs skeleton showing every export and, with --from, a '
+    + 'connector.json copied from that shipped template and renamed. The result passes validate unchanged.',
+  args: [{ name: '<name>', desc: 'provider name: lowercase letters, digits, and dashes' }],
+  options: [
+    { flag: '--from <template>', desc: 'copy this shipped provider\'s connector.json (a reader meter is set to none until you export readUsage)', default: 'no connector.json; the pool is written inline' },
+    { flag: '--dir <path>', desc: 'the provider directory to create', default: '~/.bullswarm/providers/<name>/' },
+  ],
+  safety: ['writes only inside the target directory, and refuses one that already exists and is not empty'],
+  examples: [{ cmd: 'bullswarm provider scaffold relay --from opencode2', note: 'a reseller that runs through opencode' }],
+  next: 'bullswarm provider validate <name>, then bullswarm provider probe <name>.',
+});
+const providerProbeText = rich({
+  usage: 'bullswarm provider probe <pool> [--json] [--timeout <sec>]',
+  purpose: 'Spawn one pool\'s CLI directly with the task "Reply with the single word PONG and nothing else" through '
+    + 'the dispatcher\'s own runner, then, when its provider exports readUsage, read usage once with the pool\'s '
+    + 'declared subscription. Prints the argv, the extracted output, the elapsed time, and the snapshot or error. '
+    + 'This is the acceptance step for a provider.',
+  args: [{ name: '<pool>', desc: 'a pool name; contrib providers are probed even when not enabled' }],
+  options: [
+    { flag: '--json', desc: 'print the result as JSON', default: 'human report' },
+    { flag: '--timeout <sec>', desc: 'kill the CLI after this many seconds', default: '300' },
+  ],
+  safety: [
+    'spawns the real CLI once in a throwaway directory, with no routing, quota gate, or assignment ledger, and ignores BULLSWARM_DEPTH',
+    'values from the pool\'s env are redacted from everything printed',
+    'exits 1 when the reply does not contain PONG or readUsage threw',
+  ],
+  examples: [{ cmd: 'bullswarm provider probe relay:b --json' }],
+  next: 'bullswarm provider enable <name> for a contrib provider, then bullswarm strategy set-provider <pool> on --yes.',
+});
+
 const HELP = {
   _text: top,
   setup: { _text: setupText },
@@ -1316,6 +1425,15 @@ const HELP = {
       status: { _text: strategyAutoStatusText },
       off: { _text: strategyAutoOffText },
     },
+  },
+  provider: {
+    _text: providerText,
+    list: { _text: providerListText },
+    enable: { _text: providerEnableText },
+    disable: { _text: providerDisableText },
+    validate: { _text: providerValidateText },
+    scaffold: { _text: providerScaffoldText },
+    probe: { _text: providerProbeText },
   },
   workflow: {
     _text: workflowText,

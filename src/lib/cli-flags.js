@@ -71,6 +71,15 @@ const TABLE = {
   update: ['check', 'json'],
   release: ['dry-run'],
 
+  // --- src/provider-cli.js -------------------------------------------------
+  provider: ['json', 'yes'],
+  'provider list': ['json'],
+  'provider enable': ['yes'],
+  'provider disable': [],
+  'provider validate': ['json'],
+  'provider scaffold': ['from', 'dir'],
+  'provider probe': ['json', 'timeout', 'yes'],
+
   // --- src/integrate.js ---------------------------------------------------
   integrate: ['agents', 'json'],
   'integrate status': ['agents', 'json'],

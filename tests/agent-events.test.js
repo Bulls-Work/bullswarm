@@ -1,13 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgentEventDecoder } from '../src/lib/agent-events.js';
 import { argvWithModel } from '../src/lib/watch.js';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
-const connector = (name) => JSON.parse(readFileSync(join(REPO, 'connectors', `${name}.json`), 'utf8'));
+// A first-class template ships in src/providers/, a contrib one in providers/contrib/.
+const connector = (name) => {
+  const firstClass = join(REPO, 'src', 'providers', name, 'connector.json');
+  const file = existsSync(firstClass) ? firstClass : join(REPO, 'providers', 'contrib', name, 'connector.json');
+  return JSON.parse(readFileSync(file, 'utf8'));
+};
 
 function decode(name, rows) {
   const actions = [];

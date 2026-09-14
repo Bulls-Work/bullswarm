@@ -1,5 +1,6 @@
 import { loadState, updateState } from './lib/state.js';
-import { loadConnectors, buildPools, buildPoolsLive } from './lib/config.js';
+import { loadConnectors, loadPoolProviders, buildPools, buildPoolsLive } from './lib/config.js';
+import { providerFor } from './lib/providers.js';
 import { getAllMeterReadings } from './meters/registry.js';
 import { PACING_WINDOWS } from './meters/framework.js';
 import {
@@ -20,6 +21,11 @@ import { flagName, unknownFlagExit } from './lib/cli-flags.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
+
+// Strategy operates on what ships with the package plus what the operator
+// installed, so the packaged tiers load here even under node:test, where the
+// loader otherwise hides them so a fixture home stays isolated.
+const PACKAGED = Object.freeze({ packaged: true });
 
 function parseFlags(argv) {
   const flags = { rest: [], _flags: [] };
@@ -82,7 +88,7 @@ function quotaWindowValue(value) {
 
 /**
  * `--resets-at` declares WHEN this pool's quota window ends, for a provider
- * that reports usage but no reset (the Relay wallets after 2026-09-03).
+ * that reports usage but no reset (a relay wallet that reports only used USD).
  * Stored as ISO-8601; pacing rolls it forward one window at a time once it
  * passes (src/meters/framework.js rollResetForward) and labels the result
  * declared-reset. `unknown`/`null` clears it. A provider-reported reset is
@@ -164,7 +170,7 @@ function reasoningLines(reasoning) {
 
 function reasoningReport(bullswarmDir) {
   const state = loadState(bullswarmDir);
-  const connectors = loadConnectors(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir, PACKAGED);
   const pools = Object.values(connectors)
     .map((connector) => ({ name: connector.name, connector }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -240,18 +246,15 @@ function rungUsage(missing) {
   return `${missing}: ${usageLine(['strategy', 'set-rung'])}`;
 }
 
-function providerLabel(name) {
-  const base = String(name ?? '').split(':')[0];
-  const labels = {
-    'claude-code': 'Claude',
-    codex: 'Codex',
-    'command-code': 'Command Code',
-    grok: 'Grok',
-    echo: 'Echo',
-    opencode2: 'OpenCode',
-  };
-  const suffix = String(name ?? '').includes(':') ? ` (${String(name).split(':').slice(1).join(':')})` : '';
-  return `${labels[base] ?? base}${suffix}`;
+/**
+ * A pool's label for progress lines: its owning provider's displayName, with
+ * the pool's `:<suffix>` in parentheses; the pool name when no provider owns it.
+ */
+function providerLabel(name, providers) {
+  const pool = String(name ?? '');
+  const owner = providerFor(providers, pool);
+  if (!owner?.displayName) return pool;
+  return pool === owner.name ? owner.displayName : `${owner.displayName} (${pool.slice(owner.name.length + 1)})`;
 }
 
 export async function refreshStrategy(bullswarmDir, {
@@ -259,15 +262,16 @@ export async function refreshStrategy(bullswarmDir, {
   useOpenRouter = false, openRouterCatalog = null, openRouterLoader = loadOpenRouterCatalog,
 } = {}) {
   const state = loadState(bullswarmDir);
-  const connectors = loadConnectors(bullswarmDir);
+  const { connectors, providers } = loadPoolProviders(bullswarmDir, PACKAGED);
   const providerCount = Object.keys(connectors).length;
   onProgress(`[0/${providerCount}] Preparing provider usage checks`);
   const { pools } = await buildPoolsLive(bullswarmDir, Date.now(), {
+    ...PACKAGED,
     getReadings,
     onProviderProgress: ({ stage, pool, index, completed, total }) => {
       onProgress(stage === 'start'
-        ? `[${index}/${total}] Checking usage for ${providerLabel(pool)}`
-        : `[${completed}/${total}] Usage checked for ${providerLabel(pool)}`);
+        ? `[${index}/${total}] Checking usage for ${providerLabel(pool, providers)}`
+        : `[${completed}/${total}] Usage checked for ${providerLabel(pool, providers)}`);
     },
   });
   onProgress('Discovering available models');
@@ -338,7 +342,7 @@ export async function loadRungEvidence(bullswarmDir) {
 
 /** Every rung, or one pool's rungs. Read-only: no discovery, no meter calls. */
 export async function rungRows(bullswarmDir, { pool = null } = {}) {
-  const { state, connectors, pools } = buildPools(bullswarmDir);
+  const { state, connectors, pools } = buildPools(bullswarmDir, Date.now(), {}, PACKAGED);
   if (pool != null && !connectors[pool]) throw new Error(`unknown pool "${pool}"`);
   return rungsFor({
     pools,
@@ -528,7 +532,7 @@ export async function loadStrategyInventory(bullswarmDir, {
     })
     : state.strategy.lastReport;
   state = loadState(bullswarmDir);
-  const { pools } = buildPools(bullswarmDir);
+  const { pools } = buildPools(bullswarmDir, Date.now(), {}, PACKAGED);
   const subscriptions = Object.fromEntries((report.subscriptions ?? []).map((entry) => [entry.pool, entry]));
   for (const pool of pools) {
     const live = subscriptions[pool.name];
@@ -549,7 +553,7 @@ export async function loadStrategyInventory(bullswarmDir, {
 }
 
 function setProviderEnabled(bullswarmDir, pool, enabled) {
-  const connectors = loadConnectors(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir, PACKAGED);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
   // Under the lock (S5): this is the writer an operator reaches for while a
   // run is in flight, and it is the exact out-of-band write the D5 race test
@@ -574,7 +578,7 @@ function materializeTier(strategy, inventory, tier) {
 }
 
 function setModelTiers(bullswarmDir, pool, model, tiers, inventory) {
-  const connectors = loadConnectors(bullswarmDir);
+  const connectors = loadConnectors(bullswarmDir, PACKAGED);
   if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
   if (!tiers.length) {
     updateState(bullswarmDir, (state) => {
@@ -716,7 +720,7 @@ export async function cmdStrategy(args, {
     if (sub === 'set-rung') {
       const [pool, tier] = opts.rest;
       if (!pool || !tier) throw new Error(rungUsage('missing <pool> and <tier>'));
-      const connectors = loadConnectors(bullswarmDir);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       if (!STRATEGY_TIERS.includes(tier)) {
         throw new Error(`unknown tier "${tier}" (${STRATEGY_TIERS.join(', ')})`);
@@ -832,7 +836,7 @@ export async function cmdStrategy(args, {
     if (sub === 'set-reasoning' || sub === 'reset-reasoning') {
       if (opts.yes !== true) throw new Error(`strategy ${sub} changes routing; pass --yes to approve`);
       const pool = reasoningFlag(opts.pool, sub);
-      if (pool !== null && !loadConnectors(bullswarmDir)[pool]) throw new Error(`unknown pool "${pool}"`);
+      if (pool !== null && !loadConnectors(bullswarmDir, PACKAGED)[pool]) throw new Error(`unknown pool "${pool}"`);
       if (sub === 'set-reasoning') {
         const tier = assertReasoningTier(reasoningFlag(opts.tier, sub));
         const level = assertReasoningLevel(reasoningFlag(opts.level, sub));
@@ -858,7 +862,7 @@ export async function cmdStrategy(args, {
       if (!opts.file) throw new Error(`usage: ${usageLine(['strategy', 'configure'])}`);
       const { readFileSync } = await import('node:fs');
       const config = JSON.parse(readFileSync(opts.file, 'utf8'));
-      const connectors = loadConnectors(bullswarmDir);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
       const reasoning = validateReasoningSection(config.reasoning, connectors);
       const inventory = await loadStrategyInventory(bullswarmDir);
       // The whole document is validated INSIDE the mutator (S5): a throw
@@ -925,7 +929,7 @@ export async function cmdStrategy(args, {
     if (sub === 'set-subscription') {
       const pool = opts.rest[0];
       if (!pool) throw new Error(`usage: ${usageLine(['strategy', 'set-subscription'])}`);
-      const connectors = loadConnectors(bullswarmDir);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[pool]) throw new Error(`unknown pool "${pool}"`);
       // Flag validation first, so a bad number fails before any lock is taken.
       const monthlyPriceUsd = numberOrNull(opts['monthly-usd'], 'monthly-usd');
@@ -953,7 +957,7 @@ export async function cmdStrategy(args, {
       const tier = opts.rest[0];
       if (!['high', 'medium', 'low'].includes(tier)) throw new Error(`usage: ${usageLine(['strategy', 'assign'])}`);
       if (!opts.pool || !opts.model) throw new Error('assignment needs --pool and --model');
-      const connectors = loadConnectors(bullswarmDir);
+      const connectors = loadConnectors(bullswarmDir, PACKAGED);
       if (!connectors[opts.pool]) throw new Error(`unknown pool "${opts.pool}"`);
       const state = updateState(bullswarmDir, (fresh) => {
         fresh.strategy ??= {};

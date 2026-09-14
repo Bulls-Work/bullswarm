@@ -40,7 +40,7 @@ bullswarm setup
 
 Later, `bullswarm update` upgrades that install to the latest published
 version in place (`bullswarm update --check` only reports). Requires Node.js
-18 or later. `bullswarm setup` walks through detecting your
+22.12 or later. `bullswarm setup` walks through detecting your
 installed agent CLIs, showing their quota state, and writing a routing
 configuration. See
 [Getting started](https://cowcow02.github.io/bullswarm/guide/getting-started/)
@@ -159,6 +159,7 @@ directly under [`docs/guide/`](docs/guide/) in this repository.
 | [Dashboard](https://cowcow02.github.io/bullswarm/guide/dashboard/) | `workflow watch`, the interactive TUI, terminal glyph fallback |
 | [Repository operations](https://cowcow02.github.io/bullswarm/guide/repository-operations/) | The issue-watcher launchd agent |
 | [Routing](https://cowcow02.github.io/bullswarm/guide/routing/) | How a pool is picked: pace, headroom, urgency, load, quarantine |
+| [Providers](https://cowcow02.github.io/bullswarm/guide/providers/) | Adding your own agent CLI or reseller account as a provider plugin |
 
 ## License
 

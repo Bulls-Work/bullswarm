@@ -41,7 +41,7 @@ function fixtureHome() {
     writeFileSync(join(home, 'connectors', `${name}.json`), JSON.stringify({
       name,
       bin: 'node',
-      spawn: { cmd: ['node', '{bullswarmDir}/connectors/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
+      spawn: { cmd: ['node', '{bullswarmDir}/src/providers/echo/echo-worker.mjs', '{taskFile}'], cwdMode: 'task-file-dir' },
       outputExtraction: { strategy: 'stdout' },
       meter: { type: 'none' },
       costRank: 3,

@@ -16,7 +16,7 @@ function home({ echoPool = { enabled: true }, config = {}, strategy = null } = {
   const dir = mkdtempSync(join(tmpdir(), 'bs-cli-run-'));
   mkdirSync(join(dir, 'connectors'), { recursive: true });
   for (const file of ['echo.json', 'echo-worker.mjs']) {
-    writeFileSync(join(dir, 'connectors', file), readFileSync(join(REPO, 'connectors', file)));
+    writeFileSync(join(dir, 'connectors', file), readFileSync(join(REPO, 'src', 'providers', 'echo', file === 'echo.json' ? 'connector.json' : file)));
   }
   writeFileSync(join(dir, 'state.json'), `${JSON.stringify({
     version: 1,
@@ -31,7 +31,7 @@ function home({ echoPool = { enabled: true }, config = {}, strategy = null } = {
 
 function bullswarm(dir, args) {
   return spawnSync(process.execPath, [BIN, ...args], {
-    env: { ...process.env, BULLSWARM_HOME: dir }, encoding: 'utf8', timeout: 60_000,
+    env: { ...process.env, BULLSWARM_HOME: dir, BULLSWARM_NO_PACKAGED_PROVIDERS: '1' }, encoding: 'utf8', timeout: 60_000,
   });
 }
 

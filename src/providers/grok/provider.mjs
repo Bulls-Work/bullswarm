@@ -1,9 +1,14 @@
-// bullswarm grok meter — Grok Build weekly credit pool via the billing
-// endpoint the Grok CLI itself uses. Weekly-only: five_hour stays null.
+// bullswarm grok provider — the Grok CLI, metered through the Grok Build
+// weekly credit pool via the billing endpoint the Grok CLI itself uses.
+// Weekly-only: five_hour stays null. The meter is real code: it refreshes the
+// OAuth token and writes the rotated token back into ~/.grok/auth.json.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+export const name = 'grok';
+export const displayName = 'Grok';
 
 const CREDITS_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
 const REFRESH_URL = 'https://auth.x.ai/oauth2/token';
@@ -19,13 +24,12 @@ export class GrokMeterError extends Error {
   }
 }
 
-function authPath() {
-  const home = process.env.GROK_HOME?.trim() || path.join(os.homedir(), '.grok');
-  return path.join(home, 'auth.json');
+function authPath({ env = process.env, home = os.homedir() } = {}) {
+  const grokHome = env.GROK_HOME?.trim() || path.join(home, '.grok');
+  return path.join(grokHome, 'auth.json');
 }
 
-function loadAuthEntry() {
-  const p = authPath();
+function loadAuthEntry(p) {
   if (!existsSync(p)) {
     throw new GrokMeterError('Grok not logged in. Run `grok login`.', 'no_auth');
   }
@@ -48,7 +52,7 @@ function needsRefresh(entry) {
   return Number.isFinite(ms) && Date.now() >= ms - REFRESH_BUFFER_MS;
 }
 
-async function refreshAccessToken(entry) {
+async function refreshAccessToken(entry, p) {
   const refresh = entry.refresh_token?.trim();
   if (!refresh) return null;
   const clientId = entry.oidc_client_id?.trim() || DEFAULT_CLIENT_ID;
@@ -71,7 +75,6 @@ async function refreshAccessToken(entry) {
     const j = await res.json();
     if (typeof j.access_token !== 'string' || !j.access_token) return null;
     try {
-      const p = authPath();
       const raw = JSON.parse(readFileSync(p, 'utf8'));
       for (const key of Object.keys(raw)) {
         if (raw[key]?.key === entry.key || raw[key]?.refresh_token === refresh) {
@@ -158,17 +161,18 @@ async function fetchJson(url, token) {
   return { status: res.status, body };
 }
 
-export async function fetchGrokUsage() {
-  const loaded = loadAuthEntry();
+export async function fetchGrokUsage({ pool = 'grok', env, home } = {}) {
+  const p = authPath({ env, home });
+  const loaded = loadAuthEntry(p);
   let token = loaded.token;
   if (needsRefresh(loaded.entry)) {
-    const refreshed = await refreshAccessToken(loaded.entry);
+    const refreshed = await refreshAccessToken(loaded.entry, p);
     if (refreshed) token = refreshed;
   }
 
   let { status, body } = await fetchJson(CREDITS_URL, token);
   if (status === 401 || status === 403) {
-    const refreshed = await refreshAccessToken(loaded.entry);
+    const refreshed = await refreshAccessToken(loaded.entry, p);
     if (refreshed) {
       token = refreshed;
       ({ status, body } = await fetchJson(CREDITS_URL, token));
@@ -191,10 +195,15 @@ export async function fetchGrokUsage() {
 
   return {
     captured_at: new Date().toISOString(),
-    pool: 'grok',
+    pool,
     five_hour: { utilization: null, resets_at: null },
     seven_day: { utilization: credits.utilization, resets_at: credits.resets_at },
     monthly: null,
     plan_type: null,
   };
+}
+
+export async function readUsage(pool, ctx = {}) {
+  const poolName = typeof pool === 'string' ? pool : pool?.name;
+  return fetchGrokUsage({ pool: poolName ?? 'grok', env: ctx.env, home: ctx.home });
 }

@@ -172,22 +172,22 @@ test('strict evidence routing reuses its pinned ancestor instead of deadlocking 
 
 test('provider-qualified model pins cannot run under another credential pool label', async () => {
   const h = harness([good]);
-  const primary = connector('opencode2', {
-    profile: { providerId: 'relay' },
-    spawn: { cmd: ['fake', '--model', 'relay/gpt-5.6-luna'] },
+  const primary = connector('relay', {
+    profile: { providerId: 'a' },
+    spawn: { cmd: ['fake', '--model', 'a/gpt-5.6-luna'] },
   });
-  const second = connector('opencode2:relay-2', {
-    profile: { providerId: 'relay-2' },
-    spawn: { cmd: ['fake', '--model', 'relay-2/gpt-5.6-luna'] },
+  const second = connector('relay:b', {
+    profile: { providerId: 'b' },
+    spawn: { cmd: ['fake', '--model', 'b/gpt-5.6-luna'] },
   });
   const result = await dispatchV2Action({
     action: { ...action, lane: 'analyze' }, taskText: 'inspect', targetDir: '/tmp', paths,
-    pools: [primary, second], avoidPools: ['opencode2'],
-    preferredModel: 'relay/gpt-5.6-luna', bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+    pools: [primary, second], avoidPools: ['relay'],
+    preferredModel: 'a/gpt-5.6-luna', bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(result.ok, true);
-  assert.equal(result.attempts[0].pool, 'opencode2');
-  assert.equal(result.attempts[0].model, 'relay/gpt-5.6-luna');
+  assert.equal(result.attempts[0].pool, 'relay');
+  assert.equal(result.attempts[0].model, 'a/gpt-5.6-luna');
 });
 
 test('persisted effort assignment wins while its pool remains eligible', async () => {
@@ -515,13 +515,13 @@ test('the attempt.started notification carries the resolved reasoning record', a
 });
 
 // --- one dead upstream credential, three pool names -------------------------
-// 2026-09-11: the OAuth pool behind api.relay.com was invalidated at 12:24 UTC.
-// The three Relay pools are three names for it, and the retry of a failed
-// action walked relay-3 → relay-2 → opencode2, burning both attempts on the
+// 2026-09-11: the OAuth pool behind a relaying reseller was invalidated at
+// 12:24 UTC. Its three pools were three names for it, and the retry of a failed
+// action walked from one sibling to the next, burning both attempts on the
 // same dead credential and blocking every dependent action.
 
-const RELAY_GROUP = 'relay:api.relay.com';
-const relayPool = (name) => connector(name, { upstreamGroup: RELAY_GROUP });
+const RELAY_GROUP = 'relay:relay.example';
+const relayPool = (name) => connector(name, { credentialGroup: RELAY_GROUP });
 const upstreamAuthVerdict = () => ({
   ok: false,
   failureKind: 'auth',
@@ -534,7 +534,7 @@ const HARNESS_T0 = Date.parse('2026-08-31T01:00:00Z');
 test('an upstream auth failure benches every pool on that credential and the retry leaves the group', async () => {
   const h = harness([upstreamAuthVerdict(), good]);
   const pools = [
-    relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2'),
+    relayPool('relay:c'), relayPool('relay:b'), relayPool('relay'),
     connector('command-code'),
   ];
   const result = await dispatchV2Action({
@@ -545,20 +545,20 @@ test('an upstream auth failure benches every pool on that credential and the ret
     bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3', 'command-code']);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['relay:c', 'command-code']);
   const quarantine = (name) => h.core.pools[name]?.quarantine;
-  for (const name of ['opencode2:relay-3', 'opencode2:relay-2', 'opencode2']) {
+  for (const name of ['relay:c', 'relay:b', 'relay']) {
     assert.ok(quarantine(name), `${name} is benched`);
     assert.equal(quarantine(name).kind, 'auth');
   }
   // One upstream, one deadline — the siblings do not open a second window.
-  assert.equal(quarantine('opencode2:relay-2').until, quarantine('opencode2:relay-3').until);
-  assert.equal(quarantine('opencode2').until, quarantine('opencode2:relay-3').until);
-  const ahead = quarantine('opencode2:relay-3').until - HARNESS_T0;
+  assert.equal(quarantine('relay:b').until, quarantine('relay:c').until);
+  assert.equal(quarantine('relay').until, quarantine('relay:c').until);
+  const ahead = quarantine('relay:c').until - HARNESS_T0;
   assert.ok(ahead > 600_000 && ahead <= 630_000, `re-probe window is ${ahead}ms after t0`);
   assert.equal(
-    quarantine('opencode2:relay-2').reason,
-    'sibling of opencode2:relay-3: upstream auth failure: "auth_unavailable" (provider stream error)',
+    quarantine('relay:b').reason,
+    'sibling of relay:c: upstream auth failure: "auth_unavailable" (provider stream error)',
   );
   assert.equal(quarantine('command-code'), undefined, 'a pool on its own credential keeps working');
 });
@@ -570,12 +570,12 @@ test('a group sibling is unreachable for the next attempt even without a refresh
   const h = harness([upstreamAuthVerdict(), upstreamAuthVerdict(), good]);
   const result = await dispatchV2Action({
     action, taskText: 'do it', targetDir: '/tmp', paths,
-    pools: [relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2')],
+    pools: [relayPool('relay:c'), relayPool('relay:b'), relayPool('relay')],
     bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(result.ok, false);
   assert.equal(result.failureKind, 'auth');
-  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3']);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['relay:c']);
   assert.equal(result.attempts[0].status, 'failed', 'no recovery was promised that the group could not deliver');
 });
 
@@ -583,14 +583,14 @@ test('a usage limit benches only the pool that hit it, never its upstream siblin
   const h = harness([quotaVerdict(), good]);
   const result = await dispatchV2Action({
     action, taskText: 'do it', targetDir: '/tmp', paths,
-    pools: [relayPool('opencode2:relay-3'), relayPool('opencode2:relay-2'), relayPool('opencode2')],
+    pools: [relayPool('relay:c'), relayPool('relay:b'), relayPool('relay')],
     bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['opencode2:relay-3', 'opencode2:relay-2']);
-  assert.equal(h.core.pools['opencode2:relay-3'].quarantine.kind, 'quota');
-  assert.equal(h.core.pools['opencode2:relay-2']?.quarantine, undefined, 'a sibling window is its own');
-  assert.equal(h.core.pools.opencode2?.quarantine, undefined);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['relay:c', 'relay:b']);
+  assert.equal(h.core.pools['relay:c'].quarantine.kind, 'quota');
+  assert.equal(h.core.pools['relay:b']?.quarantine, undefined, 'a sibling window is its own');
+  assert.equal(h.core.pools.relay?.quarantine, undefined);
 });
 
 test('an auth failure on a pool with no upstream group benches nothing else', async () => {

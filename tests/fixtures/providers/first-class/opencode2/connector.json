@@ -1,0 +1,9 @@
+{
+  "name": "opencode2",
+  "spawn": { "cmd": ["opencode", "run", "--auto", "{taskFile}"], "cwdMode": "pwd" },
+  "outputExtraction": { "strategy": "stdout" },
+  "model": "default",
+  "modelSelection": { "flag": "--model", "mode": "replace-or-append" },
+  "meter": { "type": "none" },
+  "flags": { "stealth": false }
+}

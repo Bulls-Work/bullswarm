@@ -15,7 +15,7 @@ Remove every Relay footprint from the repo while Relay keeps working in the pool
 
 ## Relay footprint today (what has to move)
 
-- `src/lib/opencode-relay.js`: scans opencode.json for api.relay.com keys, clones the `opencode2` connector per key (pools `opencode2`, `opencode2:relay-2`, ...), pins `--model <id>/gpt-5.6-luna`, injects `OPENCODE_CONFIG_CONTENT` reasoning variants, sets `upstreamGroup: relay:<host>`. Called from `loadConnectors` in `src/lib/config.js` right after `expandClaudeAccountConnectors` (the same hard-coded pattern).
+- `src/lib/opencode-relay.js`: scans opencode.json for relay.example keys, clones the `opencode2` connector per key (pools `opencode2`, `opencode2:relay-2`, ...), pins `--model <id>/gpt-5.6-luna`, injects `OPENCODE_CONFIG_CONTENT` reasoning variants, sets `upstreamGroup: relay:<host>`. Called from `loadConnectors` in `src/lib/config.js` right after `expandClaudeAccountConnectors` (the same hard-coded pattern).
 - `src/meters/relay.js` + the pool-to-reader mapping in `src/meters/registry.js` (`relayReaderFor`, `relayIncludedUsd`, env `RELAY_PLAN_USD`).
 - One New-API phrase in `src/lib/auth-signatures.js` defaults ("no available channel for model"); connectors can already declare `authSignatures` in JSON.
 - Help examples in `src/help.js`, connector comments in `connectors/opencode2.json`, docs, changelog, and about 20 test files that use `opencode2:relay-2` as a pool name.

@@ -2,7 +2,7 @@
 // It asks the real Grok and Command Code CLIs to inspect auth-related source,
 // reproducing the transport shape that once caused a false quarantine.
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { watchOnce } from '../src/lib/watch.js';
@@ -18,7 +18,9 @@ const names = process.argv.slice(2).length ? process.argv.slice(2) : ['grok', 'c
 const results = await Promise.all(names.map(async (name) => {
   const dir = mkdtempSync(join(tmpdir(), `bullswarm-real-${name}-`));
   try {
-    const connector = JSON.parse(readFileSync(join(root, 'connectors', `${name}.json`), 'utf8'));
+    const firstClass = join(root, 'src', 'providers', name, 'connector.json');
+    const file = existsSync(firstClass) ? firstClass : join(root, 'providers', 'contrib', name, 'connector.json');
+    const connector = JSON.parse(readFileSync(file, 'utf8'));
     const verdict = await watchOnce(connector, prompt, root, {
       taskFile: join(dir, 'task.md'),
       outFile: join(dir, 'out.md'),

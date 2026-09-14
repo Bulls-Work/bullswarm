@@ -4,93 +4,45 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { MeterCache, paceSnapshot, FRESH_MS, STALE_MS } from './framework.js';
-import { fetchCodexUsage, CodexMeterError } from './codex.js';
-import { fetchGrokUsage, GrokMeterError } from './grok.js';
-import { fetchCommandCodeUsage, CommandCodeMeterError } from './command-code.js';
-import { fetchClaudeUsage, fetchClaudeUsageWithCredentials, ClaudeMeterError } from './claude.js';
-import { fetchRelayUsage, RelayMeterError } from './relay.js';
-import { discoverClaudeAccounts, poolNameForSlug } from '../lib/claude-accounts.js';
-import { discoverRelayProviders } from '../lib/opencode-relay.js';
+import { loadProviders, providerFor } from '../lib/providers.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
 
-const READERS = {
-  codex: fetchCodexUsage,
-  grok: fetchGrokUsage,
-  'command-code': fetchCommandCodeUsage,
-  'claude-code': fetchClaudeUsage,
-  claude: fetchClaudeUsage,
-};
-
-function claudeReaderFor(pool) {
-  return async () => {
-    const accounts = discoverClaudeAccounts();
-    const slug = pool.startsWith('claude-code:') ? pool.slice('claude-code:'.length) : null;
-    const account = accounts.find((a) => poolNameForSlug(a.slug) === pool)
-      ?? accounts.find((a) => a.slug === slug);
-    if (!account) {
-      throw new ClaudeMeterError(
-        `No Claude Code OAuth token for pool ${pool}. Log in with CLAUDE_CONFIG_DIR pointing at that home.`,
-        'no_token',
-      );
-    }
-    return fetchClaudeUsageWithCredentials(account.creds, pool);
-  };
+/** The operator-declared subscription record for one pool, or null. */
+export function declaredSubscription(subscriptions, pool) {
+  const record = subscriptions?.[pool];
+  return record && typeof record === 'object' ? record : null;
 }
 
 /**
- * The wallet total a Relay used-USD figure is read against, in this order:
- * the pool's declared subscription (`strategy set-subscription <pool>
- * --included-usd <n>`), then the RELAY_PLAN_USD environment variable, then
- * $50. The wallets differ — the 2026-09-12 newcomer plan on relay-4 is $20 —
- * so one host-wide number would report a $10 spend on it as 20% used instead
- * of 50%. Anything that is not a positive finite number is skipped, and a
- * result that is still not positive is null, so the reader records used USD
- * without inventing a utilization.
- */
-export function relayIncludedUsd({ includedUsd = null, env = process.env } = {}) {
-  for (const candidate of [includedUsd, env?.RELAY_PLAN_USD, 50]) {
-    if (candidate == null || candidate === '') continue;
-    const n = Number(candidate);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return null;
-}
-
-/** The operator-declared plan total for one pool, or null when none is recorded. */
-export function declaredIncludedUsd(subscriptions, pool) {
-  const n = Number(subscriptions?.[pool]?.includedValueUsd);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-function relayReaderFor(pool, { includedUsd = null } = {}) {
-  return async () => {
-    const providers = discoverRelayProviders();
-    const hit = providers.find((p) => p.pool === pool);
-    if (!hit) {
-      throw new RelayMeterError(`No Relay key configured in OpenCode for pool ${pool}.`, 'no_token');
-    }
-    return fetchRelayUsage(hit.apiKey, {
-      pool,
-      includedUsd: relayIncludedUsd({ includedUsd }),
-    });
-  };
-}
-
-/**
+ * The live reader for a pool: a closure over its owning provider's
+ * `readUsage(poolName, ctx)`, or null when no provider owns the pool or the
+ * owner exports no readUsage (the pool then falls to a declared meter or
+ * unmetered, in src/lib/config.js).
+ *
  * @param {string} pool
- * @param {{includedUsd?: number|null}} [readerOpts] per-pool facts the reader
- *   cannot discover on its own — today the declared wallet total for Relay.
+ * @param {{
+ *   bullswarmDir?: string,
+ *   providers?: object[],
+ *   subscription?: object|null,
+ *   subscriptions?: Record<string, object>,
+ * }} [readerOpts]
+ *   bullswarmDir   the home providers load from (default METERS_DIR())
+ *   providers      loadProviders(...).providers, to skip a second load
+ *   subscription   the pool's declared subscription, else looked up in
+ *   subscriptions  state.strategy.subscriptions
  */
 export function readerFor(pool, readerOpts = {}) {
-  if (pool === 'claude-code' || pool === 'claude' || pool.startsWith('claude-code:')) {
-    return claudeReaderFor(pool);
-  }
-  if (pool === 'opencode2' || pool.startsWith('opencode2:')) {
-    return relayReaderFor(pool, readerOpts);
-  }
-  return READERS[pool] ?? null;
+  const providers = readerOpts.providers
+    ?? loadProviders(readerOpts.bullswarmDir ?? METERS_DIR()).providers;
+  const owner = providerFor(providers, pool);
+  const readUsage = owner?.module?.readUsage;
+  if (typeof readUsage !== 'function') return null;
+  const subscription = readerOpts.subscription !== undefined
+    ? readerOpts.subscription
+    : declaredSubscription(readerOpts.subscriptions, pool);
+  return () => readUsage(pool, { ...owner.ctx, subscription });
 }
 
 /**
@@ -101,10 +53,11 @@ export function readerFor(pool, readerOpts = {}) {
  * Never fabricates numbers. Every live poll is also appended to the pool's
  * reading history (see appendMeterHistory) so spend rates have a series.
  *
- * opts.reader overrides the registered reader — used by tests to exercise the
+ * opts.reader overrides the provider's reader — used by tests to exercise the
  * live path without touching a provider. opts.subscriptions is
- * state.strategy.subscriptions, so a pool's declared plan total reaches the
- * reader that needs it (Relay).
+ * state.strategy.subscriptions, so a pool's declared subscription reaches its
+ * provider's readUsage; opts.bullswarmDir and opts.providers are passed on to
+ * readerFor.
  */
 export async function getMeterReading(pool, opts = {}) {
   const { force = false, nowMs = Date.now() } = opts;
@@ -116,7 +69,9 @@ export async function getMeterReading(pool, opts = {}) {
   }
 
   const reader = opts.reader ?? readerFor(pool, {
-    includedUsd: declaredIncludedUsd(opts.subscriptions, pool),
+    bullswarmDir: opts.bullswarmDir,
+    providers: opts.providers,
+    subscriptions: opts.subscriptions,
   });
   if (!reader) {
     // No programmatic reader for this pool. A cached snapshot is still a real
@@ -166,6 +121,12 @@ export async function getMeterReading(pool, opts = {}) {
 /** Best-effort reading for all pools that have readers; never throws. */
 export async function getAllMeterReadings(poolNames, opts = {}) {
   const out = {};
+  // Load providers once for the whole batch, not once per pool.
+  if (!opts.reader && !opts.providers && poolNames.length) {
+    try {
+      opts = { ...opts, providers: loadProviders(opts.bullswarmDir ?? METERS_DIR()).providers };
+    } catch { /* each pool then reports its own error below */ }
+  }
   let completed = 0;
   await Promise.all(
     poolNames.map(async (p, index) => {
@@ -308,4 +269,4 @@ export function readMeterHistory(pool, opts = {}) {
   return out;
 }
 
-export { CodexMeterError, GrokMeterError, CommandCodeMeterError, ClaudeMeterError, RelayMeterError, FRESH_MS, STALE_MS };
+export { FRESH_MS, STALE_MS };

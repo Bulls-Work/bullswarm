@@ -1,10 +1,14 @@
-// bullswarm codex meter — ChatGPT WHAM usage API.
+// bullswarm codex provider — the Codex CLI, metered through the ChatGPT WHAM
+// usage API.
 // Endpoint + auth flow documented by OpenUsage (MIT, robinebers/openusage);
 // implemented here independently for bullswarm.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+export const name = 'codex';
+export const displayName = 'Codex';
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const REFRESH_URL = 'https://auth.openai.com/oauth/token';
@@ -20,13 +24,13 @@ export class CodexMeterError extends Error {
   }
 }
 
-function authPath() {
-  const home = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
-  return path.join(home, 'auth.json');
+function authPath({ env = process.env, home = os.homedir() } = {}) {
+  const codexHome = env.CODEX_HOME?.trim() || path.join(home, '.codex');
+  return path.join(codexHome, 'auth.json');
 }
 
-export function loadAuth() {
-  const p = authPath();
+export function loadAuth(where = {}) {
+  const p = authPath(where);
   if (!existsSync(p)) {
     throw new CodexMeterError('Codex not logged in. Run `codex` to authenticate.', 'no_auth');
   }
@@ -223,8 +227,8 @@ async function fetchUsageResponse(accessToken, accountId) {
   return { status: res.status, body, headers };
 }
 
-export async function fetchCodexUsage() {
-  const loaded = loadAuth();
+export async function fetchCodexUsage({ pool = 'codex', env, home } = {}) {
+  const loaded = loadAuth({ env, home });
   let auth = loaded.auth;
   let access = auth.tokens.access_token.trim();
   const accountId = auth.tokens?.account_id;
@@ -255,10 +259,15 @@ export async function fetchCodexUsage() {
   const windows = parseCodexWhamUsage(body, headers);
   return {
     captured_at: new Date().toISOString(),
-    pool: 'codex',
+    pool,
     five_hour: windows.five_hour,
     seven_day: windows.seven_day,
     monthly: null,
     plan_type: windows.plan_type,
   };
+}
+
+export async function readUsage(pool, ctx = {}) {
+  const poolName = typeof pool === 'string' ? pool : pool?.name;
+  return fetchCodexUsage({ pool: poolName ?? 'codex', env: ctx.env, home: ctx.home });
 }

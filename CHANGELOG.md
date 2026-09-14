@@ -1,11 +1,45 @@
 # bullswarm changelog
 
-## 0.29.0 — a declared reset date, `bullswarm update`, and benching a dead upstream together
+## 0.29.0 — providers become directories, in three tiers
+
+- providers: every coding-agent CLI is now a provider directory holding
+  `connector.json`, `provider.mjs`, or both, loaded by one synchronous loader
+  (`src/lib/providers.js`) from three tiers. First-class (`src/providers/`)
+  always loads and holds claude-code, codex, grok and echo. Contrib
+  (`providers/contrib/`) ships in the package but loads only where
+  `~/.bullswarm/providers.json` lists it, and holds command-code and the
+  generic opencode2 connector. Local (`~/.bullswarm/providers/`) is the
+  operator's own and never appears in this repository. A module exports at most
+  `name`, `displayName`, `connectors(ctx)`, `readUsage(pool, ctx)` and
+  `doctor(ctx)`; everything else stays the connector JSON four CLIs already
+  ran through. Echo ships JSON-only and grok keeps its OAuth-refreshing meter
+  as real code, so both paths stay exercised.
+- providers: `bullswarm provider list|enable|disable|validate|scaffold|probe`.
+  `probe` spawns one pool through the dispatcher's own runner with a one-word
+  task and then reads its meter once, which is the only evidence that a new
+  provider's model flag, event parsing and meter all actually work.
+- core: the per-vendor branching is gone. The meter registry resolves a pool's
+  reader through its owning provider instead of a name-prefix map, connector
+  loading is one call into the loader, setup discovery and the strategy labels
+  come from provider entries, and both hard-coded connector expanders are
+  deleted. `credentialGroup` is the honest name for `upstreamGroup`, which is
+  still read.
+- requires Node >= 22.12: the loader reads `provider.mjs` through
+  `require(esm)` so `loadConnectors` and `buildPools` stay synchronous for
+  their twenty-odd call sites.
+- providers: built-in support for one specific reseller was removed entirely.
+  It is expressible as a local provider with no repository changes at all,
+  which was the point of the tiers.
+- setup: `BULLSWARM_NO_PACKAGED_PROVIDERS=1` forces the packaged tiers off, for
+  tests that spawn the real CLI against a fixture home and assert an exact pool
+  list. Never set it in production.
+
+## 0.28.9 — a declared reset date, `bullswarm update`, and benching a dead upstream together
 
 - routing: an upstream auth failure reported inside a provider's event stream
   is now the `auth` failure kind with a quarantine hint, and it benches every
   pool that shares the same upstream credential. On 2026-09-11 the pooled Codex
-  OAuth account behind `https://api.relay.com` was invalidated at 12:24 UTC and
+  OAuth account behind `https://relay.example` was invalidated at 12:24 UTC and
   answered every request with
   `{"error":{"message":"Encountered invalidated oauth token for user, failing
   request","type":"authentication_error","code":"auth_unavailable"}}` (401) or

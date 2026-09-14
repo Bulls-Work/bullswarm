@@ -156,7 +156,7 @@ Some pools are several names for one credential. A connector may declare an
 `upstreamGroup`, and every pool sharing that string is benched together on the
 same deadline when one of them hits an upstream auth failure — the quarantine
 reason reads `sibling of <pool>: <why>`. The three Relay pools (`opencode2`,
-`opencode2:relay-2`, `opencode2:relay-3`) get `relay:api.relay.com` from
+`opencode2:relay-2`, `opencode2:relay-3`) get `relay:relay.example` from
 `src/lib/opencode-relay.js`: they relay through one host, which relays through
 one pool of OAuth accounts. On 2026-09-11 that account was invalidated at
 12:24 UTC and the retry of a failed action walked from one of those names to

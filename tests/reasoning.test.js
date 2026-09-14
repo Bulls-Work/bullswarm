@@ -7,7 +7,7 @@
 // nothing about what the shipped connectors actually declare.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -16,7 +16,12 @@ import {
 } from '../src/lib/reasoning.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const packaged = (name) => JSON.parse(readFileSync(join(REPO_ROOT, 'connectors', `${name}.json`), 'utf8'));
+// A first-class template ships in src/providers/, a contrib one in providers/contrib/.
+const packaged = (name) => {
+  const firstClass = join(REPO_ROOT, 'src', 'providers', name, 'connector.json');
+  const file = existsSync(firstClass) ? firstClass : join(REPO_ROOT, 'providers', 'contrib', name, 'connector.json');
+  return JSON.parse(readFileSync(file, 'utf8'));
+};
 
 const claude = packaged('claude-code');
 const codex = packaged('codex');
@@ -51,8 +56,8 @@ test('packaged connectors declare reasoning from their real CLIs', () => {
   assert.equal(grok.reasoning.flag, '--reasoning-effort');
   assert.equal(commandCode.reasoning.flag, '--effort');
   // opencode says the same five levels through `--variant`, which only means
-  // anything because src/lib/opencode-relay.js injects matching model variants
-  // through OPENCODE_CONFIG_CONTENT on every Relay pool.
+  // anything because a provider cloning this template injects matching model
+  // variants through OPENCODE_CONFIG_CONTENT (provider-kit's opencodeVariants).
   assert.deepEqual(opencode2.reasoning, {
     flag: '--variant',
     levels: ['low', 'medium', 'high', 'xhigh', 'max'],
