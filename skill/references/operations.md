@@ -74,9 +74,12 @@ task files or assume the last provider response is the deliverable.
 Manage a live run:
 
 ```bash
-bullswarm workflow steer   <shortId> --message '<guidance>'   # next planning boundary; active work is unchanged
-bullswarm workflow cancel  <shortId> --json                   # cooperative; a paused caller run is finalized here
-bullswarm workflow resume  <shortId> [--foreground|--watch]   # verb form of goal --resume
+bullswarm workflow plan export <shortId> --out plan.json           # the live plan as an editable revision document
+bullswarm workflow plan revise <shortId> --program plan.json --json # replace the plan at any time (see below)
+bullswarm workflow pause   <shortId> [--now]                       # start nothing new; --now also stops running agents
+bullswarm workflow resume  <shortId> [--foreground|--watch]        # lift a pause; verb form of goal --resume
+bullswarm workflow steer   <shortId> --message '<guidance>'        # guidance for whoever plans the run
+bullswarm workflow cancel  <shortId> --json                        # cooperative; a run with no kernel is finalized here
 ```
 
 Resume keeps the run's durable planner mode, routing pins, and settings;
@@ -153,6 +156,95 @@ prints the same lines at launch. Exit codes are unchanged, and the kernel stores
 them on the run, so `workflow runs show` lists them afterwards. `runs result`,
 `runs show`, and `workflow action show` print `kind` next to lane and effort.
 
+## Revising a live plan
+
+`plan revise` replaces the plan of a caller-planned program run at any moment:
+while agents run, while it is paused, while it waits at a planning boundary, or
+after it finished. Start from the export so kept actions compare equal:
+
+```bash
+bullswarm workflow plan export <shortId> --out plan.json         # or --json for status + document
+bullswarm workflow plan revise <shortId> --program plan.json --json
+bullswarm workflow plan revise <shortId> --program plan.json --rerun a,b --summary 'why' --base-revision 3 --wait 30
+```
+
+The document is `{schemaVersion, baseRevision, summary, rerun, steeringIds,
+program}`; a bare program file also works, with the flags supplying the rest.
+Flags override the file. The kernel diffs `program.actions` against the live
+plan by id:
+
+- **added**: a new id. **restored**: an id that an earlier revision removed.
+- **kept**: normalized definition unchanged. A succeeded result is reused; a
+  running attempt continues untouched.
+- **amended**: any field differs. A running attempt is stopped (watch prints
+  `stopped · replaced by a plan revision`) and ignored even if it finishes
+  afterwards; the step becomes pending with the new definition.
+- **rerun**: an id in `rerun` whose definition is unchanged and that is not
+  pending. Its result is discarded and it becomes pending.
+- **removed**: absent from the file. Stopped if running, status `removed`,
+  never scheduled, excluded from `completed`/`partial` counting. Its outputs are
+  no longer offered to dependents.
+- **invalidated**: every kept, non-pending action downstream of an amended,
+  restored, or rerun action in the new graph. It becomes pending and runs again
+  once its inputs succeed.
+
+A removed or reset evidence action's records turn stale
+(`staleReason: revision-discarded`) and the requirement status is recomputed.
+
+Validation happens twice, in the CLI before anything is written and in the
+kernel when it applies, and a failure changes nothing (exit 2 with `issues`).
+The whole live graph must validate as one program, including dependencies on
+finished actions. A revision is rejected when `baseRevision` differs from the
+live `program.revision` (another revision landed after your export), when a
+`rerun` id is unknown or pending, when the run has a pending cancellation, when
+the run is not in program mode, or when the revision changes nothing. The
+exception to that last rule: a revision whose only effect is to acknowledge
+`steeringIds` is accepted.
+
+Timing: with a kernel alive the request is queued under
+`<runDir>/revisions/` and applied within about a second (`--wait` bounds how
+long the CLI waits for the record; `queued` just means not yet). A running step
+being replaced is stopped before the new plan is committed
+(`program.revision_stopping`, then `program.revised`). With no kernel alive, the
+CLI applies the revision itself under the kernel lease and relaunches the
+kernel detached, unless the run is paused. A finished run is reopened: its
+`result.json` moves to `result-before-revision-<n>.json`, a
+`workflow.reopened` event is written, and the new plan runs to a new result. A
+revision also clears a caller-planner wait, so it can replace `plan submit`.
+
+Stopping a process does not undo its edits in the shared tree. When a stopped
+or removed step's partial changes must go, amend it or add a step whose prompt
+says what to revert or repair.
+
+### Pause and resume
+
+```bash
+bullswarm workflow pause  <shortId>          # drain: running agents finish, nothing new starts
+bullswarm workflow pause  <shortId> --now    # stop running agents too; they requeue
+bullswarm workflow resume <shortId>          # lift the pause and continue
+```
+
+A pause is an intent file the kernel honors at its next loop (`workflow.pause_requested`,
+then `workflow.paused`), after which the kernel exits and watchers print
+`outcome: paused`. Steps stopped by `--now` finish as cancelled with
+`failureKind: paused` and return to pending. While paused, revise as often as
+needed; only `resume` continues the run. `resume` before the kernel reached the
+pause withdraws the request (`workflow.unpaused`) and the run never stops.
+`cancel` on a paused run finalizes it inline. A pause on a finished run is
+refused.
+
+### Steering in a caller-planned run
+
+`workflow steer` in a program run does not halt anything. Watchers wake on
+`steering received`; the caller decides what the message means and revises.
+`plan export` lists undelivered steering under `pendingSteering` (with `--json`)
+and puts its ids in the document's `steeringIds`, so a revision from the export
+marks it delivered (`steering.delivered`, `source: revision`). When the graph
+would otherwise finish with steering still unread, the run pauses at a
+`steering` boundary instead; answer it with a revision (an acknowledgement-only
+revision is enough when the guidance needs no plan change) or with `plan
+submit`.
+
 ## Submitting work at a planning pause
 
 Use these commands when `watch` reports a caller-planner pause:
@@ -163,9 +255,11 @@ bullswarm workflow plan submit <shortId> --program plan-2.json --watch
 ```
 
 Read the current request and author only new actions; existing action IDs can
-be dependencies. New shared programs pause for opt-in scouting or explicit
-steering, not negative evidence. A submission is validated before modifying the
-run. Resuming without a submission preserves the pause.
+be dependencies. `plan revise` is accepted at the same pause when the answer
+also changes, removes, or reruns existing actions. New shared programs pause
+for opt-in scouting or, in a run about to finish, unread steering, not negative
+evidence. A submission is validated before modifying the run. Resuming without
+a submission preserves the pause.
 
 Older saved runs can also pause for requirement gaps and accept
 `plan submit <shortId> --exhausted --reason '<why>'` there. Do not use

@@ -218,7 +218,8 @@ function runsList(opts) {
     const status = !r.ongoing && ['queued', 'planning', 'running', 'ready-to-finalize'].includes(durable)
       ? 'interrupted' : durable ?? (r.ongoing ? 'running' : 'unknown');
     const completed = r.state.actions?.filter((action) => ['succeeded', 'failed', 'blocked', 'cancelled'].includes(action.status)).length ?? 0;
-    const total = r.state.actions?.length ?? 0;
+    // Steps a plan revision removed are history, not part of the plan's size.
+    const total = r.state.actions?.filter((action) => action.status !== 'removed').length ?? 0;
     console.log(`${r.ongoing ? '●' : '○'}  ${(r.shortId ?? '------').padEnd(8)} ${r.runId.padEnd(28)} ${(r.state.intent?.goal ?? '?').slice(0, 28).padEnd(28)} ${status.padEnd(10)} ${`${completed}/${total}`.padStart(5)} actions  ${humanAge(runStartedAt(r))}`);
   }
   return 0;

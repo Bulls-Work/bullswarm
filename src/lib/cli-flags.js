@@ -138,6 +138,9 @@ const TABLE = {
   'workflow plan submit': [
     'program', 'exhausted', 'reason', 'summary', 'foreground', 'watch', 'json',
   ],
+  'workflow plan export': ['out', 'json'],
+  'workflow plan revise': ['program', 'rerun', 'summary', 'base-revision', 'wait', 'json'],
+  'workflow pause': ['now', 'json'],
   'workflow capabilities': ['json'],
   'workflow tui': ['json', 'all', 'show', 'cancel'],
   'workflow watch': [

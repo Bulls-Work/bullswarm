@@ -4,6 +4,17 @@ export function isProgramWorkflow(stateOrGoal) {
   return stateOrGoal?.config?.settings?.executionMode === 'program';
 }
 
+// A program the caller has revised in place (workflow plan revise). Its
+// actions no longer replay revision by revision: the live graph is validated
+// as one program, and actions a revision dropped stay only as history.
+export function isLiveProgram(state) {
+  return Array.isArray(state?.revisions) && state.revisions.some((entry) => entry?.status === 'applied');
+}
+
+export function removedActionIds(state) {
+  return new Set((state?.actions ?? []).filter((action) => action.status === 'removed').map((action) => action.id));
+}
+
 export function enforcesOwnership(stateOrGoal) {
   return !isProgramWorkflow(stateOrGoal) || stateOrGoal.config.settings.workspaceMode === 'isolated';
 }

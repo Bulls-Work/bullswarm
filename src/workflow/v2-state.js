@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
-import { isProgramWorkflow } from './execution-policy.js';
+import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 
 export const V2_GOAL_SCHEMA_VERSION = 'bullswarm.workflow.goal.v2';
 export const V2_STATE_SCHEMA_VERSION = 'bullswarm.workflow.state.v2';
@@ -13,14 +13,21 @@ const LEGACY_FIELDS = new Set([
 ]);
 const ROUTING_KEYS = new Set(['pool', 'model', 'preferredPool', 'preferredModel', 'strictPool', 'reasoning']);
 const PLANNER_STATUSES = new Set(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
-const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
+const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ATTEMPT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']);
-const LIFECYCLE_STATUSES = new Set(['interrupted', 'queued', 'planning', 'running', 'waiting', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
+const LIFECYCLE_STATUSES = new Set(['interrupted', 'queued', 'planning', 'running', 'waiting', 'paused', 'ready-to-finalize', 'completed', 'partial', 'cancelled', 'failed']);
+const TERMINAL_LIFECYCLE = ['completed', 'partial', 'cancelled', 'failed'];
 const PREFLIGHT_STATUSES = new Set(['pending', 'running', 'succeeded', 'failed', 'skipped']);
 const ACTION_STATE_FIELDS = new Set([
   'id', 'status', 'attempts', 'programRevision', 'workRevision', 'startedAt', 'finishedAt',
-  'outputFile', 'artifactIds', 'lastFailure',
+  'outputFile', 'artifactIds', 'lastFailure', 'supersededAttempts',
 ]);
+const PAUSE_FIELDS = new Set(['requestedAt', 'mode', 'source', 'pausedAt']);
+const REVISION_RECORD_FIELDS = new Set([
+  'id', 'status', 'source', 'queuedAt', 'processedAt', 'summary', 'baseRevision',
+  'programRevision', 'changes', 'steeringIds', 'issues',
+]);
+const REVISION_CHANGE_FIELDS = new Set(['added', 'amended', 'restored', 'removed', 'rerun', 'invalidated']);
 const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
@@ -326,11 +333,13 @@ function validateEvents(events) {
   } else if (events.sequence !== 0) fail('state.events.last is required when sequence is non-zero');
 }
 
-function validatePresentation(presentation, program) {
+// Stages cover exactly the live plan: an action a revision removed belongs to
+// no stage.
+function validatePresentation(presentation, program, removed = new Set()) {
   object(presentation, 'state.presentation');
   noUnknown(presentation, new Set(['stages']), 'state.presentation');
   if (!Array.isArray(presentation.stages)) fail('state.presentation.stages must be an array');
-  const programIds = new Set(program.actions.map((action) => action.id));
+  const programIds = new Set(program.actions.map((action) => action.id).filter((id) => !removed.has(id)));
   const assigned = new Set();
   const stageIds = new Set();
   for (const [index, stage] of presentation.stages.entries()) {
@@ -408,6 +417,109 @@ function validateAdvisories(advisories) {
   }
 }
 
+// The validation options for a revised program's live graph, shared with the
+// revision planner so a revision is accepted by exactly the rules the stored
+// state is later checked against.
+export function v2LiveProgramRuntime(state, { enforceRoutingPolicy = true } = {}) {
+  return {
+    requirements: state.intent.requirements.map(({ id, mandatory }) => ({ id, mandatory })),
+    knownActions: [],
+    knownArtifacts: [],
+    freshEvidenceRequirementIds: [],
+    workspaceMutation: state.intent.constraints?.workspaceMutation ?? 'allowed',
+    requireMandatoryEvidence: false,
+    relaxedGraph: true,
+    requireOwnedFiles: state.config.settings.workspaceMode === 'isolated',
+    maxActions: state.config.settings.maxActions ?? 100,
+    maxParallel: state.config.settings.concurrency ?? state.config.settings.maxParallel ?? 100,
+    enforceMaxActions: false,
+    enforceMaxParallel: false,
+    enforceRoutingPolicy,
+  };
+}
+
+// A revised program no longer replays revision by revision (a revision can
+// rewrite an action accepted long before). Its live actions are one program;
+// removed actions are frozen history that nothing live may depend on.
+function validateLiveProgram(program, state) {
+  const ids = new Set();
+  for (const [index, action] of program.actions.entries()) {
+    object(action, `state.program.actions[${index}]`);
+    const id = identifier(action.id, `state.program.actions[${index}].id`);
+    if (ids.has(id)) fail(`state.program has duplicate action ${id}`);
+    ids.add(id);
+  }
+  const removed = removedActionIds(state);
+  const live = program.actions.filter((action) => !removed.has(action.id));
+  if (!live.length) fail('a revised state.program must keep at least one live action');
+  for (const action of program.actions) if (removed.has(action.id)) {
+    if (!Array.isArray(action.dependsOn) || action.dependsOn.some((dependency) => !ids.has(dependency))) fail(`removed action ${action.id} has an invalid dependsOn`);
+    if (!Array.isArray(action.ownedFiles)) fail(`removed action ${action.id} must keep its ownedFiles array`);
+  }
+  try {
+    validateActionProgram({ schemaVersion: program.schemaVersion, actions: live }, v2LiveProgramRuntime(state, { enforceRoutingPolicy: false }));
+  } catch (error) {
+    const detail = Array.isArray(error?.issues) ? error.issues.join('; ') : error.message;
+    fail(`state.program is invalid: ${detail}`);
+  }
+}
+
+// Optional: absent on runs no one has paused. Set while a pause is pending
+// (pausedAt null) and once the kernel has stopped for it.
+function validatePause(pause, lifecycle) {
+  if (pause === undefined || pause === null) {
+    if (lifecycle.status === 'paused') fail('state.lifecycle paused requires state.pause');
+    return;
+  }
+  object(pause, 'state.pause');
+  noUnknown(pause, PAUSE_FIELDS, 'state.pause');
+  timestamp(pause.requestedAt, 'state.pause.requestedAt');
+  if (pause.requestedAt === null) fail('state.pause.requestedAt is required');
+  if (!['drain', 'now'].includes(pause.mode)) fail('state.pause.mode must be drain|now');
+  requiredString(pause.source, 'state.pause.source');
+  timestamp(pause.pausedAt, 'state.pause.pausedAt');
+  if (lifecycle.status === 'paused' && !pause.pausedAt) fail('state.lifecycle paused requires state.pause.pausedAt');
+  if (TERMINAL_LIFECYCLE.includes(lifecycle.status)) fail('state.pause must be null once the workflow is terminal');
+}
+
+// Optional: one record per processed revision request, applied or rejected.
+function validateRevisions(revisions, program) {
+  if (revisions === undefined || revisions === null) return;
+  if (!Array.isArray(revisions)) fail('state.revisions must be an array');
+  const ids = new Set();
+  let lastApplied = 0;
+  for (const [index, entry] of revisions.entries()) {
+    const at = `state.revisions[${index}]`;
+    object(entry, at);
+    noUnknown(entry, REVISION_RECORD_FIELDS, at);
+    requiredString(entry.id, `${at}.id`);
+    if (ids.has(entry.id)) fail(`duplicate revision request ${entry.id}`);
+    ids.add(entry.id);
+    if (!['applied', 'rejected'].includes(entry.status)) fail(`${at}.status must be applied|rejected`);
+    requiredString(entry.source, `${at}.source`);
+    timestamp(entry.queuedAt, `${at}.queuedAt`);
+    timestamp(entry.processedAt, `${at}.processedAt`);
+    if (entry.summary !== null) requiredString(entry.summary, `${at}.summary`);
+    if (entry.baseRevision !== null) nonNegativeInteger(entry.baseRevision, `${at}.baseRevision`);
+    if (!Array.isArray(entry.steeringIds) || entry.steeringIds.some((id) => typeof id !== 'string' || !id)) fail(`${at}.steeringIds must be an array of ids`);
+    if (entry.status === 'applied') {
+      positiveInteger(entry.programRevision, `${at}.programRevision`);
+      if (entry.programRevision > program.revision || entry.programRevision <= lastApplied) fail(`${at}.programRevision must increase and reference an existing program revision`);
+      lastApplied = entry.programRevision;
+      object(entry.changes, `${at}.changes`);
+      noUnknown(entry.changes, REVISION_CHANGE_FIELDS, `${at}.changes`);
+      for (const field of REVISION_CHANGE_FIELDS) {
+        const list = entry.changes[field];
+        if (!Array.isArray(list) || list.some((id) => typeof id !== 'string' || !ID_RE.test(id))) fail(`${at}.changes.${field} must be an array of action ids`);
+      }
+      if (entry.issues !== null) fail(`${at}.issues must be null for an applied revision`);
+    } else {
+      if (entry.programRevision !== null || entry.changes !== null) fail(`${at} was rejected and cannot carry a program revision or changes`);
+      if (!Array.isArray(entry.issues) || !entry.issues.length || entry.issues.some((issue) => typeof issue !== 'string' || !issue)) fail(`${at}.issues must list why the revision was rejected`);
+    }
+  }
+}
+
 function validateProgram(program, state) {
   object(program, 'state.program');
   noUnknown(program, new Set(['schemaVersion', 'revision', 'actions']), 'state.program');
@@ -419,6 +531,7 @@ function validateProgram(program, state) {
     return;
   }
   if (program.revision < 1) fail('a non-empty state.program must have a positive revision');
+  if (isLiveProgram(state)) return validateLiveProgram(program, state);
   const revisionById = new Map(state.actions.map((action) => [action.id, action.programRevision]));
   const knownActions = [];
   const knownArtifacts = [];
@@ -464,7 +577,7 @@ function validateProgram(program, state) {
   }
 }
 
-function validateActionStates(actions, program) {
+function validateActionStates(actions, program, live = false) {
   if (!Array.isArray(actions)) fail('state.actions must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
   const ids = new Set();
@@ -484,6 +597,13 @@ function validateActionStates(actions, program) {
     if (action.outputFile !== undefined) nullableString(action.outputFile, `state.actions[${index}].outputFile`);
     if (action.artifactIds !== undefined && (!Array.isArray(action.artifactIds) || action.artifactIds.some((item) => typeof item !== 'string' || !ID_RE.test(item)))) fail(`state.actions[${index}].artifactIds must contain valid IDs`);
     if (action.lastFailure !== undefined && action.lastFailure !== null && !isObject(action.lastFailure)) fail(`state.actions[${index}].lastFailure must be null or an object`);
+    // Attempts up to this ordinal belong to a definition or result a plan
+    // revision replaced; recovery never reads them as this step's completion.
+    if (action.supersededAttempts !== undefined) {
+      nonNegativeInteger(action.supersededAttempts, `state.actions[${index}].supersededAttempts`);
+      if (action.supersededAttempts > action.attempts) fail(`state.actions[${index}].supersededAttempts cannot exceed attempts`);
+    }
+    if (action.status === 'removed' && !live) fail(`state.actions[${index}] is removed, which requires an applied plan revision`);
   }
   for (const id of programIds) if (!ids.has(id)) fail(`state.actions is missing program action ${id}`);
 }
@@ -569,7 +689,7 @@ function validateLedger(state) {
 
 function validateState(state) {
   object(state, 'state');
-  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories']), 'state');
+  noUnknown(state, new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'intent', 'config', 'lifecycle', 'preflight', 'planner', 'program', 'presentation', 'actions', 'attempts', 'steering', 'budget', 'cancellation', 'usage', 'events', 'ledger', 'runner', 'advisories', 'pause', 'revisions']), 'state');
   // Optional: written by a live kernel so readers can tell a running run from
   // one whose process died. Absent on a state no kernel has owned yet.
   if (state.runner !== undefined && state.runner !== null) {
@@ -587,11 +707,14 @@ function validateState(state) {
   if (state.planner?.awaiting != null && (['completed', 'partial', 'cancelled', 'failed'].includes(state.lifecycle.status) || state.lifecycle.resultFile !== null)) {
     fail('state.planner.awaiting must be null once the workflow is terminal');
   }
+  validatePause(state.pause, state.lifecycle);
   validatePreflight(state.preflight);
   validatePlanner(state.planner);
-  validatePresentation(state.presentation, state.program);
+  validateRevisions(state.revisions, state.program);
+  const live = isLiveProgram(state);
+  validatePresentation(state.presentation, state.program, live ? removedActionIds(state) : new Set());
   const ledger = validateLedger(state);
-  validateActionStates(state.actions, state.program);
+  validateActionStates(state.actions, state.program, live);
   validateProgram(state.program, { ...state, ledger });
   validateAttempts(state.attempts, state.program);
   validateAttemptConsistency(state.actions, state.attempts);

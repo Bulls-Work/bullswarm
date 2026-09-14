@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { isLiveProgram } from './execution-policy.js';
+
 const CATEGORY_ORDER = Object.freeze([
   'Discovery', 'Implementation', 'Tests', 'Documentation', 'Evidence',
 ]);
@@ -40,7 +43,7 @@ export function stageForAction(presentation, actionId) {
 export function presentationStageStatus(stage, actionStates) {
   const byId = new Map((actionStates ?? []).map((action) => [action.id, action]));
   const states = stage.actionIds.map((id) => byId.get(id)?.status ?? 'pending');
-  const terminal = new Set(['succeeded', 'failed', 'blocked', 'cancelled']);
+  const terminal = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'removed']);
   return {
     terminal: states.length > 0 && states.every((status) => terminal.has(status)),
     successful: states.length > 0 && states.every((status) => status === 'succeeded'),
@@ -81,9 +84,58 @@ export function deriveV2DependencyStages(actions, revision) {
   });
 }
 
+// A revised program is one live graph, so its levels are derived over every
+// action still in the plan. A level's id names its exact membership: a level a
+// revision left alone keeps its id, and a changed level gets a new one, so a
+// watcher reports each distinct level once.
+function liveStageGroups(state) {
+  const removed = new Set((state.actions ?? []).filter((action) => action.status === 'removed').map((action) => action.id));
+  const live = (state.program?.actions ?? []).filter((action) => !removed.has(action.id));
+  return deriveV2DependencyStages(live, 1).map((stage, index) => ({
+    ...stage,
+    id: `live-level-${index + 1}-${createHash('sha256').update([...stage.actionIds].sort().join('\n')).digest('hex').slice(0, 8)}`,
+  }));
+}
+
+function memberTimes(stage, runtime) {
+  const members = stage.actionIds.map((id) => runtime.get(id));
+  const starts = members.map((action) => action?.startedAt).filter(Boolean).sort();
+  const finishes = members.map((action) => action?.finishedAt).filter(Boolean).sort();
+  return { start: starts[0] ?? null, finish: finishes.at(-1) ?? null };
+}
+
+// The kernel-owned stages written when a revision applies. An unchanged level
+// keeps its stage record (and so its start); one that has work to do again
+// loses its completion so the kernel reports it when it finishes again.
+export function deriveV2LiveStages(state, { revision, at }) {
+  const prior = new Map((state.presentation?.stages ?? []).map((stage) => [stage.id, stage]));
+  const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  return liveStageGroups(state).map((stage) => {
+    const status = presentationStageStatus(stage, state.actions);
+    const { start, finish } = memberTimes(stage, runtime);
+    const kept = prior.get(stage.id);
+    if (kept) return { ...kept, completedAt: status.terminal ? kept.completedAt ?? finish ?? at : null };
+    return {
+      ...stage,
+      revision,
+      startedAt: status.terminal ? start ?? at : start,
+      completedAt: status.terminal ? finish ?? at : null,
+    };
+  });
+}
+
 // Project older saved program runs too, without rewriting their event history.
 export function projectV2DependencyStages(state) {
   const runtime = new Map((state.actions ?? []).map((action) => [action.id, action]));
+  if (isLiveProgram(state)) {
+    return liveStageGroups(state).map((stage) => {
+      const { start, finish } = memberTimes(stage, runtime);
+      return {
+        ...stage, revision: state.program.revision, startedAt: start,
+        completedAt: presentationStageStatus(stage, state.actions).terminal ? finish : null,
+      };
+    });
+  }
   const revisions = new Map();
   for (const action of state.program?.actions ?? []) {
     const revision = runtime.get(action.id)?.programRevision ?? 1;

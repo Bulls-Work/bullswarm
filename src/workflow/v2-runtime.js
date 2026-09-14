@@ -1,8 +1,12 @@
 import { withV2Cancellation } from './v2-cancellation.js';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic } from '../lib/fsjson.js';
-import { appendEvent } from './events.js';
+import { appendEvent, readEvents } from './events.js';
+import {
+  commitV2Revision, pendingRevisionRequests, planV2Revision, queueRevisionRequest,
+  rejectedRevisionRecord, removeStaleReceipts, revisionEventPayload,
+} from './v2-revision.js';
 import { generateShortId, isProcessAlive, listRuns, newRunId, v2RunnerLiveness } from './short-id.js';
 import { applyEvidence, invalidateRequirements } from './ledger.js';
 import { captureWorkspaceManifest, checkOwnership } from './ownership.js';
@@ -196,6 +200,171 @@ export function submitCallerPlannerResponse(options = {}) {
   const lease = acquireKernelLease(runDir);
   try { return submitCallerPlannerResponseLocked(options); }
   finally { lease.release(); }
+}
+
+// --- Live control of a run from outside its kernel ---------------------------
+// Revisions and pauses are intents written next to the run. A live kernel
+// holds the run's lease and picks them up within about a second; when no
+// kernel holds the lease (paused, waiting for its caller, interrupted, or
+// finished) the command applies the intent itself under that same lease.
+
+const PAUSE_FILE = 'pause.json';
+
+function runDirFor(bullswarmDir, runId) {
+  if (typeof bullswarmDir !== 'string' || !bullswarmDir || !/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(runId ?? '')) {
+    throw new TypeError('bullswarmDir and a valid runId are required');
+  }
+  const runDir = join(bullswarmDir, 'workflows', runId);
+  if (!existsSync(statePath(runDir))) throw new Error(`run ${runId} has no durable state`);
+  return runDir;
+}
+
+function tryRunLease(runDir) {
+  try { return acquireKernelLease(runDir); } catch { return null; }
+}
+
+function writeRunState(runDir, state) {
+  serializeV2DurableState(state);
+  writeJsonAtomic(statePath(runDir), state);
+}
+
+function readRunStateLoose(runDir) {
+  try { return JSON.parse(readFileSync(statePath(runDir), 'utf8')); } catch { return null; }
+}
+
+// Apply one revision request to a run no kernel owns. The caller holds the
+// lease. A finished run is reopened: its result is archived, cancellation
+// cleared, and the new plan runs when the kernel is relaunched.
+function commitRevisionUnderLease(runDir, request, { now }) {
+  const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+  const existing = (state.revisions ?? []).find((entry) => entry.id === request.id);
+  if (existing) return { status: existing.status, record: existing, state, reopened: null };
+  const at = now();
+  const token = state.shortId ?? state.runId;
+  const cancelFile = join(runDir, 'cancellation.json');
+  if (!TERMINAL.has(state.lifecycle.status) && existsSync(cancelFile) && JSON.parse(readFileSync(cancelFile, 'utf8'))?.requested) {
+    return { status: 'rejected', record: { issues: [`the run has a pending cancellation; finalize it with bullswarm workflow cancel ${token} before revising`] }, state, reopened: null };
+  }
+  const planned = planV2Revision(state, request, { pendingSteeringIds: peekSteering(state, runDir).map((entry) => entry.id) });
+  if (!planned.ok) {
+    state.revisions = [...(state.revisions ?? []), rejectedRevisionRecord(request, planned.issues, at)];
+    appendEvent(runDir, state, 'program.revision_rejected', { requestId: request.id, issues: planned.issues, source: request.source ?? 'cli' });
+    writeRunState(runDir, state);
+    return { status: 'rejected', record: state.revisions.at(-1), state, reopened: null };
+  }
+  const previousStatus = state.lifecycle.status;
+  const committed = commitV2Revision(state, planned, { request, runDir, at });
+  let reopened = null;
+  if (TERMINAL.has(previousStatus)) {
+    const resultFile = state.lifecycle.resultFile ?? join(runDir, 'result.json');
+    const archived = join(runDir, `result-before-revision-${state.program.revision}.json`);
+    const hadResult = existsSync(resultFile);
+    if (hadResult) renameSync(resultFile, archived);
+    Object.assign(state.lifecycle, { status: 'running', finishedAt: null, resultFile: null });
+    if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
+    rmSync(cancelFile, { force: true });
+    if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
+    reopened = { previousStatus, archivedResult: hadResult ? archived : null };
+    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, requestId: request.id, archivedResult: reopened.archivedResult });
+  }
+  // A revision answers a caller-planner pause as fully as a submission does.
+  if (state.planner.awaiting) {
+    state.planner.awaiting = null;
+    state.planner.status = 'waiting';
+    if (state.lifecycle.status === 'waiting') state.lifecycle.status = 'running';
+  }
+  for (const entry of committed.deliveredSteering) {
+    appendEvent(runDir, state, 'steering.delivered', { steeringId: entry.id, message: entry.message, decisionSequence: entry.decisionSequence, source: 'revision' });
+  }
+  appendEvent(runDir, state, 'program.revised', revisionEventPayload(committed.record));
+  writeRunState(runDir, state);
+  removeStaleReceipts(runDir, committed.staleReceipts);
+  return { status: 'applied', record: committed.record, state, reopened };
+}
+
+/**
+ * Revise a run's plan. Applies directly when no kernel owns the run; otherwise
+ * queues the request for the live kernel and waits up to waitMs for it to be
+ * applied or rejected. If the kernel exits before taking the request, this
+ * applies it itself. Resolves {status: applied|rejected|queued, record, state,
+ * reopened, appliedBy: offline|kernel|null}.
+ */
+export async function reviseV2Program({ bullswarmDir, runId, request, waitMs = 120_000, pollMs = 250, now = () => new Date().toISOString() } = {}) {
+  const runDir = runDirFor(bullswarmDir, runId);
+  const applyOffline = () => {
+    const lease = tryRunLease(runDir);
+    if (!lease) return null;
+    try { return { ...commitRevisionUnderLease(runDir, request, { now }), appliedBy: 'offline' }; }
+    finally { lease.release(); }
+  };
+  const direct = applyOffline();
+  if (direct) return direct;
+  queueRevisionRequest(runDir, request);
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    const state = readRunStateLoose(runDir);
+    const record = state?.revisions?.find((entry) => entry.id === request.id);
+    if (record) return { status: record.status, record, state, reopened: null, appliedBy: 'kernel' };
+    const takeover = applyOffline();
+    if (takeover) return takeover;
+    if (Date.now() >= deadline) return { status: 'queued', record: null, state, reopened: null, appliedBy: null };
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
+ * Pause a run: nothing new starts. mode "drain" lets running agents finish;
+ * mode "now" stops them and runs those steps again after resume. A run with no
+ * live kernel is paused on the spot. Resolves {status: paused|pausing, ...}.
+ */
+export async function pauseV2Run({ bullswarmDir, runId, mode = 'drain', source = 'cli', waitMs = 0, pollMs = 250, now = () => new Date().toISOString() } = {}) {
+  const runDir = runDirFor(bullswarmDir, runId);
+  const current = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+  if (TERMINAL.has(current.lifecycle.status)) throw new Error(`run ${runId} is already terminal (${current.lifecycle.status})`);
+  if (current.lifecycle.status === 'paused') return { status: 'paused', already: true, state: current, appliedBy: null };
+  const request = { requested: true, requestedAt: now(), mode: mode === 'now' ? 'now' : 'drain', source };
+  writeJsonAtomic(join(runDir, PAUSE_FILE), request);
+  const lease = tryRunLease(runDir);
+  if (lease) {
+    try {
+      const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+      if (state.lifecycle.status !== 'paused') {
+        state.pause = { requestedAt: request.requestedAt, mode: request.mode, source, pausedAt: now() };
+        state.lifecycle.status = 'paused';
+        appendEvent(runDir, state, 'workflow.paused', { mode: request.mode, source, requeued: [], kernel: false });
+        writeRunState(runDir, state);
+      }
+      return { status: 'paused', already: false, state, appliedBy: 'offline' };
+    } finally { lease.release(); }
+  }
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    const state = readRunStateLoose(runDir);
+    if (state?.lifecycle?.status === 'paused') return { status: 'paused', already: false, state, appliedBy: 'kernel' };
+    if (TERMINAL.has(state?.lifecycle?.status)) return { status: state.lifecycle.status, already: false, state, appliedBy: 'kernel' };
+    if (Date.now() >= deadline) return { status: 'pausing', already: false, state, appliedBy: 'kernel' };
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/**
+ * Lift a pause. A live kernel still draining for the pause simply continues;
+ * a paused run is marked runnable and the caller relaunches its kernel.
+ */
+export function unpauseV2Run({ bullswarmDir, runId, source = 'cli' } = {}) {
+  const runDir = runDirFor(bullswarmDir, runId);
+  rmSync(join(runDir, PAUSE_FILE), { force: true });
+  const lease = tryRunLease(runDir);
+  if (!lease) return { status: 'withdrawn', kernelAlive: true };
+  try {
+    const state = deserializeV2DurableState(readFileSync(statePath(runDir), 'utf8'));
+    if (!state.pause && state.lifecycle.status !== 'paused') return { status: 'not-paused', kernelAlive: false, state };
+    // The run stays paused on disk until a kernel resumes it and lifts the
+    // pause under its own lease (workflow.unpaused, source resume). Lifting it
+    // here would leave a "running" run whose recorded kernel is dead, which
+    // watchers correctly report as interrupted.
+    return { status: 'unpaused', kernelAlive: false, state, source };
+  } finally { lease.release(); }
 }
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 
@@ -475,8 +644,10 @@ function correctionTask(verdict, { originalTask }) {
 function reconcileResume(state, at, runDir) {
   // The receipt precedes the attempt snapshot. Recover either side of that
   // atomic-write boundary without dispatching successful work a second time.
+  // Attempts a plan revision superseded never count as this step's completion.
+  const current = (action, attempt) => attempt.actionId === action.id && attempt.ordinal > (action.supersededAttempts ?? 0);
   for (const action of state.actions) if (['running', 'waiting', 'interrupted'].includes(action.status)) {
-    const attempt = state.attempts.findLast((item) => item.actionId === action.id);
+    const attempt = state.attempts.findLast((item) => current(action, item));
     const path = join(runDir, `completion-${action.id}.json`);
     if (attempt && existsSync(path)) {
       const receipt = JSON.parse(readFileSync(path, 'utf8'));
@@ -678,6 +849,9 @@ async function runV2Kernel({
     }
   };
   let interrupted = false;
+  // Actions to stop while the run itself goes on: actionId -> {kind, message},
+  // where kind is superseded (a plan revision replaced the step) or paused.
+  const stopRequested = new Map();
   const workers = new Map();
   const workersPath = join(runDir, 'workers.json');
   const onSpawn = (pid) => {
@@ -1031,7 +1205,8 @@ async function runV2Kernel({
   const runAction = async (action) => {
     startPresentationStage(action.id);
     const runtime = actionState(state, action.id);
-    const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded');
+    const completedAttempt = state.attempts.findLast((attempt) => attempt.actionId === action.id && attempt.status === 'succeeded'
+      && attempt.ordinal > (runtime.supersededAttempts ?? 0));
     const receiptPath = join(runDir, `completion-${action.id}.json`);
     let receipt = completedAttempt && existsSync(receiptPath) ? JSON.parse(readFileSync(receiptPath, 'utf8')) : null;
     if (receipt && receipt.attemptId !== completedAttempt.id) throw new Error(`completion receipt does not match ${completedAttempt.id}; preserved work requires review`);
@@ -1118,7 +1293,9 @@ async function runV2Kernel({
       // better pool had been excluded on purpose. Simpler routing the operator
       // can predict beats independence the router cannot explain.
       maxMechanicalRetries: config.maxMechanicalRetries,
-      shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
+      // A plan revision or a pause --now can stop this one action while the
+      // rest of the run carries on.
+      shouldCancel: () => stopRequested.has(action.id) || refreshCancellation(), onSpawn, onWorkerExit,
       outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
       correctionTask: evidence ? correctionTask : null,
       onAttempt: (stage, record, verdict) => {
@@ -1174,10 +1351,16 @@ async function runV2Kernel({
       ? candidatePath
       : result.verdict?.outFile ?? result.attempts.at(-1)?.outFile ?? null;
     if (!result.ok) {
-      runtime.status = interrupted ? 'interrupted' : result.status === 'cancelled' ? 'cancelled' : 'failed';
-      runtime.lastFailure = { kind: interrupted ? 'interrupted' : result.failureKind, message: interrupted ? 'kernel interrupted; work retained for resume' : result.verdict?.why ?? 'dispatch failed' };
+      // Stopped on purpose (a plan revision replaced it, or pause --now): the
+      // step is cancelled here and the revision or pause decides what follows.
+      const stop = interrupted ? null : stopRequested.get(action.id) ?? null;
+      runtime.status = interrupted ? 'interrupted' : stop || result.status === 'cancelled' ? 'cancelled' : 'failed';
+      runtime.lastFailure = interrupted
+        ? { kind: 'interrupted', message: 'kernel interrupted; work retained for resume' }
+        : stop ? { kind: stop.kind, message: stop.message }
+          : { kind: result.failureKind, message: result.verdict?.why ?? 'dispatch failed' };
       persist();
-      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: result.failureKind, why: result.verdict?.why ?? null });
+      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: stop?.kind ?? result.failureKind, why: stop?.message ?? result.verdict?.why ?? null });
       releaseWorkspace();
       completePresentationStages();
       return;
@@ -1259,6 +1442,9 @@ async function runV2Kernel({
     // A terminal run is never waiting for its caller planner; a stale request
     // would otherwise make watch/plan show report a cancelled run as paused.
     state.planner.awaiting = null;
+    // Nor is it paused: a cancelled pause is finalized, and its intent file goes.
+    state.pause = null;
+    rmSync(join(runDir, 'pause.json'), { force: true });
     persist();
     emit('workflow.finished', { status: result.status, verified: result.verified, resultFile: resultPath, reason: result.reason });
     return { runId: id, shortId: state.shortId, runDir, state: clone(state), result };
@@ -1269,9 +1455,10 @@ async function runV2Kernel({
     catch (error) {
       const runtime = actionState(state, action.id);
       const finishedAt = now();
-      runtime.status = interrupted ? 'interrupted' : refreshCancellation() ? 'cancelled' : 'failed';
+      const stop = interrupted ? null : stopRequested.get(action.id) ?? null;
+      runtime.status = interrupted ? 'interrupted' : stop || refreshCancellation() ? 'cancelled' : 'failed';
       runtime.finishedAt = finishedAt;
-      runtime.lastFailure = { kind: 'runtime', message: error?.message || String(error) };
+      runtime.lastFailure = stop ? { kind: stop.kind, message: stop.message } : { kind: 'runtime', message: error?.message || String(error) };
       for (const attempt of state.attempts) if (attempt.actionId === action.id && attempt.status === 'running') {
         Object.assign(attempt, { status: runtime.status, finishedAt, failureKind: 'runtime', why: runtime.lastFailure.message });
         runtime.outputFile ??= attempt.outputFile;
@@ -1281,6 +1468,142 @@ async function runV2Kernel({
     }
   };
   const activeTasks = new Map();
+
+  // Live control. Callers and operators write intents next to the run (a
+  // queued plan revision, pause.json, cancellation.json, steering). The kernel
+  // checks for them about once a second even while every agent is busy, so a
+  // revision or pause takes effect without waiting for the current step.
+  const controlPollMs = dependencies.controlPollMs ?? 1000;
+  const pausePath = join(runDir, 'pause.json');
+  const pauseMode = (value) => (value === 'now' ? 'now' : 'drain');
+  let announcedSteering = null;
+  const announcedSteeringIds = () => {
+    announcedSteering ??= new Set(readEvents(runDir).filter((event) => event.type === 'steering.received').map((event) => event.payload?.steeringId));
+    return announcedSteering;
+  };
+  const readPauseRequest = () => {
+    try {
+      if (!existsSync(pausePath)) return null;
+      const request = JSON.parse(readFileSync(pausePath, 'utf8'));
+      return request?.requested ? request : null;
+    } catch { return null; }
+  };
+  const controlPending = () => {
+    try {
+      if (existsSync(join(runDir, 'cancellation.json'))) return true;
+      const pause = readPauseRequest();
+      if (pause ? !state.pause || state.pause.mode !== pauseMode(pause.mode) : Boolean(state.pause && !state.pause.pausedAt)) return true;
+      if (programExecution && pendingRevisionRequests(state, runDir).length) return true;
+      if (callerPlanner && programExecution && peekSteering(state, runDir).some((entry) => !announcedSteeringIds().has(entry.id))) return true;
+    } catch { /* the next poll retries */ }
+    return false;
+  };
+  // Wait until an active action settles or a control intent arrives.
+  const waitForProgress = () => new Promise((resolve) => {
+    let settled = false;
+    const timer = setInterval(() => { if (controlPending()) done(); }, controlPollMs);
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      resolve();
+    };
+    if (activeTasks.size) Promise.race(activeTasks.values()).then(done, done);
+  });
+
+  const announceSteering = (entries) => {
+    const seen = announcedSteeringIds();
+    for (const entry of entries) if (!seen.has(entry.id)) {
+      seen.add(entry.id);
+      emit('steering.received', { steeringId: entry.id, message: entry.message, queuedAt: entry.queuedAt ?? null });
+    }
+  };
+
+  const planQueuedRevision = (request) => planV2Revision(state, request, {
+    pendingSteeringIds: peekSteering(state, runDir).map((entry) => entry.id),
+  });
+  const rejectRevision = (request, issues) => {
+    state.revisions = [...(state.revisions ?? []), rejectedRevisionRecord(request, issues, now())];
+    emit('program.revision_rejected', { requestId: request.id, issues: [...issues], source: request.source ?? 'cli' });
+  };
+  // Stop exactly the running agents the revision replaces, let the rest keep
+  // going, then apply the revision to the state they all share.
+  const applyQueuedRevision = async (request) => {
+    let planned = planQueuedRevision(request);
+    if (!planned.ok) return rejectRevision(request, planned.issues);
+    const stopping = planned.affected.filter((actionId) => activeTasks.has(actionId));
+    if (stopping.length) {
+      for (const actionId of stopping) stopRequested.set(actionId, { kind: 'superseded', message: `stopped by plan revision ${request.id}` });
+      emit('program.revision_stopping', { requestId: request.id, actionIds: stopping });
+      await Promise.allSettled(stopping.map((actionId) => activeTasks.get(actionId)).filter(Boolean));
+      for (const actionId of stopping) stopRequested.delete(actionId);
+      planned = planQueuedRevision(request);
+      if (!planned.ok) return rejectRevision(request, planned.issues);
+    }
+    const committed = commitV2Revision(state, planned, { request, runDir, at: now() });
+    persist();
+    for (const entry of committed.deliveredSteering) {
+      emit('steering.delivered', { steeringId: entry.id, message: entry.message, decisionSequence: entry.decisionSequence, source: 'revision' });
+    }
+    emit('program.revised', revisionEventPayload(committed.record));
+    removeStaleReceipts(runDir, committed.staleReceipts);
+  };
+
+  const requeuePausedActions = () => {
+    const requeued = [];
+    for (const action of state.actions) if (action.status === 'cancelled' && action.lastFailure?.kind === 'paused') {
+      Object.assign(action, { status: 'pending', finishedAt: null, lastFailure: null });
+      requeued.push(action.id);
+    }
+    return requeued;
+  };
+  const clearPauseStops = () => {
+    for (const [actionId, stop] of stopRequested) if (stop.kind === 'paused') stopRequested.delete(actionId);
+  };
+  // Returns the paused kernel result once nothing runs, or null: either there
+  // is no pause, or it is still draining (state.pause set) and the loop waits.
+  const honorPause = async () => {
+    const request = readPauseRequest();
+    if (!request && state.pause) {
+      // The intent file is gone: `workflow resume` either withdrew a pause that
+      // had not taken effect, or lifted one a previous kernel completed. The
+      // lift happens here, under this kernel's lease, so no watcher ever sees
+      // the run as running before a live kernel owns it.
+      const resumed = Boolean(state.pause.pausedAt);
+      clearPauseStops();
+      state.pause = null;
+      if (state.lifecycle.status === 'paused') state.lifecycle.status = state.planner.awaiting ? 'waiting' : 'running';
+      emit('workflow.unpaused', { source: resumed ? 'resume' : 'withdrawn', requeued: requeuePausedActions() });
+      return null;
+    }
+    if (request && (!state.pause || state.pause.mode !== pauseMode(request.mode))) {
+      const first = !state.pause;
+      state.pause = {
+        requestedAt: state.pause?.requestedAt ?? request.requestedAt ?? now(),
+        mode: pauseMode(request.mode),
+        source: typeof request.source === 'string' && request.source ? request.source : 'operator',
+        pausedAt: state.pause?.pausedAt ?? null,
+      };
+      if (first && !state.pause.pausedAt) emit('workflow.pause_requested', { mode: state.pause.mode, source: state.pause.source, running: [...activeTasks.keys()] });
+      else persist();
+    }
+    if (!state.pause) return null;
+    if (state.pause.mode === 'now') {
+      for (const actionId of activeTasks.keys()) if (!stopRequested.has(actionId)) {
+        stopRequested.set(actionId, { kind: 'paused', message: 'stopped by workflow pause; it runs again after resume' });
+      }
+    }
+    if (activeTasks.size) { await waitForProgress(); return null; }
+    clearPauseStops();
+    const requeued = requeuePausedActions();
+    const already = Boolean(state.pause.pausedAt);
+    state.pause.pausedAt ??= now();
+    state.lifecycle.status = 'paused';
+    if (already && !requeued.length) persist();
+    else emit('workflow.paused', { mode: state.pause.mode, source: state.pause.source, requeued, kernel: true });
+    return { runId: id, shortId: state.shortId, runDir, state: clone(state), result: null, paused: clone(state.pause) };
+  };
+
   // A quiet worker is not a dead coordinator. Keep this independent of the
   // provider's output/progress callbacks, and stop it on every exit path.
   const startInterval = dependencies.setInterval ?? setInterval;
@@ -1322,6 +1645,18 @@ async function runV2Kernel({
         }
         return finalize();
       }
+      // A queued plan revision applies before anything else is decided, so
+      // nothing is scheduled from a plan the caller has already replaced.
+      if (programExecution) {
+        const [request] = pendingRevisionRequests(state, runDir);
+        if (request) {
+          await applyQueuedRevision(request);
+          continue;
+        }
+      }
+      const paused = await honorPause();
+      if (paused) return paused;
+      if (state.pause) continue;
       // Caller-planner mode: a durable pause is authoritative. Whatever changed
       // on disk while the kernel was away (steering queued, a resume without a
       // submission), the run stays at its recorded boundary and turn until the
@@ -1353,10 +1688,14 @@ async function runV2Kernel({
           }
         }
       }
-      const deliveredSteeringIds = new Set((state.steering ?? []).map((entry) => entry.id));
-      const hasPendingSteering = readSteering(runDir).some((entry) => !deliveredSteeringIds.has(entry.id));
-      if (hasPendingSteering && state.program.actions.length) {
-        if (activeTasks.size) { await Promise.race(activeTasks.values()); continue; }
+      const pendingSteering = peekSteering(state, runDir);
+      // A caller planning a program run can revise the live plan at any time,
+      // so steering no longer halts its work: it is announced once (a --next
+      // watcher wakes on it) and stays pending until a revision or submission
+      // consumes it. It still keeps the run from finishing unread (below).
+      if (pendingSteering.length && callerPlanner && programExecution) announceSteering(pendingSteering);
+      else if (pendingSteering.length && state.program.actions.length) {
+        if (activeTasks.size) { await waitForProgress(); continue; }
         const planned = await runPlanner('steering');
         if (!planned.ok) {
           if (planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
@@ -1367,7 +1706,16 @@ async function runV2Kernel({
         continue;
       }
       const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
-      if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) return finalize();
+      if (['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
+        // Guidance nobody acted on keeps a caller-planned run from finishing:
+        // it pauses at a steering boundary so the caller revises or submits.
+        if (progress.status !== 'cancelled' && callerPlanner && programExecution && peekSteering(state, runDir).length) {
+          const planned = await runPlanner('steering');
+          if (!planned.ok && planned.status === 'awaiting-caller') return pauseForCaller(planned.awaiting);
+          continue;
+        }
+        return finalize();
+      }
       if (progress.status === 'needs-planner') {
         const planned = await runPlanner(progress.boundary);
         if (!planned.ok) {
@@ -1384,7 +1732,7 @@ async function runV2Kernel({
       const schedule = scheduleV2Actions(state.program.actions, state.actions, schedulingOptions);
       const selected = schedule.selected;
       if (!selected.length) {
-        if (activeTasks.size) { await Promise.race(activeTasks.values()); continue; }
+        if (activeTasks.size) { await waitForProgress(); continue; }
         limitsExhausted = true;
         terminalReason = 'the workflow has unfinished work but no dependency-ready action can run';
         continue;
@@ -1397,7 +1745,7 @@ async function runV2Kernel({
           const task = runActionSafely(definition(state, actionId)).finally(() => activeTasks.delete(actionId));
           activeTasks.set(actionId, task);
         }
-        await Promise.race(activeTasks.values());
+        await waitForProgress();
       } else {
         await Promise.all(selected.map((actionId) => runActionSafely(definition(state, actionId))));
       }

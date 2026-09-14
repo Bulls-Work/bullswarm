@@ -158,10 +158,46 @@ bullswarm workflow action show --json <shortId> <actionId>
 Manage a run with first-class verbs:
 
 ```bash
-bullswarm workflow steer  <shortId> --message "<guidance>"   # next planning boundary
-bullswarm workflow cancel <shortId> --json                   # a paused run is finalized here
-bullswarm workflow resume <shortId> --watch                  # verb form of goal --resume
+bullswarm workflow plan export <shortId> --out plan.json      # the live plan, editable
+bullswarm workflow plan revise <shortId> --program plan.json  # change the plan while it runs
+bullswarm workflow pause  <shortId> [--now]                   # start nothing new; resume continues
+bullswarm workflow resume <shortId> --watch                   # lift a pause; verb form of goal --resume
+bullswarm workflow steer  <shortId> --message "<guidance>"    # guidance for whoever plans the run
+bullswarm workflow cancel <shortId> --json                    # a run with no kernel is finalized here
 ```
+
+### Changing the plan of a live run
+
+A caller-planned program run can be re-planned at any time: while agents are
+working, while it is paused, or after it finished. Export the live plan, edit
+it into the whole program you want from now on, and revise:
+
+```bash
+bullswarm workflow plan export ab12cd --out plan.json
+bullswarm workflow plan revise ab12cd --program plan.json --rerun write-docs --summary "Docs must cover the new flag"
+```
+
+The kernel matches the file to the live plan by action id within about a
+second. A new id is added. An action left as exported is kept: its finished
+result is reused and a running agent keeps going. An action with any field
+changed is amended: if its agent is running it is stopped, and the step starts
+over with the new definition. An id in `rerun` discards its finished result and
+runs again. An action missing from the file is removed: stopped if running,
+never run again, and reported as `removed` in the result instead of counting
+against it. Every step that depends on an amended or rerun step runs again,
+because its inputs change. A removed or rerun evidence step's judgment stops
+counting until it is judged again.
+
+`plan revise` checks the revision before writing anything and exits 2 with
+the issues for an invalid program, an unknown rerun id, a revision that changes
+nothing, or a plan that moved since the export (`baseRevision`). Files a stopped
+step already edited stay in the tree, so plan a repair step when that matters.
+Revising a finished run reopens it: the earlier `result.json` is archived as
+`result-before-revision-<n>.json` and the run finishes again. `workflow pause`
+lets running agents finish and starts nothing new (`--now` stops them and runs
+those steps again after resume); revisions apply while paused, and only
+`workflow resume` continues the run.
+
 
 `--orchestrator <pool>` expresses a preference and immediately falls back to
 another eligible pool if that provider is quota-gated or unavailable; plain
@@ -258,10 +294,13 @@ also returns 0 before the workers finish. Consume its eventual result.
 `--program` accepts the planner response envelope or a bare
 `bullswarm.workflow.program.v2` document. An invalid program exits 2 with the
 validator's issues and nothing is launched. When the kernel reaches a planning
-boundary for an initial plan or queued user steering, it writes
-`planner-request-turn-N.json`, sets the run to `waiting`, exits, and `watch` prints the
-`plan show` command. A submitted program contains only new actions and is
-validated against the exact durable state at that boundary. Older saved V2
+boundary (an initial plan, or a run about to finish with queued steering still
+unread), it writes `planner-request-turn-N.json`, sets the run to `waiting`,
+exits, and `watch` prints the `plan show` command. A submitted program contains
+only new actions and is validated against the exact durable state at that
+boundary. Steering queued while work is still running does not stop it: watch
+prints `steering received` and the caller answers with `plan revise` (see
+[Changing the plan of a live run](#changing-the-plan-of-a-live-run)). Older saved V2
 runs still support their original gap boundaries and `--exhausted` submissions.
 `--scout` without
 `--program` runs the kernel scout first and pauses at the initial boundary so

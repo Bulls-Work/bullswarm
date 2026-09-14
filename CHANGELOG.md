@@ -1,6 +1,36 @@
 # bullswarm changelog
 
-## 0.29.0 — providers become directories, in three tiers
+## 0.29.0 — steer a running workflow, providers become directories, a declared reset date
+
+- workflow: the plan of a caller-planned program run can be changed at any
+  time. `bullswarm workflow plan export <id>` writes the live plan as an
+  editable revision document, and `bullswarm workflow plan revise <id>
+  --program plan.json` replaces it: the kernel matches actions by id and
+  applies the difference within about a second while agents keep running. A
+  new id is added; an unchanged action keeps its result and its running agent;
+  a changed action is stopped if running and starts over with the new
+  definition; an id in `rerun` discards its result and runs again; a missing id
+  is removed (stopped, never run, reported as `removed` and not counted against
+  the result); and every step downstream of a changed or rerun step runs again.
+  Evidence from a removed or rerun check stops counting until judged again.
+  Revisions carry `baseRevision`, so a revision written against an outdated
+  export is rejected instead of silently undoing another change, and an
+  invalid revision changes nothing. Revising a finished run reopens it and
+  archives the earlier result as `result-before-revision-<n>.json`.
+- workflow: `bullswarm workflow pause <id>` stops new work while running agents
+  finish (`--now` stops them too and requeues their steps). The kernel exits
+  with `outcome: paused`; revisions apply while paused, and `workflow resume`
+  is the only way to continue.
+- workflow: steering a caller-planned program run no longer halts it at the
+  next boundary. Watchers print `steering received`, the export lists the
+  pending messages, and a revision delivers them; only a run about to finish
+  with steering still unread pauses for the caller.
+- watch: new lines for `plan revised`, `plan revision rejected`, pause
+  requested/lifted, run reopened, steering received, and steps stopped by a
+  revision or a pause.
+- skill: SKILL.md gains "Steer a running workflow" and treats every watch
+  wake-up as a point to decide whether the plan still fits; operations.md
+  documents revision semantics, pause and resume, and steering.
 
 - providers: every coding-agent CLI is now a provider directory holding
   `connector.json`, `provider.mjs`, or both, loaded by one synchronous loader
@@ -44,8 +74,6 @@
 - command-code: the connector passes `--max-turns 10000`. command-code's print
   mode stops after 100 turns by default and exits 8 mid-task, which bullswarm
   could only report as a non-zero exit and retry from scratch on another pool.
-
-## 0.28.9 — a declared reset date, `bullswarm update`, and benching a dead upstream together
 
 - routing: an upstream auth failure reported inside a provider's event stream
   is now the `auth` failure kind with a quarantine hint, and it benches every
