@@ -233,6 +233,28 @@ export function invalidateRequirements(ledger, affects, nextWorkRevision) {
   return next;
 }
 
+// Drop the judgments recorded by evidence actions a plan revision removed or
+// sent back to run again. Evidence from other sources is untouched, and each
+// affected requirement is re-resolved from what remains.
+export function discardEvidence(ledger, sourceActions) {
+  normalizeLedger(ledger);
+  if (!Array.isArray(sourceActions)) fail('sourceActions must be an array');
+  const sources = new Set(sourceActions);
+  const next = clone(ledger);
+  const touched = new Set();
+  for (const record of next.evidence) {
+    if (!sources.has(record.sourceAction) || record.stale) continue;
+    record.stale = true;
+    record.staleReason = 'revision-discarded';
+    touched.add(record.requirementId);
+  }
+  for (const id of touched) {
+    next.requirements[id].evidence = next.evidence.filter((record) => record.requirementId === id);
+    next.requirements[id].status = resolveRequirement(next, id);
+  }
+  return next;
+}
+
 export function serializeLedger(ledger) {
   validateStoredLedger(ledger);
   return JSON.stringify(ledger);

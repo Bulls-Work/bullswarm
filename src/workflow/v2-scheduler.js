@@ -9,7 +9,9 @@ export class SchedulerValidationError extends TypeError {
   }
 }
 
-const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
+// `removed` is an action a plan revision dropped: never scheduled, and no live
+// action depends on it.
+const STATUSES = new Set(['pending', 'ready', 'running', 'waiting', 'succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SUCCESS = 'succeeded';
 const UNSUCCESSFUL = new Set(['failed', 'blocked', 'cancelled', 'interrupted']);

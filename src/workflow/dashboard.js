@@ -421,7 +421,7 @@ function renderV2Details(row, { interactive = true } = {}) {
 }
 
 const TERMINAL_ACTIONS = new Set([
-  'succeeded', 'failed', 'failed_retryable', 'failed_terminal', 'skipped', 'cancelled',
+  'succeeded', 'failed', 'failed_retryable', 'failed_terminal', 'skipped', 'cancelled', 'removed',
 ]);
 
 export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null } = {}) {
@@ -1326,7 +1326,7 @@ function statusIcon(status, spinnerFrame = 0) {
   if (value.includes('waiting') || value === 'queued' || value === 'paused'
     || value === 'blocked' || value === 'starting' || value === 'reviewing evidence'
     || value === 'directing execution') return glyphs().waiting;
-  if (value === 'skipped') return '–';
+  if (value === 'skipped' || value === 'removed') return '–';
   return glyphs().pending;
 }
 

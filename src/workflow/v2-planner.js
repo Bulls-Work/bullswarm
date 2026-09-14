@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { consolidateV2Gaps } from './v2-outcome.js';
 import { validateV2DurableState, validateV2GoalDocument } from './v2-state.js';
-import { deriveV2PresentationStages, deriveV2DependencyStages } from './v2-presentation.js';
+import { deriveV2PresentationStages, deriveV2DependencyStages, deriveV2LiveStages } from './v2-presentation.js';
 import { extractScoutUnitIds } from './goal.js';
-import { isProgramWorkflow } from './execution-policy.js';
+import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
 import { REASONING_LEVELS } from '../lib/reasoning.js';
 
 export const V2_PLANNER_RESPONSE_SCHEMA_VERSION = 'bullswarm.workflow.planner-response.v2';
@@ -31,11 +31,16 @@ function runtimeFromState(state) {
   const freshEvidenceRequirementIds = Object.values(state.ledger.requirements)
     .filter((requirement) => requirement.status === 'passed')
     .map((requirement) => requirement.id);
+  // Actions a plan revision removed are history: nothing new may depend on
+  // them or consume what they produced (validateV2PlannerResponse also refuses
+  // reusing their ids).
+  const removed = removedActionIds(state);
+  const liveActions = state.program.actions.filter((action) => !removed.has(action.id));
   const knownArtifacts = [];
-  for (const action of state.program.actions) for (const id of action.produces ?? []) knownArtifacts.push({ id, producer: action.id });
+  for (const action of liveActions) for (const id of action.produces ?? []) knownArtifacts.push({ id, producer: action.id });
   return {
     requirements: state.intent.requirements.map(({ id, mandatory }) => ({ id, mandatory })),
-    knownActions: state.program.actions.map((action) => ({
+    knownActions: liveActions.map((action) => ({
       id: action.id,
       kind: action.kind ?? null,
       dependsOn: clone(action.dependsOn),
@@ -74,6 +79,10 @@ export function validateV2PlannerResponse(response, state, {
     if (!plain(response.program)) issues.push('program must be an object for kind=program');
     else try {
       program = validateActionProgram(response.program, runtimeFromState(state));
+      const removed = removedActionIds(state);
+      for (const action of program.actions) if (removed.has(action.id)) {
+        issues.push(`action id "${action.id}" belongs to a step a plan revision removed; restore it with bullswarm workflow plan revise instead`);
+      }
       if (!isProgramWorkflow(state) && boundary === 'initial' && requiredScoutUnits.length) {
         const workIds = new Set(program.actions
           .filter((action) => action.evidenceFor.length === 0)
@@ -487,12 +496,14 @@ export function applyV2PlannerResponse(state, response, options = {}) {
   const advisories = programAdvisories(accepted.program);
   if (advisories.length) next.advisories = [...(next.advisories ?? []), ...advisories];
   else next.advisories ??= [];
-  next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   for (const action of accepted.program.actions) next.actions.push({
     id: action.id, status: 'pending', attempts: 0, programRevision: revision,
     workRevision: next.ledger.workRevision, startedAt: null, finishedAt: null,
     outputFile: null, artifactIds: [], lastFailure: null,
   });
+  // A revised program is one live graph; appended actions regroup its levels.
+  if (isLiveProgram(next)) next.presentation.stages = deriveV2LiveStages(next, { revision, at: new Date().toISOString() });
+  else next.presentation.stages.push(...(isProgramWorkflow(next) ? deriveV2DependencyStages : deriveV2PresentationStages)(accepted.program.actions, revision));
   next.lifecycle.status = 'running';
   return next;
 }

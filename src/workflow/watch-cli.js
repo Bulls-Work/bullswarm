@@ -104,6 +104,8 @@ export function watchSnapshot(runDir, state, now = new Date()) {
   // paused run needs one resume to finalize.
   const awaitingPlanner = !terminal && state.planner?.awaiting ? { boundary: state.planner.awaiting.boundary, turn: state.planner.awaiting.turn } : null;
   const cancellationRequested = Boolean(state.cancellation?.requested) && !terminal;
+  // An operator pause: the kernel has stopped and nothing starts until resume.
+  const paused = !terminal && lifecycle.status === 'paused' ? { mode: state.pause?.mode ?? null, pausedAt: state.pause?.pausedAt ?? null } : null;
   const elapsedSec = secondsBetween(lifecycle.startedAt, lifecycle.finishedAt ?? now.toISOString());
   return {
     at: now.toISOString(), runId: state.runId, shortId: state.shortId ?? null,
@@ -120,6 +122,7 @@ export function watchSnapshot(runDir, state, now = new Date()) {
       : (state.actions ?? []).filter((action) => action.status === 'waiting').length + (state.planner?.status === 'waiting' ? 1 : 0),
     latestAction: runningAction ? actionById.get(runningAction.id)?.purpose ?? runningAction.id : null,
     awaitingPlanner,
+    paused,
     cancellationRequested,
     executionMode: state.config?.settings?.executionMode ?? 'verified',
     evidencePassed: hasPassingRequirementEvidence(state),
@@ -525,6 +528,29 @@ export function notableWatchEvents({
       case 'steering.delivered':
         if (verbose) notable.push({ type: 'steering.delivered', steeringId: payload.steeringId ?? null });
         break;
+      // Live control always prints: the caller changed the plan or the run's
+      // pace, and a --next watcher must wake on it.
+      case 'steering.received':
+        notable.push({ type: 'steering.received', steeringId: payload.steeringId ?? null, message: payload.message ?? null });
+        break;
+      case 'program.revised':
+        notable.push({
+          type: 'plan.revised', requestId: payload.requestId ?? null, programRevision: payload.programRevision ?? null,
+          summary: payload.summary ?? null, changes: payload.changes ?? {},
+        });
+        break;
+      case 'program.revision_rejected':
+        notable.push({ type: 'plan.rejected', requestId: payload.requestId ?? null, issues: payload.issues ?? [] });
+        break;
+      case 'workflow.pause_requested':
+        notable.push({ type: 'pause.requested', mode: payload.mode ?? null, running: payload.running ?? [] });
+        break;
+      case 'workflow.unpaused':
+        notable.push({ type: 'pause.lifted', requeued: payload.requeued ?? [] });
+        break;
+      case 'workflow.reopened':
+        notable.push({ type: 'run.reopened', previousStatus: payload.previousStatus ?? null });
+        break;
       default:
         break;
     }
@@ -592,6 +618,8 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
     case 'action.finished':
       if (event.status === 'succeeded') return `${glyphs().ok} ${event.actionId} finished · ${formatDuration(event.durationSec)}`;
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
+      if (event.status === 'cancelled' && event.failureKind === 'superseded') return `${glyphs().reroute} ${event.actionId} stopped · replaced by a plan revision`;
+      if (event.status === 'cancelled' && event.failureKind === 'paused') return `${glyphs().waiting} ${event.actionId} stopped · runs again after resume`;
       if (event.status === 'cancelled') return `${glyphs().fail} ${event.actionId} cancelled · ${formatDuration(event.durationSec)}`;
       return `${glyphs().fail} ${event.actionId} ${event.status} · ${event.failureKind ?? 'unknown'}: ` +
         `${event.why ?? 'no reason recorded'} · ${formatDuration(event.durationSec)}`;
@@ -625,6 +653,23 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
     case 'steering.delivered':
       return '→ steering delivered';
+    case 'steering.received':
+      return `${glyphs().waiting} steering received · ${event.message ?? event.steeringId ?? ''} · revise the plan to act on it`;
+    case 'plan.revised': {
+      const changes = event.changes ?? {};
+      const parts = [['added', '+'], ['amended', '~'], ['restored', '↺'], ['removed', '-'], ['rerun', '⟲'], ['invalidated', '⟲']]
+        .filter(([key]) => (changes[key] ?? []).length)
+        .map(([key]) => `${key} ${changes[key].join(', ')}`);
+      return `${glyphs().plan} plan revised (revision ${event.programRevision ?? '?'}) · ${event.summary ?? 'no summary'}${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
+    }
+    case 'plan.rejected':
+      return `× plan revision rejected · ${(event.issues ?? []).join('; ') || 'no reason recorded'}`;
+    case 'pause.requested':
+      return `${glyphs().waiting} pause requested (${event.mode ?? 'drain'}) · ${(event.running ?? []).length} running step${(event.running ?? []).length === 1 ? '' : 's'} ${event.mode === 'now' ? 'being stopped' : 'finishing first'}`;
+    case 'pause.lifted':
+      return `${glyphs().started} pause lifted · work continues`;
+    case 'run.reopened':
+      return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by a plan revision`;
     default:
       return null;
   }
@@ -823,6 +868,17 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           output.write(snapshot.cancellationRequested
             ? `next: cancellation requested; bullswarm workflow cancel ${runToken} --json finalizes it\n`
             : `next: bullswarm workflow plan show ${runToken} --json\n`);
+        }
+        return 0;
+      }
+      if (snapshot.paused) {
+        // An operator pause: the kernel exited and nothing starts until
+        // resume. The plan can still be revised while it is paused.
+        const runToken = snapshot.shortId ?? snapshot.runId;
+        if (eventMode && jsonl) emitLine({ type: 'paused', reason: 'operator', mode: snapshot.paused.mode });
+        else if (!jsonl) {
+          output.write('outcome: paused\n');
+          output.write(`next: bullswarm workflow resume ${runToken} (revise first with bullswarm workflow plan export ${runToken} --out plan.json)\n`);
         }
         return 0;
       }

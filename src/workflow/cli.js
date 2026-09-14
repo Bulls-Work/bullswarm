@@ -11,14 +11,21 @@ import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns } from './runs-cli.js';
-import { newRunId, resolveRunId, isLegacyRunDir, isLegacyRunState, legacyRunLine } from './short-id.js';
+import { newRunId, resolveRunId, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
 import { runDashboard, dashboardJson } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
 import { KIND_DEFAULTS, programAdvisories } from './action-validator.js';
-import { createV2GoalDocument, createV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
-import { runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest } from './v2-runtime.js';
+import { createV2GoalDocument, createV2DurableState, deserializeV2DurableState, validateV2GoalDocument, v2PlannerMode } from './v2-state.js';
+import {
+  runV2AutonomousWorkflow, submitCallerPlannerResponse, callerPlannerSubmitCommand, readCallerPlannerRequest,
+  pauseV2Run, reviseV2Program, unpauseV2Run,
+} from './v2-runtime.js';
+import {
+  createRevisionRequest, exportV2Plan, normalizeRevisionInput, planV2Revision, REVISION_CHANGE_KINDS, V2RevisionError,
+} from './v2-revision.js';
+import { isProgramWorkflow } from './execution-policy.js';
 import { requestCancel } from './dashboard.js';
 import {
   buildV2PlannerContract, normalizeCallerPlannerResponse, validateV2PlannerResponse,
@@ -27,7 +34,7 @@ import {
 import { maybeRefreshStrategy } from '../strategy-cli.js';
 import { loadState } from '../lib/state.js';
 import { runWorkflowWatch } from './watch-cli.js';
-import { queueSteering } from './steering.js';
+import { peekSteering, queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
@@ -77,6 +84,8 @@ export async function cmdWorkflow(args, {
       return wfPlan(tail);
     case 'cancel':
       return wfCancel(opts);
+    case 'pause':
+      return wfPause(opts);
     case 'resume':
       return wfResume(opts);
     case 'runs':
@@ -259,6 +268,13 @@ async function executeGoalDocument({ doc, pools, opts, runId, resumeRunId, initi
     else if (!opts.quiet) console.log(`workflow ${result.shortId ?? result.runId} interrupted; edits retained. Resume with: ${interrupted.next}`);
     return 130;
   }
+  if (!result.result && result.paused) {
+    const token = result.shortId ?? result.runId;
+    const paused = { action: 'workflow-paused', runId: result.runId, shortId: result.shortId, status: 'paused', mode: result.paused.mode, next: `bullswarm workflow resume ${token}` };
+    if (opts.json) console.log(JSON.stringify(paused, null, 2));
+    else if (!opts.quiet) console.log(`workflow ${token} paused; nothing new starts until: ${paused.next}`);
+    return 0;
+  }
   if (!result.result && result.awaiting) {
     const awaiting = plannerAwaitingDocument({ ...result, cancellation: result.state?.cancellation ?? null });
     if (opts.json) console.log(JSON.stringify(awaiting, null, 2));
@@ -308,6 +324,21 @@ function assertDetachedChildLaunched(launch, runId) {
   throw new Error(`could not launch the detached kernel for ${runId}: ${launch.error.message}; resume it manually with bullswarm workflow goal --resume ${runId}`);
 }
 
+// A relaunched run already has state.json, still naming the kernel that
+// stopped. Until the new kernel records itself, a watcher started next would
+// see that dead pid and call the run interrupted, so wait for the handover
+// (or for the child to die, which assertDetachedChildLaunched then reports).
+async function waitForKernelTakeover(runId, pid, { attempts = 400 } = {}) {
+  const statePath = join(BULLSWARM_DIR(), 'workflows', runId, 'state.json');
+  let state = null;
+  for (let i = 0; i < attempts; i++) {
+    try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { /* atomic state write in progress */ }
+    if (state?.runner?.pid === pid || !isProcessAlive(pid)) return state;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  return state;
+}
+
 async function waitForRunState(runId, { attempts = 400 } = {}) {
   let state = null;
   const statePath = join(BULLSWARM_DIR(), 'workflows', runId, 'state.json');
@@ -353,7 +384,7 @@ async function launchDetachedResume(doc, runId, opts) {
     stdoutPath,
     stderrPath,
   }, null, 2)}\n`);
-  const state = await waitForRunState(runId, { attempts: 40 });
+  const state = await waitForKernelTakeover(runId, child.pid);
   assertDetachedChildLaunched(spawned, runId);
   const token = state?.shortId ?? runId;
   const launch = {
@@ -791,7 +822,7 @@ async function wfPlan(rest) {
   const [head, ...tail] = rest;
   const sub = flagName(head) ? undefined : head;
   const opts = parseFlags(sub === undefined ? rest : tail);
-  const subs = ['contract', 'validate', 'show', 'submit'];
+  const subs = ['contract', 'validate', 'show', 'submit', 'export', 'revise'];
   if (sub === undefined || sub === 'help' || (opts.help && !subs.includes(sub))) {
     // A flag with no subcommand is a usage error on `workflow plan` itself.
     const planFlags = sub === undefined && !opts.help
@@ -810,6 +841,8 @@ async function wfPlan(rest) {
     case 'validate': return planValidate(opts);
     case 'show': return planShow(opts);
     case 'submit': return planSubmit(opts);
+    case 'export': return planExport(opts);
+    case 'revise': return planRevise(opts);
     default:
       console.error(helpText(['workflow', 'plan']));
       return 2;
@@ -1063,6 +1096,207 @@ async function planSubmit(opts) {
   return 0;
 }
 
+// --- live plan revisions and pause -------------------------------------------
+
+function parseIdList(value) {
+  if (value == null || value === true) return [];
+  return String(value).split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+function loadProgramRun(token) {
+  const run = loadV2RunState(token);
+  if (!isProgramWorkflow(run.state)) {
+    throw new Error(`run "${token}" uses the older verified execution mode; only program-mode runs can be exported or revised`);
+  }
+  return run;
+}
+
+function planExport(opts) {
+  if (opts.help) { console.log(helpText(['workflow', 'plan', 'export'])); return 0; }
+  const token = opts.rest[0];
+  if (!token) { console.error(`usage: ${usageLine(['workflow', 'plan', 'export'])}`); return 2; }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
+  let run;
+  try { run = loadProgramRun(token); }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  const { state } = run;
+  const id = state.shortId ?? state.runId;
+  const pendingSteering = peekSteering(state, run.runDir);
+  const document = exportV2Plan(state, { pendingSteering });
+  const out = opts.out ? resolve(opts.out) : null;
+  if (out) {
+    try { writeFileSync(out, `${JSON.stringify(document, null, 2)}\n`); }
+    catch (err) { console.error(`✗ cannot write ${out}: ${err.message}`); return 1; }
+  }
+  const runtimeById = new Map(state.actions.map((action) => [action.id, action]));
+  const payload = {
+    action: 'plan-export',
+    runId: state.runId,
+    shortId: state.shortId ?? null,
+    status: state.lifecycle.status,
+    programRevision: state.program.revision,
+    out,
+    actions: state.program.actions.map((definition) => {
+      const runtime = runtimeById.get(definition.id);
+      return {
+        id: definition.id, purpose: definition.purpose, status: runtime?.status ?? 'pending',
+        attempts: runtime?.attempts ?? 0, dependsOn: definition.dependsOn, outputFile: runtime?.outputFile ?? null,
+      };
+    }),
+    pendingSteering: pendingSteering.map(({ id: steeringId, message, queuedAt }) => ({ id: steeringId, message, queuedAt })),
+    ...(out ? {} : { document }),
+    next: { revise: `bullswarm workflow plan revise ${id} --program ${out ?? '<file.json>'}` },
+  };
+  if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return 0; }
+  if (!out) {
+    // Bare stdout is the editable document itself, so it can be redirected.
+    console.log(JSON.stringify(document, null, 2));
+    return 0;
+  }
+  console.log(`✓ plan of ${id} exported at revision ${state.program.revision} (workflow ${state.lifecycle.status}) to ${out}`);
+  for (const entry of payload.actions) console.log(`  ${entry.status.padEnd(11)} ${entry.id}`);
+  if (pendingSteering.length) {
+    console.log(`  steering ${pendingSteering.length} pending (a revision from this file marks it delivered):`);
+    for (const entry of pendingSteering) console.log(`    - ${entry.message}`);
+  }
+  console.log(`  revise   ${payload.next.revise}`);
+  return 0;
+}
+
+function printRevisionChanges(changes) {
+  const labels = {
+    added: 'added', amended: 'amended', restored: 'restored', removed: 'removed',
+    rerun: 'rerun', invalidated: 'rerun (downstream)',
+  };
+  for (const kind of REVISION_CHANGE_KINDS) {
+    const ids = changes?.[kind] ?? [];
+    if (ids.length) console.log(`  ${labels[kind].padEnd(19)} ${ids.join(', ')}`);
+  }
+}
+
+async function planRevise(opts) {
+  if (opts.help) { console.log(helpText(['workflow', 'plan', 'revise'])); return 0; }
+  const token = opts.rest[0];
+  if (!token || !opts.program || opts.program === true) { console.error(`usage: ${usageLine(['workflow', 'plan', 'revise'])}`); return 2; }
+  const waitSec = opts.wait === undefined ? 120 : Number(opts.wait);
+  if (!Number.isFinite(waitSec) || waitSec < 0) { console.error('✗ --wait must be a non-negative number of seconds'); return 2; }
+  if (opts['base-revision'] !== undefined && !/^\d+$/.test(String(opts['base-revision']))) {
+    console.error('✗ --base-revision must be a non-negative integer'); return 2;
+  }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
+  let run;
+  try { run = loadProgramRun(token); }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  let doc;
+  try { doc = JSON.parse(readFileSync(join(run.runDir, 'goal.json'), 'utf8')); }
+  catch (err) { console.error(`✗ cannot read the durable goal for ${token}: ${err.message}`); return 1; }
+  if (typeof doc?.intent?.cwd !== 'string' || !existsSync(doc.intent.cwd) || !statSync(doc.intent.cwd).isDirectory()) {
+    console.error(`✗ goal cwd is not an existing directory: ${doc?.intent?.cwd ?? '(missing)'}; nothing was revised`);
+    return 1;
+  }
+  let body;
+  try {
+    body = normalizeRevisionInput(readJsonFile(opts.program, 'revision file'), {
+      summary: typeof opts.summary === 'string' ? opts.summary : null,
+      rerun: parseIdList(opts.rerun),
+      baseRevision: opts['base-revision'] === undefined ? null : Number(opts['base-revision']),
+    });
+  } catch (err) {
+    if (err instanceof V2RevisionError) { printValidationIssues('revision invalid (nothing submitted)', err.issues); return 2; }
+    console.error(`✗ ${err.message}`);
+    return 2;
+  }
+  // Check against the run as it stands, so an invalid revision never reaches
+  // a kernel. The kernel checks again against the state it applies it to.
+  let current;
+  try { current = deserializeV2DurableState(readFileSync(join(run.runDir, 'state.json'), 'utf8')); }
+  catch (err) { console.error(`✗ cannot read the run state: ${err.message}`); return 1; }
+  const precheck = planV2Revision(current, body, { pendingSteeringIds: peekSteering(current, run.runDir).map((entry) => entry.id) });
+  const id = current.shortId ?? current.runId;
+  if (!precheck.ok) {
+    if (opts.json) console.log(JSON.stringify({ action: 'plan-revise', status: 'rejected', runId: current.runId, shortId: current.shortId ?? null, programRevision: current.program.revision, issues: precheck.issues }, null, 2));
+    printValidationIssues(`revision rejected against ${id} at revision ${current.program.revision} (run unchanged)`, precheck.issues);
+    return 2;
+  }
+  const request = createRevisionRequest(body, { source: 'cli' });
+  let outcome;
+  try { outcome = await reviseV2Program({ bullswarmDir: BULLSWARM_DIR(), runId: run.runId, request, waitMs: waitSec * 1000 }); }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  const base = { action: 'plan-revise', requestId: request.id, runId: run.runId, shortId: current.shortId ?? null };
+  if (outcome.status === 'rejected') {
+    const issues = outcome.record?.issues ?? [];
+    if (opts.json) console.log(JSON.stringify({ ...base, status: 'rejected', issues }, null, 2));
+    printValidationIssues(`revision ${request.id} rejected (run unchanged)`, issues);
+    return 2;
+  }
+  if (outcome.status === 'queued') {
+    const payload = { ...base, status: 'queued', note: `the running kernel has not taken the revision within ${waitSec}s; it applies it at its next check, and watch prints "plan revised"`, next: { watch: `bullswarm workflow watch ${id} --next` } };
+    if (opts.json) console.log(JSON.stringify(payload, null, 2));
+    else console.log(`✓ revision ${request.id} queued for ${id}; ${payload.note}`);
+    return 0;
+  }
+  const paused = outcome.state?.lifecycle?.status === 'paused';
+  let relaunch = null;
+  if (outcome.appliedBy === 'offline' && !paused) {
+    try { relaunch = await launchDetachedResume(doc, run.runId, opts); }
+    catch (err) { console.error(`✗ revision ${request.id} applied to ${id} but ${err.message}`); return 1; }
+  }
+  const payload = {
+    ...base, status: 'applied', programRevision: outcome.record.programRevision, summary: outcome.record.summary,
+    changes: outcome.record.changes, steeringDelivered: outcome.record.steeringIds ?? [],
+    appliedBy: outcome.appliedBy, reopened: outcome.reopened ?? null, paused, relaunch,
+    next: paused
+      ? { resume: `bullswarm workflow resume ${id}` }
+      : { watch: `bullswarm workflow watch ${id} --next`, export: `bullswarm workflow plan export ${id} --out plan.json` },
+  };
+  if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return 0; }
+  const by = outcome.appliedBy === 'kernel' ? 'by its running kernel' : 'directly (no kernel was running)';
+  console.log(`✓ plan of ${id} revised to revision ${payload.programRevision} ${by} · ${payload.summary}`);
+  printRevisionChanges(payload.changes);
+  if (payload.reopened) console.log(`  reopened the ${payload.reopened.previousStatus} run; its earlier result is archived`);
+  if (payload.steeringDelivered.length) console.log(`  steering  ${payload.steeringDelivered.length} instruction(s) marked delivered`);
+  if (paused) console.log(`  the run stays paused; continue with: ${payload.next.resume}`);
+  else {
+    if (relaunch) console.log('  kernel relaunched independently');
+    console.log(`  watch    ${payload.next.watch}`);
+  }
+  return 0;
+}
+
+async function wfPause(opts) {
+  if (opts.help) { console.log(helpText(['workflow', 'pause'])); return 0; }
+  const flagExit = flagErrors(opts, ['workflow', 'pause']);
+  if (flagExit !== null) return flagExit;
+  const token = opts.rest[0];
+  if (!token) { console.error(`usage: ${usageLine(['workflow', 'pause'])}`); return 2; }
+  const legacy = legacyRunRefusal(token, opts);
+  if (legacy !== null) return legacy;
+  let run;
+  try { run = loadV2RunState(token); }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  const mode = opts.now ? 'now' : 'drain';
+  let outcome;
+  try { outcome = await pauseV2Run({ bullswarmDir: BULLSWARM_DIR(), runId: run.runId, mode, source: 'cli', waitMs: opts.now ? 60_000 : 0 }); }
+  catch (err) { console.error(`✗ ${err.message}`); return 1; }
+  const id = run.state.shortId ?? run.runId;
+  const running = (outcome.state?.actions ?? []).filter((action) => action.status === 'running').map((action) => action.id);
+  const payload = {
+    action: 'pause', runId: run.runId, shortId: run.state.shortId ?? null, status: outcome.status, mode,
+    already: outcome.already, appliedBy: outcome.appliedBy, running: outcome.status === 'pausing' ? running : [],
+    next: { resume: `bullswarm workflow resume ${id}`, export: `bullswarm workflow plan export ${id} --out plan.json` },
+  };
+  if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return 0; }
+  if (outcome.status === 'paused') console.log(`✓ workflow ${id} ${outcome.already ? 'was already' : 'is'} paused; nothing new starts until: ${payload.next.resume}`);
+  else if (outcome.status === 'pausing') {
+    console.log(`✓ pause requested for ${id}; nothing new starts. ${running.length} running step${running.length === 1 ? '' : 's'} ${mode === 'now' ? 'being stopped' : 'finish first'}${running.length ? ` (${running.join(', ')})` : ''}`);
+    console.log(`  watch    bullswarm workflow watch ${id} --next`);
+  } else console.log(`workflow ${id} reached ${outcome.status} before the pause took effect`);
+  console.log(`  revise   ${payload.next.export}, then bullswarm workflow plan revise ${id} --program plan.json`);
+  return 0;
+}
+
 // --- workflow cancel / resume: first-class management verbs --------------------
 
 async function wfCancel(opts) {
@@ -1090,10 +1324,11 @@ async function wfCancel(opts) {
     try { requested = requestCancel(BULLSWARM_DIR(), token, { source: 'cli' }).state; }
     catch (err) { console.error(`✗ ${err.message}`); return 1; }
   }
-  // A caller-planner run paused at a boundary has no kernel alive to honor
-  // the request; finalize it here. The kernel reads the cancellation at the
-  // top of its loop and records the cancelled result without dispatching.
-  if (requested.planner?.awaiting) {
+  // A caller-planner run paused at a boundary, or a run stopped by workflow
+  // pause, has no kernel alive to honor the request; finalize it here. The
+  // kernel reads the cancellation at the top of its loop and records the
+  // cancelled result without dispatching.
+  if (requested.planner?.awaiting || requested.lifecycle?.status === 'paused') {
     let finished;
     try {
       const doc = JSON.parse(readFileSync(join(resolvedRun.runDir, 'goal.json'), 'utf8'));
@@ -1151,6 +1386,21 @@ async function wfResume(opts) {
     console.error(`✗ goal cwd is not an existing directory: ${doc.intent?.cwd ?? '(missing)'}`);
     return 1;
   }
+  // Resume is the one command that lifts a pause. A pause still draining is
+  // withdrawn and the live kernel simply carries on.
+  try {
+    const current = JSON.parse(readFileSync(join(resolvedRun.runDir, 'state.json'), 'utf8'));
+    if (current.lifecycle?.status === 'paused' || current.pause || existsSync(join(resolvedRun.runDir, 'pause.json'))) {
+      const lifted = unpauseV2Run({ bullswarmDir: BULLSWARM_DIR(), runId: resolvedRun.runId, source: 'cli' });
+      if (lifted.kernelAlive) {
+        const token = resolvedRun.shortId ?? resolvedRun.runId;
+        const payload = { action: 'goal-resumed', runId: resolvedRun.runId, shortId: resolvedRun.shortId ?? null, status: 'running', pauseWithdrawn: true, note: 'the pause had not taken effect; the running kernel continues' };
+        if (opts.json) console.log(JSON.stringify(payload, null, 2));
+        else console.log(`✓ pause withdrawn for ${token}; its running kernel continues`);
+        return 0;
+      }
+    }
+  } catch (err) { console.error(`✗ cannot lift the pause on ${resolvedRun.runId}: ${err.message}`); return 1; }
   if (opts.foreground) {
     const { pools } = await livePoolNames();
     return executeGoalDocument({ doc, pools, opts, resumeRunId: resolvedRun.runId });
@@ -1203,6 +1453,8 @@ async function wfCapabilities(opts) {
           advisoryPlanningTargets: true,
           callerPlanner: true,
           programRequired: true,
+          livePlanRevisions: true,
+          pauseAndResume: true,
         },
         plannerModes: {
           caller: 'default: the calling agent authors the program (workflow plan contract|validate, workflow goal --program, workflow plan show|submit); the kernel pauses durably at each boundary and never dispatches a planner',
@@ -1440,7 +1692,7 @@ function wfAction(opts) {
 function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
-  const LEAVES = ['goal', 'cancel', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer'];
+  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
 
@@ -1452,6 +1704,7 @@ function parseFlags(argv) {
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
+    'out', 'rerun', 'base-revision', 'wait',
   ]);
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not

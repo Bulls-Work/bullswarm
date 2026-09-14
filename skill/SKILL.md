@@ -1,13 +1,14 @@
 ---
 name: bullswarm
-description: Delegate bounded work through Bullswarm to one quota-routed coding agent or a shared-worktree workflow. Use for /bullswarm, offloading, independent verification, or requested multi-agent execution.
+description: Delegate bounded work through Bullswarm to one quota-routed coding agent or a shared-worktree workflow, and steer a running workflow by revising its plan (add, change, remove, or rerun steps; pause and resume). Use for /bullswarm, offloading, independent verification, or requested multi-agent execution.
 ---
 
 # Bullswarm
 
 You write the task. Bullswarm picks a worker by quota and capability, runs it,
-and saves the output. For a workflow you are the planner: write the program
-once and the kernel runs it to the end.
+and saves the output. For a workflow you are the planner: write the program,
+launch it, and keep revising the plan while it runs whenever you learn
+something that changes what it should do.
 
 Keep the user's scope and working directory. Delegate only authorized work;
 permission to delegate does not authorize messages, releases, or other external
@@ -75,6 +76,9 @@ author the graph.
 - **Prompts are self-contained.** Each names the absolute workspace path
   (nothing is substituted), the outcome, the relevant files, the dependency
   outputs to read, and the concrete checks to run.
+- **Plan only what you know.** You can add phases later (section 4), so a first
+  program may stop where your understanding stops, for example at an
+  investigation whose report decides the implementation.
 
 ### Validate, read, adjust, then launch
 
@@ -112,13 +116,76 @@ event and relaunch with the exact `next: bullswarm workflow watch <shortId>
 --next --after <sequence> --since <iso>` line it printed, until the outcome
 line reports a pause or a terminal status. A pause is not completion.
 
+Each wake-up is a decision point: read the output of the step that just
+finished (`bullswarm workflow action show <shortId> <actionId>` names its
+`outputFile`) and decide whether the rest of the plan still fits. If it does,
+relaunch the watcher. If it does not, revise the plan (section 4) before
+relaunching.
+
 Then read the real outputs and artifacts and probe the important edge cases
 yourself. `completed` means the graph ran. `verified` means evidence passed,
-which can still miss bugs. `partial` exposes failed or skipped branches; author
-follow-up work explicitly when the outcome still needs repair. Shared files
+which can still miss bugs. `partial` exposes failed or skipped branches; revise
+the plan to repair them (a revision reopens a finished run). Shared files
 remain after failure or cancellation. Exit 0 can mean launched, paused, or
 completed, so always inspect the returned status.
 
-[operations.md](references/operations.md) covers steering, cancellation,
-resume, scouting, a dispatched planner, isolation, watch flags, reasoning
-depth, digest details, the live planning contract, and routing diagnosis.
+## 4. Steer a running workflow
+
+The plan is never frozen. When an output shows the approach is wrong, the user
+adds or drops a requirement, a step is no longer needed, or a result must be
+redone, change the plan of the run you have. Do not cancel it and do not start
+a second run.
+
+```bash
+bullswarm workflow plan export <shortId> --out plan.json   # the live plan, editable
+# edit plan.json: add, change, or delete actions; put finished ids to redo in "rerun"
+bullswarm workflow plan revise <shortId> --program plan.json --json
+```
+
+`plan.json` holds the whole program you want from now on, plus `baseRevision`,
+`summary` (say why the plan changed), `rerun`, and `steeringIds`. The kernel
+compares it with the live plan by action id and applies it within about a
+second, even while agents are running:
+
+| In your file | What happens |
+|---|---|
+| a new id | added; runs once its dependencies succeed |
+| an action left exactly as exported | kept: a finished result is reused, a running agent keeps going |
+| an action with any field changed (prompt, dependsOn, ownedFiles, kind…) | amended: a running agent is stopped and the step starts over with the new definition |
+| an unchanged id listed in `rerun` | its finished result is discarded and it runs again |
+| an action you deleted | removed: stopped if running, never runs again, reported as `removed` and not counted against the result |
+| anything that depends on an amended or rerun step | runs again, because its inputs change |
+
+Rules that matter when you edit:
+
+- The id is the identity. Renaming an id removes one step and adds another.
+  Leave an action you want to keep byte-for-byte as exported.
+- New steps may depend on existing ones, including finished ones. That is how you
+  add a phase after work that already ran.
+- `revise` exits 2 and changes nothing when the program is invalid, `rerun`
+  names an id not in the program, the revision changes nothing, or the plan
+  moved since your export (`baseRevision` mismatch). Export again, redo the
+  edit, and revise again.
+- The JSON says `status`: `applied` (with `changes` listing added, amended,
+  restored, removed, rerun, and invalidated ids), `rejected` (with `issues`),
+  or `queued` (the kernel had not taken it within `--wait`; watch prints `plan
+  revised` when it does).
+- A stopped or removed step's file edits stay in the shared tree. When they
+  must not remain, give a new or amended step the job of reverting or repairing
+  them.
+- Revising a finished run (`completed`, `partial`, `cancelled`) reopens it: the
+  new plan runs and the run finishes again with a new result.
+- To think without new work starting, pause first: `bullswarm workflow pause
+  <shortId>` starts nothing new and lets running agents finish (`--now` stops
+  them; they run again after resume). Export and revise while paused, then
+  `bullswarm workflow resume <shortId>`. A revision never lifts a pause.
+- `watch --next` wakes on `plan revised`, `plan revision rejected`, pause lines,
+  and `steering received`. Steering a person queued never halts work: decide
+  what it means for the plan and revise. The exported file lists pending
+  steering in `steeringIds`, and a revision from that file marks it delivered.
+  A run about to finish with unread steering pauses for it instead.
+
+[operations.md](references/operations.md) covers the revision details, pause
+and resume, cancellation, scouting, a dispatched planner, isolation, watch
+flags, reasoning depth, digest details, the live planning contract, and routing
+diagnosis.

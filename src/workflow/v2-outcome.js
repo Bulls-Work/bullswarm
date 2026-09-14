@@ -5,7 +5,7 @@ import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions }
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
 
-const TERMINAL_ACTION_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted']);
+const TERMINAL_ACTION_STATUSES = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'removed']);
 const ACTION_STATUSES = new Set(['pending', 'ready', 'running', 'waiting', ...TERMINAL_ACTION_STATUSES]);
 const REQUIREMENT_STATUSES = new Set(['pending', 'passed', 'failed', 'blocked']);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -273,7 +273,8 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
     };
   }
   if (isProgramWorkflow(state)) {
-    const unsuccessful = state.program.actions.filter((action) => runtimeStates.get(action.id)?.status !== 'succeeded');
+    // An action a plan revision removed no longer counts toward the result.
+    const unsuccessful = state.program.actions.filter((action) => !['succeeded', 'removed'].includes(runtimeStates.get(action.id)?.status));
     return unsuccessful.length
       ? { status: 'partial', terminal: true, reason: `program finished with ${unsuccessful.length} unsuccessful action(s)`, gaps: consolidateV2Gaps(state) }
       : { status: state.lifecycle.resultFile ? 'completed' : 'ready-to-finalize', terminal: Boolean(state.lifecycle.resultFile), reason: 'all program actions finished successfully; consult evidence for verification' };
@@ -522,7 +523,8 @@ export function validateV2ResultEnvelope(result) {
     if (!Number.isFinite(total) || total < 0) resultFail(`usage.byPool.${pool} must be non-negative`);
   }
   if (result.verified && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) resultFail('verified result has an unresolved mandatory requirement');
-  if (program && result.status === 'completed' && (!result.actions.length || result.actions.some((action) => action.status !== 'succeeded'))) resultFail('completed program must have successful actions');
+  const liveActions = result.actions.filter((action) => action.status !== 'removed');
+  if (program && result.status === 'completed' && (!liveActions.length || liveActions.some((action) => action.status !== 'succeeded'))) resultFail('completed program must have successful actions');
   if (result.verified && result.gaps !== null) resultFail('verified result must not contain gaps');
   if (!result.verified) validateGaps(result.gaps, result);
   if (result.workspace !== undefined) {

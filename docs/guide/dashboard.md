@@ -139,7 +139,11 @@ Recovery refuses to overwrite conflicting user edits during integration.
 
 `workflow steer` is optional operator guidance, not hot-patching. It appends a
 durable instruction that is delivered only to the next not-yet-started
-`decide` checkpoint; the active worker continues unchanged. Steering remains
+`decide` checkpoint; the active worker continues unchanged. In a caller-planned
+program run it never halts work: watchers print `steering received`, and the
+caller acts on it with `workflow plan revise`, which can stop, amend, add,
+remove, or rerun steps while the run continues; only a run about to finish with
+the guidance still unread pauses for it. Steering remains
 inside the original goal and authorization boundary and cannot bypass runtime
 validation or required verification. Static workflows and terminal runs reject
 steering because they have no future orchestration checkpoint.
