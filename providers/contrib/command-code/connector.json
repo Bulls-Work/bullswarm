@@ -11,9 +11,12 @@
       "--no-session",
       "--tools-all",
       "--yolo",
+      "--max-turns",
+      "10000",
       "Read the file {taskFile} and follow its instructions exactly."
     ],
-    "cwdMode": "add-dir"
+    "cwdMode": "add-dir",
+    "$comment-maxTurns": "`--max-turns 10000` because command-code's print mode stops after 100 model round trips by default, mid-task, and exits 8 (result subtype `max_turns`). It rejects 0 and has no unlimited value, so a high number stands in for the no-cap behaviour every other connector has; at the observed pace (100 turns in 17.7 minutes) 10000 is about 30 hours of work. Seen on run wf-mu0vsli9-35807d, attempt ui-1, 2026-09-14: exactly 100 turns, no Stop hook, output ended on 'Now the type check.', retried from scratch on another pool. Run wf-mtttcpvg-3a56d8 attempt summary-1 on 2026-09-09 ended the same way after 210 tool calls. Verified against command-code 1.53.0: `--max-turns 1` exits 8 with subtype max_turns."
   },
   "authSignatures": [
     "unauthorized",

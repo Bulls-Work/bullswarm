@@ -41,6 +41,9 @@
   writes to its workspace, so a workflow evidence action could do the work and
   still fail with EPERM writing its candidate file into the run's state
   directory under the bullswarm home.
+- command-code: the connector passes `--max-turns 10000`. command-code's print
+  mode stops after 100 turns by default and exits 8 mid-task, which bullswarm
+  could only report as a non-zero exit and retry from scratch on another pool.
 
 ## 0.28.9 — a declared reset date, `bullswarm update`, and benching a dead upstream together
 
