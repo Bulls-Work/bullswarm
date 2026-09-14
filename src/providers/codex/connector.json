@@ -9,12 +9,14 @@
       "codex",
       "exec",
       "--skip-git-repo-check",
+      "-s",
+      "danger-full-access",
       "--add-dir",
       "{cwd}",
       "Read {taskFile} and follow the instructions."
     ],
     "cwdMode": "add-dir",
-    "$comment-argv": "{cwd} is substituted by the watcher with the resolved target directory"
+    "$comment-argv": "{cwd} is substituted by the watcher with the resolved target directory. `-s danger-full-access` because codex is the only connector that sandboxes writes to its workspace, and a workflow evidence action must write its structured candidate into the run's own state directory under the bullswarm home. Without it codex does the work, produces valid evidence, and still fails the attempt with EPERM — run wf-mu0q9bxz-01e488 on 2026-09-14 burned two attempts, about 26 minutes and their quota each, both `schema` with 'the sandbox denied writing it to the required .bullswarm path'. command-code already runs --yolo for the same reason."
   },
   "authSignatures": [
     "usage_credits_required",

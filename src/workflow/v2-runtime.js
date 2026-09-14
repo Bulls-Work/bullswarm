@@ -348,18 +348,6 @@ function observeAttemptBytes(attempt, { authorPrompt, requirements }) {
   }
 }
 
-function ancestorPools(state, action) {
-  const byId = new Map(state.program.actions.map((item) => [item.id, item]));
-  const ids = new Set();
-  const visit = (id) => {
-    if (ids.has(id)) return;
-    ids.add(id);
-    for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency);
-  };
-  for (const id of action.dependsOn) visit(id);
-  return [...new Set(state.attempts.filter((attempt) => ids.has(attempt.actionId) && attempt.status === 'succeeded').map((attempt) => attempt.pool).filter(Boolean))];
-}
-
 function buildWorkTask(state, action, targetDir = state.intent.cwd) {
   if (isProgramWorkflow(state)) return buildProgramWorkTask(state, action, targetDir);
   const requirements = state.intent.requirements.filter((requirement) => action.affects.includes(requirement.id));
@@ -1120,7 +1108,16 @@ async function runV2Kernel({
       // The program author's per-action override outranks the run-wide level.
       reasoningOverride: action.reasoning ?? null,
       runReasoning: state.config.workerRouting?.reasoning ?? null,
-      avoidPools: evidence ? ancestorPools(state, action) : [],
+      // Evidence routes like any other action. Steering it away from the pools
+      // that did the work bought a weak kind of independence — the judging
+      // model is chosen by tier, not by pool, so a "different" pool is often
+      // the same model — and it cost real pacing control: on 2026-09-14 it
+      // pushed a high-effort verify onto a pool with 15.5 surplus while the
+      // pool it skipped held 24 and had 8 hours left before its weekly window
+      // reset, and the reason it printed never said a better pool had been
+      // excluded on purpose. Simpler routing the operator can predict beats
+      // independence the router cannot explain.
+      avoidPools: [],
       maxMechanicalRetries: config.maxMechanicalRetries,
       shouldCancel: refreshCancellation, onSpawn, onWorkerExit,
       outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
