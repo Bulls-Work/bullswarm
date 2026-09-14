@@ -867,7 +867,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
           output.write(`outcome: waiting for the caller planner (${snapshot.awaitingPlanner.boundary} boundary)\n`);
           output.write(snapshot.cancellationRequested
             ? `next: cancellation requested; bullswarm workflow cancel ${runToken} --json finalizes it\n`
-            : `next: bullswarm workflow plan show ${runToken} --json\n`);
+            : `next: bullswarm workflow plan show ${runToken} --json\n`
+              + `  or revise: bullswarm workflow plan export ${runToken} --out plan.json, then bullswarm workflow plan revise ${runToken} --program plan.json\n`);
         }
         return 0;
       }

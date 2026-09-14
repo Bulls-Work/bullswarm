@@ -209,8 +209,10 @@ being replaced is stopped before the new plan is committed
 CLI applies the revision itself under the kernel lease and relaunches the
 kernel detached, unless the run is paused. A finished run is reopened: its
 `result.json` moves to `result-before-revision-<n>.json`, a
-`workflow.reopened` event is written, and the new plan runs to a new result. A
-revision also clears a caller-planner wait, so it can replace `plan submit`.
+`workflow.reopened` event is written, and the new plan runs to a new result.
+Steps a cancellation stopped return to pending (`reopened.requeued`); failed
+steps stay failed unless the revision names them in `rerun`. A revision also
+clears a caller-planner wait, so it can replace `plan submit`.
 
 Stopping a process does not undo its edits in the shared tree. When a stopped
 or removed step's partial changes must go, amend it or add a step whose prompt

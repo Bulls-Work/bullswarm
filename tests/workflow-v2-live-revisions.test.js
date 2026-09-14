@@ -233,6 +233,7 @@ test('while agents run: an amended running step is stopped and restarted, a remo
   validateV2DurableState(result.state);
   const stopped = eventsOf(f, runId, 'action.finished').find((event) => event.payload.actionId === 'a' && event.payload.status === 'cancelled');
   assert.equal(stopped.payload.failureKind, 'superseded');
+  assert.equal(result.state.attempts.find((attempt) => attempt.id === 'a-1').failureKind, 'superseded', 'the stopped attempt says why it stopped');
   assert.deepEqual(eventsOf(f, runId, 'program.revision_stopping')[0].payload.actionIds, ['a']);
   assert.equal(eventsOf(f, runId, 'program.revised')[0].payload.summary, 'A needs the v2 wording; the check is replaced by a report step');
   const stages = projectV2DependencyStages(result.state);
@@ -325,6 +326,9 @@ test('pause --now stops running steps, requeues them, and resume runs them again
   assert.equal(ctl.calls[0].cancelled, true);
   assert.equal(statusOf(paused.state, 'a'), 'pending');
   assert.deepEqual(eventsOf(f, runId, 'workflow.paused')[0].payload.requeued, ['a']);
+  // A stopped attempt records why it stopped, so it never reads as a pool failure.
+  assert.equal(paused.state.attempts.find((attempt) => attempt.actionId === 'a').failureKind, 'paused');
+  assert.deepEqual(eventsOf(f, runId, 'attempt.finished').map((event) => event.payload.failureKind), ['paused']);
 
   unpauseV2Run({ bullswarmDir: f.bullswarmDir, runId });
   const result = await resume(f, runId, ctl);
@@ -342,7 +346,7 @@ test('a finished run is reopened by a revision and finishes again with the exten
   const request = revisionFrom(f, runId, (doc) => { doc.program.actions.push(work('b', { dependsOn: ['a'] })); });
   const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request, waitMs: 0 });
   assert.equal(revised.status, 'applied');
-  assert.deepEqual(revised.reopened, { previousStatus: 'completed', archivedResult: join(runDirOf(f, runId), 'result-before-revision-2.json') });
+  assert.deepEqual(revised.reopened, { previousStatus: 'completed', archivedResult: join(runDirOf(f, runId), 'result-before-revision-2.json'), requeued: [] });
   assert.equal(existsSync(revised.reopened.archivedResult), true);
   assert.equal(revised.state.lifecycle.status, 'running');
 
@@ -447,4 +451,35 @@ test('CLI: plan export writes an editable document; plan revise refuses no-op an
   const help = cli('workflow', 'plan', 'revise', '--help');
   assert.equal(help.status, 0);
   assert.match(help.stdout, /--rerun <id,\.\.\.>/);
+});
+
+test('a cancelled run reopened by a revision runs the steps the cancellation stopped', async (t) => {
+  const f = fixture(t);
+  const ctl = controller();
+  ctl.hold('a');
+  const runId = 'wf-live11-abcdef';
+  const kernel = start(f, runId, [work('a'), work('b', { dependsOn: ['a'] })], ctl);
+  await until(() => ctl.count('a') === 1, { what: 'a started' });
+  writeFileSync(join(runDirOf(f, runId), 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: new Date().toISOString(), reason: 'operator requested stop' }));
+  const cancelled = await kernel;
+  assert.equal(cancelled.result.status, 'cancelled');
+  assert.equal(statusOf(cancelled.state, 'a'), 'cancelled');
+  assert.equal(statusOf(cancelled.state, 'b'), 'cancelled');
+
+  const request = revisionFrom(f, runId, (doc) => { doc.program.actions.push(work('c')); });
+  const revised = await reviseV2Program({ bullswarmDir: f.bullswarmDir, runId, request, waitMs: 0 });
+  assert.equal(revised.status, 'applied');
+  assert.equal(revised.reopened.previousStatus, 'cancelled');
+  assert.deepEqual([...revised.reopened.requeued].sort(), ['a', 'b']);
+  assert.equal(statusOf(revised.state, 'a'), 'pending');
+  assert.equal(revised.state.cancellation.requested, false);
+  validateV2DurableState(revised.state);
+
+  const result = await resume(f, runId, ctl);
+  assert.equal(result.result.status, 'completed');
+  assert.equal(ctl.count('a'), 2, 'the stopped step runs again');
+  assert.equal(ctl.count('b'), 1);
+  assert.equal(ctl.count('c'), 1);
+  assert.deepEqual(eventsOf(f, runId, 'workflow.reopened').map((event) => [...event.payload.requeued].sort()), [['a', 'b']]);
+  validateV2DurableState(result.state);
 });

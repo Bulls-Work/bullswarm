@@ -635,6 +635,7 @@ test('V2 --next prints no attach line and returns after the first notable event'
     assert.doesNotMatch(output, /watching/);
     assert.match(output, /outcome: waiting for the caller planner \(initial boundary\)\n/);
     assert.match(output, /next: bullswarm workflow plan show nxp234 --json/);
+    assert.match(output, /or revise: bullswarm workflow plan export nxp234 --out plan\.json, then bullswarm workflow plan revise nxp234 --program plan\.json/);
   } finally { paused.cleanup(); }
 
   const dead = v2Fixture({ shortId: 'nxd234' });

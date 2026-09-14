@@ -33,7 +33,7 @@ import { scoutPrompt } from './goal.js';
 import {
   createIsolatedWorkspace, disposeIsolatedWorkspace, integrateIsolatedWorkspace,
 } from './v2-workspace.js';
-import { presentationStageStatus, stageForAction } from './v2-presentation.js';
+import { deriveV2LiveStages, presentationStageStatus, stageForAction } from './v2-presentation.js';
 import { deliverSteering, peekSteering, readSteering } from './steering.js';
 import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
@@ -264,8 +264,22 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
     rmSync(cancelFile, { force: true });
     if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
-    reopened = { previousStatus, archivedResult: hadResult ? archived : null };
-    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, requestId: request.id, archivedResult: reopened.archivedResult });
+    // Steps the cancellation stopped were never judged; reopening the run is
+    // what lifts that cancellation, so they run again. Their earlier attempts
+    // stay on record but never count as this step's completion. Failed steps
+    // are left as they are: rerunning them is the caller's decision.
+    const requeued = [];
+    for (const action of state.actions) {
+      if (action.status !== 'cancelled') continue;
+      Object.assign(action, {
+        status: 'pending', startedAt: null, finishedAt: null, outputFile: null, artifactIds: [],
+        lastFailure: null, supersededAttempts: action.attempts,
+      });
+      requeued.push(action.id);
+    }
+    if (requeued.length) state.presentation.stages = deriveV2LiveStages(state, { revision: state.program.revision, at });
+    reopened = { previousStatus, archivedResult: hadResult ? archived : null, requeued };
+    appendEvent(runDir, state, 'workflow.reopened', { previousStatus, requestId: request.id, archivedResult: reopened.archivedResult, requeued });
   }
   // A revision answers a caller-planner pause as fully as a submission does.
   if (state.planner.awaiting) {
@@ -1307,6 +1321,10 @@ async function runV2Kernel({
           emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
         } else {
           lease.assertOwner();
+          // An attempt stopped by a plan revision or a pause is not a failure of
+          // its pool: record why it stopped, the same kind action.finished carries.
+          const stop = record.status === 'cancelled' && !interrupted ? stopRequested.get(action.id) ?? null : null;
+          if (stop) record = { ...record, failureKind: stop.kind, why: stop.message };
           if (record.status === 'succeeded') writeCompletionReceipt(receiptPath, {
             attemptId: currentAttemptId, finishedAt: record.finishedAt, before, isolated,
             verdict: verdict ?? { ok: true, outFile: record.outFile ?? record.outputFile },
@@ -1460,10 +1478,10 @@ async function runV2Kernel({
       runtime.finishedAt = finishedAt;
       runtime.lastFailure = stop ? { kind: stop.kind, message: stop.message } : { kind: 'runtime', message: error?.message || String(error) };
       for (const attempt of state.attempts) if (attempt.actionId === action.id && attempt.status === 'running') {
-        Object.assign(attempt, { status: runtime.status, finishedAt, failureKind: 'runtime', why: runtime.lastFailure.message });
+        Object.assign(attempt, { status: runtime.status, finishedAt, failureKind: runtime.lastFailure.kind, why: runtime.lastFailure.message });
         runtime.outputFile ??= attempt.outputFile;
       }
-      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: 'runtime', why: runtime.lastFailure.message });
+      emit('action.finished', { actionId: action.id, status: runtime.status, failureKind: runtime.lastFailure.kind, why: runtime.lastFailure.message });
       completePresentationStages();
     }
   };

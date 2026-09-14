@@ -535,3 +535,18 @@ test('clearTierAssignment tolerates a strategy with no assignments at all', () =
   assert.equal(clearTierAssignment(empty, 'high'), false);
   assert.deepEqual(empty.assignments, {});
 });
+
+test('rungRecord leaves stopped dispatches out of a pool ok share', () => {
+  const log = [
+    { picked: 'pool-a', effort: 'low', ok: true },
+    { picked: 'pool-a', effort: 'low', ok: false, failureKind: 'semantic', why: 'no deliverable' },
+    // Stopped by a cancel, a plan revision or a pause: not a verdict on the pool.
+    { picked: 'pool-a', effort: 'low', ok: false, failureKind: 'cancelled', why: 'workflow cancellation requested' },
+    // Recorded before dispatch rows carried failureKind.
+    { picked: 'pool-a', effort: 'low', ok: false, why: 'workflow cancellation requested' },
+  ];
+  const record = rungRecord(log, 'pool-a', 'low');
+  assert.equal(record.dispatches, 4, 'a stopped dispatch still counts as a dispatch');
+  assert.equal(record.okShare, 0.5);
+  assert.equal(rungRecord(log.slice(2), 'pool-a', 'low').okShare, null, 'only stops means no verdict yet');
+});

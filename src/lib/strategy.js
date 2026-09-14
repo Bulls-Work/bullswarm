@@ -303,7 +303,11 @@ export function rungRecord(decisionLog, pool, tier) {
     const window = attemptWindow(row);
     if (window) minutes.push(window.minutes);
   }
-  const verdicts = rows.filter((row) => typeof row.ok === 'boolean');
+  // A dispatch someone stopped (a workflow cancel, a plan revision, a pause) is
+  // not a verdict on the pool. Older rows carry no failureKind, only the
+  // dispatcher's fixed cancellation message.
+  const stopped = (row) => row.failureKind === 'cancelled' || row.why === 'workflow cancellation requested';
+  const verdicts = rows.filter((row) => typeof row.ok === 'boolean' && !stopped(row));
   return {
     dispatches: rows.length,
     medianMinutes: minutes.length ? Math.round(medianOf(minutes) * 100) / 100 : null,
