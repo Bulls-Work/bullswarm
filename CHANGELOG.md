@@ -40,6 +40,21 @@
   re-reading package.json on disk, never by npm's exit code, and a shell
   whose `bullswarm` resolves elsewhere is called out. `--check` compares
   without changing anything.
+- routing: the reasoning level now reaches every model a Relay pool can run,
+  not only `gpt-5.6-luna`. opencode forwards `--variant <level>` only when its
+  config declares that variant for that exact model, and the config
+  `src/lib/opencode-relay.js` injects declared the five levels for luna alone,
+  so moving a tier onto `<id>/gpt-5.6-sol` (2026-09-12, when luna had no
+  upstream channel left but sol did) would have sent a `--variant medium` that
+  opencode silently dropped while `strategy rungs` kept reporting medium.
+  Discovery now records each provider's model list from opencode.json and the
+  variants are declared on all of them; a provider that lists none keeps the
+  luna default.
+- meters: a Relay pool's used% is read against its own declared plan total
+  (`strategy set-subscription <pool> --included-usd <n>`) before the host-wide
+  `RELAY_PLAN_USD` and the $50 default. The wallets differ — relay-4 is a $20
+  newcomer plan — and one shared number would have shown a $10 spend on it as
+  20% used.
 - meters: a pool whose provider reports usage but no reset date can be paced
   from a reset the operator declares —
   `bullswarm strategy set-subscription <pool> --resets-at <iso|unknown>`.

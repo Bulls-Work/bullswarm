@@ -7,8 +7,9 @@
 // Relay base URL is used.
 //
 // Each pool also carries env.OPENCODE_CONFIG_CONTENT declaring the five
-// reasoning variants for its OWN provider id, which is what makes the
-// connector's `--variant <level>` mean anything (see relayVariantsConfig).
+// reasoning variants for its OWN provider id, on EVERY model that provider
+// lists in opencode.json, which is what makes the connector's
+// `--variant <level>` mean anything (see relayVariantsConfig).
 
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -44,13 +45,26 @@ export function isRelayBaseUrl(url) {
  * The keys are REASONING_LEVELS verbatim, so the injected variants can never
  * drift from the levels connectors/opencode2.json declares.
  *
+ * The variants are declared on every model named in `models` (one id or a
+ * list; default the luna model the spawn pins). opencode matches a variant
+ * per MODEL, so a rung that moves a tier onto `<id>/gpt-5.6-sol` would
+ * otherwise send `--variant medium` and have it silently dropped, while the
+ * rung table kept reporting medium (2026-09-12).
+ *
  * @returns {string} JSON, e.g. for `relay-2`:
  *   {"provider":{"relay-2":{"models":{"gpt-5.6-luna":{"variants":{"low":{"reasoningEffort":"low"},…}}}}}}
  */
-export function relayVariantsConfig(providerId, model = RELAY_OPENCODE_MODEL) {
-  const variants = {};
-  for (const level of REASONING_LEVELS) variants[level] = { reasoningEffort: level };
-  return JSON.stringify({ provider: { [providerId]: { models: { [model]: { variants } } } } });
+export function relayVariantsConfig(providerId, models = RELAY_OPENCODE_MODEL) {
+  const ids = (Array.isArray(models) ? models : [models])
+    .filter((id) => typeof id === 'string' && id.trim() !== '');
+  if (ids.length === 0) ids.push(RELAY_OPENCODE_MODEL);
+  const entries = {};
+  for (const id of ids) {
+    const variants = {};
+    for (const level of REASONING_LEVELS) variants[level] = { reasoningEffort: level };
+    entries[id] = { variants };
+  }
+  return JSON.stringify({ provider: { [providerId]: { models: entries } } });
 }
 
 /**
@@ -112,11 +126,18 @@ export function discoverRelayProviders(opts = {}) {
     const apiKey = spec?.options?.apiKey;
     if (!isRelayBaseUrl(baseURL)) continue;
     if (typeof apiKey !== 'string' || !apiKey.startsWith('sk-')) continue;
+    // The provider's own model list, so the injected variants cover every
+    // model a rung can move a tier onto; a provider that lists none gets the
+    // luna default from relayVariantsConfig.
+    const models = spec?.models && typeof spec.models === 'object'
+      ? Object.keys(spec.models)
+      : [];
     found.push({
       id,
       name: typeof spec.name === 'string' ? spec.name : id,
       baseURL,
       apiKey,
+      models,
     });
   }
   // Stable: keep `relay` first when present, then remaining ids A–Z.
@@ -155,17 +176,17 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
   // injection, so the base pool's own injected value is not mistaken for one.
   const operatorSetConfigContent = typeof base.env?.OPENCODE_CONFIG_CONTENT === 'string'
     && base.env.OPENCODE_CONFIG_CONTENT.trim() !== '';
-  const injectVariants = (clone, providerId) => {
+  const injectVariants = (clone, provider) => {
     if (operatorSetConfigContent) return;
     clone.env = {
       ...(clone.env ?? {}),
-      OPENCODE_CONFIG_CONTENT: relayVariantsConfig(providerId),
+      OPENCODE_CONFIG_CONTENT: relayVariantsConfig(provider.id, provider.models),
     };
   };
 
   const primary = providers[0];
   pinModel(base, primary.id);
-  injectVariants(base, primary.id);
+  injectVariants(base, primary);
   base.upstreamGroup = relayUpstreamGroup(primary.baseURL);
   base.profile = {
     providerId: primary.id,
@@ -183,7 +204,7 @@ export function expandOpenCodeRelayConnectors(connectors, opts = {}) {
     const clone = structuredClone(base);
     clone.name = extra.pool;
     pinModel(clone, extra.id);
-    injectVariants(clone, extra.id);
+    injectVariants(clone, extra);
     clone.upstreamGroup = relayUpstreamGroup(extra.baseURL);
     clone.flags = { ...(base.flags ?? {}), isCaller: false };
     clone.profile = {

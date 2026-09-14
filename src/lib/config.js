@@ -232,7 +232,12 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
       && !isQuarantined({ quarantine: ps.quarantine ?? null }, now);
   });
   const readings = getReadings
-    ? await getReadings(names, { force, nowMs: now, onProgress: onProviderProgress })
+    ? await getReadings(names, {
+      force, nowMs: now, onProgress: onProviderProgress,
+      // A pool's declared plan total (set-subscription --included-usd) is the
+      // denominator its meter reads used USD against; see relayIncludedUsd.
+      subscriptions: state.strategy?.subscriptions ?? {},
+    })
     : {};
   return buildPools(bullswarmDir, now, readings);
 }

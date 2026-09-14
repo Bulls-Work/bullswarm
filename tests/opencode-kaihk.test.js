@@ -61,6 +61,7 @@ test('discoverRelayProviders reads OpenCode config, relay first', () => {
         },
         'relay-2': {
           options: { baseURL: 'https://api.relay.com/v1', apiKey: 'sk-bbbb2' },
+          models: { 'gpt-5.6-sol': {}, 'gpt-5.6-luna': {}, 'gpt-5.5': {} },
         },
       },
     }));
@@ -68,6 +69,9 @@ test('discoverRelayProviders reads OpenCode config, relay first', () => {
     assert.deepEqual(found.map((p) => p.id), ['relay', 'relay-2', 'relay-3']);
     assert.deepEqual(found.map((p) => p.pool), ['opencode2', 'opencode2:relay-2', 'opencode2:relay-3']);
     assert.equal(found[1].command, 'opencode run --auto --model relay-2/gpt-5.6-luna');
+    // The provider's own model list rides along; a provider without one is [].
+    assert.deepEqual(found[1].models, ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5']);
+    assert.deepEqual(found[0].models, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -160,6 +164,29 @@ test('relayVariantsConfig is the exact opencode config opencode merges over the 
   }
   // The model is a parameter, not a constant baked into the string.
   assert.match(relayVariantsConfig('relay-3', 'gpt-5.6-sol'), /"models":\{"gpt-5\.6-sol"/);
+  // A list declares the same five variants on EVERY model, so a rung that
+  // moves a tier onto sol sends a --variant opencode forwards, not drops.
+  const multi = JSON.parse(relayVariantsConfig('relay-2', ['gpt-5.6-sol', 'gpt-5.6-luna'])).provider['relay-2'].models;
+  assert.deepEqual(Object.keys(multi), ['gpt-5.6-sol', 'gpt-5.6-luna']);
+  assert.deepEqual(multi['gpt-5.6-sol'].variants, multi['gpt-5.6-luna'].variants);
+  assert.deepEqual(multi['gpt-5.6-sol'].variants.medium, { reasoningEffort: 'medium' });
+  // An empty or blank list falls back to the luna default rather than
+  // declaring nothing (which would silently drop every --variant).
+  assert.equal(relayVariantsConfig('relay-2', []), relayVariantsConfig('relay-2'));
+  assert.equal(relayVariantsConfig('relay-2', ['', '  ']), relayVariantsConfig('relay-2'));
+});
+
+test('a pool whose provider lists several models carries variants for each of them', () => {
+  const providers = THREE_PROVIDERS.map((p) => (p.id === 'relay-2'
+    ? { ...p, models: ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5'] }
+    : p));
+  const connectors = expandPackaged({ providers });
+  const relay2 = JSON.parse(connectors['opencode2:relay-2'].env.OPENCODE_CONFIG_CONTENT);
+  assert.deepEqual(Object.keys(relay2.provider['relay-2'].models), ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5']);
+  assert.deepEqual(relay2.provider['relay-2'].models['gpt-5.6-sol'].variants.medium, { reasoningEffort: 'medium' });
+  // Siblings without a model list keep the luna-only default.
+  assert.equal(connectors['opencode2:relay-3'].env.OPENCODE_CONFIG_CONTENT, relayVariantsConfig('relay-3'));
+  assert.equal(connectors.opencode2.env.OPENCODE_CONFIG_CONTENT, relayVariantsConfig('relay'));
 });
 
 test('every Relay pool carries the variants for its OWN provider id', () => {
