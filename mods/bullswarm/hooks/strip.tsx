@@ -92,9 +92,13 @@ export function strip(
       {runs.map((run, i) => {
         const steps = stepsOf(run, model.assignments)
         const done = `${run.actionsSucceeded}/${run.actionsTotal}`
-        const running = steps
+        // One step in flight is named; the rest are counted, so the goal
+        // that says which run this is always stays on the row.
+        const named = steps
+          .slice(0, 1)
           .map(a => `${a.actionId ?? '?'}@${nameOf(a.pool)}${timingOf(a) ? ` ${timingOf(a)}` : ''}`)
           .join(', ')
+        const running = steps.length > 1 ? `${named}, and ${String(steps.length - 1)} more` : named
         const finished = run.status !== 'running'
         const selected = model.selectedShortId === run.shortId && model.paneOpen
 
