@@ -454,6 +454,8 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     usage: clone(record.usage ?? null),
     wallSec: record.wallSec ?? null,
     routing: clone(record.routing ?? null),
+    routeWhy: record.routeWhy ?? null,
+    routeCandidates: clone(record.routeCandidates ?? null),
     // The resolved {requested, applied, source, clamped} record, so the TUI
     // and the durable state show the level this attempt actually ran at.
     reasoning: clone(record.reasoning ?? null),

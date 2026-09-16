@@ -125,6 +125,11 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.equal(readEvents(result.runDir).filter((event) => event.type === 'presentation.stage_completed').length, 2);
   assert.equal(dispatch.calls(), 3);
   assert.equal(result.state.budget.seconds, 3);
+  assert.equal(result.state.attempts.length, 2);
+  for (const attempt of result.state.attempts) {
+    assert.equal(attempt.routeWhy, null);
+    assert.equal(attempt.routeCandidates, null);
+  }
   assert.ok(existsSync(join(result.runDir, 'goal.json')));
   assert.ok(existsSync(join(result.runDir, 'result.json')));
   assert.equal(readEvents(result.runDir).at(-1).type, 'workflow.finished');

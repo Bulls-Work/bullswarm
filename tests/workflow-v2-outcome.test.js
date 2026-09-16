@@ -135,11 +135,15 @@ test('result envelope carries the reasoning level of each action\'s last attempt
       id: 'write-report-1', actionId: 'write-report', ordinal: 1, status: 'failed',
       pool: 'alpha', model: 'alpha-sol', startedAt: '2026-08-31T01:01:00Z',
       reasoning: { requested: 'max', applied: 'max', source: 'action', clamped: false },
+      routeWhy: 'first fixture route',
+      routeCandidates: [],
     },
     {
       id: 'write-report-2', actionId: 'write-report', ordinal: 2, status: 'succeeded',
       pool: 'beta', model: 'beta-luna', startedAt: '2026-08-31T01:02:00Z',
       reasoning: { requested: 'max', applied: 'high', source: 'action', clamped: true },
+      routeWhy: 'retry fixture route',
+      routeCandidates: [{ pool: 'beta', effectiveSurplus: null, urgencyState: null, forecastPacingPct: null }],
     },
   ];
   state.ledger = applyEvidence(state.ledger, {
@@ -148,14 +152,24 @@ test('result envelope carries the reasoning level of each action\'s last attempt
 
   const result = createV2ResultEnvelope(state, { finishedAt: '2026-08-31T01:10:00Z' });
   assert.deepEqual(result.actions[0].reasoning, { requested: 'max', applied: 'high', source: 'action', clamped: true });
+  // The envelope reports the route the LAST attempt was dispatched under:
+  // a retry can land elsewhere, so the reason and candidate table follow it.
+  assert.equal(result.actions[0].routeWhy, 'retry fixture route');
+  assert.deepEqual(result.actions[0].routeCandidates, [{ pool: 'beta', effectiveSurplus: null, urgencyState: null, forecastPacingPct: null }]);
   // An action with no attempt at all reports null rather than inventing a level.
   assert.equal(result.actions[1].reasoning, null);
+  assert.equal(result.actions[1].routeWhy, null);
+  assert.equal(result.actions[1].routeCandidates, null);
   assert.deepEqual(deserializeV2ResultEnvelope(serializeV2ResultEnvelope(result)), result);
 
   // Envelopes written before reasoning levels existed still deserialize.
   const legacy = structuredClone(result);
   for (const action of legacy.actions) delete action.reasoning;
   assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(legacy)).actions.map((action) => action.id), ['write-report', 'check-report']);
+  // Envelopes written before route provenance existed still deserialize too.
+  const preroute = structuredClone(result);
+  for (const action of preroute.actions) { delete action.routeWhy; delete action.routeCandidates; }
+  assert.deepEqual(deserializeV2ResultEnvelope(JSON.stringify(preroute)).actions.map((action) => action.id), ['write-report', 'check-report']);
   const broken = structuredClone(result);
   broken.actions[0].reasoning = 'high';
   assert.throws(() => serializeV2ResultEnvelope(broken), /actions\[0\]\.reasoning must be an object/);
