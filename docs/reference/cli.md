@@ -1168,7 +1168,9 @@ bullswarm update
 | Flag | Meaning | Default |
 |---|---|---|
 | `--check` | only compare the installed version with the latest published one; changes nothing | off (upgrades) |
-| `--json` | machine-readable result: install `{kind: global\|pnpm-global\|checkout\|unknown, root, prefix}`, `before`, `latest`, `after`, `upToDate`, `updated`, `error`, `notes[]` | human-readable lines |
+| `--json` | machine-readable result: install `{kind: global\|pnpm-global\|checkout\|unknown, root, prefix}`, `verifiedAt`, `before`, `latest`, `after`, `upToDate`, `updated`, `error`, `notes[]` | human-readable lines |
+
+`install.root` is where the **running** copy was found. pnpm leaves that per-version store directory behind on upgrade, so it is not "where bullswarm lives now" — read `verifiedAt`, the copy `after` was read from, for that.
 
 Reads `https://registry.npmjs.org/bullswarm/latest` (8s timeout). Exit 0 = at the latest published version afterwards (or `--check` reported); exit 1 = registry, npm, pnpm or git refused, or the install shape is unknown. The running process keeps its old version; the next `bullswarm` command runs the new one.
 
