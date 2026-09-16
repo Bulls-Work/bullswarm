@@ -37,6 +37,8 @@ export type PaneModel = {
   rungs: readonly BullswarmRung[]
   /** The pools page is open instead of the run. */
   poolsPage: boolean
+  /** How that page groups the rungs. */
+  rungsBy: 'tier' | 'pool'
   readAt: number | null
   nowMs: number
   error: string | null
@@ -61,6 +63,8 @@ export type PaneActions = {
   scrollTo: (where: 'start' | 'end') => void
   /** Opens the pools page: every meter window and the model per tier. */
   openPools: () => void
+  /** Groups the rung table by effort tier (lane) or by pool. */
+  setRungsBy: (by: 'tier' | 'pool') => void
   back: () => void
   close: () => void
 }
@@ -234,7 +238,7 @@ export function paneView(
       switcher,
       dim('f1', 'read-only · adjust pools and rungs with `bullswarm setup` (or `bullswarm strategy`)'),
     ]
-    return frame(header, poolsPageRows({ Box, Text }, model, width, nameOf), footer)
+    return frame(header, poolsPageRows({ Box, Text, Button }, model, width, nameOf, actions), footer)
   }
 
   if (model.action) {
@@ -426,12 +430,13 @@ const paceWord = (usedPct: number, elapsedPct: number | null): { text: string; c
  * reasoning. Read-only: the footer names the command that changes it.
  */
 function poolsPageRows(
-  ui: Pick<PaneUi, 'Box' | 'Text'>,
+  ui: PaneUi,
   model: PaneModel,
   width: number,
   nameOf: (pool: string | null) => string,
+  actions: Pick<PaneActions, 'setRungsBy'>,
 ): RenderElement[] {
-  const { Box, Text } = ui
+  const { Box, Text, Button } = ui
   const rows: RenderElement[] = []
   const barWidth = Math.max(10, width - 4 - 8)
   for (const p of model.pools.filter(p => p.enabled)) {
@@ -470,37 +475,76 @@ function poolsPageRows(
     rows.push(<Text key={`x-${p.name}-b`}> </Text>)
   }
 
-  // Pool × tier: one row per rung, the model and reasoning each effort
-  // tier dispatches with, and what the local record says about it.
+  // The rungs: the model and reasoning each pool dispatches with per effort
+  // tier, and what the local record says about it, grouped by tier (the
+  // lane a task lands in) or by pool.
   const tiers = ['high', 'medium', 'low']
+  const enabled = model.pools.filter(p => p.enabled)
   const short = (m: string | null) => (m ? (m.split('/').pop() ?? m) : '—')
+  const recordOf = (r: BullswarmRung) =>
+    r.dispatches
+      ? `${String(r.dispatches)} run${r.dispatches === 1 ? '' : 's'}${r.okShare !== null ? ` · ${String(Math.round(r.okShare * 100))}% ok` : ''}${r.medianMinutes !== null ? ` · p50 ${String(Math.round(r.medianMinutes))}m` : ''}`
+      : 'no runs yet'
+  const rungRow = (key: string, _head: string, sub: string, r: BullswarmRung) => [
+    <Text key={key} wrap="truncate-end">
+      <Text>{'  '}</Text>
+      <Text dimColor>{sub.padEnd(16).slice(0, 16)}</Text>
+      <Text color="cyan">{short(r.model)}</Text>
+      <Text>{r.reasoning ? ` · ${r.reasoning}` : ''}</Text>
+    </Text>,
+    <Text key={`${key}-r`} dimColor wrap="truncate-end">
+      {' '.repeat(18)}
+      {recordOf(r)}
+    </Text>,
+  ]
+  // What each lane carries, from the program kinds table: the effort a
+  // kind resolves to decides the tier a step dispatches on.
+  const laneBlurb: Record<string, string> = {
+    high: 'integration · architecture · adversarial-acceptance',
+    medium: 'implement · check (the ordinary writers)',
+    low: 'mechanical · io-read · digest',
+  }
+  const poolBlurb = (p: BullswarmPool) => {
+    const meter = p.usedPct !== null && p.elapsedPct !== null ? `${String(Math.round(p.usedPct))}% used of ${String(Math.round(p.elapsedPct))}% elapsed` : 'no meter'
+    const window = p.pacingWindow === 'monthly' ? 'monthly' : p.pacingWindow === 'weekly' ? 'weekly' : p.pacingWindow ?? ''
+    return [window ? `${window} window` : '', meter, p.quarantine ? 'quarantined' : '', p.incumbentLane.length ? `incumbent for ${p.incumbentLane.join('/')}` : '']
+      .filter(Boolean)
+      .join(' · ')
+  }
   rows.push(
     <Text key="x-rungs" wrap="truncate-end">
-      <Text bold>Pool × tier</Text>
-      <Text dimColor> · model · reasoning · record</Text>
+      <Text bold>Rungs</Text>
+      <Text dimColor> · the model and reasoning each lane dispatches with, per pool</Text>
     </Text>,
+    <Box key="x-rungs-tabs" flexDirection="row" gap={1} flexWrap="nowrap">
+      <Button key="rungs-tier" plain label={model.rungsBy === 'tier' ? '[● by lane]' : '[by lane]'} onPress={() => actions.setRungsBy('tier')} />
+      <Button key="rungs-pool" plain label={model.rungsBy === 'pool' ? '[● by provider]' : '[by provider]'} onPress={() => actions.setRungsBy('pool')} />
+    </Box>,
   )
-  for (const p of model.pools.filter(p => p.enabled)) {
-    let first = true
+  const group = (key: string, title: string, blurb: string) => [
+    <Text key={`${key}-gap`}> </Text>,
+    <Text key={`${key}-title`} wrap="truncate-end">
+      <Text bold>{title}</Text>
+      <Text dimColor> · {blurb}</Text>
+    </Text>,
+  ]
+  if (model.rungsBy === 'tier') {
     for (const t of tiers) {
-      const r = model.rungs.find(x => x.pool === p.name && x.tier === t)
-      if (!r?.model) continue
-      const record = r.dispatches
-        ? `${String(r.dispatches)} run${r.dispatches === 1 ? '' : 's'}${r.okShare !== null ? ` · ${String(Math.round(r.okShare * 100))}% ok` : ''}${r.medianMinutes !== null ? ` · p50 ${String(Math.round(r.medianMinutes))}m` : ''}`
-        : 'no runs yet'
-      rows.push(
-        <Text key={`x-rung-${p.name}-${t}`} wrap="truncate-end">
-          <Text>{(first ? nameOf(p.name) : '').padEnd(16).slice(0, 16)}</Text>
-          <Text dimColor>{t.padEnd(8)}</Text>
-          <Text color="cyan">{short(r.model)}</Text>
-          <Text>{r.reasoning ? ` · ${r.reasoning}` : ''}</Text>
-        </Text>,
-        <Text key={`x-rung-${p.name}-${t}-r`} dimColor wrap="truncate-end">
-          {' '.repeat(24)}
-          {record}
-        </Text>,
-      )
-      first = false
+      const mine = enabled
+        .map(p => ({ p, r: model.rungs.find(x => x.pool === p.name && x.tier === t) }))
+        .filter((x): x is { p: BullswarmPool; r: BullswarmRung } => !!x.r?.model)
+      if (!mine.length) continue
+      rows.push(...group(`x-lane-${t}`, t, laneBlurb[t] ?? ''))
+      for (const { p, r } of mine) rows.push(...rungRow(`x-rung-${t}-${p.name}`, '', nameOf(p.name), r))
+    }
+  } else {
+    for (const p of enabled) {
+      const mine = tiers
+        .map(t => ({ t, r: model.rungs.find(x => x.pool === p.name && x.tier === t) }))
+        .filter((x): x is { t: string; r: BullswarmRung } => !!x.r?.model)
+      if (!mine.length) continue
+      rows.push(...group(`x-pool-${p.name}`, nameOf(p.name), poolBlurb(p)))
+      for (const { t, r } of mine) rows.push(...rungRow(`x-rung-${p.name}-${t}`, '', t, r))
     }
   }
   if (!model.rungs.length) rows.push(<Text key="x-rungs-none" dimColor>  reading rungs…</Text>)

@@ -63,7 +63,7 @@ claude mcp list
 
 Every step row is a button. Pressing it opens the step laid out as the TUI's agent panel: status, model and reasoning; pool, attempt and effort; the route reason; started, elapsed, last activity; the verdict or failure; the first lines of the task file; usage; the latest agent event; the tail of the output; and the task and output paths. `back` returns. `/bullswarm open <step> [run]` does the same from the keyboard.
 
-`usage` in the bottom nav (or the `Pools ▸` header) opens the usage page: every meter window of every pool (5h, 7d, monthly) as a bar with a white mark where the window's elapsed time falls, its reset time and pace, the credit meter where the provider counts credits, and one row per pool × tier rung with the model, the reasoning level and the local record. It is read-only: `bullswarm setup` or `bullswarm strategy` change it; a run button returns to the run.
+`usage` in the bottom nav (or the `Pools ▸` header) opens the usage page: every meter window of every pool (5h, 7d, monthly) as a bar with a white mark where the window's elapsed time falls, its reset time and pace, the credit meter where the provider counts credits, and the rungs (the model, reasoning level and local record per pool × tier) grouped by lane or by provider with two tabs. It is read-only: `bullswarm setup` or `bullswarm strategy` change it; a run button returns to the run.
 
 ### Load it
 
@@ -88,7 +88,7 @@ ln -sfn "$(npm root -g)/bullswarm/mods/bullswarm" ~/.claude/skills/bullswarm-mod
 
 ### `/bullswarm` subcommands
 
-The mod answers `/bullswarm` `pools`, `status`, `runs`, `pane`, `open <step> [run]`, `on`, `off`, `refresh`, and `routed`, and contributes `$.bullswarm` (`pools`, `refresh`, `runs`, `assignments`, `detail`, `step`, `rungs`, `run`) to other plugins.
+The mod answers `/bullswarm` `pools`, `status`, `runs`, `pane`, `open <step> [run]`, `on`, `off`, `refresh`, and `routed`, registers a `route` tool so Claude can switch routing off or on when you ask it to, and contributes `$.bullswarm` (`pools`, `refresh`, `runs`, `assignments`, `detail`, `step`, `rungs`, `run`) to other plugins.
 
 ### Options
 

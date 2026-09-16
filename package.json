@@ -36,11 +36,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cowcow02/bullswarm.git"
+    "url": "git+https://github.com/Bulls-Work/bullswarm.git"
   },
-  "homepage": "https://github.com/cowcow02/bullswarm#readme",
+  "homepage": "https://github.com/Bulls-Work/bullswarm#readme",
   "bugs": {
-    "url": "https://github.com/cowcow02/bullswarm/issues"
+    "url": "https://github.com/Bulls-Work/bullswarm/issues"
   },
   "keywords": [
     "ai",

@@ -100,6 +100,8 @@ export function register(on: On, options: PluginOptions = {}) {
   let rungs: BullswarmRung[] = []
   /** The pane shows the pools page instead of the run while this is set. */
   let poolsPage = false
+  /** How the usage page groups the rungs: by effort tier (lane) or by pool. */
+  let rungsBy: 'tier' | 'pool' = 'tier'
   let promptPreview: string[] = []
   let paneScroll: PaneScroll | null = null
   let autoRoute = true
@@ -369,6 +371,21 @@ export function register(on: On, options: PluginOptions = {}) {
 
     ready = refresh(h).finally(() => schedule(h))
 
+    // The person may ask Claude to stop or resume routing: a tool the model
+    // can call, the same switch as `/bullswarm on|off`.
+    await $.tool
+      .register({
+        name: 'route',
+        description:
+          'Switch bullswarm auto-routing of subagents on or off for this session, when the person asks. Off keeps every subagent in-session; on sends general-purpose subagents to the pool with spare quota. Report the resulting state.',
+        inputSchema: {
+          type: 'object',
+          properties: { on: { type: 'boolean', description: 'true to route, false to keep subagents in-session' } },
+          required: ['on'],
+        },
+      })
+      .catch(() => undefined)
+
     return next(e)
   })
 
@@ -626,6 +643,15 @@ export function register(on: On, options: PluginOptions = {}) {
     return { text: lines.join('\n') }
   })
 
+  on('tool.call', { tool: /^mcp__bullswarm__route$/ }, async ($, e) => {
+    const wanted = (e as { on?: unknown }).on === true
+    if (host) await setAutoRoute(host, wanted)
+    else autoRoute = wanted
+    return {
+      result: `bullswarm auto-route is now ${wanted ? 'on: general-purpose subagents route to the pool with spare quota' : 'off: subagents run in-session'} (the person can also type /bullswarm ${wanted ? 'off' : 'on'}).`,
+    }
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (stripLevel === 'off' || e.surface === 'mobile' || e.props.hasSurvey || pools.length === 0)
       return next(e)
@@ -695,6 +721,7 @@ export function register(on: On, options: PluginOptions = {}) {
         assignments,
         rungs,
         poolsPage,
+        rungsBy,
         readAt: overviewReadAt,
         nowMs,
         error: detailError,
@@ -723,6 +750,10 @@ export function register(on: On, options: PluginOptions = {}) {
           step = null
           paneOffset = 0
           if (h) settle(h)
+        },
+        setRungsBy: by => {
+          rungsBy = by
+          if (h) h.invalidate('ui.render')
         },
         openPools: () => {
           poolsPage = true
