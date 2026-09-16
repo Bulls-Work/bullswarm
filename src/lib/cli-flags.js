@@ -123,7 +123,7 @@ const TABLE = {
     'orchestrator-strict', 'strict-orchestrator', 'suggested-plan',
     'worker-pool', 'worker-model', 'worker-reasoning', 'planner-reasoning',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
-    'retry-attempts', 'resume', 'detach',
+    'retry-attempts', 'resume', 'detach', 'again',
   ],
   'workflow plan': [],
   'workflow plan contract': [

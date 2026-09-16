@@ -679,6 +679,8 @@ Without a program the command refuses (exit 2, nothing launched) unless `--scout
 
 Launches independently by default. `--resume <shortId|runId>` resumes a V2 run and is mutually exclusive with new goal text.
 
+A duplicate launch is refused before anything is validated or started: when an ongoing run in the same `--cwd` already has this goal text, the command exits 2 with that run's `shortId`, its age, and the command to watch it. `--json` prints `{"error":"duplicate-goal","shortId":…,"runId":…,"startedAt":…,"next":{"watch":…,"again":…}}`. Pass `--again` to start the second copy anyway.
+
 ```bash
 # Caller-planned launch that follows progress until terminal.
 bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch
@@ -711,6 +713,7 @@ bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --progra
 | `--retry-attempts <0..3>` | bounded retries for mechanical failures only; semantic evidence never auto-repairs | `1` |
 | `--resume <shortId\|runId>` | resume a V2 autonomous run; old autonomous runs fail closed before dispatch | starts a new goal |
 | `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
+| `--again` | start another copy even when an ongoing run already has the same goal text in the same `--cwd`; only a new launch is checked, never `--resume` or the internal `--request` relaunch | off (a duplicate of an ongoing goal is refused) |
 
 Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. Saved V2 runs keep their original completion and isolation policy when resumed.
 

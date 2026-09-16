@@ -816,7 +816,7 @@ const workflowText = rich({
 
 const workflowGoalText = rich({
   usage: 'bullswarm workflow goal "<goal>" (--program <file.json> [--scout] | --scout | --orchestrator auto|<pool>) '
-    + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options]  ·  bullswarm workflow goal --resume <shortId|runId>',
+    + '[--cwd <dir>] [--watch|--foreground] [--json] [planning options] [--again]  ·  bullswarm workflow goal --resume <shortId|runId>',
   purpose: 'Run an autonomous V2 goal end to end. You are the Workflow Planner: pass the program you '
     + 'authored (--program, from `workflow plan contract`) and the kernel validates it against the exact '
     + 'requirements, schedules the dependency graph in a shared workspace, and returns every action result. '
@@ -828,7 +828,9 @@ const workflowGoalText = rich({
     + 'agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its '
     + 'own it finishes, and its result hands back every unfinished step, open requirement, and unread '
     + 'steering with the commands to continue, retry, take over, or restart. '
-    + 'Launches independently by default so the caller is not blocked.',
+    + 'Launches independently by default so the caller is not blocked. Launching the same goal text in the '
+    + 'same cwd while that run is still going is refused (exit 2, nothing launched) with the running run\'s '
+    + 'shortId and its watch command; --again starts the copy anyway.',
   args: [
     { name: '"<goal>"', desc: 'the goal text, as one argument; not used (and not required) with --resume or the internal --request relaunch mode' },
   ],
@@ -858,6 +860,7 @@ const workflowGoalText = rich({
     { flag: '--retry-attempts <0..3>', desc: 'bounded retries for mechanical failures only; semantic evidence never auto-repairs', default: '1' },
     { flag: '--resume <shortId|runId>', desc: 'resume a V2 autonomous run; old autonomous runs fail closed before dispatch; mutually exclusive with new goal text', default: 'starts a new goal' },
     { flag: '--detach', desc: 'rarely needed — explicitly requests the default independent-launch behavior; cannot combine with --watch', default: 'the default launch already detaches' },
+    { flag: '--again', desc: 'start another copy even when an ongoing run already has the same goal text in the same --cwd; the lookup happens before anything is validated or launched, and only a new launch is checked', default: 'off (a duplicate of an ongoing goal is refused)' },
   ],
   safety: [
     'default launch writes ~/.bullswarm/goals/<runId>/ (request.json, launcher.json, stdout.log, '

@@ -10,6 +10,13 @@
   98% of the month gone was passed over while +3 points of quota expired).
   The skip reason now reads `expiring but draining (forecast >= 95% and past
   its clock): <pool> <forecast>% (<elapsed>% elapsed)`.
+- workflow goal: refuses to launch a duplicate of a run that is already going.
+  Before anything is validated or launched, an ongoing run with the same goal
+  text and cwd exits 2, naming that run's shortId, age, and watch command
+  (JSON: `{"error":"duplicate-goal",...}`); `--again` starts the copy anyway
+  (observed 2026-09-16: a caller whose JSON parser failed on the first
+  launch's output retried five seconds later and two identical workflows ran
+  side by side in the same directory).
 
 ## 0.32.0 — the dashboard is the main screen
 
