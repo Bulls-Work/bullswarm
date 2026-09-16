@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- workflow: every attempt record now carries `routeWhy` (the router's reason)
+  and `routeCandidates` (each pool's effective surplus, urgency state and
+  pacing forecast at pick time); `workflow action show --json` and
+  `runs result --json` print them, and older state files still load.
+
 - routing: a pool whose pacing window is about to reset is `draining` only
   when its forecast is at or above 95% *and* ahead of the window's own clock,
   the same clock-relative shape the 5h near-limit line already has. A pool on

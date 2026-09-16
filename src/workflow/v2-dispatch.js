@@ -343,6 +343,13 @@ export async function dispatchV2Action({
     const startedAt = new Date(now()).toISOString();
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
+      routeWhy: route.why,
+      routeCandidates: route.candidates.map((candidate) => ({
+        pool: candidate.pool,
+        effectiveSurplus: candidate.effectiveSurplus,
+        urgencyState: candidate.urgencyState,
+        forecastPacingPct: candidate.forecastPacingPct,
+      })),
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
       outFile: files.outFile, reasoning,
       routing: {
