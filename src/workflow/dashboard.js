@@ -61,9 +61,9 @@ function navigationFooter({
   const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
   const phaseNavigation = narrow && depth <= 2 && mobileTimeline;
   const phaseToggle = narrow && depth <= 2
-    ? ` · t ${mobileTimeline ? (dependencyGroups ? 'levels' : 'phases') : 'timeline'}`
+    ? ` · t ${mobileTimeline ? 'phases' : 'timeline'}`
     : '';
-  const movement = phaseNavigation ? `↑ previous ${dependencyGroups ? 'level' : 'phase'} · ↓ next ${dependencyGroups ? 'level' : 'phase'}` : `${keyHint('up')} · ${keyHint('down')}`;
+  const movement = phaseNavigation ? '↑ previous phase · ↓ next phase' : `${keyHint('up')} · ${keyHint('down')}`;
   const open = phaseNavigation ? `Enter ${timelineSelection === 0 ? 'planner' : 'agents'}` : keyHint('in');
   return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
 }
@@ -577,7 +577,7 @@ function runFrame(row, {
   const visiblePhases = panelWindow(['', ...phaseLines], model.phaseIndex, 1, contentHeight).slice(1);
   const visibleAgents = panelWindow(['', ...agentLines], model.agentIndex, 1, contentHeight).slice(1);
   const visibleDetail = detail.slice(scroll, scroll + contentHeight);
-  const phaseTitle = `${model.dependencyGroups ? 'Dependency levels' : 'Phases'} · ${model.phases.length}`;
+  const phaseTitle = `Phases · ${model.phases.length}`;
   const orchestrationNavLines = model.orchestrator.autonomous
     ? [
       selectLine(
@@ -857,7 +857,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
   add(state.lifecycle.startedAt, `${glyphs().ongoing} Goal accepted`, '', [
     ...goalLines,
     runDir ? `goal file · ${join(runDir, 'goal.json')}` : null,
-    model.dependencyGroups ? 'dependency levels may overlap as actions become ready' : 'preparing repository reconnaissance',
+    model.dependencyGroups ? 'phases may overlap as actions become ready' : 'preparing repository reconnaissance',
   ], 'Preflight');
   const eventByType = new Map();
   for (const event of model.events) {
@@ -886,7 +886,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
     const actionCount = (state.program?.actions ?? []).length;
     const levelCount = model.dependencyGroups ? model.stages.length : 0;
     const shape = event.payload?.ok && actionCount
-      ? `${actionCount} action${actionCount === 1 ? '' : 's'}${levelCount ? ` in ${levelCount} dependency level${levelCount === 1 ? '' : 's'}` : ''}`
+      ? `${actionCount} action${actionCount === 1 ? '' : 's'}${levelCount ? ` in ${levelCount} phase${levelCount === 1 ? '' : 's'}` : ''}`
       : null;
     add(
       event.committedAt,

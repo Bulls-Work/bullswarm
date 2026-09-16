@@ -453,13 +453,13 @@ test('V2 watch prints a program dependency level once and a verified presentatio
       program.emit('action.finished', { actionId: 'write-report', status: 'succeeded' });
       program.emit('presentation.stage_completed', {
         stageId: 'r1-level-1',
-        label: 'Level 1 · write-report',
+        label: 'Phase 1 · write-report',
         status: 'completed',
         completed: 1,
         total: 1,
       });
-      await waitUntil(() => watch.output.includes('Level 1 · write-report completed'), `program stage missing: ${watch.output}`);
-      assert.equal(watch.output.match(/Level 1 · write-report completed · 1\/1/g)?.length, 1, watch.output);
+      await waitUntil(() => watch.output.includes('Phase 1 · write-report completed'), `program stage missing: ${watch.output}`);
+      assert.equal(watch.output.match(/Phase 1 · write-report completed · 1\/1/g)?.length, 1, watch.output);
       assert.match(watch.output, /✓ write-report finished · 40s/);
     } finally { await settleWatch(program, watch); }
   } finally { program.cleanup(); }
@@ -480,7 +480,7 @@ test('V2 watch prints a program dependency level once and a verified presentatio
       verified.emit('action.finished', { actionId: 'write-report', status: 'succeeded' });
       await waitUntil(() => watch.output.includes('write-report finished'), `finish missing: ${watch.output}`);
       await sleep(200);
-      assert.doesNotMatch(watch.output, /Implementation completed|Level 1/);
+      assert.doesNotMatch(watch.output, /Implementation completed|Phase 1/);
       verified.emit('presentation.stage_completed', {
         stageId: 'r1-implementation',
         label: 'Implementation',
@@ -676,7 +676,7 @@ test('V2 --next --after replays a missed finish and its level once and skips a l
     });
     assert.equal(code, 0);
     assert.equal(replayed.match(/✓ write-report finished · 40s/g)?.length, 1, replayed);
-    assert.equal(replayed.match(/✓ Level 1 · write-report completed · 1\/1/g)?.length, 1, replayed);
+    assert.equal(replayed.match(/✓ Phase 1 · write-report completed · 1\/1/g)?.length, 1, replayed);
     assert.doesNotMatch(replayed, /watching/);
 
     // The same level is terminal on disk on the next relaunch, but it happened
@@ -689,7 +689,7 @@ test('V2 --next --after replays a missed finish and its level once and skips a l
     });
     assert.equal(nextCode, 0);
     assert.match(again, /◇ plan updated #2 · Second turn\./);
-    assert.doesNotMatch(again, /Level 1|write-report finished/);
+    assert.doesNotMatch(again, /Phase 1|write-report finished/);
   } finally { f.cleanup(); }
 });
 
