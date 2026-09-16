@@ -32,7 +32,7 @@ const ATTEMPT_FIELDS = new Set([
   'id', 'actionId', 'ordinal', 'status', 'pool', 'model', 'startedAt',
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
   'usage', 'routing', 'reasoning', 'continued', 'lastActivityAt', 'lastEventAt',
-  'outputBytesObserved', 'bytes', 'lastAgentEvent', 'wallSec',
+  'outputBytesObserved', 'bytes', 'lastAgentEvent', 'wallSec', 'routeWhy', 'routeCandidates',
 ]);
 // `state.attempts[].bytes` — the kernel's byte ledger for one dispatch, written
 // at dispatch and completed when the attempt ends (src/workflow/v2-runtime.js

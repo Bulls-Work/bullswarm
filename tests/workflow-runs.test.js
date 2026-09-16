@@ -38,6 +38,8 @@ import {
   SHORT_ID_ALPHABET, SHORT_ID_LEN,
 } from '../src/workflow/short-id.js';
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from '../src/workflow/status.js';
+import { deserializeV2DurableState } from '../src/workflow/v2-state.js';
+import { deserializeV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -163,6 +165,34 @@ test('I1: a new run gets a 6-char shortId in its durable V2 state', { timeout: 3
     const stateOnDisk = JSON.parse(readFileSync(join(only.runDir, 'state.json'), 'utf8'));
     assert.equal(stateOnDisk.shortId, only.shortId);
     assert.equal(resolveRunId(home, only.shortId).runId, only.runId);
+    const durable = deserializeV2DurableState(JSON.stringify(stateOnDisk));
+    assert.equal(durable.attempts.length, 2);
+    const envelope = deserializeV2ResultEnvelope(readFileSync(join(only.runDir, 'result.json'), 'utf8'));
+    const resultReadback = run(wf('runs', 'result', only.shortId, '--json'), { home });
+    assert.equal(resultReadback.status, 0, resultReadback.stderr || resultReadback.stdout);
+    const cliResult = JSON.parse(resultReadback.stdout);
+    for (const attempt of durable.attempts) {
+      assert.equal(typeof attempt.routeWhy, 'string');
+      assert.equal(attempt.routeWhy, attempt.routing.reason);
+      const candidates = attempt.routing.candidates.map(({ pool, effectiveSurplus, urgencyState, forecastPacingPct }) => ({ pool, effectiveSurplus, urgencyState, forecastPacingPct }));
+      assert.deepEqual(attempt.routeCandidates, candidates);
+      const actionReadback = run(wf('action', 'show', only.shortId, attempt.actionId, '--json'), { home });
+      assert.equal(actionReadback.status, 0, actionReadback.stderr || actionReadback.stdout);
+      const shownAttempt = JSON.parse(actionReadback.stdout).attempts.at(-1);
+      assert.equal(shownAttempt.routeWhy, attempt.routeWhy);
+      assert.deepEqual(shownAttempt.routeCandidates, candidates);
+      for (const result of [envelope, cliResult]) {
+        const action = result.actions.find((entry) => entry.id === attempt.actionId);
+        assert.equal(action.routeWhy, attempt.routeWhy);
+        assert.deepEqual(action.routeCandidates, candidates);
+      }
+    }
+    const legacy = structuredClone(durable);
+    for (const attempt of legacy.attempts) {
+      delete attempt.routeWhy;
+      delete attempt.routeCandidates;
+    }
+    assert.deepEqual(deserializeV2DurableState(JSON.stringify(legacy)), legacy);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
     cleanup();
