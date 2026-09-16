@@ -187,6 +187,8 @@ export function paneView(
     const contentRows = rows.length
     const offset = Math.max(0, Math.min(model.offset, Math.max(0, contentRows - windowRows)))
     const shown = rows.slice(offset, offset + windowRows)
+    // Pad a short body so the footer always sits on the pane's last rows.
+    while (shown.length < windowRows) shown.push(<Text key={`pad${String(shown.length)}`}> </Text>)
     const scrolled = offset > 0 || contentRows > offset + windowRows
     const position = scrolled ? ` · ${String(offset + 1)}–${String(offset + shown.length)}/${String(contentRows)}` : ''
     return {
@@ -364,20 +366,20 @@ export function paneView(
       </Text>
     )
   })
-  if (model.pools.length) {
-    rows.push(
-      <Text key="pools-rule" dimColor>
-        {rule}
-      </Text>,
-      <Box key="pools" flexDirection="row">
-        <Button key="pools-open" plain label="Pools ▸" onPress={actions.openPools} />
-        <Text dimColor wrap="truncate-end">
-          {' '}· used/elapsed · pace · ▏ marks elapsed · click for every window and the model per tier
-        </Text>
-      </Box>,
-      ...poolRows({ Box, Text }, model.pools, model.assignments, model.names),
-    )
-  }
+  const poolsFooter: RenderElement[] = model.pools.length
+    ? [
+        <Text key="pools-rule" dimColor>
+          {rule}
+        </Text>,
+        <Box key="pools" flexDirection="row">
+          <Button key="pools-open" plain label="Pools ▸" onPress={actions.openPools} />
+          <Text dimColor wrap="truncate-end">
+            {' '}· used/elapsed · pace · ▏ marks elapsed · click for every window and the model per tier
+          </Text>
+        </Box>,
+        ...poolRows({ Box, Text }, model.pools, model.assignments, model.names),
+      ]
+    : []
 
   const header: RenderElement[] = [
     <Text key="h0" wrap="truncate-end">
@@ -398,6 +400,7 @@ export function paneView(
   ]
   if (model.error) header.push(plain('err', model.error, 'red'))
   const footer: RenderElement[] = [
+    ...poolsFooter,
     switcher,
     dim('f1', `click a step to open it · bullswarm workflow watch ${run.shortId} --next`),
   ]
