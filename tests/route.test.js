@@ -868,25 +868,45 @@ test('expiring soon: grok wins the lane it lost on surplus (R11, 2026-09-11 repl
   );
 });
 
-test('an expiring pool forecast through the 95% line is draining, not urgent', () => {
-  // Same grok, same 0.75/min rate, 90% of the week already spent: the
-  // 8-minute candidate lands it at 96%. Feeding it one more run would spend
-  // the run's next attempt on a quota failure.
-  const pools = septemberPools({ grok: { usedPct: 90 } });
+test('an expiring pool forecast through the 95% line and past its clock is draining, not urgent', () => {
+  // Same grok, same 0.75/min rate, 93.5% of the week already spent with 98.8%
+  // of it elapsed: the 8-minute candidate lands it at 99.5%, ahead of its own
+  // clock. Feeding it one more run would spend the run's next attempt on a
+  // quota failure.
+  const pools = septemberPools({ grok: { usedPct: 93.5 } });
   const r = pickPool('build', pools, septemberOpts);
   const g = r.candidates.find((c) => c.pool === 'grok');
   assert.deepEqual(
     [g.expiringSoon, g.urgencyState, g.forecastPacingPct, g.effectiveSurplus],
-    [true, 'draining', 96, 2.8],   // 8.8 − 6
+    [true, 'draining', 99.5, -0.7],   // 5.3 − 6
   );
   assert.equal(r.pick.pool, 'claude-code:acme');
-  assert.match(r.why, /expiring but draining \(forecast >= 95%\): grok 96/);
+  assert.match(r.why, /expiring but draining \(forecast >= 95% and past its clock\): grok 99\.5% \(98\.8% elapsed\)/);
   assert.equal(r.candidates.at(-1).pool, 'grok');  // ranked behind everyone
 
   // Only when nothing else is eligible is a draining pool still named:
   // returning no pick would strand the action.
   const alone = pickPool('build', [pools[0]], septemberOpts);
   assert.equal(alone.pick.pool, 'grok');
+});
+
+test('past the 95% line but under its clock, an expiring pool is on pace and stays urgent', () => {
+  // The 2026-09-16 command-code case in grok's clothes: 90% spent, the
+  // 8-minute candidate lands it at 96% — over the fixed line, but 98.8% of
+  // the week has elapsed, so the pool is spending at its own pace and the
+  // 4% it still holds is about to expire. It keeps the lane.
+  const pools = septemberPools({ grok: { usedPct: 90 } });
+  const r = pickPool('build', pools, septemberOpts);
+  const g = r.candidates.find((c) => c.pool === 'grok');
+  assert.deepEqual(
+    [g.expiringSoon, g.urgencyState, g.forecastPacingPct, g.effectiveSurplus],
+    [true, 'urgent', 96, 2.8],   // 8.8 − 6
+  );
+  // Both expiring pools are urgent; acme's 22.9 over 8.1% of its week (283)
+  // still outranks grok's 2.8 over 1.2% (233), so grok is second, not last.
+  assert.deepEqual(r.candidates.slice(0, 2).map((c) => c.pool), ['claude-code:acme', 'grok']);
+  assert.equal(r.pick.pool, 'claude-code:acme');
+  assert.doesNotMatch(r.why, /draining/);
 });
 
 test('outside the lead time nothing changes: grok 30h from its reset ranks as today', () => {
@@ -1036,8 +1056,10 @@ test('a reset seconds away divides by the floor, never by zero', () => {
   const r = pickPool('build', [edge], { now: NOW, callerEligible: false, callerSession: false });
   const c = r.candidates[0];
   assert.equal(c.urgency, 400);           // 2 / 0.005, not 2 / 0.00005
-  // 98% of the week spent with seconds to go: expiring, and draining with it.
-  assert.deepEqual([c.expiringSoon, c.urgencyState, c.forecastPacingPct], [true, 'draining', 98]);
+  // 98% of the week spent with seconds to go: expiring, over the fixed line
+  // but under its clock, so not draining; with no measured rate and no
+  // headroom under the line it is not urgent either — it ranks as normal.
+  assert.deepEqual([c.expiringSoon, c.urgencyState, c.forecastPacingPct], [true, 'normal', 98]);
   for (const [key, value] of Object.entries(c)) {
     assert.ok(
       typeof value !== 'number' || Number.isFinite(value),

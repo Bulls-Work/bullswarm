@@ -75,10 +75,18 @@
 //                    rate the reading must also sit 5 points under that line,
 //                    because an unmeasured pool's forecast is only its
 //                    reading. Ranks ahead of every pool not expiring soon.
-//         draining — forecast at/above the line: ranked after every normal
+//         draining — forecast at/above the line AND above the share of the
+//                    pacing window already elapsed (clock-relative, exactly
+//                    as R10 makes the 5h line): ranked after every normal
 //                    pool and chosen only when nothing else is eligible, so a
 //                    pool about to be emptied is not fed one more run that
-//                    would push it over the wall.
+//                    would push it over the wall. A pool whose forecast sits
+//                    at/above the line but still under its clock is spending
+//                    at its own pace and about to be handed a fresh window,
+//                    so it is not draining. (Observed 2026-09-16: command-code,
+//                    94.9% used with 98% of the month elapsed — +3.1 on pace,
+//                    15h to its reset — was ranked draining by the fixed line
+//                    and the 5% it had left was going to expire unspent.)
 //         normal   — expiring soon but on or ahead of pace: ranked with
 //                    everyone else on effective surplus, exactly as today.
 //       Urgency outranks incumbency (R3/R4/R9) and a configured effort
@@ -126,7 +134,10 @@ export const EXPIRING_SOON_MS = {
 /**
  * Pacing-window forecast at/above which an expiring-soon pool is `draining`
  * rather than `urgent`: its window is about to close AND about to be emptied,
- * so one more run spends the run's next attempt on a quota failure.
+ * so one more run spends the run's next attempt on a quota failure. The line
+ * is clock-relative (R11, as R10 makes the 5h line): a forecast at/above it
+ * counts as draining only while it is also above the window's elapsed share,
+ * so a pool on or behind pace keeps spending right up to its reset.
  */
 export const PACING_FORECAST_BLOCK_PCT = 95;
 
@@ -588,8 +599,15 @@ export function expiringSoonView(pool, opts = {}) {
   const trusted =
     pacing.ratePerMinute != null ||
     (used != null && used <= PACING_FORECAST_BLOCK_PCT - UNMEASURED_URGENT_HEADROOM_PCT);
+  // Draining is clock-relative: at/above the block line AND ahead of the
+  // window's own clock. With no elapsed reading there is no clock, and the
+  // fixed line stands (R8).
+  const draining =
+    forecast != null
+    && forecast >= PACING_FORECAST_BLOCK_PCT
+    && (elapsed == null || forecast > elapsed);
   const state =
-    forecast != null && forecast >= PACING_FORECAST_BLOCK_PCT ? 'draining'
+    draining ? 'draining'
     : eff > 0 && forecast != null && trusted ? 'urgent'
     : 'normal';
   return {
@@ -1011,8 +1029,10 @@ function routingReason(
     // R11: a pool whose window is about to close was passed over anyway,
     // because the run would spend what little it has left through the wall.
     clauses.push(
-      `expiring but draining (forecast >= ${PACING_FORECAST_BLOCK_PCT}%): ${skippedDraining
-        .map((e) => `${e.pool.name} ${pacingPctText(e)}`)
+      `expiring but draining (forecast >= ${PACING_FORECAST_BLOCK_PCT}% and past its clock): ${skippedDraining
+        .map((e) => `${e.pool.name} ${pacingPctText(e)}${
+          num(e.pool?.elapsedPct) != null ? ` (${num(e.pool.elapsedPct).toFixed(1)}% elapsed)` : ''
+        }`)
         .join(', ')}`,
     );
   }
