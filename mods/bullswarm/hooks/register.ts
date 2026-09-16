@@ -29,6 +29,8 @@ import { parseVerdict, verdictContext } from './verdict'
 
 const COMMAND = 'bullswarm'
 const PANE_ID = 'bullswarm'
+/** Body rows the pane asks for while inline above the prompt. */
+const PANE_ROWS = 40
 const PANE_TITLE = 'bullswarm runs'
 const STORE_AUTO_ROUTE = 'bullswarm.autoRoute'
 /** The words the mod answers on `/bullswarm`; anything else is the skill's. */
@@ -92,6 +94,8 @@ export function register(on: On, options: PluginOptions = {}) {
   let outputTail: string | null = null
   let paneColumns = 100
   let paneRows = 30
+  /** The body rows the pane really has, learned from the engine's report (see the render hook). */
+  let paneWant: number | null = null
   /** The overview's own window: the first scrollable row shown, and its extent. */
   let paneOffset = 0
   /** The open step as `action show` reports it, and the head of its task file. */
@@ -232,7 +236,10 @@ export function register(on: On, options: PluginOptions = {}) {
   async function openPane(h: Host, shortId: string | null) {
     if (shortId && shortId !== selectedShortId) selectedActionId = null
     selectedShortId = shortId ?? selectedShortId ?? runs[0]?.shortId ?? null
-    await h.openPane({ id: PANE_ID, title: PANE_TITLE, holdToasts: true })
+    // Seated inline (a phone terminal, a narrow window) the pane asks for
+    // most of the screen: the engine grants what the layout spares, and the
+    // dock beside a wide transcript ignores the request.
+    await h.openPane({ id: PANE_ID, title: PANE_TITLE, holdToasts: true, rows: PANE_ROWS })
     paneOpen = true
     settle(h)
     await readDetail(h)
@@ -693,15 +700,25 @@ export function register(on: On, options: PluginOptions = {}) {
     const selected = runs.find(r => r.shortId === selectedShortId) ?? runs[0] ?? null
 
     // The frame is sized to the pane; a resize re-reads at the new size.
-    const resized = paneColumns !== e.props.bodyColumns || paneRows !== e.props.scroll.bodyRows
+    // The engine reports the body as the lesser of the rows it granted and
+    // the rows the tree drew, so a tree sized to the report would only ever
+    // shrink. The tree carries blank probe rows past its footer; the report
+    // is then the grant itself, and the frame is laid out to that.
+    const reported = e.props.scroll.bodyRows
+    const grew = reported > 0 && reported !== paneWant
+    if (grew) paneWant = reported
+    const resized = paneColumns !== e.props.bodyColumns || paneRows !== reported
     paneColumns = e.props.bodyColumns
-    paneRows = e.props.scroll.bodyRows
+    paneRows = reported
+    const bodyRows = paneWant ?? Math.max(reported, 5)
 
     // The engine still shows the pane across a module reload: adopt it, and
     // read the frame the fresh environment does not have yet.
     if ((!paneOpen || resized) && h) {
       paneOpen = true
       void readDetail(h).then(() => settle(h))
+    } else if (grew && h) {
+      settle(h)
     }
 
     const action = selectedActionId ? (detail?.actions.find(a => a.id === selectedActionId) ?? null) : null
@@ -727,7 +744,7 @@ export function register(on: On, options: PluginOptions = {}) {
         error: detailError,
         names,
         offset: paneOffset,
-        bodyRows: e.props.scroll.bodyRows,
+        bodyRows,
       },
       {
         select: shortId => {
