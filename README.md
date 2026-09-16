@@ -55,7 +55,9 @@ as a Claude Mod (a plugin of TypeScript function hooks, behind
 prompt, the pools named in the model's context, Claude's general-purpose
 subagents routed to whichever pool has surplus and answered with the
 verified output, and the verdict appended to every `bullswarm run` the model
-runs. See [mods/bullswarm/README.md](mods/bullswarm/README.md).
+runs. The Mod is the dashboard's read-only counterpart: the same Run, Step and
+Usage pages in the same meter colours, with no edit or install action. See
+[mods/bullswarm/README.md](mods/bullswarm/README.md).
 
 Three ways to load it:
 
@@ -77,6 +79,16 @@ CLI on `PATH`. Pick one route: an installed marketplace copy takes precedence
 over the skills-dir link, and Claude says so at startup.
 
 ## Quick start
+
+Once setup is complete, bare `bullswarm` opens the dashboard on its Home page.
+Use `bullswarm --setup` or `bullswarm setup` to open setup again, and use
+`bullswarm workflow tui` when you want the explicit dashboard command. The
+pages are Home, Run, Step, Usage, and Help. A sticky header and bottom nav
+(`1. [ <run> ] … [ usage ] ?. [ help ] [ quit ]`, each button's key
+underlined in its label or written ahead of it) carry `q` (quit), `?` (help),
+`u` (usage), `e` (edit), `i` (install), `l`/`p` (Usage tabs), arrows or
+PgUp/PgDn (scroll), and Enter; click any button, tab, run or step, or use the
+wheel to scroll.
 
 One bounded outcome — a task with a clear finish line:
 
@@ -174,6 +186,11 @@ full shape of both.
 The full documentation is published at
 [bulls-work.github.io/bullswarm](https://bulls-work.github.io/bullswarm/).
 
+The dashboard is the main screen after setup: bare `bullswarm` opens Home,
+`bullswarm --setup` or `bullswarm setup` opens setup, and
+`bullswarm workflow tui` is the explicit form. The [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing)
+page maps its pages, keys, and mouse controls.
+
 | Page | What it covers |
 |---|---|
 | [Introduction](https://bulls-work.github.io/bullswarm/guide/) | What Bullswarm is, the two entry points, and the four rules it never breaks |
@@ -181,14 +198,14 @@ The full documentation is published at
 | [Concepts](https://bulls-work.github.io/bullswarm/guide/concepts) | Pools, lanes, surplus, the two windows, verdicts, quarantine, and the run directory |
 | [Run one task](https://bulls-work.github.io/bullswarm/guide/run) | Every `bullswarm run` option, and what each verdict asks you to do |
 | [Workflows](https://bulls-work.github.io/bullswarm/guide/workflows) | Authoring the program `workflow goal` executes: territories, dependencies, integration, acceptance |
-| [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) | `workflow watch`, listing and inspecting runs, the interactive dashboard, terminal glyphs |
+| [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) | `workflow watch`, the Home/Run/Step/Usage/Help dashboard pages, keys, mouse, and terminal glyphs |
 | [Routing](https://bulls-work.github.io/bullswarm/guide/routing) | How a pool is picked: pace, 5-hour headroom, urgency, load, quarantine |
 | [CLI reference](https://bulls-work.github.io/bullswarm/reference/cli) | Every verb and nested subcommand, with its flags and defaults |
 | [Workflow program](https://bulls-work.github.io/bullswarm/reference/program) | The `bullswarm.workflow.program.v2` document: action fields, kinds, validation rules |
 | [Configuration](https://bulls-work.github.io/bullswarm/reference/configuration) | The Bullswarm home, `state.json`, strategy models and rungs, environment variables |
 | [Providers](https://bulls-work.github.io/bullswarm/reference/providers) | Adding your own agent CLI or reseller account as a provider plugin |
 | [Result envelope](https://bulls-work.github.io/bullswarm/reference/result) | Every field of `run --json` and of the workflow result document |
-| [Claude Code](https://bulls-work.github.io/bullswarm/integrations/claude-code) | The packaged skill, the MCP server, and the Claude Mod under `mods/bullswarm` |
+| [Claude Code](https://bulls-work.github.io/bullswarm/integrations/claude-code) | The packaged skill, the MCP server, and the read-only Claude Mod counterpart under `mods/bullswarm` |
 | [Codex and Grok](https://bulls-work.github.io/bullswarm/integrations/agent-clis) | What `bullswarm integrate` writes for each agent CLI, and how to check it |
 | [Issue watcher](https://bulls-work.github.io/bullswarm/integrations/issue-watcher) | The launchd agent that triages and fixes new GitHub issues |
 | [Historical notes](https://bulls-work.github.io/bullswarm/notes/) | Working notes, audits, and experiment writeups, kept as records |

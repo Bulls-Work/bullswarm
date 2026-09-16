@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install Bullswarm, verify your pools, and read the verdict from your first run.
+description: Install Bullswarm, open its dashboard, verify your pools, and read the verdict from your first run.
 ---
 
 # Getting started
@@ -55,6 +55,16 @@ bullswarm integrate status
 `--agents codex,claude,grok` limits the action to a subset; the default is all three. The awareness rule is also what stops an agent Bullswarm launched from re-delegating into a recursive swarm. `bullswarm integrate remove --yes` reverses the install.
 
 ## Your first run
+
+The first time you run bare `bullswarm`, it opens setup so the agent CLIs and
+pools can be discovered. Once that configuration exists, bare `bullswarm`
+opens the dashboard on Home; `bullswarm --setup` or `bullswarm setup` opens
+setup again. The explicit dashboard form is `bullswarm workflow tui`.
+The dashboard's Home, Run, Step, Usage, and Help pages share a sticky header
+and bottom nav with `q`, `?`, `u`, `e`, `i`, `l`/`p`, arrows, `PgUp`/`PgDn`,
+and Enter; click its buttons, tabs, runs, or steps, or use the wheel. In
+Claude Code, the Mod is the same dashboard's read-only counterpart: the Run,
+Step, and Usage pages in the same colours, with no edit or install action.
 
 ```bash
 # one read-only analysis task, routed to the best pool and verified

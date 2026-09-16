@@ -56,8 +56,10 @@ export const UNDOCUMENTED_FLAGS = Object.freeze({
 // the decision), so adding a command means adding its row here.
 const TABLE = {
   // --- src/cli.js ---------------------------------------------------------
-  // Bare `bullswarm` dispatches to cmdSetup(), so it accepts setup's flags.
-  '': ['wizard', 'yes', 'strategy', 'integrate', 'agents', 'json'],
+  // Bare `bullswarm` opens the dashboard on a configured machine and
+  // dispatches to cmdSetup() otherwise, so it accepts setup's flags plus
+  // `--setup`, which forces the setup path from a configured terminal.
+  '': ['wizard', 'setup', 'yes', 'strategy', 'integrate', 'agents', 'json'],
   setup: ['wizard', 'yes', 'strategy', 'integrate', 'agents', 'json'],
   run: [
     'lane', 'add-dir', 'task-file', 'prompt', 'effort', 'reasoning', 'timeout',

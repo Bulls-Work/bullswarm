@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, read
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { dashboardRows, renderDashboard, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard } from '../src/workflow/dashboard.js';
+import { dashboardModel, dashboardRows, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard } from '../src/workflow/dashboard.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
 import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
@@ -288,68 +288,38 @@ test('all-runs ordering uses the V2 lifecycle start time and keeps the initial l
   } finally { cleanup(); }
 });
 
-test('direct V2 run IDs initially select the unified list shell before drilldown', async () => {
+test('a run ID passed to the dashboard opens that run on the Run page', async () => {
   const { home, cleanup } = fixture();
   try {
     addV2HistoricalRun(home);
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      setRawMode() {}
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns = 120;
-      rows = 30;
-      text = '';
-      write(chunk) { this.text += chunk; }
-    }
-    const input = new FakeInput();
-    const output = new FakeOutput();
-    const running = runDashboard(home, { token: 'v2n456', input, output, refreshMs: 60_000 });
-    assert.match(output.text, /Runs · all/);
-    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
-    assert.match(output.text, /Workflow timeline/);
-    input.emit('data', Buffer.from('\r'));
-    assert.match(output.text, /Phases ·/);
-    input.emit('data', Buffer.from('\u001b'));
-    assert.match(output.text, /Runs · all/);
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
+    const session = shellSession(home, { columns: 120, rows: 30, token: 'v2n456' });
+    const runPage = lastFrame(session.output);
+    assert.match(frameHeader(runPage), /^ v2n456 completed · .* · 0\/0 actions · done/);
+    assert.match(plain(runPage), /Workflow timeline/);
+    session.press('\r'); // the run page opens its agents
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
+    session.press(ESC_KEY); // and out to Home, where the run is listed
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
+    assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
 
-test('recent-list V2 selection opens the unified overview before phase drilldown', async () => {
+test('recent-list V2 selection opens that run on the Run page', async () => {
   const { home, cleanup } = fixture();
   try {
     addHistoricalRun(home);
     addV2HistoricalRun(home);
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      setRawMode() {}
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns = 120;
-      rows = 30;
-      text = '';
-      write(chunk) { this.text += chunk; }
-    }
-    const input = new FakeInput();
-    const output = new FakeOutput();
-    const running = cmdWorkflow([], { bullswarmDir: home, input, output });
-
-    input.emit('data', Buffer.from('a')); // active -> all
-    input.emit('data', Buffer.from('\u001b[B')); // active run -> newer V2 run
-    assert.match(output.text, /Runs · all/);
-    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
-    input.emit('data', Buffer.from('\r'));
-    assert.match(output.text, /Phases ·/);
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    session.press('a'); // active -> all
+    session.press('\u001b[B'); // active run -> newer V2 run
+    assert.match(plain(lastFrame(session.output)), /Runs · all/);
+    assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
+    session.press('\r');
+    assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
+    assert.match(plain(lastFrame(session.output)), /Phases ·/);
+    assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
 
@@ -358,42 +328,15 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
   try {
     addV2HistoricalRun(home);
 
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      setRawMode() {}
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns;
-      rows = 30;
-      text = '';
-      constructor(columns) { super(); this.columns = columns; }
-      write(chunk) { this.text += chunk; }
-    }
-    const session = (columns, token = 'v2n456') => {
-      const input = new FakeInput();
-      const output = new FakeOutput(columns);
-      const running = runDashboard(home, { token, input, output, refreshMs: 60_000 });
-      const press = (key) => {
-        const before = output.text.length;
-        input.emit('data', Buffer.from(key));
-        return output.text.slice(before);
-      };
-      return { press, quit: () => { press('q'); return running; } };
-    };
-
-    // Desktop: list -> phase/agent detail -> planner -> technical planner.
-    const desktop = session(120);
-    assert.match(desktop.press('\r'), /Phases ·/);
+    // Desktop: the run page -> its agents -> the planner -> technical planner.
+    const desktop = shellSession(home, { columns: 120, rows: 30, token: 'abc234' });
+    assert.match(desktop.press('\r'), /Implementation · 0\/1 complete/);
     assert.match(desktop.press('o'), /Workflow Planner · overview/);
     assert.match(desktop.press('v'), /Workflow Planner · technical details/);
     assert.equal(await desktop.quit(), 0);
 
-    // Mobile: the selected run opens on the timeline, then t exposes phases.
-    const mobile = session(80);
-    assert.match(mobile.press('\r'), /Workflow timeline/);
+    // Mobile: the run page opens on the timeline, t exposes the phases.
+    const mobile = shellSession(home, { columns: 80, rows: 30, token: 'abc234' });
     assert.match(mobile.press('t'), /Phases ·/);
     assert.doesNotMatch(mobile.press('t'), /Phases ·/);
     assert.match(mobile.press('t'), /Phases ·/);
@@ -402,15 +345,12 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
     // Bare active view: no active rows show the explicit recent-runs escape.
     const emptyHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-empty-'));
     addV2HistoricalRun(emptyHome);
-    const input = new FakeInput();
-    const output = new FakeOutput(120);
-    const running = runDashboard(emptyHome, { input, output, refreshMs: 60_000 });
-    assert.match(output.text, /Press a to browse recent runs\./);
-    input.emit('data', Buffer.from('a'));
-    assert.match(output.text, /Runs · all/);
-    assert.match(output.text, /v2n456 · Newer V2 dashboard run/);
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
+    const empty = shellSession(emptyHome, { columns: 120, rows: 30 });
+    assert.match(plain(lastFrame(empty.output)), /Press a to browse recent runs\./);
+    empty.press('a');
+    assert.match(plain(lastFrame(empty.output)), /Runs · all/);
+    assert.match(plain(lastFrame(empty.output)), /v2n456 · Newer V2 dashboard run/);
+    assert.equal(await empty.quit(), 0);
     rmSync(emptyHome, { recursive: true, force: true });
   } finally { cleanup(); }
 });
@@ -488,36 +428,22 @@ test('workflow TUI honors terminal widths below the previous 38-column floor', (
   } finally { cleanup(); }
 });
 
-test('interactive TUI uses alternate screen and q only detaches the viewer', async () => {
+test('the interactive TUI takes the alternate screen with mouse reporting, and q only detaches', async () => {
   const { home, cleanup } = fixture();
   try {
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      rawModes = [];
-      setRawMode(value) { this.rawModes.push(value); }
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns = 110;
-      rows = 26;
-      text = '';
-      write(chunk) { this.text += chunk; }
-    }
-    const input = new FakeInput();
-    const output = new FakeOutput();
-    const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
-    input.emit('data', Buffer.from('\r')); // phase -> agent
-    input.emit('data', Buffer.from('\r')); // agent -> detail
-    input.emit('data', Buffer.from('\u001b')); // detail -> agent
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
-    assert.deepEqual(input.rawModes, [true, false]);
-    assert.match(output.text, /\x1b\[\?1049h/);
-    assert.match(output.text, /\x1b\[\?1049l/);
-    assert.match(output.text, /Agents · r refresh/);
-    assert.match(output.text, /audit-files · planner-agent/);
+    const session = shellSession(home, { columns: 110, rows: 26, token: 'abc234' });
+    // SGR mouse reporting is asked for with the alternate screen.
+    assert.equal(session.output.text.includes('\x1b[?1000h\x1b[?1006h'), true);
+    session.press('\r'); // run -> its agents
+    session.press('\r'); // agents -> the selected step
+    assert.match(frameHeader(lastFrame(session.output)), /audit-files · run abc234/);
+    session.press(ESC_KEY);
+    assert.equal(await session.quit(), 0);
+    assert.deepEqual(session.input.rawModes, [true, false]);
+    assert.match(session.output.text, /\x1b\[\?1049h/);
+    assert.match(session.output.text, /\x1b\[\?1049l/);
+    // Leaving releases the mouse and shows the cursor again.
+    assert.match(session.output.text, /\x1b\[\?1006l\x1b\[\?1000l\x1b\[\?25h\x1b\[\?1049l/);
     // Detaching the viewer never asks the kernel to stop.
     assert.equal(existsSync(join(home, 'workflows', 'wf-test', 'cancellation.json')), false);
   } finally { cleanup(); }
@@ -527,39 +453,22 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
   const { home, cleanup } = fixture();
   try {
     addHistoricalRun(home);
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      rawModes = [];
-      setRawMode(value) { this.rawModes.push(value); }
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns = 60;
-      rows = 26;
-      text = '';
-      write(chunk) { this.text += chunk; }
-    }
-    const input = new FakeInput();
-    const output = new FakeOutput();
-    const running = cmdWorkflow([], { bullswarmDir: home, input, output });
-    input.emit('data', Buffer.from('a')); // active -> all
-    input.emit('data', Buffer.from('\u001b[B')); // select historical
-    input.emit('data', Buffer.from('\r')); // open timeline
-    input.emit('data', Buffer.from('\u001b')); // back to runs
-    input.emit('data', Buffer.from('/'));
-    input.emit('data', Buffer.from('docs'));
-    input.emit('data', Buffer.from('\r'));
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
-    assert.deepEqual(input.rawModes, [true, false]);
-    assert.match(output.text, /Runs · all/);
-    assert.match(output.text, /def345 · Audit documentation/);
-    assert.match(output.text, /Workflow timeline/);
-    assert.match(output.text, /Showing workflows matching “docs”/);
-     assert.match(output.text, /Enter open · \/ filter · a active\/all · q detach/);
-    assert.match(output.text, /\x1b\[\?1049l/);
+    const session = shellSession(home, { columns: 60, rows: 26 });
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    session.press('a'); // active -> all
+    session.press('\u001b[B'); // select the historical run
+    session.press('\r'); // open it on the Run page
+    session.press(ESC_KEY); // back to Home
+    session.press('/');
+    session.press('def');
+    session.press('\r');
+    assert.match(plain(lastFrame(session.output)), /Showing workflows matching “def”/);
+    assert.match(plain(lastFrame(session.output)), /Runs · all/);
+    assert.match(plain(lastFrame(session.output)), /def345 · Audit documentation/);
+    assert.match(session.output.text, /Workflow timeline/);
+    assert.equal(await session.quit(), 0);
+    assert.deepEqual(session.input.rawModes, [true, false]);
+    assert.match(session.output.text, /\x1b\[\?1049l/);
   } finally { cleanup(); }
 });
 
@@ -625,62 +534,31 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
       appendEvent(join(home, 'workflows', 'wf-test'), state, 'action.finished', { actionId: action.id, status: 'succeeded' });
     }
     writeFileSync(statePath, JSON.stringify(state));
-    class FakeInput extends EventEmitter {
-      isTTY = true;
-      setRawMode() {}
-      resume() {}
-      pause() {}
-    }
-    class FakeOutput extends EventEmitter {
-      isTTY = true;
-      columns = 80;
-      rows = 26;
-      text = '';
-      write(chunk) { this.text += chunk; }
-    }
-    const input = new FakeInput();
-    const output = new FakeOutput();
-    const running = runDashboard(home, { token: 'abc234', input, output, refreshMs: 60_000 });
-    // A V2 run opens on the unified list; Enter drills into its overview.
-    input.emit('data', Buffer.from('\r'));
-    const timelineText = output.text;
-    let frameStart = output.text.length;
-    input.emit('data', Buffer.from('\x1b[B')); // first target: Preflight
-    const preflightText = output.text.slice(frameStart);
-    frameStart = output.text.length;
-    input.emit('data', Buffer.from('\x1b[C')); // Preflight opens Workflow Planner
-    const plannerText = output.text.slice(frameStart);
-    input.emit('data', Buffer.from('\x1b')); // planner -> selected Preflight
-    frameStart = output.text.length;
-    input.emit('data', Buffer.from('\x1b[B')); // next target: Phase 1
-    const focusedTimeline = output.text.slice(frameStart);
-    frameStart = output.text.length;
-    input.emit('data', Buffer.from('\x1b[C')); // open selected phase's agents
-    const agentsText = output.text.slice(frameStart);
-    input.emit('data', Buffer.from('\x1b')); // agents -> timeline
-    input.emit('data', Buffer.from('t'));
-    const phasesText = output.text;
-    input.emit('data', Buffer.from('q'));
-    assert.equal(await running, 0);
-    assert.match(timelineText, /Workflow timeline/);
-    assert.match(timelineText, /t phases/);
-    assert.match(timelineText, /↑ previous phase · ↓ next phase/);
-    assert.match(timelineText, /Enter agents/);
-    assert.doesNotMatch(timelineText, /t phases · t timeline/);
+    const session = shellSession(home, { columns: 80, rows: 26, token: 'abc234' });
+    const timelineText = lastFrame(session.output);
+    // The narrow run page opens on the timeline; ↓ selects its first segment.
+    session.press('\u001b[B');
+    const preflightText = lastFrame(session.output);
+    session.press('\u001b[C'); // the selected Preflight opens the Workflow Planner
+    const plannerText = lastFrame(session.output);
+    session.press(ESC_KEY); // and back out to the timeline
+    session.press('\u001b[B');
+    session.press('\u001b[C'); // the selected phase opens its agents
+    const agentsText = lastFrame(session.output);
+    session.press(ESC_KEY);
+    session.press('t');
+    const phasesText = lastFrame(session.output);
+    assert.equal(await session.quit(), 0);
+    assert.match(plain(timelineText), /Workflow timeline/);
     assert.match(preflightText, /\x1b\[7m── Preflight/);
-    assert.match(preflightText, /Enter planner/);
     assert.match(plannerText, /Workflow Planner · overview/);
-    assert.match(focusedTimeline, /\x1b\[7m── Phase 1 · Implementation/);
     assert.match(agentsText, /Implementation · 1\/1 complete/);
-    const visibleWidths = timelineText
-      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-      .split('\n')
+    const visibleWidths = paintedRows(timelineText)
       .filter((line) => line.includes('│') || line.includes('┐') || line.includes('┘'))
       .map((line) => line.length);
-    assert.ok(visibleWidths.every((lineWidth) => lineWidth <= output.columns - 1), 'mobile frames reserve the terminal wrap column');
-    assert.match(phasesText, /Phases · 2/);
-    assert.match(phasesText, /t timeline/);
-    assert.doesNotMatch(phasesText, /t phases · t timeline/);
+    assert.ok(visibleWidths.every((lineWidth) => lineWidth <= 80 - 1), 'mobile frames reserve the terminal wrap column');
+    assert.match(plain(phasesText), /Phases · 2/);
+    assert.doesNotMatch(plain(phasesText), /Workflow timeline/);
   } finally { cleanup(); }
 });
 
@@ -781,130 +659,210 @@ function shellFixture() {
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
-// A rendered screen opens with the clear/home escape; an in-place repaint frame
-// does not. Both start their first visible row with the breadcrumb.
-function visibleLines(screen) {
-  const lines = plain(screen).split('\n');
-  return lines[0] === '' ? lines.slice(1) : lines;
+// The painted rows of one frame: the clear/home escape a repaint opens with
+// renders nothing, so the header is the first row and the nav the last.
+function paintedRows(screen) {
+  const rows = plain(screen).split('\n');
+  if (rows[0] === '') rows.shift();
+  return rows;
 }
 
-function breadcrumbOf(screen) {
-  const [first] = visibleLines(screen);
-  return String(first ?? '').replace(/\s+$/, '');
+/** The sticky header: the first painted row of the frame. */
+function frameHeader(screen) {
+  return String(paintedRows(screen)[0] ?? '').replace(/\s+$/, '');
 }
 
-function crumbSegments(screen) {
-  return breadcrumbOf(screen).split('›').map((segment) => segment.trim()).filter(Boolean);
+/** The sticky bottom nav as its `[ label ]` buttons, marks included. */
+function navButtons(screen) {
+  const nav = plain(String(paintedRows(screen).at(-1) ?? ''));
+  return [...nav.matchAll(/\[ ([^\]]*?) \]/g)].map((match) => match[1].trim());
 }
 
-function footerOf(screen) {
-  const lines = visibleLines(screen).filter((line) => line.trim());
-  return String(lines.at(-1) ?? '').trim();
+/** The last frame written to a fake output, with its leading paint escape. */
+function lastFrame(output) {
+  const frames = output.text.split('\x1b[H');
+  return frames[frames.length - 1];
 }
 
-// Keys that belong to the hierarchy-wide grammar. Screen-specific keys (t, o,
-// v, /, a, r, c, PgUp/PgDn) are deliberately excluded: they are not the same
-// action everywhere, and `t` is one toggle that prints both of its labels.
-const SHARED_KEYS = ['↑', '↓', 'Enter', 'Esc', 'Shift+Tab', 'Tab', 'q'];
-
-function hintLabels(screen) {
-  const footer = footerOf(screen);
-  const labels = new Map();
-  for (const key of SHARED_KEYS) {
-    // tolerate a hint that spells out its aliases (`Enter/→/l open`) and a
-    // token that pairs two bindings (`Tab next workflow/Shift+Tab previous …`)
-    const pattern = new RegExp(`(?:^|[\\s·/])${key.replace('+', '\\+')}(?:/\\S+)?\\s+([^·/]+)`, 'g');
-    const found = [...footer.matchAll(pattern)].map((match) => match[1].trim());
-    if (found.length) labels.set(key, found);
+/** Clicks the first painted occurrence of `needle`, the way a mouse would. */
+function clickOn(session, needle) {
+  const rows = paintedRows(lastFrame(session.output)).map(plain);
+  for (const [index, row] of rows.entries()) {
+    const at = row.indexOf(needle);
+    if (at < 0) continue;
+    session.press(`\x1b[<0;${at + 1};${index + 1}M`);
+    return { x: at + 1, y: index + 1 };
   }
-  return labels;
+  throw new Error(`"${needle}" is not painted in the frame:\n${rows.join('\n')}`);
 }
 
-test('the breadcrumb names the location at list, run, phase, and agent depth', () => {
+/** The next macrotask, so an async usage read can land before an assertion. */
+const settle = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+test('every page paints its own sticky header, and the nav marks the run and the page', () => {
   const { home, cleanup } = shellFixture();
   try {
-    const rows = dashboardRows(home);
+    const rows = dashboardRows(home, { all: true });
     const row = rows.find((entry) => entry.runId === 'wf-alpha');
     assert.ok(row, 'the fixture run is listed');
+    const model = dashboardModel(row, {
+      runs: rows.filter((entry) => entry.ongoing),
+      usage: usageFixture(),
+      integration: { ok: true, agents: [] },
+    });
+    const page = (name, extra = {}) => renderDashboardPage(model, {
+      page: name, width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha', ...extra,
+    }).lines.join('\n');
 
-    const list = breadcrumbOf(renderDashboard({ rows, selected: 0, width: 200, height: 30 }));
-    const [run, phase, agent] = [0, 1, 2].map((focus) =>
-      breadcrumbOf(renderWorkflowTui(row, { width: 200, height: 30, focus })));
+    // The header names the page: the product on Home, the run on Run, the step
+    // on Step (`✓ id · run <id>`), the meter sample on Usage.
+    assert.match(frameHeader(page('home')), /^ bullswarm · home/);
+    assert.match(frameHeader(page('run')), /^ aaa111 running · .* · 1\/3 actions/);
+    assert.match(frameHeader(page('step')), /^ .* build-alpha · run aaa111$/);
+    assert.match(frameHeader(page('usage')), /^ Pools · sampled 3m ago$/);
+    assert.match(frameHeader(page('help')), /^ bullswarm · help$/);
 
-    // the list is the root of the hierarchy and names nothing below itself
-    assert.equal(list, ' Workflows');
-    // one run segment identifies the run the way `runs` does: id · workflow
-    assert.equal(crumbSegments(renderWorkflowTui(row, { width: 200, height: 30 }))[1], 'aaa111 · unified-shell');
-    // the run depth is not an agent location
-    assert.doesNotMatch(run, /build-alpha/);
-    // the phase depth names the phase, the agent depth names the agent
-    assert.ok(phase.includes('Implementation'), `phase breadcrumb lost its phase: ${phase}`);
-    assert.ok(agent.endsWith('build-alpha'), `agent breadcrumb lost its agent: ${agent}`);
-    // drilling in only ever extends the path it came from
-    assert.ok(run.startsWith(list), `${run} does not extend ${list}`);
-    assert.ok(phase.startsWith(run), `${phase} does not extend ${run}`);
-    assert.ok(agent.startsWith(phase), `${agent} does not extend ${phase}`);
-  } finally { cleanup(); }
-});
+    // One button per ongoing run, then usage, help and quit — the current run
+    // and the current page carrying the mark.
+    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', 'usage', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('run')), ['● aaa111', 'bbb222', 'usage', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('usage')), ['aaa111', 'bbb222', '● usage', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', 'usage', '● help', 'quit']);
+    // Step prepends the way back out.
+    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', 'usage', 'help', 'quit']);
 
-test('a breadcrumb wider than the terminal drops its deepest segments first', () => {
-  const { home, cleanup } = shellFixture();
-  try {
-    const row = dashboardRows(home).find((entry) => entry.runId === 'wf-alpha');
-    const deepest = (width) => renderWorkflowTui(row, { width, height: 30, focus: 2 });
-
-    assert.deepEqual(crumbSegments(deepest(200)),
-      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
-    // the agent and its phase go before the run that contains them
-    assert.deepEqual(crumbSegments(deepest(40)), ['Workflows', 'aaa111 · unified-shell']);
-    // and the root survives a terminal too narrow for anything else
-    assert.deepEqual(crumbSegments(deepest(24)), ['Workflows']);
-
-    const full = crumbSegments(deepest(200));
-    for (const width of [24, 32, 40, 60, 80, 200]) {
-      const screen = deepest(width);
-      const segments = crumbSegments(screen);
-      assert.ok(segments.length >= 1, `width ${width} rendered no breadcrumb`);
-      // whatever survives is the shallow prefix of the full path, never a hole
-      assert.deepEqual(segments, full.slice(0, segments.length), `width ${width} truncated out of order`);
-      assert.ok([...breadcrumbOf(screen)].length <= width, `width ${width} breadcrumb overflows`);
+    for (const name of ['home', 'run', 'step', 'usage', 'help']) {
+      const frame = renderDashboardPage(model, {
+        page: name, width: 100, height: 26, rows, allRows: rows, selectedRunId: 'wf-alpha',
+      });
+      assert.ok(frame.lines.length <= 26, `${name} painted ${frame.lines.length} rows`);
+      assert.match(plain(frame.lines.at(-1)), /\[ quit \]/, `${name} lost its bottom nav`);
     }
   } finally { cleanup(); }
 });
 
-test('one shared key reads the same on the list, run, phase, and agent screens', () => {
+test('every nav button is prefixed by its underlined key, and digits open runs in nav order', () => {
   const { home, cleanup } = shellFixture();
   try {
-    const rows = dashboardRows(home);
+    const rows = dashboardRows(home, { all: true });
     const row = rows.find((entry) => entry.runId === 'wf-alpha');
-    const screens = {
-      list: renderDashboard({ rows, selected: 0, width: 200, height: 30 }),
-      run: renderWorkflowTui(row, { width: 200, height: 30, focus: 0 }),
-      phase: renderWorkflowTui(row, { width: 200, height: 30, focus: 1 }),
-      agent: renderWorkflowTui(row, { width: 200, height: 30, focus: 2 }),
-    };
+    const model = dashboardModel(row, {
+      runs: rows.filter((entry) => entry.ongoing),
+      usage: usageFixture(),
+      integration: { ok: true, agents: [] },
+    });
+    const frame = renderDashboardPage(model, {
+      page: 'home', width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
+    });
+    const nav = String(frame.lines.at(-1));
+    const key = (text) => `\x1b[4m${text}\x1b[24m`;
+    assert.match(nav, new RegExp(`${key('1')}\\. \\[ ● aaa111 \\]`.replace(/\x1b\[/g, '\\x1b\\[')));
+    assert.ok(nav.includes(`${key('2')}. [ bbb222 ]`), 'the second run carries 2.');
+    assert.ok(nav.includes(`[ ${key('u')}sage ]`), 'usage underlines its u');
+    assert.ok(nav.includes(`${key('?')}. [ help ]`), 'help carries ?. ahead, its key not being a letter of it');
+    assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
+    const step = renderDashboardPage(model, {
+      page: 'step', width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
+    });
+    assert.ok(String(step.lines.at(-1)).includes(`[ ${key('b')}ack ]`), 'back underlines its b');
 
-    // every wording a key is given, on every screen that offers it
-    const seen = new Map();
-    for (const [name, screen] of Object.entries(screens)) {
-      for (const [key, found] of hintLabels(screen)) {
-        for (const label of found) seen.set(key, [...(seen.get(key) ?? []), { name, label }]);
+    // The digit a button shows is the digit that opens that run.
+    const session = shellSession(home, { columns: 100, rows: 24 });
+    session.press('2');
+    assert.match(frameHeader(lastFrame(session.output)), / bbb222 running/);
+    session.press('1');
+    assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
+    session.press('q');
+  } finally { cleanup(); }
+});
+
+test('Usage and Help open with no run selected: a fresh install with no runs, or only finished ones', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-empty-'));
+  try {
+    mkdirSync(join(home, 'workflows'), { recursive: true });
+    const session = shellSession(home, { columns: 100, rows: 24 });
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    session.press('u');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    session.press('?');
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help$/);
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    clickOn(session, '[ usage ]');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    clickOn(session, '[ quit ]');
+    assert.equal(await session.running, 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a frame never paints past the terminal, at any page or width', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const model = dashboardModel(row, {
+      runs: rows,
+      usage: usageFixture(),
+      integration: { ok: false, agents: [{ agent: 'codex', skill: { status: 'missing' }, awareness: false }] },
+    });
+
+    for (const width of [32, 60, 80, 100, 200]) {
+      for (const name of ['home', 'run', 'step', 'usage', 'help']) {
+        const screen = renderDashboardPage(model, {
+          page: name, width, height: 30, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
+          phaseIndex: 1, agentIndex: 0,
+        }).lines.join('\n');
+        const overflow = paintedRows(screen).filter((line) => [...line].length > width);
+        assert.deepEqual(overflow, [], `width ${width} ${name} overflowed`);
+        // Whatever the width, the header survives and the nav is drawn whole.
+        assert.ok(frameHeader(screen).trim().length > 0, `width ${width} ${name} painted no header`);
+        assert.match(plain(paintedRows(screen).at(-1)), /\[ quit \]/, `width ${width} ${name} lost its nav`);
       }
     }
+  } finally { cleanup(); }
+});
 
-    // the grammar is genuinely shared, not one hint compared with itself
-    for (const key of ['↑', 'Enter', 'Esc', 'Tab', 'Shift+Tab', 'q']) {
-      assert.ok((seen.get(key) ?? []).length >= 2, `${key} is not part of the shared footer grammar`);
+test('the nav records a hit region for every button, run row and step row', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const model = dashboardModel(row, { runs: rows, usage: usageFixture() });
+
+    const runFrame = renderDashboardPage(model, {
+      page: 'run', width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
+    });
+    const nav = runFrame.regions.filter((region) => region.y === runFrame.lines.length);
+    assert.deepEqual(nav.map((region) => region.action.kind), ['open-run', 'open-run', 'page', 'page', 'quit']);
+    assert.deepEqual(nav.map((region) => region.action.page).filter(Boolean), ['usage', 'help']);
+    for (const region of nav) {
+      const painted = plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2);
+      assert.match(painted, /^([1-9?]\. )?\[ .+ \]$/, `${painted} is not a whole button`);
     }
+    // Every step row the timeline prints opens that step.
+    const steps = runFrame.regions.filter((region) => region.action.kind === 'open-step');
+    assert.ok(steps.length >= 2, `expected the timeline step rows to be clickable: ${steps.length}`);
+    assert.deepEqual(new Set(steps.map((region) => region.action.actionId)), new Set(['scan', 'build-alpha']));
 
-     // Every shared binding has one label at every hierarchy depth.
-    assert.deepEqual(new Set(seen.get('↑').map(({ label }) => label)), new Set(['move up']));
-    assert.deepEqual(new Set(seen.get('↓').map(({ label }) => label)), new Set(['move down']));
-    assert.deepEqual(new Set(seen.get('Esc').map(({ label }) => label)), new Set(['move out']));
-     assert.deepEqual(new Set(seen.get('Enter').map(({ label }) => label)), new Set(['open']));
-      assert.deepEqual(new Set(seen.get('Shift+Tab').map(({ label }) => label)), new Set(['previous workflow']));
-     assert.deepEqual(new Set(seen.get('Tab').map(({ label }) => label)), new Set(['next workflow']));
-     assert.deepEqual(new Set(seen.get('q').map(({ label }) => label)), new Set(['detach']));
+    // The Home run rows open their run, and the Usage tabs switch grouping.
+    const homeFrame = renderDashboardPage(model, {
+      page: 'home', width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
+    });
+    const runRows = homeFrame.regions.filter((region) => region.action.kind === 'open-run'
+      && region.y !== homeFrame.lines.length);
+    assert.deepEqual(runRows.map((region) => region.action.runId), ['wf-alpha', 'wf-beta']);
+    assert.equal(plain(homeFrame.lines[runRows[0].y - 1]).slice(runRows[0].x1 - 1, runRows[0].x2).includes('aaa111'), true);
+
+    const usageFrame = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 });
+    const tabs = usageFrame.regions.filter((region) => region.action.kind === 'rungs');
+    assert.deepEqual(tabs.map((region) => region.action.by), ['lane', 'provider']);
+    const tabsRow = plain(usageFrame.lines[tabs[0].y - 1]);
+    assert.equal(tabsRow.slice(tabs[0].x1 - 1, tabs[0].x2), '[● by lane]');
+    assert.equal(tabsRow.slice(tabs[1].x1 - 1, tabs[1].x2), '[by provider]');
+    // `[edit]` in the read-only note is the key e button.
+    const edit = usageFrame.regions.find((region) => region.action.kind === 'edit');
+    assert.equal(plain(usageFrame.lines[edit.y - 1]).slice(edit.x1 - 1, edit.x2), '[edit]');
+    assert.equal(edit.y, usageFrame.lines.length - 1, 'the note sits right above the nav');
   } finally { cleanup(); }
 });
 
@@ -913,87 +871,135 @@ test('one shared key reads the same on the list, run, phase, and agent screens',
 // that key produced — nothing else can have painted in between.
 const ESC_KEY = String.fromCharCode(27);
 
-function shellSession(home, { columns = 120, rows = 30 } = {}) {
-  const width = columns;
-  const height = rows;
+/** Two pools and their rungs: the shape `loadUsage` hands the pages. */
+function usageFixture(nowMs = Date.now()) {
+  const at = (ms) => new Date(nowMs + ms).toISOString();
+  return {
+    pools: [
+      {
+        name: 'relay', enabled: true, usedPct: 32, elapsedPct: 27, pace: 5.4, pacingWindow: 'weekly',
+        incumbentLane: ['build'], quarantine: null,
+        meterSnapshot: {
+          captured_at: at(-3 * 60_000), plan_type: 'max',
+          five_hour: { utilization: 32, resets_at: at(3_600_000) },
+          seven_day: { utilization: 55, resets_at: at(2 * 86_400_000) },
+          monthly_quota: { used: 63.5, limit: 70, unit: 'credits' },
+        },
+      },
+      {
+        name: 'codex', enabled: false, usedPct: 81, elapsedPct: 60, pace: -21, pacingWindow: 'monthly',
+        incumbentLane: [], quarantine: null, meterSnapshot: null,
+      },
+    ],
+    assignments: [{ pool: 'relay', actionId: 'build-alpha', lane: 'build' }],
+    rungs: [
+      { pool: 'relay', tier: 'high', model: 'vendor/gpt-5.6-luna', reasoning: 'high', dispatches: 3, okShare: 0.67, medianMinutes: 12 },
+      { pool: 'relay', tier: 'medium', model: 'vendor/gpt-5.6-mini', reasoning: 'medium', dispatches: 0, okShare: null, medianMinutes: null },
+    ],
+    capturedAt: at(-3 * 60_000),
+  };
+}
+
+function shellSession(home, {
+  columns = 120, rows = 30, token = null, homeDir = home, openSetupTui = null,
+} = {}) {
   class FakeInput extends EventEmitter {
     isTTY = true;
-    setRawMode() {}
+    rawModes = [];
+    setRawMode(value) { this.rawModes.push(value); }
     resume() {}
     pause() {}
   }
   class FakeOutput extends EventEmitter {
     isTTY = true;
-    columns = width;
-    rows = height;
     text = '';
+    constructor(width, height) { super(); this.columns = width; this.rows = height; }
     write(chunk) { this.text += chunk; }
   }
   const input = new FakeInput();
-  const output = new FakeOutput();
-  const running = runDashboard(home, { input, output, refreshMs: 60_000 });
+  const output = new FakeOutput(columns, rows);
+  const running = runDashboard(home, {
+    input, output, refreshMs: 60_000, token, homeDir, openSetupTui,
+  });
   const press = (key) => {
     const before = output.text.length;
     input.emit('data', Buffer.from(key));
     return output.text.slice(before);
   };
-  const drillToAgent = () => {
-    press('\r'); // workflows list -> run
-    press('\r'); // run -> phase
-    return press('\r'); // phase -> agent
-  };
-  return { input, output, running, press, drillToAgent, quit: () => { press('q'); return running; } };
+  return { input, output, running, press, quit: () => { press('q'); return running; } };
 }
 
-test('Tab re-enters the sibling workflow at the depth it was left at', async () => {
+test('Tab re-enters the sibling run at the page it was left on', async () => {
   const { home, cleanup } = shellFixture();
   try {
-    const session = shellSession(home);
-    const atAgent = session.drillToAgent();
-    assert.match(atAgent, /Agent activity · r refresh/);
-    assert.deepEqual(crumbSegments(atAgent),
-      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
+    const session = shellSession(home, { token: 'wf-alpha' });
+    session.press('\r'); // run -> agents
+    session.press('\r'); // agents -> the selected step
+    const atStep = lastFrame(session.output);
+    assert.match(frameHeader(atStep), /build-alpha · run aaa111/);
 
     const sibling = session.press('\t');
     assert.ok(sibling.length, 'Tab repainted the screen');
-    // same depth, same phase, the sibling workflow's own agent
-    assert.match(sibling, /Agent activity · r refresh/);
-    assert.deepEqual(crumbSegments(sibling),
-      ['Workflows', 'bbb222 · sibling-run', 'Implementation', 'build-beta']);
-    assert.equal(crumbSegments(sibling).length, crumbSegments(atAgent).length);
+    // same page, the sibling workflow's own agent, marked current in the nav
+    assert.match(frameHeader(sibling), /build-beta · run bbb222/);
+    const buttons = navButtons(sibling);
+    assert.equal(buttons[0], 'back', 'the sibling is entered at the same depth');
+    assert.ok(buttons.includes('● bbb222'), `the sibling is the current run: ${buttons.join(' ')}`);
+    assert.ok(!buttons.includes('● aaa111'));
     assert.doesNotMatch(sibling, /build-alpha/);
 
-    // and Shift+Tab comes back the same way, still at agent depth
+    // and Shift+Tab comes back the same way, still on the step page
     const back = session.press(`${ESC_KEY}[Z`);
-    assert.match(back, /Agent activity · r refresh/);
-    assert.deepEqual(crumbSegments(back),
-      ['Workflows', 'aaa111 · unified-shell', 'Implementation', 'build-alpha']);
+    assert.match(frameHeader(back), /build-alpha · run aaa111/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
 
-test('Esc walks out exactly one level: agent to phase to run to the workflows list', async () => {
+test('Enter walks in and Esc walks out one page at a time', async () => {
   const { home, cleanup } = shellFixture();
   try {
-    const session = shellSession(home);
-    assert.match(session.drillToAgent(), /Agent activity · r refresh/);
+    const session = shellSession(home, { token: 'wf-alpha' });
+    assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
 
-    const phase = session.press(ESC_KEY);
-    assert.match(phase, /Agents · r refresh/);
-    assert.doesNotMatch(phase, /Agent activity · r refresh/); // not two levels at once
-    assert.doesNotMatch(phase, /Runs · active/); // and not all the way out
-    assert.match(breadcrumbOf(phase), /^ Workflows › aaa111 · unified-shell/);
+    session.press('\r'); // run -> its agents
+    session.press('\r'); // agents -> the selected step
+    assert.match(frameHeader(lastFrame(session.output)), /build-alpha · run aaa111/);
+    assert.equal(navButtons(lastFrame(session.output))[0], 'back');
 
-    const run = session.press(ESC_KEY);
-    assert.match(run, /Timeline · auto-following newest event/);
-    assert.doesNotMatch(run, /Agents · r refresh/);
-    assert.doesNotMatch(run, /Runs · active/);
-    assert.match(breadcrumbOf(run), /^ Workflows › aaa111 · unified-shell/);
+    const run = session.press(ESC_KEY); // step -> the run's agents
+    assert.match(frameHeader(run), / aaa111 running/);
+    assert.ok(!navButtons(run).includes('back'), 'the step page was left behind');
+    assert.doesNotMatch(run, /bullswarm · home/);
 
-    const list = session.press(ESC_KEY);
-    assert.match(list, /Runs · active/);
-    assert.doesNotMatch(list, /Timeline · auto-following newest event/);
-    assert.equal(breadcrumbOf(list), ' Workflows');
+    const timeline = session.press(ESC_KEY); // agents -> the run's timeline
+    assert.match(frameHeader(timeline), / aaa111 running/);
+    assert.doesNotMatch(timeline, /bullswarm · home/);
+
+    const list = session.press(ESC_KEY); // run -> home
+    assert.match(frameHeader(list), /^ bullswarm · home/);
+    assert.doesNotMatch(list, /Workflow timeline/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('the Help page names every key, and the keys the nav buttons carry open them', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { token: 'wf-alpha' });
+    session.press('?');
+    const help = plain(lastFrame(session.output));
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help$/);
+    for (const key of ['u · ?', 'q', 'Tab / Shift+Tab', '1–9']) assert.ok(help.includes(key), `the help page lost ${key}`);
+    // ? -> help -> Esc -> home -> u -> usage -> Esc -> home
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    session.press('u');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    // the digit a nav button carries opens that run
+    session.press('2');
+    assert.match(frameHeader(lastFrame(session.output)), / bbb222 running/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -1673,7 +1679,7 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
     // claims there is anything newer below the viewport.
     assert.match(pane.filter((line) => line.trim()).at(-1), /work-tail/);
     assert.deepEqual(pane.filter((line) => line.includes('newer timeline rows')), []);
-    assert.match(plain(following), /Timeline · auto-following newest event/);
+    assert.match(frameHeader(following), /^ lng234 /);
 
     // Scrolling back holds older rows in place and says how much is newer.
     const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 22, detailScroll: 4 }));
@@ -1739,5 +1745,183 @@ test('a narrow terminal wraps the agent detail pane to its full width, not the s
     assert.match(wide, /audit-files · planner-agent/);
     // Wide layout is unchanged: two panels side by side on every body row.
     assert.ok(wide.split('\n').some((line) => /^│.*││.*│$/.test(line)));
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// The pages the mod asked for: the Usage page with its meter windows, rungs,
+// tabs and read-only note; the Home install button; the mouse; and the setup
+// hand-off. Each page is a pure function of a model, so every expectation
+// below is a frame the terminal would paint verbatim.
+// ---------------------------------------------------------------------------
+
+test('the Usage page draws every meter window, the rungs, the tabs and the read-only note', () => {
+  const usage = usageFixture();
+  const model = dashboardModel(null, { usage });
+  const frame = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 });
+  const text = plain(frame.lines.join('\n'));
+
+  assert.match(frameHeader(text), /^ Pools · sampled 3m ago$/);
+  // Every window of the enabled pool: its bar, its used%, its reset time and
+  // the pace word the elapsed mark implies, then the credit meter.
+  assert.match(text, /relay · max/);
+  assert.match(text, /5h {2}/);
+  assert.match(text, /32\.0%/);
+  assert.match(text, /resets 1h00m · slow \+48pp/);
+  assert.match(text, /7d {2}/);
+  assert.match(text, /55\.0%/);
+  assert.match(text, /hot −28pp/);
+  assert.match(text, /63\.5 \/ 70 credits/);
+  // A disabled pool draws no windows.
+  assert.doesNotMatch(text, /codex/);
+  // The rungs with the local record, under the two tabs, the active one marked.
+  assert.match(text, /Rungs · model · reasoning · record, per lane and pool/);
+  assert.match(text, /\[● by lane\] \[by provider\]/);
+  assert.match(text, /gpt-5\.6-luna · high/);
+  assert.match(text, /3 runs · 67% ok · p50 12m/);
+  assert.match(text, /high · integration · architecture · adversarial-acceptance/);
+  // The note is whole, wrapped, right above the nav.
+  assert.equal(plain(frame.lines.at(-2)), 'read-only here · [edit] opens bullswarm setup');
+  assert.match(plain(frame.lines.at(-1)), /\[ ● usage \]/);
+
+  const byProvider = renderDashboardPage(model, { page: 'usage', width: 100, height: 30, rungsBy: 'provider' });
+  const providerText = plain(byProvider.lines.join('\n'));
+  assert.match(providerText, /\[by lane\] \[● by provider\]/);
+  assert.match(providerText, /relay · weekly window · 32% used of 27% elapsed/);
+});
+
+test('meters are background-coloured cells, and the compact rows use them too', () => {
+  const usage = usageFixture();
+  const model = dashboardModel(null, { usage });
+  const usagePage = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 }).lines.join('\n');
+  // #b6bd73 below 50% used, #e9c880 from 50%, #bf6c69 from 80%, track #3a3a3a.
+  assert.ok(usagePage.includes('\x1b[48;2;182;189;115m'), 'the green fill is a background-coloured cell');
+  assert.ok(usagePage.includes('\x1b[48;2;233;200;128m'), 'the amber fill is a background-coloured cell');
+  assert.ok(usagePage.includes('\x1b[48;2;58;58;58m'), 'the track is a background-coloured cell');
+  assert.match(usagePage, /\x1b\[38;2;255;255;255m▏/, 'the elapsed mark is a white ▏');
+
+  const rows = [{ runId: 'wf-alpha', shortId: 'aaa111', ongoing: true, state: {} }];
+  const home = renderDashboardPage(dashboardModel(null, { runs: rows, usage }), {
+    page: 'home', width: 100, height: 30, rows, allRows: rows,
+  }).lines.join('\n');
+  assert.match(home, /Pools ▸/);
+  assert.ok(home.indexOf('\x1b[48;2;182;189;115m') > home.indexOf('relay'), 'the pool row carries a filled bar');
+  assert.ok(home.includes('\x1b[48;2;58;58;58m'), 'and the same track behind it');
+  assert.doesNotMatch(home, /█/, 'no `█░` bar survives anywhere');
+});
+
+test('the Home integration line offers [install] until every agent is installed, then reads [installed ✓]', () => {
+  const offered = renderDashboardPage(dashboardModel(null, {
+    runs: [],
+    integration: {
+      ok: false,
+      agents: [
+        { agent: 'codex', skill: { status: 'installed' }, awareness: true },
+        { agent: 'claude', skill: { status: 'missing' }, awareness: false, mod: { status: 'missing' }, hooksFlag: false },
+      ],
+    },
+  }), { page: 'home', width: 100, height: 30 });
+  const text = offered.lines.join('\n');
+  assert.match(text, /agent integration\s+\[install\]/);
+  assert.match(text, /codex\s+skill ✓ · awareness ✓/);
+  assert.match(text, /claude\s+skill — · awareness — · mod — · hooks —/);
+  const install = offered.regions.find((region) => region.action.kind === 'install');
+  assert.equal(plain(offered.lines[install.y - 1]).slice(install.x1 - 1, install.x2), '[install]');
+
+  const done = renderDashboardPage(dashboardModel(null, {
+    runs: [],
+    integration: {
+      ok: true,
+      agents: [{ agent: 'claude', skill: { status: 'installed' }, awareness: true, mod: { status: 'installed' }, hooksFlag: true }],
+    },
+  }), { page: 'home', width: 100, height: 30 });
+  const doneText = done.lines.join('\n');
+  assert.match(doneText, /\[installed ✓\]/);
+  assert.match(doneText, /claude\s+skill ✓ · awareness ✓ · mod ✓ · hooks ✓/);
+  assert.equal(done.regions.some((region) => region.action.kind === 'install'), false, 'the button is inert once everything is installed');
+});
+
+test('a mouse click runs the same action its key does, and the wheel moves the window', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    // A short terminal, so the Home body is taller than its window.
+    const session = shellSession(home, { columns: 100, rows: 14 });
+    // The wheel walks the body window down and the header reports it.
+    const before = frameHeader(lastFrame(session.output));
+    session.press('\x1b[<65;10;6M');
+    const scrolled = frameHeader(lastFrame(session.output));
+    assert.match(scrolled, / · \d+–\d+\/\d+$/);
+    assert.notEqual(scrolled, before);
+
+    clickOn(session, '[ bbb222 ]');
+    assert.match(frameHeader(lastFrame(session.output)), / bbb222 running/);
+    clickOn(session, '[ usage ]');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    assert.match(plain(lastFrame(session.output)), /read-only here · \[edit\] opens bullswarm setup/);
+
+    // Esc goes Home; its run rows are clickable, and so are the step rows.
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    clickOn(session, 'aaa111 · unified-shell');
+    assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
+    clickOn(session, 'build-alpha');
+    const step = lastFrame(session.output);
+    assert.match(frameHeader(step), /build-alpha · run aaa111/);
+    assert.equal(navButtons(step)[0], 'back');
+    clickOn(session, '[ back ]');
+    assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
+    clickOn(session, '[ quit ]');
+    assert.equal(await session.running, 0);
+  } finally { cleanup(); }
+});
+
+test('the Home [install] button installs the agent integration in-process', async () => {
+  const { home, cleanup } = shellFixture();
+  const agentHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-integrate-'));
+  try {
+    const session = shellSession(home, { columns: 100, rows: 30, homeDir: agentHome });
+    assert.match(plain(lastFrame(session.output)), /\[install\]/);
+    session.press('i');
+    const frame = plain(lastFrame(session.output));
+    // The status line reflects it, and every agent's result is shown inline:
+    // the skill, the awareness block, and for Claude the mod and hooks flag.
+    assert.match(frame, /agent integration\s+\[installed ✓\]/);
+    assert.match(frame, /install results/);
+    assert.match(frame, /codex · skill installed · awareness installed/);
+    assert.match(frame, /claude · skill installed · awareness installed · mod linked · hooks flag set/);
+    assert.match(frame, /grok · skill installed · awareness installed/);
+    assert.equal(await session.quit(), 0);
+    assert.equal(existsSync(join(agentHome, '.codex', 'skills', 'bullswarm')), true);
+  } finally { cleanup(); rmSync(agentHome, { recursive: true, force: true }); }
+});
+
+test('the [edit] button pauses the dashboard for setup and resumes on the Usage page', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const handoffs = [];
+    const openSetupTui = async ({ bullswarmDir, input, output }) => {
+      handoffs.push({ bullswarmDir, isTTY: input.isTTY, painted: output.text.length });
+    };
+    const session = shellSession(home, { columns: 100, rows: 26, token: 'wf-alpha', openSetupTui });
+    session.press('u');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    const before = session.output.text.length;
+    session.press('e');
+    await settle();
+    await settle();
+
+    assert.equal(handoffs.length, 1, 'the injected control centre ran once');
+    assert.equal(handoffs[0].bullswarmDir, home);
+    const handover = session.output.text.slice(before);
+    // The terminal is handed over cleanly: mouse reporting and the cursor
+    // restored, the alternate screen left.
+    assert.ok(handover.includes('\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l'), 'the dashboard did not release the terminal');
+    // And taken back: alternate screen, hidden cursor, mouse reporting on.
+    assert.ok(handover.includes('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'), 'the dashboard did not take the terminal back');
+    assert.deepEqual(session.input.rawModes, [true, false, true]);
+    // It returns to the Usage page with the note and a fresh repaint.
+    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    assert.match(plain(lastFrame(session.output)), /read-only here · \[edit\] opens bullswarm setup/);
+    assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });

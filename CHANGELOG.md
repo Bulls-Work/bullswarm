@@ -1,5 +1,24 @@
 # bullswarm changelog
 
+## 0.32.0 — the dashboard is the main screen
+
+- dashboard: the full-screen Home, Run, Step, Usage, and Help pages now share
+  a sticky header and bottom nav, keyboard shortcuts, mouse clicks, and wheel
+  scrolling, so a live workflow can be understood in one place.
+- usage and edit: Usage renders every meter window, elapsed mark, reset, pace,
+  credit meter, and rung record with the same coloured cells as the status
+  view; its read-only note hands `[edit]` to setup and returns with fresh data.
+- install: Home's `[install]` action runs the same integration install as
+  `bullswarm integrate install --yes`, then shows each agent's skill,
+  awareness, and Claude Mod status.
+- bare command: after setup, bare `bullswarm` opens the dashboard; the first
+  run and `bullswarm --setup` or `bullswarm setup` open setup, while
+  `bullswarm workflow tui` remains the explicit dashboard form.
+- docs: the README, guides, CLI reference, and Claude Code pages now make the
+  dashboard the main screen and describe the Claude Mod as its read-only
+  counterpart — the same Run, Step, and Usage pages in the same colours, with
+  no edit or install action.
+
 ## 0.31.0 — the Claude Mod, and a documentation site
 
 - mod: `mods/bullswarm` puts Bullswarm inside Claude Code's own interface as a

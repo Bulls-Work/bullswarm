@@ -587,6 +587,38 @@ export async function configureTierRungs(bullswarmDir, prompter, {
   return stored;
 }
 
+// --- the control center ---------------------------------------------------
+// The strategy control center is what setup opens on a terminal. There are two
+// callers — src/cli.js's interactive cmdSetup and the dashboard's `[edit]`
+// hand-off — so the options live here once: the same title, the same analysis
+// question, the same inventory loader and the same apply hook. Both imports
+// stay lazy because a non-wizard setup, a non-TTY caller, and every verb that
+// never opens a TUI must not pay for loading the strategy surface.
+export async function openSetupTui({
+  bullswarmDir,
+  input = process.stdin,
+  output = process.stdout,
+  startDashboard = null, // test seam for the option pass-through
+} = {}) {
+  const { loadStrategyInventory, applyStrategyRecommendations } = await import('./strategy-cli.js');
+  const start = startDashboard
+    ?? (await import('./strategy-dashboard.js')).startStrategyDashboard;
+  return start({
+    bullswarmDir,
+    input,
+    output,
+    title: 'Bullswarm setup',
+    promptForAnalysis: true,
+    loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(bullswarmDir, {
+      force, onProgress, useOpenRouter: analyze,
+    }),
+    applyRecommendations: () => {
+      const report = loadState(bullswarmDir).strategy?.lastReport;
+      if (report) applyStrategyRecommendations(bullswarmDir, report);
+    },
+  });
+}
+
 // --- wizard -------------------------------------------------------------------
 
 export async function runWizard(bullswarmDir, opts = {}) {

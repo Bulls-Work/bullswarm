@@ -48,7 +48,15 @@ claude mcp list
 
 ## The Claude Mod
 
-`mods/bullswarm` is the same routing injected into Claude Code's own engine as a Claude Mod — a plugin of TypeScript function hooks, behind the early-access flag `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Unlike the skill and the MCP server, it hooks the session itself.
+`mods/bullswarm` is the same routing injected into Claude Code's own engine as a Claude Mod — a plugin of TypeScript function hooks, behind the early-access flag `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Unlike the skill and the MCP server, it hooks the session itself. It is the terminal dashboard's read-only counterpart: the strip is the run list, the pane mirrors the dashboard's Run, Step, and Usage pages with the same meter colours, and nothing in it mutates — there is no Home or Help page and no `[edit]` or `[install]` action.
+
+The terminal dashboard is the main screen after setup. Its sticky header and
+bottom nav (`[ <run> ] … [ usage ] [ help ] [ quit ]`) expose `q` (quit), `?` (Help), `u` (Usage), `e` (edit), `i`
+(install), `l`/`p` (Usage tabs), arrows or `PgUp`/`PgDn` (scroll), and Enter
+(open). Click any button, tab, run, or step; the mouse wheel scrolls. The Mod
+keeps the Run, Step, and Usage vocabulary and the same colours; its pane's
+`usage` and `close` buttons replace the dashboard's nav, and it omits the edit
+and install actions.
 
 ### What it changes in the interface
 
@@ -59,7 +67,7 @@ claude mcp list
 
 ### The runs pane
 
-`[w]`, a digit in the strip, or `/bullswarm pane` opens a pane docked beside the transcript. Its header and `[Top] [End]` stay fixed at the top, the run buttons with `usage` and `close` at the bottom, and between them scrolls what `bullswarm workflow tui <id> --overview` draws: Preflight with the accepted goal, every dependency level, Live workers with their latest activity, Next, and the pool meters last. The wheel over the pane, or arrows, PgUp/PgDn, Home/End once it has focus, move that middle. It re-reads every 20 seconds while the run is in flight.
+`[w]`, a digit in the strip, or `/bullswarm pane` opens a pane docked beside the transcript. Its header and `[Top] [End]` stay fixed at the top, the run buttons with `usage` and `close` at the bottom, and between them scrolls what `bullswarm workflow tui <id> --overview` draws: Preflight with the accepted goal, every dependency level, Live workers with their latest activity, Next, and the pool meters last. The wheel over the pane, or arrows, PgUp/PgDn, Home/End once it has focus, move that middle. It re-reads every 20 seconds while the run is in flight. The pane is read-only: it has no dashboard `[edit]` or `[install]` action.
 
 Every step row is a button. Pressing it opens the step laid out as the TUI's agent panel: status, model and reasoning; pool, attempt and effort; the route reason; started, elapsed, last activity; the verdict or failure; the first lines of the task file; usage; the latest agent event; the tail of the output; and the task and output paths. `back` returns. `/bullswarm open <step> [run]` does the same from the keyboard.
 

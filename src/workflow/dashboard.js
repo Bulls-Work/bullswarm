@@ -10,7 +10,13 @@ import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
-import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
+import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
+import { integrationStatus, installIntegration } from '../integrate.js';
+import { loadUsage, parseMouse, poolSummaryLines, usageLines } from './usage-view.js';
+// The Usage page's `[edit]` hands the terminal to the same control centre
+// `bullswarm setup` opens, so the rungs the reader just saw and the ones they
+// are about to change are the same program's.
+import { openSetupTui as openSetupControlCentre } from '../setup.js';
 
 const ESC = '\x1b[';
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
@@ -77,12 +83,6 @@ function breadcrumbLine(segments, width) {
   while (parts.length > 1 && ` ${parts.join(' › ')}`.length > width) parts.pop();
   if (` ${parts.join(' › ')}`.length <= width) return ` ${parts.join(' › ')}`;
   return truncate(` ${parts.join(' › ')}`, width);
-}
-
-function navigationDepth({ detail = false, focus = 0, orchestratorDetail = false, workflowVerbose = false } = {}) {
-  if (!detail) return 0;
-  if (orchestratorDetail || workflowVerbose) return 2;
-  return Math.min(4, 2 + Math.max(0, Number(focus) || 0));
 }
 
 function compactUsage(usage) {
@@ -485,12 +485,18 @@ export function workflowPanelModel(row, { phaseIndex = null, agentIndex = null }
   };
 }
 
-export function renderWorkflowTui(row, {
+/**
+ * The Run and Step pages' panels: the hierarchy the viewer always drew — the
+ * timeline/Live/Next overview, the phases, the agents, the agent detail — laid
+ * out for a body of `bodyHeight` rows. The page around it owns the sticky
+ * header, the pools and the nav.
+ */
+function runFrame(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
   detailScroll = 0, message = null, confirmCancel = false,
   controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
   workflowVerbose = false, mobileTimeline = true, timelineSelection = null,
-  spinnerFrame = 0,
+  spinnerFrame = 0, bodyHeight: pageBodyHeight = null,
 } = {}) {
   width = Math.max(20, Number(width) || 120);
   height = Math.max(18, Number(height) || 36);
@@ -509,30 +515,9 @@ export function renderWorkflowTui(row, {
     ? ` · ${status === 'completed' ? 'done' : status}${isProgramWorkflow(state) && status === 'completed' ? hasPassingRequirementEvidence(state) ? ' · evidence passed' : ' · unverified' : ''}`
     : '';
   const runName = state.workflow ?? row?.shortId ?? state.shortId ?? row?.runId ?? 'workflow';
-  const breadcrumbDepth = navigationDepth({ detail: true, focus, orchestratorDetail, workflowVerbose });
-  const header = [
-    breadcrumbLine(breadcrumbSegments(row, {
-      dependencyGroups: model.dependencyGroups,
-      depth: breadcrumbDepth,
-      phase: model.selectedPhase,
-      agent: model.selectedAgent,
-    }), width),
-    truncate(` ${truncate(runName, Math.max(1, width - agentProgress.length - elapsed.length - terminalLabel.length - 5))} · ${agentProgress}${elapsed}${terminalLabel}`, width),
-    ` ${truncate(state.intent?.goal ?? state.workflow ?? 'workflow', width - 2)}`,
-  ];
-  const footer = confirmCancel
-    ? ' Stop this workflow? y confirm · n/Esc keep running'
-    : navigationFooter({
-      depth: breadcrumbDepth,
-      narrow,
-      mobileTimeline: mobileTimeline && !orchestratorDetail && !workflowVerbose && focus === 0,
-      timelineSelection,
-    });
-  const rawMessageLine = message
-    ? ` ${truncate(message, width - 2)}`
-    : ` ${orchestratorDetail ? `Workflow Planner ${orchestratorVerbose ? 'technical details' : 'overview'}` : workflowVerbose ? 'Workflow technical details' : focus === 0 ? (narrow && !mobileTimeline ? 'Phases' : 'Timeline · auto-following newest event') : focus === 1 ? 'Agents' : 'Agent activity'} · r refresh · workflow continues after detach`;
-  const messageLine = truncate(rawMessageLine, width);
-  const bodyHeight = Math.max(10, height - header.length - 3);
+  // The page's sticky header names the run the way the nav's own button does;
+  // the body below is the hierarchy, sized to the page's window.
+  const bodyHeight = Math.max(6, Number(pageBodyHeight) || height - 8);
 
   const phaseLines = [];
   model.phases.forEach((phase, index) => {
@@ -677,8 +662,9 @@ export function renderWorkflowTui(row, {
     );
   }
 
-  const lines = [`${ESC}2J${ESC}H`, ...header, ...body, messageLine, truncate(footer, width)];
-  return lines.join('\n');
+  return {
+    body, model, state, status, elapsed, terminalLabel, agentProgress, runName, narrow,
+  };
 }
 
 function renderPanel(title, content, width, height) {
@@ -1446,9 +1432,499 @@ export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30
   return { legacy: false, shortId: row.shortId, runId: row.runId, lines };
 }
 
+// ---------------------------------------------------------------------------
+// The paged dashboard: Home, Run, Step, Usage and Help.
+//
+// Every paint draws one sticky header, a window over the body, an optional
+// message line and note, then the sticky bottom nav. Each page, tab, run row
+// and step row records the columns it was painted in, so an SGR mouse press
+// runs the same action its key runs and the wheel moves the same window.
+// ---------------------------------------------------------------------------
+
+const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
+/** Every page the dashboard has, in the order the help page lists them. */
+const DASHBOARD_PAGES = Object.freeze(['home', 'run', 'step', 'usage', 'help']);
+/** How many columns a painted line really occupies. */
+const visibleLength = (value) => String(value ?? '').replace(ANSI_SGR, '').length;
+/** The Usage page's read-only note, whole and wrapped above the nav. */
+const USAGE_NOTE = 'read-only here · [edit] opens bullswarm setup';
+/** The one-line commands that operate the product, as Home lists them. */
+const DASHBOARD_COMMANDS = Object.freeze([
+  'bullswarm run',
+  'bullswarm workflow goal "<goal>"',
+  'bullswarm workflow watch <id> --next',
+  'bullswarm setup',
+  'bullswarm integrate install --yes',
+  'bullswarm doctor',
+]);
+
+/** Meters are background-coloured cells; an ascii terminal gets the plain bar. */
+function meterAnsi() {
+  return !asciiGlyphsPreferred();
+}
+
+/** `42m` / `2h05m` since an ISO time. */
+function ageText(iso, nowMs) {
+  if (!iso) return '';
+  const mins = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 60_000));
+  if (!Number.isFinite(mins)) return '';
+  return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
+}
+
+/** A line builder that remembers where each clickable part was painted. */
+function frameBuilder() {
+  const builder = {
+    lines: [],
+    regions: [],
+    push(text = '') { builder.lines.push(text); return builder; },
+    /** A row that reacts to a click anywhere on it. */
+    row(text = '', action = null) {
+      builder.lines.push(text);
+      if (action) {
+        builder.regions.push({ x1: 1, x2: Math.max(1, visibleLength(text)), y: builder.lines.length, action });
+      }
+      return builder;
+    },
+    /** One line from parts: `{ text, action }` makes that text clickable. */
+    parts(parts) {
+      let column = 1;
+      let text = '';
+      for (const part of parts) {
+        const span = visibleLength(part.text);
+        if (part.action) {
+          builder.regions.push({ x1: column, x2: Math.max(column, column + span - 1), y: builder.lines.length + 1, action: part.action });
+        }
+        column += span;
+        text += part.text;
+      }
+      builder.lines.push(text);
+      return builder;
+    },
+  };
+  return builder;
+}
+
+/** The window a body is drawn through, and its `first–last/total` label. */
+function windowOf(body, { height, scroll = 0 } = {}) {
+  const total = body.lines.length;
+  const capacity = Math.max(1, Number(height) || 1);
+  const offset = clamp(scroll, 0, Math.max(0, total - capacity));
+  const end = Math.min(total, offset + capacity);
+  const scrolled = offset > 0 || total > end;
+  return { offset, end, total, position: scrolled ? ` · ${offset + 1}–${end}/${total}` : '' };
+}
+
+/** Copies a windowed body into the frame, moving its hit regions down with it. */
+function drawWindow(frame, body, window) {
+  const base = frame.lines.length;
+  for (let index = window.offset; index < window.end; index += 1) frame.lines.push(body.lines[index]);
+  for (const region of body.regions) {
+    if (region.y > window.offset && region.y <= window.end) {
+      frame.regions.push({ ...region, y: base + (region.y - window.offset) });
+    }
+  }
+  return frame;
+}
+
+/** `text` underlined, so a key hint reads as one. */
+const underline = (text) => `\x1b[4m${text}\x1b[24m`;
+
+/**
+ * The bottom nav: one button per ongoing run, then usage, help and quit.
+ * Every button shows its key underlined: inside the label where the label
+ * has it (`[ usage ]` with the u underlined), else written ahead of the
+ * button (`1. [ aaa111 ]`, `?. [ help ]`), so the keys read off the nav.
+ */
+function navParts(model, { page, width, selectedRunId }) {
+  const button = (item) => {
+    const mark = item.mark ? `${glyphs().ongoing} ` : '';
+    // A digit is never a label's key, however the run id spells itself.
+    const at = /^[a-z]$/.test(item.key) ? item.label.indexOf(item.key) : -1;
+    if (at >= 0) {
+      return `[ ${mark}${item.label.slice(0, at)}${underline(item.key)}${item.label.slice(at + 1)} ]`;
+    }
+    return `${underline(item.key)}. [ ${mark}${item.label} ]`;
+  };
+  const back = page === 'step' ? [{ key: 'b', label: 'back', action: { kind: 'back' } }] : [];
+  // The run the reader is on is marked wherever a run is what they are
+  // reading; the Usage and Help pages mark themselves instead.
+  const onRunPage = page === 'home' || page === 'run' || page === 'step';
+  const runs = model.runs.map((run, index) => ({
+    key: index < 9 ? String(index + 1) : ' ',
+    label: run.shortId ?? '------',
+    mark: onRunPage && run.runId === selectedRunId,
+    action: { kind: 'open-run', runId: run.runId },
+  }));
+  const tail = [
+    { key: 'u', label: 'usage', mark: page === 'usage', action: { kind: 'page', page: 'usage' } },
+    { key: '?', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
+    { key: 'q', label: 'quit', action: { kind: 'quit' } },
+  ];
+  // The way out is the last thing to go: the tail is kept whole and the run
+  // buttons fill whatever the terminal has left for them — a terminal too
+  // narrow for the whole tail still gets its quit button.
+  const lineLength = (items) => 1 + items.reduce((sum, item) => sum + visibleLength(button(item)) + 1, 0);
+  const shown = [...runs];
+  while (shown.length && lineLength([...back, ...shown, ...tail]) > width) shown.pop();
+  while (tail.length > 1 && lineLength([...back, ...tail]) > width) tail.shift();
+
+  const parts = [{ text: ' ' }];
+  for (const item of [...back, ...shown, ...tail]) {
+    parts.push({ text: button(item), action: item.action });
+    parts.push({ text: ' ' });
+  }
+  const hidden = ` ${glyphs().ongoing} ${runs.length} runs`;
+  if (shown.length < runs.length && lineLength([...back, ...shown, ...tail]) + visibleLength(hidden) <= width) {
+    parts.push({ text: hidden });
+  }
+  return parts;
+}
+
+/**
+ * The compact pool rows: the same block on Home and as the last body rows of
+ * Run. `Pools ▸` opens the Usage page, where every window is drawn full width.
+ */
+function poolBlock(model, { width }, target) {
+  if (!model.pools.length) return 0;
+  target.push(dimText(` ${'─'.repeat(Math.max(1, Math.min(width, 120) - 1))}`, width));
+  const label = ' Pools ▸';
+  const hint = ' · used/elapsed · pace · u for every window and the model per tier';
+  target.parts([
+    { text: label, action: { kind: 'page', page: 'usage' } },
+    { text: dimText(hint, Math.max(0, width - visibleLength(label))) },
+  ]);
+  for (const line of poolSummaryLines(model.pools, model.assignments, {
+    width: Math.max(20, width - 1), ansi: meterAnsi(),
+  })) {
+    target.push(` ${line}`);
+  }
+  return target.lines.length;
+}
+
+/** `skill ✓ · awareness ✓`, plus the mod link and hooks flag for Claude. */
+function integrationAgentLine(entry) {
+  const ok = glyphs().ok;
+  const mark = (installed) => (installed ? ok : '—');
+  const parts = [
+    `skill ${mark(entry.skill?.status === 'installed')}`,
+    `awareness ${mark(entry.awareness === true)}`,
+  ];
+  if (entry.mod !== undefined) {
+    parts.push(`mod ${mark(entry.mod?.status === 'installed')}`, `hooks ${mark(entry.hooksFlag === true)}`);
+  }
+  return `${String(entry.agent ?? '?').padEnd(8)} ${parts.join(' · ')}`;
+}
+
+/** What `installIntegration` changed, agent by agent. */
+function installResultLines(result) {
+  const lines = [' install results'];
+  for (const change of result?.changes ?? []) {
+    const parts = [
+      `skill ${change.skill?.changed ? 'installed' : 'already installed'}`,
+      `awareness ${change.awareness?.reason ?? 'unchanged'}`,
+    ];
+    if (change.mod) parts.push(`mod ${change.mod.changed ? 'linked' : 'already linked'}`);
+    if (change.hooksFlag) parts.push(`hooks flag ${change.hooksFlag.reason ?? 'unchanged'}`);
+    lines.push(`   ${change.agent} · ${parts.join(' · ')}`);
+  }
+  if (lines.length === 1) lines.push('   nothing to change');
+  return lines;
+}
+
+/**
+ * The action a painted row names, when it is one of the run's actions.
+ * Boundary-checked so `implement` never matches `implement-two`.
+ */
+function actionNamedIn(text, actions) {
+  let best = null;
+  for (const action of actions) {
+    const at = text.indexOf(action.id);
+    if (at < 0) continue;
+    const before = at === 0 ? ' ' : text[at - 1];
+    const after = text[at + action.id.length] ?? ' ';
+    if (/[A-Za-z0-9_-]/.test(before) || /[A-Za-z0-9_-]/.test(after)) continue;
+    if (!best || action.id.length > best.id.length) best = action;
+  }
+  return best;
+}
+
+/** One clickable row per step the painted lines name. */
+function markStepRows(builder, lines, model) {
+  const actions = model.state.actions ?? [];
+  if (!actions.length) return;
+  const from = builder.lines.length - lines.length;
+  lines.forEach((line, index) => {
+    const action = actionNamedIn(String(line).replace(ANSI_SGR, ''), actions);
+    if (action) {
+      builder.regions.push({
+        x1: 1, x2: Math.max(1, visibleLength(line)), y: from + index + 1,
+        action: { kind: 'open-step', actionId: action.id },
+      });
+    }
+  });
+}
+
+/** Home: the ongoing runs, the pools, the agent integration, the commands. */
+function homePage(model, opts, body) {
+  const { width, narrow } = opts;
+  const rows = opts.rows ?? [];
+  const allRows = opts.allRows ?? rows;
+  const active = allRows.filter((row) => row.ongoing).length;
+  const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
+  const recent = Math.max(0, allRows.length - active);
+  body.push(dimText(` Runs · ${opts.filter === 'all' ? 'all' : 'active'}${opts.query ? ` · filter “${opts.query}”` : ''} · ${active} active · ${waiting} waiting · ${recent} recent`, width));
+  const selected = clamp(opts.selected ?? 0, 0, Math.max(0, rows.length - 1));
+  if (!rows.length) {
+    body.row(' No workflows in this view.');
+    body.row(dimText(opts.filter === 'all'
+      ? ' Start one with: bullswarm workflow goal "…"'
+      : ' Press a to browse recent runs.', width));
+  }
+  if (rows.length) dashboardRunLines(rows, selected, narrow, width).forEach((group, index) => {
+    const runId = rows[index]?.runId ?? null;
+    group.lines.forEach((line, lineIndex) => {
+      if (!line) { body.push(''); return; }
+      body.row(line, lineIndex === 0 && runId ? { kind: 'open-run', runId } : null);
+    });
+  });
+
+  poolBlock(model, opts, body);
+
+  body.push('');
+  const installed = model.integration?.ok === true;
+  const button = installed ? `[installed ${glyphs().ok}]` : '[install]';
+  const prefix = ' agent integration  ';
+  const suffix = installed ? ' · every agent already has it' : ' · i installs the skill and the awareness block for every agent';
+  const fits = visibleLength(prefix) + visibleLength(button) + visibleLength(suffix) <= width;
+  body.parts([
+    { text: prefix },
+    { text: button, action: installed ? null : { kind: 'install' } },
+    { text: fits ? dimText(suffix, Math.max(0, width - visibleLength(prefix) - visibleLength(button))) : '' },
+  ]);
+  if (!model.integration) {
+    body.push(dimText('   reading the agent integration…', width));
+  } else {
+    for (const entry of model.integration.agents ?? []) {
+      body.push(dimText(`   ${integrationAgentLine(entry)}`, width));
+    }
+    if (model.installResult) {
+      for (const line of installResultLines(model.installResult)) body.push(dimText(truncate(line, width), width));
+    }
+  }
+
+  body.push('');
+  body.push(dimText(' run it', width));
+  for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
+  return ' bullswarm · home';
+}
+
+/** Run: the timeline/Live/Next overview, with the compact pool rows last. */
+function runPage(model, opts, body) {
+  const { width, bodyHeight } = opts;
+  const pools = frameBuilder();
+  poolBlock(model, opts, pools);
+  const frame = runFrame(model.row, {
+    ...opts,
+    focus: opts.focus === 1 ? 1 : 0,
+    bodyHeight: Math.max(6, bodyHeight - pools.lines.length),
+  });
+  const { state, status, elapsed, terminalLabel } = frame;
+  for (const line of frame.body) body.push(line);
+  markStepRows(body, frame.body, frame.model);
+  drawWindow(body, pools, windowOf(pools, { height: pools.lines.length }));
+  const shortId = state.shortId ?? model.row?.shortId ?? model.row?.runId ?? '------';
+  const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
+  const total = (state.actions ?? []).length;
+  const age = elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : '';
+  return truncate(` ${shortId} ${status}${age} · ${done}/${total} actions${terminalLabel}`, width);
+}
+
+/** Step: the agent panel the viewer always drew, with `[back]` in the nav. */
+function stepPage(model, opts, body) {
+  const { width, spinnerFrame } = opts;
+  const frame = runFrame(model.row, { ...opts, focus: 2 });
+  const state = frame.model.state;
+  const agent = frame.model.selectedAgent;
+  const shortId = state.shortId ?? model.row?.shortId ?? '';
+  for (const line of frame.body) body.push(line);
+  markStepRows(body, frame.body, frame.model);
+  const label = agent
+    ? `${statusIcon(agent.status, spinnerFrame)} ${agent.action.id} · run ${shortId}`
+    : `${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`;
+  return truncate(` ${label}`, width);
+}
+
+/** Usage: every meter window per pool, then the rungs by lane or provider. */
+function usagePage(model, opts, body) {
+  const { width } = opts;
+  const nowMs = Number(opts.nowMs) || Date.now();
+  const lines = usageLines(model.pools, model.rungs, {
+    width,
+    rungsBy: opts.rungsBy === 'provider' ? 'provider' : 'lane',
+    nowMs,
+    ansi: meterAnsi(),
+  });
+  for (const line of lines) {
+    const plain = String(line).replace(ANSI_SGR, '');
+    const tabs = [];
+    for (const [needle, by] of [['by lane]', 'lane'], ['by provider]', 'provider']]) {
+      const at = plain.indexOf(needle);
+      const start = at < 0 ? -1 : plain.lastIndexOf('[', at);
+      if (start >= 0) tabs.push({ x1: start + 1, x2: at + needle.length, action: { kind: 'rungs', by } });
+    }
+    body.push(line);
+    for (const tab of tabs) body.regions.push({ ...tab, y: body.lines.length });
+    if (tabs.length) body.anchor = { tabs: body.lines.length };
+  }
+  if (!lines.length) body.push(dimText(' No enabled pool reports a meter yet; bullswarm setup enables them.', width));
+  const sampled = ageText(model.capturedAt, nowMs);
+  return ` Pools · ${sampled ? `sampled ${sampled} ago` : 'no meter snapshot yet'}`;
+}
+
+/**
+ * The Usage page's note: whole, wrapped, right above the bottom nav, with
+ * `[edit]` the button that hands the terminal to `bullswarm setup`.
+ */
+function usagePageNotes({ width }, notes) {
+  for (const line of wrapLines([USAGE_NOTE], width)) {
+    const at = line.indexOf('[edit]');
+    notes.parts(at < 0 ? [{ text: dimText(line, width) }] : [
+      { text: `\x1b[2m${line.slice(0, at)}` },
+      { text: '[edit]', action: { kind: 'edit' } },
+      { text: `${line.slice(at + '[edit]'.length)}\x1b[0m` },
+    ]);
+  }
+}
+
+/** Help: the pages, every key, and the commands that operate the product. */
+function helpPage(model, opts, body) {
+  const { width } = opts;
+  const rows = [
+    ['↑/k · ↓/j', 'move up · move down'],
+    ['Enter/→/l', 'open the selected run, step or tab'],
+    ['Esc/←/h/b', 'move out one page'],
+    ['Tab / Shift+Tab', 'next · previous run'],
+    ['1–9', 'open that run from the nav'],
+    ['u · ?', 'usage · help'],
+    ['q', 'quit; the workflow keeps running'],
+    ['home', '/ filter · a active/all · r refresh · i install the agent integration'],
+    ['run', 't phases/timeline · o planner · v technical details · c stop the workflow · PgUp/PgDn scroll'],
+    ['step', 'the agent panel; Esc/b goes back'],
+    ['usage', 'l by lane · p by provider · e edit (bullswarm setup)'],
+    ['mouse', 'click a button, tab, run row or step row; the wheel scrolls'],
+  ];
+  for (const [key, text] of rows) body.push(truncate(` ${String(key).padEnd(17)}${text}`, width));
+  body.push('');
+  body.push(dimText(' the commands that operate the product', width));
+  for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
+  return ' bullswarm · help';
+}
+
+/**
+ * One frame of the dashboard: the sticky header, the body window, the message
+ * line, the notes, and the sticky bottom nav — plus the hit regions the mouse
+ * handler answers to.
+ *
+ * @param {object} model as `dashboardModel` builds it
+ * @param {object} [options] width, height, page and the page's own state
+ * @returns {{page: string, lines: string[], regions: Array<{x1: number, x2: number, y: number, action: object}>}}
+ */
+export function renderDashboardPage(model, options = {}) {
+  const width = Math.max(20, Number(options.width) || 120);
+  const height = Math.max(12, Number(options.height) || 36);
+  const page = DASHBOARD_PAGES.includes(options.page)
+    ? options.page
+    : Number(options.focus) >= 2 ? 'step' : 'run';
+  const opts = {
+    ...options,
+    width,
+    height,
+    page,
+    narrow: options.narrow ?? width < 100,
+    nowMs: Number(options.nowMs) || model.nowMs || Date.now(),
+  };
+  const message = options.filterEditing
+    ? `Filter: ${options.query ?? ''}█ · Enter apply · Esc clear`
+    : options.confirmCancel
+      ? 'Stop this workflow? y confirm · n/Esc keep running'
+      : options.message ?? null;
+  const messageLines = message ? [dimText(` ${message}`, width)] : [];
+  const notes = frameBuilder();
+  if (page === 'usage') usagePageNotes(opts, notes);
+  const bodyHeight = Math.max(1, height - 1 - messageLines.length - notes.lines.length - 1);
+
+  const body = frameBuilder();
+  let header = '';
+  // A legacy run is five read-only fields and a marker: its page is that one
+  // line, still inside the shell so the nav can carry the reader back out.
+  const legacyLine = model.row?.legacy
+    ? legacyRunLine({ shortId: model.row.shortId, runId: model.row.runId, runDir: model.row.runDir })
+    : null;
+  if (legacyLine && (page === 'run' || page === 'step')) {
+    body.row(legacyLine);
+    body.push('');
+    body.push(dimText(' read-only · the executor for authored-graph runs was removed; nothing here can be driven', width));
+    header = ` ${model.row.shortId ?? model.row.runId ?? '------'} legacy`;
+  } else if (page === 'home') header = homePage(model, opts, body);
+  else if (page === 'usage') header = usagePage(model, opts, body);
+  else if (page === 'help') header = helpPage(model, opts, body);
+  else if (page === 'step') header = stepPage(model, { ...opts, bodyHeight }, body);
+  else header = runPage(model, { ...opts, bodyHeight }, body);
+
+  const frame = frameBuilder();
+  const window = windowOf(body, { height: bodyHeight, scroll: opts.bodyScroll });
+  frame.push(truncate(`${header}${window.position}`, width));
+  drawWindow(frame, body, window);
+  for (const line of messageLines) frame.push(line);
+  drawWindow(frame, notes, windowOf(notes, { height: notes.lines.length }));
+  const nav = frameBuilder();
+  nav.parts(navParts(model, { page, width, selectedRunId: opts.selectedRunId ?? model.row?.runId ?? null }));
+  drawWindow(frame, nav, windowOf(nav, { height: 1 }));
+
+  const lines = frame.lines.slice(0, height);
+  return {
+    page,
+    lines,
+    regions: frame.regions.filter((region) => region.y >= 1 && region.y <= lines.length),
+    // Where a page marked something worth scrolling to (the Usage page's rung
+    // tabs), as a row of its body, so a caller can bring it into the window.
+    anchor: body.anchor ?? null,
+  };
+}
+
+/**
+ * The dashboard's data, gathered once per paint. Rendering stays a pure
+ * function of this model and the options, so every page is testable without
+ * a terminal, a clock or the operator's home directory.
+ */
+export function dashboardModel(row, {
+  runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
+} = {}) {
+  return {
+    row: row ?? null,
+    nowMs,
+    runs: runs ?? (row && row.legacy !== true ? [row] : []),
+    pools: usage?.pools ?? [],
+    assignments: usage?.assignments ?? [],
+    rungs: usage?.rungs ?? [],
+    capturedAt: usage?.capturedAt ?? null,
+    integration,
+    installResult,
+  };
+}
+
+/**
+ * One frame of a run's dashboard page as a string, the way every existing
+ * caller reads it. `page` defaults to Run, or Step when `focus` is at the
+ * agent detail.
+ */
+export function renderWorkflowTui(row, options = {}) {
+  return renderDashboardPage(dashboardModel(row, options), options).lines.join('\n');
+}
+
 export async function runDashboard(bullswarmDir, {
   input = process.stdin, output = process.stdout, refreshMs = 1000,
-  spinnerMs = 400, token = null,
+  spinnerMs = 400, token = null, openSetupTui = null, homeDir = process.env.HOME ?? '',
 } = {}) {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
@@ -1472,9 +1948,8 @@ export async function runDashboard(bullswarmDir, {
   }
   let selected = 0;
   const directRow = token ? detailRow(bullswarmDir, token) : null;
-  // A legacy run has no drilldown: open on its detail pane, which is one line.
+  // A legacy run has no drilldown: its page is the one line the CLI prints.
   const directV2 = Boolean(directRow) && !directRow.legacy;
-  let detail = Boolean(token) && !directV2;
   let message = null;
   let lastGoodRow = null;
   let dashboardFilter = directV2 ? 'all' : 'active';
@@ -1488,8 +1963,16 @@ export async function runDashboard(bullswarmDir, {
   }
   let selectedRunId = token ? directRow.runId : (rows[selected]?.runId ?? null);
   let lastPaintedFrame = null;
+  let lastFrameResult = null;
+  let regions = [];
+  let usage = null;
+  let integration = null;
+  let installResult = null;
+  let bodyScroll = 0;
   const ui = {
+    page: token ? 'run' : 'home',
     focus: 0,
+    rungsBy: 'lane',
     phaseIndex: null,
     agentIndex: null,
     detailScroll: 0,
@@ -1503,6 +1986,25 @@ export async function runDashboard(bullswarmDir, {
     mobileTimeline: true,
     timelineSelection: null,
     spinnerFrame: 0,
+  };
+  // The pools, the ledger and the rungs are read off disk (live meter reads
+  // included), so the read lands after the frame it was asked for: the frame
+  // paints at once and repaints when the data arrives. A later read wins.
+  let usageTicket = 0;
+  const readUsage = () => {
+    const ticket = (usageTicket += 1);
+    return loadUsage(bullswarmDir).then((loaded) => {
+      if (ticket !== usageTicket) return undefined;
+      usage = loaded;
+      return paint();
+    }, (err) => {
+      if (ticket !== usageTicket) return undefined;
+      message = `usage unavailable: ${err.message}`;
+      return paint();
+    });
+  };
+  const readIntegration = () => {
+    try { integration = integrationStatus({ homeDir }); } catch (err) { message = `agent integration unavailable: ${err.message}`; }
   };
   // Clearing the entire alternate screen for every spinner frame produces a
   // visible blank flash on slower terminals, especially mobile SSH sessions.
@@ -1529,63 +2031,77 @@ export async function runDashboard(bullswarmDir, {
     const columns = Math.max(20, Number(output.columns) || 120);
     return columns < 100 ? Math.max(20, columns - 1) : columns;
   };
+  const frameHeight = () => Math.max(12, Number(output.rows) || 36);
+  // A torn read while the runner writes state.json yields state:null for one
+  // frame — keep painting the last good snapshot of the same run.
+  const currentRow = () => {
+    const fresh = detailRow(bullswarmDir, selectedRunId);
+    const row = (fresh.state || fresh.legacy || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
+    if (row === fresh) lastGoodRow = fresh;
+    return row;
+  };
+  const pageOptions = () => ({
+    width: frameWidth(),
+    height: frameHeight(),
+    page: ui.page,
+    rows, allRows, selected,
+    filter: dashboardFilter, query, filterEditing,
+    selectedRunId, message, bodyScroll, rungsBy: ui.rungsBy,
+    spinnerFrame: ui.spinnerFrame,
+    focus: ui.focus,
+    phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
+    agentIndex: ui.followActiveAgent ? null : ui.agentIndex,
+    detailScroll: ui.detailScroll,
+    controlSelected: ui.controlSelected,
+    orchestratorDetail: ui.orchestratorDetail,
+    orchestratorVerbose: ui.orchestratorVerbose,
+    workflowVerbose: ui.workflowVerbose,
+    mobileTimeline: ui.mobileTimeline,
+    timelineSelection: ui.timelineSelection,
+    confirmCancel: ui.confirmCancel,
+  });
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
-    if (detail && selectedRunId) {
-      // A torn read while the runner writes state.json yields state:null for
-      // one frame — keep painting the last good snapshot of the same run.
-      const fresh = detailRow(bullswarmDir, selectedRunId);
-      const row = (fresh.state || fresh.legacy || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
-      if (row === fresh) lastGoodRow = fresh;
-      if (row.legacy) { writeFrame(renderDetails(row)); return; }
-      const model = workflowPanelModel(row, {
+    // Home, Usage and Help are always paintable; Run and Step need a run and
+    // fall back to Home without one.
+    if ((ui.page === 'run' || ui.page === 'step') && !selectedRunId) ui.page = 'home';
+    // Usage and Help read no run, so they paint without one (a fresh install).
+    const row = ui.page === 'home' || !selectedRunId ? null : currentRow();
+    if (row && !row.legacy && (ui.page === 'run' || ui.page === 'step')) {
+      // The follow flags track whatever the page last resolved as current.
+      const panel = workflowPanelModel(row, {
         phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
         agentIndex: ui.followActiveAgent ? null : ui.agentIndex,
       });
-      ui.phaseIndex = model.phaseIndex;
-      ui.agentIndex = model.agentIndex;
-      writeFrame(renderWorkflowTui(row, {
-        width: frameWidth(),
-        height: output.rows,
-        ...ui,
-        message,
-      }));
-      return;
+      ui.phaseIndex = panel.phaseIndex;
+      ui.agentIndex = panel.agentIndex;
     }
-    let previewRow = null;
-    if (selectedRunId) {
-      const fresh = detailRow(bullswarmDir, selectedRunId);
-      previewRow = (fresh.state || lastGoodRow?.runId !== fresh.runId) ? fresh : lastGoodRow;
-      if (previewRow === fresh) lastGoodRow = fresh;
-      const selectedListRow = rows[selected];
-      if (previewRow && selectedListRow) previewRow.ongoing = selectedListRow.ongoing;
-    }
-    writeFrame(renderDashboard({
-      rows,
-      allRows,
-      selected,
-      message,
-      width: frameWidth(),
-      height: output.rows,
-      filter: dashboardFilter,
-      query,
-      filterEditing,
-      spinnerFrame: ui.spinnerFrame,
-      previewRow,
-    }));
+    const model = dashboardModel(row, {
+      runs: allRows.filter((entry) => entry.ongoing),
+      usage, integration, installResult,
+    });
+    const frame = renderDashboardPage(model, pageOptions());
+    regions = frame.regions;
+    writeFrame(frame.lines.join('\n'));
+    lastFrameResult = frame;
+    return frame;
   };
   // A render error must never kill the TUI or strand the terminal in
   // alt-screen raw mode (crash observed 2026-08-29 at detailRow via the
   // repaint timer). Show the error in the message line and keep running.
   const paint = () => {
-    try { paintUnsafe(); } catch (err) {
+    try { return paintUnsafe(); } catch (err) {
       message = `display error: ${err.message}`;
       try {
-        writeFrame(renderDashboard({
-          rows, allRows, selected, message, width: frameWidth(), height: output.rows,
-          filter: dashboardFilter, query, filterEditing, spinnerFrame: ui.spinnerFrame,
-        }));
+        const frame = renderDashboardPage(dashboardModel(null, {
+          runs: allRows.filter((entry) => entry.ongoing), usage, integration,
+        }), { ...pageOptions(), page: 'home', message });
+        regions = frame.regions;
+        writeFrame(frame.lines.join('\n'));
+        lastFrameResult = frame;
+        return frame;
       } catch { /* keep the loop alive */ }
+      return lastFrameResult;
     }
   };
   const refresh = () => {
@@ -1596,8 +2112,30 @@ export async function runDashboard(bullswarmDir, {
       const preserved = rows.findIndex((row) => row.runId === previousRunId);
       if (preserved >= 0) selected = preserved;
       else selected = clamp(selected, 0, Math.max(0, rows.length - 1));
+      readIntegration();
+      void readUsage();
     } catch (err) { message = `display error: ${err.message}`; }
-    selectedRunId = rows[selected]?.runId ?? null;
+    selectedRunId = rows[selected]?.runId ?? selectedRunId;
+    paint();
+  };
+  /** Opens one run's page, widening the filter when it hides that run. */
+  const openRun = (runId) => {
+    selectedRunId = runId;
+    let index = rows.findIndex((row) => row.runId === runId);
+    if (index < 0 && dashboardFilter === 'active') {
+      dashboardFilter = 'all';
+      rows = filterDashboardRows(allRows, dashboardFilter, query);
+      index = rows.findIndex((row) => row.runId === runId);
+    }
+    if (index >= 0) selected = index;
+    ui.page = 'run';
+    ui.focus = 0;
+    ui.followActivePhase = true;
+    ui.followActiveAgent = true;
+    ui.detailScroll = 0;
+    ui.timelineSelection = null;
+    bodyScroll = 0;
+    message = null;
     paint();
   };
   const switchWorkflow = (delta) => {
@@ -1617,8 +2155,14 @@ export async function runDashboard(bullswarmDir, {
       visibleIndex = rows.findIndex((row) => row.runId === next.runId);
     }
     if (visibleIndex >= 0) selected = visibleIndex;
-    if (detail) {
+    if (ui.page === 'run' || ui.page === 'step') {
       const nextRow = detailRow(bullswarmDir, next.runId);
+      if (nextRow.legacy) {
+        ui.focus = 0;
+        ui.detailScroll = 0;
+        message = null;
+        return paint();
+      }
       const nextModel = workflowPanelModel(nextRow, {
         phaseIndex: previousPhaseIndex,
         agentIndex: ui.agentIndex,
@@ -1645,301 +2189,431 @@ export async function runDashboard(bullswarmDir, {
     message = null;
     paint();
   };
-  input.setRawMode?.(true);
-  input.resume();
-  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H`);
-  paint();
-  const timer = setInterval(refresh, refreshMs);
-  const spinnerTimer = setInterval(() => {
+  /** Opens the Step page on one action, in the phase that holds it. */
+  const openStep = (actionId) => {
+    const row = detailRow(bullswarmDir, selectedRunId);
+    if (!row.legacy) {
+      const panel = workflowPanelModel(row);
+      const phaseIndex = panel.phases.findIndex((phase) => phase.actions.some((action) => action.id === actionId));
+      if (phaseIndex >= 0) {
+        ui.phaseIndex = phaseIndex;
+        const agentIndex = workflowPanelModel(row, { phaseIndex }).agents
+          .findIndex((agent) => agent.action.id === actionId);
+        if (agentIndex >= 0) ui.agentIndex = agentIndex;
+      }
+      ui.followActivePhase = false;
+      ui.followActiveAgent = false;
+    }
+    ui.page = 'step';
+    ui.focus = 2;
+    ui.detailScroll = 0;
+    bodyScroll = 0;
+    paint();
+  };
+  /** Esc/←/h/b walks out one page: step → run → home, usage/help → home. */
+  const moveOut = () => {
+    if (ui.page === 'step') {
+      ui.page = 'run';
+      ui.focus = 1;
+      ui.detailScroll = 0;
+      return paint();
+    }
+    if (ui.page === 'usage' || ui.page === 'help') {
+      ui.page = 'home';
+      bodyScroll = 0;
+      return paint();
+    }
+    if (ui.orchestratorDetail) {
+      ui.orchestratorDetail = false;
+      ui.orchestratorVerbose = false;
+      ui.focus = 0;
+      ui.controlSelected = output.columns >= 100;
+      if (output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = 0;
+      ui.detailScroll = 0;
+      return paint();
+    }
+    if (ui.workflowVerbose) {
+      ui.workflowVerbose = false;
+      ui.detailScroll = 0;
+      return paint();
+    }
+    if (ui.page === 'run' && ui.focus > 0) {
+      ui.focus -= 1;
+      if (ui.focus === 0 && output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = (ui.phaseIndex ?? 0) + 1;
+      return paint();
+    }
+    ui.page = 'home';
+    ui.focus = 0;
+    bodyScroll = 0;
+    return paint();
+  };
+  // The wheel: up walks back through whatever is above the window, down walks
+  // on. The timeline counts rows back from its newest event, a page body
+  // counts the first visible row.
+  const scrollActivePage = (delta) => {
+    if (ui.page === 'run' && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose) {
+      ui.detailScroll = Math.max(0, ui.detailScroll + delta);
+      return paint();
+    }
+    bodyScroll = Math.max(0, bodyScroll - delta);
+    return paint();
+  };
+  // The same install `bullswarm integrate install --yes` runs, in-process and
+  // without a shell: every agent, judged by content, reported where it ran.
+  const runInstall = () => {
+    try {
+      installResult = installIntegration({ approved: true, homeDir });
+      integration = installResult.status;
+      message = integration?.ok
+        ? 'Agent integration installed.'
+        : 'Agent integration is incomplete; see the results under the status.';
+    } catch (err) { message = `install failed: ${err.message}`; }
+    return paint();
+  };
+  const spin = () => {
     ui.spinnerFrame = (ui.spinnerFrame + 1) % glyphs().spinner.length;
-    if (detail || rows[selected]?.ongoing) paint();
-  }, Math.max(50, Number(spinnerMs) || 400));
-  return new Promise((resolve) => {
-    const finish = () => {
-      clearInterval(timer);
-      clearInterval(spinnerTimer);
-      input.setRawMode?.(false);
-      input.pause();
-      input.removeListener('data', onData);
-      output.removeListener?.('resize', onResize);
-      output.write(`${ESC}?25h${ESC}?1049l`);
-      resolve(0);
-    };
-    const moveVertical = (delta) => {
-      if (!detail || !selectedRunId) {
-        selected = clamp(selected + delta, 0, Math.max(0, rows.length - 1));
-        selectedRunId = rows[selected]?.runId ?? selectedRunId;
-        return paint();
-      }
-      const row = detailRow(bullswarmDir, selectedRunId);
-      const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-      const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
-      if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
-        if (narrowTimeline) {
-          const visibleSegments = new Set(workflowTimelineLines(model, Math.max(20, frameWidth() - 2)).lines
-            .filter((line) => line?.header)
-            .map((line) => line.segment));
-          const navigable = [
-            ...(visibleSegments.has('Preflight') ? [{ selection: 0, phaseIndex: null }] : []),
-            ...model.phases
-              .map((phase, index) => ({ phase, selection: index + 1, phaseIndex: index }))
-              .filter(({ phase }) => visibleSegments.has(phase.label)),
-          ];
-          if (navigable.length) {
-            const current = navigable.findIndex((target) => target.selection === ui.timelineSelection);
-            const base = current >= 0 ? current : (delta < 0 ? navigable.length : -1);
-            const target = navigable[clamp(base + delta, 0, navigable.length - 1)];
-            ui.timelineSelection = target.selection;
-            if (target.phaseIndex != null) {
-              ui.followActivePhase = false;
-              ui.phaseIndex = target.phaseIndex;
-              ui.agentIndex = null;
-              ui.followActiveAgent = true;
-            }
-            ui.detailScroll = 0;
-          }
-        } else ui.detailScroll = Math.max(0, ui.detailScroll + delta);
-        return paint();
-      }
-      if (ui.focus === 0) {
-        if (model.orchestrator.autonomous && ui.controlSelected) {
-          if (delta > 0) {
-            ui.controlSelected = false;
+    if (ui.page !== 'home' || rows.some((row) => row.ongoing)) paint();
+  };
+  // Switching the rung grouping brings the table into view: on a machine with
+  // several pools the windows alone fill the page, and a tab that changed
+  // something the reader cannot see reads as a tab that did nothing.
+  const showRungs = (by) => {
+    ui.rungsBy = by;
+    const frame = paint();
+    const tabs = frame?.anchor?.tabs;
+    if (tabs != null && tabs > 1) {
+      bodyScroll = tabs - 1;
+      paint();
+    }
+    return undefined;
+  };
+  // `[edit]`: hand the terminal to the same control centre `bullswarm setup`
+  // opens, then take it back and re-read the rungs the setup may have changed.
+  const runEdit = async () => {
+    const openSetup = openSetupTui ?? openSetupControlCentre;
+    clearInterval(timer);
+    clearInterval(spinnerTimer);
+    input.removeListener('data', onData);
+    output.removeListener?.('resize', onResize);
+    input.setRawMode?.(false);
+    input.pause?.();
+    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    try {
+      await openSetup({ bullswarmDir, input, output });
+    } catch (err) {
+      message = `setup error: ${err.message}`;
+    } finally {
+      output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+      input.setRawMode?.(true);
+      input.resume?.();
+      input.on('data', onData);
+      output.on?.('resize', onResize);
+      lastPaintedFrame = null;
+      timer = setInterval(refresh, refreshMs);
+      spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
+      readUsage();
+      ui.page = 'usage';
+      ui.focus = 0;
+      bodyScroll = 0;
+      paint();
+    }
+  };
+  const handleMouse = (mouse) => {
+    if (mouse.kind === 'wheel-up') return scrollActivePage(3);
+    if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
+    if (mouse.kind !== 'press') return undefined;
+    const action = regions.find((region) => mouse.y === region.y
+      && mouse.x >= region.x1 && mouse.x <= region.x2)?.action;
+    if (!action) return undefined;
+    if (action.kind === 'page') { ui.page = action.page; ui.focus = 0; bodyScroll = 0; return paint(); }
+    if (action.kind === 'open-run') return openRun(action.runId);
+    if (action.kind === 'open-step') return openStep(action.actionId);
+    if (action.kind === 'back') return moveOut();
+    if (action.kind === 'install') return runInstall();
+    if (action.kind === 'rungs') return showRungs(action.by);
+    if (action.kind === 'edit') { void runEdit(); return undefined; }
+    if (action.kind === 'quit') return finish();
+    return undefined;
+  };
+  // Every way out releases the mouse before it leaves the alternate screen,
+  // so the terminal is never left reporting clicks to a dead dashboard.
+  let finished = false;
+  let resolveDashboard = null;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearInterval(timer);
+    clearInterval(spinnerTimer);
+    input.setRawMode?.(false);
+    input.pause?.();
+    input.removeListener('data', onData);
+    output.removeListener?.('resize', onResize);
+    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    resolveDashboard?.(0);
+  };
+  const moveVertical = (delta) => {
+    if (ui.page === 'home' || !selectedRunId) {
+      selected = clamp(selected + delta, 0, Math.max(0, rows.length - 1));
+      selectedRunId = rows[selected]?.runId ?? selectedRunId;
+      return paint();
+    }
+    if (ui.page === 'usage' || ui.page === 'help') {
+      bodyScroll = Math.max(0, bodyScroll + delta);
+      return paint();
+    }
+    const row = detailRow(bullswarmDir, selectedRunId);
+    const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+    const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
+    if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
+      if (narrowTimeline) {
+        const visibleSegments = new Set(workflowTimelineLines(model, Math.max(20, frameWidth() - 2)).lines
+          .filter((line) => line?.header)
+          .map((line) => line.segment));
+        const navigable = [
+          ...(visibleSegments.has('Preflight') ? [{ selection: 0, phaseIndex: null }] : []),
+          ...model.phases
+            .map((phase, index) => ({ phase, selection: index + 1, phaseIndex: index }))
+            .filter(({ phase }) => visibleSegments.has(phase.label)),
+        ];
+        if (navigable.length) {
+          const current = navigable.findIndex((target) => target.selection === ui.timelineSelection);
+          const base = current >= 0 ? current : (delta < 0 ? navigable.length : -1);
+          const target = navigable[clamp(base + delta, 0, navigable.length - 1)];
+          ui.timelineSelection = target.selection;
+          if (target.phaseIndex != null) {
             ui.followActivePhase = false;
-            ui.phaseIndex = 0;
+            ui.phaseIndex = target.phaseIndex;
+            ui.agentIndex = null;
+            ui.followActiveAgent = true;
           }
-          return paint();
-        }
-        if (model.orchestrator.autonomous && delta < 0 && model.phaseIndex === 0) {
-          ui.controlSelected = true;
           ui.detailScroll = 0;
-          return paint();
         }
-        ui.followActivePhase = false;
-        ui.phaseIndex = clamp(model.phaseIndex + delta, 0, model.phases.length - 1);
-        ui.agentIndex = null;
+      } else ui.detailScroll = Math.max(0, ui.detailScroll + delta);
+      return paint();
+    }
+    if (ui.focus === 0) {
+      if (model.orchestrator.autonomous && ui.controlSelected) {
+        if (delta > 0) {
+          ui.controlSelected = false;
+          ui.followActivePhase = false;
+          ui.phaseIndex = 0;
+        }
+        return paint();
+      }
+      if (model.orchestrator.autonomous && delta < 0 && model.phaseIndex === 0) {
+        ui.controlSelected = true;
+        ui.detailScroll = 0;
+        return paint();
+      }
+      ui.followActivePhase = false;
+      ui.phaseIndex = clamp(model.phaseIndex + delta, 0, model.phases.length - 1);
+      ui.agentIndex = null;
+      ui.followActiveAgent = true;
+      ui.detailScroll = 0;
+    } else if (ui.focus === 1) {
+      ui.followActiveAgent = false;
+      ui.agentIndex = clamp(model.agentIndex + delta, 0, Math.max(0, model.agents.length - 1));
+      ui.detailScroll = 0;
+    } else {
+      ui.detailScroll = Math.max(0, ui.detailScroll + delta);
+    }
+    return paint();
+  };
+  const requestSelectedCancel = () => {
+    const target = selectedRunId;
+    if (!target) { message = 'No workflow selected.'; return paint(); }
+    try {
+      const result = requestCancel(bullswarmDir, target, { source: 'interactive-tui' });
+      message = result.alreadyFinished
+        ? 'That workflow has already finished.'
+        : `Stop requested for ${result.shortId ?? result.runId}.`;
+      ui.confirmCancel = false;
+      refresh();
+    } catch (err) { message = err.message; ui.confirmCancel = false; paint(); }
+  };
+  /** Enter: open the selected run, then its agents, then the selected step. */
+  const drillIn = () => {
+    if (ui.page === 'home') {
+      selectedRunId = rows[selected]?.runId ?? selectedRunId;
+      if (!selectedRunId) {
+        message = dashboardFilter === 'active'
+          ? 'No active workflow selected · press a to browse recent runs.'
+          : 'No workflow selected.';
+        return paint();
+      }
+      return openRun(selectedRunId);
+    }
+    if (ui.page === 'usage' || ui.page === 'help') return paint();
+    if (ui.orchestratorDetail) { message = 'Planner detail is the deepest level.'; return paint(); }
+    if (ui.workflowVerbose) { message = 'Technical details are the deepest level.'; return paint(); }
+    if (ui.focus === 0) {
+      if (output.columns < 100 && ui.mobileTimeline && ui.timelineSelection === 0) {
+        const row = detailRow(bullswarmDir, selectedRunId);
+        const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+        if (model.orchestrator.autonomous) {
+          ui.orchestratorDetail = true;
+          ui.orchestratorVerbose = false;
+          ui.controlSelected = true;
+        } else message = 'This workflow has no autonomous Workflow Planner.';
+      } else {
+        ui.focus = 1;
         ui.followActiveAgent = true;
         ui.detailScroll = 0;
-      } else if (ui.focus === 1) {
-        ui.followActiveAgent = false;
-        ui.agentIndex = clamp(model.agentIndex + delta, 0, Math.max(0, model.agents.length - 1));
-        ui.detailScroll = 0;
-      } else {
-        ui.detailScroll = Math.max(0, ui.detailScroll + delta);
       }
-      paint();
-    };
-    const requestSelectedCancel = () => {
-      const target = detail ? selectedRunId : rows[selected]?.runId;
-      if (!target) { message = 'No workflow selected.'; return paint(); }
-      try {
-        const result = requestCancel(bullswarmDir, target, { source: 'interactive-tui' });
-        message = result.alreadyFinished
-          ? 'That workflow has already finished.'
-          : `Stop requested for ${result.shortId ?? result.runId}.`;
+      return paint();
+    }
+    if (ui.focus === 1) {
+      const row = detailRow(bullswarmDir, selectedRunId);
+      const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+      const agent = model.agents[model.agentIndex] ?? null;
+      if (agent) return openStep(agent.action.id);
+      message = 'No agent has started in this phase yet.';
+      return paint();
+    }
+    return paint();
+  };
+  const onDataUnsafe = (buf) => {
+    const chunk = String(buf);
+    // A mouse press runs its region's action; the sequence is never read as a
+    // key. The wheel moves whatever window the page is scrolling.
+    const mouse = parseMouse(chunk);
+    if (mouse) handleMouse(mouse);
+    const key = chunk.replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, '');
+    if (!key) return;
+    if (filterEditing) {
+      if (key === '\r' || key === '\n') {
+        filterEditing = false;
+        message = query ? `Showing workflows matching “${query}”.` : null;
+        return refresh();
+      }
+      if (key === '\u001b' || key === '\u0003') {
+        filterEditing = false;
+        query = '';
+        message = null;
+        return refresh();
+      }
+      if (key === '\u007f' || key === '\b') {
+        query = query.slice(0, -1);
+        return refresh();
+      }
+      if (/^[ -~]+$/.test(key)) {
+        query += key;
+        return refresh();
+      }
+      return;
+    }
+    if (ui.confirmCancel) {
+      if (key === 'y' || key === 'Y') return requestSelectedCancel();
+      if (key === 'n' || key === 'N' || key === '\u001b' || key === '\u0003') {
         ui.confirmCancel = false;
-        refresh();
-      } catch (err) { message = err.message; ui.confirmCancel = false; paint(); }
-    };
-    const onDataUnsafe = (buf) => {
-      const key = String(buf);
-      if (filterEditing) {
-        if (key === '\r' || key === '\n') {
-          filterEditing = false;
-          message = query ? `Showing workflows matching “${query}”.` : null;
-          return refresh();
-        }
-        if (key === '\u001b' || key === '\u0003') {
-          filterEditing = false;
-          query = '';
-          message = null;
-          return refresh();
-        }
-        if (key === '\u007f' || key === '\b') {
-          query = query.slice(0, -1);
-          return refresh();
-        }
-        if (/^[ -~]+$/.test(key)) {
-          query += key;
-          return refresh();
-        }
-        return;
+        message = 'Workflow left running.';
+        return paint();
       }
-      if (ui.confirmCancel) {
-        if (key === 'y' || key === 'Y') return requestSelectedCancel();
-        if (key === 'n' || key === 'N' || key === '\u001b' || key === '\u0003') {
-          ui.confirmCancel = false;
-          message = 'Workflow left running.';
-          return paint();
-        }
-        return;
-      }
-      if (keyPressed('detach', key)) return finish();
-      if (key === 'r') { message = null; return refresh(); }
-      if (!detail && key === '/') {
+      return;
+    }
+    if (keyPressed('detach', key)) return finish();
+    if (key === 'r') { message = null; return refresh(); }
+    if (key === '?') { ui.page = 'help'; ui.focus = 0; bodyScroll = 0; return paint(); }
+    if (key === 'u') { ui.page = 'usage'; ui.focus = 0; bodyScroll = 0; return paint(); }
+    if (ui.page === 'usage') {
+      if (key === 'l') return showRungs('lane');
+      if (key === 'p') return showRungs('provider');
+      if (key === 'e') { void runEdit(); return; }
+    }
+    if (ui.page === 'home') {
+      if (key === '/') {
         filterEditing = true;
         message = null;
         return paint();
       }
-      if (!detail && key === 'a') {
+      if (key === 'a') {
         dashboardFilter = dashboardFilter === 'active' ? 'all' : 'active';
         message = dashboardFilter === 'active' ? 'Showing active workflows.' : 'Showing active and recent workflows.';
         return refresh();
       }
-      if (keyPressed('out', key)) {
-        if (!detail) return finish();
-        if (ui.orchestratorDetail) {
-          ui.orchestratorDetail = false;
-          ui.orchestratorVerbose = false;
-          ui.focus = 0;
-          ui.controlSelected = output.columns >= 100;
-          if (output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = 0;
-          ui.detailScroll = 0;
-        } else if (ui.workflowVerbose) {
-          ui.workflowVerbose = false;
-          ui.detailScroll = 0;
-        } else if (detail && ui.focus > 0) {
-          ui.focus -= 1;
-          if (ui.focus === 0 && output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = (ui.phaseIndex ?? 0) + 1;
-        }
-        else if (detail) detail = false;
-        return paint();
-      }
-      if (keyPressed('nextWorkflow', key)) return switchWorkflow(1);
-      if (keyPressed('previousWorkflow', key)) return switchWorkflow(-1);
-      if (keyPressed('in', key)) {
-        if (!detail) {
-          selectedRunId = rows[selected]?.runId ?? selectedRunId;
-          if (selectedRunId) {
-            detail = true;
-            ui.followActivePhase = true;
-            ui.followActiveAgent = true;
-            ui.timelineSelection = null;
-          }
-        } else if (ui.orchestratorDetail) {
-          message = 'Planner detail is the deepest level.';
-        } else if (ui.workflowVerbose) {
-          message = 'Technical details are the deepest level.';
-        } else if (ui.focus === 0) {
-          if (output.columns < 100 && ui.mobileTimeline && ui.timelineSelection === 0) {
-            const row = detailRow(bullswarmDir, selectedRunId);
-            const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-            if (model.orchestrator.autonomous) {
-              ui.orchestratorDetail = true;
-              ui.orchestratorVerbose = false;
-              ui.controlSelected = true;
-            } else message = 'This workflow has no autonomous Workflow Planner.';
-          } else {
-            ui.focus = 1;
-            ui.followActiveAgent = true;
-          }
-        } else if (ui.focus === 1) {
-          const row = detailRow(bullswarmDir, selectedRunId);
-          if (workflowPanelModel(row, { phaseIndex: ui.phaseIndex }).agents.length) ui.focus = 2;
-          else message = 'No agent has started in this phase yet.';
-        }
-        ui.detailScroll = 0;
-        return paint();
-      }
-      if (key === '\u001b[D' || key === 'h') {
-        if (ui.orchestratorDetail) {
-          ui.orchestratorDetail = false;
-          ui.orchestratorVerbose = false;
-          ui.focus = 0;
-          ui.controlSelected = output.columns >= 100;
-          if (output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = 0;
-        } else if (ui.workflowVerbose) {
-          ui.workflowVerbose = false;
-        } else if (detail && ui.focus > 0) {
-          ui.focus -= 1;
-          if (ui.focus === 0 && output.columns < 100 && ui.mobileTimeline) ui.timelineSelection = (ui.phaseIndex ?? 0) + 1;
-        } else if (detail) {
-          detail = false;
-        }
-        ui.detailScroll = 0;
-        return paint();
-      }
-      if (keyPressed('up', key)) return moveVertical(-1);
-      if (keyPressed('down', key)) return moveVertical(1);
-      const timelineScroll = detail && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
-      if (key === '\u001b[5~') { if (timelineScroll) ui.timelineSelection = null; ui.detailScroll = timelineScroll ? ui.detailScroll + 8 : Math.max(0, ui.detailScroll - 8); return paint(); }
-      if (key === '\u001b[6~') { if (timelineScroll) ui.timelineSelection = null; ui.detailScroll = timelineScroll ? Math.max(0, ui.detailScroll - 8) : ui.detailScroll + 8; return paint(); }
-      if (key === 'o' && detail) {
-        const row = detailRow(bullswarmDir, selectedRunId);
-        const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-        if (model.orchestrator.autonomous) {
-          ui.workflowVerbose = false;
-          ui.orchestratorDetail = true;
-          ui.orchestratorVerbose = false;
-          ui.controlSelected = true;
-          ui.detailScroll = 0;
-          message = null;
-        } else message = 'This workflow has no autonomous orchestrator thread.';
-        return paint();
-      }
-      if (key === 't' && detail && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
-        ui.mobileTimeline = !ui.mobileTimeline;
-        ui.focus = 0;
-        ui.controlSelected = false;
+      if (key === 'i') return runInstall();
+    }
+    if (/^[1-9]$/.test(key)) {
+      const run = allRows.filter((row) => row.ongoing)[Number(key) - 1];
+      if (run) return openRun(run.runId);
+    }
+    if (keyPressed('out', key)) return moveOut();
+    if (key === '\u001b[D' || key === 'h') return moveOut();
+    if (keyPressed('nextWorkflow', key)) return switchWorkflow(1);
+    if (keyPressed('previousWorkflow', key)) return switchWorkflow(-1);
+    if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();
+    if (keyPressed('up', key)) return moveVertical(-1);
+    if (keyPressed('down', key)) return moveVertical(1);
+    const runPage = ui.page === 'run' || ui.page === 'step';
+    const timelineScroll = runPage && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
+    if (key === '\u001b[5~') {
+      if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll += 8; return paint(); }
+      if (runPage) ui.detailScroll = Math.max(0, ui.detailScroll - 8);
+      else bodyScroll = Math.max(0, bodyScroll - 8);
+      return paint();
+    }
+    if (key === '\u001b[6~') {
+      if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
+      if (runPage) ui.detailScroll += 8;
+      else bodyScroll += 8;
+      return paint();
+    }
+    if (key === 'o' && runPage) {
+      const row = detailRow(bullswarmDir, selectedRunId);
+      const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+      if (model.orchestrator.autonomous) {
+        ui.workflowVerbose = false;
+        ui.orchestratorDetail = true;
+        ui.orchestratorVerbose = false;
+        ui.controlSelected = true;
         ui.detailScroll = 0;
         message = null;
-        return paint();
-      }
-      if (key === '1' && detail) { ui.focus = 0; return paint(); }
-      if (key === '2' && detail) { ui.focus = 1; return paint(); }
-      if (key === '3' && detail) { ui.focus = 2; return paint(); }
-      if (key === 'v' && detail) {
-        if (ui.orchestratorDetail) ui.orchestratorVerbose = !ui.orchestratorVerbose;
-        else ui.workflowVerbose = !ui.workflowVerbose;
-        ui.detailScroll = 0;
-        message = null;
-        return paint();
-      }
-      if (key === '\r' || key === '\n') {
-        if (!detail) {
-          selectedRunId = rows[selected]?.runId ?? selectedRunId;
-          if (!selectedRunId) {
-            message = dashboardFilter === 'active'
-              ? 'No active workflow selected · press a to browse recent runs.'
-              : 'No workflow selected.';
-            return paint();
-          }
-          detail = true;
-          ui.followActivePhase = true;
-          ui.followActiveAgent = true;
-        } else if (ui.focus === 0) {
-          if (ui.controlSelected) {
-            ui.workflowVerbose = false;
-            ui.orchestratorDetail = true;
-            ui.orchestratorVerbose = false;
-            ui.detailScroll = 0;
-          } else ui.focus = 1;
-        } else if (ui.focus === 1) {
-          const row = detailRow(bullswarmDir, selectedRunId);
-          const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
-          if (model.agents.length) ui.focus = 2;
-          else message = 'No agent has started in this phase yet.';
-        }
-        return paint();
-      }
-      if (key === 'c') {
-        ui.confirmCancel = true;
-        message = null;
-        return paint();
-      }
-    };
-    const onData = (buf) => {
-      // A key-handler error (e.g. a drill-in racing the writer) must never
-      // kill the TUI; finish() still restores the terminal on q/Ctrl-C.
-      try { onDataUnsafe(buf); } catch (err) {
-        message = `display error: ${err.message}`;
-        paint();
-      }
-    };
-    const onResize = () => paint();
-    input.on('data', onData);
-    output.on?.('resize', onResize);
-  });
+      } else message = 'This workflow has no autonomous orchestrator thread.';
+      return paint();
+    }
+    if (key === 't' && runPage && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
+      ui.mobileTimeline = !ui.mobileTimeline;
+      ui.focus = 0;
+      ui.controlSelected = false;
+      ui.detailScroll = 0;
+      message = null;
+      return paint();
+    }
+    if (key === 'v' && runPage) {
+      if (ui.orchestratorDetail) ui.orchestratorVerbose = !ui.orchestratorVerbose;
+      else ui.workflowVerbose = !ui.workflowVerbose;
+      ui.detailScroll = 0;
+      message = null;
+      return paint();
+    }
+    if (key === 'c' && runPage) {
+      ui.confirmCancel = true;
+      message = null;
+      return paint();
+    }
+  };
+  const onData = (buf) => {
+    // A key-handler error (e.g. a drill-in racing the writer) must never
+    // kill the TUI; finish() still restores the terminal on q/Ctrl-C.
+    try { onDataUnsafe(buf); } catch (err) {
+      message = `display error: ${err.message}`;
+      paint();
+    }
+  };
+  const onResize = () => paint();
+  input.setRawMode?.(true);
+  input.resume();
+  // SGR mouse reporting travels with the alternate screen: on for the whole
+  // session, off again in finish() and around the setup hand-off.
+  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+  readIntegration();
+  paint();
+  let timer = setInterval(refresh, refreshMs);
+  let spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
+  input.on('data', onData);
+  output.on?.('resize', onResize);
+  void readUsage();
+  return new Promise((resolve) => { resolveDashboard = resolve; });
 }
 
 export function dashboardJson(bullswarmDir, { all = false, token = null, cancel = false } = {}) {

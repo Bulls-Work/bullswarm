@@ -17,7 +17,37 @@ bullswarm run --help
 
 `--help` / `-h` / a trailing `help` never reads or writes state, calls a network endpoint, or spawns a process. Every other command self-initializes `~/.bullswarm/state.json` (or `$BULLSWARM_HOME`) on first use. An unrecognized option prints `unknown flag --name` plus that command's synopsis and exits 2, before routing or spawning anything. Malformed values (a missing `--lane`, a `--limit` that is not a positive integer) are rejected at the same boundary with exit 2.
 
-Bare `bullswarm` runs `bullswarm setup`. It accepts every option that command documents. `--yes` on the bare command skips the interactive wizard and auto-initializes with discovered defaults (default: prompts on a TTY; auto-initializes for a non-TTY caller).
+Bare `bullswarm` opens setup until the installation is configured, then opens
+the dashboard. It accepts every option that setup documents. `--yes` on the
+bare command skips the interactive wizard and auto-initializes with discovered
+defaults (default: prompts on a TTY; auto-initializes for a non-TTY caller).
+
+## The root dashboard
+
+Once setup has completed, bare `bullswarm` opens the full-screen dashboard on
+Home. `bullswarm --setup` or `bullswarm setup` opens the setup control centre;
+`bullswarm workflow tui` is the explicit dashboard form. The dashboard has
+Home, Run, Step, Usage, and Help pages. A sticky header and bottom nav keep
+the page and run controls visible (`1. [ <run> ] … [ usage ] ?. [ help ]
+[ quit ]`, each button's key underlined in its label or written ahead of it);
+`q`, `?`, `u`, `e`, `i`, `l`/`p`, arrows, `PgUp`/`PgDn`, and Enter provide the
+keyboard actions. Mouse reporting lets you click any button, tab, run, or
+step, and the wheel scrolls the body.
+The Claude Mod is this dashboard's read-only counterpart: it keeps the Run,
+Step, and Usage pages and the same colours, but has no Home or Help page and
+omits edit and install.
+
+```bash
+# main screen after setup
+bullswarm
+
+# open setup explicitly
+bullswarm --setup
+bullswarm setup
+
+# explicit dashboard entry point
+bullswarm workflow tui
+```
 
 ## setup
 
@@ -886,6 +916,18 @@ Read-only. Performs live pool discovery; nothing is written.
 ### tui
 
 Open the interactive full-screen workflow dashboard, or print a static/JSON snapshot for a non-interactive caller. Bare `bullswarm workflow` is equivalent on a TTY.
+
+The interactive dashboard is the same five-page surface as the root command:
+Home (runs, pools, integration and commands), Run (timeline, Live, Next and
+pool rows), Step (one action's agent panel), Usage (meter windows, credits and
+rungs), and Help. Every page has a sticky header and bottom nav; the current
+run or page is marked `●`, and Step prepends `[ back ]`. The nav has one
+`[ <run> ]` button per ongoing run, followed by `[ usage ] [ help ] [ quit ]`,
+every button's key underlined in its label (`u`, `q`, `b`) or written ahead
+of it (`1.`, `2.`, `?.`).
+Use `q` to quit, `?` for Help, `u` for Usage, `e` for the Usage edit hand-off, `i` for Home's install,
+`l`/`p` for the Usage tabs, arrows or `PgUp`/`PgDn` to scroll, and Enter to
+open a selection. Click any button, tab, run, or step; the mouse wheel scrolls.
 
 ```bash
 # One plain-text frame of the timeline, live, and next sections.
