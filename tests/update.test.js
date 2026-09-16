@@ -86,6 +86,17 @@ test('detectInstall: a pnpm global store is its own shape, and a pnpm project de
     packageRoot: '/home/u/Library/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
     exists: (p) => p.endsWith('/.git'),
   }).kind, 'checkout');
+  // A Windows pnpm home, written with forward slashes for the same reason the
+  // npm case above is: node:path only splits backslashes when running ON
+  // Windows, so a backslash fixture would assert posix behaviour, not win32.
+  assert.deepEqual(detectInstall({
+    packageRoot: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    exists: () => false,
+  }), {
+    kind: 'pnpm-global',
+    root: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    prefix: 'C:/Users/u/AppData/Local/pnpm/global/5',
+  });
 });
 
 test('update: a pnpm global install is upgraded with pnpm add -g and verified through the link, not the store', async () => {
@@ -111,6 +122,10 @@ test('update: a pnpm global install is upgraded with pnpm add -g and verified th
   assert.equal(result.install.prefix, home);
   assert.equal(result.updated, true);
   assert.equal(result.after, '0.30.0');
+  // install.root still names the superseded store directory; verifiedAt is the
+  // copy `after` was actually read from, and the one the shell now runs.
+  assert.equal(result.install.root, root);
+  assert.equal(result.verifiedAt, link);
 });
 
 test('update: the pnpm copy that is verified is the one pnpm names now, not the one found before', async () => {
