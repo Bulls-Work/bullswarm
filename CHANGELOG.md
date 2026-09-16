@@ -17,6 +17,12 @@
 - bare command: after setup, bare `bullswarm` opens the dashboard; the first
   run and `bullswarm --setup` or `bullswarm setup` open setup, while
   `bullswarm workflow tui` remains the explicit dashboard form.
+- update: a global pnpm install is recognised as its own shape and upgraded with
+  `pnpm add -g`, verified through the link under the pnpm global node_modules.
+  It used to be read as an npm prefix — but pnpm's `.pnpm/<name>@<version>/`
+  is a per-version store directory, so `npm install -g --prefix` wrote into the
+  old version's folder and `bullswarm update` could never exit 0. A pnpm
+  project dependency is reported as unknown rather than upgraded globally.
 - docs: the README, guides, CLI reference, and Claude Code pages now make the
   dashboard the main screen and describe the Claude Mod as its read-only
   counterpart — the same Run, Step, and Usage pages in the same colours, with

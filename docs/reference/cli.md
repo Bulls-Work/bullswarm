@@ -1112,7 +1112,7 @@ No flags. Self-initializes `state.json` on first use, like every other non-help 
 
 ## update
 
-Upgrade this installation of bullswarm to the latest version published on npm, in place. A global npm install is upgraded with `npm install -g bullswarm@<latest> --prefix <its own prefix>`. A source checkout (a clone, or a global install that is an `npm link` into one) is pulled with `git pull --ff-only` instead and is refused while it has local changes. The result is verified by re-reading `package.json` on disk, never by npm's exit code.
+Upgrade this installation of bullswarm to the latest version published on npm, in place. A global npm install is upgraded with `npm install -g bullswarm@<latest> --prefix <its own prefix>`. A global pnpm install lives in a per-version store directory (`<pnpm home>/.pnpm/bullswarm@<version>/`) that is not a prefix, so it is upgraded with `pnpm add -g bullswarm@<latest>` and verified through the link under the pnpm global `node_modules`. A source checkout (a clone, or a global install that is an `npm link` into one) is pulled with `git pull --ff-only` instead and is refused while it has local changes. The result is verified by re-reading `package.json` on disk, never by the package manager's exit code.
 
 ```bash
 # Compare with the registry, then upgrade in place.
@@ -1123,9 +1123,9 @@ bullswarm update
 | Flag | Meaning | Default |
 |---|---|---|
 | `--check` | only compare the installed version with the latest published one; changes nothing | off (upgrades) |
-| `--json` | machine-readable result: install `{kind, root, prefix}`, `before`, `latest`, `after`, `upToDate`, `updated`, `error`, `notes[]` | human-readable lines |
+| `--json` | machine-readable result: install `{kind: global\|pnpm-global\|checkout\|unknown, root, prefix}`, `before`, `latest`, `after`, `upToDate`, `updated`, `error`, `notes[]` | human-readable lines |
 
-Reads `https://registry.npmjs.org/bullswarm/latest` (8s timeout). Exit 0 = at the latest published version afterwards (or `--check` reported); exit 1 = registry, npm or git refused, or the install shape is unknown. The running process keeps its old version; the next `bullswarm` command runs the new one.
+Reads `https://registry.npmjs.org/bullswarm/latest` (8s timeout). Exit 0 = at the latest published version afterwards (or `--check` reported); exit 1 = registry, npm, pnpm or git refused, or the install shape is unknown. The running process keeps its old version; the next `bullswarm` command runs the new one.
 
 ## release
 
