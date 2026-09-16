@@ -145,3 +145,50 @@ test('integrate CLI works non-interactively with an isolated HOME', () => {
     }).ok, true);
   } finally { cleanup(); }
 });
+
+test('the Claude integration links the mod and sets the function-hooks flag, and remove undoes both', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ model: 'opus', env: { OTHER: 'kept' } }, null, 2));
+    const result = installIntegration({ homeDir: home, skillSource: SKILL_SOURCE, approved: true, agents: ['claude'] });
+    const claude = result.status.agents.find((item) => item.agent === 'claude');
+    assert.equal(result.status.ok, true);
+    assert.equal(claude.mod.status, 'installed');
+    assert.equal(lstatSync(claude.modPath).isSymbolicLink(), true);
+    assert.equal(resolve(join(claude.modPath, '..'), readlinkSync(claude.modPath)), join(REPO, 'mods', 'bullswarm'));
+    assert.equal(claude.hooksFlag, true);
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    assert.equal(settings.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, '1');
+    assert.equal(settings.env.OTHER, 'kept');
+    assert.equal(settings.model, 'opus');
+
+    const again = installIntegration({ homeDir: home, skillSource: SKILL_SOURCE, approved: true, agents: ['claude'] });
+    assert.equal(again.changes[0].mod.changed, false);
+    assert.equal(again.changes[0].hooksFlag.changed, false);
+
+    const removed = removeIntegration({ homeDir: home, skillSource: SKILL_SOURCE, approved: true, agents: ['claude'] });
+    assert.equal(removed.changes[0].mod.changed, true);
+    assert.equal(existsSync(claude.modPath), false);
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    assert.equal(after.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, undefined);
+    assert.equal(after.env.OTHER, 'kept');
+    assert.equal(removed.status.ok, false);
+  } finally { cleanup(); }
+});
+
+test('a settings.json that is not a JSON object is left alone and reported', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const settingsPath = join(home, '.claude', 'settings.json');
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(settingsPath, '{ not json');
+    const result = installIntegration({ homeDir: home, skillSource: SKILL_SOURCE, approved: true, agents: ['claude'] });
+    assert.equal(result.changes[0].mod.changed, true);
+    assert.equal(result.changes[0].hooksFlag.changed, false);
+    assert.match(result.changes[0].hooksFlag.reason, /not a JSON object/);
+    assert.equal(readFileSync(settingsPath, 'utf8'), '{ not json');
+    assert.equal(result.status.ok, false);
+  } finally { cleanup(); }
+});

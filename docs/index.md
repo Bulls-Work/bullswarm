@@ -1,53 +1,31 @@
 ---
-title: Bullswarm documentation
-permalink: /
+layout: home
+title: Bullswarm
+titleTemplate: Route coding work by quota. Verify it by content.
+description: Bullswarm routes a bounded coding task to whichever installed agent CLI has unused subscription quota, then verifies the result by its content.
+
+hero:
+  name: Bullswarm
+  text: Route coding work by quota. Verify it by content.
+  tagline: Bullswarm is a CLI that sends a coding task to whichever of your installed agent CLIs — Claude Code, Codex, Grok, OpenCode, or Command Code — currently has unused subscription quota, then checks the result by its content.
+  actions:
+    - theme: brand
+      text: Get started
+      link: /guide/getting-started
+    - theme: alt
+      text: Concepts
+      link: /guide/concepts
+    - theme: alt
+      text: CLI reference
+      link: /reference/cli
+
+features:
+  - title: Quota-paced routing across pools
+    details: A pool is one installed agent CLI, or one account of that CLI. Work is tagged by lane — analyze, build, or chore — and the pool furthest behind its own quota pace wins. A pool at its 5-hour ceiling yields to one with headroom, and a pool whose weekly window is about to reset gets priority for its remaining surplus, so quota never runs out the clock unspent.
+  - title: Verdict by content, never exit code
+    details: Every delegate's output is evidence to be verified, never an authority to be trusted on its word. A non-zero exit is never success on its own — the JSON verdict's ok, why, and contentUsableDespiteExit say what was actually written before you re-run anything.
+  - title: Workflows you author, with independent acceptance
+    details: One agent planning and judging its own serial work leaves every other pool idle and multiplies the risk. You author the program; the kernel validates and runs the graph of dependent actions across whichever pools have quota to spare, and computes completion from evidence the graph itself required.
+  - title: Works inside Claude Code, Codex and Grok
+    details: The packaged bullswarm skill goes straight to bullswarm run or bullswarm workflow goal from the agent CLI you are already in — no separate preview or classifier command to learn first.
 ---
-
-Bullswarm is a CLI that sends a coding task to whichever of your installed
-agent CLIs — Claude Code, Codex, Grok, OpenCode, or Command Code — currently
-has unused subscription quota, then checks the result by its content.
-
-It routes by quota and pace instead of a fixed map from work type to agent,
-and it judges every delegate's output by content, never by exit code. A
-**pool** is one installed agent CLI, or one account of that CLI. A **lane**
-is the nature of the work: `analyze` (read-only), `build` (edits), or
-`chore` (mechanical edits).
-
-## Guides
-
-| Page | What it covers |
-|---|---|
-| [Entry points](./guide/entry-points/) | `run` vs `workflow goal`, and every top-level verb with its one-line purpose |
-| [Doctrine](./guide/doctrine/) | The four non-negotiable rules, and the result verdict shape |
-| [Getting started](./guide/getting-started/) | Install, integration with Codex/Claude/Grok, quick-start commands |
-| [Strategy](./guide/strategy/) | Model/provider configuration, rungs (model plus reasoning level per effort tier), benchmark evidence |
-| [Workflows](./guide/workflows/) | Authoring a program, kinds, advisories, the plan contract/validate/goal flow |
-| [Operations](./guide/operations/) | Listing and inspecting runs, the result envelope, context diet |
-| [Dashboard](./guide/dashboard/) | `workflow watch`, the interactive TUI, terminal glyph fallback |
-| [Repository operations](./guide/repository-operations/) | The issue-watcher launchd agent |
-| [Routing](./guide/routing/) | How a pool is picked: pace, 5-hour headroom, expiring-soon urgency, load, quarantine |
-| [Providers](./guide/providers/) | The provider plugin contract: tiers, `provider.mjs` exports, the kit, the snapshot, every pool field and its reader |
-
-## Internal notes and studies
-
-These are historical working notes, audits, and experiment writeups, kept as
-records rather than as current documentation. Skip this list unless you are
-working on the Bullswarm codebase itself:
-
-- [claude-dynamic-workflow-mechanics.md](./claude-dynamic-workflow-mechanics.md)
-- [dynamic-workflow-handoff.md](./dynamic-workflow-handoff.md)
-- [dynamic-workflow-qa.md](./dynamic-workflow-qa.md)
-- [dynamic-workflow-v2-execution-plan.md](./dynamic-workflow-v2-execution-plan.md)
-- [integration-audit-2026-08-31.md](./integration-audit-2026-08-31.md)
-- [planner-prompt-audit-2026-08-29.md](./planner-prompt-audit-2026-08-29.md)
-- [workflow-agent-usability-audit-2026-08-27.md](./workflow-agent-usability-audit-2026-08-27.md)
-- [workflow-design.md](./workflow-design.md)
-- [workflow-simplification.md](./workflow-simplification.md)
-- [audits/2026-09-09-codebase-audit.md](./audits/2026-09-09-codebase-audit.md)
-- [design/2026-09-06-caller-first-cli.md](./design/2026-09-06-caller-first-cli.md)
-- [experiments/2026-08-28-trending-ai-autonomy.md](./experiments/2026-08-28-trending-ai-autonomy.md)
-- [experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md](./experiments/2026-08-29-dogfood-bullswarm-builds-bullswarm.md)
-- [experiments/2026-08-29-ultracode-vs-bullswarm.md](./experiments/2026-08-29-ultracode-vs-bullswarm.md)
-- [experiments/2026-08-31-v2-component-probes.md](./experiments/2026-08-31-v2-component-probes.md)
-- [experiments/2026-09-06-caller-planner-evaluation.md](./experiments/2026-09-06-caller-planner-evaluation.md)
-- [studies/portal-token-diet.md](./studies/portal-token-diet.md)

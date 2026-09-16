@@ -1,0 +1,4 @@
+{
+  "description": "Bullswarm: an engine.create step adds $.bullswarm (pools, refresh, run) over $.process beneath; session.start registers /bullswarm and starts the meter refresh; prompt.context tells the model which pools have surplus; tool.call on Agent routes eligible subagents through `bullswarm run --no-caller` and answers with the verified output; tool.call on Bash appends the verdict of a `bullswarm run` or `bullswarm workflow goal`; ui.render draws the meter strip in the AbovePrompt band",
+  "modules": ["./register.ts"]
+}

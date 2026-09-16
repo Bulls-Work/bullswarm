@@ -136,8 +136,8 @@ const integrateText = rich({
   argsTitle: 'Commands',
   args: [
     { name: 'status', desc: 'report install state per agent (default when no subcommand is given)' },
-    { name: 'install', desc: 'symlink the skill and append the awareness block' },
-    { name: 'remove', desc: 'remove only the Bullswarm-managed symlink and awareness block' },
+    { name: 'install', desc: 'symlink the skill and append the awareness block; for Claude also link the Claude Mod and enable function hooks' },
+    { name: 'remove', desc: 'remove only the Bullswarm-managed symlinks, awareness block and hooks flag' },
     { name: 'retire-legacy', desc: 'recoverably archive the retired pre-Bullswarm offload skill' },
   ],
   options: [
@@ -146,11 +146,12 @@ const integrateText = rich({
   ],
   safety: [
     'install/remove write outside this repo, under each agent\'s home-dir config (~/.codex, ~/.claude, ~/.grok); status only reads integration files, though the common CLI bootstrap may initialize ~/.bullswarm state on a fresh machine',
+    'for Claude, install links ~/.claude/skills/bullswarm-mod to the packaged Claude Mod and sets env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS to "1" in ~/.claude/settings.json (function hooks are early access in Claude Code); remove unlinks the mod and clears that key',
     'install refuses to replace a non-Bullswarm file found at the same path',
     'retire-legacy renames (moves), never deletes, the legacy skill directory',
   ],
   examples: [
-    { cmd: 'bullswarm integrate status', note: 'check which agents already have the skill and awareness block installed' },
+    { cmd: 'bullswarm integrate status', note: 'check which agents already have the skill, awareness block and (for Claude) the mod installed' },
   ],
   next: 'bullswarm integrate install --yes to install for all discovered agents.',
 });
@@ -158,7 +159,8 @@ const integrateText = rich({
 const integrateStatusText = rich({
   usage: 'bullswarm integrate status [--agents codex,claude,grok] [--json]',
   purpose: 'Report, per agent, whether the packaged skill symlink and the awareness block are '
-    + 'installed, and whether a legacy pre-Bullswarm offload skill needs retiring.',
+    + 'installed (for Claude, also the Claude Mod link and the function-hooks flag), and whether '
+    + 'a legacy pre-Bullswarm offload skill needs retiring.',
   args: [],
   options: [
     { flag: '--agents codex,claude,grok', desc: 'restrict the report to specific agents', default: 'all three' },
@@ -172,7 +174,9 @@ const integrateStatusText = rich({
 const integrateInstallText = rich({
   usage: 'bullswarm integrate install [--agents codex,claude,grok] --yes [--json]',
   purpose: "Symlink the packaged Bullswarm skill and append the awareness block marker into "
-    + "each selected agent's global instructions file.",
+    + "each selected agent's global instructions file. For Claude, also link the Claude Mod "
+    + "(mods/bullswarm) under ~/.claude/skills and set CLAUDE_CODE_ENABLE_FUNCTION_HOOKS in "
+    + "~/.claude/settings.json so Claude Code loads it in every session.",
   args: [],
   options: [
     { flag: '--agents codex,claude,grok', desc: 'restrict install to specific agents', default: 'all three' },
@@ -182,6 +186,7 @@ const integrateInstallText = rich({
   safety: [
     "writes/symlinks under each agent's global config directory (~/.codex, ~/.claude, ~/.grok)",
     'refuses to replace a non-Bullswarm skill path instead of overwriting it',
+    'edits only the env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS key of ~/.claude/settings.json and leaves a file that is not a JSON object alone, reporting it',
     'idempotent: re-running after a successful install makes no further changes',
   ],
   examples: [{ cmd: 'bullswarm integrate install --agents codex,claude --yes' }],
@@ -1143,7 +1148,7 @@ const workflowCapabilitiesText = rich({
 
 
 const workflowTuiText = rich({
-  usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>]',
+  usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>] [--overview [--width <cols>] [--height <rows>]]',
   purpose: 'Open the interactive full-screen workflow dashboard with an active/recent run list, '
     + 'selected-run preview, Workflow Planner, phase, live-agent, and technical drill-down views, or print a '
     + 'static/JSON snapshot for a non-interactive caller.',
@@ -1153,9 +1158,12 @@ const workflowTuiText = rich({
     { flag: '--all', desc: 'print the JSON run list including historical (finished) runs; implies --json and cannot be combined with a runId', default: 'ongoing only' },
     { flag: '--show <runId>', desc: 'equivalent to passing <runId> positionally; forces the --json code path for that one run', default: 'none' },
     { flag: '--cancel <runId>', desc: 'request cooperative cancellation of that run instead of viewing it', default: 'none' },
+    { flag: '--overview', desc: "print one static frame of the run's overview panel (Workflow timeline, Live, Next) as plain text with no escape codes, sized by --width and --height, for a caller that embeds it; with --json, the same lines in a document with the run ids; needs a runId", default: 'off' },
+    { flag: '--width <cols>', desc: 'columns of the --overview frame, at least 40', default: '100' },
+    { flag: '--height <rows>', desc: 'rows of the --overview frame, at least 12', default: '30' },
   ],
   safety: [
-    'interactive mode and the --json/--show/--all views are read-only',
+    'interactive mode and the --json/--show/--all/--overview views are read-only',
     '--cancel writes state.json (cancelRequested=true, status=cancelling) — cooperative, not a force-kill: the workflow stops at its next safe checkpoint',
     'inside the interactive browser, q detaches without stopping the underlying workflow; c requests the same cancellation with a confirmation prompt',
     'the default timeline is derived from durable state and events; press v for raw action-ledger and event evidence',
@@ -1164,6 +1172,7 @@ const workflowTuiText = rich({
   examples: [
     { cmd: 'bullswarm workflow tui', note: 'compatibility alias for the bare workflow dashboard' },
     { cmd: 'bullswarm workflow tui --json --all' },
+    { cmd: 'bullswarm workflow tui ab12cd --overview --width 90 --height 24', note: 'one plain-text frame of the timeline, live and next sections' },
   ],
   next: 'bullswarm workflow watch <runId> for a low-noise non-interactive follow, or bullswarm workflow runs result <runId> --json once it finishes.',
 });

@@ -505,7 +505,7 @@ function providerSkeleton(name, from) {
     `// ${name} — a Bullswarm provider, scaffolded by \`bullswarm provider scaffold\`.`,
     '//',
     '// A provider teaches Bullswarm one agent CLI and returns its pools. The full',
-    '// contract is docs/guide/providers.md in the bullswarm package.',
+    '// contract is docs/reference/providers.md in the bullswarm package.',
     '//',
     '//   check it  bullswarm provider validate <this directory>',
     `//   run it    bullswarm provider probe ${name}     (the step not to skip)`,

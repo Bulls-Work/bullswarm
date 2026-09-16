@@ -43,9 +43,38 @@ version in place (`bullswarm update --check` only reports). Requires Node.js
 22.12 or later. `bullswarm setup` walks through detecting your
 installed agent CLIs, showing their quota state, and writing a routing
 configuration. See
-[Getting started](https://cowcow02.github.io/bullswarm/guide/getting-started/)
+[Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started)
 for integrating Bullswarm's skill into Codex, Claude, and Grok, and for the
 full quick-start command list.
+
+## Claude Mod (early access)
+
+`mods/bullswarm` is the same routing injected into Claude Code's own engine
+as a Claude Mod (a plugin of TypeScript function hooks, behind
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`): the pool meters drawn above the
+prompt, the pools named in the model's context, Claude's general-purpose
+subagents routed to whichever pool has surplus and answered with the
+verified output, and the verdict appended to every `bullswarm run` the model
+runs. See [mods/bullswarm/README.md](mods/bullswarm/README.md).
+
+Three ways to load it:
+
+```bash
+# with the CLI: links the mod under ~/.claude/skills and sets the flag in ~/.claude/settings.json
+bullswarm integrate install --agents claude --yes
+
+# from Claude Code's plugin marketplace (a copy that `claude plugin update` refreshes)
+claude plugin marketplace add Bulls-Work/bullswarm
+claude plugin install bullswarm@bullswarm
+
+# one session only, from the installed package
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir "$(npm root -g)/bullswarm/mods/bullswarm"
+```
+
+The marketplace route still needs `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, in
+the shell or under `env` in `~/.claude/settings.json`, and the `bullswarm`
+CLI on `PATH`. Pick one route: an installed marketplace copy takes precedence
+over the skills-dir link, and Claude says so at startup.
 
 ## Quick start
 
@@ -107,7 +136,7 @@ instead.
   and never retried early.
 
 The full mechanics behind each of these are in
-[Routing](https://cowcow02.github.io/bullswarm/guide/routing/).
+[Routing](https://bulls-work.github.io/bullswarm/guide/routing).
 
 ## What you get back
 
@@ -121,7 +150,7 @@ The full mechanics behind each of these are in
   content still verified; read it before re-running
 
 A non-zero exit from the delegate is never treated as success on its own. See
-[Doctrine](https://cowcow02.github.io/bullswarm/guide/doctrine/) for the full
+[Result envelope](https://bulls-work.github.io/bullswarm/reference/result) for the full
 verdict shape.
 
 A workflow produces a durable, versioned result envelope — a JSON document
@@ -137,29 +166,32 @@ bullswarm workflow runs result <shortId> --json --summary  # compact status once
 the exact flags to keep polling; `runs result --summary` is what to read once
 a run finishes, and `runs result --json` (no `--summary`) gives the full
 envelope for a failed or partial run. See
-[Operations](https://cowcow02.github.io/bullswarm/guide/operations/) for the
+[Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) for the
 full shape of both.
 
 ## Documentation
 
 The full documentation is published at
-[cowcow02.github.io/bullswarm](https://cowcow02.github.io/bullswarm/) once
-GitHub Pages is enabled for this repository (Settings → Pages → deploy from
-branch `main`, folder `/docs`). Until then, the same pages are readable
-directly under [`docs/guide/`](docs/guide/) in this repository.
+[bulls-work.github.io/bullswarm](https://bulls-work.github.io/bullswarm/).
 
 | Page | What it covers |
 |---|---|
-| [Entry points](https://cowcow02.github.io/bullswarm/guide/entry-points/) | `run` vs `workflow goal`, and every top-level verb |
-| [Doctrine](https://cowcow02.github.io/bullswarm/guide/doctrine/) | The non-negotiable rules, and the result verdict shape |
-| [Getting started](https://cowcow02.github.io/bullswarm/guide/getting-started/) | Install, agent integration, quick-start commands |
-| [Strategy](https://cowcow02.github.io/bullswarm/guide/strategy/) | Model/provider configuration, rungs (model plus reasoning level per effort tier), benchmark evidence |
-| [Workflows](https://cowcow02.github.io/bullswarm/guide/workflows/) | Authoring a program, kinds, advisories, plan contract/validate/goal |
-| [Operations](https://cowcow02.github.io/bullswarm/guide/operations/) | Listing/inspecting runs, the result envelope, context diet |
-| [Dashboard](https://cowcow02.github.io/bullswarm/guide/dashboard/) | `workflow watch`, the interactive TUI, terminal glyph fallback |
-| [Repository operations](https://cowcow02.github.io/bullswarm/guide/repository-operations/) | The issue-watcher launchd agent |
-| [Routing](https://cowcow02.github.io/bullswarm/guide/routing/) | How a pool is picked: pace, headroom, urgency, load, quarantine |
-| [Providers](https://cowcow02.github.io/bullswarm/guide/providers/) | Adding your own agent CLI or reseller account as a provider plugin |
+| [Introduction](https://bulls-work.github.io/bullswarm/guide/) | What Bullswarm is, the two entry points, and the four rules it never breaks |
+| [Getting started](https://bulls-work.github.io/bullswarm/guide/getting-started) | Install, `setup`, `doctor`, agent integration, and your first verified run |
+| [Concepts](https://bulls-work.github.io/bullswarm/guide/concepts) | Pools, lanes, surplus, the two windows, verdicts, quarantine, and the run directory |
+| [Run one task](https://bulls-work.github.io/bullswarm/guide/run) | Every `bullswarm run` option, and what each verdict asks you to do |
+| [Workflows](https://bulls-work.github.io/bullswarm/guide/workflows) | Authoring the program `workflow goal` executes: territories, dependencies, integration, acceptance |
+| [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) | `workflow watch`, listing and inspecting runs, the interactive dashboard, terminal glyphs |
+| [Routing](https://bulls-work.github.io/bullswarm/guide/routing) | How a pool is picked: pace, 5-hour headroom, urgency, load, quarantine |
+| [CLI reference](https://bulls-work.github.io/bullswarm/reference/cli) | Every verb and nested subcommand, with its flags and defaults |
+| [Workflow program](https://bulls-work.github.io/bullswarm/reference/program) | The `bullswarm.workflow.program.v2` document: action fields, kinds, validation rules |
+| [Configuration](https://bulls-work.github.io/bullswarm/reference/configuration) | The Bullswarm home, `state.json`, strategy models and rungs, environment variables |
+| [Providers](https://bulls-work.github.io/bullswarm/reference/providers) | Adding your own agent CLI or reseller account as a provider plugin |
+| [Result envelope](https://bulls-work.github.io/bullswarm/reference/result) | Every field of `run --json` and of the workflow result document |
+| [Claude Code](https://bulls-work.github.io/bullswarm/integrations/claude-code) | The packaged skill, the MCP server, and the Claude Mod under `mods/bullswarm` |
+| [Codex and Grok](https://bulls-work.github.io/bullswarm/integrations/agent-clis) | What `bullswarm integrate` writes for each agent CLI, and how to check it |
+| [Issue watcher](https://bulls-work.github.io/bullswarm/integrations/issue-watcher) | The launchd agent that triages and fixes new GitHub issues |
+| [Historical notes](https://bulls-work.github.io/bullswarm/notes/) | Working notes, audits, and experiment writeups, kept as records |
 
 ## License
 

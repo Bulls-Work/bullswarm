@@ -13,6 +13,14 @@ import { fileURLToPath } from 'node:url';
 import { helpText } from './help.js';
 
 const SKILL_SOURCE = fileURLToPath(new URL('../skill', import.meta.url));
+// The Claude Mod: function hooks that put Bullswarm into Claude Code's own
+// interface. Claude loads a plugin folder linked under ~/.claude/skills, and
+// runs its hooks only while CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is set (early
+// access), so the Claude integration links the mod and sets that flag.
+const MOD_SOURCE = fileURLToPath(new URL('../mods/bullswarm', import.meta.url));
+const MOD_LINK = ['.claude', 'skills', 'bullswarm-mod'];
+const MOD_FLAG = 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS';
+const CLAUDE_SETTINGS = ['.claude', 'settings.json'];
 const MARKER_BEGIN = '<!-- bullswarm:begin v3 -->';
 const MARKER_END = '<!-- bullswarm:end -->';
 const MARKER_RE = /<!-- bullswarm:begin v\d+ -->[\s\S]*?<!-- bullswarm:end -->\n?/;
@@ -76,21 +84,30 @@ export function parseIntegrationAgents(value) {
 
 export function integrationStatus({
   homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS, skillSource = SKILL_SOURCE,
+  modSource = MOD_SOURCE,
 } = {}) {
   const selected = parseIntegrationAgents(agents);
   const entries = selected.map((agent) => {
     const paths = pathsFor(homeDir, agent);
-    return {
+    const entry = {
       agent,
       skillPath: paths.skillPath,
       skill: skillLinkStatus(paths.skillPath, skillSource),
       instructionsPath: paths.instructionsPath,
       awareness: awarenessBlockPresent(paths.instructionsPath),
     };
+    if (agent === 'claude') {
+      entry.modPath = join(homeDir, ...MOD_LINK);
+      entry.mod = skillLinkStatus(entry.modPath, modSource);
+      entry.settingsPath = join(homeDir, ...CLAUDE_SETTINGS);
+      entry.hooksFlag = hooksFlagPresent(entry.settingsPath);
+    }
+    return entry;
   });
   const legacyPath = join(homeDir, '.claude', 'skills', 'offload');
   return {
-    ok: entries.every((entry) => entry.skill.status === 'installed' && entry.awareness),
+    ok: entries.every((entry) => entry.skill.status === 'installed' && entry.awareness
+      && (entry.mod === undefined || (entry.mod.status === 'installed' && entry.hooksFlag))),
     skillSource,
     agents: entries,
     legacyOffload: {
@@ -105,7 +122,7 @@ export function integrationStatus({
 
 export function installIntegration({
   homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS,
-  skillSource = SKILL_SOURCE, approved = false,
+  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false,
 } = {}) {
   if (!approved) throw new Error('integration changes global agent configuration; pass --yes to approve');
   const selected = parseIntegrationAgents(agents);
@@ -117,20 +134,28 @@ export function installIntegration({
     if (skillLinkStatus(skillPath, skillSource).status === 'conflict') {
       throw new Error(`refusing to replace non-Bullswarm skill path: ${skillPath}`);
     }
+    if (agent === 'claude' && skillLinkStatus(join(homeDir, ...MOD_LINK), modSource).status === 'conflict') {
+      throw new Error(`refusing to replace non-Bullswarm skill path: ${join(homeDir, ...MOD_LINK)}`);
+    }
   }
   const changes = [];
   for (const agent of selected) {
     const paths = pathsFor(homeDir, agent);
     const skill = installSkillLink(paths.skillPath, skillSource);
     const awareness = applyAwarenessBlock(paths.instructionsPath, { approved: true });
-    changes.push({ agent, skill, awareness });
+    const change = { agent, skill, awareness };
+    if (agent === 'claude' && existsSync(join(modSource, '.claude-plugin', 'plugin.json'))) {
+      change.mod = installSkillLink(join(homeDir, ...MOD_LINK), modSource);
+      change.hooksFlag = setHooksFlag(join(homeDir, ...CLAUDE_SETTINGS));
+    }
+    changes.push(change);
   }
-  return { action: 'install', changes, status: integrationStatus({ homeDir, agents: selected, skillSource }) };
+  return { action: 'install', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource }) };
 }
 
 export function removeIntegration({
   homeDir = process.env.HOME ?? '', agents = INTEGRATION_AGENTS,
-  skillSource = SKILL_SOURCE, approved = false,
+  skillSource = SKILL_SOURCE, modSource = MOD_SOURCE, approved = false,
 } = {}) {
   if (!approved) throw new Error('integration removal changes global agent configuration; pass --yes to approve');
   const selected = parseIntegrationAgents(agents);
@@ -139,9 +164,14 @@ export function removeIntegration({
     const paths = pathsFor(homeDir, agent);
     const skill = removeSkillLink(paths.skillPath, skillSource);
     const awareness = removeAwarenessBlock(paths.instructionsPath, { approved: true });
-    changes.push({ agent, skill, awareness });
+    const change = { agent, skill, awareness };
+    if (agent === 'claude') {
+      change.mod = removeSkillLink(join(homeDir, ...MOD_LINK), modSource);
+      change.hooksFlag = clearHooksFlag(join(homeDir, ...CLAUDE_SETTINGS));
+    }
+    changes.push(change);
   }
-  return { action: 'remove', changes, status: integrationStatus({ homeDir, agents: selected, skillSource }) };
+  return { action: 'remove', changes, status: integrationStatus({ homeDir, agents: selected, skillSource, modSource }) };
 }
 
 export function retireLegacyOffload({ homeDir = process.env.HOME ?? '', approved = false, now = new Date() } = {}) {
@@ -238,6 +268,50 @@ function readOptional(filePath) {
   try { return readFileSync(filePath, 'utf8'); } catch { return ''; }
 }
 
+// ~/.claude/settings.json is the person's file: read it as JSON, touch only
+// the one env key, and leave a file that is not an object alone.
+function readSettings(settingsPath) {
+  const text = readOptional(settingsPath);
+  if (!text.trim()) return { settings: {}, writable: true };
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { settings: parsed, writable: true }
+      : { settings: null, writable: false };
+  } catch {
+    return { settings: null, writable: false };
+  }
+}
+
+export function hooksFlagPresent(settingsPath) {
+  const { settings } = readSettings(settingsPath);
+  const value = settings?.env?.[MOD_FLAG];
+  return value === '1' || value === 1 || value === true || value === 'true';
+}
+
+function setHooksFlag(settingsPath) {
+  if (hooksFlagPresent(settingsPath)) return { changed: false, reason: 'already set', path: settingsPath };
+  const { settings, writable } = readSettings(settingsPath);
+  if (!writable) return { changed: false, reason: 'settings.json is not a JSON object; set env.' + MOD_FLAG + ' to "1" yourself', path: settingsPath };
+  const env = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env) ? settings.env : {};
+  const next = { ...settings, env: { ...env, [MOD_FLAG]: '1' } };
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, `${JSON.stringify(next, null, 2)}\n`);
+  return { changed: true, reason: 'set', path: settingsPath };
+}
+
+function clearHooksFlag(settingsPath) {
+  if (!hooksFlagPresent(settingsPath)) return { changed: false, reason: 'not set', path: settingsPath };
+  const { settings, writable } = readSettings(settingsPath);
+  if (!writable) return { changed: false, reason: 'settings.json is not a JSON object', path: settingsPath };
+  const env = { ...settings.env };
+  delete env[MOD_FLAG];
+  const next = { ...settings };
+  if (Object.keys(env).length) next.env = env; else delete next.env;
+  writeFileSync(settingsPath, `${JSON.stringify(next, null, 2)}\n`);
+  return { changed: true, reason: 'cleared', path: settingsPath };
+}
+
 function printIntegrationResult(result) {
   if (result.action === 'retire-legacy') {
     console.log(result.changed
@@ -249,7 +323,10 @@ function printIntegrationResult(result) {
   for (const entry of status.agents ?? []) {
     const skill = entry.skill.status === 'installed' ? 'skill ✓' : `skill ${entry.skill.status}`;
     const awareness = entry.awareness ? 'awareness ✓' : 'awareness missing';
-    console.log(`${entry.agent.padEnd(8)} ${skill}; ${awareness}`);
+    const mod = entry.mod
+      ? `; mod ${entry.mod.status === 'installed' ? '✓' : entry.mod.status}; function hooks ${entry.hooksFlag ? '✓' : 'flag missing'}`
+      : '';
+    console.log(`${entry.agent.padEnd(8)} ${skill}; ${awareness}${mod}`);
   }
   if (status.legacyOffload?.detected) {
     console.log(`⚠ retired Claude offload skill detected: ${status.legacyOffload.path}`);

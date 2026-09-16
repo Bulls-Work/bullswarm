@@ -1,5 +1,52 @@
 # bullswarm changelog
 
+## 0.31.0 — the Claude Mod, and a documentation site
+
+- mod: `mods/bullswarm` puts Bullswarm inside Claude Code's own interface as a
+  Claude Mod (function hooks, early access behind
+  `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). Claude's general-purpose subagents
+  are routed to the pool with spare quota through `bullswarm run --no-caller`
+  and answered with the verified output; the verdict of every `bullswarm run`
+  and `workflow goal` the model runs is appended to its Bash result; the pool
+  meters are named in the model's context; a strip above the prompt lists
+  the ongoing workflow runs; and a docked pane shows one run as
+  `bullswarm workflow tui` draws it, every step a button that opens the
+  step laid out as the TUI's agent panel. `/bullswarm pools|status|on|off|
+  refresh|runs|pane|open <step> [run]|routed` answer from the mod; anything
+  else still reaches the packaged skill. The pool rows draw a white mark
+  where the window's elapsed time falls, and `usage` in the pane's bottom
+  nav opens a page with every meter window of every pool, its reset time
+  and pace, the credit meter where there is one, and every pool × tier rung
+  with its model, reasoning and record. Pool display names come from the
+  `poolAliases` option; `strip` picks `runs`, `full` or `off`.
+- integrate: `bullswarm integrate install --agents claude --yes` also links
+  the mod under `~/.claude/skills/bullswarm-mod` and sets
+  `env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` to `"1"` in `~/.claude/settings.json`;
+  `status` reports both and `remove` undoes both. A `settings.json` that is
+  not a JSON object is left alone and reported. `.claude-plugin/marketplace.json`
+  at the repository root makes `claude plugin marketplace add Bulls-Work/bullswarm`
+  and `claude plugin install bullswarm@bullswarm` work too.
+- workflow tui: the Preflight milestone now states the accepted goal (wrapped)
+  with the paths of `goal.json` and `initial-planner-response.json`, and the
+  planner milestone says how many actions in how many dependency levels the
+  plan has. The Live section lists the planner only while it is planning;
+  the "waiting for N workers" planner row and the "· N waiting" count are
+  gone, since Next already says that. The first plan's own milestone is gone
+  too: the levels that follow it say what it planned; plan revisions and
+  rejected planning attempts still appear. A goal with several lines wraps
+  line by line instead of carrying a line break inside one row. `workflow tui <run> --overview
+  [--width <cols>] [--height <rows>]` prints one overview frame (or `--json`)
+  for a caller that draws its own.
+- docs: the documentation site is now a VitePress site under `docs-site/`,
+  built from `docs/` and deployed to GitHub Pages by
+  `.github/workflows/docs.yml` at https://bulls-work.github.io/bullswarm/.
+  Guide (introduction, getting started, concepts, run, workflows, observing,
+  routing), Reference (CLI, workflow program, configuration, providers,
+  result envelope) and Integrations (Claude Code, Codex and Grok, issue
+  watcher) replace the Jekyll pages; the historical notes are indexed under
+  `/notes/`. `tests/unknown-flags.test.js` now checks every command form on
+  the new pages against the CLI.
+
 ## 0.30.0 — a run never waits: it finishes and hands back what is left
 
 - workflow: a run no longer waits for anyone. Every point where a

@@ -16,7 +16,7 @@ content. Published as `bullswarm` on npm.
    `src/meters/framework.js`).
 3. Provider quirks live in the provider's directory (`src/providers/<name>/`,
    `providers/contrib/<name>/`, or `~/.bullswarm/providers/<name>/`), never in
-   core logic (see `docs/guide/providers.md`).
+   core logic (see `docs/reference/providers.md`).
 4. Quarantine always auto-releases; recursion depth is core-owned via env
    (`BULLSWARM_DEPTH`).
 5. Workflow dispatches must honor the same guarantees as single runs:
@@ -84,7 +84,7 @@ providers live in `src/providers/<name>/`, contrib providers in
 `bullswarm provider scaffold <name> [--from <template>]`, then
 `bullswarm provider validate` and `bullswarm provider probe <pool>`. Write a
 `readUsage` export only if the vendor exposes a usage API — declared meters
-are the fallback, never the goal. The contract is `docs/guide/providers.md`;
+are the fallback, never the goal. The contract is `docs/reference/providers.md`;
 the authoring method is `skill/references/providers.md`.
 
 ## Releasing

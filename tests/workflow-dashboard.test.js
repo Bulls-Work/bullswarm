@@ -194,7 +194,8 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const screen = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(screen, /\[Workflow Planner\] plan created/);
+    assert.doesNotMatch(screen, /\[Workflow Planner\] plan created/);
+    assert.match(screen, /● Goal accepted/);
     assert.match(screen, /── Phase 1 · Implementation/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);

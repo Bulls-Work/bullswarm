@@ -328,7 +328,7 @@ author and the `Workflow` runtime.
 
 7. Two robustness gaps the 0.11.1 comparison run itself exposed, fixed
    before 0.12.0 shipped: (a) a planner-authored verify prompt that quoted a
-   JSDoc type literally — `{{maxLength?: number}}` — was parsed as a template
+   JSDoc type literally — <span v-pre>`{{maxLength?: number}}`</span> — was parsed as a template
    ref and killed the action at render time with zero attempts, forcing an
    extra planner turn to re-issue it. Only a known root plus dotted
    identifiers is a ref now; other double-brace text is prompt content.

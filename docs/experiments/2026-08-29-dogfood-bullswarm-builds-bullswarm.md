@@ -11,11 +11,11 @@ Runtime: local worktree `bullswarm-rt` pinned at main (user: redispatch with loc
 Home: default `~/.bullswarm` (heterogeneous pools) — user can `bullswarm workflow tui <shortId>`.
 
 ## Attempt 1 — 01:43:37 Z, installed 0.13.1 — failed at validation, nothing ran
-`autonomous workflow invalid (nothing ran): phases[0].steps[0](scout): template ref "{{outputs.x.data.field}}" cannot resolve`.
+<span v-pre>`autonomous workflow invalid (nothing ran): phases[0].steps[0](scout): template ref "{{outputs.x.data.field}}" cannot resolve`</span>.
 Cause: goal text spliced into the scout prompt; validator parsed a quoted ref in user text.
 Fix (bullswarm defect #1): goal → declared `inputs.goal`, inserted at render time; unresolved grammar-valid refs are
 left literal + `template.unresolved_ref` event instead of fatal. Commit `7badea3`, released 0.13.2 (`a0f0965`).
-Verified: scout task file of attempt 3 contains `{{outputs.x.data.field}}` verbatim; only `{{inputs.goal}}` resolved.
+Verified: scout task file of attempt 3 contains <span v-pre>`{{outputs.x.data.field}}`</span> verbatim; only <span v-pre>`{{inputs.goal}}`</span> resolved.
 
 ## Attempt 2 — 01:47:37 Z — launcher bug (mine, not bullswarm): zsh does not word-split `$BS="node path"`. Fixed script.
 
@@ -82,7 +82,7 @@ Verified: scout task file of attempt 3 contains `{{outputs.x.data.field}}` verba
   stale "318 passing" and used the real 320. Program: impl-src → verify-src(repair 2) → update-tests ∥ update-docs →
   verify-tests(repair 2) → verify-suite(repair 1).
 - 02:58:56 → 03:09:04 impl-src (~610 s). verify-src rejected twice, both times on SUBSTANTIVE spec points (obsolete
-  skeleton text left in a comment; 6 JSON examples instead of 2; `<item>` instead of `{{item}}` in examples; excerpt
+  skeleton text left in a comment; 6 JSON examples instead of 2; `<item>` instead of <span v-pre>`{{item}}`</span> in examples; excerpt
   policy). One misread to check in the final diff: it called the existing 3 000/36 000-char excerpt caps a violation of
   "full excerpt" although the goal said "(existing budget logic)" — the repair may have removed the caps.
   Ordering tension: verify-src runs before update-tests, so it necessarily sees 5 failing old assertions; the planner

@@ -42,7 +42,7 @@ author to be a programmer. Bullswarm's workflows are:
 
 - **JSON documents** — validatable before anything runs (`workflow validate`),
   writable by any agent via its existing file tools, diffable in PRs.
-- **Templated, not programmed.** The only "logic" is `{{ref}}` substitution
+- **Templated, not programmed.** The only "logic" is <span v-pre>`{{ref}}`</span> substitution
   from prior step outputs and JSON-path extraction. Everything Claude's
   example scripts do between `agent()` calls (filter, dedupe, merge) is
   either a step option here or belongs in a delegate's prompt.
@@ -107,7 +107,7 @@ Step fields (all pass through to the existing `run` pipeline):
 
 - **`run`** — one offload. Verdict recorded.
 - **`fanout`** — expand `stepTemplate` once per item from `itemsFrom`.
-  Items may be strings or objects (`{{item.path}}` paths work). Concurrency
+  Items may be strings or objects (<span v-pre>`{{item.path}}`</span> paths work). Concurrency
   capped by min(step, settings).
 - **`verify`** — independently review a prior artifact and require structured
   `{ok, concerns, summary}` evidence before dependent work may trust it.
@@ -131,10 +131,10 @@ preflight reduces avoidable retries but never replaces the authoritative gate.
 
 ### Templating
 
-`{{...}}` resolves against a single scope, precedence: loop item > inputs >
+<span v-pre>`{{...}}`</span> resolves against a single scope, precedence: loop item > inputs >
 prior outputs (`outputs.<stepId>`), whole-run metadata (`runId`, `wfDir`).
 Missing reference → validation error *unless* inside `fanout.stepTemplate`
-where `{{item}}`/`{{item.*}}` resolve per-expansion.
+where <span v-pre>`{{item}}`</span>/<span v-pre>`{{item.*}}`</span> resolve per-expansion.
 
 ## Runtime
 

@@ -1,0 +1,28 @@
+{
+  "name": "bullswarm",
+  "version": "0.1.0",
+  "description": "Bullswarm as a Claude Mod: live subscription meters for every installed coding-agent CLI above the prompt, quota-aware routing of Claude's own subagents to whichever pool has surplus, a verdict note on every bullswarm command the model runs, a /bullswarm command, and $.bullswarm for other plugins.",
+  "author": {
+    "name": "cowcow02"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "poolAliases": {
+      "type": "string",
+      "title": "Pool display names",
+      "description": "Display names for pools in the strip and pane, as from=to pairs separated by commas (claude-code:wati=claude-code:w). Without one, an account pool shows as prefix:<first letter of its slug>.",
+      "default": ""
+    },
+    "strip": {
+      "type": "string",
+      "title": "Strip above the prompt",
+      "description": "What the band above the prompt shows: runs (the ongoing workflow runs; the pool meters live in the runs pane), full (pool meters too), off (nothing; /bullswarm pane still opens the pane).",
+      "options": [
+        "runs",
+        "full",
+        "off"
+      ],
+      "default": "runs"
+    }
+  }
+}
