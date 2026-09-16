@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyV2DispatchFailure, dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { loadState, saveState } from '../src/lib/state.js';
+import {
+  createV2GoalDocument, createV2DurableState, deserializeV2DurableState,
+} from '../src/workflow/v2-state.js';
 
 const action = { id: 'do-work', lane: 'build', effort: 'low' };
 const connector = (name, extra = {}) => ({
@@ -506,6 +509,72 @@ test('the attempt.started notification carries the resolved reasoning record', a
     onAttempt: (phase, record) => { if (phase === 'started') started.push(record.reasoning); },
   });
   assert.deepEqual(started, [{ requested: 'medium', applied: 'medium', source: 'connector', clamped: false }]);
+});
+
+// --- routed-why provenance on the durable attempt record --------------------
+
+test('every dispatched attempt records the router reason and candidate table', async () => {
+  const h = harness([good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.attempts[0].routeWhy, 'routeWhy is the router reason string');
+  assert.ok(Array.isArray(result.attempts[0].routeCandidates));
+  assert.ok(result.attempts[0].routeCandidates.length >= 1);
+  for (const attempt of result.attempts) {
+    assert.equal(typeof attempt.routeWhy, 'string');
+    for (const candidate of attempt.routeCandidates) {
+      assert.equal(typeof candidate.pool, 'string');
+      assert.ok('effectiveSurplus' in candidate, 'effectiveSurplus present, null preserved');
+      assert.ok('urgencyState' in candidate, 'urgencyState present, null preserved');
+      assert.ok('forecastPacingPct' in candidate, 'forecastPacingPct present, null preserved');
+    }
+    assert.ok(
+      attempt.routeCandidates.some((candidate) => candidate.pool === attempt.pool),
+      'the picked pool appears among the candidates',
+    );
+  }
+  // The routed pool sits in candidate position zero when it is the best pick.
+  assert.equal(result.attempts[0].routeCandidates[0].pool, result.attempts[0].pool);
+});
+
+test('a state file whose attempts lack the routing fields still loads', () => {
+  const goal = createV2GoalDocument({
+    goal: 'Old run without route provenance', cwd: '/tmp/repo',
+    requirements: [{ id: 'r1', text: 'Do the thing' }], settings: {},
+  });
+  const state = createV2DurableState(goal, { runId: 'wf-old', shortId: 'old123' });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [{
+      id: 'do-work', purpose: 'Do the thing', dependsOn: [], affects: [], ownedFiles: [],
+      prompt: 'Do the thing.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+    }],
+  };
+  state.actions = [{ id: 'do-work', status: 'succeeded', attempts: 1, programRevision: 1 }];
+  state.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['do-work'], startedAt: null, completedAt: null }] };
+  // An attempt recorded before routeWhy/routeCandidates existed: no fields at all.
+  state.attempts = [{
+    id: 'do-work-1', actionId: 'do-work', ordinal: 1, status: 'succeeded',
+    pool: 'luna-1', model: 'gpt-5.6-luna', startedAt: '2026-08-31T01:00:00.000Z',
+    finishedAt: '2026-08-31T01:01:00.000Z',
+  }];
+  assert.doesNotThrow(() => deserializeV2DurableState(JSON.stringify(state)));
+});
+
+test('the attempt.started notification carries the router reason and candidates', async () => {
+  const started = [];
+  const h = harness([good]);
+  await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+    onAttempt: (phase, record) => { if (phase === 'started') started.push(record); },
+  });
+  assert.equal(typeof started[0].routeWhy, 'string');
+  assert.ok(Array.isArray(started[0].routeCandidates));
 });
 
 // --- one dead upstream credential, three pool names -------------------------
