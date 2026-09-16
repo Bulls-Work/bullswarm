@@ -234,9 +234,11 @@ export function paneView(
       nav,
     ]
     if (model.error) header.push(plain('err', model.error, 'red'))
+    // The note sits whole, wrapped, right above the nav, where it is read.
+    const note = wrapText('read-only · adjust pools and rungs with `bullswarm setup` (or `bullswarm strategy`)', width)
     const footer: RenderElement[] = [
+      ...note.map((l, k) => dim(`note${String(k)}`, l)),
       switcher,
-      dim('f1', 'read-only · adjust pools and rungs with `bullswarm setup` (or `bullswarm strategy`)'),
     ]
     return frame(header, poolsPageRows({ Box, Text, Button }, model, width, nameOf, actions), footer)
   }
@@ -514,7 +516,7 @@ function poolsPageRows(
   rows.push(
     <Text key="x-rungs" wrap="truncate-end">
       <Text bold>Rungs</Text>
-      <Text dimColor> · the model and reasoning each lane dispatches with, per pool</Text>
+      <Text dimColor> · model · reasoning · record, per lane and pool</Text>
     </Text>,
     <Box key="x-rungs-tabs" flexDirection="row" gap={1} flexWrap="nowrap">
       <Button key="rungs-tier" plain label={model.rungsBy === 'tier' ? '[● by lane]' : '[by lane]'} onPress={() => actions.setRungsBy('tier')} />
