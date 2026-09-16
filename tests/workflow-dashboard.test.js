@@ -759,7 +759,7 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
     assert.match(nav, new RegExp(`${key('1')}\\. \\[ ● aaa111 \\]`.replace(/\x1b\[/g, '\\x1b\\[')));
     assert.ok(nav.includes(`${key('2')}. [ bbb222 ]`), 'the second run carries 2.');
     assert.ok(nav.includes(`[ ${key('u')}sage ]`), 'usage underlines its u');
-    assert.ok(nav.includes(`${key('?')}. [ help ]`), 'help carries ?. ahead, its key not being a letter of it');
+    assert.ok(nav.includes(`[ ${key('h')}elp ]`), 'help underlines its h');
     assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
     const step = renderDashboardPage(model, {
       page: 'step', width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
@@ -837,7 +837,7 @@ test('the nav records a hit region for every button, run row and step row', () =
     assert.deepEqual(nav.map((region) => region.action.page).filter(Boolean), ['usage', 'help']);
     for (const region of nav) {
       const painted = plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2);
-      assert.match(painted, /^([1-9?]\. )?\[ .+ \]$/, `${painted} is not a whole button`);
+      assert.match(painted, /^([1-9]\. )?\[ .+ \]$/, `${painted} is not a whole button`);
     }
     // Every step row the timeline prints opens that step.
     const steps = runFrame.regions.filter((region) => region.action.kind === 'open-step');
