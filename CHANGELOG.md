@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- routing: measured pacing rates now charge timed in-flight work at the actual
+  `rate × remaining minutes` with no 3-point floor, so an expiring-soon pool
+  with a known burn rate is not demoted by a tie-breaker meant for unmeasured
+  pools. `config.inflightPenaltyPct` remains the per-agent fallback for pools
+  without a measured rate (and for in-flight records with unknown duration).
 - routing: a pool whose pacing window is about to reset is `draining` only
   when its forecast is at or above 95% *and* ahead of the window's own clock,
   the same clock-relative shape the 5h near-limit line already has. A pool on
