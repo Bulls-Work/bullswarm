@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  columnBars, cut, heatRow, niceStep, periodToggle, progressBar, rule, shareBar, sparkline, stackedBars, tabsRow,
+  columnBars, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, shareBar, sparkline, stackedBars, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
@@ -59,9 +59,9 @@ const ROWS = Object.freeze([
   { label: 'grok', segments: [] },
 ]);
 
-test('the kit exports its eleven rendering primitives', () => {
+test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'columnBars', 'cut', 'heatRow', 'niceStep', 'periodToggle', 'progressBar', 'rule',
+    'columnBars', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle', 'progressBar', 'rule',
     'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
   ]);
 });
@@ -352,13 +352,12 @@ test('columnBars without a mark paints a measured figure bare', () => {
   assert.equal(text.includes('≈'), false, 'a count is not an estimate');
 });
 
-test('columnBars never paints a recorded fraction of a cent as zero', () => {
+test('columnBars applies the dashboard money precision to fractions of a cent', () => {
   const chart = columnBars([{ values: [0.004] }], ['Mon'], {
     width: 40, mark: '≈', colors: false,
   });
   const valueRow = visible(chart[chart.meta.valueRow - 1]);
-  assert.match(valueRow, /≈\$0\.004/, 'a recording below a cent is still a recording');
-  assert.doesNotMatch(valueRow, /≈\$0\.0+\s/, 'and it is never rounded to free');
+  assert.match(valueRow, /≈\$0\.00/, 'money is consistently rounded to cents');
 });
 
 test('heatRow paints a cell per value, an empty marker for null', () => {
@@ -372,7 +371,7 @@ test('heatRow paints a cell per value, an empty marker for null', () => {
 test('heatRow paints the ramp in ansi and fits the width it is given', () => {
   const row = heatRow([0.1, 0.6, 1], {});
   assert.ok(row.includes('\x1b[48;2;'), 'cells are background-coloured');
-  assert.equal(visible(row), ' '.repeat(5), 'three cells and the two gaps between them');
+  assert.equal(visible(row), '░ ▓ █', 'three visible density cells and the two gaps between them');
   assert.equal(visibleLength(heatRow([null, 1], {})), 3);
   const ramps = heatRow([0.1, 0.4, 0.7, 1], {}).match(/\x1b\[48;2;(\d+);(\d+);(\d+)m/g);
   assert.equal(ramps.length, 4);
@@ -409,6 +408,13 @@ test('niceStep rounds an axis to a readable step and lists its ticks', () => {
   }
   assert.deepEqual(niceStep(10, 0), { step: 5, ticks: [0, 5, 10] });
   assert.equal(niceStep(1e9).ticks.includes(Number.NaN), false);
+});
+
+test('the shared formatter rounds money, rates and durations once', () => {
+  assert.equal(formatDashboardValue(3.248556, 'money'), '$3.25');
+  assert.equal(formatDashboardValue(0.022846, 'rate'), '0.0228%/min');
+  assert.equal(formatDashboardValue(79.9999 * 60, 'minutes'), '80h');
+  assert.equal(formatDashboardValue(null, 'money'), null);
 });
 
 test('cut truncates to visible cells with an ellipsis', () => {

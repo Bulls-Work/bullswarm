@@ -396,6 +396,16 @@ test('budgetModel: no pools and no runs is empty, not zero', () => {
   assertNoNaN(model);
 });
 
+test('budgetModel excludes disabled pools and records them for the dim footer', () => {
+  const model = budgetModel([
+    metered(),
+    { ...unmetered(), name: 'claude-code:petsona', enabled: false },
+    { ...unmetered(), name: 'echo', enabled: false },
+  ], { rollups: indexOf(corpus()), now: NOW });
+  assert.deepEqual(model.rows.map((row) => row.name), ['claude-code']);
+  assert.deepEqual(model.disabledPools, ['claude-code:petsona', 'echo']);
+});
+
 // ------------------------------------------------------------- biggestRuns
 
 test('biggestRuns: ranked by worker-minutes and by recorded estimate, each labelled', () => {

@@ -22,6 +22,7 @@
 //       which ones are null.
 
 import { priceFor, subscriptionCostUsd } from '../lib/prices.js';
+import { formatDashboardValue } from './dash-kit.js';
 import { periodRange } from './stats-model.js';
 
 const MINUTE_MS = 60_000;
@@ -374,7 +375,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
       exceedsMeter: workflowsPct != null && usedPct != null && workflowsPct > usedPct,
       basis: rate.ratePerMinute == null
         ? 'no licence share: the pool has no measured %/minute rate'
-        : `≈ ${rate.ratePerMinute}%/min × measured worker-minutes (rate source: ${rate.source ?? 'unknown'})`,
+      : `≈ ${formatDashboardValue(rate.ratePerMinute, 'rate')} × measured worker-minutes (rate source: ${rate.source ?? 'unknown'})`,
     },
     subscription,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
@@ -421,7 +422,9 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
 export function budgetModel(pools, { rollups = [], prices = null, period = 'week', now = Date.now() } = {}) {
   const at = finite(now) ?? Date.now();
   const range = periodRange(period, at);
-  const list = (Array.isArray(pools) ? pools : []).filter((pool) => poolName(pool));
+  const allPools = (Array.isArray(pools) ? pools : []).filter((pool) => poolName(pool));
+  const disabledPools = allPools.filter((pool) => pool?.enabled === false).map((pool) => poolName(pool));
+  const list = allPools.filter((pool) => pool?.enabled !== false);
   const records = toRecords(rollups);
   const rows = list.map((pool) => poolBudget(pool, { rollups: records, prices, period, now: at }));
 
@@ -475,6 +478,7 @@ export function budgetModel(pools, { rollups = [], prices = null, period = 'week
     rows,
     totals,
     notes,
+    disabledPools,
   };
   model.nulls = nullPaths({
     totals: {

@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, read
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { DASHBOARD_KEYS, activeDashboardRows, dashboardModel, dashboardRows, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
+import { DASHBOARD_KEYS, activeDashboardRows, dashboardModel, dashboardRows, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
 import { readRollups } from '../src/workflow/rollup.js';
 import { SUBSTITUTED_GLYPHS } from '../src/lib/glyphs.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
@@ -2000,6 +2000,48 @@ test('the Budget page draws every pool meter, its money and what still fits', ()
   assert.match(text, /bullswarm strategy set-subscription/);
   // The notes sit above the nav, and the nav is still whole.
   assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
+});
+
+test('Home keeps all three period choices on their own clickable row at 55 columns', () => {
+  const model = dashboardModel(null, { usage: usageFixture(), rollups: rollupFixture() });
+  const frame = renderDashboardPage(model, { page: 'home', width: 55, height: 100, period: '7d' });
+  const lines = frame.lines.map(plain);
+  const toggleRow = lines.findIndex((line) => line.includes('Last 7 days') && line.includes('All time'));
+  assert.ok(toggleRow >= 0, lines.join('\n'));
+  assert.ok(lines[toggleRow - 1].startsWith('── last 7 days '), lines.join('\n'));
+  assert.deepEqual(frame.regions
+    .filter((region) => region.y === toggleRow + 1 && region.action.kind === 'period')
+    .map((region) => region.action.period), ['7d', '30d', 'all']);
+});
+
+test('Stats Pools loads retained meter-history days and leaves older days blank with a reason', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-meter-dashboard-'));
+  try {
+    const historyDir = join(home, 'meters', 'history');
+    mkdirSync(historyDir, { recursive: true });
+    writeFileSync(join(historyDir, 'relay.jsonl'), [
+      JSON.stringify({ captured_at: '2026-09-14T12:00:00Z', weekly: { utilization: 20 } }),
+      JSON.stringify({ captured_at: '2026-09-15T12:00:00Z', weekly: { utilization: 25 } }),
+    ].join('\n'));
+    const pools = [{ name: 'relay', enabled: true, pacingWindow: 'weekly', usedPct: 25, elapsedPct: 30 }];
+    const rollups = [{ runId: 'wf-old', startedAt: '2026-08-20T00:00:00Z', finishedAt: '2026-08-20T01:00:00Z', pools: {} }];
+    const history = readLicencePerDay(home, pools, {
+      period: '30d', now: Date.parse('2026-09-16T12:00:00Z'), rollups,
+    });
+    assert.ok(history.rows.some((row) => row.date === '2026-09-14' && row.segments[0]?.value === 20));
+    assert.ok(history.rows.some((row) => row.date === '2026-08-18' && row.segments.length === 0));
+    assert.match(history.reason, /earlier days in 30d are blank/);
+
+    const model = dashboardModel(null, {
+      usage: { pools, assignments: [], rungs: [] }, rollups, period: '30d', meterHistory: history,
+    });
+    const text = plain(renderDashboardPage(model, {
+      page: 'stats', statsTab: 'pools', period: '30d', width: 120, height: 100,
+    }).lines.join('\n'));
+    assert.doesNotMatch(text, /meter history is not loaded/);
+    assert.match(text, /2026-09-14/);
+    assert.match(text, /earlier days in 30d are blank/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
 test('the Fleet page draws the rungs under its two tabs, with the read-only note', () => {
