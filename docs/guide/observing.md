@@ -32,8 +32,8 @@ page and, on Run and Usage, keeps the current run or meter sample in view. The
 bottom nav has one `[ <run> ]` button per ongoing run, followed by
 `[ usage ] [ help ] [ quit ]`. Every button shows its key underlined: inside
 the label (the `u` of `usage`, the `h` of `help`, the `q` of `quit`), and a
-run's digit written ahead of its button (`1. [ aaa111 ] 2. [ bbb222 ]`), so
-the keys are read off the nav itself. `?` opens Help too. The current run or page is marked `●`.
+run's digit ahead of its id inside the button (`[ 1.aaa111 ] [ 2.bbb222 ]`),
+so the keys are read off the nav itself. `?` opens Help too. The current run or page is marked `●`.
 Step adds `[ back ]` at the front, its `b` underlined. A long body shows its
 `first–last/total` row window while it scrolls.
 

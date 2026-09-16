@@ -84,8 +84,8 @@ Once setup is complete, bare `bullswarm` opens the dashboard on its Home page.
 Use `bullswarm --setup` or `bullswarm setup` to open setup again, and use
 `bullswarm workflow tui` when you want the explicit dashboard command. The
 pages are Home, Run, Step, Usage, and Help. A sticky header and bottom nav
-(`1. [ <run> ] … [ usage ] [ help ] [ quit ]`, each button's key
-underlined in its label, a run's digit written ahead of it) carry `q` (quit),
+(`[ 1.<run> ] … [ usage ] [ help ] [ quit ]`, each button's key
+underlined inside its label) carry `q` (quit),
 `h` or `?` (help), `u` (usage), `e` (edit), `i` (install), `l`/`p` (Usage tabs), arrows or
 PgUp/PgDn (scroll), and Enter; click any button, tab, run or step, or use the
 wheel to scroll.

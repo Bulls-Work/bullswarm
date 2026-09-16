@@ -28,8 +28,8 @@ Once setup has completed, bare `bullswarm` opens the full-screen dashboard on
 Home. `bullswarm --setup` or `bullswarm setup` opens the setup control centre;
 `bullswarm workflow tui` is the explicit dashboard form. The dashboard has
 Home, Run, Step, Usage, and Help pages. A sticky header and bottom nav keep
-the page and run controls visible (`1. [ <run> ] … [ usage ] [ help ]
-[ quit ]`, each button's key underlined in its label, a run's digit ahead of it);
+the page and run controls visible (`[ 1.<run> ] … [ usage ] [ help ]
+[ quit ]`, each button's key underlined inside its label);
 `q`, `?`, `u`, `e`, `i`, `l`/`p`, arrows, `PgUp`/`PgDn`, and Enter provide the
 keyboard actions. Mouse reporting lets you click any button, tab, run, or
 step, and the wheel scrolls the body.
@@ -923,8 +923,8 @@ pool rows), Step (one action's agent panel), Usage (meter windows, credits and
 rungs), and Help. Every page has a sticky header and bottom nav; the current
 run or page is marked `●`, and Step prepends `[ back ]`. The nav has one
 `[ <run> ]` button per ongoing run, followed by `[ usage ] [ help ] [ quit ]`,
-every button's key underlined in its label (`u`, `h`, `q`, `b`), a run's digit
-written ahead of its button (`1.`, `2.`).
+every button's key underlined inside its label (`u`, `h`, `q`, `b`, and a run's
+digit ahead of its id: `[ 1.aaa111 ]`).
 Use `q` to quit, `h` or `?` for Help, `u` for Usage, `e` for the Usage edit hand-off, `i` for Home's install,
 `l`/`p` for the Usage tabs, arrows or `PgUp`/`PgDn` to scroll, and Enter to
 open a selection. Click any button, tab, run, or step; the mouse wheel scrolls.
