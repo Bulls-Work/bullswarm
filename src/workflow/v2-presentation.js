@@ -78,7 +78,7 @@ export function deriveV2DependencyStages(actions, revision) {
       : members.every((action) => action.lane === 'analyze') ? 'Parallel analysis' : 'Parallel work';
     return {
       id: `r${revision}-level-${level + 1}`,
-      label: `${revision > 1 ? `Follow-up ${revision - 1}: ` : ''}Level ${level + 1} · ${description}`,
+      label: `${revision > 1 ? `Follow-up ${revision - 1}: ` : ''}Phase ${level + 1} · ${description}`,
       revision, actionIds: members.map((action) => action.id), startedAt: null, completedAt: null,
     };
   });

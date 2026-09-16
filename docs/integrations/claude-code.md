@@ -67,7 +67,7 @@ and install actions.
 
 ### The runs pane
 
-`[w]`, a digit in the strip, or `/bullswarm pane` opens a pane docked beside the transcript. Its header and `[Top] [End]` stay fixed at the top, the run buttons with `usage` and `close` at the bottom, and between them scrolls what `bullswarm workflow tui <id> --overview` draws: Preflight with the accepted goal, every dependency level, Live workers with their latest activity, Next, and the pool meters last. The wheel over the pane, or arrows, PgUp/PgDn, Home/End once it has focus, move that middle. It re-reads every 20 seconds while the run is in flight. The pane is read-only: it has no dashboard `[edit]` or `[install]` action.
+`[w]`, a digit in the strip, or `/bullswarm pane` opens a pane docked beside the transcript. Its header and `[Top] [End]` stay fixed at the top, the run buttons with `usage` and `close` at the bottom, and between them scrolls what `bullswarm workflow tui <id> --overview` draws: Preflight with the accepted goal, every phase, Live workers with their latest activity, Next, and the pool meters last. The wheel over the pane, or arrows, PgUp/PgDn, Home/End once it has focus, move that middle. It re-reads every 20 seconds while the run is in flight. The pane is read-only: it has no dashboard `[edit]` or `[install]` action.
 
 Every step row is a button. Pressing it opens the step laid out as the TUI's agent panel: status, model and reasoning; pool, attempt and effort; the route reason; started, elapsed, last activity; the verdict or failure; the first lines of the task file; usage; the latest agent event; the tail of the output; and the task and output paths. `back` returns. `/bullswarm open <step> [run]` does the same from the keyboard.
 

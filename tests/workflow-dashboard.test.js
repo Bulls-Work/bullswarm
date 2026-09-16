@@ -1122,10 +1122,11 @@ test('program dashboard projects saved categories into dependency levels with ov
   assert.deepEqual(model.phases.map((phase) => phase.status), ['active', 'active']);
   for (const width of [60, 120]) {
     const screen = renderWorkflowTui(row, { width, height: 40 });
-    assert.match(screen, /Level 1/);
-    assert.match(screen, /Level 2/);
-    assert.doesNotMatch(screen, /Phase [12]|Documentation/);
-    assert.match(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false }), /Dependency levels/);
+    assert.match(screen, /Phase 1/);
+    assert.match(screen, /Phase 2/);
+    // The phases are the program's dependency groups, never keyword-inferred.
+    assert.doesNotMatch(screen, /Documentation/);
+    assert.match(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false }), /Phases · 2/);
   }
   assert.equal(JSON.stringify(state), before);
 });
@@ -1510,7 +1511,7 @@ test('a dependency level whose action never dispatched names the dependency that
 
     const model = workflowPanelModel(row, { phaseIndex: 2 });
     const blockedLevel = model.phases[2];
-    assert.equal(blockedLevel.label, 'Level 3 · harden-core');
+    assert.equal(blockedLevel.label, 'Phase 3 · harden-core');
     assert.deepEqual(blockedLevel.blockedActions, [
       { id: 'harden-core', kind: 'action', blockedBy: ['verify-core'] },
     ]);
@@ -1622,27 +1623,26 @@ test('parallel dependency levels stay grouped in declared level order', () => {
     );
 
     const screen = renderWorkflowTui(row, { width: 120, height: 40 });
-    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Level 1 · Parallel work', 'Level 2 · Parallel analysis']);
-    assert.deepEqual(segmentRows(screen, 'Level 1 · Parallel work').map(normalizeRow), [
+    assert.deepEqual(segmentLabels(screen), ['Preflight', 'Parallel work', 'Parallel analysis']);
+    assert.deepEqual(segmentRows(screen, 'Parallel work').map(normalizeRow), [
       'HH:MM ├─ started',
       'HH:MM │ ├─✓ implement-a 1m00s',
       'HH:MM │ ├─✓ implement-b 30s',
       'HH:MM └─✓ completed 2/2',
     ]);
-    assert.deepEqual(segmentRows(screen, 'Level 2 · Parallel analysis').map(normalizeRow).slice(0, 4), [
+    assert.deepEqual(segmentRows(screen, 'Parallel analysis').map(normalizeRow).slice(0, 4), [
       'HH:MM ├─ started',
       'HH:MM │ ├─✓ verify-a 30s',
       'HH:MM │ ├─✓ verify-b 30s',
       'HH:MM └─✓ completed 2/2',
     ]);
-    // Level 2 opened while level 1 was still running: the clock column proves
-    // the rows were reordered by declared level, not by time.
+    // Phase 2 opened while phase 1 was still running: the clock column proves
+    // the rows were reordered by declared phase, not by time.
     const clock = (label, index) => segmentRows(screen, label)[index].slice(0, 5);
-    assert.ok(clock('Level 1 · Parallel work', 2) > clock('Level 2 · Parallel analysis', 0),
+    assert.ok(clock('Parallel work', 2) > clock('Parallel analysis', 0),
       `level 1's second worker should postdate level 2's start:\n${timelinePaneRows(screen).join('\n')}`);
-    // Dependency levels are not numbered phases, so no phase prefix is added.
+    // A program's phases are its dependency groups: no keyword phase prefix.
     assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
-    assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /── Phase \d/);
   } finally { run.cleanup(); }
 });
 

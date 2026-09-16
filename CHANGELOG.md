@@ -2,6 +2,9 @@
 
 ## 0.32.0 — the dashboard is the main screen
 
+- wording: a program run's dependency levels are called phases everywhere the
+  product prints them (`Phase 2 · integrate`), matching what the planner's runs
+  already say; the ids in the events are unchanged.
 - dashboard: the full-screen Home, Run, Step, Usage, and Help pages now share
   a sticky header and bottom nav, keyboard shortcuts, mouse clicks, and wheel
   scrolling, so a live workflow can be understood in one place.

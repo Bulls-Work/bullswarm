@@ -40,8 +40,8 @@ test('dependency levels order research by edges instead of documentation keyword
   ];
   assert.deepEqual(deriveV2DependencyStages(actions, 1).map((s) => s.actionIds), [['docs-a', 'docs-b'], ['comparison'], ['verify']]);
   const audit = [{ id: 'trace', lane: 'analyze' }, { id: 'audit', lane: 'analyze' }];
-  assert.equal(deriveV2DependencyStages(audit, 1)[0].label, 'Level 1 · Parallel analysis');
-  assert.equal(deriveV2DependencyStages([{ id: 'later', dependsOn: ['previous'] }], 2)[0].label, 'Follow-up 1: Level 1 · later');
+  assert.equal(deriveV2DependencyStages(audit, 1)[0].label, 'Phase 1 · Parallel analysis');
+  assert.equal(deriveV2DependencyStages([{ id: 'later', dependsOn: ['previous'] }], 2)[0].label, 'Follow-up 1: Phase 1 · later');
 });
 
 test('saved program projection preserves overlapping levels and does not mutate history', () => {
