@@ -124,7 +124,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes', 'routeWhy', 'routeCandidates']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -465,6 +465,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     }),
     actions: state.program.actions.map((definition) => {
       const runtime = state.actions.find((action) => action.id === definition.id);
+      const attempt = state.attempts?.findLast((entry) => entry.actionId === definition.id);
       return {
         id: definition.id,
         purpose: definition.purpose,
@@ -480,6 +481,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // durable action; `kind` is what a reader needs to know WHY.
         kind: definition.kind ?? null,
         bytes: lastAttemptBytes(state, definition.id),
+        routeWhy: attempt?.routeWhy ?? null,
+        routeCandidates: clone(attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
       };
     }),
