@@ -139,9 +139,10 @@ export function paneView(
   const rule = '─'.repeat(Math.max(1, Math.min(kit.columns, 120)))
   const nameOf = (pool: string | null) => (pool ? (model.names.get(pool) ?? pool) : '')
 
-  // Compact: a phone terminal or a short inline pane. One header row, the
-  // nav on two rows with [Top] [End] beside it, and nothing else pinned, so
-  // the window keeps most of the body. Pools stay one press away: [usage].
+  // Compact: a phone terminal or a short inline pane. One header row, one
+  // nav row with [Top] [End] beside it and no [close] (the frame's ✕ does
+  // that), and nothing else pinned, so the window keeps most of the body.
+  // Pools stay one press away: [usage].
   const compact = model.bodyRows < COMPACT_ROWS
   const runButtons = model.runs.map((r, i) => (
     <Button
@@ -157,17 +158,12 @@ export function paneView(
   )
   const closeButton = <Button key="close" hotkey="q" label="close" onPress={actions.close} />
   const switcher = compact ? (
-    <Box key="switcher" flexDirection="column">
-      <Box key="sw-runs" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
-        {backButton}
-        {runButtons}
-      </Box>
-      <Box key="sw-more" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
-        {usageButton}
-        {closeButton}
-        <Button key="top" plain label="[Top]" onPress={() => actions.scrollTo('start')} />
-        <Button key="end" plain label="[End]" onPress={() => actions.scrollTo('end')} />
-      </Box>
+    <Box key="switcher" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
+      {backButton}
+      {runButtons}
+      {usageButton}
+      <Button key="top" plain label="[Top]" onPress={() => actions.scrollTo('start')} />
+      <Button key="end" plain label="[End]" onPress={() => actions.scrollTo('end')} />
     </Box>
   ) : (
     <Box key="switcher" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
@@ -210,8 +206,7 @@ export function paneView(
     rows: RenderElement[],
     footer: RenderElement[],
   ): { tree: RenderElement; scroll: PaneScroll } => {
-    // The compact switcher is one element drawing two rows.
-    const fixedRows = header.length + footer.length + (compact ? 1 : 0)
+    const fixedRows = header.length + footer.length
     const windowRows = Math.max(1, model.bodyRows - fixedRows)
     const contentRows = rows.length
     const offset = Math.max(0, Math.min(model.offset, Math.max(0, contentRows - windowRows)))
@@ -347,9 +342,11 @@ export function paneView(
     ]
     if (!compact) header.push(nav)
     if (model.error) header.push(plain('err', model.error, 'red'))
+    // The hint sits whole above the nav, as the usage page's note does.
+    const hint = wrapText(`bullswarm workflow action show ${run.shortId} ${a.id}`, width)
     const footer: RenderElement[] = compact
       ? [switcher]
-      : [switcher, dim('f1', `bullswarm workflow action show ${run.shortId} ${a.id}`)]
+      : [...hint.map((l, k) => dim(`f${String(k)}`, l)), switcher]
     return frame(header, rows, footer)
   }
 
@@ -431,9 +428,11 @@ export function paneView(
   ]
   if (!compact) header.push(nav)
   if (model.error) header.push(plain('err', model.error, 'red'))
+  // The hint sits whole above the nav, as the usage page's note does.
+  const hint = wrapText(`click a step to open it · bullswarm workflow watch ${run.shortId} --next`, width)
   const footer: RenderElement[] = compact
     ? [switcher]
-    : [...poolsFooter, switcher, dim('f1', `click a step to open it · bullswarm workflow watch ${run.shortId} --next`)]
+    : [...poolsFooter, ...hint.map((l, k) => dim(`f${String(k)}`, l)), switcher]
   return frame(header, rows, footer)
 }
 
