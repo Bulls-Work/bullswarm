@@ -60,6 +60,27 @@ test('strategy refresh persists honest discovery and tier suggestions', async ()
   } finally { f.cleanup(); }
 });
 
+test('strategy subscription view states a missing price and then a declared price', async () => {
+  const f = fixture();
+  try {
+    await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
+    const missing = await runStrategy(['show'], f.dir);
+    assert.equal(missing.code, 0);
+    assert.match(missing.out, /price unavailable: no published or operator-declared monthly price/);
+
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      assert.equal(await cmdStrategy([
+        'set-subscription', 'command-code', '--monthly-usd', '10', '--included-usd', '70',
+      ], { bullswarmDir: f.dir }), 0);
+    } finally { console.log = originalLog; }
+    await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
+    const declared = await runStrategy(['show'], f.dir);
+    assert.match(declared.out, /\$10\/mo → \$70 included/);
+  } finally { f.cleanup(); }
+});
+
 test('strategy subscription metadata and assignments are explicit persisted user choices', async () => {
   const f = fixture();
   const originalLog = console.log;

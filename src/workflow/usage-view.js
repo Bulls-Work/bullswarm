@@ -10,6 +10,8 @@ import { listAssignments } from '../lib/assignments.js';
 import { rungsFor, STRATEGY_TIERS } from '../lib/strategy.js';
 import { finiteOrNull } from '../lib/num.js';
 import { getAllMeterReadings } from '../meters/registry.js';
+import { attachForecast } from '../lib/forecast.js';
+import { loadState } from '../lib/state.js';
 
 /**
  * The truecolour meter palette: green below 50% used, amber from 50%, red
@@ -396,6 +398,55 @@ function capturedAtOf(pools) {
  * rung table `bullswarm strategy rungs` prints, flattened to one record per
  * pool × tier. `capturedAt` is the oldest meter snapshot among them.
  */
+// attachForecast re-reads every pool's meter history (about 110 ms on this
+// machine), so a page refreshing once a second must not pay for it each tick.
+// What it stamped is cached against the meter snapshot it was measured from
+// and re-stamped while that snapshot stands; one entry per home.
+const forecastCache = new Map();
+
+/**
+ * Stamp `spend` (with its `pacing.ratePerMinute`), `inflight` and the
+ * `projected*Pct` fields onto the pool views, reusing the last measurement
+ * while the meter snapshot has not moved.
+ *
+ * Without this, `poolBudget` has no `ratePerMinute`, and every licence share
+ * and "what still fits" figure on the Budget page renders blank even on a
+ * pool whose rate really was measured.
+ */
+function attachPacing(pools, bullswarmDir, { nowMs, capturedAt }) {
+  const list = Array.isArray(pools) ? pools : [];
+  if (!list.length || typeof bullswarmDir !== 'string' || !bullswarmDir) return list;
+  const cached = forecastCache.get(bullswarmDir);
+  if (capturedAt != null && cached && cached.capturedAt === capturedAt) {
+    for (const pool of list) Object.assign(pool, cached.stamped.get(pool.name) ?? {});
+    return list;
+  }
+  const keysBefore = list.map((pool) => new Set(Object.keys(pool)));
+  const valuesBefore = list.map((pool) => ({ ...pool }));
+  try {
+    attachForecast(list, bullswarmDir, {
+      now: nowMs,
+      decisionLog: loadState(bullswarmDir)?.decisionLog ?? [],
+    });
+  } catch {
+    // A forecast is an optimization, never a precondition: the pools are
+    // still the live meter reading, the licence share just stays blank.
+    return list;
+  }
+  // Cache by field name rather than a fixed list, so a field attachForecast
+  // gains later is carried across a refresh without changing this file.
+  const stamped = new Map();
+  list.forEach((pool, index) => {
+    const changed = {};
+    for (const [key, value] of Object.entries(pool)) {
+      if (!keysBefore[index].has(key) || valuesBefore[index][key] !== value) changed[key] = value;
+    }
+    stamped.set(pool.name, changed);
+  });
+  if (capturedAt != null) forecastCache.set(bullswarmDir, { capturedAt, stamped });
+  return list;
+}
+
 export async function loadUsage(bullswarmDir, nowMs = Date.now()) {
   let built;
   try {
@@ -419,7 +470,9 @@ export async function loadUsage(bullswarmDir, nowMs = Date.now()) {
     okShare: row.record?.okShare ?? null,
     medianMinutes: row.record?.medianMinutes ?? null,
   }));
-  return { pools, assignments, rungs, capturedAt: capturedAtOf(pools) };
+  const capturedAt = capturedAtOf(pools);
+  attachPacing(pools, bullswarmDir, { nowMs, capturedAt });
+  return { pools, assignments, rungs, capturedAt };
 }
 
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/;

@@ -12,8 +12,36 @@ import {
   windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
   pacingWindowFor, normalizePacingWindow, rollResetForward, declaredResetPacing,
 } from '../src/meters/framework.js';
+import { readMeterHistoryByDay, readMeterHistoryDays, meterHistoryPath } from '../src/meters/registry.js';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
+
+test('meter history can be read by local day and survives a truncated line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-meter-day-'));
+  try {
+    const path = meterHistoryPath('pool', join(dir, 'meters'));
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, [
+      JSON.stringify({ captured_at: '2026-08-20T00:00:00Z', five_hour: { utilization: 1 } }),
+      '{"captured_at":"2026-08-21T00:',
+      JSON.stringify({ captured_at: '2026-08-21T12:00:00Z', five_hour: { utilization: 3 } }),
+    ].join('\n'));
+    assert.deepEqual(
+      readMeterHistoryByDay('pool', '2026-08-21', { dir: join(dir, 'meters') })
+        .map((entry) => entry.five_hour.utilization),
+      [3],
+    );
+    assert.deepEqual(Object.keys(readMeterHistoryDays('pool', { dir: join(dir, 'meters') })), [
+      '2026-08-20', '2026-08-21',
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // --- codex WHAM decoder -------------------------------------------------------
 

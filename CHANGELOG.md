@@ -18,6 +18,51 @@
   launch's output retried five seconds later and two identical workflows ran
   side by side in the same directory).
 
+## 0.33.0 — the dashboard release
+
+- dashboard: the full-screen surface now has nine pages — Home, Runs, Run,
+  Step, Budget, Stats, History, Fleet, and Help. Home answers what happened
+  today and what is active; Runs is the catalogue and integration actions; Run
+  and Step explain a workflow and one action; Budget shows quota, measured
+  worker-time share, labelled money, fit, and biggest workflows; Stats covers
+  Overview, Trends, Pools, Models, and Projects; History is the dated timeline;
+  Fleet shows lane/provider rungs; Help names the controls. Home, Stats, and
+  History read the rollup index instead of parsing every run directory on each
+  refresh.
+- workflow: every finished V2 run now records a per-run `rollup.json` and
+  appends an idempotent line to `~/.bullswarm/history/runs.jsonl`. On the real
+  corpus used for the release, `294` run directories yielded `181` indexed
+  finished V2 records; `105` legacy and `8` unfinished directories were left
+  out. History spans `15` recorded days, and `94` of the `188` V2 results are
+  verified.
+- dashboard, **keys rebound** — three keys changed meaning, one is gone, and
+  seven are new. Rebound: `r` opened nothing and refreshed the view in 0.32.0
+  and now opens **Runs** (the 1 s timer refreshes, so no key needs to);
+  `b` was **move out** and now opens **Budget** (`Esc` and `←` are move out);
+  `Tab` was **next workflow** and now cycles the current page's **sub-tabs**
+  (`Shift+Tab` cycles workflows, as it did). Removed: the Usage page is
+  replaced by **Budget** (`b`) and **Fleet** (`f`), so **`u` is gone**, and
+  Usage's `l`/`p` lane/provider grouping keys are now **`Tab`** on Fleet.
+  New: `s` Stats, `y` History, `f` Fleet, `p` cycles the period, `Home` top,
+  `End` bottom, and `ctrl+s` copies the screen. Moved, not rebound: `i`, `/`
+  and `a` are **Runs-page** keys now that Home is the prototype's Home.
+  Unchanged: `h`/`?`, `1`–`9`, `Enter`/`→`/`l`, the arrows, `PgUp`, `PgDn`
+  and `q`.
+- accounting: money and licence figures are either measured or carry `≈` with
+  their basis. API-equivalent estimates use the recorded per-attempt estimate;
+  a licence draw uses the measured pool rate multiplied by measured worker-
+  minutes and stays blank when no rate is available; an undeclared subscription
+  price stays null. On the release corpus, `113` of `188` V2 runs carried a
+  cost figure and the other `75` did not, so no zero was manufactured for them.
+- workflow: `bullswarm workflow reindex [--json] [--force]` backfills finished
+  runs from their durable directories, skips legacy and unfinished runs,
+  repairs missing index entries, and can rebuild existing rollups with
+  `--force`. The JSON form reports `ok`, `indexPath`, `scanned`, `written`,
+  `skipped`, `legacy`, `unfinished`, `present`, `failed`, and `failures[]`.
+- docs: the observing guide, README, CLI reference, command help, and Claude
+  Mod README now describe the nine pages, the full key map, the measured/
+  labelled money rule, and the Mod's smaller Run/Step/Usage-Pools surface.
+
 ## 0.32.0 — the dashboard is the main screen
 
 - wording: a program run's dependency levels are called phases everywhere the

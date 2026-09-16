@@ -4,7 +4,9 @@ import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, read
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { dashboardModel, dashboardRows, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard } from '../src/workflow/dashboard.js';
+import { DASHBOARD_KEYS, activeDashboardRows, dashboardModel, dashboardRows, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
+import { readRollups } from '../src/workflow/rollup.js';
+import { SUBSTITUTED_GLYPHS } from '../src/lib/glyphs.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
 import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
@@ -193,8 +195,11 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     emit('presentation.stage_started', iso(6), { stageId: 'r1-evidence', label: 'Evidence' });
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
-    const screen = renderWorkflowTui(row, { width: 120, height: 30 });
+    // 0.33.0 paints the plan strip, the phase count and the run's pool share
+    // above the timeline, so the same timeline needs the rows those take.
+    const screen = renderWorkflowTui(row, { width: 120, height: 42 });
     assert.doesNotMatch(screen, /\[Workflow Planner\] plan created/);
+    assert.match(screen, /── plan .*phase 2 of 2 · 1\/2 steps/);
     assert.match(screen, /● Goal accepted/);
     assert.match(screen, /── Phase 1 · Implementation/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
@@ -281,6 +286,7 @@ test('all-runs ordering uses the V2 lifecycle start time and keeps the initial l
     const input = new FakeInput();
     const output = new FakeOutput();
     const running = cmdWorkflow([], { bullswarmDir: home, input, output });
+    input.emit('data', Buffer.from('r')); // Home -> Runs
     assert.match(output.text, /Runs · active/);
     assert.match(output.text, /abc234 · Audit every file/);
     input.emit('data', Buffer.from('q'));
@@ -299,8 +305,9 @@ test('a run ID passed to the dashboard opens that run on the Run page', async ()
     session.press('\r'); // the run page opens its agents
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
-    session.press(ESC_KEY); // and out to Home, where the run is listed
+    session.press(ESC_KEY); // and out to Home
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    session.press('r'); // where r lists every run
     assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
@@ -312,6 +319,7 @@ test('recent-list V2 selection opens that run on the Run page', async () => {
     addHistoricalRun(home);
     addV2HistoricalRun(home);
     const session = shellSession(home, { columns: 120, rows: 30 });
+    session.press('r'); // Home -> Runs
     session.press('a'); // active -> all
     session.press('\u001b[B'); // active run -> newer V2 run
     assert.match(plain(lastFrame(session.output)), /Runs · all/);
@@ -346,6 +354,7 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
     const emptyHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-empty-'));
     addV2HistoricalRun(emptyHome);
     const empty = shellSession(emptyHome, { columns: 120, rows: 30 });
+    empty.press('r');
     assert.match(plain(lastFrame(empty.output)), /Press a to browse recent runs\./);
     empty.press('a');
     assert.match(plain(lastFrame(empty.output)), /Runs · all/);
@@ -455,10 +464,12 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     addHistoricalRun(home);
     const session = shellSession(home, { columns: 60, rows: 26 });
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    session.press('r'); // Home -> Runs
     session.press('a'); // active -> all
     session.press('\u001b[B'); // select the historical run
     session.press('\r'); // open it on the Run page
     session.press(ESC_KEY); // back to Home
+    session.press('r'); // and on to Runs, which owns the filter
     session.press('/');
     session.press('def');
     session.press('\r');
@@ -646,6 +657,11 @@ const SHELL_RUNS = [
 
 function shellFixture() {
   const home = mkdtempSync(join(tmpdir(), 'bs-shell-'));
+  mkdirSync(join(home, 'history'), { recursive: true });
+  writeFileSync(
+    join(home, 'history', 'runs.jsonl'),
+    `${rollupFixture().map((record) => JSON.stringify(record)).join('\n')}\n`,
+  );
   for (const run of SHELL_RUNS) {
     const dir = join(home, 'workflows', run.runId);
     mkdirSync(dir, { recursive: true });
@@ -667,9 +683,19 @@ function paintedRows(screen) {
   return rows;
 }
 
-/** The sticky header: the first painted row of the frame. */
+/** The page tab row: the first painted row of every frame. */
+function tabRow(screen) {
+  return plain(String(paintedRows(screen)[0] ?? '')).replace(/\s+$/, '');
+}
+
+/** The tabs the row actually painted, in order. */
+function tabNames(screen) {
+  return tabRow(screen).trim().split(/\s{2,}/).filter(Boolean);
+}
+
+/** The sticky header: the row under the tab row. */
 function frameHeader(screen) {
-  return String(paintedRows(screen)[0] ?? '').replace(/\s+$/, '');
+  return String(paintedRows(screen)[1] ?? '').replace(/\s+$/, '');
 }
 
 /** The sticky bottom nav as its `[ label ]` buttons, marks included. */
@@ -677,6 +703,69 @@ function navButtons(screen) {
   const nav = plain(String(paintedRows(screen).at(-1) ?? ''));
   // A run button's digit (`[ 1.aaa111 ]`) is dropped: the tests name runs by id.
   return [...nav.matchAll(/\[ ([^\]]*?) \]/g)].map((match) => match[1].trim().replace(/^(● )?[1-9]\./, '$1'));
+}
+
+/** Every page the 0.33.0 shell has, in the order Help lists them. */
+const DASHBOARD_PAGE_NAMES = ['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'fleet', 'help'];
+
+/** The tab the row painted inverted — the page the reader is on. */
+function activeTab(screen) {
+  const rows = String(screen).split('\n');
+  const row = rows[0] === '' ? rows[1] : rows[0];
+  const match = /\x1b\[7m(.*?)\x1b\[0m/.exec(String(row ?? ''));
+  return match ? plain(match[1]) : '';
+}
+
+/**
+ * Two rollup records, the shape `~/.bullswarm/history/runs.jsonl` holds: one
+ * verified run with a recorded API-equivalent estimate, one that recorded
+ * none. Nothing here declares a subscription price, which is the state every
+ * pool on a real machine is in until an operator declares one.
+ */
+function rollupFixture(now = Date.now()) {
+  const day = (back) => new Date(now - back * 86_400_000).toISOString();
+  return [
+    {
+      schemaVersion: 'bullswarm.workflow.rollup.v1',
+      runId: 'wf-zzz', shortId: 'zzz999', project: 'bullswarm', goal: 'Rebuild the dashboard shell',
+      startedAt: day(0), finishedAt: day(0), status: 'completed', verified: true,
+      requirements: { passed: 3, total: 3 }, minutes: { wall: 41, agent: 63 },
+      pools: { relay: { attempts: 2, minutes: 40, costUsd: 0.42, tokens: 1200 } },
+      models: { 'gpt-5.6-luna': { attempts: 2, minutes: 40 } }, legacy: false,
+    },
+    {
+      schemaVersion: 'bullswarm.workflow.rollup.v1',
+      runId: 'wf-yyy', shortId: 'yyy888', project: 'project-a', goal: 'Tidy the repo',
+      startedAt: day(2), finishedAt: day(2), status: 'failed', verified: false,
+      requirements: { passed: 1, total: 3 }, minutes: { wall: 12, agent: 15 },
+      pools: { relay: { attempts: 1, minutes: 12, costUsd: null, tokens: null } },
+      models: { 'gpt-5.6-mini': { attempts: 1, minutes: 12 } }, legacy: false,
+    },
+  ];
+}
+
+/**
+ * The day rows `historyDays` returns for the same two runs. The keys are
+ * local dates, because `dayKey` groups a run by the day it finished in the
+ * reader's own zone, not in UTC.
+ */
+function dayFixture(now = Date.now()) {
+  const key = (back) => {
+    const at = new Date(now - back * 86_400_000);
+    return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+  };
+  // historyDays files each record under the day it belongs to and hands the
+  // page that day's `rows`, so the fixture carries them the same way.
+  const records = rollupFixture(now);
+  const rowsOn = (back) => records.filter((record) => {
+    const at = new Date(record.finishedAt);
+    return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}` === key(back);
+  });
+  return [
+    { date: key(0), runs: 1, finished: 1, verified: 1, verifiedShare: 1, spendUsd: 0.42, rows: rowsOn(0) },
+    { date: key(1), runs: 0, finished: 0, verified: 0, verifiedShare: null, spendUsd: null, rows: [] },
+    { date: key(2), runs: 1, finished: 1, verified: 0, verifiedShare: 0, spendUsd: null, rows: rowsOn(2) },
+  ];
 }
 
 /** The last frame written to a fake output, with its leading paint escape. */
@@ -700,7 +789,7 @@ function clickOn(session, needle) {
 /** The next macrotask, so an async usage read can land before an assertion. */
 const settle = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
-test('every page paints its own sticky header, and the nav marks the run and the page', () => {
+test('every page paints its tab row, its own sticky header, and a nav that marks the run', () => {
   const { home, cleanup } = shellFixture();
   try {
     const rows = dashboardRows(home, { all: true });
@@ -710,33 +799,55 @@ test('every page paints its own sticky header, and the nav marks the run and the
       runs: rows.filter((entry) => entry.ongoing),
       usage: usageFixture(),
       integration: { ok: true, agents: [] },
+      rollups: rollupFixture(),
+      days: dayFixture(),
     });
     const page = (name, extra = {}) => renderDashboardPage(model, {
-      page: name, width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha', ...extra,
+      page: name, width: 100, height: 30, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha', ...extra,
     }).lines.join('\n');
 
+    // The tab row is the first row of every page, the active tab inverted.
+    for (const name of DASHBOARD_PAGE_NAMES) {
+      assert.deepEqual(
+        tabNames(page(name)),
+        name === 'help'
+          ? ['Home', 'Runs', 'Budget', 'Stats', 'History', 'Fleet', 'Help']
+          : ['Home', 'Runs', 'Budget', 'Stats', 'History', 'Fleet'],
+        `${name} painted the wrong tab row`,
+      );
+    }
+    // Run and Step are read as Runs, so the tab row marks Runs on both.
+    for (const [name, active] of [['home', 'Home'], ['runs', 'Runs'], ['run', 'Runs'], ['step', 'Runs'],
+      ['budget', 'Budget'], ['stats', 'Stats'], ['history', 'History'], ['fleet', 'Fleet'], ['help', 'Help']]) {
+      assert.ok(String(page(name)).includes(`\x1b[7m`), `${name} painted no active tab`);
+      assert.ok(activeTab(page(name)).includes(active), `${name} marked ${activeTab(page(name))}, not ${active}`);
+    }
+
     // The header names the page: the product on Home, the run on Run, the step
-    // on Step (`✓ id · run <id>`), the meter sample on Usage.
+    // on Step, the window on Budget, the tab on Stats.
     assert.match(frameHeader(page('home')), /^ bullswarm · home/);
+    assert.match(frameHeader(page('runs')), /^ bullswarm · runs/);
     assert.match(frameHeader(page('run')), /^ aaa111 running · .* · 1\/3 actions/);
-    assert.match(frameHeader(page('step')), /^ .* build-alpha · run aaa111$/);
-    assert.match(frameHeader(page('usage')), /^ Pools · sampled 3m ago$/);
-    assert.match(frameHeader(page('help')), /^ bullswarm · help$/);
+    assert.match(frameHeader(page('step')), /^ .* build-alpha · run aaa111/);
+    assert.match(frameHeader(page('budget')), /^ Budget · /);
+    assert.match(frameHeader(page('stats')), /^ Stats · overview/);
+    assert.match(frameHeader(page('history')), /^ History · \d+ day/);
+    assert.match(frameHeader(page('fleet')), /^ Fleet · by lane/);
+    assert.match(frameHeader(page('help')), /^ bullswarm · help/);
 
-    // One button per ongoing run, then usage, help and quit — the current run
-    // and the current page carrying the mark.
-    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', 'usage', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('run')), ['● aaa111', 'bbb222', 'usage', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('usage')), ['aaa111', 'bbb222', '● usage', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', 'usage', '● help', 'quit']);
+    // One button per ongoing run, then help and quit, the current run marked.
+    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('run')), ['● aaa111', 'bbb222', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● help', 'quit']);
     // Step prepends the way back out.
-    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', 'usage', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', 'help', 'quit']);
 
-    for (const name of ['home', 'run', 'step', 'usage', 'help']) {
+    for (const name of DASHBOARD_PAGE_NAMES) {
       const frame = renderDashboardPage(model, {
-        page: name, width: 100, height: 26, rows, allRows: rows, selectedRunId: 'wf-alpha',
+        page: name, width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
       });
-      assert.ok(frame.lines.length <= 26, `${name} painted ${frame.lines.length} rows`);
+      assert.ok(frame.lines.length <= 30, `${name} painted ${frame.lines.length} rows`);
       assert.match(plain(frame.lines.at(-1)), /\[ quit \]/, `${name} lost its bottom nav`);
     }
   } finally { cleanup(); }
@@ -759,13 +870,21 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
     const key = (text) => `\x1b[4m${text}\x1b[24m`;
     assert.ok(nav.includes(`[ ● ${key('1')}.aaa111 ]`), 'the current run carries 1. inside its button');
     assert.ok(nav.includes(`[ ${key('2')}.bbb222 ]`), 'the second run carries 2. inside its button');
-    assert.ok(nav.includes(`[ ${key('u')}sage ]`), 'usage underlines its u');
     assert.ok(nav.includes(`[ ${key('h')}elp ]`), 'help underlines its h');
     assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
+    // b is Budget now, so the way back out of a step carries no key letter.
     const step = renderDashboardPage(model, {
       page: 'step', width: 100, height: 26, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
     });
-    assert.ok(String(step.lines.at(-1)).includes(`[ ${key('b')}ack ]`), 'back underlines its b');
+    assert.ok(String(step.lines.at(-1)).includes('[ back ]'), 'the step page keeps its way out');
+
+    // The tab row underlines the key that opens each page.
+    const tabs = String(frame.lines[0]);
+    for (const [letter, label] of [['r', 'uns'], ['b', 'udget'], ['s', 'tats'], ['f', 'leet']]) {
+      assert.ok(tabs.includes(`${key(letter.toUpperCase())}${label}`) || tabs.includes(`${key(letter)}${label}`),
+        `the ${label} tab does not underline ${letter}`);
+    }
+    assert.ok(tabs.includes(`Histor${key('y')}`), 'the History tab underlines its y');
 
     // The digit a button shows is the digit that opens that run.
     const session = shellSession(home, { columns: 100, rows: 24 });
@@ -777,26 +896,28 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
   } finally { cleanup(); }
 });
 
-test('Usage and Help open with no run selected: a fresh install with no runs, or only finished ones', async () => {
+test('Budget, Fleet and Help open with no run selected: a fresh install, or only finished runs', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-empty-'));
   try {
     mkdirSync(join(home, 'workflows'), { recursive: true });
     const session = shellSession(home, { columns: 100, rows: 24 });
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
-    session.press('u');
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    session.press('b');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Budget · /);
+    session.press('f');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
     session.press('?');
-    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help$/);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help/);
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
-    clickOn(session, '[ usage ]');
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    clickOn(session, 'Budget');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Budget · /);
     clickOn(session, '[ quit ]');
     assert.equal(await session.running, 0);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('a frame never paints past the terminal, at any page or width', () => {
+test('no page paints past the terminal or comes up blank, at 120x40 and at 55x26', () => {
   const { home, cleanup } = shellFixture();
   try {
     const rows = dashboardRows(home, { all: true });
@@ -805,65 +926,156 @@ test('a frame never paints past the terminal, at any page or width', () => {
       runs: rows,
       usage: usageFixture(),
       integration: { ok: false, agents: [{ agent: 'codex', skill: { status: 'missing' }, awareness: false }] },
+      rollups: rollupFixture(),
+      days: dayFixture(),
     });
 
-    for (const width of [32, 60, 80, 100, 200]) {
-      for (const name of ['home', 'run', 'step', 'usage', 'help']) {
-        const screen = renderDashboardPage(model, {
-          page: name, width, height: 30, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
-          phaseIndex: 1, agentIndex: 0,
-        }).lines.join('\n');
-        const overflow = paintedRows(screen).filter((line) => [...line].length > width);
-        assert.deepEqual(overflow, [], `width ${width} ${name} overflowed`);
-        // Whatever the width, the header survives and the nav is drawn whole.
-        assert.ok(frameHeader(screen).trim().length > 0, `width ${width} ${name} painted no header`);
-        assert.match(plain(paintedRows(screen).at(-1)), /\[ quit \]/, `width ${width} ${name} lost its nav`);
+    // 55 columns is the phone layout; frameWidth() subtracts one below 100,
+    // so the terminal paints 54 and every page must fit it.
+    for (const [width, height] of [[120, 40], [54, 26], [32, 20], [60, 26], [80, 30], [99, 30], [200, 40]]) {
+      for (const name of DASHBOARD_PAGE_NAMES) {
+        for (const tab of ['overview', 'trends', 'pools', 'models', 'projects']) {
+          const frame = renderDashboardPage(model, {
+            page: name, width, height, rows, allRows: rows, selected: 0, selectedRunId: 'wf-alpha',
+            phaseIndex: 1, agentIndex: 0, statsTab: tab, metric: 'spend', period: '30d',
+          });
+          const screen = frame.lines.join('\n');
+          const overflow = paintedRows(screen).filter((line) => [...line].length > width);
+          assert.deepEqual(overflow, [], `width ${width} ${name}/${tab} overflowed`);
+          // No page is blank: it paints a header, a body and the nav.
+          assert.ok(frameHeader(screen).trim().length > 0, `width ${width} ${name} painted no header`);
+          assert.ok(paintedRows(screen).filter((line) => line.trim()).length >= 3, `width ${width} ${name} came up blank`);
+          assert.match(plain(paintedRows(screen).at(-1)), /\[/, `width ${width} ${name} lost its nav`);
+          if (name !== 'stats') break;
+        }
       }
     }
   } finally { cleanup(); }
 });
 
-test('the nav records a hit region for every button, run row and step row', () => {
+test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [Help]', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const model = dashboardModel(rows[0], { runs: rows.filter((entry) => entry.ongoing), usage: usageFixture() });
+    const narrow = renderDashboardPage(model, { page: 'home', width: 54, height: 26, rows, allRows: rows });
+    assert.deepEqual(tabNames(narrow.lines.join('\n')), ['Home', 'Runs', 'Budget', 'Stats', 'History']);
+    const nav = plain(narrow.lines.at(-1));
+    assert.match(nav, /\[Top\] \[End\] \[Help\]\s*$/);
+    assert.doesNotMatch(nav, /\[ quit \]/);
+    // Fleet comes back the moment it is the page being read.
+    const fleet = renderDashboardPage(model, { page: 'fleet', width: 54, height: 26, rows, allRows: rows });
+    assert.ok(tabNames(fleet.lines.join('\n')).includes('Fleet'), 'the active page never leaves the tab row');
+    // Every one of the three tail buttons is clickable.
+    const tail = narrow.regions.filter((region) => region.y === narrow.lines.length);
+    assert.deepEqual(tail.map((region) => region.action.kind).slice(-3), ['top', 'end', 'page']);
+    // And the Help page says which layout the reader is looking at.
+    const help = plain(renderDashboardPage(model, { page: 'help', width: 54, height: 60 }).lines.join('\n'));
+    assert.match(help, /\[Top\] \[End\] \[Help\]/);
+    assert.match(help, /Fleet leaves the tab row/);
+  } finally { cleanup(); }
+});
+
+test('the nav records a hit region for every button, run row, tile, bar and step row', () => {
   const { home, cleanup } = shellFixture();
   try {
     const rows = dashboardRows(home, { all: true });
     const row = rows.find((entry) => entry.runId === 'wf-alpha');
-    const model = dashboardModel(row, { runs: rows, usage: usageFixture() });
+    const model = dashboardModel(row, {
+      runs: rows, usage: usageFixture(), rollups: rollupFixture(), days: dayFixture(),
+    });
 
     const runFrame = renderDashboardPage(model, {
-      page: 'run', width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
+      page: 'run', width: 100, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     });
     const nav = runFrame.regions.filter((region) => region.y === runFrame.lines.length);
-    assert.deepEqual(nav.map((region) => region.action.kind), ['open-run', 'open-run', 'page', 'page', 'quit']);
-    assert.deepEqual(nav.map((region) => region.action.page).filter(Boolean), ['usage', 'help']);
+    assert.deepEqual(nav.map((region) => region.action.kind), ['run', 'run', 'page', 'quit']);
+    assert.deepEqual(nav.map((region) => region.action.page).filter(Boolean), ['help']);
     for (const region of nav) {
       const painted = plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2);
       assert.match(painted, /^\[ .+ \]$/, `${painted} is not a whole button`);
     }
-    // Every step row the timeline prints opens that step.
-    const steps = runFrame.regions.filter((region) => region.action.kind === 'open-step');
-    assert.ok(steps.length >= 2, `expected the timeline step rows to be clickable: ${steps.length}`);
-    assert.deepEqual(new Set(steps.map((region) => region.action.actionId)), new Set(['scan', 'build-alpha']));
+    // Every step row the timeline prints opens that step, and so does every
+    // glyph of the plan strip above it.
+    const steps = runFrame.regions.filter((region) => region.action.kind === 'step');
+    assert.ok(steps.length >= 3, `expected the plan strip and the timeline rows to be clickable: ${steps.length}`);
+    assert.ok(new Set(steps.map((region) => region.action.actionId)).has('scan'));
+    assert.ok(new Set(steps.map((region) => region.action.actionId)).has('build-alpha'));
 
-    // The Home run rows open their run, and the Usage tabs switch grouping.
+    // Home: every tile, every breakdown bar, every run and every recent row.
     const homeFrame = renderDashboardPage(model, {
-      page: 'home', width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
+      page: 'home', width: 100, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     });
-    const runRows = homeFrame.regions.filter((region) => region.action.kind === 'open-run'
-      && region.y !== homeFrame.lines.length);
-    assert.deepEqual(runRows.map((region) => region.action.runId), ['wf-alpha', 'wf-beta']);
-    assert.equal(plain(homeFrame.lines[runRows[0].y - 1]).slice(runRows[0].x1 - 1, runRows[0].x2).includes('aaa111'), true);
+    const kinds = (frame, kind) => frame.regions.filter((region) => region.action.kind === kind);
+    assert.deepEqual(kinds(homeFrame, 'trend').map((region) => region.action.metric), ['runs', 'verified', 'spend']);
+    assert.ok(kinds(homeFrame, 'tab').length >= 1, 'the licence tile and the bars open a Stats tab');
+    assert.deepEqual(kinds(homeFrame, 'period').map((region) => region.action.period), ['7d', '30d', 'all']);
+    const runRows = kinds(homeFrame, 'run').filter((region) => region.y !== homeFrame.lines.length);
+    assert.ok(runRows.some((region) => region.action.runId === 'wf-alpha'));
+    assert.ok(kinds(homeFrame, 'step').length >= 2, 'the per-run glyph strip is clickable');
+    // Every region sits inside the line it was painted on.
+    for (const frame of [homeFrame, runFrame]) {
+      for (const region of frame.regions) {
+        const line = plain(frame.lines[region.y - 1] ?? '');
+        assert.ok(region.x1 >= 1 && region.x2 <= Math.max(1, line.length),
+          `region ${JSON.stringify(region.action)} at ${region.x1}–${region.x2} is outside "${line}"`);
+      }
+    }
 
-    const usageFrame = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 });
-    const tabs = usageFrame.regions.filter((region) => region.action.kind === 'rungs');
-    assert.deepEqual(tabs.map((region) => region.action.by), ['lane', 'provider']);
-    const tabsRow = plain(usageFrame.lines[tabs[0].y - 1]);
-    assert.equal(tabsRow.slice(tabs[0].x1 - 1, tabs[0].x2), '[● by lane]');
-    assert.equal(tabsRow.slice(tabs[1].x1 - 1, tabs[1].x2), '[by provider]');
-    // `[edit]` in the read-only note is the key e button.
-    const edit = usageFrame.regions.find((region) => region.action.kind === 'edit');
-    assert.equal(plain(usageFrame.lines[edit.y - 1]).slice(edit.x1 - 1, edit.x2), '[edit]');
-    assert.equal(edit.y, usageFrame.lines.length - 1, 'the note sits right above the nav');
+    // The page tab row opens its page from every page.
+    const tabs = homeFrame.regions.filter((region) => region.action.kind === 'page' && region.y === 1);
+    assert.deepEqual(tabs.map((region) => region.action.page), ['home', 'runs', 'budget', 'stats', 'history', 'fleet']);
+
+    // Fleet's own tabs switch the grouping, and `[edit]` is the e key.
+    const fleetFrame = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30 });
+    const fleetTabs = fleetFrame.regions.filter((region) => region.action.kind === 'tab');
+    assert.deepEqual(fleetTabs.map((region) => region.action.tab), ['lane', 'provider']);
+    const tabsRowText = plain(fleetFrame.lines[fleetTabs[0].y - 1]);
+    assert.equal(tabsRowText.slice(fleetTabs[0].x1 - 1, fleetTabs[0].x2), '[● by lane]');
+    assert.equal(tabsRowText.slice(fleetTabs[1].x1 - 1, fleetTabs[1].x2), '[by provider]');
+    const edit = fleetFrame.regions.find((region) => region.action.kind === 'edit');
+    assert.equal(plain(fleetFrame.lines[edit.y - 1]).slice(edit.x1 - 1, edit.x2), '[edit]');
+
+    // Stats' five sub-tabs are the same five Tab walks.
+    const statsFrame = renderDashboardPage(model, { page: 'stats', width: 100, height: 30 });
+    assert.deepEqual(
+      statsFrame.regions.filter((region) => region.action.kind === 'tab').map((region) => region.action.tab),
+      ['overview', 'trends', 'pools', 'models', 'projects'],
+    );
+    // Stats' dense rows remain real hit targets at desktop and phone widths:
+    // pool meters open the matching Budget view, while model/project rows use
+    // the deliberately chosen History fallback (there is no row filter yet).
+    for (const width of [120, 54]) {
+      const statsPage = (tab) => renderDashboardPage(model, {
+        page: 'stats', width, height: 80, rows, allRows: rows, selectedRunId: 'wf-alpha',
+        statsTab: tab, period: '7d', metric: 'runs',
+      });
+      const poolsFrame = statsPage('pools');
+      const poolRegions = poolsFrame.regions.filter((region) => region.action.kind === 'page'
+        && region.action.page === 'budget' && region.action.pool);
+      assert.ok(poolRegions.some((region) => region.action.pool === 'relay'), `pool meter missing at ${width}`);
+      const modelsFrame = statsPage('models');
+      assert.ok(modelsFrame.regions.some((region) => region.action.kind === 'page' && region.action.page === 'history'), `model row missing at ${width}`);
+      const projectsFrame = statsPage('projects');
+      assert.ok(projectsFrame.regions.some((region) => region.action.kind === 'page' && region.action.page === 'history'), `project row missing at ${width}`);
+      for (const frame of [poolsFrame, modelsFrame, projectsFrame]) {
+        for (const region of frame.regions) {
+          const line = plain(frame.lines[region.y - 1] ?? '');
+          assert.ok(region.x1 >= 1 && region.x2 <= Math.max(1, line.length), `stats region overrun at ${width}`);
+        }
+      }
+    }
+    // History's run rows open that run.
+    const historyFrame = renderDashboardPage(model, { page: 'history', width: 100, height: 30 });
+    // The bottom nav's run buttons are the same { kind: 'run' } action, so a
+    // body row is one that is not on the nav's own line.
+    const historyRuns = historyFrame.regions.filter((region) => region.action.kind === 'run'
+      && region.y !== historyFrame.lines.length);
+    assert.ok(historyRuns.length >= 1, 'a History row opens its run');
+    assert.equal(
+      plain(historyFrame.lines[historyRuns[0].y - 1]).slice(historyRuns[0].x1 - 1, historyRuns[0].x2),
+      'zzz999',
+    );
   } finally { cleanup(); }
 });
 
@@ -902,7 +1114,7 @@ function usageFixture(nowMs = Date.now()) {
 }
 
 function shellSession(home, {
-  columns = 120, rows = 30, token = null, homeDir = home, openSetupTui = null,
+  columns = 120, rows = 30, token = null, homeDir = home, openSetupTui = null, refreshMs = 60_000,
 } = {}) {
   class FakeInput extends EventEmitter {
     isTTY = true;
@@ -920,7 +1132,7 @@ function shellSession(home, {
   const input = new FakeInput();
   const output = new FakeOutput(columns, rows);
   const running = runDashboard(home, {
-    input, output, refreshMs: 60_000, token, homeDir, openSetupTui,
+    input, output, refreshMs, token, homeDir, openSetupTui,
   });
   const press = (key) => {
     const before = output.text.length;
@@ -930,7 +1142,7 @@ function shellSession(home, {
   return { input, output, running, press, quit: () => { press('q'); return running; } };
 }
 
-test('Tab re-enters the sibling run at the page it was left on', async () => {
+test('Shift+Tab re-enters the sibling run at the page it was left on', async () => {
   const { home, cleanup } = shellFixture();
   try {
     const session = shellSession(home, { token: 'wf-alpha' });
@@ -939,8 +1151,10 @@ test('Tab re-enters the sibling run at the page it was left on', async () => {
     const atStep = lastFrame(session.output);
     assert.match(frameHeader(atStep), /build-alpha · run aaa111/);
 
-    const sibling = session.press('\t');
-    assert.ok(sibling.length, 'Tab repainted the screen');
+    // 0.33.0 gives Tab the sub-tabs; Shift+Tab is the key that still cycles
+    // workflows, and it cycles, so two presses come back here.
+    const sibling = session.press(`${ESC_KEY}[Z`);
+    assert.ok(sibling.length, 'Shift+Tab repainted the screen');
     // same page, the sibling workflow's own agent, marked current in the nav
     assert.match(frameHeader(sibling), /build-beta · run bbb222/);
     const buttons = navButtons(sibling);
@@ -949,7 +1163,7 @@ test('Tab re-enters the sibling run at the page it was left on', async () => {
     assert.ok(!buttons.includes('● aaa111'));
     assert.doesNotMatch(sibling, /build-alpha/);
 
-    // and Shift+Tab comes back the same way, still on the step page
+    // and cycling on comes back the same way, still on the step page
     const back = session.press(`${ESC_KEY}[Z`);
     assert.match(frameHeader(back), /build-alpha · run aaa111/);
     assert.equal(await session.quit(), 0);
@@ -988,14 +1202,26 @@ test('the Help page names every key, and the keys the nav buttons carry open the
   try {
     const session = shellSession(home, { token: 'wf-alpha' });
     session.press('?');
-    const help = plain(lastFrame(session.output));
-    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help$/);
-    for (const key of ['u · ?', 'q', 'Tab / Shift+Tab', '1–9']) assert.ok(help.includes(key), `the help page lost ${key}`);
-    // ? -> help -> Esc -> home -> u -> usage -> Esc -> home
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · help/);
+    // The whole page, not just the window it opens on: every key the table
+    // binds is named, and every click the pages record.
+    const whole = renderDashboardPage(dashboardModel(null, {}), { page: 'help', width: 100, height: 80 });
+    const help = plain(whole.lines.join('\n'));
+    for (const name of Object.keys(DASHBOARD_KEYS)) {
+      assert.ok(help.includes(DASHBOARD_KEYS[name].keys), `the help page lost ${name} (${DASHBOARD_KEYS[name].keys})`);
+    }
+    for (const text of ['tile', 'bar', 'wheel', 'y confirms it', 'r was refresh', 'OSC 52']) {
+      assert.ok(help.includes(text), `the help page lost ${text}`);
+    }
+    // And at 55 columns every row of it fits the 54 the frame paints.
+    const narrowHelp = renderDashboardPage(dashboardModel(null, {}), { page: 'help', width: 54, height: 80 });
+    for (const line of narrowHelp.lines) assert.ok(plain(line).length <= 54, `help clipped at 55 columns: ${plain(line)}`);
+    assert.ok(plain(narrowHelp.lines.join('\n')).includes('ctrl+s'), 'the narrow help page lost ctrl+s');
+    // ? -> help -> Esc -> home -> b -> budget -> Esc -> home
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
-    session.press('u');
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    session.press('b');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Budget · /);
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
     // the digit a nav button carries opens that run
@@ -1756,62 +1982,55 @@ test('a narrow terminal wraps the agent detail pane to its full width, not the s
 // below is a frame the terminal would paint verbatim.
 // ---------------------------------------------------------------------------
 
-test('the Usage page draws every meter window, the rungs, the tabs and the read-only note', () => {
+test('the Budget page draws every pool meter, its money and what still fits', () => {
   const usage = usageFixture();
-  const model = dashboardModel(null, { usage });
-  const frame = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 });
+  const model = dashboardModel(null, { usage, rollups: rollupFixture(), prices: { subscriptions: {} } });
+  const frame = renderDashboardPage(model, { page: 'budget', width: 100, height: 40 });
   const text = plain(frame.lines.join('\n'));
 
-  assert.match(frameHeader(text), /^ Pools · sampled 3m ago$/);
-  // Every window of the enabled pool: its bar, its used%, its reset time and
-  // the pace word the elapsed mark implies, then the credit meter.
-  assert.match(text, /relay · max/);
-  assert.match(text, /5h {2}/);
-  assert.match(text, /32\.0%/);
-  assert.match(text, /resets 1h00m · slow \+48pp/);
-  assert.match(text, /7d {2}/);
-  assert.match(text, /55\.0%/);
-  assert.match(text, /hot −28pp/);
-  assert.match(text, /63\.5 \/ 70 credits/);
-  // A disabled pool draws no windows.
-  assert.doesNotMatch(text, /codex/);
-  // The rungs with the local record, under the two tabs, the active one marked.
-  assert.match(text, /Rungs · model · reasoning · record, per lane and pool/);
-  assert.match(text, /\[● by lane\] \[by provider\]/);
-  assert.match(text, /gpt-5\.6-luna · high/);
-  assert.match(text, /3 runs · 67% ok · p50 12m/);
-  assert.match(text, /high · integration · architecture · adversarial-acceptance/);
-  // The note is whole, wrapped, right above the nav.
-  assert.equal(plain(frame.lines.at(-2)), 'read-only here · [edit] opens bullswarm setup');
-  assert.match(plain(frame.lines.at(-1)), /\[ ● usage \]/);
-
-  const byProvider = renderDashboardPage(model, { page: 'usage', width: 100, height: 30, rungsBy: 'provider' });
-  const providerText = plain(byProvider.lines.join('\n'));
-  assert.match(providerText, /\[by lane\] \[● by provider\]/);
-  assert.match(providerText, /relay · weekly window · 32% used of 27% elapsed/);
+  assert.match(frameHeader(text), /^ Budget · \d+ days to /);
+  assert.match(text, /relay/);
+  assert.match(text, /Licence meter/);
+  assert.match(text, /27% of the window elapsed/);
+  assert.match(text, /Credits: 63\.5 \/ 70 credits/);
+  // Money is the recorded estimate, labelled, and the undeclared plan price is
+  // a blank with the reason — never a number.
+  assert.match(text, /≈ \$0\.42 API-equivalent estimate/);
+  assert.match(text, /Subscription rate: — \(no declared subscription price\)/);
+  assert.match(text, /bullswarm strategy set-subscription/);
+  // The notes sit above the nav, and the nav is still whole.
+  assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
 });
 
-test('meters are background-coloured cells, and the compact rows use them too', () => {
+test('the Fleet page draws the rungs under its two tabs, with the read-only note', () => {
   const usage = usageFixture();
   const model = dashboardModel(null, { usage });
-  const usagePage = renderDashboardPage(model, { page: 'usage', width: 100, height: 30 }).lines.join('\n');
-  // #b6bd73 below 50% used, #e9c880 from 50%, #bf6c69 from 80%, track #3a3a3a.
-  assert.ok(usagePage.includes('\x1b[48;2;182;189;115m'), 'the green fill is a background-coloured cell');
-  assert.ok(usagePage.includes('\x1b[48;2;233;200;128m'), 'the amber fill is a background-coloured cell');
-  assert.ok(usagePage.includes('\x1b[48;2;58;58;58m'), 'the track is a background-coloured cell');
-  assert.match(usagePage, /\x1b\[38;2;255;255;255m▏/, 'the elapsed mark is a white ▏');
+  const byLane = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30 });
+  const text = plain(byLane.lines.join('\n'));
+  assert.match(frameHeader(text), /^ Fleet · by lane$/);
+  assert.match(text, /\[● by lane\] \[by provider\]/);
+  assert.match(text, /read-only here · edit opens bullswarm setup/);
+  assert.match(text, /gpt-5\.6-luna · high/);
+  assert.match(text, /3 runs · 67% ok · p50 12m/);
 
-  const rows = [{ runId: 'wf-alpha', shortId: 'aaa111', ongoing: true, state: {} }];
-  const home = renderDashboardPage(dashboardModel(null, { runs: rows, usage }), {
-    page: 'home', width: 100, height: 30, rows, allRows: rows,
-  }).lines.join('\n');
-  assert.match(home, /Pools ▸/);
-  assert.ok(home.indexOf('\x1b[48;2;182;189;115m') > home.indexOf('relay'), 'the pool row carries a filled bar');
-  assert.ok(home.includes('\x1b[48;2;58;58;58m'), 'and the same track behind it');
-  assert.doesNotMatch(home, /█/, 'no `█░` bar survives anywhere');
+  const byProvider = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30, fleetBy: 'provider' });
+  const providerText = plain(byProvider.lines.join('\n'));
+  assert.match(frameHeader(providerText), /^ Fleet · by provider$/);
+  assert.match(providerText, /\[by lane\] \[● by provider\]/);
+  assert.match(providerText, /relay/);
 });
 
-test('the Home integration line offers [install] until every agent is installed, then reads [installed ✓]', () => {
+test('meters are background-coloured cells on Budget, and no plain bar survives', () => {
+  const usage = usageFixture();
+  const model = dashboardModel(null, { usage, rollups: rollupFixture() });
+  const budget = renderDashboardPage(model, { page: 'budget', width: 100, height: 40 }).lines.join('\n');
+  // #b6bd73 below 50% used, #e9c880 from 50%, #bf6c69 from 80%, track #3a3a3a.
+  assert.ok(budget.includes('\x1b[48;2;182;189;115m'), 'the green fill is a background-coloured cell');
+  assert.ok(budget.includes('\x1b[48;2;58;58;58m'), 'the track is a background-coloured cell');
+  assert.match(budget, /\x1b\[38;2;255;255;255m▏/, 'the elapsed mark is a white ▏');
+});
+
+test('the Runs integration line offers [install] until every agent is installed, then reads [installed ✓]', () => {
   const offered = renderDashboardPage(dashboardModel(null, {
     runs: [],
     integration: {
@@ -1821,7 +2040,7 @@ test('the Home integration line offers [install] until every agent is installed,
         { agent: 'claude', skill: { status: 'missing' }, awareness: false, mod: { status: 'missing' }, hooksFlag: false },
       ],
     },
-  }), { page: 'home', width: 100, height: 30 });
+  }), { page: 'runs', width: 100, height: 30 });
   const text = offered.lines.join('\n');
   assert.match(text, /agent integration\s+\[install\]/);
   assert.match(text, /codex\s+skill ✓ · awareness ✓/);
@@ -1835,7 +2054,7 @@ test('the Home integration line offers [install] until every agent is installed,
       ok: true,
       agents: [{ agent: 'claude', skill: { status: 'installed' }, awareness: true, mod: { status: 'installed' }, hooksFlag: true }],
     },
-  }), { page: 'home', width: 100, height: 30 });
+  }), { page: 'runs', width: 100, height: 30 });
   const doneText = done.lines.join('\n');
   assert.match(doneText, /\[installed ✓\]/);
   assert.match(doneText, /claude\s+skill ✓ · awareness ✓ · mod ✓ · hooks ✓/);
@@ -1856,14 +2075,22 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
 
     clickOn(session, '[ 2.bbb222 ]');
     assert.match(frameHeader(lastFrame(session.output)), / bbb222 running/);
-    clickOn(session, '[ usage ]');
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
-    assert.match(plain(lastFrame(session.output)), /read-only here · \[edit\] opens bullswarm setup/);
+    // The tab row is clickable, and every tab opens the page its key opens.
+    clickOn(session, 'Budget');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Budget · /);
+    clickOn(session, 'Fleet');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
+    assert.match(plain(lastFrame(session.output)), /read-only here · edit opens bullswarm setup/);
+    // Fleet's own sub-tab click is the same move Tab makes.
+    clickOn(session, '[by provider]');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · by provider$/);
+    session.press('\t');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · by lane$/);
 
-    // Esc goes Home; its run rows are clickable, and so are the step rows.
+    // Esc goes Home; its run rows are clickable, and so are its step glyphs.
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
-    clickOn(session, 'aaa111 · unified-shell');
+    clickOn(session, '1.aaa111');
     assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
     clickOn(session, 'build-alpha');
     const step = lastFrame(session.output);
@@ -1876,11 +2103,52 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
   } finally { cleanup(); }
 });
 
-test('the Home [install] button installs the agent integration in-process', async () => {
+test('a Trends column opens History at its first bucket day', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    session.press('s');
+    clickOn(session, 'Trends');
+    const today = new Date();
+    const label = `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][today.getDay()]} ${today.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][today.getMonth()]}`;
+    assert.ok(plain(lastFrame(session.output)).includes(label), `trend chart did not paint today's bucket: ${label}`);
+    clickOn(session, label);
+    assert.match(frameHeader(lastFrame(session.output)), /^ History · /);
+    assert.ok(plain(lastFrame(session.output)).includes(label), 'History did not land on the clicked bucket day');
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('a finished run opened from Budget remains selected across two refreshes', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    // A legacy connector JSON is enough to give Budget one real pool without
+    // loading any packaged providers in this isolated test home.
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'connectors', 'relay.json'), JSON.stringify({ name: 'relay', lanes: ['build'] }));
+    const finishedAt = new Date().toISOString();
+    writeV2Run(home, {
+      runId: 'wf-zzz', shortId: 'zzz999', goal: 'Rebuild the dashboard shell', status: 'completed',
+      startedAt: new Date(Date.now() - 60_000).toISOString(), finishedAt,
+    });
+    const session = shellSession(home, { columns: 120, rows: 36, refreshMs: 10 });
+    session.press('b');
+    await settle();
+    assert.ok(plain(lastFrame(session.output)).includes('zzz999'), 'Budget did not paint the finished workflow');
+    clickOn(session, 'zzz999');
+    assert.match(frameHeader(lastFrame(session.output)), /zzz999 completed/);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.match(frameHeader(lastFrame(session.output)), /zzz999 completed/, 'refresh lost the finished selection');
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('the Runs [install] button installs the agent integration in-process', async () => {
   const { home, cleanup } = shellFixture();
   const agentHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-integrate-'));
   try {
     const session = shellSession(home, { columns: 100, rows: 30, homeDir: agentHome });
+    session.press('r');
     assert.match(plain(lastFrame(session.output)), /\[install\]/);
     session.press('i');
     const frame = plain(lastFrame(session.output));
@@ -1896,7 +2164,7 @@ test('the Home [install] button installs the agent integration in-process', asyn
   } finally { cleanup(); rmSync(agentHome, { recursive: true, force: true }); }
 });
 
-test('the [edit] button pauses the dashboard for setup and resumes on the Usage page', async () => {
+test('the [edit] button pauses the dashboard for setup and resumes on the Fleet page', async () => {
   const { home, cleanup } = shellFixture();
   try {
     const handoffs = [];
@@ -1904,8 +2172,8 @@ test('the [edit] button pauses the dashboard for setup and resumes on the Usage 
       handoffs.push({ bullswarmDir, isTTY: input.isTTY, painted: output.text.length });
     };
     const session = shellSession(home, { columns: 100, rows: 26, token: 'wf-alpha', openSetupTui });
-    session.press('u');
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
+    session.press('f');
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
     const before = session.output.text.length;
     session.press('e');
     await settle();
@@ -1920,9 +2188,426 @@ test('the [edit] button pauses the dashboard for setup and resumes on the Usage 
     // And taken back: alternate screen, hidden cursor, mouse reporting on.
     assert.ok(handover.includes('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'), 'the dashboard did not take the terminal back');
     assert.deepEqual(session.input.rawModes, [true, false, true]);
-    // It returns to the Usage page with the note and a fresh repaint.
-    assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
-    assert.match(plain(lastFrame(session.output)), /read-only here · \[edit\] opens bullswarm setup/);
+    // It returns to the Fleet page with the note and a fresh repaint.
+    assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
+    assert.match(plain(lastFrame(session.output)), /read-only here · edit opens bullswarm setup/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// The three things the 0.33.0 acceptance asks of the shell: every key reaches
+// its page or its action, every clickable atom runs the same action its key
+// runs, and no money or licence figure is ever painted as a bare number.
+// ---------------------------------------------------------------------------
+
+test('every key in the table reaches its page or its action', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    const header = () => frameHeader(lastFrame(session.output));
+    const screen = () => plain(lastFrame(session.output));
+
+    // r b s y f h ? — one key per page.
+    for (const [key, expected] of [
+      ['r', /^ bullswarm · runs/],
+      ['b', /^ Budget · /],
+      ['s', /^ Stats · overview/],
+      ['y', /^ History · /],
+      ['f', /^ Fleet · by lane/],
+      ['h', /^ bullswarm · help/],
+    ]) {
+      session.press(key);
+      assert.match(header(), expected, `${key} did not open its page`);
+      session.press(ESC_KEY);
+      assert.match(header(), /^ bullswarm · home/, `Esc did not come back from ${key}`);
+    }
+    session.press('?');
+    assert.match(header(), /^ bullswarm · help/);
+
+    // 1–9 open the run that carries that digit in the nav.
+    session.press('1');
+    assert.match(header(), / aaa111 running/);
+    session.press('2');
+    assert.match(header(), / bbb222 running/);
+    session.press('9');
+    assert.match(screen(), /no run 9 in flight/);
+
+    // Esc and the left arrow both walk out, step -> run -> home.
+    session.press('\r');
+    session.press('\r');
+    assert.match(header(), /build-beta · run bbb222/);
+    session.press('\x1b[D');
+    assert.match(header(), / bbb222 running/);
+    session.press(ESC_KEY);
+    session.press(ESC_KEY);
+    assert.match(header(), /^ bullswarm · home/);
+
+    // Tab walks the sub-tabs of the pages that have them, and says so on the
+    // pages that do not.
+    session.press('s');
+    assert.match(header(), /^ Stats · overview/);
+    session.press('\t');
+    assert.match(header(), /^ Stats · trends/);
+    session.press('\t');
+    assert.match(header(), /^ Stats · pools/);
+    session.press('f');
+    session.press('\t');
+    assert.match(header(), /^ Fleet · by provider/);
+    session.press(ESC_KEY);
+    session.press('\t');
+    assert.match(screen(), /Tab walks the sub-tabs on Stats and Fleet/);
+
+    // Shift+Tab still cycles workflows.
+    session.press('1');
+    assert.match(header(), / aaa111 running/);
+    session.press(`${ESC_KEY}[Z`);
+    assert.match(header(), / bbb222 running/);
+    session.press(ESC_KEY);
+
+    // p cycles the period, and every page drawn over one follows it.
+    session.press('p');
+    assert.match(screen(), /Period · Last 30 days/);
+    session.press('p');
+    assert.match(screen(), /Period · All time/);
+    session.press('p');
+    assert.match(screen(), /Period · Last 7 days/);
+
+    // The movement keys walk the body window, and Home/End jump it.
+    session.press('h'); // a page long enough to scroll
+    const top = header();
+    session.press('\x1b[B');
+    session.press('j');
+    const moved = header();
+    assert.notEqual(moved, top, 'down/j did not move the window');
+    session.press('\x1b[A');
+    session.press('k');
+    assert.equal(header(), top, 'up/k did not come back');
+    session.press('\x1b[6~'); // PgDn
+    assert.notEqual(header(), top, 'PgDn did not move the window');
+    session.press('\x1b[H'); // Home
+    assert.equal(header(), top, 'Home did not go back to the top');
+    session.press('\x1b[F'); // End
+    assert.match(header(), / · \d+–\d+\/\d+$/);
+    session.press('\x1b[5~'); // PgUp
+    session.press('\x1b[H');
+    assert.equal(header(), top);
+
+    // ctrl+s copies the painted screen, and says how it carried it.
+    session.press('\x13');
+    assert.match(screen(), /screen copied \(OSC 52\) · \d+ lines/);
+    assert.match(session.output.text, /\x1b\]52;c;[A-Za-z0-9+/=]+\x07/);
+
+    // q quits, and never asks a kernel to stop.
+    assert.equal(await session.quit(), 0);
+    assert.equal(existsSync(join(home, 'workflows', 'wf-alpha', 'cancellation.json')), false);
+  } finally { cleanup(); }
+});
+
+test('a pending stop still takes y, and Help says so', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { columns: 120, rows: 30, token: 'wf-alpha' });
+    session.press('c');
+    assert.match(plain(lastFrame(session.output)), /Stop this workflow\? y confirm/);
+    session.press('y');
+    assert.match(plain(lastFrame(session.output)), /Stop requested for aaa111/);
+    assert.equal(existsSync(join(home, 'workflows', 'wf-alpha', 'cancellation.json')), true);
+    // And with no question on the screen, y is History again.
+    session.press('y');
+    assert.match(frameHeader(lastFrame(session.output)), /^ History · /);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('ctrl+s falls back to the local clipboard, and the message names the tool', () => {
+  const calls = [];
+  const run = (tool, args, options) => { calls.push({ tool, args, input: options.input }); return { status: 0 }; };
+  assert.deepEqual(
+    writeClipboard('two\nlines', { platform: 'darwin', env: {}, run }),
+    { ok: true, tool: 'pbcopy' },
+  );
+  assert.deepEqual(calls, [{ tool: 'pbcopy', args: [], input: 'two\nlines' }]);
+
+  const wayland = [];
+  assert.deepEqual(
+    writeClipboard('x', {
+      platform: 'linux',
+      env: { WAYLAND_DISPLAY: 'wayland-0' },
+      run: (tool, args, options) => { wayland.push(tool); return { status: 0 }; },
+    }),
+    { ok: true, tool: 'wl-copy' },
+  );
+  assert.deepEqual(wayland, ['wl-copy']);
+
+  // A machine with neither says so rather than claiming a copy that never was.
+  const none = writeClipboard('x', { platform: 'linux', env: {}, run: () => ({ status: 1 }) });
+  assert.equal(none.ok, false);
+  assert.match(none.reason, /no pbcopy, wl-copy or xclip/);
+
+  // A tool that fails is reported as a failure, not as a copy.
+  const failing = writeClipboard('x', { platform: 'darwin', env: {}, run: () => ({ error: new Error('nope') }) });
+  assert.equal(failing.ok, false);
+  assert.match(failing.reason, /pbcopy failed/);
+});
+
+test('every clickable atom runs the same action its key runs', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    // Each pair is [what to click, the key that does the same thing].
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    const header = () => frameHeader(lastFrame(session.output));
+    for (const [needle, key, expected] of [
+      ['Runs', 'r', /^ bullswarm · runs/],
+      ['Budget', 'b', /^ Budget · /],
+      ['Stats', 's', /^ Stats · overview/],
+      ['History', 'y', /^ History · /],
+      ['Fleet', 'f', /^ Fleet · by lane/],
+      ['Home', null, /^ bullswarm · home/],
+    ]) {
+      session.press(ESC_KEY);
+      clickOn(session, needle);
+      const clicked = header();
+      assert.match(clicked, expected, `clicking ${needle} did not open its page`);
+      if (!key) continue;
+      session.press(ESC_KEY);
+      session.press(key);
+      assert.equal(header(), clicked, `clicking ${needle} and pressing ${key} disagree`);
+    }
+
+    // A run button and its digit are the same action.
+    session.press(ESC_KEY);
+    clickOn(session, '[ 2.bbb222 ]');
+    const byClick = header();
+    session.press(ESC_KEY);
+    session.press('2');
+    assert.equal(header(), byClick);
+
+    // A Home tile opens the chart of the metric it shows: the spend tile
+    // carries today's recorded estimate, and clicking it charts spend.
+    session.press(ESC_KEY);
+    clickOn(session, '≈ $0.42');
+    assert.match(header(), /^ Stats · trends/);
+
+    // The period toggle is the same move p makes.
+    session.press(ESC_KEY);
+    clickOn(session, 'Last 30 days');
+    const afterClick = plain(lastFrame(session.output));
+    assert.match(afterClick, /Last 30 days/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('with no declared price and no measured licence rate, no bare number is painted', () => {
+  // The state of every pool on a real machine today: a live meter, no
+  // `spend.pacing.ratePerMinute`, no declared subscription price, and
+  // `normalizedQuota.estimatedPercent` null on every attempt.
+  const usage = usageFixture();
+  for (const pool of usage.pools) delete pool.spend;
+  const rollups = rollupFixture().map((record) => ({
+    ...record,
+    pools: Object.fromEntries(Object.entries(record.pools)
+      .map(([name, entry]) => [name, { ...entry, costUsd: null }])),
+  }));
+  const model = dashboardModel(null, { usage, rollups, days: dayFixture(), prices: { subscriptions: {} } });
+
+  for (const page of ['home', 'budget', 'stats', 'history']) {
+    for (const width of [120, 54]) {
+      const text = plain(renderDashboardPage(model, { page, width, height: 40 }).lines.join('\n'));
+      // Every money figure on screen carries its ≈ and its basis; a figure
+      // with no source is a blank with the reason beside it.
+      for (const match of text.matchAll(/\$\s?[\d.]+/g)) {
+        const before = text.slice(Math.max(0, match.index - 2), match.index);
+        assert.ok(before.includes('≈'), `${page} at ${width} painted a bare ${match[0]}: ${before}${match[0]}`);
+      }
+      // And no licence percent is claimed for a run or a pool without a rate.
+      assert.doesNotMatch(text, /≈ \d+\.\d+% of its/, `${page} at ${width} claimed a licence share with no measured rate`);
+    }
+  }
+
+  // Home says why each blank tile is blank rather than printing a zero. The
+  // phone layout gives each tile its own row, so the whole reason is there.
+  const home = plain(renderDashboardPage(model, { page: 'home', width: 54, height: 40 }).lines.join('\n'));
+  assert.match(home, /no finished run recorded an estimate/);
+  // Budget says what is missing and how to declare it.
+  const budget = plain(renderDashboardPage(model, { page: 'budget', width: 120, height: 40 }).lines.join('\n'));
+  assert.match(budget, /Subscription rate: — \(no declared subscription price\)/);
+  assert.match(budget, /no measured %\/minute rate/);
+});
+
+test('a run with no recorded estimate and no measured rate paints blanks, not zeroes', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const usage = usageFixture();
+    for (const pool of usage.pools) delete pool.spend;
+    const model = dashboardModel(row, { runs: rows.filter((entry) => entry.ongoing), usage });
+    const text = plain(renderDashboardPage(model, {
+      page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
+    }).lines.join('\n'));
+    assert.match(text, /no attempt recorded an API-equivalent estimate/);
+    assert.match(text, /— no measured %\/minute rate for this pool/);
+    assert.doesNotMatch(text, /\$0\.00/);
+  } finally { cleanup(); }
+});
+
+test('an explicitly recorded "estimatedUsd: null" stays blank and is never counted as priced', () => {
+  // The shape the real corpus actually writes: the attempt has a cost object
+  // and the figure inside it is null.  Number(null) is 0 and Number.isFinite(0)
+  // is true, so a bare Number() here paints "≈ $0.00 · 2 of 2 attempts priced"
+  // for a run that priced nothing.  Observed live on 2026-09-17 against run
+  // ahvsda, whose ten attempts all record estimatedUsd: null.
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    for (const attempt of state.attempts) {
+      attempt.usage = { cost: { estimatedUsd: null, breakdown: null, basis: 'unknown: no model rate metadata' } };
+      attempt.wallSec = null;
+    }
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const usage = usageFixture();
+    for (const pool of usage.pools) pool.spend = { pacing: { window: 'weekly', ratePerMinute: null, source: null, samples: 0 } };
+    const model = dashboardModel(row, { runs: rows.filter((entry) => entry.ongoing), usage });
+    for (const page of ['run', 'step']) {
+      const text = plain(renderDashboardPage(model, {
+        page, width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
+      }).lines.join('\n'));
+      assert.doesNotMatch(text, /\$0\.00/, `${page} manufactured a zero from a null estimate`);
+      assert.doesNotMatch(text, /attempts priced/, `${page} counted a null estimate as priced`);
+      assert.match(text, /no attempt recorded an API-equivalent estimate|recorded no estimate/);
+      // A null ratePerMinute is a blank share, never 0.00%.
+      assert.doesNotMatch(text, /≈ 0\.00% of its/, `${page} claimed a zero licence share`);
+    }
+  } finally { cleanup(); }
+});
+
+test('Home paints in under 50 ms with 293 run directories present', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-perf-'));
+  try {
+    // The corpus this machine actually has: 293 run directories, each with a
+    // state.json far too big to parse on a 1 s timer, and the index that is
+    // read instead.
+    mkdirSync(join(home, 'history'), { recursive: true });
+    const filler = 'x'.repeat(20_000);
+    const records = [];
+    for (let index = 0; index < 293; index += 1) {
+      const runId = `wf-perf-${String(index).padStart(4, '0')}`;
+      const shortId = `p${String(index).padStart(5, '0')}`;
+      const dir = join(home, 'workflows', runId);
+      mkdirSync(dir, { recursive: true });
+      const finishedAt = new Date(Date.now() - index * 3_600_000).toISOString();
+      writeFileSync(join(dir, 'state.json'), JSON.stringify({
+        schemaVersion: 'bullswarm.workflow.state.v2', runId, shortId,
+        lifecycle: { status: 'completed', startedAt: finishedAt, finishedAt },
+        intent: { goal: `perf run ${index}`, cwd: '/tmp' },
+        actions: [], attempts: [], planner: { status: 'completed', turns: 1, attempts: [] },
+        presentation: { stages: [] }, ledger: { requirements: {} }, notes: filler,
+      }));
+      // A finished run writes rollup.json, which is how the refresh path knows
+      // it never has to open that state.json again.
+      writeFileSync(join(dir, 'rollup.json'), '{}');
+      records.push(JSON.stringify({
+        schemaVersion: 'bullswarm.workflow.rollup.v1', runId, shortId,
+        project: 'bullswarm', goal: `perf run ${index}`, startedAt: finishedAt, finishedAt,
+        status: 'completed', verified: index % 2 === 0, requirements: { passed: 1, total: 1 },
+        minutes: { wall: 10 + (index % 30), agent: 12 },
+        pools: { relay: { attempts: 1, minutes: 10, costUsd: 0.01, tokens: 100 } },
+        models: { luna: { attempts: 1, minutes: 10 } }, legacy: false,
+      }));
+    }
+    writeFileSync(join(home, 'history', 'runs.jsonl'), `${records.join('\n')}\n`);
+
+    const runs = activeDashboardRows(home);
+    assert.deepEqual(runs, [], 'a finished run is never parsed on the refresh path');
+    const rollups = readRollups(home);
+    assert.equal(rollups.length, 293, 'the index carries every finished run');
+
+    // The measurement: one whole Home paint, model and render, over the index.
+    const paint = () => renderDashboardPage(
+      dashboardModel(null, { runs, rollups, days: [] }),
+      { page: 'home', width: 120, height: 40 },
+    );
+    const frame = paint();
+    assert.ok(frame.lines.length > 0, 'Home painted nothing');
+    // The best of five: this suite runs its files in parallel, so a single
+    // wall-clock sample measures the machine's load as much as the paint.
+    let best = Infinity;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const start = process.hrtime.bigint();
+      paint();
+      best = Math.min(best, Number(process.hrtime.bigint() - start) / 1e6);
+    }
+    assert.ok(best < 50, `Home took ${best.toFixed(1)}ms with 293 run directories`);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('an ascii terminal gets ascii: no substituted glyph survives on a page the shell draws', () => {
+  const { home, cleanup } = shellFixture();
+  const before = process.env.BULLSWARM_ASCII;
+  try {
+    process.env.BULLSWARM_ASCII = '1';
+    const rows = dashboardRows(home, { all: true });
+    const model = dashboardModel(rows.find((entry) => entry.runId === 'wf-alpha'), {
+      runs: rows.filter((entry) => entry.ongoing),
+      usage: usageFixture(),
+      rollups: rollupFixture(),
+      days: dayFixture(),
+    });
+    // Fleet is left out: `[● by lane]` is fleet-view's own literal, reported
+    // to the integrator rather than patched from another territory.
+    for (const page of ['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'help']) {
+      for (const width of [120, 54]) {
+        const text = plain(renderDashboardPage(model, {
+          page, width, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
+        }).lines.join('\n'));
+        for (const glyph of SUBSTITUTED_GLYPHS) {
+          assert.ok(!text.includes(glyph), `${page} at ${width} painted ${glyph} in ascii mode`);
+        }
+        for (const line of text.split('\n')) {
+          assert.ok([...line].length <= width, `${page} at ${width} overflowed in ascii mode`);
+        }
+      }
+    }
+  } finally {
+    if (before === undefined) delete process.env.BULLSWARM_ASCII;
+    else process.env.BULLSWARM_ASCII = before;
+    cleanup();
+  }
+});
+
+test('History loads seven more days each time the reader nears the bottom', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-history-'));
+  try {
+    // Thirty days of finished runs, one a day: more than the seven History
+    // opens with, so scrolling has something to load.
+    mkdirSync(join(home, 'history'), { recursive: true });
+    mkdirSync(join(home, 'workflows'), { recursive: true });
+    const records = [];
+    for (let back = 0; back < 30; back += 1) {
+      const at = new Date(Date.now() - back * 86_400_000).toISOString();
+      records.push(JSON.stringify({
+        schemaVersion: 'bullswarm.workflow.rollup.v1',
+        runId: `wf-day-${back}`, shortId: `d${String(back).padStart(5, '0')}`,
+        project: 'bullswarm', goal: `run ${back}`, startedAt: at, finishedAt: at,
+        status: 'completed', verified: true, requirements: { passed: 1, total: 1 },
+        minutes: { wall: 10, agent: 12 },
+        pools: { relay: { attempts: 1, minutes: 10, costUsd: 0.01, tokens: 10 } },
+        models: { luna: { attempts: 1, minutes: 10 } }, legacy: false,
+      }));
+    }
+    writeFileSync(join(home, 'history', 'runs.jsonl'), `${records.join('\n')}\n`);
+
+    const session = shellSession(home, { columns: 100, rows: 20 });
+    session.press('y');
+    assert.match(frameHeader(lastFrame(session.output)), /^ History · 7 days/);
+    // End is the bottom of what is loaded, so the next scroll asks for more.
+    session.press('\x1b[F');
+    session.press('\x1b[6~');
+    assert.match(frameHeader(lastFrame(session.output)), /^ History · (14|21) days/);
+    assert.equal(await session.quit(), 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });

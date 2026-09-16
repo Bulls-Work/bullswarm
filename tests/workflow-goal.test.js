@@ -6,7 +6,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { extractGoalRequirements, extractScoutUnitIds, scoutPrompt } from '../src/workflow/goal.js';
+import {
+  extractGoalRequirements, extractScoutUnitIds, goalProjectPath, readGoalProject,
+  recordGoalProject, scoutPrompt,
+} from '../src/workflow/goal.js';
 import { extractV2GoalConstraints, shouldAutoWatchGoal } from '../src/workflow/cli.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
@@ -522,4 +525,57 @@ test('a goal already progressing in the same cwd is refused as a duplicate until
     }
     assert.equal(readdirSync(join(f.home, 'workflows')).length, 1, 'a duplicate refusal must not create a run');
   } finally { f.cleanup(); }
+});
+
+// --- project identity at goal time -------------------------------------
+//
+// The rollup groups runs by project, and a cwd is not a project: three git
+// worktrees of one repository are three directories and one project. The
+// identity is stamped when the run is launched, because by the time it
+// finishes the branch worktree may be gone.
+
+test('a launch records the project beside its goal document, and reads it back', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-goal-project-'));
+  try {
+    const checkout = join(root, 'a-branch-worktree');
+    mkdirSync(checkout);
+    const git = (args) => spawnSync('git', args, {
+      cwd: checkout, encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+    });
+    git(['init', '--quiet']);
+    git(['remote', 'add', 'origin', 'https://github.com/Bulls-Work/bullswarm.git']);
+
+    const runDir = join(root, 'wf-goal-project');
+    mkdirSync(runDir);
+    const recorded = recordGoalProject(runDir, checkout, { now: () => '2026-09-16T12:00:00.000Z' });
+    assert.equal(recorded.schemaVersion, 'bullswarm.workflow.project.v1');
+    assert.equal(recorded.name, 'bullswarm', 'the origin remote names the project, not the worktree directory');
+    assert.equal(recorded.remote, 'https://github.com/Bulls-Work/bullswarm.git');
+    assert.equal(recorded.cwd, checkout);
+    assert.equal(recorded.recordedAt, '2026-09-16T12:00:00.000Z');
+    assert.equal(goalProjectPath(runDir), join(runDir, 'project.json'));
+    assert.deepEqual(readGoalProject(runDir), recorded);
+
+    // The checkout can go; the run still knows which project it belonged to.
+    rmSync(checkout, { recursive: true, force: true });
+    assert.equal(readGoalProject(runDir).name, 'bullswarm');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recording the project never throws, and a run with no record reads back null', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-goal-project-none-'));
+  try {
+    assert.equal(readGoalProject(root), null, 'no record yet');
+    // An unwritable destination must not cost a launch its run.
+    assert.doesNotThrow(() => recordGoalProject(join(root, 'no', 'such', '\0bad'), root));
+    assert.equal(recordGoalProject(join(root, 'no', 'such', '\0bad'), root), null);
+
+    const runDir = join(root, 'plain-run');
+    mkdirSync(runDir);
+    assert.equal(recordGoalProject(runDir, null).name, null, 'no cwd is a null name, not a throw');
+
+    writeFileSync(join(runDir, 'project.json'), JSON.stringify({ schemaVersion: 'something.else.v9', name: 'nope' }));
+    assert.equal(readGoalProject(runDir), null, 'a foreign schema is not a project record');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

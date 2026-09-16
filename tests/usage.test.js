@@ -52,6 +52,19 @@ test('usage prefers reported input/cache/output counters', () => {
   assert.equal(usage.tokens.output, 20);
 });
 
+test('usage sums matching provider counters across a stream', () => {
+  const reported = parseReportedUsage([
+    '{"input_tokens":100,"output_tokens":4}',
+    '{"input_tokens":50,"output_tokens":6}',
+  ].join('\n'));
+  assert.deepEqual(reported, {
+    standardReadTokens: 150,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    outputTokens: 10,
+  });
+});
+
 test('unknown pricing and subscription values stay explicitly unknown', () => {
   const usage = estimateInvocationUsage({ taskText: 'hello', outputText: 'world', connector: {}, model: 'mystery' });
   assert.equal(usage.cost.estimatedUsd, null);

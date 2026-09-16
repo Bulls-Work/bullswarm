@@ -20,7 +20,8 @@ import {
   createV2PlannerContext, createV2PlannerRequest, readPlannerCandidate, plannerCorrectionRequest,
   validateV2PlannerResponse, V2PlannerValidationError,
 } from './v2-planner.js';
-import { extractScoutUnitIds } from './goal.js';
+import { extractScoutUnitIds, recordGoalProject } from './goal.js';
+import { writeRunRollup } from './rollup.js';
 import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
@@ -857,6 +858,10 @@ async function runV2Kernel({
   } else {
     validateV2GoalDocument(goalDocument);
     writeJsonAtomic(goalPath(runDir), goalDocument);
+    // Goal time is the only moment the project is certainly knowable: the
+    // checkout is there, the remote is there. Stamp it now so the rollup and
+    // every later reindex agree on which project this run belongs to.
+    recordGoalProject(runDir, goalDocument.intent.cwd, { now });
     state = createV2DurableState(goalDocument, { runId: id, shortId: nextShortId(bullswarmDir) });
   }
 
@@ -1496,6 +1501,12 @@ async function runV2Kernel({
       status: result.status, verified: result.verified, resultFile: resultPath, reason: result.reason,
       ...(result.handback ? { unfinished: result.handback.unfinished.length, unreadSteering: result.handback.unreadSteering.length } : {}),
     });
+    // The dashboard's per-run rollup and its history index. The run is
+    // already delivered at this point, so a rollup that cannot be written is
+    // reported and left for `bullswarm workflow reindex` — it never costs a
+    // finished run its result.
+    try { writeRunRollup(runDir, state, result, { now: Date.parse(finishedAt) || Date.now() }); }
+    catch (error) { console.error(`✗ rollup not recorded for ${id}: ${error.message}; bullswarm workflow reindex backfills it`); }
     return { runId: id, shortId: state.shortId, runDir, state: clone(state), result };
   };
 

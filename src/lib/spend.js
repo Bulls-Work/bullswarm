@@ -76,6 +76,33 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/**
+ * Canonicalise a provider reset timestamp for window identity comparisons.
+ *
+ * Some providers (notably Claude) return a freshly generated timestamp with
+ * milliseconds on every poll even while the quota window is unchanged. A
+ * reset is a window boundary, not a sub-second measurement, so S4 compares
+ * these values at whole-second resolution. Values that cannot be parsed stay
+ * null so callers can treat the reset as unknown rather than displaying a
+ * fabricated timestamp.
+ */
+export function normalizeResetsAt(value) {
+  if (value == null || value === '') return null;
+  const parsed = value instanceof Date
+    ? value.getTime()
+    : typeof value === 'number'
+      ? value
+      : Date.parse(String(value));
+  if (!Number.isFinite(parsed)) return null;
+  // Numeric reset values in provider payloads are normally epoch
+  // milliseconds. Accept epoch seconds as a small convenience without
+  // changing the ISO strings emitted by the readers.
+  const milliseconds = typeof value === 'number' && Math.abs(parsed) < 1e12
+    ? parsed * 1000
+    : parsed;
+  return new Date(Math.floor(milliseconds / 1000) * 1000).toISOString();
+}
+
 /** Pool name from a name, a pool view, or a connector. */
 export function poolNameOf(pool) {
   if (typeof pool === 'string') return pool;
@@ -293,7 +320,15 @@ function rateForWindow(meta, { history, snapshot, workerMinutesBetween, nowMs })
   for (let i = 1; i < series.length; i += 1) {
     const from = series[i - 1];
     const to = series[i];
-    if (from.resetsAt !== to.resetsAt) continue; // S4: the window rolled over
+    const fromReset = normalizeResetsAt(from.resetsAt);
+    const toReset = normalizeResetsAt(to.resetsAt);
+    // Keep the old equality behavior for two equally absent/invalid raw
+    // values, while distinct malformed provider values still break the pair.
+    if (fromReset === null || toReset === null
+      ? from.resetsAt !== to.resetsAt
+      : fromReset !== toReset) {
+      continue; // S4: the window rolled over
+    }
     if (to.usedPct < from.usedPct) continue; // S4: utilization only rises
     const minutes = minutesBetween ? num(minutesBetween(from.capturedAtMs, to.capturedAtMs)) : null;
     if (minutes == null || minutes <= 0) continue; // nothing was dispatched
