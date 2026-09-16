@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns } from './runs-cli.js';
-import { newRunId, resolveRunId, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
+import { newRunId, resolveRunId, listRuns, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
@@ -735,6 +735,49 @@ function printValidationIssues(prefix, issues) {
   for (const issue of issues) console.error(`  - ${issue}`);
 }
 
+// The same goal text in the same cwd while the first launch is still going is
+// a duplicate, not a second slice of work: the retry a caller makes when it
+// cannot parse the first launch's output would otherwise race two identical
+// workflows in one directory. Only V2 runs can be ongoing, and `ongoing`
+// already accounts for a kernel that died without saying so.
+function ongoingGoalRun(goal, cwd) {
+  for (const run of listRuns(BULLSWARM_DIR())) {
+    if (!run.ongoing) continue;
+    const intent = run.state?.intent;
+    if (typeof intent?.goal !== 'string' || typeof intent?.cwd !== 'string') continue;
+    if (intent.goal.trim() === goal && resolve(intent.cwd) === cwd) return run;
+  }
+  return null;
+}
+
+// `started <age> ago`, in the coarse units `workflow runs list` prints.
+function runAge(startedAt) {
+  const ms = Date.now() - Date.parse(startedAt ?? '');
+  if (!Number.isFinite(ms)) return 'unknown';
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+function refuseDuplicateGoal(goal, opts, run, cwd) {
+  const token = run.shortId ?? run.runId;
+  const startedAt = run.state?.lifecycle?.startedAt ?? null;
+  const next = {
+    watch: `bullswarm workflow watch ${token} --next`,
+    again: `bullswarm workflow goal ${goalArg(goal)} --cwd ${shellArg(cwd)}${opts.isolation === true ? ' --isolation' : ''} --again`,
+  };
+  if (opts.json) {
+    console.log(JSON.stringify({
+      error: 'duplicate-goal', shortId: run.shortId ?? null, runId: run.runId, startedAt, next,
+    }, null, 2));
+  } else {
+    console.error(`✗ this goal is already running as ${token} (started ${runAge(startedAt)} ago in ${cwd}); watch it with: ${next.watch} · to launch another copy anyway pass --again`);
+  }
+  return 2;
+}
+
 async function wfGoal(opts) {
   if (opts.help) {
     console.log(goalUsage());
@@ -798,6 +841,13 @@ async function wfGoal(opts) {
     if (!goal) {
       console.error(goalUsage());
       return 2;
+    }
+    // A new launch only: --resume continues the run it names, and the internal
+    // --request relaunch is the detached child of a launch that already passed.
+    const cwd = resolve(opts.cwd ?? process.cwd());
+    if (!opts.again) {
+      const duplicate = ongoingGoalRun(goal, cwd);
+      if (duplicate) return refuseDuplicateGoal(goal, opts, duplicate, cwd);
     }
     if (planning.programRequired) return refuseProgramRequired(goal, opts);
     try {

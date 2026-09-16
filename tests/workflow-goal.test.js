@@ -470,3 +470,56 @@ test('--planner-reasoning is refused where there is no dispatched planner to app
     assert.equal(JSON.parse(worker.stdout).reasoning.worker, 'high');
   } finally { f.cleanup(); }
 });
+
+test('a goal already progressing in the same cwd is refused as a duplicate until --again', () => {
+  const f = fixture();
+  try {
+    // The observed failure: a caller whose JSON parser failed on the first
+    // launch's output retried the same command five seconds later and two
+    // identical workflows ran side by side in one directory. The fixture run
+    // stands in for the first launch, carrying exactly the fields listRuns()
+    // reads to call a V2 run ongoing.
+    const goal = 'Create and verify done.txt in a duplicated autonomous run.';
+    const startedAt = new Date().toISOString();
+    const runDir = join(f.home, 'workflows', 'wf-fixture-ongoing');
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, 'state.json'), `${JSON.stringify({
+      schemaVersion: 'bullswarm.workflow.state.v2',
+      runId: 'wf-fixture-ongoing',
+      shortId: 'dupe23',
+      intent: { goal, cwd: f.target, requirements: [] },
+      lifecycle: { status: 'running', startedAt, finishedAt: null },
+      runner: { pid: process.pid, startedAt, lastHeartbeatAt: startedAt },
+    }, null, 2)}\n`);
+
+    const duplicate = cli(f, ['workflow', 'goal', goal, '--cwd', f.target, '--json']);
+    assert.equal(duplicate.status, 2, duplicate.stdout || duplicate.stderr);
+    const doc = JSON.parse(duplicate.stdout);
+    assert.equal(doc.error, 'duplicate-goal');
+    assert.equal(doc.shortId, 'dupe23');
+    assert.equal(doc.runId, 'wf-fixture-ongoing');
+    assert.equal(doc.startedAt, startedAt);
+    assert.equal(doc.next.watch, 'bullswarm workflow watch dupe23 --next');
+    assert.match(doc.next.again, /^bullswarm workflow goal .* --cwd .* --again$/);
+
+    // The same refusal in the human form, with the age and the way past it.
+    const human = cli(f, ['workflow', 'goal', goal, '--cwd', f.target]);
+    assert.equal(human.status, 2, human.stdout || human.stderr);
+    assert.match(
+      human.stderr,
+      /✗ this goal is already running as dupe23 \(started \d+s ago in \S+\); watch it with: bullswarm workflow watch dupe23 --next · to launch another copy anyway pass --again/,
+    );
+
+    // Both escapes clear the check and reach the next refusal (a new goal with
+    // no program), and neither touched the run that is already going.
+    for (const argv of [
+      ['workflow', 'goal', goal, '--cwd', f.target, '--again', '--json'],
+      ['workflow', 'goal', goal, '--cwd', f.root, '--json'],
+    ]) {
+      const escaped = cli(f, argv);
+      assert.equal(escaped.status, 2, `${argv.join(' ')}: ${escaped.stdout}${escaped.stderr}`);
+      assert.equal(JSON.parse(escaped.stdout).error, 'program-required', `${argv.join(' ')} must get past the duplicate check`);
+    }
+    assert.equal(readdirSync(join(f.home, 'workflows')).length, 1, 'a duplicate refusal must not create a run');
+  } finally { f.cleanup(); }
+});
