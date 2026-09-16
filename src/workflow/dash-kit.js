@@ -57,6 +57,26 @@ const bgOf = (triple) => `\x1b[48;2;${triple.join(';')}m`;
 const fgOf = (hex) => `\x1b[38;2;${rgbOf(hex).join(';')}m`;
 const isHex = (value) => typeof value === 'string' && HEX.test(value);
 
+/** Shared dashboard precision for money, licence rates and durations. */
+export function formatDashboardValue(value, kind) {
+  const number = reading(value);
+  if (number == null) return null;
+  if (kind === 'money') return `$${number.toFixed(2)}`;
+  if (kind === 'rate') {
+    if (number === 0) return '0%/min';
+    return `${Number(number.toPrecision(3))}%/min`;
+  }
+  if (kind === 'percent') return `${number === 0 ? 0 : Number(number.toPrecision(3))}%`;
+  if (kind === 'minutes') {
+    const total = Math.max(0, Math.round(number));
+    if (total < 60) return `${total}m`;
+    const hours = Math.floor(total / 60);
+    const minutes = total % 60;
+    return minutes === 0 ? `${hours}h` : `${hours}h${String(minutes).padStart(2, '0')}m`;
+  }
+  return String(number);
+}
+
 /**
  * `text` cut to `width` visible cells with a trailing `…`: escapes are kept
  * whole, measuring strips them first, and a reset closes whatever was still
@@ -443,6 +463,7 @@ export function columnBars(series, labels, {
       // `0.0` would read as free, which is a different claim from "very small".
       if (number !== 0 && Number(text) === 0) text = number.toPrecision(1);
     }
+    if (unit === '$') return `${markText}${formatDashboardValue(number, 'money')}`;
     return `${markText}${unit ?? ''}${text}`;
   };
   const cellText = (value, limit, fallback = '') => {
@@ -454,7 +475,10 @@ export function columnBars(series, labels, {
   const columnCell = (text = '', glyph = null) => {
     if (cellWidth <= 1) return glyph ?? ' ';
     const run = glyph ? `${glyph.repeat(barWidth)}${' '.repeat(Math.max(0, cellWidth - barWidth - 1))}` : '';
-    return ` ${run || cellText(text, cellWidth - 1)}`;
+    // Value/label cells use the whole cell. Reserving a leading blank made a
+    // six-cell phone column truncate a cents value (`≈$0.…`). Bars retain the
+    // one-cell gutter that visually separates adjacent columns.
+    return run ? ` ${run}` : cellText(text, cellWidth);
   };
   const colored = (text, color) => {
     if (!text || !colors || ascii || !isHex(color)) return text;
@@ -473,23 +497,19 @@ export function columnBars(series, labels, {
     }
     return null;
   };
-  const tickFor = (row) => {
-    if (!axisTop) return row === 1 ? 0 : null;
-    const wanted = axisTop * row / rowCount;
-    let best = null;
-    let distance = Infinity;
-    for (const tick of axisInfo.ticks) {
-      const at = Math.abs(tick - wanted);
-      if (at < distance) { best = tick; distance = at; }
+  const ticksByRow = new Map();
+  if (axisTop > 0) {
+    for (const tick of axisInfo.ticks.filter((value) => value > 0)) {
+      const row = Math.max(1, Math.min(rowCount, Math.round(tick / axisTop * rowCount)));
+      ticksByRow.set(row, tick);
     }
-    return distance <= axisInfo.step * 0.51 ? best : null;
-  };
+  }
 
   const lines = [];
   for (let row = rowCount; row >= 1; row -= 1) {
     const high = axisTop * row / rowCount;
     const low = axisTop * (row - 1) / rowCount;
-    const tick = tickFor(row);
+    const tick = axisTop ? ticksByRow.get(row) ?? null : (row === 1 ? 0 : null);
     let line = cellText(numberText(tick) ?? '', axisWidth) + axis;
     for (let index = 0; index < n; index += 1) {
       const segment = segmentAt(index, low, high);
@@ -577,8 +597,8 @@ export function heatRow(cells, { width = null, ansi = true } = {}) {
     const number = reading(value);
     if (number == null) return ansi ? `${DIM}·${RESET}` : '·';
     const level = Math.max(1, Math.ceil(Math.max(0, Math.min(1, number)) * shades.length));
-    // One background-coloured space: the cell the prototype paints.
-    return ramp ? `${ramp[level - 1]} ${RESET}` : shades[level - 1];
+    // Keep the density glyph visible in captures even when it is coloured.
+    return ramp ? `${ramp[level - 1]}${shades[level - 1]}${RESET}` : shades[level - 1];
   }).join(' ');
 }
 

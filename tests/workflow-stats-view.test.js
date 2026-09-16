@@ -155,7 +155,7 @@ test('the Trends spend chart marks every money figure it paints', () => {
       if (tick) assert.match(tick, /^≈\$/, `the tick "${tick}" at ${String(width)} carries the mark`);
     }
     assert.match(lines[axisRow + 1], /≈\$0\.1/, 'the value row is marked');
-    assert.match(lines.find((line) => line.startsWith('total')), /≈\$1\.4/, 'the running total is marked');
+    assert.match(lines.find((line) => line.startsWith('total')), /≈\$1\.37/, 'the running total is marked and rounded to cents');
   }
 });
 
@@ -184,7 +184,7 @@ test('a spend bucket with no recorded estimate is a blank with its reason, never
   const lines = view.lines.map(visible);
   const axisRow = lines.findIndex((line) => line.includes('┼'));
   const valueRow = lines[axisRow + 1];
-  assert.match(valueRow, /≈\$0\.1\s+—\s+≈\$1\.2/, 'the uncosted bucket sits between two marked figures as a blank');
+  assert.match(valueRow, /≈\$0\.12\s+—\s+≈\$1\.25/, 'the uncosted bucket sits between two marked figures as a blank');
   assert.doesNotMatch(valueRow, /\$0(?!\.\d)/, 'a bucket nobody recorded a cost for is never $0');
   assert.equal(/≈\s*—/.test(valueRow), false, 'a blank carries no mark: there is nothing to qualify');
   assert.match(lines.join('\n'), /— = none recorded/, 'the frame says why the blank is blank');
@@ -196,4 +196,50 @@ test('a measured metric carries no estimate mark and no money basis', () => {
   assert.match(text, /Total: 5 runs/, 'the runs chart still totals as a count');
   assert.equal(text.includes('≈'), false, 'a count is a measurement, not an estimate');
   assert.equal(text.includes('API-equivalent estimate, recorded'), false, 'and it states no money basis');
+});
+
+test('Overview rounds total minutes before splitting hours and paints a 27-day heatmap', () => {
+  const days = Array.from({ length: 27 }, (_, index) => {
+    const at = new Date(2026, 7, 24 + index, 12);
+    return {
+      date: at.toISOString().slice(0, 10),
+      weekday: (at.getDay() + 6) % 7,
+      value: index % 5 === 0 ? 1 : 0.25,
+      inHistory: true,
+    };
+  });
+  const fixture = models();
+  fixture.overview = {
+    ...overview,
+    keys: { ...overview.keys, totalAgentMinutes: 79.9999 * 60 },
+    heat: { days, spanDays: 27, max: 58 },
+  };
+  const text = statsLines(fixture, { width: 120, tab: 'overview', ansi: false }).lines.map(visible);
+  assert.ok(text.some((line) => /Mon\s+.*[░▒▓█]/.test(line)), text.join('\n'));
+  assert.ok(text.some((line) => /Wed\s+.*[░▒▓█]/.test(line)), text.join('\n'));
+  assert.ok(text.some((line) => /Fri\s+.*[░▒▓█]/.test(line)), text.join('\n'));
+  assert.match(text.join('\n'), /Agent time: 80h(?:\s|·|$)/);
+  assert.doesNotMatch(text.join('\n'), /79h60m/);
+});
+
+test('narrow Trends uses unique nice ticks, day labels and one month title', () => {
+  const buckets = Array.from({ length: 7 }, (_, index) => ({
+    key: `2026-09-${String(index + 11).padStart(2, '0')}`,
+    value: [4, 7, 10, 13, 16, 18, 20][index],
+  }));
+  const lines = statsLines({ trend: { metric: 'runs', period: '7d', buckets, total: 88 } }, {
+    width: 55, tab: 'trends', period: '7d', metric: 'runs', ansi: false,
+  }).lines.map(visible);
+  assert.ok(lines.some((line) => line.startsWith('── runs · 7d · Sep ')), lines.join('\n'));
+  const axis = lines.filter((line) => line.includes('┤')).map((line) => line.split('┤')[0].trim()).filter(Boolean);
+  assert.equal(new Set(axis).size, axis.length, `duplicated ticks: ${axis.join(' ')}`);
+  const labels = lines.find((line) => line.includes('┼'));
+  assert.match(labels, /\b11\b.*\b12\b.*\b13\b/);
+  assert.doesNotMatch(labels, /11Se|12Se/);
+
+  const all = statsLines({ trend: { metric: 'runs', period: 'all', buckets: [
+    { key: '2026-09-01', value: 1 }, { key: '2026-09-08', value: 2 },
+  ], total: 3 } }, { width: 55, tab: 'trends', period: 'all', metric: 'runs', ansi: false })
+    .lines.map(visible).find((line) => line.includes('┼'));
+  assert.match(all, /1Sep.*8Sep/);
 });

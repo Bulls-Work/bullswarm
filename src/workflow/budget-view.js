@@ -5,7 +5,7 @@
 // missing price, rate, or recorded estimate into zero, and it never derives a
 // subscription figure from an API-equivalent estimate.
 
-import { shareBar } from './dash-kit.js';
+import { formatDashboardValue, shareBar } from './dash-kit.js';
 import { meterBar } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
@@ -41,8 +41,7 @@ function pctText(value) {
 }
 
 function moneyText(value) {
-  const text = numberText(value, 6);
-  return text == null ? null : `$${text}`;
+  return formatDashboardValue(value, 'money');
 }
 
 function stripMarkup(text) {
@@ -308,6 +307,9 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
     pushText(lines, apiLine(row), cols);
     lines.push('');
   }
+
+  const disabled = Array.isArray(budget?.disabledPools) ? budget.disabledPools.filter(Boolean) : [];
+  if (disabled.length) pushText(lines, tint(`disabled: ${disabled.join(', ')}`, DIM, ansi), cols);
 
   // A final defensive pass catches unusual caller strings while preserving
   // the meter/share bars, which are already exactly `cols` visible cells.

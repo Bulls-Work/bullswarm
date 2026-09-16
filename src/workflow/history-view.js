@@ -18,7 +18,7 @@
 //               does.  Its `elapsedMinutes` is measured, never estimated.
 
 import { glyphs } from '../lib/glyphs.js';
-import { cut, rule } from './dash-kit.js';
+import { cut, formatDashboardValue, rule } from './dash-kit.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
@@ -120,8 +120,8 @@ function clock(value) {
 }
 
 function apiEstimate(value) {
-  const number = finite(value);
-  return number == null ? null : `≈ $${number.toFixed(2)} API-equivalent estimate`;
+  const money = formatDashboardValue(value, 'money');
+  return money == null ? null : `≈ ${money} API-equivalent estimate`;
 }
 
 function recordCost(run) {
@@ -168,8 +168,10 @@ function durationMinutes(run) {
 }
 
 function minutesText(minutes) {
-  if (minutes >= 60) return `${Math.floor(minutes / 60)}h${String(Math.round(minutes % 60)).padStart(2, '0')}m`;
-  return `${Math.round(minutes)}m`;
+  const total = Math.max(0, Math.round(minutes));
+  return total >= 60
+    ? `${Math.floor(total / 60)}h${String(total % 60).padStart(2, '0')}m`
+    : `${total}m`;
 }
 
 function durationText(run) {

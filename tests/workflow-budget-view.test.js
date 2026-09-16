@@ -38,7 +38,7 @@ test('Budget renders measured meter, share, fit, biggest run and the two labelle
   assert.match(text, /qv6242 · 40 worker-minutes/);
   assert.match(text, /Subscription rate: —/);
   assert.match(text, /bullswarm strategy set-subscription <pool> --monthly-usd/);
-  assert.match(text, /≈ \$0\.3 API-equivalent estimate/);
+  assert.match(text, /≈ \$0\.30 API-equivalent estimate/);
   assert.equal(result.regions.length, 1);
   const [region] = result.regions;
   assert.deepEqual(
@@ -105,4 +105,14 @@ test('Budget and notes never paint past the supplied frame', () => {
     const notes = budgetNotes(budgetFixture(), { width });
     assert.deepEqual(notes.filter((line) => strip(line).length > width), [], `notes width ${width}`);
   }
+});
+
+test('Budget lists disabled pools once in a dim footer, not as meter rows', () => {
+  const result = budgetLines({
+    ...budgetFixture(),
+    disabledPools: ['claude-code:initech', 'echo'],
+  }, { width: 120, ansi: true });
+  const text = result.lines.join('\n');
+  assert.match(text, /\x1b\[2mdisabled: claude-code:initech, echo\x1b\[0m/);
+  assert.doesNotMatch(strip(text), /claude-code:initech\s+.*Licence meter/);
 });

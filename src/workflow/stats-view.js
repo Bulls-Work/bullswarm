@@ -8,7 +8,7 @@
 
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import {
-  columnBars, cut, heatRow, periodToggle, progressBar, rule, stackedBars, tabsRow,
+  columnBars, cut, formatDashboardValue, heatRow, periodToggle, progressBar, rule, stackedBars, tabsRow,
 } from './dash-kit.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
 
@@ -227,8 +227,8 @@ function percent(value) {
 }
 
 function apiEstimate(value) {
-  const number = finite(value);
-  return number == null ? null : `≈ $${number.toFixed(2)} API-equivalent estimate`;
+  const money = formatDashboardValue(value, 'money');
+  return money == null ? null : `≈ ${money} API-equivalent estimate`;
 }
 
 function spendText(value) {
@@ -236,10 +236,7 @@ function spendText(value) {
 }
 
 function minutesText(value) {
-  const number = finite(value);
-  if (number == null) return 'worker time unavailable';
-  if (number >= 60) return `${Math.floor(number / 60)}h${String(Math.round(number % 60)).padStart(2, '0')}m`;
-  return `${Math.round(number)}m`;
+  return formatDashboardValue(value, 'minutes') ?? 'worker time unavailable';
 }
 
 function dateLabel(value) {
@@ -315,15 +312,24 @@ function trendDisplayBuckets(buckets, period, width) {
   return out;
 }
 
-function compactBucketLabel(bucket, narrow) {
+function compactBucketLabel(bucket, narrow, period) {
   const key = String(bucket?.key ?? '');
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
   if (!match) return cut(bucketLabel(bucket), narrow ? 4 : 14);
   const month = monthNames[Number(match[2]) - 1] ?? '';
-  const day = match[3];
-  // Four compact cells (`15Se`) keep both the day and a month hint on a phone;
-  // desktop labels retain the full calendar wording.
-  return narrow ? `${day}${month.slice(0, 2)}` : bucketLabel(bucket);
+  const day = String(Number(match[3]));
+  if (!narrow) return bucketLabel(bucket);
+  return period === 'all' ? `${day}${month}` : day;
+}
+
+function narrowMonthTitle(buckets) {
+  const months = [];
+  for (const bucket of buckets) {
+    const match = /^\d{4}-(\d{2})-\d{2}$/.exec(String(bucket?.key ?? ''));
+    const month = match ? monthNames[Number(match[1]) - 1] : null;
+    if (month && !months.includes(month)) months.push(month);
+  }
+  return months.length ? months.join('–') : null;
 }
 
 function metricValueText(metric, value) {
@@ -424,9 +430,15 @@ function overviewLines(model, lines, regions, width, period, ansi) {
   if (!days.length) {
     pushLine(lines, regions, ` ${fit('No workflow history yet — the heatmap has no measured days.', Math.max(0, widthOf(width) - 1), ansi)}`, width, ansi);
   } else {
-    const byWeekday = (weekday) => days
-      .filter((day) => day?.weekday === weekday)
-      .map((day) => day?.inHistory === false ? null : day?.value);
+    const weeks = Array.isArray(heat?.weeks) && heat.weeks.length
+      ? heat.weeks
+      : Array.from({ length: Math.ceil(days.length / 7) }, (_, index) => days.slice(index * 7, index * 7 + 7));
+    const byWeekday = (weekday) => weeks.map((week) => {
+      const day = Array.isArray(week)
+        ? (week[weekday]?.weekday === weekday ? week[weekday] : week.find((entry) => entry?.weekday === weekday))
+        : null;
+      return !day || day.inHistory === false ? null : day.value;
+    });
     const prefix = 5;
     for (const weekday of [0, 2, 4]) {
       const values = byWeekday(weekday);
@@ -545,7 +557,7 @@ function trendLines(stats, lines, regions, width, period, metric, ansi) {
         : finite(bucket.segments?.find?.((segment) => segment.name === name)?.value) ?? 0),
     }))
     : [{ values: displayBuckets.map((bucket) => bucket.value) }];
-  const labels = displayBuckets.map((bucket) => compactBucketLabel(bucket, narrow));
+  const labels = displayBuckets.map((bucket) => compactBucketLabel(bucket, narrow, period));
   const chartLines = columnBars(series, labels, {
     width: widthOf(width),
     height: narrow ? 5 : 8,
@@ -559,7 +571,8 @@ function trendLines(stats, lines, regions, width, period, metric, ansi) {
     cumulative: money,
     colors: ansi,
   });
-  pushLine(lines, regions, rule(`${metricLabel[metric] ?? metric} · ${period}${model?.truncated ? ' · history starts later' : ''}`, null, width), width, ansi);
+  const calendar = narrow && period !== 'all' ? narrowMonthTitle(displayBuckets) : null;
+  pushLine(lines, regions, rule(`${metricLabel[metric] ?? metric} · ${period}${calendar ? ` · ${calendar}` : ''}${model?.truncated ? ' · history starts later' : ''}`, null, width), width, ansi);
   const meta = chartLines.meta ?? { chartRows: 0, axisRow: null, valueRow: null, columns: [] };
   chartLines.forEach((line, lineIndex) => {
     const lineRegions = [];
@@ -653,6 +666,7 @@ function poolMeterLines(model, lines, regions, width, ansi) {
       return { label: historyLabel(entry), segments: historySegments(entry) };
     });
     for (const line of stackedBars(chartRows, { width: widthOf(width), colors: ansi })) pushLine(lines, regions, line, width, ansi);
+    if (model?.meterHistoryReason) pushWrapped(lines, regions, model.meterHistoryReason, width, ansi, ' ');
   } else {
     pushWrapped(lines, regions, 'Licence-per-day chart unavailable: meter history is not loaded.', width, ansi, ' ');
   }

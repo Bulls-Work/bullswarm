@@ -17,7 +17,7 @@ import { loadUsage, parseMouse } from './usage-view.js';
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { cut, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -27,6 +27,7 @@ import { historyLines, historyNote } from './history-view.js';
 import { dayKey, historyDays } from './history.js';
 import { readRollups, rollupIndexPath } from './rollup.js';
 import { loadState } from '../lib/state.js';
+import { readMeterHistoryDays } from '../meters/registry.js';
 // N1: a missing measurement never becomes a confident zero. Number(null) is
 // 0 and Number.isFinite(0) is true, so every reading below goes through this.
 import { finiteOrNull } from '../lib/num.js';
@@ -50,6 +51,56 @@ const MOUSE_SEQUENCE = /\x1b\[<\d+;\d+;\d+[Mm]/g;
 const OSC52_LIMIT = 74_000;
 /** How far back History will load, seven days at a time, as the reader scrolls. */
 const MAX_HISTORY_DAYS = 120;
+
+function localDayKey(ms) {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dayStart(ms) {
+  const date = new Date(ms);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12).getTime();
+}
+
+/** Read the retained per-pool meter log into one real row per local day. */
+export function readLicencePerDay(bullswarmDir, pools, { period = '7d', now = Date.now(), rollups = [] } = {}) {
+  const enabled = (Array.isArray(pools) ? pools : []).filter((pool) => pool?.name && pool.enabled !== false);
+  const histories = enabled.map((pool) => ({ pool, days: readMeterHistoryDays(pool.name, { dir: join(bullswarmDir, 'meters') }) }));
+  const recordedDays = histories.flatMap((entry) => Object.keys(entry.days));
+  if (!recordedDays.length) return { period, rows: [], reason: 'meter history is not loaded' };
+
+  const nowDay = dayStart(now);
+  let requestedStart;
+  if (period === '30d') requestedStart = nowDay - 29 * 86_400_000;
+  else if (period === 'all') {
+    const times = (Array.isArray(rollups) ? rollups : [])
+      .map((record) => Date.parse(record?.finishedAt ?? record?.startedAt ?? ''))
+      .filter(Number.isFinite);
+    requestedStart = times.length ? dayStart(Math.min(...times)) : dayStart(Date.parse(recordedDays.sort()[0]));
+  } else requestedStart = nowDay - 6 * 86_400_000;
+
+  const firstRecorded = recordedDays.sort()[0];
+  const rows = [];
+  for (let at = requestedStart; at <= nowDay; at = new Date(new Date(at).setDate(new Date(at).getDate() + 1)).getTime()) {
+    const date = localDayKey(at);
+    const segments = [];
+    for (const { pool, days } of histories) {
+      const samples = days[date] ?? [];
+      const sample = samples.at(-1);
+      if (!sample) continue;
+      const preferred = pool.pacingWindow === 'monthly' ? 'monthly'
+        : pool.pacingWindow === 'five_hour' ? 'five_hour' : 'weekly';
+      const window = sample[preferred] ?? sample.weekly ?? sample.monthly ?? sample.five_hour;
+      const value = finiteOrNull(window?.utilization);
+      if (value != null) segments.push({ name: pool.name, value });
+    }
+    rows.push({ date, segments });
+  }
+  const reason = localDayKey(requestedStart) < firstRecorded
+    ? `Meter logs retain data from ${firstRecorded}; earlier days in ${period} are blank.`
+    : null;
+  return { period, rows, reason };
+}
 
 /**
  * The local clipboard, for a terminal that will not take OSC 52: pbcopy on
@@ -1622,14 +1673,8 @@ function about() {
  * recorded is null, and the caller paints a blank with the reason.
  */
 function moneyText(value) {
-  const amount = Number(value);
-  if (value == null || !Number.isFinite(amount)) return null;
-  // A recorded fraction of a cent is still a recording; rounding it to $0.00
-  // would read as free, which is a different claim from "very small".
-  const text = amount >= 1000 ? String(Math.round(amount))
-    : amount >= 0.01 || amount === 0 ? amount.toFixed(2)
-      : amount.toFixed(4);
-  return `${about()} $${text}`;
+  const text = formatDashboardValue(value, 'money');
+  return text == null ? null : `${about()} ${text}`;
 }
 
 /** A percentage, to one decimal, or null when there is nothing to show. */
@@ -1648,10 +1693,7 @@ function shareText(value) {
 
 /** `42m` / `2h05m` from minutes. */
 function minutesText(value) {
-  const amount = Number(value);
-  if (value == null || !Number.isFinite(amount)) return null;
-  const whole = Math.max(0, Math.round(amount));
-  return whole < 60 ? `${whole}m` : `${Math.floor(whole / 60)}h${String(whole % 60).padStart(2, '0')}m`;
+  return formatDashboardValue(value, 'minutes');
 }
 
 /** `42m` / `2h05m` since an ISO time. */
@@ -2177,7 +2219,7 @@ function homePage(model, opts, body) {
     const economics = runEconomics(run, model.pools, nowMs);
     const draw = economics.pools.map((pool) => (pool.sharePct == null
       ? `${pool.name} ${blank()}`
-      : `${pool.name} ${about()} ${pool.sharePct.toFixed(2)}% of its ${pool.window ?? 'pacing'} window`)).join(' · ');
+      : `${pool.name} ${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`)).join(' · ');
     const money = moneyText(economics.apiEquivalentUsd);
     const spent = money ? `${money} API-equivalent estimate` : `${blank()} no attempt recorded an estimate`;
     body.push(dimText(cut(`   ${draw ? `${draw} · ` : ''}${spent}`, width), width));
@@ -2186,9 +2228,14 @@ function homePage(model, opts, body) {
   // The period's breakdown, and the toggle that changes it.
   const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
   body.push('');
-  const toggle = periodToggle(PERIOD_ITEMS, { active: period.id, width: Math.max(10, width - 24) });
-  const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
-  body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
+  const toggle = periodToggle(PERIOD_ITEMS, { active: period.id, width: narrow ? width - 2 : Math.max(10, width - 24) });
+  if (narrow) {
+    body.push(rule(period.label.toLowerCase(), null, width));
+    body.kit({ text: ` ${toggle.text}`, regions: toggle.regions.map((region) => ({ ...region, x: region.x + 1 })) });
+  } else {
+    const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
+    body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
+  }
   const breakdown = overview?.breakdown ?? { pools: [], models: [], projects: [] };
   const sections = [
     { key: 'pools', label: 'by pool', tab: 'pools' },
@@ -2378,7 +2425,7 @@ function runPage(model, opts, body) {
       ], { width: barWidth, colors: meterAnsi() });
     const share = pool.sharePct == null
       ? `${blank()} no measured %/minute rate for this pool`
-      : `${about()} ${pool.sharePct.toFixed(2)}% of its ${pool.window ?? 'pacing'} window`;
+      : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`;
     head.row(cut(` ${String(pool.name).padEnd(nameWidth)} ${bar}  ${share} · ${minutesText(pool.minutes)} measured`, width), { kind: 'page', page: 'budget' });
   }
   // The share bands only need naming where there is room to name them.
@@ -2421,7 +2468,7 @@ function stepPage(model, opts, body) {
     const money = moneyText(finiteOrNull(agent?.attempt?.usage?.cost?.estimatedUsd));
     body.push(dimText(cut(` ${pool ?? 'pool pending'} · ${economics?.sharePct == null
       ? `${blank()} no measured %/minute rate`
-      : `${about()} ${economics.sharePct.toFixed(2)}% of its ${economics.window ?? 'pacing'} window for the whole run`} · ${money ? `${money} API-equivalent estimate` : `${blank()} this attempt recorded no estimate`}`, width), width));
+      : `${about()} ${formatDashboardValue(economics.sharePct, 'percent')} of its ${economics.window ?? 'pacing'} window for the whole run`} · ${money ? `${money} API-equivalent estimate` : `${blank()} this attempt recorded no estimate`}`, width), width));
     body.push('');
   }
   for (const line of frame.body) body.push(line);
@@ -2674,7 +2721,7 @@ function tileSparklines(rollups, nowMs) {
 export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
   rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
-  metric = 'runs',
+  metric = 'runs', meterHistory = null,
 } = {}) {
   const pools = usage?.pools ?? [];
   const records = rollups ?? [];
@@ -2704,7 +2751,11 @@ export function dashboardModel(row, {
       // The Trends tab charts the metric the reader chose, so the tile they
       // clicked and the chart it opened are the same series.
       trend: trendModel(records, { metric: TREND_METRICS.includes(metric) ? metric : 'runs', period, now: nowMs }),
-      pools: poolsModel(records, pools, { period, now: nowMs }),
+      pools: {
+        ...poolsModel(records, pools, { period, now: nowMs }),
+        licencePerDay: meterHistory?.rows ?? null,
+        meterHistoryReason: meterHistory?.reason ?? null,
+      },
       models: modelsModel(records, { period, now: nowMs }),
       projects: projectsModel(records, { period, now: nowMs }),
       sparklines: tileSparklines(records, nowMs),
@@ -2784,6 +2835,7 @@ export async function runDashboard(bullswarmDir, {
   let rollupFingerprint = null;
   let days = [];
   let prices = null;
+  let meterHistory = null;
   const ui = {
     page: token ? 'run' : 'home',
     focus: 0,
@@ -2842,6 +2894,9 @@ export async function runDashboard(bullswarmDir, {
       // loadUsage now measures that rate itself — once per meter snapshot,
       // not once per one-second refresh.
       usage = loaded;
+      meterHistory = readLicencePerDay(bullswarmDir, loaded.pools, {
+        period: ui.period, now: Date.now(), rollups,
+      });
       return paint();
     }, (err) => {
       if (ticket !== usageTicket) return undefined;
@@ -2934,10 +2989,15 @@ export async function runDashboard(bullswarmDir, {
       ui.phaseIndex = panel.phaseIndex;
       ui.agentIndex = panel.agentIndex;
     }
+    if (usage && meterHistory?.period !== ui.period) {
+      meterHistory = readLicencePerDay(bullswarmDir, usage.pools, {
+        period: ui.period, now: Date.now(), rollups,
+      });
+    }
     const model = dashboardModel(row, {
       runs: activeRuns,
       usage, integration, installResult, rollups, days, prices,
-      period: ui.period, metric: ui.metric,
+      period: ui.period, metric: ui.metric, meterHistory,
     });
     const frame = renderDashboardPage(model, pageOptions());
     regions = frame.regions;
@@ -2954,6 +3014,7 @@ export async function runDashboard(bullswarmDir, {
       try {
         const frame = renderDashboardPage(dashboardModel(null, {
           runs: activeRuns, usage, integration, rollups, days, prices,
+          meterHistory,
         }), { ...pageOptions(), page: 'home', message });
         regions = frame.regions;
         writeFrame(frame.lines.join('\n'));
