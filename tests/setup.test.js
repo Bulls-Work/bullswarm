@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   Prompter,
   suggestRoutingTable,
@@ -13,8 +15,13 @@ import {
   autoSetup,
   ensureSetup,
   configureTierRungs,
+  openSetupTui,
 } from '../src/setup.js';
+import { decideBareCommand } from '../src/cli.js';
 import { loadState, saveState } from '../src/lib/state.js';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const BIN = join(ROOT, 'bin', 'bullswarm.js');
 
 function tmp() {
   const d = mkdtempSync(join(tmpdir(), 'bullswarm-setup-'));
@@ -499,4 +506,148 @@ test('connector metadata upgrades insert packaged model profiles the installed c
     }
     assert.deepEqual(upgradeConnectorMetadata(d), [], 'idempotent');
   } finally { cleanup(); }
+});
+
+// --- the bare command and the setup control center ---------------------------
+// Item 4 of the dashboard goal: bare `bullswarm` opens the dashboard once the
+// installation is configured and setup when it is not, while `--yes` and every
+// non-TTY caller keep the historical auto-setup path. The dispatch decision is
+// a pure function (decideBareCommand) so it is testable without a terminal;
+// the legs that need a real process are driven through bin/bullswarm.js with an
+// isolated BULLSWARM_HOME, where stdin is a pipe and no TTY can be faked.
+
+test('the bare command opens the dashboard only for a configured terminal', () => {
+  assert.equal(decideBareCommand({ tty: true, configured: true }), 'dashboard');
+  assert.equal(decideBareCommand({ tty: true, configured: false }), 'setup',
+    'a machine that is not configured yet still opens setup');
+  assert.equal(decideBareCommand({ tty: false, configured: true }), 'setup-auto',
+    'no terminal: never the dashboard, never a prompt');
+  assert.equal(decideBareCommand({}), 'setup-auto', 'the safe default is the historical auto path');
+  assert.equal(decideBareCommand({ tty: true, configured: true, yes: true }), 'setup-auto',
+    '--yes is a request for discovered defaults, not a dashboard');
+  assert.equal(decideBareCommand({ tty: true, configured: true, yes: true, setup: true }), 'setup',
+    '--setup reaches cmdSetup, which honors --yes there');
+  assert.equal(decideBareCommand({ tty: true, configured: true, setup: true }), 'setup',
+    '--setup forces setup on a configured machine');
+  assert.equal(decideBareCommand({ tty: false, configured: true, setup: true }), 'setup',
+    '--setup on a non-TTY call is still the auto setup cmdSetup applies');
+});
+
+test('openSetupTui hands the dashboard exactly the options cmdSetup passes', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    const input = { isTTY: true };
+    const output = { write() {} };
+    let seen = null;
+    const code = await openSetupTui({
+      bullswarmDir: d,
+      input,
+      output,
+      startDashboard: (options) => { seen = options; return Promise.resolve(0); },
+    });
+    assert.equal(code, 0, 'the dashboard exit code is returned');
+    assert.equal(seen.bullswarmDir, d);
+    assert.equal(seen.input, input);
+    assert.equal(seen.output, output);
+    assert.equal(seen.title, 'Bullswarm setup');
+    assert.equal(seen.promptForAnalysis, true);
+    assert.equal(typeof seen.loadInventory, 'function');
+    assert.equal(typeof seen.applyRecommendations, 'function');
+  } finally { cleanup(); }
+});
+
+test('openSetupTui defaults to the process streams and returns the dashboard exit code', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    let seen = null;
+    const code = await openSetupTui({
+      bullswarmDir: d,
+      startDashboard: (options) => { seen = options; return Promise.resolve(7); },
+    });
+    assert.equal(code, 7);
+    assert.equal(seen.input, process.stdin);
+    assert.equal(seen.output, process.stdout);
+  } finally { cleanup(); }
+});
+
+test('openSetupTui applies the last strategy report through the shared hook', async () => {
+  const { d, cleanup } = tmp();
+  try {
+    autoSetup(d, { reason: 'test' });
+    const state = loadState(d);
+    state.strategy = { lastReport: { suggestions: { high: { recommended: { pool: 'codex', model: 'gpt-5.6-sol' } } } } };
+    saveState(d, state);
+    let seen = null;
+    await openSetupTui({
+      bullswarmDir: d,
+      startDashboard: (options) => { seen = options; return Promise.resolve(0); },
+    });
+    seen.applyRecommendations();
+    assert.deepEqual(loadState(d).strategy.assignments.high, { pool: 'codex', model: 'gpt-5.6-sol' });
+  } finally { cleanup(); }
+});
+
+function bare(argv, home, env = {}) {
+  return spawnSync(process.execPath, [BIN, ...argv], {
+    cwd: ROOT,
+    // input:'' makes stdin a pipe: no TTY can be faked in a subprocess, which
+    // is exactly the contract these legs pin.
+    env: { ...process.env, BULLSWARM_HOME: home, ...env },
+    encoding: 'utf8',
+    input: '',
+  });
+}
+
+test('bare bullswarm still auto-initializes for a non-TTY caller, configured or not', () => {
+  const base = mkdtempSync(join(tmpdir(), 'bullswarm-bare-'));
+  const home = join(base, 'home');
+  try {
+    const fresh = bare([], home);
+    assert.equal(fresh.status, 0, fresh.stderr);
+    // A non-TTY bare caller has always been handed cmdSetup `yes: true`, which
+    // is why its reason reads "flag" rather than "non-tty" — unchanged here.
+    assert.match(fresh.stdout, /^setup complete \(flag\): enabled /m);
+    assert.equal(existsSync(join(home, 'state.json')), true, 'the non-TTY caller self-initialized');
+
+    // Second run: the home is now configured, and a non-TTY caller must still
+    // get the same auto path rather than the dashboard.
+    const configured = bare([], home);
+    assert.equal(configured.status, 0, configured.stderr);
+    assert.match(configured.stdout, /^setup complete \(flag\): enabled /m);
+    assert.doesNotMatch(configured.stdout, /dashboard/);
+
+    // The setup verb itself is untouched and still reports its own reason.
+    const setupVerb = bare(['setup'], home);
+    assert.equal(setupVerb.status, 0, setupVerb.stderr);
+    assert.match(setupVerb.stdout, /^setup complete \(non-tty\): enabled /m);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+test('bare bullswarm --yes keeps its auto setup and never opens the dashboard', () => {
+  const base = mkdtempSync(join(tmpdir(), 'bullswarm-bare-yes-'));
+  const home = join(base, 'home');
+  try {
+    const result = bare(['--yes'], home);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^setup complete \(flag\): enabled /m);
+    assert.equal(existsSync(join(home, 'state.json')), true);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
+// `--setup` must reach the setup path from the bare command. This leg needs
+// src/lib/cli-flags.js's row for the bare command to accept the flag (the
+// shared-file request this action reports); until that row lands, the flag
+// gate answers exit 2 with "unknown flag --setup".
+test('bare bullswarm --setup forces setup on a configured machine', () => {
+  const base = mkdtempSync(join(tmpdir(), 'bullswarm-bare-setup-'));
+  const home = join(base, 'home');
+  try {
+    assert.equal(bare(['--yes'], home).status, 0, 'configure first');
+    const result = bare(['--setup'], home);
+    assert.equal(result.status, 0, `--setup must reach setup, not the flag gate: ${result.stderr}`);
+    assert.match(result.stdout, /^setup complete \(non-tty\): enabled /m);
+    assert.doesNotMatch(result.stdout, /unknown flag/);
+  } finally { rmSync(base, { recursive: true, force: true }); }
 });

@@ -23,9 +23,8 @@ import { runUpdate } from './lib/update.js';
 import { cmdWorkflow } from './workflow/cli.js';
 import { DEFAULT_EFFORT_BY_LANE } from './workflow/action-validator.js';
 import {
-  applyStrategyRecommendations, cmdStrategy, loadStrategyInventory, maybeRefreshStrategy,
+  applyStrategyRecommendations, cmdStrategy, maybeRefreshStrategy,
 } from './strategy-cli.js';
-import { startStrategyDashboard } from './strategy-dashboard.js';
 import { cmdIntegrate, installIntegration } from './integrate.js';
 import { cmdProvider } from './provider-cli.js';
 import { helpForArgs, usageLine } from './help.js';
@@ -49,7 +48,7 @@ export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
   'overview',
-  'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
+  'json', 'force', 'no-caller', 'yes', 'setup', 'strategy', 'integrate', 'dry-run',
   'wizard', 'check',
 ]);
 
@@ -633,8 +632,26 @@ function cmdHealth(opts) {
 
 // --- setup ------------------------------------------------------------------
 
+/**
+ * What bare `bullswarm` does, as a pure decision so the dispatch is testable
+ * without a terminal. `tty` means both streams are terminals (the dashboard
+ * cannot be drawn otherwise); `configured` is state.json existing BEFORE this
+ * invocation self-initialized, else a fresh machine could never reach setup.
+ * Returns:
+ *   dashboard  — configured interactive terminal: the dashboard's Home page
+ *   setup      — not configured yet, or --setup: the interactive control center
+ *   setup-auto — --yes or no terminal: discovered defaults, never prompts
+ */
+export function decideBareCommand({
+  tty = false, yes = false, setup = false, configured = false,
+} = {}) {
+  if (setup) return 'setup';
+  if (yes || !tty) return 'setup-auto';
+  return configured ? 'dashboard' : 'setup';
+}
+
 async function cmdSetup(opts) {
-  const { runWizard, autoSetup } = await import('./setup.js');
+  const { runWizard, autoSetup, openSetupTui } = await import('./setup.js');
   // Agent-friendly: --yes (or no TTY on stdin) initializes with discovered
   // defaults and never prompts.
   if (opts.yes || !process.stdin.isTTY) {
@@ -663,17 +680,12 @@ async function cmdSetup(opts) {
     return 0;
   }
   if (!opts.json && !opts.wizard && !opts.integrate) {
-    return startStrategyDashboard({
+    // The control center's own options live in src/setup.js (openSetupTui) so
+    // the dashboard's `[edit]` hand-off opens the same screen with the same
+    // title, analysis prompt, inventory loader and apply hook — no second copy
+    // to drift.
+    return openSetupTui({
       bullswarmDir: getBullswarmDir(), input: process.stdin, output: process.stdout,
-      title: 'Bullswarm setup',
-      promptForAnalysis: true,
-      loadInventory: ({ force, onProgress, analyze }) => loadStrategyInventory(getBullswarmDir(), {
-        force, onProgress, useOpenRouter: analyze,
-      }),
-      applyRecommendations: () => {
-        const report = loadState(getBullswarmDir()).strategy?.lastReport;
-        if (report) applyStrategyRecommendations(getBullswarmDir(), report);
-      },
     });
   }
   return runWizard(getBullswarmDir(), opts);
@@ -805,18 +817,38 @@ export async function main(argv) {
   const flagExit = unknownFlagExit(opts._flags, topLevelHelpPath(verb, opts));
   if (flagExit !== null) return flagExit;
 
-  const { ensureSetup } = await import('./setup.js');
+  const { ensureSetup, isConfigured } = await import('./setup.js');
+
+  // Read BEFORE ensureSetup() below: that call self-initializes a fresh home,
+  // and a home that only exists because of this very invocation has not been
+  // configured by anyone yet — that difference is exactly what decides between
+  // setup and the dashboard for a bare `bullswarm`.
+  const wasConfigured = isConfigured(getBullswarmDir());
 
   // Agent-friendly guarantee: EVERY verb works on a fresh machine. If config
   // is missing, self-initialize with discovered defaults (never prompts).
   ensureSetup(getBullswarmDir());
 
   switch (verb) {
-    case undefined:
-      // Bare bullswarm: interactive wizard for humans on a TTY, auto-setup
-      // + status for everyone else (agents, scripts).
-      if (opts.yes || !process.stdin.isTTY) return cmdSetup({ ...opts, yes: true });
+    case undefined: {
+      // Bare bullswarm: the dashboard on a configured terminal, the setup
+      // control center when nothing is configured, and the historical
+      // auto-setup for --yes or any non-TTY caller (agents, scripts).
+      const decision = decideBareCommand({
+        tty: process.stdin.isTTY === true && process.stdout.isTTY === true,
+        yes: opts.yes === true,
+        setup: opts.setup === true,
+        configured: wasConfigured,
+      });
+      if (decision === 'dashboard') {
+        // Lazy: a terminal UI no other verb needs, and nothing a non-dashboard
+        // caller should pay to load.
+        const { runDashboard } = await import('./workflow/dashboard.js');
+        return runDashboard(getBullswarmDir(), { input: process.stdin, output: process.stdout });
+      }
+      if (decision === 'setup-auto') return cmdSetup({ ...opts, yes: true });
       return cmdSetup(opts);
+    }
     case 'setup':
       return cmdSetup(opts);
     case 'run':

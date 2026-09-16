@@ -58,8 +58,9 @@ const top = rich({
   purpose: 'Route work across coding-agent subscriptions and verify the result before treating '
     + 'it as done. There are exactly two ways to start work: `bullswarm run` dispatches one '
     + 'bounded task to a single agent, and `bullswarm workflow goal` executes a program you '
-    + "author across a coordinated multi-agent run. Reach for a specific command's --help for "
-    + 'full options.',
+    + 'author across a coordinated multi-agent run. Bare `bullswarm` opens the dashboard — '
+    + 'Home, Run, Step, Usage, Help — once this machine is configured, and the setup control '
+    + "center when it is not. Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
   args: [
     { name: 'setup', desc: 'discover and configure installed coding agents' },
@@ -78,7 +79,8 @@ const top = rich({
     { name: 'release', desc: 'create a version commit and tag' },
   ],
   options: [
-    { flag: '--yes', desc: 'bare `bullswarm` only: skip the interactive wizard and auto-initialize with discovered defaults. Bare `bullswarm` runs `bullswarm setup`, so it accepts every option that command documents', default: 'prompts on a TTY; auto-initializes for a non-TTY caller' },
+    { flag: '--yes', desc: 'bare `bullswarm` only: skip the dashboard and the interactive wizard and auto-initialize with discovered defaults. It takes the `bullswarm setup` path, so it accepts every option that command documents', default: 'prompts on a TTY; auto-initializes for a non-TTY caller' },
+    { flag: '--setup', desc: 'bare `bullswarm` only: open the interactive setup control center even when this machine is already configured', default: 'off — a configured terminal opens the dashboard' },
   ],
   safety: [
     'every command below except a --help/-h/help invocation self-initializes ~/.bullswarm/state.json (or $BULLSWARM_HOME) on first use',
@@ -90,6 +92,8 @@ const top = rich({
       + '--limit that is not a positive integer)',
   ],
   examples: [
+    { cmd: 'bullswarm', note: 'open the dashboard once this machine is configured; an unconfigured machine opens setup instead' },
+    { cmd: 'bullswarm --setup && bullswarm workflow tui --json', note: 'force setup on a configured machine, then read the dashboard\'s run list non-interactively' },
     { cmd: 'bullswarm setup --yes && bullswarm run --lane analyze "audit this repo for TODOs"', note: 'one-time initialization, then one bounded task' },
     { cmd: 'bullswarm workflow goal "1. Fix the parser. 2. Add tests." --cwd . --program plan.json', note: 'author the program yourself, the kernel routes and verifies it' },
   ],
@@ -102,7 +106,9 @@ const setupText = rich({
   usage: 'bullswarm setup [--wizard] [--yes] [--strategy] [--integrate] [--agents <list>] [--json]',
   purpose: 'Discover installed agent CLIs (codex, claude, grok, ...) and initialize local '
     + 'routing state. Bare setup on a TTY opens the provider/model control center; agents '
-    + 'and CI retain deterministic non-interactive setup.',
+    + 'and CI retain deterministic non-interactive setup. On a machine that is already '
+    + 'configured, bare `bullswarm` opens the dashboard instead — `bullswarm --setup` forces '
+    + 'this setup path from there, and the dashboard\'s Usage page reaches it with [edit].',
   args: [],
   options: [
     { flag: '--wizard', desc: 'open the comprehensive question-based wizard for worktree, reasoning-depth, and integration settings', default: 'off; bare setup opens the provider/model control center' },
@@ -119,6 +125,7 @@ const setupText = rich({
     '--wizard shows each suggested rung with its benchmark evidence and asks one reasoning level per configured effort tier; Enter keeps that connector\'s own default and writes nothing, and agents set the same values with bullswarm strategy set-reasoning or set-rung',
   ],
   examples: [
+    { cmd: 'bullswarm --setup', note: 'open this same control center from a machine where bare `bullswarm` would open the dashboard' },
     { cmd: 'bullswarm setup', note: 'browse providers, models, effort tiers, meters, and effective routes interactively' },
     { cmd: 'bullswarm setup --wizard', note: 'use the broader question-based configuration flow, including reasoning depth per effort tier' },
     { cmd: 'bullswarm setup --yes --integrate --agents claude,codex', note: 'non-interactive initialization plus agent integration; safe in CI or from an agent' },
@@ -768,8 +775,9 @@ const strategyAutoOffText = rich({
 const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
   purpose: 'Plan, execute, observe, and audit durable multi-agent workflows with the '
-    + 'single V2 action/evidence engine. With no command on a TTY, opens the unified '
-    + 'full-screen workflow home.',
+    + 'single V2 action/evidence engine. With no command on a TTY, opens the dashboard '
+    + '(Home, Run, Step, Usage, Help) — the same screen bare `bullswarm` opens on a '
+    + 'configured machine.',
   argsTitle: 'Commands',
   args: [
     { name: 'goal "<goal>"', desc: 'run a V2 autonomous goal from your program (--program), a kernel scout that finishes with its report (--scout), or an explicitly dispatched Workflow Planner (--orchestrator); a run never waits, it finishes and hands back what is left' },
@@ -779,7 +787,7 @@ const workflowText = rich({
     { name: 'resume <runId>', desc: 'lift a pause, continue an interrupted run, or retry a finished run\'s retryable steps, with its durable planner mode and routing' },
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
-    { name: 'tui [runId]', desc: 'open the workflow home or one run timeline; bare workflow is equivalent on a TTY' },
+    { name: 'tui [runId]', desc: 'open the dashboard (Home, Run, Step, Usage, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
@@ -1149,9 +1157,17 @@ const workflowCapabilitiesText = rich({
 
 const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>] [--overview [--width <cols>] [--height <rows>]]',
-  purpose: 'Open the interactive full-screen workflow dashboard with an active/recent run list, '
-    + 'selected-run preview, Workflow Planner, phase, live-agent, and technical drill-down views, or print a '
-    + 'static/JSON snapshot for a non-interactive caller.',
+  purpose: 'Open the dashboard — the same screen bare `bullswarm` opens on a configured terminal, here as the '
+    + 'explicit command. A sticky header names the selected run and a sticky bottom nav carries every ongoing run '
+    + '(1. [ <run> ], the current one marked ●) plus [ usage ], ?. [ help ] and [ quit ], each button\'s key '
+    + 'underlined in its label or written ahead of it. The pages are Home (ongoing '
+    + 'runs, the compact pool rows, the agent-integration status with an [install] button, and the commands that '
+    + 'operate the product), Run (the selected run\'s timeline with its Live and Next overview), Step (one agent\'s '
+    + 'panel, with [back]), Usage (every meter window per enabled pool, the rungs with their local record, the '
+    + 'read-only note, and [edit], which hands the terminal to bullswarm setup) and Help. Keys: q quit, ? help, '
+    + 'u usage, e edit, i install, l and p switch the Usage grouping, the arrows/PgUp/PgDn/Enter move and open, '
+    + 'Esc goes back; the mouse clicks any button, tab, run or step and the wheel scrolls. A non-interactive '
+    + 'caller gets a static/JSON snapshot instead.',
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
     { flag: '--json', desc: "print a JSON snapshot instead of opening the interactive browser (list of ongoing runs, or one run's state/report/events when a runId is given)", default: "opens the interactive browser on a TTY; without a TTY, a given runId instead prints one static text detail tree" },
@@ -1166,11 +1182,14 @@ const workflowTuiText = rich({
     'interactive mode and the --json/--show/--all/--overview views are read-only',
     '--cancel writes state.json (cancelRequested=true, status=cancelling) — cooperative, not a force-kill: the workflow stops at its next safe checkpoint',
     'inside the interactive browser, q detaches without stopping the underlying workflow; c requests the same cancellation with a confirmation prompt',
+    'the mouse (SGR reporting, 1000h/1006h) is enabled on entry and released on exit, so a detach never leaves the terminal capturing clicks',
+    '[edit] on the Usage page hands the terminal to the same provider/model control center `bullswarm setup` opens and returns to the Usage page when it exits; [install] on Home runs the same install as `bullswarm integrate install --yes`',
     'the default timeline is derived from durable state and events; press v for raw action-ledger and event evidence',
     'below 100 columns the timeline remains full-width; press t to toggle Timeline and Phases, then Enter/Esc to drill into agents and activity',
   ],
   examples: [
-    { cmd: 'bullswarm workflow tui', note: 'compatibility alias for the bare workflow dashboard' },
+    { cmd: 'bullswarm', note: 'the dashboard by its shortest name, once this machine is configured' },
+    { cmd: 'bullswarm workflow tui', note: 'the explicit form of the same dashboard' },
     { cmd: 'bullswarm workflow tui --json --all' },
     { cmd: 'bullswarm workflow tui ab12cd --overview --width 90 --height 24', note: 'one plain-text frame of the timeline, live and next sections' },
   ],

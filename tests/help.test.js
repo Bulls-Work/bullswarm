@@ -224,6 +224,45 @@ test('help describes the 0.27.1 command-surface behaviour it is now paired with'
   assert.match(rootHelp, /exits 2/);
 });
 
+// Item 4 of the dashboard goal: bare `bullswarm` opens the dashboard once the
+// installation is configured and the setup control center when it is not, and
+// `--setup` forces setup from a configured machine. The three help texts a
+// reader reaches that decision from must say so.
+test('help describes the bare command as the dashboard with setup as the fallback', () => {
+  const root = helpText([]);
+  assert.match(root, /Bare `bullswarm` opens the dashboard/);
+  assert.match(root, /the setup control center when it is not/);
+  const rootOptions = root.split('\n\n')[3];
+  assert.match(
+    rootOptions,
+    /--setup\s+bare `bullswarm` only: open the interactive setup control center/,
+    'the root Options block must advertise --setup',
+  );
+  assert.match(root.split('\n\n')[5], /\$ bullswarm\n/, 'the root Example block shows the bare command');
+
+  const setupHelp = helpText(['setup']);
+  assert.match(setupHelp, /bare `bullswarm` opens the dashboard instead/);
+  assert.match(setupHelp, /`bullswarm --setup` forces this setup path/);
+  assert.match(setupHelp, /\$ bullswarm --setup\n/, 'setup --help shows the forcing form as an example');
+
+  const tuiHelp = helpText(['workflow', 'tui']);
+  assert.match(tuiHelp, /the same screen bare `bullswarm` opens on a configured terminal/);
+  assert.match(tuiHelp, /sticky header/);
+  assert.match(tuiHelp, /sticky bottom nav/);
+  for (const page of ['Home (ongoing', 'Run (the selected', 'Step (one agent', 'Usage (every meter', 'and Help.']) {
+    assert.ok(tuiHelp.includes(page), `workflow tui --help must describe the ${page.split(' ')[0]} page`);
+  }
+  for (const key of ['q quit', '? help', 'u usage', 'e edit', 'i install', 'l and p switch the Usage grouping']) {
+    assert.ok(tuiHelp.includes(key), `workflow tui --help must document the ${key.split(' ')[0]} key`);
+  }
+  assert.match(tuiHelp, /the mouse clicks any button, tab, run or step and the wheel scrolls/);
+  assert.match(tuiHelp, /the explicit form of the same dashboard/);
+
+  // The workflow command list points at the same dashboard, with the same
+  // pages named.
+  assert.match(helpText(['workflow']), /open the dashboard \(Home, Run, Step, Usage, Help\)/);
+});
+
 // Preserved behavior: --help must never spawn a delegate coding-agent CLI
 // process. Exercising this against the real binary with PATH stripped to
 // nothing but the node executable's own directory is a real, executable

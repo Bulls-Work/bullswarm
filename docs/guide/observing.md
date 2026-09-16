@@ -1,11 +1,94 @@
 ---
 title: Observing runs
-description: Follow a live Bullswarm run without polling, list and inspect past runs, read the result, and use the interactive workflow dashboard.
+description: Follow a live Bullswarm run without polling, list and inspect past runs, read the result, and use the full-screen dashboard.
 ---
 
 # Observing runs
 
-After this page you can follow a live run without polling in a loop, list and inspect runs by id, read a finished run's result, use the interactive dashboard and its keys, and fix a terminal that cannot draw the status glyphs.
+After this page you can follow a live run without polling in a loop, list and inspect runs by id, read a finished run's result, use the dashboard and its keys, and fix a terminal that cannot draw the status glyphs.
+
+## The dashboard
+
+The dashboard is Bullswarm's main screen once setup is complete. Bare
+`bullswarm` opens Home; `bullswarm --setup` or `bullswarm setup` opens setup;
+`bullswarm workflow tui` is the explicit dashboard command. Pass a run id to
+open that run directly.
+
+```bash
+# the main screen after setup
+bullswarm
+
+# return to the setup control centre
+bullswarm --setup
+bullswarm setup
+
+# explicit dashboard forms
+bullswarm workflow tui
+bullswarm workflow tui ab12cd
+```
+
+Every page has a sticky header and a sticky bottom nav. The header names the
+page and, on Run and Usage, keeps the current run or meter sample in view. The
+bottom nav has one `[ <run> ]` button per ongoing run, followed by
+`[ usage ] [ help ] [ quit ]`. Every button shows its key underlined: inside
+the label where the label has it (the `u` of `usage`, the `q` of `quit`), else
+written ahead of the button (`1. [ aaa111 ] 2. [ bbb222 ]`, `?. [ help ]`), so
+the keys are read off the nav itself. The current run or page is marked `●`.
+Step adds `[ back ]` at the front, its `b` underlined. A long body shows its
+`first–last/total` row window while it scrolls.
+
+The pages are Home, Run, Step, Usage, and Help:
+
+- **Home** — ongoing runs, compact pool rows, agent-integration status with
+  `[install]`, and the one-line commands that operate Bullswarm.
+- **Run** — the Preflight and timeline, Live workers, Next work, and compact
+  pool rows last; each step row opens Step.
+- **Step** — the selected action's status, model and reasoning, attempt,
+  route, activity, verdict or failure, prompt, usage, events, output, and
+  artifact paths.
+- **Usage** — every enabled pool's 5h, 7d, and monthly windows, credits when
+  reported, and model rungs grouped by lane or provider.
+- **Help** — the dashboard's controls and the page-specific actions.
+
+Every page shares these keys — the dashboard's own Help page (`?`) prints the
+same table:
+
+| Key | Does |
+| --- | --- |
+| `↑`/`k`, `↓`/`j` | move up, move down |
+| `Enter`, `→`, `l` | open the selected run, step, or tab |
+| `Esc`, `←`, `h`, `b` | move out one page |
+| `Tab` / `Shift+Tab` | next / previous run |
+| `1`–`9` | open that run from the nav |
+| `u`, `?` | open Usage, open Help |
+| `q` | quit the dashboard; a workflow keeps running |
+
+And these are page-specific:
+
+| Page | Keys |
+| --- | --- |
+| Home | `/` filter · `a` active/all · `r` refresh · `i` install the agent integration |
+| Run | `t` phases/timeline · `o` planner · `v` technical details · `c` stop the workflow · `PgUp`/`PgDn` scroll |
+| Step | the agent panel; `Esc`/`b` goes back |
+| Usage | `l` by lane · `p` by provider · `e` edit (`bullswarm setup`) |
+
+Mouse reporting is enabled while the dashboard is open: click any button,
+tab, run, or step, and use the wheel to scroll the body.
+
+::: tip
+`q` quits the dashboard and leaves the run going; only `c` stops it, and that
+asks the kernel for a cooperative stop at its next safe checkpoint.
+:::
+
+Usage draws full-width background-coloured meter cells: green (`#b6bd73`)
+below 50% used, amber (`#e9c880`) from 50%, red (`#bf6c69`) from 80%, and a
+dark track (`#3a3a3a`). A white `▏` marks where each window's elapsed time
+falls. Each window includes its reset time and pace, followed by a credit
+meter where the provider reports one, then the rung's model, reasoning, and
+local record. The page note reads `read-only here · [edit] opens bullswarm setup`;
+`[edit]` hands the terminal to setup and returns to Usage with the rungs
+re-read. Home's `[install]` runs the same as `bullswarm integrate install --yes`; once every agent is installed it reads
+`[installed ✓]` and is inert.
 
 ## Watch prints only events
 
@@ -96,36 +179,6 @@ bullswarm workflow events ab12cd --after 0
 
 `action show` names the action's `outputFile` — read it before deciding the rest of the plan still fits. `events` is the machine-oriented replay; page through it by passing the last returned `sequence` to `--after`.
 
-## The interactive dashboard
-
-```bash
-# the workflow home: active and recent runs with a live preview
-bullswarm workflow
-
-# open one run's detail view directly
-bullswarm workflow tui ab12cd
-```
-
-The detail view is a timestamped timeline — Preflight, planner checkpoints, level transitions, worker results — above two live sections. **Live** shows the waiting or running work with each agent's latest action and stream heartbeat; **Next** holds planned work that has not started, kept separate so it cannot be mistaken for execution evidence. Below 100 columns the view opens on a full-width timeline.
-
-| Key | Does |
-| --- | --- |
-| `j` / `k`, arrows | move the selection |
-| `Enter` | open the selection: timeline to agents to activity |
-| `Esc` | move back out |
-| `o` | the planner overview: what it is doing now, its latest decision, and why |
-| `v` | technical state; from the planner, provider session, usage, and artifact paths |
-| `t` | below 100 columns, toggle Timeline and Phases |
-| `/` , `a` | filter the run list; switch between active and all runs |
-| `Tab` / `Shift+Tab` | switch runs |
-| `c` | request a confirmed cooperative stop |
-| `r` | refresh |
-| `q` | detach — the workflow keeps running |
-
-::: tip
-`q` detaches and leaves the run going; only `c` stops it, and that asks the kernel for a cooperative stop at its next safe checkpoint.
-:::
-
 ## One frame for a caller
 
 ```bash
@@ -155,11 +208,16 @@ BULLSWARM_ASCII=1 bullswarm workflow
 BULLSWARM_UNICODE=1 bullswarm workflow
 ```
 
-## The Claude Mod pane
+## The Claude Mod counterpart
 
-Inside Claude Code, the Bullswarm mod (`mods/bullswarm`) adds a strip above the prompt with one row per ongoing run; a digit in front of a row, or `[w]`, opens a pane docked beside the transcript. The pane draws the same overview as `workflow tui <id> --overview` — Preflight, every dependency level, Live workers with their latest activity, and Next — and re-reads it every 20 seconds while the run is in flight. `q` closes the pane, `r` re-reads, and a digit switches runs.
+Inside Claude Code, the Bullswarm mod (`mods/bullswarm`) is the dashboard's
+read-only counterpart. Its strip above the prompt is the run list, and its pane
+mirrors the dashboard's Run, Step, and Usage pages with the same meter colours
+and the same click-and-wheel navigation. Its bottom row is `back` (on a step), the
+run buttons, `usage` and `close`: there is no Home or Help page, and none of
+the dashboard's `[edit]` or `[install]` actions. Its strip and pane re-read
+ongoing runs every 20 seconds; the full details are in [Claude Code integration](/integrations/claude-code).
 
-Installation and the mod's other hooks are covered in [Claude Code integration](/integrations/claude-code).
 
 ## Next steps
 
