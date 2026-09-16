@@ -215,6 +215,10 @@ export async function runUpdate({
     action: 'update',
     package: PACKAGE_NAME,
     install,
+    // Where `after` was read from. install.root is where the RUNNING copy was
+    // found, which pnpm leaves behind on its old per-version store directory,
+    // so it cannot double as "where bullswarm lives now".
+    verifiedAt: install.root,
     before,
     latest: latest.version,
     after: before,
@@ -293,6 +297,7 @@ export async function runUpdate({
   const verifyRoot = pnpm
     ? join(pnpmDir(exec, 'root') ?? join(install.prefix, 'node_modules'), PACKAGE_NAME)
     : install.root;
+  result.verifiedAt = verifyRoot;
   const after = readVersion(verifyRoot);
   result.after = after;
   if (after !== latest.version) {

@@ -301,7 +301,7 @@ const updateText = rich({
   args: [],
   options: [
     { flag: '--check', desc: 'only compare the installed version with the latest published one; changes nothing', default: 'off (upgrades)' },
-    { flag: '--json', desc: 'machine-readable result: install {kind: global|pnpm-global|checkout|unknown, root, prefix}, before, latest, after, upToDate, updated, error, notes[]', default: 'human-readable lines' },
+    { flag: '--json', desc: 'machine-readable result: install {kind: global|pnpm-global|checkout|unknown, root, prefix}, verifiedAt (the copy `after` was read from — install.root is where the RUNNING copy was found, which pnpm leaves on its old store directory), before, latest, after, upToDate, updated, error, notes[]', default: 'human-readable lines' },
   ],
   safety: [
     'reads https://registry.npmjs.org/bullswarm/latest (8s timeout); without --check, runs npm install -g into the running install\'s own prefix, pnpm add -g for a pnpm global install, or git pull --ff-only in a source checkout',
