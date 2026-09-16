@@ -33,7 +33,7 @@ export const DASHBOARD_KEYS = Object.freeze({
   up: Object.freeze({ keys: '↑/k', label: 'move up', bindings: Object.freeze(['\x1b[A', 'k']) }),
   down: Object.freeze({ keys: '↓/j', label: 'move down', bindings: Object.freeze(['\x1b[B', 'j']) }),
   in: Object.freeze({ keys: 'Enter/→/l', label: 'open', bindings: Object.freeze(['\r', '\n', '\x1b[C', 'l']) }),
-  out: Object.freeze({ keys: 'Esc/←/h/b', label: 'move out', bindings: Object.freeze(['\x1b', '\x1b[D', 'h', 'b']) }),
+  out: Object.freeze({ keys: 'Esc/←/b', label: 'move out', bindings: Object.freeze(['\x1b', '\x1b[D', 'b']) }),
   nextWorkflow: Object.freeze({ keys: 'Tab', label: 'next workflow', bindings: Object.freeze(['\t']) }),
   previousWorkflow: Object.freeze({ keys: 'Shift+Tab', label: 'previous workflow', bindings: Object.freeze(['\x1b[Z']) }),
   detach: Object.freeze({ keys: 'q', label: 'detach', bindings: Object.freeze(['q', '\x03']) }),
@@ -1533,7 +1533,7 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
  * The bottom nav: one button per ongoing run, then usage, help and quit.
  * Every button shows its key underlined: inside the label where the label
  * has it (`[ usage ]` with the u underlined), else written ahead of the
- * button (`1. [ aaa111 ]`, `?. [ help ]`), so the keys read off the nav.
+ * button (`1. [ aaa111 ]`), so the keys read off the nav.
  */
 function navParts(model, { page, width, selectedRunId }) {
   const button = (item) => {
@@ -1557,7 +1557,7 @@ function navParts(model, { page, width, selectedRunId }) {
   }));
   const tail = [
     { key: 'u', label: 'usage', mark: page === 'usage', action: { kind: 'page', page: 'usage' } },
-    { key: '?', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
+    { key: 'h', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
     { key: 'q', label: 'quit', action: { kind: 'quit' } },
   ];
   // The way out is the last thing to go: the tail is kept whole and the run
@@ -1802,7 +1802,7 @@ function helpPage(model, opts, body) {
   const rows = [
     ['↑/k · ↓/j', 'move up · move down'],
     ['Enter/→/l', 'open the selected run, step or tab'],
-    ['Esc/←/h/b', 'move out one page'],
+    ['Esc/←/b', 'move out one page'],
     ['Tab / Shift+Tab', 'next · previous run'],
     ['1–9', 'open that run from the nav'],
     ['u · ?', 'usage · help'],
@@ -2210,7 +2210,7 @@ export async function runDashboard(bullswarmDir, {
     bodyScroll = 0;
     paint();
   };
-  /** Esc/←/h/b walks out one page: step → run → home, usage/help → home. */
+  /** Esc/←/b walks out one page: step → run → home, usage/help → home. */
   const moveOut = () => {
     if (ui.page === 'step') {
       ui.page = 'run';
@@ -2513,7 +2513,7 @@ export async function runDashboard(bullswarmDir, {
     }
     if (keyPressed('detach', key)) return finish();
     if (key === 'r') { message = null; return refresh(); }
-    if (key === '?') { ui.page = 'help'; ui.focus = 0; bodyScroll = 0; return paint(); }
+    if (key === '?' || key === 'h') { ui.page = 'help'; ui.focus = 0; bodyScroll = 0; return paint(); }
     if (key === 'u') { ui.page = 'usage'; ui.focus = 0; bodyScroll = 0; return paint(); }
     if (ui.page === 'usage') {
       if (key === 'l') return showRungs('lane');
@@ -2538,7 +2538,7 @@ export async function runDashboard(bullswarmDir, {
       if (run) return openRun(run.runId);
     }
     if (keyPressed('out', key)) return moveOut();
-    if (key === '\u001b[D' || key === 'h') return moveOut();
+    if (key === '\u001b[D') return moveOut();
     if (keyPressed('nextWorkflow', key)) return switchWorkflow(1);
     if (keyPressed('previousWorkflow', key)) return switchWorkflow(-1);
     if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();

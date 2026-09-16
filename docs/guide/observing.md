@@ -31,9 +31,9 @@ Every page has a sticky header and a sticky bottom nav. The header names the
 page and, on Run and Usage, keeps the current run or meter sample in view. The
 bottom nav has one `[ <run> ]` button per ongoing run, followed by
 `[ usage ] [ help ] [ quit ]`. Every button shows its key underlined: inside
-the label where the label has it (the `u` of `usage`, the `q` of `quit`), else
-written ahead of the button (`1. [ aaa111 ] 2. [ bbb222 ]`, `?. [ help ]`), so
-the keys are read off the nav itself. The current run or page is marked `●`.
+the label (the `u` of `usage`, the `h` of `help`, the `q` of `quit`), and a
+run's digit written ahead of its button (`1. [ aaa111 ] 2. [ bbb222 ]`), so
+the keys are read off the nav itself. `?` opens Help too. The current run or page is marked `●`.
 Step adds `[ back ]` at the front, its `b` underlined. A long body shows its
 `first–last/total` row window while it scrolls.
 
@@ -57,10 +57,10 @@ same table:
 | --- | --- |
 | `↑`/`k`, `↓`/`j` | move up, move down |
 | `Enter`, `→`, `l` | open the selected run, step, or tab |
-| `Esc`, `←`, `h`, `b` | move out one page |
+| `Esc`, `←`, `b` | move out one page |
 | `Tab` / `Shift+Tab` | next / previous run |
 | `1`–`9` | open that run from the nav |
-| `u`, `?` | open Usage, open Help |
+| `u`, `h` or `?` | open Usage, open Help |
 | `q` | quit the dashboard; a workflow keeps running |
 
 And these are page-specific:

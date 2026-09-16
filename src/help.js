@@ -1159,8 +1159,8 @@ const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>] [--overview [--width <cols>] [--height <rows>]]',
   purpose: 'Open the dashboard — the same screen bare `bullswarm` opens on a configured terminal, here as the '
     + 'explicit command. A sticky header names the selected run and a sticky bottom nav carries every ongoing run '
-    + '(1. [ <run> ], the current one marked ●) plus [ usage ], ?. [ help ] and [ quit ], each button\'s key '
-    + 'underlined in its label or written ahead of it. The pages are Home (ongoing '
+    + '(1. [ <run> ], the current one marked ●) plus [ usage ], [ help ] and [ quit ], each button\'s key '
+    + 'underlined in its label, a run\'s digit ahead of its button. The pages are Home (ongoing '
     + 'runs, the compact pool rows, the agent-integration status with an [install] button, and the commands that '
     + 'operate the product), Run (the selected run\'s timeline with its Live and Next overview), Step (one agent\'s '
     + 'panel, with [back]), Usage (every meter window per enabled pool, the rungs with their local record, the '
