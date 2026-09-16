@@ -1531,19 +1531,19 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
 
 /**
  * The bottom nav: one button per ongoing run, then usage, help and quit.
- * Every button shows its key underlined: inside the label where the label
- * has it (`[ usage ]` with the u underlined), else written ahead of the
- * button (`1. [ aaa111 ]`), so the keys read off the nav.
+ * Every button shows its key underlined inside its label: the letter where
+ * the label has it (`[ usage ]` with the u underlined), a run's digit ahead
+ * of its id (`[ 1.aaa111 ]`), so the keys read off the nav.
  */
 function navParts(model, { page, width, selectedRunId }) {
   const button = (item) => {
     const mark = item.mark ? `${glyphs().ongoing} ` : '';
     // A digit is never a label's key, however the run id spells itself.
     const at = /^[a-z]$/.test(item.key) ? item.label.indexOf(item.key) : -1;
-    if (at >= 0) {
-      return `[ ${mark}${item.label.slice(0, at)}${underline(item.key)}${item.label.slice(at + 1)} ]`;
-    }
-    return `${underline(item.key)}. [ ${mark}${item.label} ]`;
+    const label = at >= 0
+      ? `${item.label.slice(0, at)}${underline(item.key)}${item.label.slice(at + 1)}`
+      : `${underline(item.key)}.${item.label}`;
+    return `[ ${mark}${label} ]`;
   };
   const back = page === 'step' ? [{ key: 'b', label: 'back', action: { kind: 'back' } }] : [];
   // The run the reader is on is marked wherever a run is what they are

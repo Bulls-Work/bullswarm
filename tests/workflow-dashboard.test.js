@@ -675,7 +675,8 @@ function frameHeader(screen) {
 /** The sticky bottom nav as its `[ label ]` buttons, marks included. */
 function navButtons(screen) {
   const nav = plain(String(paintedRows(screen).at(-1) ?? ''));
-  return [...nav.matchAll(/\[ ([^\]]*?) \]/g)].map((match) => match[1].trim());
+  // A run button's digit (`[ 1.aaa111 ]`) is dropped: the tests name runs by id.
+  return [...nav.matchAll(/\[ ([^\]]*?) \]/g)].map((match) => match[1].trim().replace(/^(● )?[1-9]\./, '$1'));
 }
 
 /** The last frame written to a fake output, with its leading paint escape. */
@@ -756,8 +757,8 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
     });
     const nav = String(frame.lines.at(-1));
     const key = (text) => `\x1b[4m${text}\x1b[24m`;
-    assert.match(nav, new RegExp(`${key('1')}\\. \\[ ● aaa111 \\]`.replace(/\x1b\[/g, '\\x1b\\[')));
-    assert.ok(nav.includes(`${key('2')}. [ bbb222 ]`), 'the second run carries 2.');
+    assert.ok(nav.includes(`[ ● ${key('1')}.aaa111 ]`), 'the current run carries 1. inside its button');
+    assert.ok(nav.includes(`[ ${key('2')}.bbb222 ]`), 'the second run carries 2. inside its button');
     assert.ok(nav.includes(`[ ${key('u')}sage ]`), 'usage underlines its u');
     assert.ok(nav.includes(`[ ${key('h')}elp ]`), 'help underlines its h');
     assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
@@ -837,7 +838,7 @@ test('the nav records a hit region for every button, run row and step row', () =
     assert.deepEqual(nav.map((region) => region.action.page).filter(Boolean), ['usage', 'help']);
     for (const region of nav) {
       const painted = plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2);
-      assert.match(painted, /^([1-9]\. )?\[ .+ \]$/, `${painted} is not a whole button`);
+      assert.match(painted, /^\[ .+ \]$/, `${painted} is not a whole button`);
     }
     // Every step row the timeline prints opens that step.
     const steps = runFrame.regions.filter((region) => region.action.kind === 'open-step');
@@ -1853,7 +1854,7 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
     assert.match(scrolled, / · \d+–\d+\/\d+$/);
     assert.notEqual(scrolled, before);
 
-    clickOn(session, '[ bbb222 ]');
+    clickOn(session, '[ 2.bbb222 ]');
     assert.match(frameHeader(lastFrame(session.output)), / bbb222 running/);
     clickOn(session, '[ usage ]');
     assert.match(frameHeader(lastFrame(session.output)), /^ Pools · /);
