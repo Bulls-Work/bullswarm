@@ -33,7 +33,7 @@ The rolling 5-hour window never paces — it only gates. A pool whose forecast i
 
 ## Expiring-soon urgency
 
-A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool already forecast at or above 95% of its pacing window is `draining` and goes last.
+A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) is ranked on urgency — its surplus divided by the fraction of the window still to run — instead of on the surplus alone. While any urgent pool can still spend its quota, it is the only one selectable, which is how a pool with two hours left beats a pool with three days left. A pool forecast at or above 95% of its pacing window *and* ahead of the window's own clock (forecast above the elapsed share) is `draining` and goes last; a pool at 96% with 98% of its month gone is spending at its own pace, not draining, and keeps its quota in play until the reset.
 
 ## In-flight load
 
@@ -92,7 +92,7 @@ forecast: inflight=0 5h ?%->?% expected=5.67m rate=unmeasured basis=bootstrap
 
 Grok won because it was the only pool left: this `analyze` task resolves to the medium effort tier, whose allow-list names a model only on grok and codex, and codex is disabled — eligibility runs before any pace comparison, so the +35.6 on `claude-code:wati` never entered the race.
 
-When a pool is passed over, the reason says so in the same line — `skipped near 5h limit (projected): claude-code:wati 88.1% (92.3% elapsed)`, `forecast-gated at/above 90%: …`, `expiring but draining (forecast >= 95%): …`, or `preferred over busier: … (2 in flight)`.
+When a pool is passed over, the reason says so in the same line — `skipped near 5h limit (projected): claude-code:wati 88.1% (92.3% elapsed)`, `forecast-gated at/above 90%: …`, `expiring but draining (forecast >= 95% and past its clock): grok 99.5% (98.8% elapsed)`, or `preferred over busier: … (2 in flight)`.
 
 ## Next steps
 

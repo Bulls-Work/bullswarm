@@ -1,5 +1,16 @@
 # bullswarm changelog
 
+## Unreleased
+
+- routing: a pool whose pacing window is about to reset is `draining` only
+  when its forecast is at or above 95% *and* ahead of the window's own clock,
+  the same clock-relative shape the 5h near-limit line already has. A pool on
+  or behind pace keeps spending right up to its reset instead of being ranked
+  last by a fixed line (observed 2026-09-16: command-code at 94.9% used with
+  98% of the month gone was passed over while +3 points of quota expired).
+  The skip reason now reads `expiring but draining (forecast >= 95% and past
+  its clock): <pool> <forecast>% (<elapsed>% elapsed)`.
+
 ## 0.32.0 — the dashboard is the main screen
 
 - wording: a program run's dependency levels are called phases everywhere the
