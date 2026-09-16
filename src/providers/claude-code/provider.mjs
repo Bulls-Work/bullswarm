@@ -186,6 +186,21 @@ export function profileCommand(configDir, bin = 'claude') {
   return `CLAUDE_CONFIG_DIR=${configDir} ${bin}`;
 }
 
+// The Anthropic account a home is logged into, as recorded by `claude` itself.
+// A token string cannot answer this: signing the same account in twice mints
+// two unrelated access tokens, so token equality sees two accounts where the
+// subscription — and its quota — is one.
+export function accountIdentity(configDir, opts = {}) {
+  const read = opts.readClaudeConfig ?? ((path) => readFileSync(path, 'utf8'));
+  try {
+    const uuid = JSON.parse(read(join(configDir, '.claude.json')))?.oauthAccount?.accountUuid;
+    return typeof uuid === 'string' && uuid.length > 0 ? `account:${uuid}` : null;
+  } catch {
+    // No .claude.json, unreadable, or a home that predates the field.
+    return null;
+  }
+}
+
 export function discoverClaudeAccounts(opts = {}) {
   const homeDir = opts.homeDir ?? homedir();
   const dirs = discoverClaudeConfigDirs({
@@ -193,12 +208,17 @@ export function discoverClaudeAccounts(opts = {}) {
     envConfigDir: opts.envConfigDir,
   });
   const accounts = [];
-  const seenTokens = new Set();
+  const seen = new Set();
   for (const configDir of dirs) {
     const got = readAccountCredentials(configDir, opts);
     if (!got) continue;
-    if (seenTokens.has(got.creds.accessToken)) continue;
-    seenTokens.add(got.creds.accessToken);
+    // Keyed on the account when the home records one, on the raw token when it
+    // does not. `dirs` starts at the default home, so first-wins keeps the
+    // caller's own login and drops the duplicate — routing never hands work to
+    // the subscription already running the session.
+    const key = accountIdentity(configDir, opts) ?? `token:${got.creds.accessToken}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const slug = accountSlugForConfigDir(configDir, homeDir);
     accounts.push({
       configDir,
