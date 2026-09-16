@@ -37,7 +37,7 @@ A pool whose pacing window resets within 24 hours (weekly) or 3 days (monthly) i
 
 ## In-flight load
 
-Work already dispatched is charged against a pool before the next pick: each pool's effective surplus is its pace minus what its in-flight agents are expected to spend, and minus at least 3 surplus points per agent when no measured rate exists. A busier pool therefore yields to a quieter one at similar pace. The floor is `config.inflightPenaltyPct` in `~/.bullswarm/state.json` (default 3; `0` turns it off).
+Work already dispatched is charged against a pool before the next pick: each pool's effective surplus is its pace minus what its in-flight agents and the candidate are expected to spend. When the pacing window has a measured rate, each timed in-flight record is charged at `rate × remaining minutes` with no floor. A pool with no measured rate uses the flat `config.inflightPenaltyPct` tie-breaker in `~/.bullswarm/state.json` (default 3; `0` turns it off); a measured pool uses that value only for an in-flight record whose remaining duration is unknown. A busier pool therefore yields to a quieter one at similar pace.
 
 ## Assignments and incumbency
 

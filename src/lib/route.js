@@ -30,12 +30,17 @@
 //       above BURST_BLOCK_PCT is gated out entirely, and pools already carrying
 //       in-flight work yield to quieter pools of similar pace — so a burst of
 //       parallel actions spreads instead of stacking on the most-behind pool.
+//       A measured pacing rate charges each timed in-flight record at
+//       rate × remaining minutes with no artificial floor; a pool with no
+//       measured rate uses DEFAULT_INFLIGHT_PENALTY_PCT as the tie-breaker.
 //       With no forecast fields attached, every rule above behaves exactly as
 //       it did before: an unmeasured pool is never penalized for a number
 //       nobody produced.
 //   R9. Load beats incumbency: an incumbent carrying more in-flight agents
 //       than a challenger keeps neither its margin nor its cost guard; the
-//       quieter pool wins as soon as its effective surplus is higher.
+//       quieter pool wins as soon as its effective surplus is higher. Effective
+//       surplus subtracts the measured remaining-work charge when a rate is
+//       known, and the flat per-agent tie-breaker only when it is not.
 //  R10. The near-limit line is clock-relative. R7's tier is for a pool that
 //       will hit its 5h wall mid-run, and that danger is time-shaped: 88%
 //       projected with 23 minutes left in the window is a pool spending at its
@@ -114,8 +119,9 @@ export const INCUMBENCY_MARGIN = 10; // surplus points a challenger must beat
  * the pool's pacing window (or, failing that, its weekly one). It is a
  * tie-breaker, not a measurement: three points is
  * under a third of INCUMBENCY_MARGIN, so it separates pools of similar pace
- * without ever overturning a real quota difference. Callers override it with
- * opts.inflightPenaltyPct.
+ * without ever overturning a real quota difference. It applies only when the
+ * pacing rate is unmeasured (and as the fallback for an untimed record); callers
+ * override it with opts.inflightPenaltyPct.
  */
 export const DEFAULT_INFLIGHT_PENALTY_PCT = 3;
 
@@ -339,17 +345,12 @@ export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()
  * attached only the weekly one). Charging a weekly rate against a monthly
  * surplus would compare points from two different windows.
  *
- * Two bases, and the larger one is charged:
- *   1. a known rate: rate × each in-flight record's remainingMinutes,
- *      plus rate × candidateMinutes — real projected percentage points (an
- *      in-flight agent whose remaining minutes nobody recorded is charged
- *      inflightPenaltyPct instead);
- *   2. the floor: inflightPenaltyPct per in-flight agent — a documented flat
- *      default, labeled `penalty` so no reader mistakes it for a measurement.
- * The floor exists because at real subscription-window rates (about 0.05
- * points per worker-minute) a six-minute agent projects to under a point,
- * which cannot spread a burst across a pace gap of a few points; the measured
- * projection only ever raises the charge above the floor.
+ * A measured rate is charged directly: rate × each in-flight record's
+ * remainingMinutes, plus rate × candidateMinutes for the assignment being
+ * routed. There is no floor on that measured projection. An in-flight agent
+ * whose remaining minutes nobody recorded still uses `inflightPenaltyPct` as
+ * an unknown-duration fallback. When no rate is measured at all, the flat
+ * `inflightPenaltyPct` per in-flight agent is the documented tie-breaker.
  *
  * Only `inflight.records[].remainingMinutes` is read: `inflight.minutes` is
  * elapsed worker-minutes (src/lib/assignments.js attachInflight), which says
@@ -361,11 +362,11 @@ export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()
  * the 5h forecast in fiveHourForecast() clips at `fiveHourResetsAt`, and it
  * computes that separately from this number.
  *
- * estimateSource: `none` (nothing to charge), `penalty` (the flat floor set the
- * charge), or the source label of the rate that was used (`history` /
- * `bootstrap`, from `spend.pacing` or `spend.weekly`) when the measured
- * projection exceeded the floor; null when a rate was used but the producer
- * labeled no provenance for it.
+ * estimateSource: `none` (nothing to charge), `penalty` (the flat fallback
+ * charged because no rate was measured, or because an in-flight record had no
+ * duration), or the source label of the measured rate (`history` /
+ * `bootstrap`, from `spend.pacing` or `spend.weekly`); null when a rate was
+ * used but the producer labeled no provenance for it.
  *
  * @returns {{count: number, penalty: number, ratePerMinute: number|null,
  *            estimateSource: string|null}}
@@ -404,18 +405,16 @@ export function inflightLoad(pool, opts = {}) {
     measured += 1;
   }
   // An in-flight agent nobody could time still costs something: charge it the
-  // flat penalty rather than pretending it will finish for free.
+  // flat fallback rather than pretending it will finish for free. This is an
+  // unknown-duration fallback, not a floor on the measured records.
   const untimed = Math.max(0, count - measured);
   const projected = rate * remaining + rate * (minutes ?? 0) + untimed * penaltyPct;
-  // Every in-flight agent costs at least the flat penalty. At measured weekly
-  // rates the projection alone is a fraction of a point per agent, which would
-  // leave a burst stacked on the single most-behind pool — the very thing this
-  // rule exists to prevent. The projection can only raise the charge.
-  const floor = count * penaltyPct;
-  const penalty = Math.max(projected, floor);
+  // A measured rate is the quota estimate. The flat tie-breaker belongs only
+  // to the no-rate branch above; applying it here would demote a measured pool
+  // even when its remaining work is worth materially less than the default.
+  const penalty = projected;
   const estimateSource =
     penalty === 0 ? 'none'
-    : floor > projected ? 'penalty'
     : measured === 0 && untimed > 0 && minutes == null ? 'penalty'
     : sourceLabel;
   return { count, penalty, ratePerMinute: rate, estimateSource };
@@ -651,7 +650,8 @@ export function isExhausted(pool) {
  *                        requiredCapabilities, preferredPool, effortTier,
  *                        callerSession, candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
- *                        inflightPenaltyPct=DEFAULT_INFLIGHT_PENALTY_PCT }
+ *                        inflightPenaltyPct=DEFAULT_INFLIGHT_PENALTY_PCT
+ *                        (unmeasured-pool fallback) }
  * @returns {{pick: object|null, keepOnClaude: boolean, why: string,
  *            candidates: Array,
  *            forecast: {candidateMinutes: number|null, gated: string[]}}}

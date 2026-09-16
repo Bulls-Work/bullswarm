@@ -385,18 +385,20 @@ test('an unknown forecast is never gated and never deprioritized', () => {
   );
 });
 
-test('between pools of equal pace the one carrying work in flight yields', () => {
+test('between pools of equal pace the one carrying measured work still yields', () => {
   const loaded = busy('acme', { pace: 10, count: 2, remainingMinutes: 20, fiveHourUsedPct: 30 });
   const quiet = busy('codex', { pace: 10, count: 0, fiveHourUsedPct: 30 });
   const r = pickPool('build', [loaded, quiet], {
     callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 6,
   });
   assert.equal(r.pick.pool, 'codex');
-  // loaded: projection 0.05×(40 + 6) = 2.3 is below the 2×3 floor → 10 − 6 = 4,
-  // labeled penalty · quiet: 10 − 0.05×6 = 9.7 on the measured rate
+  // The measured projection is charged directly now: loaded 0.05×(40 + 6)
+  // = 2.3 → 10 − 2.3 = 7.7, labeled history. Quiet is 10 − 0.05×6 = 9.7.
+  // The quieter pool still wins, but the measured pool is no longer charged a
+  // floor that says six minutes of known work costs six points.
   assert.deepEqual(
     r.candidates.map((c) => [c.pool, c.pace, c.effectiveSurplus, c.inflight, c.estimateSource]),
-    [['codex', 10, 9.7, 0, 'history'], ['acme', 10, 4, 2, 'penalty']],
+    [['codex', 10, 9.7, 0, 'history'], ['acme', 10, 7.7, 2, 'history']],
   );
   assert.match(r.why, /preferred over busier: acme \(2 in flight\)/);
 });
@@ -426,24 +428,25 @@ test('an in-flight agent with no recorded remaining minutes still costs the pena
     spend: { weekly: { ratePerMinute: 0.05, source: 'history' } },
   });
   const r = pickPool('build', [p], { callerEligible: false, callerSession: false, now: NOW });
-  // projection 0.05×20 measured + 3 for the untimed one = 4, floor 2×3 = 6 → 10 − 6
-  assert.equal(r.candidates[0].effectiveSurplus, 4);
-  assert.equal(r.candidates[0].estimateSource, 'penalty');
+  // The timed record is charged at its measured rate and the untimed record
+  // keeps the 3-point unknown-duration fallback: 0.05×20 + 3 = 4 → 10 − 4.
+  assert.equal(r.candidates[0].effectiveSurplus, 6);
+  assert.equal(r.candidates[0].estimateSource, 'history');
 });
 
-test('a measured weekly rate never charges less than the flat floor per in-flight agent', () => {
-  // The real machine measures about 0.05 weekly points per worker-minute, so a
-  // six-minute agent projects to 0.3 points: without the floor a 4-point pace
-  // gap keeps a whole burst on one pool.
+test('a measured weekly rate charges projected work without the flat floor', () => {
+  // The real machine measures about 0.05 weekly points per worker-minute. The
+  // old floor made this six-minute burst cost 6 points; the measured projection
+  // is 0.9, so the loaded pool remains the most-behind after the change.
   const loaded = busy('acme', { pace: 22, count: 2, remainingMinutes: 6, fiveHourUsedPct: 30 });
   const quiet = busy('codex', { pace: 18, count: 0, fiveHourUsedPct: 30 });
   const r = pickPool('build', [loaded, quiet], {
     callerEligible: false, callerSession: false, now: NOW, candidateMinutes: 6,
   });
-  assert.equal(r.pick.pool, 'codex');
+  assert.equal(r.pick.pool, 'acme');
   const w = r.candidates.find((c) => c.pool === 'acme');
-  // projection 0.05×(12 + 6) = 0.9 < floor 6 → 22 − 6 = 16 < codex 18 − 0.3
-  assert.deepEqual([w.effectiveSurplus, w.inflight, w.estimateSource], [16, 2, 'penalty']);
+  // 0.05×(12 + 6) = 0.9 → 22 − 0.9 = 21.1 > codex's 18 − 0.3.
+  assert.deepEqual([w.effectiveSurplus, w.inflight, w.estimateSource], [21.1, 2, 'history']);
   const c = r.candidates.find((x) => x.pool === 'codex');
   assert.deepEqual([c.effectiveSurplus, c.estimateSource], [17.7, 'history']);
 
@@ -460,18 +463,20 @@ test('a measured weekly rate never charges less than the flat floor per in-fligh
 
 test('a loaded incumbent is displaced by a quieter challenger of equal cost', () => {
   const incumbent = busy('acme', {
-    incumbent: true, costRank: 2, pace: 10, count: 3, remainingMinutes: 40, fiveHourUsedPct: 20,
+    incumbent: true, costRank: 2, pace: 10, count: 3, remainingMinutes: 80, fiveHourUsedPct: 20,
   });
   const challenger = busy('codex', { costRank: 2, pace: 4, count: 0, fiveHourUsedPct: 20 });
   const r = pickPool('chore', [incumbent, challenger], {
     callerEligible: false, callerSession: false, now: NOW,
   });
-  // incumbent 10 − max(0.05×120, 3×3) = 1 · challenger 4 − 0 = 4. R9: against a
-  // challenger carrying fewer agents the loaded incumbent has no margin to hide
-  // behind, so the higher effective surplus wins outright.
+  // The measured projection is 0.05×240 = 12, so incumbent 10 − 12 = −2;
+  // challenger 4 − 0 = 4. R9: against a challenger carrying fewer agents the
+  // loaded incumbent has no margin to hide behind, so the higher effective
+  // surplus wins outright. (The fixture keeps enough measured work to remain
+  // displaced after the flat floor was removed.)
   assert.equal(r.pick.pool, 'codex');
-  const sameLoad = busy('codex', { costRank: 2, pace: 4, count: 3, remainingMinutes: 40, fiveHourUsedPct: 20 });
-  // An equally loaded challenger (4 − 9 = −5) gets no shortcut and loses.
+  const sameLoad = busy('codex', { costRank: 2, pace: 4, count: 3, remainingMinutes: 80, fiveHourUsedPct: 20 });
+  // An equally loaded challenger (4 − 12 = −8) gets no shortcut and loses.
   assert.equal(pickPool('chore', [incumbent, sameLoad], {
     callerEligible: false, callerSession: false, now: NOW,
   }).pick.pool, 'acme');
@@ -812,6 +817,111 @@ function septemberPools(over = {}) {
 }
 
 const septemberOpts = { now: NOW, candidateMinutes: 8, callerEligible: false };
+
+const COMMAND_CODE_RATE = 0.039208;
+
+/** The measured command-code monthly case from 2026-09-16. */
+function commandCodeReplay(over = {}) {
+  return pacedPool('command-code', 'monthly', 95.7, 12 * 60, {
+    elapsedPct: 98.4,
+    pace: 2.7,
+    spend: {
+      pacing: { window: 'monthly', ratePerMinute: COMMAND_CODE_RATE, source: 'history' },
+    },
+    inflight: {
+      count: 1,
+      minutes: 10,
+      records: [{ remainingMinutes: 10 }],
+    },
+    ...over,
+  });
+}
+
+function weeklyNotSoon() {
+  // 71.4% of the week elapsed, 51.4% used: +20 with two days left, outside
+  // the weekly 24-hour expiring-soon lead time.
+  return pacedPool('weekly', 'weekly', 51.4, 2 * 24 * 60);
+}
+
+test('a measured monthly pool stays urgent with one in-flight record', () => {
+  const r = pickPool('build', [commandCodeReplay(), weeklyNotSoon()], {
+    now: NOW,
+    callerEligible: false,
+    candidateMinutes: 10,
+  });
+  const command = r.candidates.find((c) => c.pool === 'command-code');
+  assert.equal(r.pick.pool, 'command-code');
+  assert.equal(command.urgencyState, 'urgent');
+  // The measured load includes the 10-minute in-flight record and the
+  // 10-minute candidate: 2.7 − 0.039208×20 = 1.9 after tenth(). The old
+  // three-point floor made the same pool normal at effective −0.3.
+  assert.equal(command.effectiveSurplus, 1.9);
+  assert.equal(command.forecastPacingPct, 96.5);
+  assert.equal(command.estimateSource, 'history');
+  assert.equal(r.candidates.find((c) => c.pool === 'weekly').pace, 20);
+});
+
+test('a measured monthly pool stays urgent with two in-flight records', () => {
+  const r = pickPool('build', [commandCodeReplay({
+    inflight: {
+      count: 2,
+      minutes: 26,
+      records: [{ remainingMinutes: 10 }, { remainingMinutes: 16 }],
+    },
+  }), weeklyNotSoon()], {
+    now: NOW,
+    callerEligible: false,
+    candidateMinutes: 10,
+  });
+  const command = r.candidates.find((c) => c.pool === 'command-code');
+  assert.equal(r.pick.pool, 'command-code');
+  assert.deepEqual(
+    [command.urgencyState, command.effectiveSurplus, command.forecastPacingPct],
+    ['urgent', 1.3, 97.1],
+  );
+});
+
+test('a measured monthly pool still drains when its forecast crosses the clock', () => {
+  const r = pickPool('build', [commandCodeReplay({
+    usedPct: 97,
+    pace: 1.4,
+  })], {
+    now: NOW,
+    callerEligible: false,
+    candidateMinutes: 40,
+  });
+  const command = r.candidates[0];
+  // 97 + 0.039208×(10 in flight + 40 candidate) = 98.9604, ahead of the
+  // unchanged 98.4% elapsed clock, so R11 remains clock-relative draining.
+  assert.deepEqual(
+    [command.urgencyState, command.forecastPacingPct],
+    ['draining', 99],
+  );
+});
+
+test('an unmeasured expiring pool still pays the configured floor', () => {
+  const unmeasured = pacedPool('unmeasured', 'monthly', 80, 12 * 60, {
+    elapsedPct: 98.4,
+    pace: 18.4,
+    inflight: {
+      count: 1,
+      minutes: 10,
+      records: [{ remainingMinutes: 10 }],
+    },
+    spend: {
+      pacing: { window: 'monthly', ratePerMinute: null, source: null },
+    },
+  });
+  const c = pickPool('build', [unmeasured], {
+    now: NOW,
+    callerEligible: false,
+    candidateMinutes: 10,
+  }).candidates[0];
+  assert.deepEqual(
+    [c.effectiveSurplus, c.estimateSource, c.urgencyState],
+    [15.4, 'penalty', 'urgent'],
+  );
+});
 
 test('expiring soon: grok wins the lane it lost on surplus (R11, 2026-09-11 replay)', () => {
   const r = pickPool('build', septemberPools(), septemberOpts);
