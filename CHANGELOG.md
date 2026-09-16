@@ -17,7 +17,9 @@
   where the window's elapsed time falls, and `usage` in the pane's bottom
   nav opens a page with every meter window of every pool, its reset time
   and pace, the credit meter where there is one, and every pool × tier rung
-  with its model, reasoning and record. Pool display names come from the
+  with its model, reasoning and record, grouped by lane or by provider. A
+  `route` tool lets the model switch routing when the person asks. Pool
+  display names come from the
   `poolAliases` option; `strip` picks `runs`, `full` or `off`.
 - integrate: `bullswarm integrate install --agents claude --yes` also links
   the mod under `~/.claude/skills/bullswarm-mod` and sets
