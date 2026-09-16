@@ -142,7 +142,7 @@ const TABLE = {
   'workflow plan revise': ['program', 'rerun', 'summary', 'base-revision', 'wait', 'json'],
   'workflow pause': ['now', 'json'],
   'workflow capabilities': ['json'],
-  'workflow tui': ['json', 'all', 'show', 'cancel'],
+  'workflow tui': ['json', 'all', 'show', 'cancel', 'overview', 'width', 'height'],
   'workflow watch': [
     'classic', 'interval', 'heartbeat', 'stall-after', 'next', 'after',
     'since', 'jsonl', 'once', 'verbose',

@@ -12,7 +12,7 @@ import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { cmdRuns } from './runs-cli.js';
 import { newRunId, resolveRunId, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
-import { runDashboard, dashboardJson } from './dashboard.js';
+import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { readEvents } from './events.js';
 import { REASONING_LEVELS, isReasoningLevel } from '../lib/reasoning.js';
 import { extractGoalRequirements, REQUIREMENT_GRANULARITY_HINT } from './goal.js';
@@ -102,6 +102,14 @@ export async function cmdWorkflow(args, {
             const legacy = legacyRunRefusal(token, { json: Boolean(opts.json) });
             if (legacy !== null) return legacy;
           }
+        }
+        if (opts.overview) {
+          const token = opts.rest[0] ?? opts.show;
+          if (!token) { console.error(`usage: ${usageLine(['workflow', 'tui'])}\n--overview needs a run: pass <runId> or --show <runId>`); return 2; }
+          const snapshot = overviewSnapshot(bullswarmDir, token, { width: opts.width, height: opts.height });
+          if (opts.json) console.log(JSON.stringify(snapshot, null, 2));
+          else console.log(snapshot.lines.join('\n'));
+          return snapshot.legacy ? 2 : 0;
         }
         if (opts.json || opts.cancel || opts.show || opts.all) {
           const token = opts.rest[0] ?? opts.show;
@@ -1808,7 +1816,7 @@ function parseFlags(argv) {
     'suggested-plan', 'planner', 'program', 'summary', 'reason',
     'max-agents', 'max-expansion-rounds', 'max-actions', 'concurrency',
     'retry-attempts', 'interval', 'heartbeat', 'stall-after', 'since', 'message',
-    'out', 'rerun', 'base-revision', 'wait',
+    'out', 'rerun', 'base-revision', 'wait', 'width', 'height',
   ]);
   // A value flag with no value (end of argv, or the next token is another
   // flag) is a usage error, never a silent default: a bare --program must not

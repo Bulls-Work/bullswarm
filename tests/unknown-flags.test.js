@@ -152,15 +152,24 @@ test('the known-flag table and src/help.js cannot drift apart', () => {
 // A flag that is real, used, and simply missing from a table would turn a
 // documented command into exit 2 — the one regression this change could cause.
 test('every command form README/SKILL/operations.md documents is accepted', () => {
-  const guideDir = join(ROOT, 'docs', 'guide');
+  // The published site: the guide, the reference, and the integration pages.
+  // Historical notes under docs/ are deliberately excluded — they record
+  // removed verbs on purpose.
+  const pageDirs = [
+    join('docs', 'guide'),
+    join('docs', 'reference'),
+    join('docs', 'integrations'),
+  ];
   const sources = [
     'README.md',
     join('skill', 'SKILL.md'),
     join('skill', 'references', 'operations.md'),
     join('docs', 'index.md'),
-    ...readdirSync(guideDir)
-      .filter((name) => name.endsWith('.md'))
-      .map((name) => join('docs', 'guide', name)),
+    ...pageDirs.flatMap((dir) =>
+      readdirSync(join(ROOT, dir))
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => join(dir, name)),
+    ),
   ];
   const helpKeys = new Set(HELP_PATHS.map((p) => p.join(' ')));
   let checked = 0;

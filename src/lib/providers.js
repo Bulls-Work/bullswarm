@@ -1,7 +1,7 @@
 // bullswarm provider loader — every pool comes from a provider directory.
 //
 // A provider is a directory holding `connector.json` (a pool template,
-// src/providers/_schema.json) and/or `provider.mjs` (docs/guide/providers.md).
+// src/providers/_schema.json) and/or `provider.mjs` (docs/reference/providers.md).
 // Three tiers, loaded in this order:
 //   first-class  <repo>/src/providers/<name>/        always
 //   contrib      <repo>/providers/contrib/<name>/    when <bullswarmDir>/providers.json

@@ -1,0 +1,1107 @@
+---
+title: CLI reference
+description: Every bullswarm command, subcommand, flag, and default, in the order bullswarm --help lists them.
+---
+
+# CLI reference
+
+After this page you can invoke any `bullswarm` verb with the flags the running binary actually accepts, and look up a default without guessing.
+
+There are exactly two ways to start work: `bullswarm run` dispatches one bounded task, and `bullswarm workflow goal` executes a program you author. Reach for a specific command's `--help` when this page and the binary might have drifted after an upgrade.
+
+```bash
+# Print the top-level command list, then one command's full help.
+bullswarm --help
+bullswarm run --help
+```
+
+`--help` / `-h` / a trailing `help` never reads or writes state, calls a network endpoint, or spawns a process. Every other command self-initializes `~/.bullswarm/state.json` (or `$BULLSWARM_HOME`) on first use. An unrecognized option prints `unknown flag --name` plus that command's synopsis and exits 2, before routing or spawning anything. Malformed values (a missing `--lane`, a `--limit` that is not a positive integer) are rejected at the same boundary with exit 2.
+
+Bare `bullswarm` runs `bullswarm setup`. It accepts every option that command documents. `--yes` on the bare command skips the interactive wizard and auto-initializes with discovered defaults (default: prompts on a TTY; auto-initializes for a non-TTY caller).
+
+## setup
+
+Discover installed agent CLIs and initialize local routing state. Bare setup on a TTY opens the provider/model control center; agents and CI retain deterministic non-interactive setup.
+
+```bash
+# Non-interactive initialization plus skill install for Claude and Codex.
+bullswarm setup --yes --integrate --agents claude,codex
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--wizard` | open the question-based wizard for worktree, reasoning-depth, and integration settings | off; bare setup opens the provider/model control center |
+| `--yes` | skip interactive setup and initialize with discovered defaults | interactive control center on a TTY |
+| `--strategy` | discover models, apply recommended effort-tier routes, and enable strategy autopilot; requires `--yes` | off |
+| `--integrate` | also install agent integration (skill symlink + awareness block); requires `--yes` | off |
+| `--agents <list>` | comma-separated agent list for `--integrate` (`codex`, `claude`, `grok`) | all three |
+| `--json` | machine-readable result | human summary |
+
+Writes `state.json` and `routing.json`. With `--integrate --yes`, also writes under `~/.codex`, `~/.claude`, `~/.grok`. A non-TTY caller auto-applies discovered defaults without prompting, even without `--yes`.
+
+## integrate
+
+Manage the packaged Bullswarm skill and a short recursion-safe awareness rule inside each installed coding agent's global configuration.
+
+```bash
+# Check which agents already have the skill and awareness block.
+bullswarm integrate status
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--agents codex,claude,grok` | restrict the action to specific agents | all three |
+| `--json` | machine-readable output | human summary |
+
+Install refuses to replace a non-Bullswarm file at the same path. `retire-legacy` renames, never deletes, the legacy skill directory.
+
+### status
+
+Report, per agent, whether the packaged skill symlink and the awareness block are installed, and whether a legacy pre-Bullswarm offload skill needs retiring.
+
+```bash
+# Machine-readable install report for every discovered agent.
+bullswarm integrate status --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--agents codex,claude,grok` | restrict the report | all three |
+| `--json` | machine-readable output | human summary lines |
+
+Does not change agent integration files.
+
+### install
+
+Symlink the packaged skill and append the awareness block marker into each selected agent's global instructions file.
+
+```bash
+# Install for Codex and Claude. --yes is required.
+bullswarm integrate install --agents codex,claude --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--agents codex,claude,grok` | restrict install | all three |
+| `--yes` | required — approves writing global agent configuration | none; the command refuses without it |
+| `--json` | machine-readable output | human summary |
+
+Idempotent. Refuses to replace a non-Bullswarm skill path.
+
+### remove
+
+Remove only the Bullswarm-managed skill symlink and awareness marker block, leaving any other content in the agent's configuration untouched.
+
+```bash
+# Remove the managed symlink and awareness block for every agent.
+bullswarm integrate remove --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--agents codex,claude,grok` | restrict removal | all three |
+| `--yes` | required — approves editing global agent configuration | none; the command refuses without it |
+| `--json` | machine-readable output | human summary |
+
+A conflicting non-symlink path is left untouched, not deleted.
+
+### retire-legacy
+
+Recoverably archive the retired pre-Bullswarm `~/.claude/skills/offload` skill so it stops shadowing Bullswarm guidance for Claude.
+
+```bash
+# Move the legacy offload skill into ~/.claude/skills-archive/.
+bullswarm integrate retire-legacy --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required — approves moving a user skill directory | none; the command refuses without it |
+| `--json` | machine-readable output | human summary |
+
+Renames into `~/.claude/skills-archive/`. A no-op if the legacy skill is not installed.
+
+## run
+
+Dispatch one bounded task to the best-available delegate pool (or keep it on the calling agent when nothing suitable is eligible), then verify the saved output before reporting a verdict.
+
+```bash
+# Route one analysis task and print the verdict.
+bullswarm run --lane analyze --add-dir . "List every TODO comment in src/ with file:line"
+```
+
+Trailing `<task text...>` is mutually exclusive with `--prompt` and `--task-file`.
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--lane <analyze\|build\|chore>` | routing lane: analyze (exploratory/large), build (implementation), chore (small/cheap) | required — omitting it, or passing anything else, exits 2 |
+| `--add-dir <dir>` | working directory the delegate operates in | current directory |
+| `--task-file <file>` | read the task text from a file instead of trailing words | unset |
+| `--prompt <text>` | pass the task text inline as one flag value | unset |
+| `--effort <high\|medium\|low>` | override the effort tier used for model-tier routing | derived from `--lane` (analyze→medium, build→medium, chore→low) |
+| `--reasoning <low\|medium\|high\|xhigh\|max\|default>` | run-wide thinking-level override, clamped to what the picked pool's connector accepts; `default` passes nothing | strategy reasoning setting for the effort tier, else the connector default |
+| `--timeout <seconds>` | hard wall-clock kill timer for the delegate process | none — the delegate is allowed to run to completion |
+| `--heartbeat <seconds>` | print one compact progress heartbeat to stderr per interval without streaming delegate output | off |
+| `--dry-run` | print the routing decision, the forecast, and the exact command that would be spawned, without spawning, registering an assignment, or writing the decision log | off (dispatches for real) |
+| `--no-caller` | exclude the calling agent from routing, so the task must go to a delegate pool or fail | off — the caller competes for the lane like any other pool |
+| `--json` | print the machine-readable verdict document | human-readable summary line |
+
+May quarantine a pool after an authentication failure. The JSON shape is in [Result envelope](/reference/result).
+
+```bash
+# Show the exact argv, including the clamped reasoning flag, without dispatching.
+bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"
+```
+
+## health
+
+Re-judge every saved delegate output against the real verify gate and report where a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal), plus any pool quarantine clustering.
+
+```bash
+# Re-judge saved outputs. Exit 1 means unhealthy, not a crash.
+bullswarm health --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the machine-readable health report | human-readable summary of the same facts |
+
+Reads every `out-*` file under `~/.bullswarm/runs/`. If any pool quarantine has expired, writes the released state back to `state.json`; otherwise read-only.
+
+## pools
+
+Show every configured pool: cost rank, lanes, live meter usage/elapsed percentage, pace surplus, in-flight assignment count, projected 5-hour utilization, and quarantine/burst-gate status.
+
+The 5-hour column reads `5h=<reading>%` alone when nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is expected to push the window further; routing decides on the right-hand number. A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run. A pool whose weekly window resets within 24 hours, or whose monthly window resets within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON urgency=<n>`.
+
+```bash
+# Bypass the meter cache and re-read live usage for every pool.
+bullswarm pools --force
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--force` | bypass the meter cache and re-read live usage for every pool | off (cached meter readings reused within their TTL) |
+| `--json` | machine-readable pool array, each entry carrying `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), and projected percentages | human-readable aligned table |
+
+Always writes `state.json` after sweeping expired quarantines, even in `--json` mode. Reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours).
+
+## assignments
+
+List the work in flight right now across every Bullswarm process — one line per live assignment with its pool, lane/effort, source, run/action, age in minutes, expected duration, and worker pid. This is the shared ledger `bullswarm pools` counts as `inflight=<n>`.
+
+```bash
+# One line per live assignment, including runs started by another terminal.
+bullswarm assignments
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | machine-readable array of live assignment records (`pool`, `source`, `runId`, `actionId`, `kernelPid`, `workerPid`, `startedAt`, `elapsedMinutes`, `expectedMinutes`, `remainingMinutes`) | one human-readable line per assignment |
+
+Reads `~/.bullswarm/assignments/` only — no meters, no network, no pool build.
+
+## strategy
+
+Open the provider/model strategy control center on a terminal, or run a subcommand non-interactively. Toggle whole providers, assign each detected model to any combination of high/medium/low effort, and preview the live route.
+
+```bash
+# Inspect providers, models, selections, meters, and effective routes.
+bullswarm strategy inventory --json
+```
+
+`--json` is accepted on subcommands that support it. `refresh` / `apply` / `assign` / `clear-assignment` / `exclude-model` / `include-model` / `set-subscription` / `set-reasoning` / `reset-reasoning` / `set-rung` all mutate `state.json`. `refresh` (and a cold `show`) perform live discovery against every installed agent CLI and the public OpenRouter model API.
+
+Concepts (rungs, allow-lists, autopilot) are in [Configuration](/reference/configuration).
+
+### tui
+
+Open the full-screen provider and model strategy control center. Analysis previews one OpenRouter-backed default per provider/tier before Y applies it. Provider Space toggles and model-tier Enter toggles persist immediately; select Finish setup or press F to exit.
+
+```bash
+# Browse providers, models, effort tiers, meters, and effective routes.
+bullswarm strategy tui
+```
+
+No flags. Bare `bullswarm strategy` on a TTY is the same control center.
+
+### inventory
+
+Return detected provider pools, models, selections, live meters, and effective routes for an agentic caller. The output is always JSON.
+
+```bash
+# Rerun model discovery and meters, then dump the inventory.
+bullswarm strategy inventory --json --refresh
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | accepted so agents can pass it uniformly; it selects nothing | output is always JSON, with or without the flag |
+| `--refresh` | rerun model discovery and meters | off |
+
+Read-only apart from refreshing the cached discovery report.
+
+### routes
+
+Show the live effective choice for high/analyze, medium/build, and low/chore. The output is always JSON.
+
+```bash
+# Print the currently effective high/medium/low choices.
+bullswarm strategy routes --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | accepted so agents can pass it uniformly; it selects nothing | output is always JSON, with or without the flag |
+| `--refresh` | refresh meters first | off |
+
+### rungs
+
+List every rung: one pool's model plus its reasoning level for one effort tier, with the dated benchmark evidence for that exact pair and what this machine actually recorded for it.
+
+```bash
+# Machine-readable rungs for one pool.
+bullswarm strategy rungs --json --pool codex
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | machine-readable rows (the same rows `strategy inventory --json` carries under `rungs`) | human table |
+| `--pool <name>` | limit the table to one provider pool | every enabled pool |
+
+Read-only: writes no state, spawns no model discovery, and downloads no meter or datapack. A rung with no benchmark row prints `no evidence`; one with no matching attempt prints `no dispatches`. Neither is ever estimated.
+
+### set-provider
+
+Enable or disable one detected provider/account as a whole.
+
+```bash
+# Take relay:b out of the routing set.
+bullswarm strategy set-provider relay:b off --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required approval | none |
+
+Arguments: `<pool>` (exact name from `strategy inventory`) and `<on|off>`. Changes routing immediately for new dispatches.
+
+### set-model
+
+Assign one model to one or more effort tiers.
+
+```bash
+# Put one model on every effort tier for the relay pool.
+bullswarm strategy set-model relay a/gpt-5.6-sol --tiers high,medium,low --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--tiers <list\|off>` | comma-separated multi-selection or `off` | required |
+| `--yes` | required approval | none |
+
+A configured tier becomes an allow-list; leaving it with no enabled models makes that tier unavailable.
+
+### set-rung
+
+Set one rung — the model and the reasoning level a pool uses for one effort tier — in a single atomic state save.
+
+```bash
+# Move the codex high rung onto gpt-5.6-sol thinking at xhigh.
+bullswarm strategy set-rung codex high --model gpt-5.6-sol --reasoning xhigh
+```
+
+Arguments: `<pool>` and `<tier>` (`high`, `medium`, or `low`).
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--model <model>` | model to run on that tier; must appear in the pool's cached discovery unless `--force` | required |
+| `--reasoning <level>` | `low`, `medium`, `high`, `xhigh`, `max`, or `default` | leaves the configured level untouched |
+| `--force` | accept a model the cached discovery has not seen | off |
+
+A rung is singular per pool and tier: the tier moves off whichever model held it, and that model keeps its other tiers. Never spawns model discovery — an unknown pool, tier, or model exits 2 instead.
+
+### reset-tier
+
+Remove the explicit model allow-list for one effort tier and return it to automatic routing.
+
+```bash
+# Restore low to automatic routing.
+bullswarm strategy reset-tier low --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required approval | none |
+
+Argument: `<high|medium|low>`. Removes that tier from every model selection and clears its legacy pin.
+
+### set-reasoning
+
+Set how hard one effort tier thinks. This is a separate dimension from the model.
+
+```bash
+# Every pool's high tier thinks at xhigh, clamped per connector.
+bullswarm strategy set-reasoning --tier high --level xhigh --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--tier <high\|medium\|low>` | effort tier to configure | required |
+| `--level <level>` | `low`, `medium`, `high`, `xhigh`, `max`, or `default` | required |
+| `--pool <name>` | apply to one provider pool only | every pool |
+| `--yes` | required approval | none |
+
+A level a CLI cannot express is clamped down to the strongest level it accepts, never up.
+
+### reset-reasoning
+
+Remove configured reasoning levels so the affected tiers fall back to each connector's own defaults.
+
+```bash
+# Clear the low-tier reasoning override everywhere.
+bullswarm strategy reset-reasoning --tier low --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--tier <high\|medium\|low>` | clear one effort tier everywhere | every tier |
+| `--pool <name>` | clear one provider pool only | the global tier defaults too |
+| `--yes` | required approval | none |
+
+With no `--tier` and no `--pool` this clears every configured reasoning level at once. `--tier` alone also removes that tier from every per-pool override.
+
+### configure
+
+Atomically apply provider toggles, model tier combinations, and reasoning depth from an agent-authored JSON file.
+
+```bash
+# Validate and save a complete strategy document.
+bullswarm strategy configure --file strategy.json --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--file <json>` | object with optional `providers`, `models`, and `reasoning` maps. `reasoning` is `{ "tiers": { "high": "xhigh" }, "pools": { "codex": { "high": "high" } } }` where each level is `low`, `medium`, `high`, `xhigh`, `max`, `default`, or `null` to remove it | required |
+| `--yes` | required approval | none |
+
+Validates the complete document before saving. An invalid reasoning section rejects the whole document; nothing is written.
+
+### refresh
+
+Run live model discovery against every installed agent CLI and recompute high/medium/low tier recommendations from capability and cost. `strategy recommend` is an alias with identical options and behavior.
+
+```bash
+# Discover models and print the report without changing routing.
+bullswarm strategy refresh --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the full report as JSON | human-readable summary |
+| `--apply` | also approve and persist the resulting recommendations; requires `--yes` | off (discovery only) |
+| `--yes` | required alongside `--apply` — approves changing routing | none; `--apply` refuses without it |
+| `--refresh-hours <n>` | auto-refresh cadence to record when combined with `--apply` | `24` |
+
+Writes the report to `state.json`; with `--apply --yes` also writes tier assignments and enables the auto-refresh policy.
+
+### apply
+
+Approve and persist the most recently discovered recommendations (from the last `refresh` or `show`) without running discovery again.
+
+```bash
+# Persist the last refresh and enable autopilot at the default cadence.
+bullswarm strategy apply --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required — approves changing routing | none; the command refuses without it |
+| `--refresh-hours <n>` | auto-refresh cadence to record | `24` |
+
+Writes `state.strategy.assignments` and the auto-refresh policy.
+
+### show
+
+Print the last captured strategy report (subscriptions, tier suggestions, exclusions). Runs a first discovery pass automatically if none is cached yet.
+
+```bash
+# Print the cached strategy report as JSON.
+bullswarm strategy show --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the full report as JSON | human-readable summary |
+
+Does not change approved routing assignments.
+
+### assign
+
+Force one specific pool/model for an effort tier, overriding auto-discovery for that tier only.
+
+```bash
+# Pin high to a specific Claude model.
+bullswarm strategy assign high --pool claude-code --model claude-opus-5
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--pool <pool>` | connector/pool name to assign | required; no default |
+| `--model <model>` | exact model identifier to assign | required; no default |
+
+Argument: `<high|medium|low>`. Writes `state.strategy.assignments[tier]` and invalidates the cached report.
+
+### clear-assignment
+
+Remove an explicit tier pin so that tier falls back to the latest discovery recommendation.
+
+```bash
+# Release the high-tier pin.
+bullswarm strategy clear-assignment high
+```
+
+No flags. Argument: `<high|medium|low>`.
+
+### exclude-model
+
+Persistently prevent this exact model from orchestration and worker dispatch, even if it would otherwise be recommended or assigned.
+
+```bash
+# Block gpt-5.4-mini from every dispatch.
+bullswarm strategy exclude-model gpt-5.4-mini
+```
+
+No flags. Argument: exact model identifier. Reverse with `include-model`.
+
+### include-model
+
+Remove a previously persisted model exclusion.
+
+```bash
+# Unblock a previously excluded model.
+bullswarm strategy include-model gpt-5.4-mini
+```
+
+No flags. Argument: exact model identifier.
+
+### set-subscription
+
+Record known subscription pricing for a pool so refresh's value-multiple math is accurate, choose the quota window routing paces this pool by, and declare when that window ends for a provider that reports usage but no reset date.
+
+```bash
+# Record plan economics, then declare a refill date a wallet does not report.
+bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000
+bullswarm strategy set-subscription opencode2 --resets-at 2026-09-17T01:46:01Z
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--plan <name>` | plan label to record | unchanged |
+| `--monthly-usd <n\|unknown>` | monthly subscription price | unchanged |
+| `--included-usd <n\|unknown>` | estimated included usage value | unchanged |
+| `--quota-window <weekly\|monthly>` | the subscription window that paces routing for this pool (used% vs elapsed% of it); `unknown` clears it back to the connector default | unchanged |
+| `--resets-at <iso\|unknown>` | the date-time this pool's quota window next ends, used only when the provider reports usage but no reset; a provider-reported reset always wins; `unknown` clears it | unchanged |
+
+Writes `state.strategy.subscriptions[pool]` and invalidates the cached report.
+
+### auto
+
+Inspect or disable the policy that re-applies discovery recommendations automatically on a cadence, set by a prior `apply` or `refresh --apply`.
+
+```bash
+# Show whether auto-apply-on-refresh is enabled and its cadence.
+bullswarm strategy auto status
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required for `off` — approves changing routing policy | not needed for `status` |
+
+`auto status` is read-only. `auto off --yes` writes `state.strategy.policy` and keeps the last-applied tier assignments as-is.
+
+## provider
+
+Manage providers, the plugins that define pools. A provider is a directory with a `connector.json` and/or a `provider.mjs`. Bare `bullswarm provider` runs `list`. Loading is not routing: whether a loaded pool gets work stays `bullswarm strategy set-provider <pool> on|off --yes`.
+
+```bash
+# See what loaded and what failed.
+bullswarm provider list
+```
+
+The contract is [Providers](/reference/providers).
+
+### list
+
+Show every provider — first-class, contrib, and local — with its tier, whether it is loaded, the pools it returned, the pools the loader skipped, its load error, and whether it exports `readUsage`.
+
+```bash
+# Machine-readable provider table.
+bullswarm provider list --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the report as JSON | human table |
+
+Read-only; loads every provider module and calls `connectors()` for the loaded ones.
+
+### enable
+
+Load a contrib provider: add its directory name to `~/.bullswarm/providers.json`. Its pools appear on the next bullswarm start.
+
+```bash
+# Load the shipped command-code contrib provider.
+bullswarm provider enable command-code
+```
+
+No flags. Argument: a directory name under `providers/contrib/`. Refuses a name with no contrib directory, and a name a local provider already claims. Writes `providers.json` only; `state.json` is never touched.
+
+### disable
+
+Stop loading a contrib provider: remove its name from `~/.bullswarm/providers.json`.
+
+```bash
+# Unload a contrib provider. A name that is not listed writes nothing.
+bullswarm provider disable command-code
+```
+
+No flags. Argument: a contrib provider name listed in `providers.json`.
+
+### validate
+
+Import a provider directory, check name and the export types, call `connectors()` with the real shipped templates, and check the prefix rule and every returned pool against `src/providers/_schema.json`.
+
+```bash
+# Check a local provider directory against the contract.
+bullswarm provider validate ~/.bullswarm/providers/relay
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the report as JSON | human report |
+
+Argument: a provider directory path, or a provider name looked up in the local, contrib, then first-class directories. Runs the module and `connectors()`; never spawns the CLI or reads usage. Exits 2 on any failure; warnings alone exit 0.
+
+### scaffold
+
+Write a commented provider directory: a `provider.mjs` skeleton showing every export and, with `--from`, a `connector.json` copied from that shipped template and renamed. The result passes validate unchanged.
+
+```bash
+# Scaffold a reseller that runs through OpenCode.
+bullswarm provider scaffold relay --from opencode2
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--from <template>` | copy this shipped provider's `connector.json` (a reader meter is set to `none` until you export `readUsage`) | no `connector.json`; the pool is written inline |
+| `--dir <path>` | the provider directory to create | `~/.bullswarm/providers/<name>/` |
+
+Argument: provider name (lowercase letters, digits, and dashes). Writes only inside the target directory, and refuses one that already exists and is not empty.
+
+### probe
+
+Spawn one pool's CLI directly with the task "Reply with the single word PONG and nothing else" through the dispatcher's own runner, then, when its provider exports `readUsage`, read usage once with the pool's declared subscription.
+
+```bash
+# Acceptance step: spawn the CLI once and print argv, output, elapsed time, snapshot.
+bullswarm provider probe relay:b --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the result as JSON | human report |
+| `--timeout <sec>` | kill the CLI after this many seconds | `300` |
+
+Argument: a pool name; contrib providers are probed even when not enabled. Spawns in a throwaway directory with no routing, quota gate, or assignment ledger, and ignores `BULLSWARM_DEPTH`. Values from the pool's `env` are redacted. Exits 1 when the reply does not contain `PONG` or `readUsage` threw.
+
+## doctor
+
+Report installation readiness — config present, at least one agent CLI discovered, meters reachable, at least one delegate pool enabled — with the exact fix command for anything failing.
+
+```bash
+# Machine-readable { version, configured, ok, checks[], nextActions[] }.
+bullswarm doctor --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | machine-readable `{ version, configured, ok, checks[], nextActions[] }` | human-readable checklist with ✓/✗ per check |
+
+Self-heals: if `~/.bullswarm` is not yet configured, runs the same auto-setup as any other verb before reporting. Exit code is 0 when every check passes, 1 if any check fails.
+
+## workflow
+
+Plan, execute, observe, and audit durable multi-agent workflows with the single V2 action/evidence engine. With no command on a TTY, opens the unified full-screen workflow home. Non-interactive callers receive this help text instead.
+
+```bash
+# Author plan.json from `workflow plan contract`, then launch.
+bullswarm workflow goal "1. Fix the parser. 2. Verify it." --cwd . --program plan.json
+```
+
+Legacy authored-graph runs are read-only; driving commands fail closed before dispatch. Goal dispatches real coding-agent CLI processes and writes durable state under `~/.bullswarm/workflows/<runId>/`. How to author a program is in [Workflows](/guide/workflows); the JSON fields are in [Workflow program](/reference/program).
+
+### goal
+
+Run an autonomous V2 goal end to end. Pass the program you authored (`--program`) and the kernel validates it against the exact requirements, schedules the dependency graph in a shared workspace, and returns every action result. File territories guide coordination; exact-file enforcement and worktree copying require `--isolation`. Completion means all actions succeeded; verified separately reports requirement evidence. There are no automatic gap rounds.
+
+Without a program the command refuses (exit 2, nothing launched) unless `--scout` or `--orchestrator` is given. `--scout` alone surveys the repository and finishes partial with the scout report. `--orchestrator` dispatches a Workflow Planner agent instead of planning yourself. A run never waits for its caller: when nothing more can run on its own it finishes and hands back what is left.
+
+Launches independently by default. `--resume <shortId|runId>` resumes a V2 run and is mutually exclusive with new goal text.
+
+```bash
+# Caller-planned launch that follows progress until terminal.
+bullswarm workflow goal "1. Fix src/parser.js. 2. Update docs." --cwd . --program plan.json --watch
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--cwd <dir>` | working directory the goal executes in | current directory |
+| `--isolation` | opt into per-worker worktrees and strict exact-file ownership checks; saved runs retain their original workspace policy on resume | off (shared workspace, advisory territories) |
+| `--watch` | immediately follow low-noise progress until terminal; only valid for a new human-readable independent launch — cannot combine with `--detach`, `--foreground`, `--json`, `--resume`, or `--request` | off |
+| `--foreground` | keep execution attached to this terminal instead of detaching | off (detaches into a background process) |
+| `--json` | print the launch/report document as JSON | human-readable launch instructions |
+| `--program <file.json>` | planner-response envelope or bare `bullswarm.workflow.program.v2` document; validated before anything launches (exit 2 with the issues when invalid) | required unless `--scout` or `--orchestrator` is given |
+| `--summary <text>` | one-line summary recorded for a bare `--program` document | derived from the action purposes |
+| `--scout` | with `--program`: run the kernel scout first and hand its units as advisory context; alone: survey, then finish partial with the scout report | off |
+| `--orchestrator <auto\|pool>` | dispatch a Workflow Planner agent at every planning boundary: `auto` lets the kernel route it, a pool name prefers that pool and falls back when it is quota-gated or unavailable | off (you are the planner) |
+| `--orchestrator-model <model\|auto>` | with `--orchestrator`: pin the exact model used by the dispatched planner; only pools that can guarantee it remain eligible | `auto` (effort-tier strategy or connector default) |
+| `--orchestrator-strict` | with `--orchestrator <pool>`: require exactly that pool; fails if it is unavailable rather than silently substituting | off |
+| `--strict-orchestrator <pool>` | deprecated alias for `--orchestrator <pool> --orchestrator-strict` | off |
+| `--suggested-plan <text>` | with `--orchestrator`: persist a caller-imagined conceptual execution shape for the dispatched planner | none |
+| `--worker-pool <pool\|auto>` | pin every non-planner dispatch, including scout, work actions, and evidence actions, to one pool | `auto` (normal routing) |
+| `--worker-model <model\|auto>` | pin the exact model for every non-planner dispatch; only pools that can guarantee it remain eligible | `auto` |
+| `--worker-reasoning <level>` | run-wide reasoning depth for every non-planner dispatch: `low\|medium\|high\|xhigh\|max`, or `default`; a per-action `reasoning` field outranks this; clamped to the picked connector | the configured strategy level, else the connector default |
+| `--planner-reasoning <level>` | with `--orchestrator`: the same run-wide reasoning depth for every dispatched Workflow Planner turn | the configured strategy level, else the connector default |
+| `--max-agents <n>` | soft planning target for total scout, planner, work, evidence, and correction dispatches; essential work may exceed it | `30` |
+| `--max-expansion-rounds <n>` | legacy planning target retained for compatibility; new programs do not generate gap rounds | `2` |
+| `--max-actions <n>` | soft planning target for total actions across planner revisions; essential actions may exceed it | `100` |
+| `--no-scout` | with `--orchestrator`: skip the read-only repository reconnaissance before the dispatched planner creates its first program | the scout runs first for a dispatched planner |
+| `--concurrency <n>` | max parallel dispatches; dependency-ready file-disjoint actions run concurrently up to this cap | `4` |
+| `--retry-attempts <0..3>` | bounded retries for mechanical failures only; semantic evidence never auto-repairs | `1` |
+| `--resume <shortId\|runId>` | resume a V2 autonomous run; old autonomous runs fail closed before dispatch | starts a new goal |
+| `--detach` | rarely needed — explicitly requests the default independent-launch behavior; cannot combine with `--watch` | the default launch already detaches |
+
+Workers keep their edits even when their action fails. Failed dependencies skip downstream actions and independent branches finish. Saved V2 runs keep their original completion and isolation policy when resumed.
+
+### plan
+
+You are the Workflow Planner. `contract` prints the planning contract for a goal before any run exists; `validate` checks a program against that contract without launching; `export` and `revise` change the plan of a live or finished run. `show` and `submit` answer only a run an older version left waiting for its caller. Launch the initial program with `workflow goal --program`.
+
+```bash
+# Print the contract, then dry-run a program, then launch with the same goal text.
+bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
+bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json
+```
+
+### plan contract
+
+Print everything a caller planner needs to author a valid initial program: requirement IDs, read-only constraints, planning rules, generic action fields, validation, the response envelope, and one worked example.
+
+```bash
+# Derive requirement IDs from numbered clauses and print the contract as JSON.
+bullswarm workflow plan contract "1. Fix the parser. 2. Update the docs." --cwd . --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--cwd <dir>` | working directory the goal will execute in | current directory |
+| `--isolation` | describe strict per-worker worktree isolation and retain the flag in launch guidance | off (shared workspace) |
+| `--json` | accepted for consistency; the contract is always printed as JSON | JSON |
+| `--max-agents <n>` | advisory dispatch target recorded in the contract settings | `30` |
+| `--max-actions <n>` | advisory action target recorded in the contract settings | `100` |
+| `--max-expansion-rounds <n>` | advisory gap-round target recorded in the contract settings | `2` |
+| `--concurrency <n>` | execution concurrency recorded in the contract settings | `4` |
+| `--retry-attempts <0..3>` | mechanical retry allowance recorded in the contract settings | `1` |
+| `--scout` | describe a kernel scout ahead of your program and retain the flag in launch guidance | off for a caller-authored program |
+| `--worker-pool <pool\|auto>` | pin the worker pool the contract echoes back | `auto` |
+| `--worker-model <model\|auto>` | pin the worker model the contract echoes back | `auto` |
+| `--worker-reasoning <level>` | run-wide worker thinking level the contract echoes back | the strategy setting for the action effort tier |
+
+Read-only. Rejects launch-only and dispatched-planner flags (`--program`, `--orchestrator*`) so the contract cannot silently describe a different run.
+
+### plan validate
+
+Check a program you authored against the exact contract a launch would enforce, without creating a run. Exit 0 prints the accepted actions and the launch line; exit 2 prints every validator issue.
+
+```bash
+# Same validator as workflow goal --program; nothing is launched.
+bullswarm workflow plan validate "1. Fix the parser. 2. Update the docs." --cwd . --program plan.json --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--program <file.json>` | planner response envelope or bare `bullswarm.workflow.program.v2` document | required |
+| `--cwd <dir>` | working directory the goal will execute in (must exist) | current directory |
+| `--summary <text>` | one-line summary recorded for a bare program document | derived from the action purposes |
+| `--json` | print the acceptance document (`{action: "plan-valid", requirements, program, next}`) or the refusal (`{error: "program-invalid", issues, next}`) | human summary |
+| `--isolation` | validate against strict per-worker worktree isolation | off (shared workspace) |
+| `--scout` | validate against a run that scouts before your program | off for a caller-authored program |
+| `--worker-pool <pool\|auto>` | pin the worker pool the preview routes with | `auto` |
+| `--worker-model <model\|auto>` | pin the worker model the preview routes with | `auto` |
+| `--worker-reasoning <level>` | run-wide worker thinking level for the preview | the strategy setting for the action effort tier |
+| `--max-agents <n>` | advisory dispatch target for the previewed run | `30` |
+| `--max-actions <n>` | advisory action target for the previewed run | `100` |
+| `--max-expansion-rounds <n>` | advisory gap-round target for the previewed run | `2` |
+| `--concurrency <n>` | execution concurrency for the previewed run | `4` |
+| `--retry-attempts <0..3>` | mechanical retry allowance for the previewed run | `1` |
+
+Read-only. Exit 0 valid, 2 invalid, 1 bad cwd.
+
+### plan show
+
+For a run an older version left waiting for its caller (current versions never wait), print the durable planner request it left. Exits 1 when the run is not waiting for a submission.
+
+```bash
+# Print the pending planner request of a waiting run.
+bullswarm workflow plan show ab12cd --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the full request document | compact human summary |
+
+Never changes run state, except it may rewrite the request document so it lists steering queued since the pause (`requestRefreshed: true`).
+
+### plan submit
+
+Submit your planner response to a run an older version left waiting. Current versions never wait; change a current run with `plan revise`. `--exhausted` records that no useful bounded action remains (gaps boundary only).
+
+```bash
+# Accept a follow-up program and relaunch the waiting kernel.
+bullswarm workflow plan submit ab12cd --program plan-2.json --watch
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--program <file.json>` | planner response or bare program with the new actions only | none |
+| `--exhausted` | declare that no further useful bounded action exists; valid only at a gaps boundary | off |
+| `--reason <text>` | required with `--exhausted` | none |
+| `--summary <text>` | one-line summary recorded for a bare program document | derived from the action purposes |
+| `--foreground` | resume the kernel attached to this terminal; combines with `--json` | off (detaches) |
+| `--watch` | detach, then follow until terminal or paused; cannot combine with `--foreground` or `--json` | off |
+| `--json` | print the acceptance and relaunch document (or, with `--foreground`, the final result) | human summary plus operating commands |
+
+A rejected program exits 2 and leaves the run untouched. A run with a pending cancellation refuses every submission.
+
+### plan export
+
+Write the live plan of a program-mode run as an editable revision document: every action still in the plan, `baseRevision`, and pending steering ids. Works while agents run, while paused, or after the run finished.
+
+```bash
+# Write the live plan so you can edit it and pass it to plan revise.
+bullswarm workflow plan export ab12cd --out plan.json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--out <file.json>` | write the revision document to this file and print a status summary | print the revision document itself on stdout |
+| `--json` | print `{programRevision, status, actions[] with each status, pendingSteering, document\|out, next}` | the document (no `--out`) or a human summary (`--out`) |
+
+Read-only for the run; `--out` writes only the named file.
+
+### plan revise
+
+Replace the plan of a program-mode run with the complete program you want now. The kernel compares it with the live plan by action id: a new id is added; an unchanged action keeps its result or keeps running; a changed action is stopped if running and starts over; an action missing from the program is removed; ids in `--rerun` discard their finished result and run again; every step depending on a changed or rerun step runs again too. A finished run is reopened; a paused run stays paused until resume.
+
+```bash
+# Apply an edited export, and rerun one finished step.
+bullswarm workflow plan revise ab12cd --program plan.json --rerun write-docs --summary "Docs must cover the new flag"
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--program <file.json>` | the whole desired program: a document from `plan export`, a bare program, or a planner response envelope | required |
+| `--rerun <id,...>` | comma-separated action ids whose finished results are discarded so they run again (merged with the document's `rerun` list) | none |
+| `--summary <text>` | why the plan changed, recorded on the revision and shown by watch | the document summary, else `Plan revision <n>` |
+| `--base-revision <n>` | refuse the revision if the run is no longer at program revision n | the document's `baseRevision`; none for a bare program |
+| `--wait <seconds>` | how long to wait for a running kernel to apply or reject it; `0` returns once it is queued | `120` |
+| `--json` | print `{status: applied\|rejected\|queued, programRevision, changes, appliedBy, reopened, relaunch}` | human summary of the changes |
+
+An invalid program, an unknown rerun id, a stale base revision, or a revision that changes nothing exits 2 and leaves the run untouched. Files a stopped agent already changed stay in the workspace.
+
+### pause
+
+Pause a run: the kernel starts no new step. By default running agents finish first and their results are kept; with `--now` they are stopped and those steps run again after resume.
+
+```bash
+# Let running agents finish, then record the pause.
+bullswarm workflow pause ab12cd
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--now` | stop running agents instead of letting them finish, and wait up to 60s for the pause to take effect | off (running agents finish) |
+| `--json` | print `{status: paused\|pausing, mode, appliedBy, next}` | one human line |
+
+Writes `pause.json` in the run directory. Refuses a terminal run. `--now` stops agents mid-step; files they already changed stay in the workspace.
+
+### cancel
+
+Stop a run. A running kernel is asked to stop cooperatively at its next safe checkpoint (active workers are never killed mid-write). A run with no kernel alive is finalized here and now. A plan revision can still reopen a cancelled run.
+
+```bash
+# Request cooperative cancellation.
+bullswarm workflow cancel ab12cd --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print `{action: "cancel", finalized, status, result\|next}` | one human line |
+
+Idempotent: an already-terminal run reports `alreadyFinished` and exits 0.
+
+### resume
+
+Resume a V2 run with its durable planner mode and routing. On a finished run (`completed`, `partial`, or `cancelled`) resume is a retry: it reopens pending and cancelled steps, failed steps whose failure kind a retry fixes, and the steps blocked behind them. With nothing retryable it prints `nothing to retry`, starts nothing, and exits 1.
+
+```bash
+# Retry a partial run once the handback's retryAfter time has passed.
+bullswarm workflow resume ab12cd --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--foreground` | run the kernel attached to this terminal; combines with `--json` | off (detaches) |
+| `--watch` | detach, then follow until terminal or paused; cannot combine with `--foreground` or `--json` | off |
+| `--json` | print the relaunch document (or, with `--foreground`, the final result or pause document) | human launch instructions |
+
+`--program`, `--orchestrator`, `--scout`, and `--suggested-plan` are rejected here (use `plan revise` to change the plan). A failed step whose failure is about the work itself is not rerun.
+
+### capabilities
+
+Report the workflow engine, current routing policy, and live pool/model/meter state.
+
+```bash
+# Always JSON: pools, lanes, models, meters, routing constraints.
+bullswarm workflow capabilities
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | accepted so agents can pass it uniformly; it selects nothing | output is always JSON, with or without the flag |
+
+Read-only. Performs live pool discovery; nothing is written.
+
+### tui
+
+Open the interactive full-screen workflow dashboard, or print a static/JSON snapshot for a non-interactive caller. Bare `bullswarm workflow` is equivalent on a TTY.
+
+```bash
+# One plain-text frame of the timeline, live, and next sections.
+bullswarm workflow tui ab12cd --overview --width 90 --height 24
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print a JSON snapshot instead of opening the interactive browser | opens the interactive browser on a TTY; without a TTY, a given runId prints one static text detail tree |
+| `--all` | print the JSON run list including historical (finished) runs; implies `--json` and cannot be combined with a runId | ongoing only |
+| `--show <runId>` | equivalent to passing `<runId>` positionally; forces the `--json` code path for that one run | none |
+| `--cancel <runId>` | request cooperative cancellation of that run instead of viewing it | none |
+| `--overview` | print one static frame of the run's overview panel as plain text with no escape codes; needs a runId | off |
+| `--width <cols>` | columns of the `--overview` frame, at least 40 | `100` |
+| `--height <rows>` | rows of the `--overview` frame, at least 12 | `30` |
+
+Interactive mode and the snapshot views are read-only. `--cancel` writes `cancelRequested=true`. Inside the browser, `q` detaches without stopping the workflow; `c` requests cancellation with a confirmation prompt.
+
+### watch
+
+Follow one V2 run by printing one attach line, then one line per notable event, staying silent while work is merely in progress. `--next` prints no attach line and returns after the first notable event, or immediately at a pause or terminal status. Every `--next` exit that leaves the run going prints a `next:` relaunch line carrying `--after` and `--since`. A legacy authored-graph run cannot be watched: the watcher prints the legacy line and exits 2 before polling.
+
+```bash
+# Print the next notable event and exit; relaunch until outcome reports pause or terminal.
+bullswarm workflow watch ab12cd --next
+bullswarm workflow watch ab12cd --next --after 42 --since 2026-09-08T10:15:00.000Z
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--classic` | force the older heartbeat-based watcher instead of event mode; V2 runs only; cannot combine with `--next` | off (event mode) |
+| `--interval <seconds>` | poll interval while following | `2` |
+| `--heartbeat <seconds>` | print a periodic heartbeat line when nothing has changed; opt-in for V2, must be >= 1 | off in event mode, `60` with `--classic` |
+| `--stall-after <seconds>` | report a running agent as silent after this many seconds without activity; must be >= 1 | `300` |
+| `--next` | print no attach line; exit after the first poll that printed a notable event, or immediately at a pause or terminal status | off (follows until terminal or pause) |
+| `--after <sequence>` | start from this durable event sequence instead of the current high-water mark | attach at the current high-water mark |
+| `--since <iso-timestamp>` | the previous watcher's exit time, so an already-reported stall does not fire again | report every agent silent past `--stall-after` at attach |
+| `--jsonl` | emit one JSON object per line instead of human text; every object carries `sequence`; the `next:` relaunch line is not printed | off (human text) |
+| `--once` | print a single current snapshot and exit immediately instead of following | off |
+| `--verbose` | include started, retry, and steering-delivered lines in event mode, and per-agent action detail with `--classic` | off (compact) |
+
+Read-only. Exits 0 if the run reaches a delivered status (or on `--once`), 1 if it reaches a non-delivered terminal status. `--next` exits 0 while the run continues or when it delivered, 1 when it ended without delivering or the kernel is not running. `--classic --next` is rejected with exit 2.
+
+### events
+
+Replay one run's durable, ordered event log from a sequence cursor — the machine-oriented alternative to watch/tui.
+
+```bash
+# Return every event from the start of the log.
+bullswarm workflow events ab12cd --after 0
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--after <sequence>` | only return events with a sequence number greater than this cursor | `0` (all events) |
+| `--json` | accepted for consistency, but has no effect | output is always JSON |
+
+Read-only.
+
+### steer
+
+Queue free-text guidance for a running goal's next orchestration checkpoint, without interrupting the currently active step. In a caller-planned program run the guidance never halts work: watch prints it at once, and the caller acts on it with `plan export` and `plan revise`. A run that finishes before anyone acts on it lists it as steering not acted on.
+
+```bash
+# Queue guidance. The active worker is unaffected.
+bullswarm workflow steer ab12cd --message "Focus only on the auth module"
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--message <guidance>` | the guidance text; if omitted, all words after `<runId>` are joined and used instead | required, in one of the two forms |
+| `--json` | machine-readable confirmation | human-readable confirmation line |
+
+Refuses if the run is already terminal, and refuses a legacy authored-graph run with the legacy line and exit 2.
+
+### action show
+
+Print one action's full record — its ledger entry, every dispatch attempt, its saved output, and the events tied to it.
+
+```bash
+# Inspect one action and all of its attempts.
+bullswarm workflow action show ab12cd act-3
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | accepted for consistency, but has no effect | output is always JSON |
+
+Read-only. The action id comes from the run's action ledger (`workflow runs show` or the TUI).
+
+### runs
+
+Search ongoing and historical workflow run instances, including read-only legacy rows, or drill into one with `show` / `result` / `delete`. `bullswarm runs` is a documented alias that prints the same help with `bullswarm runs` in the synopsis.
+
+Time filters compare each run's initiation timestamp and accept ISO timestamps, local dates (`YYYY-MM-DD`), `today`/`yesterday`/`tomorrow`/`now`, or relative durations such as `30m`, `24h`, `7d`, `2w`. `--since` is inclusive and `--until` is exclusive; `--from` / `--started-after` and `--to` / `--started-before` are aliases.
+
+```bash
+# List every run started in the last week.
+bullswarm workflow runs --all --since 7d
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--all` | include both ongoing and historical runs | ongoing only |
+| `--historical` | only historical (finished) runs | ongoing only |
+| `--name <goal>` | filter by exact goal text (a legacy row matches on its recorded workflow name) | no filter |
+| `--since <time>` | lower bound on start time (inclusive) | no lower bound |
+| `--until <time>` | upper bound on start time (exclusive) | no upper bound |
+| `--limit <n>` | cap the number of results; must be a positive integer, and anything else exits 2 | no cap |
+| `--json` | machine-readable output | human-readable one-line-per-run summary |
+
+`list` is the default when no subcommand is given and takes the same flags.
+
+### runs show
+
+Show one run's durable state and status summary.
+
+```bash
+# Human-readable state and report for one run.
+bullswarm workflow runs show ab12cd
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the full state/report as JSON | human-readable summary lines |
+
+Read-only.
+
+### runs result
+
+Print the stable caller envelope. This is the intended integration point for scripts and agents. Use `--summary` for the compact status-loop envelope; read the full envelope on failed or partial runs and before judging evidence. Field-by-field documentation is in [Result envelope](/reference/result).
+
+```bash
+# Compact status-loop JSON, then the full envelope.
+bullswarm workflow runs result ab12cd --json --summary
+bullswarm workflow runs result ab12cd --json
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--json` | print the full versioned result document as JSON | human-readable result summary |
+| `--summary` | print the compact JSON status-loop envelope; implies `--json` | full result envelope |
+
+Read-only.
+
+### runs delete
+
+Permanently remove one run's directory (state, report, events, logs).
+
+```bash
+# Irreversible delete of a finished run directory.
+bullswarm workflow runs delete ab12cd --yes
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--yes` | required — approves the deletion | none; the command refuses without it |
+| `--force` | also delete an ongoing run | refuses to delete an ongoing run |
+| `--json` | machine-readable confirmation | human confirmation line |
+
+Recursively deletes `~/.bullswarm/workflows/<runId>/`.
+
+## runs
+
+Alias for `workflow runs`. Every subcommand, flag, and default is the same; the synopsis prints `bullswarm runs` instead of `bullswarm workflow runs`.
+
+```bash
+# Top-level shorthand for the same run list.
+bullswarm runs --all --since 7d
+```
+
+## version
+
+Print the installed bullswarm package version. `bullswarm --version` is an equivalent alias handled the same way by the command dispatcher.
+
+```bash
+# Print the package version from package.json.
+bullswarm version
+```
+
+No flags. Self-initializes `state.json` on first use, like every other non-help command.
+
+## update
+
+Upgrade this installation of bullswarm to the latest version published on npm, in place. A global npm install is upgraded with `npm install -g bullswarm@<latest> --prefix <its own prefix>`. A source checkout (a clone, or a global install that is an `npm link` into one) is pulled with `git pull --ff-only` instead and is refused while it has local changes. The result is verified by re-reading `package.json` on disk, never by npm's exit code.
+
+```bash
+# Compare with the registry, then upgrade in place.
+bullswarm update --check
+bullswarm update
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--check` | only compare the installed version with the latest published one; changes nothing | off (upgrades) |
+| `--json` | machine-readable result: install `{kind, root, prefix}`, `before`, `latest`, `after`, `upToDate`, `updated`, `error`, `notes[]` | human-readable lines |
+
+Reads `https://registry.npmjs.org/bullswarm/latest` (8s timeout). Exit 0 = at the latest published version afterwards (or `--check` reported); exit 1 = registry, npm or git refused, or the install shape is unknown. The running process keeps its old version; the next `bullswarm` command runs the new one.
+
+## release
+
+Bump the `package.json` version, commit that change, and create an annotated git tag locally. For maintainers cutting a bullswarm release, not for routine use.
+
+```bash
+# Compute the resulting version and tag without writing or committing.
+bullswarm release patch --dry-run
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--dry-run` | compute and print the resulting version/tag without writing or committing anything | off (writes for real) |
+
+Argument: `<patch|minor|major>` — patch for fixes, minor for new verbs/connectors/behavior, major for verdict-contract or config-format breaking changes. Refuses if the working tree is not clean. Never pushes or publishes; the command prints the exact push command to run next.
+
+## Next steps
+
+- [Getting started](/guide/getting-started) — install, setup, and the first `run`
+- [Workflow program](/reference/program) — the `plan.json` `workflow goal --program` executes
+- [Result envelope](/reference/result) — JSON `run --json` and `runs result --json` return

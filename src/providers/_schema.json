@@ -1,5 +1,5 @@
 {
-  "$comment": "Provider pool template schema (src/providers/<name>/connector.json, and every pool a provider.mjs returns). Every per-CLI quirk lives HERE, never in core logic. See docs/guide/providers.md.",
+  "$comment": "Provider pool template schema (src/providers/<name>/connector.json, and every pool a provider.mjs returns). Every per-CLI quirk lives HERE, never in core logic. See docs/reference/providers.md.",
   "name": "pool name: the provider name, or <provider>:<suffix> for extra pools a provider returns",
   "bin": "binary on PATH to probe for discovery",
   "configDirs": [

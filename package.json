@@ -17,6 +17,7 @@
     "providers/",
     "skill/",
     "mcp/",
+    "mods/",
     "fixtures/",
     "data/",
     "docs/",

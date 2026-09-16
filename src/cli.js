@@ -48,6 +48,7 @@ export function getBullswarmDir() {
 export const BULLSWARM_DIR = getBullswarmDir();
 
 const BOOLEAN_FLAGS = new Set([
+  'overview',
   'json', 'force', 'no-caller', 'yes', 'strategy', 'integrate', 'dry-run',
   'wizard', 'check',
 ]);

@@ -27,6 +27,6 @@ is loaded, you turn its individual pools on and off with
 A contrib provider is a directory `providers/contrib/<name>/` holding a
 `connector.json` (the pool template), a `provider.mjs` (`name`, and optionally
 `displayName`, `connectors`, `readUsage`, `doctor`), or both. Follow
-[docs/guide/providers.md](../../docs/guide/providers.md) for the contract.
+[docs/reference/providers.md](../../docs/reference/providers.md) for the contract.
 Run `bullswarm provider validate providers/contrib/<name>` before you open
 the pull request.

@@ -13,6 +13,8 @@ import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-po
 import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 
 const ESC = '\x1b[';
+/** Lines of the goal the Preflight segment shows before an ellipsis. */
+const GOAL_PREVIEW_LINES = 5;
 const SIDEBAR_WIDTH = 34;
 const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const stateStatus = (state) => state?.lifecycle?.status;
@@ -763,7 +765,7 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
   const rows = [`┌${truncate(title, inner)}${'─'.repeat(Math.max(0, inner - truncate(title, inner).length))}┐`];
   for (const line of visibleTimeline) rows.push(`│${panelCell(line, inner)}│`);
   while (rows.length < 1 + timelineRows) rows.push(`│${panelCell('', inner)}│`);
-  rows.push(sectionDivider(`Live · ${live.running} running · ${live.waiting} waiting`, inner));
+  rows.push(sectionDivider(`Live · ${live.running} running`, inner));
   for (const line of visibleLive) rows.push(`│${panelCell(line, inner)}│`);
   while (rows.length < 2 + timelineRows + liveRows) rows.push(`│${panelCell('', inner)}│`);
   rows.push(sectionDivider('Next', inner));
@@ -846,12 +848,31 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
     if (!at) return;
+    const details = detail == null ? [] : Array.isArray(detail) ? detail : [detail];
     rows.push({
       at, startedAt, segment, ...extra,
-      lines: [timelineRow(at, label, right, width), ...(detail ? [timelineDetail(detail, width)] : [])],
+      lines: [timelineRow(at, label, right, width), ...details.filter((line) => line != null && line !== '').map((line) => timelineDetail(line, width))],
     });
   };
-  add(state.lifecycle.startedAt, `${glyphs().ongoing} Workflow initiated`, '', model.dependencyGroups ? 'Goal accepted; dependency levels may overlap as actions become ready' : 'Goal accepted; preparing repository reconnaissance', 'Preflight');
+  // Preflight opens with the goal itself, wrapped over a few lines, and the
+  // file it was accepted from, so the reader never depends on a truncated
+  // one-line header to know what the run is for.
+  const runDir = model.row?.runDir ?? null;
+  const goalText = String(state.intent?.goal ?? state.workflow ?? '').trim();
+  const goalWidth = Math.max(20, width - 7);
+  // A goal is often several lines (a sentence, then numbered deliverables);
+  // wrap each of its own lines, or a line break would sit inside one row
+  // and split the frame.
+  const goalSource = goalText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const goalLines = wrapLines(goalSource, goalWidth).slice(0, GOAL_PREVIEW_LINES);
+  if (goalLines.length === GOAL_PREVIEW_LINES && wrapLines(goalSource, goalWidth).length > GOAL_PREVIEW_LINES) {
+    goalLines[GOAL_PREVIEW_LINES - 1] = truncate(`${goalLines[GOAL_PREVIEW_LINES - 1]} …`, goalWidth);
+  }
+  add(state.lifecycle.startedAt, `${glyphs().ongoing} Goal accepted`, '', [
+    ...goalLines,
+    runDir ? `goal file · ${join(runDir, 'goal.json')}` : null,
+    model.dependencyGroups ? 'dependency levels may overlap as actions become ready' : 'preparing repository reconnaissance',
+  ], 'Preflight');
   const eventByType = new Map();
   for (const event of model.events) {
     if (!eventByType.has(event.type)) eventByType.set(event.type, []);
@@ -865,15 +886,30 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
   }
   for (const event of eventByType.get('planner.finished') ?? []) {
     const turn = Number(event.payload?.turn ?? 1);
+    // The first plan is implied by the levels that follow it, so its own
+    // milestone only repeated them; later revisions and rejections stay,
+    // since they change what the levels mean.
+    if (event.payload?.ok && turn === 1) continue;
     const label = event.payload?.ok
       ? turn === 1 ? '[Workflow Planner] plan created' : `[Workflow Planner] plan updated #${turn}`
       : '[Workflow Planner] planning attempt rejected';
     const attempt = state.planner.attempts.findLast((item) => item.turn === turn);
+    const programFile = runDir
+      ? join(runDir, turn === 1 ? 'initial-planner-response.json' : `planner-response-turn-${turn}.json`)
+      : null;
+    const actionCount = (state.program?.actions ?? []).length;
+    const levelCount = model.dependencyGroups ? model.stages.length : 0;
+    const shape = event.payload?.ok && actionCount
+      ? `${actionCount} action${actionCount === 1 ? '' : 's'}${levelCount ? ` in ${levelCount} dependency level${levelCount === 1 ? '' : 's'}` : ''}`
+      : null;
     add(
       event.committedAt,
       `${event.payload?.ok ? glyphs().plan : '×'} ${label}`,
       attempt ? durationText(attempt.startedAt, attempt.finishedAt) : '',
-      event.payload?.summary ?? event.payload?.why,
+      [
+        shape && programFile && existsSync(programFile) ? `${shape} · plan file · ${programFile}` : shape,
+        event.payload?.summary ?? event.payload?.why,
+      ],
       turn === 1 ? 'Preflight' : 'Planner',
       attempt?.startedAt,
     );
@@ -981,13 +1017,13 @@ function workflowLiveLines(model, width, spinnerFrame) {
   const runningAttempts = state.attempts.filter((attempt) => attempt.status === 'running');
   const lines = [];
   const plannerRunning = orchestrator.active;
-  const plannerWaiting = !plannerRunning && runningAttempts.length > 0 && !stateFinishedAt(state);
-  let waiting = plannerWaiting ? 1 : 0;
-  if (plannerRunning || plannerWaiting) {
-    const status = plannerRunning ? 'planning' : 'waiting';
-    lines.push(alignRight(`${statusIcon(status, spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`, status, width));
-    lines.push(plannerRunning ? '   Choosing the next bounded program' : `   Waiting for ${runningAttempts.length} worker${runningAttempts.length === 1 ? '' : 's'}`);
-    const event = plannerRunning?.lastAgentEvent;
+  // The planner appears here only while it is actually planning. Between
+  // programs it is merely waiting on the workers listed below, which the
+  // Next section already says; a "waiting" row of its own told nothing.
+  if (plannerRunning) {
+    lines.push(alignRight(`${statusIcon('planning', spinnerFrame)} [Workflow Planner] · ${orchestrator.pool} · ${orchestrator.model}`, 'planning', width));
+    lines.push('   Choosing the next bounded program');
+    const event = plannerRunning.lastAgentEvent;
     if (event) lines.push(`   ${glyphs().detail} ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`);
     const stream = streamActivityLine(plannerRunning);
     if (stream) lines.push(`   ${stream}`);
@@ -1015,7 +1051,7 @@ function workflowLiveLines(model, width, spinnerFrame) {
     }
   }
   if (model.row?.kernelStderrTail?.length) lines.push('  kernel log: available');
-  return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0), waiting };
+  return { lines, running: runningAttempts.length + (plannerRunning ? 1 : 0) };
 }
 
 function workflowNextLines(model, width) {
@@ -1388,6 +1424,26 @@ function detailRow(bullswarmDir, token) {
     events: legacy ? [] : readEvents(resolved.runDir),
     status: state?.lifecycle?.status,
   };
+}
+
+/**
+ * One static frame of a run's overview panel — the timeline, live and next
+ * sections the interactive viewer draws — as plain text lines with no
+ * escape codes, for a caller that embeds it (the Claude mod's pane).
+ * @param {string} bullswarmDir
+ * @param {string} token shortId or runId
+ * @param {{width?: number, height?: number}} [opts]
+ * @returns {{legacy: boolean, shortId: string, runId: string, lines: string[]}}
+ */
+export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30 } = {}) {
+  const row = detailRow(bullswarmDir, token);
+  if (row.legacy) {
+    return { legacy: true, shortId: row.shortId, runId: row.runId, lines: [legacyRunLine({ shortId: row.shortId, runId: row.runId, runDir: row.runDir })] };
+  }
+  const model = workflowPanelModel(row);
+  const lines = renderWorkflowOverviewPanel(model, Math.max(40, Number(width) || 100), Math.max(12, Number(height) || 30), 0, 0)
+    .map((line) => String(line).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
+  return { legacy: false, shortId: row.shortId, runId: row.runId, lines };
 }
 
 export async function runDashboard(bullswarmDir, {

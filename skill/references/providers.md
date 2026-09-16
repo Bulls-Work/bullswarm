@@ -2,7 +2,7 @@
 
 A provider teaches Bullswarm one agent CLI. This file is the method. The
 contract (exports, `ctx`, the kit, the snapshot, every pool field and its
-reader) is `docs/guide/providers.md` in the repository; open it while you
+reader) is `docs/reference/providers.md` in the repository; open it while you
 fill in the exports.
 
 Add a provider only when the user asks for one. A new provider is a local
