@@ -1,0 +1,293 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "data-floor",
+      "kind": "implement",
+      "effort": "high",
+      "purpose": "Per-run rollup, history index, project identity and the reindex backfill",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/rollup.js",
+        "src/workflow/history.js",
+        "src/lib/project.js",
+        "src/workflow/v2-runtime.js",
+        "src/workflow/goal.js",
+        "src/workflow/runs-cli.js",
+        "tests/workflow-rollup.test.js",
+        "tests/workflow-history.test.js",
+        "tests/project.test.js",
+        "tests/workflow-v2-runtime.test.js",
+        "tests/workflow-goal.test.js",
+        "tests/workflow-runs.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) build the dashboard's data floor for the 0.33.0 release. Read docs/plans/dashboard-0.33.md first — work item W1, territory data-floor, and its sections 2-4 for the record shape and the exported signatures — and docs/design/dashboard-prototype.html for the pages that will read this data.\n\nDeliver exactly these signatures.\n\nsrc/workflow/rollup.js\n- rollupRecord(state, result, { project = null, now = Date.now() } = {}) — the record below, pure, no I/O.\n- writeRunRollup(runDir, state, result, { now } = {}) — writes <runDir>/rollup.json atomically and appends the record to the index; returns the record.\n- readRollup(runDir) — the record or null.\n- rollupIndexPath(bullswarmDir) — <dir>/history/runs.jsonl.\n- appendRollupIndex(bullswarmDir, record) — idempotent by runId.\n- readRollups(bullswarmDir, { since = null, until = null, limit = null, now = Date.now() } = {}) — records newest first, reading the index and falling back to run directories when the index is empty or a run predates it.\nRecord: { schemaVersion: 'bullswarm.workflow.rollup.v1', runId, shortId, project, goal, cwd, startedAt, finishedAt, status, verified, requirements: { passed, total }, minutes: { wall, agent }, pools: { [pool]: { attempts, minutes, costUsd, tokens } }, models: { [model]: { attempts, minutes } }, legacy: false }. minutes.wall comes from lifecycle.startedAt/finishedAt and minutes.agent from budget.seconds; costUsd is the recorded estimate and is null when the run recorded none — never a guess, never zero-for-unknown.\n\nsrc/workflow/history.js\n- dayKey(iso) — 'YYYY-MM-DD' in the resolved local zone (Intl.DateTimeFormat().resolvedOptions().timeZone), never a hard-coded zone.\n- historyDays(bullswarmDir, { before = null, days = 7, now = Date.now() } = {}) — [{ date, runs, finished, verified, verifiedShare, spendUsd }] newest first, strictly before the 'before' date key when one is given, for the History page's scroll-back. It reads the rollup index and never calls listRuns.\n\nsrc/lib/project.js\n- projectOf(cwd, { remote = true } = {}) — { name, remote, toplevel } derived from `git rev-parse --show-toplevel` plus the origin remote, falling back to the cwd basename. Never throws, tolerates a missing git or a non-repository, and passes arguments as an array rather than through a shell string.\n- projectName(cwd) — projectOf(cwd).name.\n\nWire it up: call writeRunRollup from the finish path in src/workflow/v2-runtime.js that writes result.json (finalize(), around line 1481) and from the cancelled-result path in src/workflow/runs-cli.js; record the project name into the goal document in src/workflow/goal.js at goal time; add `bullswarm workflow reindex` in src/workflow/runs-cli.js, backfilling rollups for runs that already exist, printing a plain summary line and supporting --json with the counts written and skipped. src/help.js is not yours: report the exact usage line for the integrator.\n\nDo not edit src/workflow/v2-dispatch.js, src/lib/strategy.js, src/lib/spend.js, src/workflow/dashboard.js or src/help.js. Of the 293 run directories on this machine, 105 are legacy with no V2 state.json: skip them without erroring and record nothing for them. Measured constraint to preserve: listRuns parses 293 state.json files in about 100 ms against a 1 s dashboard refresh, so nothing on that path may call it.\n\nTests to add: tests/workflow-rollup.test.js, tests/workflow-history.test.js, tests/project.test.js, plus cases in tests/workflow-goal.test.js, tests/workflow-runs.test.js and tests/workflow-v2-runtime.test.js. Every fixture builds a temporary home with mkdtempSync and never touches the developer's real ~/.bullswarm; no test may need the network.\n\nRun `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "render-kit",
+      "kind": "implement",
+      "purpose": "The drawing primitives every new page composes, with ASCII fallbacks",
+      "dependsOn": [],
+      "affects": [
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7",
+        "requirement-9",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/dash-kit.js",
+        "tests/dash-kit.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) write the dashboard's render kit for the 0.33.0 release: the small drawing primitives every new page composes. Read docs/plans/dashboard-0.33.md first (work item W2, territory render-kit, and section 4 'Frozen interfaces'), then docs/design/dashboard-prototype.html for the shapes the owner approved, plus src/workflow/usage-view.js (meterBar, severityColor, METER_COLORS) and src/lib/glyphs.js, and match the existing cell vocabulary, colours and ASCII fallback discipline.\n\nCreate src/workflow/dash-kit.js exporting exactly:\n- rule(title, right, width) — '── title ─────────── right ──', both sides optional.\n- tabsRow(tabs, { active, width, hidden = [] }) — { text, regions }; tabs are [{ id, label, key }], the active tab is inverted, its key letter underlined, a tab named in hidden is dropped unless it is active, and each tab region is { x, width, action: { kind: 'page', page: <id> } } with x relative to the line.\n- periodToggle(periods, { active }) — { text, regions }; periods are [{ id, label, key }], each region action is { kind: 'period', period: <id> }.\n- shareBar(parts, { width, colors = true }) — a three-way '▓▒░' bar for parts [{ value, glyph }] that sum to the whole; ASCII '# . |' when asciiGlyphsPreferred().\n- sparkline(values, width) — '▁▂▃▄▅▆▇█' scaled to the window; ASCII '.:-=#' fallback.\n- progressBar(fraction, width) — '▇▇▇░░░░', with the ASCII fallback.\n- stackedBars(rows, { width, colors = true }) — lines for rows [{ label, segments: [{ value, color }] }] with a left label gutter, no line past width.\n- heatRow(cells, { width, ansi = true }) — heatmap cells for values 0..1, an empty cell for null.\n- niceStep(max, ticks = 4) — a round axis step and the tick values it implies.\n- cut(text, width) — truncate to width with a trailing '…', counting visible cells (strip SGR before measuring).\n\nRules: every function is pure, reads no terminal, never paints past width for any width from 32 to 200, and honours asciiGlyphsPreferred(). Reuse the existing palette rather than inventing a second one: if you need a colour constant that does not exist, report it for the integrator instead of adding one to a file you do not own.\n\nTests: tests/dash-kit.test.js covering each export at widths 32, 54, 55, 100 and 200, the ASCII fallback for each, every region's x and width inside its line, and empty or null input (no NaN, no throw). Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "measure-prices",
+      "kind": "implement",
+      "purpose": "Meter-rate normalisation, meter history access, plan prices, and the usage counter fix",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-3",
+        "requirement-11",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/lib/spend.js",
+        "src/meters/registry.js",
+        "src/lib/prices.js",
+        "data/plan-prices.json",
+        "src/strategy-cli.js",
+        "src/lib/usage.js",
+        "tests/spend.test.js",
+        "tests/meters.test.js",
+        "tests/prices.test.js",
+        "tests/usage.test.js",
+        "tests/strategy-cli.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) build the 0.33.0 dashboard's measurement and price layer. Read docs/plans/dashboard-0.33.md first — work item W3, territory measure-prices, and its sections 2.2, 2.3 and 4 — then the six files you own.\n\n1. src/lib/spend.js — normalise resets_at before the S4 rollover test in the fitted-rate pair loop (the `from.resetsAt !== to.resetsAt` comparison around line 296): sub-second differences are the same window, so compare at second resolution. Measured today on this machine: claude-code yields 382 distinct resets_at values in 382 samples and therefore 0 usable pairs, while grok and codex yield 74 and 29. Export normalizeResetsAt(value). Keep every existing export and its shape: MIN_EXPECTED_MINUTES, DEFAULT_EXPECTED_MINUTES, MIN_DURATION_SAMPLES, MIN_RATE_PAIRS, MIN_RATE_MINUTES, poolNameOf, attemptWindow, inflightRecordsFor, remainingMinutesOf, expectedMinutesFor, workerMinutesForPool, spendRateFor, attachSpend.\n\n2. src/meters/registry.js — keep the history log and its 500-line cap as they are, and add the read helper the model layer needs to walk ~/.bullswarm/meters/history/<pool>.jsonl by day, tolerating a missing or truncated file exactly as readMeterHistory does. Measured retention at the cap: 10.1 days for claude-code, 9.8 for command-code — nothing may assume more.\n\n3. src/lib/prices.js — export planPrices({ file = null } = {}) returning the parsed data/plan-prices.json (cached, path resolved from the package root the way other bundled data is), priceFor(pool, { subscriptions = {} } = {}) returning { monthlyPriceUsd, includedValueUsd, source, updatedAt, basis } or null, where a per-machine state.strategy.subscriptions[pool] override wins over the table, and subscriptionCostUsd(price, { days = 7 } = {}) pro-rating a declared monthly price over a window. Return null, never a guess, whenever no price is declared.\n\n4. data/plan-prices.json — a schema-versioned table with its source and updatedAt, in the style of the connector pricing blocks in src/providers/_schema.json. Include an entry only for a price that is published and citable with a URL. On this machine every pool has monthlyPriceUsd null and there is no price table in the repository, so the honest starting table carries the schema and whatever sources you can actually cite, and says in the file why other plans are absent. The dashboard renders a blank plus a reason where a price is missing, and your tests pin that.\n\n5. src/lib/usage.js — lastCounter takes the last matching counter in a stream, which is why the 20 provider-reported attempts recorded output: 4 rather than a total. Sum the matching counters instead, keeping parseReportedUsage and estimateInvocationUsage's shapes unchanged.\n\n6. src/strategy-cli.js — the subscription view currently prints nothing when monthlyPriceUsd is null; make it print the resolved price or the reason it is missing, and keep `bullswarm strategy set-subscription <pool> --monthly-usd --included-usd --quota-window --resets-at` working exactly as it does today.\n\nTests: tests/spend.test.js (a pair whose resets_at differs only below the second now counts), tests/meters.test.js, tests/prices.test.js (an override wins over the table; an undeclared plan yields null and no number), tests/usage.test.js (a stream with several counters sums them), tests/strategy-cli.test.js. Fixtures use a temporary home and no test may need the network. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "aggregation-models",
+      "kind": "implement",
+      "effort": "high",
+      "purpose": "The stats and budget maths over rollups, live pools and declared prices",
+      "dependsOn": [
+        "data-floor",
+        "measure-prices"
+      ],
+      "affects": [
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-11",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/stats-model.js",
+        "src/workflow/budget-model.js",
+        "tests/workflow-stats-model.test.js",
+        "tests/workflow-budget-model.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) write the 0.33.0 dashboard's two aggregation models. Read the dependency outputs listed with this task (data-floor and measure-prices) and docs/plans/dashboard-0.33.md (work item W4, territory aggregation-models, and sections 2, 3 and 4) before writing code. Consume the rollup records of src/workflow/rollup.js, the history helpers of src/workflow/history.js, the prices of src/lib/prices.js, and the pool shape src/lib/config.js buildPools already returns (usedPct, elapsedPct, pace, paceResetsAt, resetSource, credits). You own the maths only: no rendering, no ANSI, no terminal.\n\nsrc/workflow/stats-model.js, exporting exactly:\n- PERIODS = ['7d', '30d', 'all'] and TREND_METRICS = ['runs', 'spend', 'minutes', 'verified'].\n- periodRange(period, now) — { from, to }.\n- overviewModel(rollups, pools, { period = '7d', now }) — today's tiles (finished, verified share, apiEquivalentUsd, licence used), the 7-day breakdown by pool, model and project, weekday heat cells sized to the history that exists (V2 history is 15 distinct days today), and the key-value block (workflows, favourite pool, busiest project, favourite model, median run, total agent time; 187h of agent time is real). A value with no source is null and the model says which are null rather than filling them.\n- trendModel(rollups, { metric, period = '7d', now }) — { buckets: [{ label, value, segments }], total, cumulative, max }; '7d' and '30d' bucket by day, 'all' by week, and segments carry the per-pool (or, where that is the point, per-model) split of the bucket.\n- poolsModel(rollups, pools, { period = '7d', now }), modelsModel(rollups, { period = '7d', now }), projectsModel(rollups, { period = '7d', now }) — the Pools, Models and Projects tables: counts, ok share, median wall minutes, apiEquivalentUsd, most used, workflows completed. Median is a real median over wall minutes, never a mean presented as one.\n\nsrc/workflow/budget-model.js, exporting exactly:\n- poolBudget(pool, { rollups, prices, now }) and budgetModel(pools, { rollups, prices = null, period = 'week', now }) — per pool { name, planType, window, usedPct, elapsedPct, pace, paceWord, resetsAt, resetSource, resetsText, credits, share: { workflows, rest }, subscription, apiEquivalentUsd, fits }. resetsText is the absolute date and time with the resolved local zone name, never a hard-coded zone. share counts measured worker-minutes only and has no 'you' term: that source does not exist in the CLI and must not be faked. subscription is null unless priceFor returned a declared price. fits is how many median runs that pool's remaining licence allows, and is null when it cannot be computed.\n- biggestRuns(rollups, { pool, period = 'week', now, limit = 5 }) — the biggest workflows by worker-minutes and by recorded estimate, labelled as such. Never by licence draw: that is not measurable per run today (normalizedQuota.estimatedPercent is null on all 877 recorded attempts).\n\nRules: money is the recorded API-equivalent estimate and appears only under names that say so (apiEquivalentUsd); the subscription figure is money at the declared subscription rate, and there is no third kind. A per-run licence draw may only be ratePerMinute x worker-minutes with its source, and is null when the rate is null. Where a period asks for more history than exists, return what exists; the view labels it.\n\nTests: tests/workflow-stats-model.test.js and tests/workflow-budget-model.test.js, each driving a fixture rollup index that includes a run with null cost, a legacy run, a pool with no declared price, a period with no data, and a day with a single run, asserting nulls rather than zeros and no NaN. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "budget-fleet-views",
+      "kind": "implement",
+      "purpose": "The Budget and Fleet pages, and the usageLines split that keeps the mod pane working",
+      "dependsOn": [
+        "render-kit",
+        "aggregation-models"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-6",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/budget-view.js",
+        "src/workflow/fleet-view.js",
+        "src/workflow/usage-view.js",
+        "tests/workflow-budget-view.test.js",
+        "tests/workflow-fleet-view.test.js",
+        "tests/workflow-usage-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) write the 0.33.0 Budget and Fleet pages as view modules. Read the dependency outputs listed with this task (render-kit and aggregation-models) and docs/plans/dashboard-0.33.md (work item W5, territory budget-fleet-views, and sections 2, 4 and 6) before writing code, then docs/design/dashboard-prototype.html pageBudget and pageFleet for the shape the owner approved.\n\nCreate src/workflow/budget-view.js exporting budgetLines(budget, { width = 120, ansi = true } = {}) — { lines, regions } — and budgetNotes(budget, { width = 120 } = {}).\nCreate src/workflow/fleet-view.js exporting fleetLines(pools, rungs, { width = 120, by = 'lane', nowMs = Date.now(), ansi = true } = {}) — { lines, regions }.\n\nBudget renders, per pool: the plan name and window ('claude-code  Max 20x · weekly window'), a full-width licence meter built from meterBar(pool.usedPct, pool.elapsedPct, width) with its elapsed mark, the pace word, 'Resets <absolute date and time> (<resolved local zone>) · <elapsed>% of the window elapsed · <paceWord>', the credit meter where the snapshot has one (66.41 / 70 credits is real on this machine), the workflows/rest share bar from budget-model, the biggest workflows with their measured worker-minutes, and exactly two money lines: the subscription rate, which prints a number only when budget-model returned a declared price and otherwise a blank plus the reason and the command that declares one, and the equivalent API rate, which always carries '≈' and the words 'API-equivalent estimate'. No other line on the page prints money, and no multiple of a subscription cost is ever printed.\n\nFleet renders the pools by lane and by provider with their blurbs, the rung records, the read-only note, and an [edit] region whose action is { kind: 'edit' } so the shell hands it to the same setup control centre usageLines' note opens today.\n\nBoth pages must fit 54 columns: below that the meter shrinks, money lines wrap under it, and no atom paints past the width (frameWidth() subtracts one column under 100, so a 55-column terminal paints 54).\n\nsrc/workflow/usage-view.js: you own the split, and it must not break a contract. usageLines, poolSummaryLines, meterBar, paceWord, severityColor, poolWindows, untilText, loadUsage and parseMouse keep their exported names and signatures, because the Claude Mod pane and tests/workflow-usage-view.test.js read them; usageLines must keep returning the lines it returns today, since mods/bullswarm/hooks/overview.ts parses that text frame. Move the meter half into budget-view.js and the rung half into fleet-view.js without deleting the old page's behaviour. If you need to change METER_COLORS, report it for the integrator: mods/bullswarm/hooks/pool-rows.tsx holds its own copy of that palette and the two must stay in step.\n\nRegions are { x, width, action } with x relative to the line, and actions are { kind: 'page', page }, { kind: 'period', period }, { kind: 'run', runId } or { kind: 'edit' }, so the shell maps them in one switch — do not invent new action kinds without saying so in your report.\n\nTests: tests/workflow-budget-view.test.js, tests/workflow-fleet-view.test.js, and updates to tests/workflow-usage-view.test.js. Pin: no painted line past the width at 54, 55, 80, 100 and 200 columns on both pages; with a pool whose price is undeclared and an attempt whose normalizedQuota.estimatedPercent is null, the Budget page prints no bare number and no multiple; and usageLines still renders what it renders today. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "stats-history-views",
+      "kind": "implement",
+      "purpose": "The Stats and History pages, with clickable bars and scroll-back day loading",
+      "dependsOn": [
+        "render-kit",
+        "aggregation-models"
+      ],
+      "affects": [
+        "requirement-4",
+        "requirement-5",
+        "requirement-9",
+        "requirement-11",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/stats-view.js",
+        "src/workflow/history-view.js",
+        "tests/workflow-stats-view.test.js",
+        "tests/workflow-history-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) write the 0.33.0 Stats and History pages as view modules. Read the dependency outputs listed with this task (render-kit and aggregation-models) and docs/plans/dashboard-0.33.md (work item W6, territory stats-history-views, and sections 2, 4 and 6) before writing code, then docs/design/dashboard-prototype.html pageStats and pageHistory for the approved shape.\n\nCreate src/workflow/stats-view.js exporting statsLines(stats, { width = 120, tab = 'overview', period = '7d', metric = 'runs', ansi = true } = {}) — { lines, regions }.\nCreate src/workflow/history-view.js exporting historyLines(days, { width = 120, ansi = true } = {}) — { lines, regions } — and historyNote(days, { width = 120 } = {}).\n\nStats renders five tabs — Overview, Trends, Pools, Models, Projects — with tabsRow, whose tab regions carry { kind: 'tab', tab }, plus a periodToggle whose regions carry { kind: 'period', period }, drawn from stats-model's PERIODS, TREND_METRICS and the tab list. Overview shows the period totals, the weekday heat cells sized to the history that exists, the key-value block and the playful line. Trends draws stacked bars per bucket for the chosen metric with the running total and a legend, and every bar carries a region { kind: 'trend', metric, period, bucket } so a click can drill. Pools pairs the licence-per-day chart with the live meters. Models and Projects show stats-model's tables, including most used and workflows completed, with share expressed against the measured total rather than against a licence. A metric with no data renders an empty chart with a stated reason, never an invented axis of zeros. Stats may not print money without '≈' and 'API-equivalent estimate'.\n\nHistory renders one rule per date — 'Tue 15 Sep — 6 runs · ≈ $8.40' — then that day's rows newest first: short id, project, goal, duration, the labelled estimate, and the time. It shows every workflow that exists; a legacy run with no V2 state is a read-only row with no numbers, and says so. historyNote states how many days are loaded and that older days load as the reader scrolls; the shell fetches the next page with historyDays(bullswarmDir, { before: <oldest loaded date> }), so never load the whole history at once and never call listRuns.\n\nBoth pages must fit 54 columns: choose shorter labels rather than clipping, and never paint past the width (frameWidth() subtracts one column under 100, so a 55-column terminal paints 54).\n\nRegions are { x, width, action } with x relative to the line, and actions are { kind: 'page', page }, { kind: 'tab', tab }, { kind: 'period', period }, { kind: 'metric', metric } or { kind: 'run', runId } — do not invent new action kinds without saying so in your report.\n\nTests: tests/workflow-stats-view.test.js and tests/workflow-history-view.test.js. Pin: every tab and every period renders at 54, 55, 80, 100 and 200 columns with no line past the width; a period with no data renders the stated empty state; a bar's region x and width lie inside its line; a day holding only legacy runs prints no money for them. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "digest-shell-inputs",
+      "kind": "digest",
+      "purpose": "One brief for the shell writer from the four module territories",
+      "dependsOn": [
+        "render-kit",
+        "aggregation-models",
+        "budget-fleet-views",
+        "stats-history-views"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Focus the brief on what the shell writer must call: every exported signature verbatim, the record and region shapes, the file each module lives in, and every shared-file or palette request the four territories raised."
+    },
+    {
+      "id": "shell-home",
+      "kind": "implement",
+      "effort": "high",
+      "purpose": "Page shell, Home, Run/Step enrichment, the key table and the phone layout",
+      "dependsOn": [
+        "digest-shell-inputs"
+      ],
+      "affects": [
+        "requirement-2",
+        "requirement-7",
+        "requirement-8",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11",
+        "requirement-12"
+      ],
+      "ownedFiles": [
+        "src/workflow/dashboard.js",
+        "tests/workflow-dashboard.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) rebuild the dashboard shell and its pages for 0.33.0. Read the dependency output listed with this task — the digest of the four module territories — and docs/plans/dashboard-0.33.md (work item W7, territory shell-home, and sections 4 and 6) before writing code, then docs/design/dashboard-prototype.html for the approved layout, keys and clicks. You own src/workflow/dashboard.js and tests/workflow-dashboard.test.js, and no other file.\n\nDeliver:\n1. Page enum and tab row. DASHBOARD_PAGES becomes ['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'fleet', 'help'], painted with dash-kit's tabsRow above the body: active tab inverted, its key letter underlined, Fleet dropped while narrow unless it is the active page. The sticky header, body window, position line and message and note lines keep working as they do now.\n2. Home. The today tiles (finished, verified share, API-equivalent estimate, licence used) with sparklines over the last 7 days, the 7-day breakdown by pool, model and project, the active runs block always visible with its per-run glyph strip whose glyphs are clickable, and the recent list. Every tile and bar carries a region so a click opens the Stats tab that charts it. Where budget-model returns no declared price or no measurable licence, the tile renders a blank with the reason, never a number.\n3. Pages. Budget and Fleet route to budgetLines, budgetNotes and fleetLines. Run and Step keep their current frames and gain the plan DAG strip, the phase count ('phase 2 of 4 · 5/8 steps · ETA 19:22'), per-step progress against expectedMinutes, and the pool share and spend columns — every money figure labelled as section 2 of the plan requires. The Run frame's box borders, '── ' section prefixes and 'HH:MM ' milestones are parsed by mods/bullswarm/hooks/overview.ts parseOverview, so keep those shapes and say in your report what you added around them.\n4. Keys, all named in the existing DASHBOARD_KEYS table: r Runs, b Budget, s Stats, y History, f Fleet, h and ? Help, 1-9 open a run, Tab and Shift+Tab cycle sub-tabs, p cycles the period, Esc and left-arrow move out one page and then home, up/down/j/k one line, PgUp/PgDn, Home/End, ctrl+s copies the screen (OSC 52, falling back to pbcopy or wl-copy, with the message saying which), q quits. Move-out is no longer b, refresh is no longer r and Tab no longer cycles workflows: the 1 s refresh timer keeps refreshing, Esc and left-arrow still move out, Shift+Tab still cycles workflows, and the changelog records the rebinding. A pending stop confirmation still takes y, and the Help page says so.\n5. Help. Every key and click above is named, with rows short enough to fit 55 columns rather than clipped ones.\n6. Mouse. Every region from tabsRow, periodToggle, the tiles, the bars, the day rows and the nav buttons runs the same action its key runs, and the existing wheel and click parsing stays.\n7. Narrow layout. Everything width-driven. frameWidth() keeps subtracting one column below 100, so the phone layout is specified at 55 columns and must fit 54; at that width the nav tail is [Top] [End] [Help] rather than the run buttons, and Help says which.\n\nImport only names the digest lists as exported. If a signature you need is missing or wrong, report it for the integrator instead of editing another territory. Home must paint in under 50 ms with 293 run directories present: read the rollup index, never listRuns on the refresh path.\n\nTests: tests/workflow-dashboard.test.js keeps its current coverage green and adds — every page at 120x40 and 55x26 with no painted line past the width and none blank; every key in the list reaching its page or action; every clickable atom recording a region whose click runs its key's action; and the money rule, that with an undeclared price and normalizedQuota.estimatedPercent null no bare number is painted. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "docs-changelog",
+      "kind": "implement",
+      "purpose": "The pages, keys and command documented, and the 0.33.0 changelog entry",
+      "dependsOn": [
+        "data-floor",
+        "measure-prices",
+        "budget-fleet-views",
+        "stats-history-views",
+        "shell-home"
+      ],
+      "affects": [
+        "requirement-13",
+        "requirement-14"
+      ],
+      "ownedFiles": [
+        "docs/guide/observing.md",
+        "docs/reference/cli.md",
+        "README.md",
+        "src/help.js",
+        "mods/bullswarm/README.md",
+        "CHANGELOG.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard (bullswarm 0.32.0, branch dashboard-0.33) document the 0.33.0 dashboard release from the code as it actually shipped. Read every dependency output listed with this task — each writer reports what it shipped and which requests it left for you — and docs/plans/dashboard-0.33.md sections 1, 5, 6 and 8 before writing. You own exactly these files: docs/guide/observing.md, docs/reference/cli.md, README.md, src/help.js, mods/bullswarm/README.md, CHANGELOG.md.\n\nWrite:\n1. The page list and what each page answers — Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help — in docs/guide/observing.md where the dashboard is described today, and in README.md where the dashboard is introduced.\n2. The full key table — r b s y f h ? 1-9 Tab p Esc arrows PgUp PgDn Home End ctrl+s q — in the same places, saying what each key does, and naming the 0.33.0 rebinding plainly: r no longer refreshes (the view refreshes itself), b no longer moves out (Esc and left-arrow do), Tab cycles sub-tabs rather than workflows (Shift+Tab still cycles workflows).\n3. `bullswarm workflow reindex` in docs/reference/cli.md and src/help.js with the exact usage line and flags the data-floor writer reported, placed beside the other workflow commands.\n4. The mod pane's page list in mods/bullswarm/README.md, stating which pages the pane shows and which it does not.\n5. CHANGELOG.md: a '## 0.33.0 — the dashboard release' section above 0.32.0, in the file's established voice — a bullet per change, backticked flags and keys, the measured number where one exists — covering the new pages, the new recording and index, the key rebinding, the rule that money and licence figures are measured or carry '≈' with their basis, and `workflow reindex`. Do not bump package.json: `bullswarm release minor` owns the version, the commit and the tag.\n\nKeep every edit inside the existing voice and structure of each file, and do not reformat unrelated sections. Do not document anything you cannot see in the code: if a page or flag is missing, report it for the integrator instead of writing it up. Tests: tests/help.test.js stays green and gains a case for the reindex usage line. Run `npm test` and quote the summary line (baseline 918 pass, 0 fail). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile every territory, apply their requests, and run the repository gates",
+      "dependsOn": [
+        "data-floor",
+        "render-kit",
+        "measure-prices",
+        "aggregation-models",
+        "budget-fleet-views",
+        "stats-history-views",
+        "shell-home",
+        "docs-changelog"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7",
+        "requirement-8",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11",
+        "requirement-12",
+        "requirement-13",
+        "requirement-14"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard integrate the 0.33.0 dashboard release. Read every dependency output first, including the digest and each writer's report and outstanding requests, and docs/plans/dashboard-0.33.md. You are now the sole writer: apply the shared-file requests the territories raised — they never edited outside their own files — reconcile the wiring in src/workflow/dashboard.js against the modules it imports, and check that every documented signature is real rather than assumed.\n\nThen run the repository gates and quote the exact output of each:\n- `npm test` (baseline 918 pass, 0 fail) with its summary line;\n- `node bin/bullswarm.js doctor --json` still parsing;\n- against a real finished run, `bullswarm workflow tui <id> --overview` still parsing under mods/bullswarm/hooks/overview.ts parseOverview, and `bullswarm pools --json`, `workflow runs --json`, `assignments --json`, `strategy rungs --json`, `workflow runs show <id> --json` and `workflow action show <id> --json` each still emitting their shape;\n- `bullswarm workflow plan validate \"<goal>\" --cwd=/Users/cowcow02/Repo/bullswork/bullswarm-dashboard --program=/Users/cowcow02/Repo/bullswork/bullswarm-dashboard/docs/plans/dashboard-0.33.program.json --json` still exiting 0, so the shipped plan stays self-consistent;\n- the real dashboard in tmux at 120x40 and 55x26 against a fixture home, once, confirming every page paints and no line exceeds the frame width.\n\nFix what fails in the code you now own; where a fix belongs to a module whose writer is gone, make it and say so. Do not commit, and do not edit docs/plans/dashboard-0.33.goal.txt or docs/plans/dashboard-0.33.program.json.\n\nReport precisely: what you changed and why, what you could not reconcile, the acceptance-relevant behaviour you observed with the commands and lines that showed it, and what the acceptance action should try to break. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, write null, say so, and label it."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently verify every requirement against the running dashboard",
+      "dependsOn": [
+        "data-floor",
+        "render-kit",
+        "measure-prices",
+        "aggregation-models",
+        "budget-fleet-views",
+        "stats-history-views",
+        "shell-home",
+        "docs-changelog",
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7",
+        "requirement-8",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11",
+        "requirement-12",
+        "requirement-13",
+        "requirement-14"
+      ],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-dashboard independently verify the 0.33.0 dashboard release against the goal text in docs/plans/dashboard-0.33.goal.txt. Read the dependency outputs — the writers' reports and the integration report — then inspect the repository as it stands, in docs/plans/dashboard-0.33.md for the feasibility rules the plan fixes, and docs/design/dashboard-prototype.html for the shape the owner approved.\n\nWhere to look: run the real `node bin/bullswarm.js` dashboard in tmux at 120x40 and 55x26 against a fixture ~/.bullswarm home holding finished runs, a legacy run directory with no state.json, a running run, cached meters, a pool with no declared plan price, and attempts whose normalizedQuota.estimatedPercent is null; then walk every key and click the prototype names and compare what is painted with the prototype's page functions. Follow the data floor end to end: confirm a finished run writes rollup.json and grows ~/.bullswarm/history/runs.jsonl, that `bullswarm workflow reindex` is idempotent on a second run, and that Home paints with 293 run directories present without calling listRuns.\n\nWhat to try to break: a pool with no price, a period with no data, a day holding only legacy runs, a 32-column terminal, a wheel event on a page with no scrollable body, a click on a region whose target moved after the previous keypress, ctrl+s on a terminal where OSC 52 is unavailable, a plan whose stored price table is malformed, and `bullswarm workflow tui <id> --overview` parsed through mods/bullswarm/hooks/overview.ts parseOverview. Check the money rule hard: with no declared price and no measured licence, nothing on any page may print a bare number, and every '≈' figure must state its basis on the same screen. Check the documentation claims against the running product rather than the reports: src/help.js's reindex usage line, the key table, and the changelog's description of the rebinding.\n\nReport, for each numbered requirement in the goal, what you observed with the exact command and the exact lines it printed, and where a requirement is only partly met, which part and how you would tell. Do not edit anything and do not commit. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: never invent numbers, prices or API facts; when something cannot be measured today, say so and label it."
+    }
+  ]
+}

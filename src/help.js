@@ -59,7 +59,7 @@ const top = rich({
     + 'it as done. There are exactly two ways to start work: `bullswarm run` dispatches one '
     + 'bounded task to a single agent, and `bullswarm workflow goal` executes a program you '
     + 'author across a coordinated multi-agent run. Bare `bullswarm` opens the dashboard — '
-    + 'Home, Run, Step, Usage, Help — once this machine is configured, and the setup control '
+    + 'Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help — once this machine is configured, and the setup control '
     + "center when it is not. Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
   args: [
@@ -776,7 +776,7 @@ const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
   purpose: 'Plan, execute, observe, and audit durable multi-agent workflows with the '
     + 'single V2 action/evidence engine. With no command on a TTY, opens the dashboard '
-    + '(Home, Run, Step, Usage, Help) — the same screen bare `bullswarm` opens on a '
+    + '(Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help) — the same screen bare `bullswarm` opens on a '
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
@@ -787,7 +787,8 @@ const workflowText = rich({
     { name: 'resume <runId>', desc: 'lift a pause, continue an interrupted run, or retry a finished run\'s retryable steps, with its durable planner mode and routing' },
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
-    { name: 'tui [runId]', desc: 'open the dashboard (Home, Run, Step, Usage, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
+    { name: 'reindex', desc: 'backfill the run-rollup history index, including minimal legacy records' },
+    { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
@@ -1146,6 +1147,29 @@ const workflowPauseText = rich({
   next: 'bullswarm workflow plan export <runId> --out plan.json to revise, then bullswarm workflow resume <runId>.',
 });
 
+const workflowReindexText = rich({
+  usage: 'bullswarm workflow reindex [--json] [--force]',
+  purpose: 'Backfill the append-only run-rollup history index from finished workflow run directories. '
+    + 'Runs completed before 0.33.0, or whose finish-time rollup write failed, are included; legacy '
+    + 'authored-graph runs get a minimal record marked legacy; only unfinished runs are skipped. The '
+    + 'dashboard reads this index instead of parsing every state.json on each refresh.',
+  args: [],
+  options: [
+    { flag: '--json', desc: 'print `{ ok, indexPath, scanned, written, skipped, legacy, unfinished, present, failed, failures[] }`', default: 'human summary line' },
+    { flag: '--force', desc: 'rebuild rollups that already exist, then refresh their index entries', default: 'leave existing rollups in place' },
+  ],
+  safety: [
+    'writes <runDir>/rollup.json and ~/.bullswarm/history/runs.jsonl (or the equivalent $BULLSWARM_HOME paths)',
+    'legacy runs get a minimal record marked legacy; only unfinished runs are skipped without an index entry; failures are reported and return exit 1',
+    'safe to run again: an already indexed run is counted as present rather than duplicated',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow reindex', note: 'backfill finished runs and print the counts' },
+    { cmd: 'bullswarm workflow reindex --json --force', note: 'rebuild every existing rollup and return the machine-readable counts' },
+  ],
+  next: 'bullswarm workflow tui for the dashboard, or bullswarm workflow runs --all to inspect the indexed history.',
+});
+
 const workflowCapabilitiesText = rich({
   usage: 'bullswarm workflow capabilities',
   purpose: 'Report the workflow engine, current routing policy, and live '
@@ -1161,16 +1185,18 @@ const workflowCapabilitiesText = rich({
 const workflowTuiText = rich({
   usage: 'bullswarm workflow tui [<runId>] [--json] [--all] [--show <runId>] [--cancel <runId>] [--overview [--width <cols>] [--height <rows>]]',
   purpose: 'Open the dashboard — the same screen bare `bullswarm` opens on a configured terminal, here as the '
-    + 'explicit command. A sticky header names the selected run and a sticky bottom nav carries every ongoing run '
-    + '([ 1.<run> ], the current one marked ●) plus [ usage ], [ help ] and [ quit ], each button\'s key '
-    + 'underlined inside its label. The pages are Home (ongoing '
-    + 'runs, the compact pool rows, the agent-integration status with an [install] button, and the commands that '
-    + 'operate the product), Run (the selected run\'s timeline with its Live and Next overview), Step (one agent\'s '
-    + 'panel, with [back]), Usage (every meter window per enabled pool, the rungs with their local record, the '
-    + 'read-only note, and [edit], which hands the terminal to bullswarm setup) and Help. Keys: q quit, ? help, '
-    + 'u usage, e edit, i install, l and p switch the Usage grouping, the arrows/PgUp/PgDn/Enter move and open, '
-    + 'Esc goes back; the mouse clicks any button, tab, run or step and the wheel scrolls. A non-interactive '
-    + 'caller gets a static/JSON snapshot instead.',
+    + 'explicit command. A sticky header names the selected run and a sticky bottom nav keeps the page and run '
+    + 'controls visible. The pages are Home (today\'s tiles, active/recent workflows, and pool/model/project '
+    + 'breakdown), Runs (the workflow catalogue, integration status, and commands), Run (plan, Live, Next, ETA, '
+    + 'and budget), Step (one action\'s full panel), Budget (quota, measured worker-time share, labelled money, '
+    + 'fit, and biggest workflows), Stats (Overview, Trends, Pools, Models, Projects), History (a dated workflow '
+    + 'timeline), Fleet (lane/provider rungs), and Help. Keys: r Runs, b Budget, s Stats, y History, f Fleet, '
+    + 'h or ? Help, 1–9 open a run, Tab cycles sub-tabs, Shift+Tab cycles workflows, p cycles the period, '
+    + 'Esc or the left arrow moves out, arrows move one line, PgUp/PgDn scroll a screen, Home/End jump to '
+    + 'top/bottom, ctrl+s copies the screen, and q quits. Enter, the right arrow, or l opens a selection. In '
+    + '0.33.0, r no longer refreshes, b no longer moves out, and Tab no longer cycles workflows; the view refreshes '
+    + 'itself, Esc/left moves out, and Shift+Tab still cycles workflows. The mouse clicks tabs, tiles, bars, runs, '
+    + 'steps, dates, and controls; a non-interactive caller gets a static/JSON snapshot instead.',
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
     { flag: '--json', desc: "print a JSON snapshot instead of opening the interactive browser (list of ongoing runs, or one run's state/report/events when a runId is given)", default: "opens the interactive browser on a TTY; without a TTY, a given runId instead prints one static text detail tree" },
@@ -1574,6 +1600,7 @@ const HELP = {
       revise: { _text: workflowPlanReviseText },
     },
     pause: { _text: workflowPauseText },
+    reindex: { _text: workflowReindexText },
     capabilities: { _text: workflowCapabilitiesText },
     tui: { _text: workflowTuiText },
     watch: { _text: workflowWatchText },

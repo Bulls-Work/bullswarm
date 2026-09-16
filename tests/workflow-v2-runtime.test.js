@@ -2,11 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { readGoalProject } from '../src/workflow/goal.js';
+import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
 
 const requirement = { id: 'report-correct', text: 'report.md exists and contains READY' };
 const programResponse = () => ({
@@ -630,4 +632,144 @@ test('a resolved reasoning record survives dispatch into the durable attempt and
   // The durable state must still validate with the new field present.
   const durable = deserializeV2DurableState(readFileSync(join(result.runDir, 'state.json'), 'utf8'));
   assert.deepEqual(durable.attempts.map((attempt) => attempt.reasoning?.applied), ['high', 'high']);
+});
+
+// --- the dashboard's data floor ----------------------------------------
+//
+// The finish path writes one rollup record per run and appends it to the
+// history index, so Home, Stats and History never have to parse every
+// state.json (293 directories, 22 MB, ~100 ms measured on this machine) on
+// the dashboard's 1 s refresh timer. Goal time stamps the project.
+
+test('a finished run writes rollup.json, appends the history index, and stamps its project at goal time', async () => {
+  const f = setup();
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
+      writeFileSync(candidatePath, JSON.stringify(programResponse()));
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator('x'), outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      writeFileSync(files.outFile, 'wrote report.md');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
+    writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)[1], JSON.stringify(evidence));
+    writeFileSync(files.outFile, 'inspected');
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator('x'), outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const finished = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-rollup-abcdef',
+    dependencies: { dispatchV2Action: dispatch },
+    now: (() => { let n = 0; return () => `2026-08-31T01:00:${String(n++).padStart(2, '0')}.000Z`; })(),
+  });
+  assert.equal(finished.result.status, 'completed');
+
+  // Goal time: the project the run's cwd belongs to, recorded beside
+  // goal.json before a single agent is dispatched.
+  const stamped = readGoalProject(finished.runDir);
+  assert.ok(stamped, 'a launch must record its project identity');
+  assert.equal(stamped.cwd, f.workspace);
+  assert.equal(stamped.name, basename(f.workspace), 'a plain directory is named after itself');
+
+  // Finish time: the record and the index line.
+  const record = readRollup(finished.runDir);
+  assert.ok(record, 'a finished run must leave a rollup');
+  assert.equal(record.schemaVersion, 'bullswarm.workflow.rollup.v1');
+  assert.equal(record.runId, 'wf-rollup-abcdef');
+  assert.equal(record.shortId, finished.state.shortId);
+  assert.equal(record.project, basename(f.workspace));
+  assert.equal(record.goal, 'Deliver a correct report');
+  assert.equal(record.cwd, f.workspace);
+  assert.equal(record.status, 'completed');
+  assert.equal(record.verified, true);
+  assert.deepEqual(record.requirements, { passed: 1, total: 1 });
+  assert.equal(record.legacy, false);
+  assert.equal(record.startedAt, finished.state.lifecycle.startedAt);
+  assert.equal(record.finishedAt, finished.state.lifecycle.finishedAt);
+  // The fake dispatcher records wallSec 1 and no cost estimate on every
+  // attempt, so minutes are real and the money stays blank.
+  assert.equal(record.minutes.agent, Math.round((finished.state.budget.seconds / 60) * 100) / 100);
+  assert.equal(record.pools.relay.attempts, finished.state.attempts.length);
+  assert.equal(record.pools.relay.costUsd, null, 'no estimate recorded → null, never 0');
+  assert.equal(record.models['gpt-5.6-luna'].attempts, finished.state.attempts.length);
+
+  const index = readRollupIndex(f.bullswarmDir);
+  assert.equal(readFileSync(rollupIndexPath(f.bullswarmDir), 'utf8').trim().split('\n').length, 1);
+  assert.deepEqual(index, [record]);
+
+  // readRollups reaches it through the index, which is what the dashboard
+  // does instead of listRuns.
+  assert.deepEqual(readRollups(f.bullswarmDir).map((entry) => entry.runId), ['wf-rollup-abcdef']);
+});
+
+test('a cancelled run is rolled up too, and finishing twice leaves one index line', async () => {
+  const f = setup();
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)[1], JSON.stringify(programResponse()));
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator('x'), outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      // Request cancellation from inside the first worker, so the kernel
+      // finalizes a cancelled run on its next checkpoint.
+      writeFileSync(join(f.bullswarmDir, 'workflows', 'wf-cancel-abcdef', 'cancellation.json'), JSON.stringify({ requested: true, requestedAt: '2026-08-31T01:00:05.000Z', reason: 'test' }));
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      writeFileSync(files.outFile, 'wrote report.md');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    writeFileSync(files.outFile, 'inspected');
+    return { ok: false, status: 'failed', failureKind: 'cancelled', verdict: { ok: false, why: 'cancelled', outFile: files.outFile, meta: { exitCode: 1 } } };
+  });
+  const finished = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-cancel-abcdef',
+    dependencies: { dispatchV2Action: dispatch },
+    now: (() => { let n = 0; return () => `2026-08-31T01:00:${String(n++).padStart(2, '0')}.000Z`; })(),
+  });
+  assert.equal(finished.result.status, 'cancelled');
+  const record = readRollup(finished.runDir);
+  assert.ok(record, 'a cancelled run is history too and must be rolled up');
+  assert.equal(record.status, 'cancelled');
+  assert.equal(record.verified, false);
+
+  // Resuming a terminal run replays the finish path. The index must still
+  // carry exactly one line for it.
+  await runV2AutonomousWorkflow({ bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], resumeRunId: 'wf-cancel-abcdef', dependencies: { dispatchV2Action: dispatch } });
+  const lines = readFileSync(rollupIndexPath(f.bullswarmDir), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1, 'the index is idempotent by runId');
+  assert.equal(JSON.parse(lines[0]).runId, 'wf-cancel-abcdef');
+});
+
+test('a rollup that cannot be indexed never costs a finished run its result', async () => {
+  const f = setup();
+  // A regular FILE where the history directory belongs: appending to the
+  // index throws, which is the failure this guard exists for.
+  writeFileSync(join(f.bullswarmDir, 'history'), 'not a directory\n');
+  const dispatch = fakeDispatch(async (options, _calls, files) => {
+    if (options.action.id === 'workflow-planner') {
+      writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)[1], JSON.stringify(programResponse()));
+      return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator('x'), outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    if (options.action.id === 'write-report') {
+      writeFileSync(join(f.workspace, 'report.md'), 'READY\n');
+      writeFileSync(files.outFile, 'wrote report.md');
+      return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
+    }
+    const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
+    writeFileSync(options.taskText.match(/exact durable path: '([^']+)'/)[1], JSON.stringify(evidence));
+    writeFileSync(files.outFile, 'inspected');
+    return { ok: true, status: 'succeeded', verdict: { ok: true, structured: options.outputValidator('x'), outFile: files.outFile, meta: { exitCode: 0 } } };
+  });
+  const finished = await runV2AutonomousWorkflow({
+    bullswarmDir: f.bullswarmDir, goalDocument: f.goal, pools: [], runId: 'wf-blocked-abcdef',
+    dependencies: { dispatchV2Action: dispatch },
+  });
+  assert.equal(finished.result.status, 'completed', 'the run still delivers');
+  assert.equal(finished.result.verified, true);
+  assert.equal(existsSync(join(finished.runDir, 'result.json')), true, 'the result envelope is still on disk');
+  // The record itself was written before the index append failed, so
+  // `workflow reindex` has everything it needs to repair the index later.
+  assert.ok(readRollup(finished.runDir), 'the run still holds its own record');
+  assert.equal(readFileSync(join(f.bullswarmDir, 'history'), 'utf8'), 'not a directory\n', 'nothing clobbered the blocking file');
 });

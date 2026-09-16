@@ -17,13 +17,17 @@ export function estimateTextTokens(text) {
 }
 
 function lastCounter(text, names) {
-  let found = null;
+  let total = 0;
+  let found = false;
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`(?:^|[,{\\s])["']?${escaped}["']?\\s*[:=]\\s*(\\d+)`, 'gi');
-    for (const match of String(text ?? '').matchAll(re)) found = Number(match[1]);
+    for (const match of String(text ?? '').matchAll(re)) {
+      total += Number(match[1]);
+      found = true;
+    }
   }
-  return finiteNonNegative(found);
+  return found ? finiteNonNegative(total) : null;
 }
 
 export function parseReportedUsage(text) {

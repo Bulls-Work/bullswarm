@@ -5,12 +5,13 @@ inside Claude Code's engine ("function hooks", early access, enabled with
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). This folder is that plugin.
 
 The terminal dashboard is Bullswarm's main screen. This Mod is its read-only
-counterpart: the strip is the run list, and the pane follows the dashboard's
-Run, Step, and Usage pages in the same meter colours, while deliberately
-exposing no `[edit]` or `[install]` action. It has no Home or Help page — the
-pane's bottom row is `back` (on a step), the run buttons, `usage` and `close`. Navigation
-matches the dashboard's mouse rules: click any button, tab, run, or step, and
-use the wheel to scroll.
+counterpart: the strip is the run list, and the pane shows the dashboard's
+**Run**, **Step**, and **Usage/Pools** view in the same meter colours. It does
+not show the dashboard's **Home**, **Runs**, **Budget**, **Stats**, **History**,
+**Fleet**, or **Help** pages, and deliberately exposes no `[edit]` or
+`[install]` action. The pane's bottom row is `back` (on a step), the run
+buttons, `usage`, and `close`. Navigation matches the dashboard's mouse rules:
+click any button, tab, run, or step, and use the wheel to scroll.
 
 What it adds beyond the packaged skill and the MCP server:
 

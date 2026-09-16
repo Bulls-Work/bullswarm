@@ -155,6 +155,7 @@ const TABLE = {
   'workflow resume': ['foreground', 'watch', 'json'],
   'workflow action': [],
   'workflow action show': ['json'],
+  'workflow reindex': ['json', 'force'],
 
   // --- src/workflow/runs-cli.js -------------------------------------------
   // --from/--started-after and --to/--started-before are documented in the

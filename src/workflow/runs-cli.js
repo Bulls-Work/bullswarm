@@ -23,6 +23,10 @@ import { readJsonSafe } from '../lib/fsjson.js';
 import { join } from 'node:path';
 import { listRuns, resolveRunId, isOngoing, isLegacyRunDir, legacyRunLine, v2RunnerLiveness, readKernelStderrTail } from './short-id.js';
 import { BULLSWARM_DIR } from './cli.js';
+import { appendRollupIndex, readRollup, rollupIndexPath, writeLegacyRollup, writeRunRollup } from './rollup.js';
+import { readGoalProject } from './goal.js';
+import { projectName } from '../lib/project.js';
+import { isTerminalWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
@@ -415,6 +419,111 @@ function runsDelete(idToken, opts, rest) {
   if (opts.json) jsonOut({ ok: true, runId, shortId, runDir, deleted: true }, opts);
   else console.log(`✓ deleted run ${runId} (${shortId ?? 'no shortId'})`);
   return 0;
+}
+
+// bullswarm workflow reindex — backfill the rollup history index.
+//
+// Every finished run written from 0.33.0 on records its own rollup at finish.
+// Runs that finished before that, and any run whose rollup write failed, are
+// backfilled here. This is the one place `listRuns` is still the right tool:
+// it runs once, by hand, not on the dashboard's 1 s refresh.
+//
+// Legacy pre-0.27.0 runs have no V2 state.json, so they get the minimal record
+// `writeLegacyRollup` builds from the files they do hold — identity, the times
+// those files prove, the status word, `legacy: true`, no cost and no pool
+// minutes. History is a timeline of every workflow, so all of them join the
+// index. A legacy directory nothing can be read from still records nothing and
+// raises nothing.
+export function cmdReindex(args = []) {
+  const opts = { json: false, force: false };
+  for (const arg of args) {
+    if (arg === '--json') opts.json = true;
+    else if (arg === '--force') opts.force = true;
+    else if (arg.startsWith('-')) {
+      console.error(`✗ unknown flag ${flagName(arg) ? `--${flagName(arg)}` : arg} for workflow reindex`);
+      return 2;
+    }
+  }
+  const bullswarmDir = BULLSWARM_DIR();
+  const counts = { scanned: 0, written: 0, skipped: 0, legacy: 0, unfinished: 0, present: 0, failed: 0 };
+  const failures = [];
+  // One git resolution per working directory, not per run: 293 run
+  // directories share a handful of checkouts.
+  const projectCache = new Map();
+  const projectFor = (runDir, cwd) => {
+    const recorded = readGoalProject(runDir);
+    if (recorded) return recorded.name;
+    if (!cwd) return null;
+    if (!projectCache.has(cwd)) projectCache.set(cwd, projectName(cwd));
+    return projectCache.get(cwd);
+  };
+
+  for (const run of listRuns(bullswarmDir)) {
+    counts.scanned += 1;
+    const legacy = Boolean(run.legacy) || !run.state || run.state.schemaVersion !== 'bullswarm.workflow.state.v2';
+    if (legacy) counts.legacy += 1;
+    if (!legacy) {
+      // "Finished" is `lifecycle.finishedAt`, not a status word. A run that
+      // stamped a finish time finished, and a status the kernel calls terminal
+      // (v2-runtime.js TERMINAL, which the shared set now matches) is the
+      // kernel saying so: partial runs never get skipped for lacking a time.
+      const status = run.state.lifecycle?.status ?? null;
+      const finished = Boolean(run.state.lifecycle?.finishedAt) || isTerminalWorkflowStatus(status);
+      if (run.ongoing || !finished) {
+        counts.unfinished += 1;
+        counts.skipped += 1;
+        continue;
+      }
+    }
+    const existing = readRollup(run.runDir);
+    if (existing && !opts.force) {
+      // The record is already written; make sure the index carries it too,
+      // which is what repairs an index deleted out from under the runs.
+      try {
+        const indexed = appendRollupIndex(bullswarmDir, existing);
+        if (indexed.appended) counts.written += 1;
+        else { counts.present += 1; counts.skipped += 1; }
+      } catch (error) {
+        counts.failed += 1;
+        counts.skipped += 1;
+        failures.push({ runId: run.runId, error: error.message });
+      }
+      continue;
+    }
+    try {
+      if (legacy) {
+        // No V2 state to read: the record comes from the run's own report.json
+        // and state.json, or from the directory's file times when those say
+        // nothing. Never from the clock, so a second reindex writes no new line.
+        writeLegacyRollup(run.runDir, {
+          runId: run.runId, shortId: run.shortId, project: projectFor(run.runDir, null),
+        });
+      } else {
+        // A run finished before result.json existed, or whose envelope is
+        // gone, still has a durable state: its rollup is built from that alone.
+        const result = readJsonSafe(join(run.runDir, 'result.json'), null);
+        writeRunRollup(run.runDir, run.state, result, { project: projectFor(run.runDir, run.state.intent?.cwd ?? null) });
+      }
+      counts.written += 1;
+    } catch (error) {
+      counts.failed += 1;
+      counts.skipped += 1;
+      failures.push({ runId: run.runId, error: error.message });
+    }
+  }
+
+  const indexPath = rollupIndexPath(bullswarmDir);
+  if (opts.json) {
+    jsonOut({ ok: counts.failed === 0, indexPath, ...counts, failures }, { json: true });
+  } else {
+    console.log(
+      `✓ reindex: wrote ${counts.written}, skipped ${counts.skipped} `
+      + `(${counts.legacy} legacy, ${counts.unfinished} unfinished, ${counts.present} already indexed`
+      + `${counts.failed ? `, ${counts.failed} failed` : ''}) of ${counts.scanned} run directories → ${indexPath}`,
+    );
+    for (const failure of failures) console.error(`✗ ${failure.runId}: ${failure.error}`);
+  }
+  return counts.failed ? 1 : 0;
 }
 
 function summarize(r) {

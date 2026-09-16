@@ -27,68 +27,86 @@ bullswarm workflow tui
 bullswarm workflow tui ab12cd
 ```
 
-Every page has a sticky header and a sticky bottom nav. The header names the
-page and, on Run and Usage, keeps the current run or meter sample in view. The
-bottom nav has one `[ <run> ]` button per ongoing run, followed by
-`[ usage ] [ help ] [ quit ]`. Every button shows its key underlined: inside
-the label (the `u` of `usage`, the `h` of `help`, the `q` of `quit`), and a
-run's digit ahead of its id inside the button (`[ 1.aaa111 ] [ 2.bbb222 ]`),
-so the keys are read off the nav itself. `?` opens Help too. The current run or page is marked `●`.
-Step adds `[ back ]` at the front, its `b` underlined. A long body shows its
-`first–last/total` row window while it scrolls.
+Every page has a sticky header and a sticky bottom nav. The tab row opens the
+page directly; the nav keeps run buttons and the narrow-layout `[Top] [End]
+[Help]` tail visible. A long body shows its `first–last/total` row window
+while it scrolls. The dashboard's Help page (`?`) prints the same page and key
+map.
 
-The pages are Home, Run, Step, Usage, and Help:
+The pages answer different questions:
 
-- **Home** — ongoing runs, compact pool rows, agent-integration status with
-  `[install]`, and the one-line commands that operate Bullswarm.
-- **Run** — the Preflight and timeline, Live workers, Next work, and compact
-  pool rows last; each step row opens Step.
-- **Step** — the selected action's status, model and reasoning, attempt,
-  route, activity, verdict or failure, prompt, usage, events, output, and
-  artifact paths.
-- **Usage** — every enabled pool's 5h, 7d, and monthly windows, credits when
-  reported, and model rungs grouped by lane or provider.
-- **Help** — the dashboard's controls and the page-specific actions.
+| Page | What it answers |
+| --- | --- |
+| **Home** | What happened today, what is verified, what API-equivalent/licence figures are available, and which workflows are active or recent? It also shows the period breakdown by pool, model, and project. |
+| **Runs** | Which workflows are active or in the catalogue, and where are the integration and command actions? `/` filters, `a` switches active/all, and `i` installs the agent integration. |
+| **Run** | Where is this workflow in its plan, which workers are live or next, and what are the current ETA and measured budget shares? |
+| **Step** | What is this action doing — its model, reasoning, route, attempt, activity, verdict or failure, prompt, usage, events, output, and artifact paths? |
+| **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
+| **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time, broken down by pool, model, and project? Its sub-tabs are Overview, Trends, Pools, Models, and Projects. |
+| **History** | Which workflows started or finished on each recorded date, with verification, duration, and measured or labelled spend; legacy rows are read-only and carry no figures. |
+| **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
+| **Help** | What every key, click, layout rule, and dashboard command does. |
 
-Every page shares these keys — the dashboard's own Help page (`?`) prints the
-same table:
+The shared keyboard table is:
 
 | Key | Does |
 | --- | --- |
-| `↑`/`k`, `↓`/`j` | move up, move down |
-| `Enter`, `→`, `l` | open the selected run, step, or tab |
-| `Esc`, `←`, `b` | move out one page |
-| `Tab` / `Shift+Tab` | next / previous run |
+| `r` | open Runs; the view refreshes itself, so `r` is no longer refresh |
+| `b` | open Budget; it is no longer move-out |
+| `s` | open Stats |
+| `y` | open History, except that it confirms a pending stop |
+| `f` | open Fleet |
+| `h` / `?` | open Help |
 | `1`–`9` | open that run from the nav |
-| `u`, `h` or `?` | open Usage, open Help |
-| `q` | quit the dashboard; a workflow keeps running |
+| `Tab` | cycle the current page's sub-tabs (Stats and Fleet) |
+| `Shift+Tab` | cycle workflows |
+| `p` | cycle the page period (Home and Stats) |
+| `Esc` / `←` | move out one page, then return to Home |
+| `↑`/`k`, `↓`/`j` | move one line up or down |
+| `Enter` / `→` / `l` | open the selected run, step, tab, or action |
+| `PgUp` / `PgDn` | scroll up or down one screen |
+| `Home` / `End` | jump to the top or bottom |
+| `ctrl+s` | copy the screen through OSC 52, falling back to `pbcopy`, `wl-copy`, or `xclip` |
+| `q` | quit the dashboard; workflows keep running |
 
-And these are page-specific:
-
-| Page | Keys |
-| --- | --- |
-| Home | `/` filter · `a` active/all · `r` refresh · `i` install the agent integration |
-| Run | `t` phases/timeline · `o` planner · `v` technical details · `c` stop the workflow · `PgUp`/`PgDn` scroll |
-| Step | the agent panel; `Esc`/`b` goes back |
-| Usage | `l` by lane · `p` by provider · `e` edit (`bullswarm setup`) |
-
-Mouse reporting is enabled while the dashboard is open: click any button,
-tab, run, or step, and use the wheel to scroll the body.
+Page-specific controls include `/` (filter), `a` (active/all), and `i`
+(install) on Runs; `o`, `v`, and `t` on Run; and `e` on Fleet to open setup.
+`c` requests a cooperative stop from Run, and `y` confirms it. Mouse reporting
+is enabled while the dashboard is open: click any tab, tile, bar, run, step,
+date, or control, and use the wheel to scroll the body.
 
 ::: tip
-`q` quits the dashboard and leaves the run going; only `c` stops it, and that
-asks the kernel for a cooperative stop at its next safe checkpoint.
+`r`, `b`, and `Tab` were rebound in 0.33.0: the view refreshes itself, Esc and
+the left arrow move out, and Shift+Tab still cycles workflows. `q` quits the
+dashboard and leaves the run going; only `c` stops it, and that asks the kernel
+for a cooperative stop at its next safe checkpoint.
 :::
 
-Usage draws full-width background-coloured meter cells: green (`#b6bd73`)
-below 50% used, amber (`#e9c880`) from 50%, red (`#bf6c69`) from 80%, and a
-dark track (`#3a3a3a`). A white `▏` marks where each window's elapsed time
-falls. Each window includes its reset time and pace, followed by a credit
-meter where the provider reports one, then the rung's model, reasoning, and
-local record. The page note reads `read-only here · [edit] opens bullswarm setup`;
-`[edit]` hands the terminal to setup and returns to Usage with the rungs
-re-read. Home's `[install]` runs the same as `bullswarm integrate install --yes`; once every agent is installed it reads
-`[installed ✓]` and is inert.
+## The history index and `workflow reindex`
+
+Home, Budget, Stats, and History read a per-run rollup, written to
+`<run dir>/rollup.json` when a run finishes and appended to the history index
+at `~/.bullswarm/history/runs.jsonl`. Nothing rescans every run directory on
+each frame. Runs finished before 0.33.0 have no rollup yet, so a freshly
+upgraded home shows `no run has been rolled up yet · bullswarm workflow
+reindex backfills them` until you run it once:
+
+```bash
+bullswarm workflow reindex
+```
+
+Legacy runs with no V2 state get a minimal record marked legacy; only runs
+still in flight are skipped. The command is idempotent, so a second run
+writes nothing new, and `--force` rewrites every record. See
+[`workflow reindex`](/reference/cli#reindex) for the flags and the JSON it prints.
+
+Budget's meter cells use the same green (`#b6bd73`), amber (`#e9c880`), red
+(`#bf6c69`), and dark-track (`#3a3a3a`) palette as the live pool view. A white
+`▏` marks elapsed time. Money and licence figures are measured when their
+source supports it; otherwise they are blank or carry `≈` with their basis.
+The Fleet `[edit]` action hands the terminal to setup and returns with fresh
+data. Runs' `[install]` runs the same as `bullswarm integrate install --yes`;
+once every agent is installed it reads `[installed ✓]` and is inert.
 
 ## Watch prints only events
 
@@ -211,12 +229,13 @@ BULLSWARM_UNICODE=1 bullswarm workflow
 ## The Claude Mod counterpart
 
 Inside Claude Code, the Bullswarm mod (`mods/bullswarm`) is the dashboard's
-read-only counterpart. Its strip above the prompt is the run list, and its pane
-mirrors the dashboard's Run, Step, and Usage pages with the same meter colours
-and the same click-and-wheel navigation. Its bottom row is `back` (on a step), the
-run buttons, `usage` and `close`: there is no Home or Help page, and none of
-the dashboard's `[edit]` or `[install]` actions. Its strip and pane re-read
-ongoing runs every 20 seconds; the full details are in [Claude Code integration](/integrations/claude-code).
+read-only counterpart. Its pane shows **Run**, **Step**, and the **Usage/Pools**
+page (meter windows and fleet rungs); it does not show **Home**, **Runs**,
+**Budget**, **Stats**, **History**, **Fleet**, or **Help** as dashboard pages.
+The strip remains the run list. The pane's bottom row is `back` (on a step), the
+run buttons, `usage` and `close`, with no dashboard `[edit]` or `[install]`
+actions. Its strip and pane re-read ongoing runs every 20 seconds; the full
+details are in [Claude Code integration](/integrations/claude-code).
 
 
 ## Next steps
