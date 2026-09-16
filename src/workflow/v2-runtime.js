@@ -1468,6 +1468,14 @@ async function runV2Kernel({
   };
 
   const finalize = () => {
+    // A signalled kernel is never terminal. This is the ONLY place a lifecycle
+    // becomes terminal, so the guard belongs here and not at each call site:
+    // the progress check below reached finalize without asking, and a run
+    // SIGTERM'd in that window was written out `cancelled` — terminal, with a
+    // result.json — instead of the resumable `interrupted` the durability
+    // contract promises. Whatever the progress evaluation decided about work
+    // the signal itself just stopped, the answer is: resume from it.
+    if (interrupted) return pauseInterrupted();
     const finishedAt = now();
     // Guidance nobody acted on no longer holds a run open: the result lists
     // it, and the caller decides whether it still matters.
