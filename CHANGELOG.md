@@ -1,5 +1,54 @@
 # bullswarm changelog
 
+- dashboard: the visual-fidelity pass now composes `Home` with a four-column
+  7-day breakdown and a budget block, `Run` with a plan strip, per-step bars
+  and a `budget` / `live` / `so far` band, `Budget` with seven rows per pool
+  plus one consolidated footer, coloured stacked columns on `Stats` `Trends`,
+  and fixed columns on `History`, reducing its phone form from two rows per run
+  to one at 55 columns.
+- dashboard: the shared palette keeps its four existing meter colours and adds
+  seven named roles, including the four-shade heat ramp; `Help` groups the `r`,
+  `b`, `s`, `y`, and `f` keys into 35 body rows at 55 columns (from about 51)
+  and drops the nonexistent `Budget` sub-tabs.
+- dashboard: the `Run` plan strip closes a fan the way the prototype does —
+  each lower branch hangs under the `┬` that opened it, is ruled across to the
+  joint, and the last one ends in `┘` under the closing `┬`; it used to draw a
+  `┴` with nothing beneath it when the lower branch was the longer name. The
+  `Stats` `Models` footnote says `no per-model money` in words instead of
+  naming the `apiEquivalentUsd` field.
+- dashboard: the phone layouts now put one item on one row where the page is a
+  list — `Stats` `Models`, `Stats` `Projects` (with its sparkline beside the
+  name), `Stats` `Pools`, `Fleet` and `History`, plus `Home`'s today tiles and
+  per-step bars. `Budget`'s seven-row pool block, `Home`'s `budget · this week`
+  pool and the `Runs` list keep their extra lines on purpose.
+- dashboard: `Stats` `Models` draws a worker-minutes-per-day chart whose series
+  are coloured to match the model list beneath it, and `Stats` `Projects` draws
+  a sparkline beside every project name. At a 200-column frame a project keeps
+  name, sparkline and figures on one row, with the sparkline capped at four
+  cells per measured day so seven days read as a shape rather than a
+  frame-wide run of repeated glyphs.
+- dashboard: `Stats` rows built from the shared `compactRow` now lay their
+  fields out on the frame minus their one-cell indent, so the last field no
+  longer lost its final character to the frame's own truncation (`p50 5…`
+  where `p50 54m` fits).
+- dashboard: every page now composes to a 200-column frame instead of stopping
+  at the 120-column composition — measured on the real binary, the widest
+  painted row is 200 cells on every page except `Fleet`, which reaches 188.
+- dashboard: `Run` draws a bar for the running step inside the plan strip, using
+  an empty indeterminate bar when the step recorded no expected duration, and
+  `Step` keeps its task summary short enough that the `output` and `artifacts`
+  sections both start inside a 26-row phone frame rather than below it.
+- data: the pass keeps real figures and the `≈`/basis rule. An undeclared
+  subscription price, an expected duration, and a per-run licence draw
+  deliberately remain blank with their reasons. The months-wide heatmap does
+  not move over: `Stats` uses only history that exists and, when there are no
+  measured days, renders a blank with `No workflow history yet — the heatmap
+  has no measured days.` rather than inventing the prototype's number.
+- docs: `README.md` and the observing guide now describe the shipped
+  composition and the same data-honesty rule, and name the three places whose
+  phone form deliberately keeps more than one row per item rather than claiming
+  a universal one-row layout.
+
 - routing: measured pacing rates now charge timed in-flight work at the actual
   `rate × remaining minutes` with no 3-point floor, so an expiring-soon pool
   with a known burn rate is not demoted by a tie-breaker meant for unmeasured

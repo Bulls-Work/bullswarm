@@ -98,6 +98,18 @@ nine pages answer different questions:
 | Fleet | Lane/provider model and reasoning rungs, records, meter state, and the setup edit hand-off. |
 | Help | Every key, click, layout rule, and dashboard command. |
 
+The visual-fidelity pass keeps the same real numbers while composing and
+colouring these pages like the approved prototype. At 55 columns every Home
+today tile and per-step bar, every Stats model, project and its sparkline, every
+Stats and Fleet pool row, and every History run row keeps one row per item on
+the phone; Budget's seven-row pool block, Home's `budget · this week` pool
+(meter plus a reset line, as the prototype draws it) and the Runs list's
+three-line entry are the deliberate exceptions. At 200 columns every page
+composes to the frame rather than capping at the 120-column composition — the
+widest painted row measures 200 cells on every page except Fleet, at 188.
+Estimated figures still carry `≈` and their basis; unavailable figures remain
+blank with their reason.
+
 Every page has a sticky header, a page tab row, and a sticky bottom nav. The
 shared key table is:
 

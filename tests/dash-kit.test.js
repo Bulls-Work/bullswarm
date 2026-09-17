@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  columnBars, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, shareBar, sparkline, stackedBars, tabsRow,
+  columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule,
+  shareBar, sparkline, stackedBars, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
@@ -53,6 +54,20 @@ const PERIODS = Object.freeze([
   { id: 'all', label: 'All time', key: 'a' },
 ]);
 
+const CELLS = Object.freeze([
+  { rule: 'budget', rows: ['cmd      1.2%', 'codex    1.5%', 'this run 1.2% of 100%'] },
+  { rule: 'live', rows: ['widget-lib  15m/17m', '  > done: lib exported'] },
+  { rule: 'so far', rows: ['steps   3/8', 'time    16m', 'spent   $1.05'] },
+]);
+
+const FIELDS = Object.freeze([
+  { text: '✓', width: 1 },
+  { text: 'gcxzza', width: 6 },
+  { text: 'bullswarm · docs site rebuilt · 5/5', grow: true, gap: 2 },
+  { text: '41m · $2.10', width: 11, align: 'right', gap: 3 },
+  { text: '16:41', width: 5, gap: 2 },
+]);
+
 const ROWS = Object.freeze([
   { label: 'claude-code', segments: [{ value: 6, color: METER_COLORS.green }, { value: 2, color: METER_COLORS.amber }] },
   { label: 'codex', segments: [{ value: 3, color: METER_COLORS.red }] },
@@ -61,8 +76,8 @@ const ROWS = Object.freeze([
 
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'columnBars', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle', 'progressBar', 'rule',
-    'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
+    'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle',
+    'progressBar', 'rule', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
   ]);
 });
 
@@ -392,6 +407,169 @@ test('heatRow paints the ramp in ansi and fits the width it is given', () => {
   assert.equal(visibleLength(heatRow([1, 1, 1], { width: 0 })), 0);
 });
 
+test('columns lays one, two and four cells across the width', () => {
+  for (const width of WIDTHS) {
+    for (const count of [1, 2, 4]) {
+      const cells = CELLS.slice(0, 3).concat([{ rule: 'extra', rows: ['one', 'two'] }]).slice(0, count);
+      const band = columns(cells, { width });
+      assert.equal(band.meta.columns.length, count, `${String(count)} cells at ${String(width)}`);
+      for (const line of band) {
+        assert.ok(visibleLength(line) <= width, `a line overran ${String(width)}: "${visible(line)}"`);
+        assert.equal(line.includes('NaN'), false);
+      }
+      for (const region of band.meta.columns) {
+        assert.ok(region.x >= 1, 'x is a 1-based column of the line');
+        assert.ok(region.x + region.width - 1 <= width, `a column sat past ${String(width)}`);
+      }
+      // Every column is as tall as the block, so the rows below stay aligned.
+      const tallest = Math.max(...cells.map((cell) => cell.rows.length)) + 1;
+      assert.equal(band.length, tallest, 'the block is as tall as its tallest cell');
+    }
+  }
+});
+
+test('columns draws each cell’s rule across its own column and starts it there', () => {
+  const band = columns(CELLS, { width: 119, gap: 2 });
+  // 39 + 2 + 38 + 2 + 38 = 119: the odd column goes to the leftmost cell.
+  assert.deepEqual(band.meta, {
+    gap: 2,
+    columns: [{ x: 1, width: 39, rows: 4 }, { x: 42, width: 38, rows: 3 }, { x: 82, width: 38, rows: 4 }],
+  });
+  assert.equal(visibleLength(band[0]), 119, 'the rule band fills the width');
+  assert.equal(
+    visible(band[0]),
+    [rule('budget', null, 39), rule('live', null, 38), rule('so far', null, 38)].join('  '),
+    'each cell’s rule is drawn across its own column',
+  );
+  for (const [index, region] of band.meta.columns.entries()) {
+    assert.equal(visible(band[1]).slice(region.x - 1, region.x - 1 + region.width).trimEnd(), CELLS[index].rows[0]);
+  }
+});
+
+test('columns honours a measured column width and falls back when it does not fit', () => {
+  // The prototype’s Run triptych is 37/36/29, not three equal thirds.
+  const measured = columns([
+    { rule: 'budget', width: 37, rows: ['cmd 1.2%'] },
+    { rule: 'live', width: 36, rows: ['widget-lib 15m/17m'] },
+    { rule: 'so far', width: 29, rows: ['spent $1.05'] },
+  ], { width: 119, gap: 2 });
+  assert.deepEqual(measured.meta.columns.map((region) => region.width), [37, 36, 29]);
+  assert.deepEqual(measured.meta.columns.map((region) => region.x), [1, 40, 78]);
+  for (const line of measured) assert.ok(visibleLength(line) <= 119);
+
+  // Asked for more than the band holds: an even split, never an overrun.
+  const squeezed = columns([
+    { rule: 'budget', width: 37, rows: ['cmd 1.2%'] },
+    { rule: 'live', width: 36, rows: ['widget-lib'] },
+  ], { width: 40, gap: 2 });
+  assert.deepEqual(squeezed.meta.columns.map((region) => region.width), [19, 19]);
+  for (const line of squeezed) assert.ok(visibleLength(line) <= 40);
+});
+
+test('columns cuts a row too wide for its column and pads a short one', () => {
+  const band = columns([
+    { rows: ['a project name far too long for twelve cells'] },
+    { rows: ['x'] },
+  ], { width: 26, gap: 2 });
+  assert.equal(band.meta.columns[0].width, 12);
+  assert.ok(visible(band[0]).startsWith('a project n…'), 'the long row is cut, not wrapped');
+  assert.equal(visibleLength(band[0]) <= 26, true);
+  assert.equal(visible(band[0]).slice(14), 'x', 'the short column is padded so the next starts on its column');
+});
+
+test('columns drops a cell it cannot give a column to, and survives nothing', () => {
+  const tight = columns(CELLS, { width: 3, gap: 2 });
+  assert.equal(tight.meta.columns.length, 1, 'cells that cannot fit are dropped from the right');
+  for (const line of tight) assert.ok(visibleLength(line) <= 3);
+  assert.deepEqual(columns([], { width: 40 }), []);
+  assert.deepEqual(columns(null, { width: 40 }), []);
+  assert.deepEqual(columns(undefined, {}), []);
+  assert.deepEqual(columns(CELLS, { width: 0 }), []);
+  assert.deepEqual(columns([{ rows: [] }, { rows: [] }], { width: 40 }), [], 'no rows, no block');
+  assert.deepEqual(columns(null, { width: 40 }).meta, { gap: 2, columns: [] });
+  const untitled = columns([{ rows: ['one'] }, { rows: ['two'] }], { width: 40 });
+  assert.equal(untitled.length, 1, 'no cell names a rule, so no heading row is drawn');
+});
+
+test('columns and compactRow leak no unicode-only glyph of their own', () => {
+  withEnv(ASCII_ENV, () => {
+    const band = columns([{ rule: 'budget', rows: ['cmd 1.2%'] }, { rule: 'live', rows: ['x'] }], { width: 55 });
+    // `─` and `…` are the two the glyph table documents as safe everywhere.
+    for (const glyph of ['▇', '░', '▒', '▓', '█']) {
+      assert.equal(band.join('\n').includes(glyph), false, `${glyph} reached an ascii terminal`);
+      assert.equal(compactRow(FIELDS, { width: 40 }).includes(glyph), false);
+    }
+  });
+});
+
+test('compactRow gives the slack to the elastic field and pins the rest right', () => {
+  for (const width of WIDTHS) {
+    const row = compactRow(FIELDS, { width });
+    assert.equal(visibleLength(row), width, `the elastic field fills ${String(width)}`);
+    assert.ok(visible(row).startsWith('✓ gcxzza'), 'the fixed left fields keep their columns');
+    assert.equal(row.includes('NaN'), false);
+  }
+  const row = compactRow(FIELDS, { width: 54 });
+  assert.equal(visible(row), '✓ gcxzza  bullswarm · docs site …   41m · $2.10  16:41');
+  assert.ok(visible(row).endsWith('16:41'), 'the trailing metric sits on the right edge');
+  const wide = visible(compactRow(FIELDS, { width: 200 }));
+  assert.ok(wide.includes('bullswarm · docs site rebuilt · 5/5'), 'nothing is cut when there is room');
+  assert.ok(wide.endsWith('41m · $2.10  16:41'));
+});
+
+test('compactRow cuts the elastic field before it drops a field', () => {
+  // A middle field far wider than the whole row: it shrinks to its floor and
+  // ends in an ellipsis, and only then are fields dropped from the right.
+  const huge = compactRow([
+    { text: 'x', width: 1 },
+    { text: 'y'.repeat(500), grow: true },
+    { text: 'zz', width: 2 },
+  ], { width: 12 });
+  assert.equal(visibleLength(huge), 12);
+  assert.equal(visible(huge), 'x yyyyyy… zz', 'the middle is cut, the outer fields stay');
+  assert.ok(visible(huge).endsWith('zz'), 'nothing was dropped while cutting still fitted');
+
+  const dropped = visible(compactRow([
+    { text: 'label' },
+    { text: 'y'.repeat(500), grow: true },
+    { text: 'zz' },
+  ], { width: 8 }));
+  assert.ok(visibleLength(dropped) <= 8);
+  assert.ok(dropped.startsWith('label'), 'the field that says what the row is never drops');
+
+  const tiny = visible(compactRow([{ text: 'label' }, { text: 'y'.repeat(50), grow: true }], { width: 4 }));
+  assert.equal(tiny, 'lab…', 'narrower than the first field: the row is cut, never overrun');
+  assert.equal(compactRow(FIELDS, { width: 0 }), '');
+  for (let width = 32; width <= 200; width += 1) {
+    assert.ok(visibleLength(compactRow(FIELDS, { width })) <= width, `overran ${String(width)}`);
+  }
+});
+
+test('compactRow takes a bare string, a right-aligned field and its own gaps', () => {
+  assert.equal(compactRow(['finished', '4', '✓ 3 · ✗ 1'], { width: 40 }), 'finished 4 ✓ 3 · ✗ 1');
+  assert.equal(compactRow(['a', 'b'], { width: 40, gap: 4 }), 'a    b');
+  assert.equal(compactRow([{ text: 'a' }, { text: 'b', gap: 0 }], { width: 40 }), 'ab');
+  assert.equal(
+    compactRow([{ text: 'spent', grow: true }, { text: '$6.40', width: 9, align: 'right' }], { width: 20 }),
+    'spent          $6.40',
+  );
+  assert.equal(compactRow([], { width: 40 }), '');
+  assert.equal(compactRow(null, { width: 40 }), '');
+  assert.equal(compactRow([null, undefined, { text: 'kept' }], { width: 40 }), 'kept');
+  assert.equal(compactRow([{ text: 'x' }, { text: '', grow: true }, { text: 'y' }], { width: 10 }), 'x        y');
+});
+
+test('compactRow measures a styled field by its visible cells', () => {
+  const row = compactRow([
+    { text: '\x1b[1mfinished\x1b[0m', width: 8 },
+    { text: '\x1b[38;2;169;156;240ma long middle that will be cut\x1b[0m', grow: true },
+    { text: '\x1b[2m16:41\x1b[0m', width: 5 },
+  ], { width: 30 });
+  assert.equal(visibleLength(row), 30);
+  assert.ok(row.includes('\x1b[1m'), 'the escapes a field carries survive');
+  assert.ok(visible(row).endsWith('16:41'));
+});
+
 test('niceStep rounds an axis to a readable step and lists its ticks', () => {
   assert.deepEqual(niceStep(12.85), { step: 5, ticks: [0, 5, 10, 15] });
   assert.deepEqual(niceStep(100), { step: 50, ticks: [0, 50, 100] });
@@ -447,6 +625,8 @@ test('no function paints past its width from 32 to 200 columns', () => {
     (width) => stackedBars(ROWS, { width }).join('\n'),
     (width) => columnBars([{ values: [1, 36] }], ['a', 'b'], { width, colors: false }).join('\n'),
     (width) => heatRow([0.2, 0.4, 0.6, 0.8, 1], { width }),
+    (width) => columns(CELLS, { width }).join('\n'),
+    (width) => compactRow(FIELDS, { width }),
     (width) => cut('a long line that has to be cut back', width),
   ];
   for (let width = 32; width <= 200; width += 1) {
@@ -474,6 +654,8 @@ test('no primitive leaks a unicode-only glyph once ascii mode is on', () => {
       stackedBars(ROWS, { width: 55 }).join('\n'),
       columnBars([{ values: [1, 36] }], ['a', 'b'], { width: 55 }),
       heatRow([0, 0.5, 1, null], { ansi: false }),
+      columns(CELLS, { width: 55 }).join('\n'),
+      compactRow(FIELDS, { width: 55 }),
       cut('a label that is far too long for this narrow line', 20),
     ].join('\n');
     const leaked = unicodeOnly.filter((glyph) => rendered.includes(glyph));
@@ -498,6 +680,8 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       stackedBars([{ label: 'pool', segments: [{ value }] }], { width: 40 }).join('\n'),
       columnBars([{ values: [value, 1] }], ['a', 'b'], { width: 40, colors: false }).join('\n'),
       heatRow([value, 0.5, value], { width: 10 }),
+      columns([{ rule: 'budget', rows: ['a row'], width: value }, { rows: value }], { width: 40, gap: value }).join('\n'),
+      compactRow([{ text: 'id', width: value }, { text: 'middle', grow: true, min: value }, { text: 'end', gap: value }], { width: 40, gap: value }),
       JSON.stringify(niceStep(value)) + JSON.stringify(niceStep(1, value)),
       cut('text', 8),
     ].join('\n');
@@ -516,6 +700,8 @@ test('every primitive survives null, empty and junk data without NaN', () => {
       stackedBars(value, { width: value, colors: value });
       columnBars(value, value, { width: value, colors: value });
       heatRow(value, { width: value, ansi: value });
+      columns(value, { width: value, gap: value });
+      compactRow(value, { width: value, gap: value });
       niceStep(value, value);
       cut(value, value);
     }, `nothing throws for ${JSON.stringify(value)}`);

@@ -451,6 +451,29 @@ test('modelsModel: every model\'s apiEquivalentUsd is null, and the model says w
   assertNoNaN(model);
 });
 
+test('modelsModel carries a per-model daily series: worker-minutes and attempts per day', () => {
+  const model = modelsModel(indexOf(corpus()), { period: '7d', now: NOW });
+  const opus = model.rows.find((row) => row.name === 'claude-opus-5');
+  assert.ok(Array.isArray(opus.daily) && opus.daily.length > 0, 'each model row carries a daily series');
+  const today = opus.daily.at(-1);
+  assert.equal(today.attempts, 2, 'today: wf-today (2); wf-nocost ran gpt-5.6');
+  assert.equal(today.minutes, 40, 'wf-today\u2019s measured worker-minutes');
+  // The chart series the view draws: one value per day, null where unmeasured.
+  assert.ok(opus.daily.every((day) => day.attempts === null || Number.isFinite(day.attempts)));
+  assert.ok(opus.daily.every((day) => day.minutes === null || Number.isFinite(day.minutes)));
+  assertNoNaN(model);
+});
+
+test('modelsModel: the basis says how many rows carried the per-model series', () => {
+  const model = modelsModel(indexOf(corpus()), { period: 'all', now: NOW });
+  // corpus(): four rows with models maps (wf-today, wf-nocost, wf-single,
+  // wf-split) and one legacy record without one.
+  assert.equal(model.seriesRows, 4);
+  assert.equal(model.seriesTotalRows, 5);
+  const last = model.trend.buckets.at(-1).segments.find((s) => s.name === 'claude-opus-5');
+  assert.ok(last.minutes === null || Number.isFinite(last.minutes));
+});
+
 test('projectsModel: a run with no recorded project lands under "unknown", labelled', () => {
   const model = projectsModel(indexOf(corpus()), { period: 'all', now: NOW });
   const unknown = model.rows.find((row) => row.name === 'unknown');
@@ -464,6 +487,23 @@ test('projectsModel: a run with no recorded project lands under "unknown", label
   assert.equal(bullswarm.apiEquivalentUsd, 0.3);
   assert.equal(bullswarm.okShare, 0.6667, 'wf-nocost failed: two of three delivered');
   assert.equal(model.mostUsed, 'bullswarm');
+  assertNoNaN(model);
+});
+
+test('projectsModel carries a per-project daily series: runs and minutes per day', () => {
+  const model = projectsModel(indexOf(corpus()), { period: 'all', now: NOW });
+  const bullswarm = model.rows.find((row) => row.name === 'bullswarm');
+  assert.ok(Array.isArray(bullswarm.daily) && bullswarm.daily.length > 0, 'each project row carries a daily series');
+  // Runs per day is a count, so it measures 0 on a quiet day (S1 does not
+  // apply to counts); minutes stay null where nothing measured them.
+  assert.ok(bullswarm.daily.every((day) => Number.isFinite(day.runs)));
+  assert.ok(bullswarm.daily.every((day) => day.minutes === null || Number.isFinite(day.minutes)));
+  const totalRuns = bullswarm.daily.reduce((sum, day) => sum + day.runs, 0);
+  assert.equal(totalRuns, bullswarm.runs, 'the daily series sums back to the row');
+  // The legacy record has no project: it lands under "unknown" and its day
+  // carries runs there, measured as a run and nothing more.
+  const unknown = model.rows.find((row) => row.name === 'unknown');
+  assert.equal(unknown.daily.reduce((sum, day) => sum + day.runs, 0), 1);
   assertNoNaN(model);
 });
 

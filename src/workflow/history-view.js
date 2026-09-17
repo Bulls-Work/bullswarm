@@ -10,19 +10,38 @@
 // Two row kinds carry no finished record, and each says so rather than
 // painting a blank where a number belongs:
 //
-//   legacy      a pre-0.27.0 run: `legacy · read-only` first, so a phone-width
-//               cut can never drop the mark, then whatever the run recorded —
-//               its duration, status word and finish clock when it has them.
+//   legacy      a pre-0.27.0 run: `legacy · read-only` stays in the elastic
+//               summary, alongside the duration and finish clock when known,
+//               while the fixed result mark remains at the row start.
 //   unfinished  a run with no finish time: `● running · 42m elapsed` while a
 //               kernel owns it, `■ interrupted · no result recorded` once none
 //               does.  Its `elapsedMinutes` is measured, never estimated.
 
 import { glyphs } from '../lib/glyphs.js';
-import { cut, formatDashboardValue, rule } from './dash-kit.js';
+import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
+import { METER_COLORS } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
 const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+
+const rgbOf = (hex) => {
+  const value = Number.parseInt(String(hex).slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+};
+
+function tint(text, role, ansi) {
+  const value = String(text ?? '');
+  if (!ansi || !METER_COLORS[role]) return value;
+  return `\x1b[38;2;${rgbOf(METER_COLORS[role]).join(';')}m${value}${RESET}`;
+}
+
+function bold(text, ansi) {
+  const value = String(text ?? '');
+  return ansi ? `${BOLD}${value}${RESET}` : value;
+}
 
 function visible(text) {
   return String(text ?? '').replace(SGR, '');
@@ -121,7 +140,7 @@ function clock(value) {
 
 function apiEstimate(value) {
   const money = formatDashboardValue(value, 'money');
-  return money == null ? null : `≈ ${money} API-equivalent estimate`;
+  return money == null ? null : `(≈ ${money} API)`;
 }
 
 function recordCost(run) {
@@ -195,10 +214,16 @@ function elapsedText(run) {
 const LIVE_STATUS_WORDS = new Set(['queued', 'planning', 'running', 'ready-to-finalize']);
 
 function unfinishedWord(run) {
-  if (run?.running) return 'running';
-  const status = textOf(run?.status, null);
+  if (run?.running === true) return 'running';
+  const status = statusValue(run);
   if (!status) return 'stopped';
   return LIVE_STATUS_WORDS.has(status) ? 'interrupted' : status;
+}
+
+function unfinishedRun(run) {
+  const hasFinish = Boolean(run?.finishedAt || run?.endedAt || run?.completedAt);
+  const liveStatus = LIVE_STATUS_WORDS.has(statusValue(run));
+  return !isLegacy(run) && Boolean(run?.unfinished === true || run?.running === true || (!hasFinish && liveStatus));
 }
 
 function isLegacy(run) {
@@ -275,7 +300,7 @@ function daySpend(day, runs) {
   if (stated != null) return stated;
   let total = null;
   for (const run of runs) {
-    const cost = recordCost(run);
+    const cost = isLegacy(run) ? null : recordCost(run);
     if (cost != null) total = (total ?? 0) + cost;
   }
   return total;
@@ -308,7 +333,7 @@ function wrapText(text, width, indent = '') {
   let current = '';
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
-    if (candidate.length <= cols) current = candidate;
+    if (visible(candidate).length <= cols) current = candidate;
     else if (current) { lines.push(`${indent}${current}`); current = word; }
     else {
       lines.push(`${indent}${cut(word, cols)}`);
@@ -319,77 +344,117 @@ function wrapText(text, width, indent = '') {
   return lines;
 }
 
-function renderRun(run, lines, regions, width, ansi) {
+function statusValue(run) {
+  return textOf(
+    run?.status
+      ?? run?.state?.status
+      ?? run?.state?.lifecycle?.status
+      ?? run?.lifecycle?.status
+      ?? run?.result?.status,
+    null,
+  )?.toLowerCase() ?? null;
+}
+
+/** The mark is a result, not a second status sentence. */
+function resultMark(run) {
+  if (unfinishedRun(run)) return run.running === true ? glyphs().ongoing : glyphs().stopped;
+  const status = statusValue(run);
+  if (status === 'completed' || status === 'success' || status?.startsWith('succeeded')) return glyphs().ok;
+  if (status && /(?:failed|failure|error|cancel(?:led)?|interrupted|partial|blocked|budget[_-]exhausted|stopped|aborted|timed[_-]?out|completed[_-]with[_-](?:gaps|concerns))/.test(status)) {
+    return glyphs().fail;
+  }
+  // Callers that hand the view a finished rollup may omit the lifecycle word;
+  // a recorded finish is still a result and keeps the prototype's ✓ mark.
+  return run?.finishedAt || run?.endedAt || run?.completedAt ? glyphs().ok : glyphs().pending;
+}
+
+function markRole(mark, run) {
+  if (unfinishedRun(run)) return run.running ? 'cyan' : 'red';
+  if (mark === glyphs().ok) return 'green';
+  if (mark === glyphs().fail) return 'red';
+  return 'dim';
+}
+
+function rowSummary(run) {
+  const base = goal(run);
+  if (isLegacy(run)) return `legacy · read-only · ${base}`;
+  if (unfinishedRun(run)) {
+    return run.running === true
+      ? `running · ${elapsedText(run)} · no result yet · ${base}`
+      : `${unfinishedWord(run)} · no result recorded · ${base}`;
+  }
+  return base;
+}
+
+/**
+ * One compact row. The first five fields are the stable identity columns;
+ * the summary grows and gives cells back before the right-aligned duration,
+ * estimate and clock. A one-cell trailing spacer reserves the prototype's
+ * final blank without painting it, keeping the right columns stable at 120.
+ */
+function runRow(run, width, ansi) {
+  const cols = widthOf(width);
+  const desktop = cols >= 100;
+  const phone = !desktop;
   const id = shortId(run) || '------';
-  const action = { kind: 'run', runId: runId(run) || id };
-  const detailIndent = widthOf(width) >= 60 ? '    ' : '  ';
-  if (isLegacy(run)) {
-    // The legacy mark sits before the project and the goal: at 55 columns a
-    // fit drops the tail of the line, and a row must never lose the fact that
-    // it is read-only history.
-    push(lines, `  ${id}  legacy · read-only  ${project(run)}  ${goal(run)}`, width, ansi);
-    addRegion(regions, lines, 3, id.length, action);
-    const known = [];
-    const minutes = durationMinutes(run);
-    if (minutes != null) known.push(`ran ${minutesText(minutes)}`);
-    const status = textOf(run.status ?? run.state?.status, null);
-    if (status) known.push(status);
-    const at = clock(runTime(run));
-    // A time taken from a file's own mtime is a time, but not the run's: it
-    // says when something last wrote to the directory. Label it rather than
-    // let it read as the run's own record.
-    const fromFiles = typeof run.timeSource === 'string' && run.timeSource.includes('directory');
-    if (at) known.push(`finished ${at}${fromFiles ? ' (file time)' : ''}`);
-    known.push('no V2 state or measured figures');
-    for (const detail of wrapText(known.join(' · '), width, detailIndent)) push(lines, detail, width, ansi);
-    return;
-  }
+  // Legacy directories have no V2 measurement contract. Ignore any stale
+  // cost-shaped field a caller may have attached instead of pricing a
+  // read-only row by accident.
+  const cost = isLegacy(run) ? null : recordCost(run);
+  const estimate = apiEstimate(cost);
+  const mark = resultMark(run);
+  const projectWidth = desktop
+    ? 25
+    : Math.min(18, Math.max(9, Math.floor(cols * 0.2)));
+  const duration = unfinishedRun(run)
+    ? (run.running ? elapsedText(run).replace(/ elapsed$/, '') : '—')
+    : durationText(run);
+  // A live run has a start but no result time; never let its start clock read
+  // as a finished timestamp. A stopped run may expose its last file write,
+  // which is the only honest time available for that row.
+  const atValue = unfinishedRun(run)
+    ? (run.running === true ? null : run?.lastWriteAt)
+    : runTime(run);
+  const at = clock(atValue) ?? '—';
+  const timeText = tint(at, 'dim', ansi);
+  // Keep the approximation marker and API basis at every width. It is the
+  // product's only honest money label; a narrow row gives cells back from
+  // the elastic summary rather than reducing it to an unlabeled `$` figure.
+  const estimateText = estimate ? tint(estimate, 'dim', ansi) : '';
+  const estimateWidth = 14;
+  const compactUnfinished = phone && cols < 70 && unfinishedRun(run);
+  const rightFields = compactUnfinished
+    ? []
+    : [
+      { text: duration, width: 4, align: 'right', gap: 1 },
+      ...((desktop || cost != null) ? [
+        { text: cost == null ? '' : '·', width: 1, gap: 1 },
+        { text: estimateText, width: estimateWidth, align: 'right', gap: 0 },
+      ] : []),
+      { text: timeText, width: 5, align: 'right', gap: 2 },
+    ];
+  return {
+    id,
+    idWidth: Math.min(6, visible(id).length),
+    line: compactRow([
+      { text: ' ', width: 1 },
+      { text: tint(mark, markRole(mark, run), ansi), width: 1, gap: 0 },
+      { text: bold(id, ansi), width: 6, gap: 1 },
+      { text: project(run), width: projectWidth, gap: 2 },
+      { text: rowSummary(run), grow: true, min: 1, gap: desktop ? 2 : 1 },
+      ...rightFields,
+      { text: ' ', width: 1, gap: 0 },
+    ], { width: cols, gap: 1 }),
+  };
+}
 
-  if (run?.unfinished === true) {
-    // A run with no finish time: its elapsed time is the measured interval
-    // from its own start, and the word says whether anything is still working
-    // on it. Never a blank number — an unreadable start or last write says so.
-    const mark = run.running ? glyphs().ongoing : glyphs().stopped;
-    const suffix = run.running
-      ? `${mark} running · ${elapsedText(run)} · no result yet`
-      : `${mark} ${unfinishedWord(run)} · no result recorded · last write ${clock(run.lastWriteAt) ?? 'unavailable'}`;
-    const leadWidth = widthOf(width);
-    if (leadWidth >= 92) {
-      const label = `  ${id}  ${project(run)}  ${goal(run)}`;
-      // The separator is part of the budget: a row that does not count it is
-      // one column over, and the frame then trims the mark the row exists for.
-      const room = Math.max(1, leadWidth - visible(suffix).length - 2);
-      push(lines, `${cut(label, room)}  ${suffix}`, width, ansi);
-      addRegion(regions, lines, 3, id.length, action);
-      return;
-    }
-    push(lines, `  ${id}  ${project(run)}  ${goal(run)}`, width, ansi);
-    addRegion(regions, lines, 3, id.length, action);
-    for (const detail of wrapText(suffix, width, detailIndent)) push(lines, detail, width, ansi);
-    return;
-  }
-
-  const cost = recordCost(run);
-  const estimate = apiEstimate(cost) ?? 'estimate unavailable (no recorded API-equivalent cost)';
-  const at = clock(runTime(run)) ?? 'time unavailable';
-  const duration = durationText(run);
-  const leadWidth = widthOf(width);
-  // At desktop widths the fields share one row.  On a phone the estimate's
-  // required basis gets its own line so it is never clipped into a bare '$'.
-  if (leadWidth >= 92) {
-    const label = `  ${id}  ${project(run)}  ${goal(run)}`;
-    const suffix = `  ${duration} · ${estimate} · ${at}`;
-    const room = Math.max(1, leadWidth - visible(suffix).length - 1);
-    const line = fit(`${cut(label, room)}${suffix}`, width, ansi);
-    lines.push(line);
-    addRegion(regions, lines, 3, id.length, action);
-    return;
-  }
-
-  const label = fit(`  ${id}  ${project(run)}  ${goal(run)}`, width, ansi);
-  lines.push(label);
-  addRegion(regions, lines, 3, id.length, action);
-  for (const detail of wrapText(`${duration} · ${estimate} · ${at}`, width, detailIndent)) lines.push(fit(detail, width, ansi));
+function renderRun(run, lines, regions, width, ansi) {
+  const action = { kind: 'run', runId: runId(run) || shortId(run) || '------' };
+  const rendered = runRow(run, width, ansi);
+  lines.push(fit(rendered.line, width, ansi));
+  // The shell has always made the id the click target. The leading spacer and
+  // result mark restore its prototype x coordinate at column 4.
+  addRegion(regions, lines, 4, rendered.idWidth, action);
 }
 
 /**
@@ -425,16 +490,17 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
     // A day whose runs have not delivered has no estimate because there is no
     // result yet — a different reason from "nothing recorded", and the one the
     // reader needs.
-    const inFlight = runs.length > 0 && runs.every((run) => run.unfinished === true);
+    const inFlight = runs.length > 0 && runs.every((run) => unfinishedRun(run));
     const basis = money ?? (inFlight ? 'no result recorded yet' : 'estimate unavailable (no recorded API-equivalent cost)');
-    const right = `${summary} · ${basis}`;
+    const title = bold(dateLabel(day.date), ansi);
+    const right = `${summary} · ${money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi)}`;
     const ruleHeadWidth = visible(`── ${dateLabel(day.date)} `).length;
     const ruleTailWidth = visible(` ${right} ──`).length;
-    if (cols >= 86 && ruleHeadWidth + ruleTailWidth < cols) {
-      push(lines, rule(dateLabel(day.date), right, cols), cols, ansi);
+    if (ruleHeadWidth + ruleTailWidth < cols) {
+      push(lines, rule(title, right, cols), cols, ansi);
     } else {
-      push(lines, rule(`${dateLabel(day.date)} · ${summary}`, null, cols), cols, ansi);
-      pushWrapped(lines, basis, cols, ansi);
+      push(lines, rule(`${title} · ${summary}`, null, cols), cols, ansi);
+      pushWrapped(lines, money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi), cols, ansi, '');
     }
     if (!runs.length) {
       const legacyOnly = Boolean(day.legacyOnly || day.onlyLegacy || day.legacy);

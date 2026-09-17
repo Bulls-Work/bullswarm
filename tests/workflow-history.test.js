@@ -467,7 +467,7 @@ test('H5/H6: a run with no readable start is not dated from the clock, and paint
       rows: [{ runId: 'wf-nostart-000001', shortId: 'nostrt', project: 'bullswarm', goal: 'no start recorded', startedAt: null, unfinished: true, running: true, elapsedMinutes: null, lastWriteAt: null }],
     };
     const text = historyLines([day], { width: 120, ansi: false }).lines.join('\n');
-    assert.match(text, /● running · elapsed unavailable · no result yet/);
+    assert.match(text, /● nostrt\s+bullswarm\s+running · elapsed unavailable · no result yet/);
   } finally { h.cleanup(); }
 });
 
@@ -492,21 +492,30 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
       // Every row is clickable, and each workflow appears once.
       const targets = view.regions.filter((region) => region.action.kind === 'run').map((region) => region.action.runId);
       assert.equal(new Set(targets).size, 7, `${width}: one region per workflow`);
-      // The legacy mark survives the phone width, ahead of what may be cut.
+      // The legacy state survives the phone width in its compact row; the
+      // shared reason now appears once in the page footer rather than being
+      // repeated as a second line for every legacy workflow.
       assert.match(text, /legacy · read-only/);
-      assert.match(text, /no V2 state or measured figures/);
-      // The running mark and its measured elapsed time.
-      assert.match(text, /● running · 5h00m elapsed · no result yet/);
-      assert.match(text, /■ interrupted · no result recorded · last write 08:30/, 'a dead kernel is never painted as a live run');
-      assert.match(text, /finished 09:02/, 'the legacy row shows the finish time its report recorded');
-      assert.match(text, /ran 2m/, 'and the duration between the two times it recorded');
+      assert.match(text, /Legacy workflows are read-only: no cost and no pool minutes were recorded\./);
+      // Marks and identities stay at the row start at every width. Desktop
+      // also has room for the measured state, duration and trailing clock;
+      // the phone keeps the item to one row and may cut that context.
+      assert.match(text, /● run101/);
+      assert.match(text, /■ stop01/, 'a dead kernel is never painted as a live run');
+      assert.match(text, /✓ 000001/, 'the legacy result mark survives');
+      if (width === 120) {
+        assert.match(text, /running · 5h00m elapsed · no result yet/);
+        assert.match(text, /interrupted · no result recorded/);
+        assert.match(text, /legacy · read-only · smoke-two-step\s+2m\s+09:02/, 'the legacy row shows its measured duration and finish time');
+      }
     }
-    // A goal long enough to fill the row leaves the mark intact: the label is
-    // what gets trimmed, never the suffix the row exists to carry.
+    // A goal long enough to fill the row leaves the identity and fixed
+    // trailing measurements intact: the elastic summary is what gets cut.
     const running = days[0].rows.find((row) => row.unfinished === true);
     const wide = historyLines([{ ...days[0], rows: [{ ...running, goal: 'g'.repeat(200) }] }], { width: 120, ansi: false });
     const row = wide.lines.find((line) => line.includes('running'));
-    assert.ok(row.endsWith('● running · 5h00m elapsed · no result yet'), `suffix trimmed instead of the label: ${JSON.stringify(row)}`);
+    assert.match(row, /^ ● run101\s+bullswarm/);
+    assert.match(row, /5h0…\s+—$/, `fixed measurements trimmed instead of the summary: ${JSON.stringify(row)}`);
     assert.ok(row.length <= 120, `over the frame: ${row.length}`);
 
     // The legacy-only day prints no money at all (H3), at either width.

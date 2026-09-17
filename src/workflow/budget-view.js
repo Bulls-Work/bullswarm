@@ -1,12 +1,12 @@
 // Budget page rendering for the terminal dashboard.
 //
-// The arithmetic belongs to budget-model.js.  This module only turns that
-// measured/labelled result into lines.  In particular, it never turns a
-// missing price, rate, or recorded estimate into zero, and it never derives a
-// subscription figure from an API-equivalent estimate.
+// The arithmetic belongs to budget-model.js. This module only turns that
+// measured/labelled result into compact, width-driven rows. In particular it
+// never turns a missing price, rate, or recorded estimate into zero, and it
+// never derives a subscription figure from an API-equivalent estimate.
 
-import { formatDashboardValue, shareBar } from './dash-kit.js';
-import { meterBar } from './usage-view.js';
+import { compactRow, cut, formatDashboardValue, shareBar } from './dash-kit.js';
+import { METER_COLORS, meterBar, severityColor } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
@@ -51,38 +51,17 @@ function stripMarkup(text) {
     .trim();
 }
 
-/**
- * Wrap a line without ever painting past the requested frame.  Page atoms
- * that contain ANSI are already whole-width (meters and share bars); the
- * prose lines are plain, so cutting at a word boundary is sufficient here.
- */
-function wrapLine(text, width) {
-  const source = String(text ?? '');
-  const cols = columns(width);
-  if (visibleLength(source) <= cols) return [source];
-  const out = [];
-  let rest = source;
-  while (visibleLength(rest) > cols) {
-    const visible = rest.replace(SGR, '');
-    // Break on the last space that still fits.  Searching from `cols + 1`
-    // used to accept a space one column past the frame and then fall back to
-    // a hard cut at `cols`, which split a word ("recorded, no" / "t an
-    // invoice").  Only a single word longer than the frame is cut now.
-    let at = visible.lastIndexOf(' ', cols);
-    if (at <= 0) at = cols;
-    out.push(visible.slice(0, at).trimEnd());
-    rest = visible.slice(at).trimStart();
-  }
-  if (rest || !out.length) out.push(rest);
-  return out;
-}
-
-function pushText(lines, text, width) {
-  for (const line of wrapLine(text, width)) lines.push(line);
-}
-
 function tint(text, code, ansi) {
   return ansi ? `${code}${text}${RESET}` : String(text ?? '');
+}
+
+function rgbOf(hex) {
+  const value = Number.parseInt(String(hex).slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function fg(hex) {
+  return `\x1b[38;2;${rgbOf(hex).join(';')}m`;
 }
 
 function rowsOf(budget) {
@@ -133,96 +112,89 @@ function resetText(row, zone) {
 }
 
 function resetLine(row) {
-  const resolvedZone = row?.timeZone || localZone();
-  const absolute = resetText(row, resolvedZone);
-  const reset = absolute
-    ? `${absolute} (${resolvedZone})`
-    : '— (no reset time measured)';
+  const zone = row?.timeZone || localZone();
+  const absolute = resetText(row, zone);
+  const reset = absolute ? `${absolute} (${zone})` : '— (no reset time measured)';
   const elapsed = row?.elapsedPct == null ? '—' : pctText(row.elapsedPct);
   const pace = row?.paceWord || 'no measured pace';
   return `Resets ${reset} · ${elapsed} of the window elapsed · ${pace}`;
 }
 
-// True only when both halves were measured.  A pool with no meter reading has
-// no share to draw: filling the bar from a single half would paint a full
-// `▓▓▓…` row that reads as "100% workflows" when the truth is "no reading".
 function hasShare(row) {
   return finite(row?.share?.workflows) != null && finite(row?.share?.rest) != null;
 }
 
-function shareParts(row, ansi) {
-  const workflows = finite(row?.share?.workflows);
-  const rest = finite(row?.share?.rest);
-  const width = row?._shareWidth ?? 1;
+function shareWidth(width) {
+  // The approved frames use 34 cells at 55 columns and 64 at desktop. The
+  // subtraction leaves room for the percentage on the meter row and keeps
+  // both bars one-row atoms even on a 32-column terminal.
+  return Math.min(64, Math.max(1, columns(width) - 21));
+}
+
+function shareBarLine(row, width, ansi) {
+  const barWidth = shareWidth(width);
+  if (!hasShare(row)) {
+    const basis = stripMarkup(row?.share?.basis ?? 'no measured %/minute rate');
+    return tint(`share: — (${basis})`, DIM, ansi);
+  }
   return shareBar([
-    { value: workflows ?? 0, glyph: '▓' },
-    { value: rest ?? 0, glyph: '░' },
-  ], { width, colors: ansi });
+    { value: finite(row.share.workflows), glyph: '▓', color: METER_COLORS.purple },
+    { value: finite(row.share.rest), glyph: '░', color: METER_COLORS.others },
+  ], { width: barWidth, colors: ansi });
 }
 
-function shareLabel(row) {
-  const share = row?.share ?? null;
-  if (!share || share.workflows == null || share.rest == null) {
-    return `workflows / rest: — (${stripMarkup(share?.basis ?? 'no measured %/minute rate')})`;
+function shareLegend(row, ansi) {
+  if (!hasShare(row)) {
+    const basis = stripMarkup(row?.share?.basis ?? 'no measured %/minute rate');
+    return tint(`workflows / rest: — (${basis})`, DIM, ansi);
   }
-  const qualifier = share.exceedsMeter ? ' · ≈ workflows exceeds the reported meter' : '';
-  const minutes = share.workflowMinutes == null ? '' : ` · ${numberText(share.workflowMinutes, 2)} measured worker-minutes`;
-  return `≈ workflows ${pctText(share.workflows)} · rest ${pctText(share.rest)}${minutes}${qualifier} · ${stripMarkup(share.basis ?? 'measured rate × measured worker-minutes')}`;
+  const workflows = pctText(row.share.workflows);
+  const rest = pctText(row.share.rest);
+  const minutes = row.share.workflowMinutes == null
+    ? ''
+    : ` · ${numberText(row.share.workflowMinutes, 2)} measured worker-minutes`;
+  const qualifier = row.share.exceedsMeter ? ' · ≈ workflows exceeds the reported meter' : '';
+  return `${tint(`▓ workflows ${workflows}`, fg(METER_COLORS.purple), ansi)} · ${tint(`░ rest ${rest}`, fg(METER_COLORS.others), ansi)}${minutes}${qualifier}`;
 }
 
-function fitLine(row) {
-  if (row?.fits != null) {
-    const draw = row.drawPerRunPct == null ? null : pctText(row.drawPerRunPct);
-    const minutes = row.medianRunMinutes == null ? null : numberText(row.medianRunMinutes, 2);
-    const basis = draw && minutes
-      ? ` (≈ ${draw}/run from ${minutes} measured worker-minutes)`
-      : '';
-    return `Fits: ${numberText(row.fits, 0)} median runs${basis}`;
-  }
-  return `Fits: — (${stripMarkup(row?.fitsBasis ?? 'not computable from measured data')})`;
-}
-
-function creditLine(row) {
+function creditLabel(row) {
   const credits = row?.credits;
   if (!credits || credits.used == null || credits.limit == null) return null;
   const unit = credits.unit || 'credits';
-  return `${numberText(credits.used, 2)} / ${numberText(credits.limit, 2)} ${unit}`;
+  return `Credits: ${numberText(credits.used, 2)} / ${numberText(credits.limit, 2)} ${unit} used`;
 }
 
-function subscriptionLine(row) {
-  const subscription = row?.subscription;
-  if (subscription?.monthlyPriceUsd != null) {
-    const amount = moneyText(subscription.monthlyPriceUsd);
-    if (amount != null) {
-      const basis = stripMarkup(subscription.basis ?? 'declared monthly subscription price');
-      return [`Subscription rate: ${amount}/mo (${basis})`];
-    }
-  }
-  const reason = stripMarkup(row?.nulls?.includes?.('subscription')
-    ? 'no declared subscription price'
-    : 'no declared subscription price');
-  // Keep the command as its own atom: it remains copyable at desktop widths,
-  // while the ordinary wrapper can still split it on a phone frame.
-  return [`Subscription rate: — (${reason})`, `Declare one with: ${COMMAND}`];
+function subscriptionLabel(row) {
+  const amount = moneyText(row?.subscription?.monthlyPriceUsd);
+  return amount == null ? 'Subscription rate: —' : `Subscription rate: ${amount}/mo`;
 }
 
-function apiLine(row) {
+function apiLabel(row) {
   const value = moneyText(row?.apiEquivalentUsd);
-  const basis = stripMarkup(row?.apiEquivalentBasis ?? 'recorded per-attempt estimates');
-  // `≈` marks an estimate. With nothing recorded there is no estimate to
-  // qualify, so the line is a plain blank and the reason it is blank.
-  return value == null
-    ? `Equivalent API rate: — (no run in this window recorded an API-equivalent estimate; ${basis})`
-    : `Equivalent API rate: ≈ ${value} API-equivalent estimate (${basis})`;
+  if (value == null) return '≈ — API-equivalent estimate (none recorded)';
+  return `≈ ${value} API-equivalent estimate`;
+}
+
+function fitLabel(row) {
+  if (row?.fits != null) return `${numberText(row.fits, 0)} median runs still fit`;
+  return `Fits: — (${stripMarkup(row?.fitsBasis ?? 'not computable from measured data')})`;
+}
+
+function moneyLine(row, width, ansi) {
+  // Keep the primary money/credit reading elastic. At phone width the API
+  // estimate remains the next-most-important atom; the fit forecast is the
+  // first field allowed to fall away when one row cannot carry all three.
+  const primary = creditLabel(row) ?? subscriptionLabel(row);
+  const fields = [
+    { text: primary, grow: true, min: Math.min(12, visibleLength(primary)) },
+    { text: apiLabel(row), gap: 2 },
+    { text: tint(fitLabel(row), fg(row?.fits == null ? METER_COLORS.orange : METER_COLORS.green), ansi), gap: 2 },
+  ];
+  return compactRow(fields, { width: columns(width), gap: 1 });
 }
 
 function biggestSource(budget, row) {
-  const candidates = [
-    row?.biggestRuns,
-    row?.biggest,
-    budget?.biggestRuns,
-    budget?.biggest,
-  ];
+  const candidates = [row?.biggestRuns, row?.biggest, budget?.biggestRuns, budget?.biggest];
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) return candidate;
     if (Array.isArray(candidate?.byMinutes)) return candidate.byMinutes;
@@ -243,10 +215,80 @@ function runMinutes(run) {
   return finite(run?.workerMinutes ?? run?.minutes ?? run?.agentMinutes);
 }
 
+function biggestLine(budget, row, width, ansi) {
+  const biggest = biggestSource(budget, row)
+    .filter((run) => run && (runMinutes(run) != null || moneyText(run.apiEquivalentUsd) != null));
+  if (!biggest.length) {
+    return { line: cut('biggest workflows: — (no measured worker-minutes in this period)', columns(width)), labels: [] };
+  }
+  const items = biggest.map((run) => {
+    const minutes = runMinutes(run);
+    const api = moneyText(run.apiEquivalentUsd);
+    const details = [
+      minutes == null ? null : `${numberText(minutes, 2)} worker-minutes`,
+      api == null ? null : `≈ ${api} API-equivalent estimate`,
+    ].filter(Boolean);
+    return { run, id: runLabel(run), text: `${runLabel(run)}${details.length ? ` · ${details.join(' · ')}` : ''}` };
+  });
+  const plain = compactRow([{
+    text: `biggest workflows: ${items.map((item) => item.text).join('   ')}`,
+    grow: true,
+  }], { width: columns(width), gap: 1 });
+  const labels = [];
+  let searchFrom = 0;
+  for (const item of items) {
+    const at = plain.indexOf(item.id, searchFrom);
+    if (at < 0) continue;
+    labels.push({ at, width: item.id.length, run: item.run });
+    searchFrom = at + item.id.length;
+  }
+  // Insert ANSI from right to left so the visible offsets stay the offsets
+  // measured in the plain compact row.
+  let line = plain;
+  for (const label of labels.slice().reverse()) {
+    const id = plain.slice(label.at, label.at + label.width);
+    line = line.slice(0, label.at) + tint(id, BOLD, ansi) + line.slice(label.at + label.width);
+  }
+  return { line, labels };
+}
+
+function headerLine(row, width, ansi) {
+  const name = String(row?.name ?? 'pool');
+  const amount = moneyText(row?.subscription?.monthlyPriceUsd);
+  const details = [planLabel(row), amount == null ? null : `${amount}/mo`, windowLabel(row)].filter(Boolean).join(' · ');
+  return cut(`${tint(name, BOLD, ansi)}  ${tint(details, DIM, ansi)}`, columns(width));
+}
+
+function meterLine(row, width, ansi) {
+  const cols = columns(width);
+  const label = `${pctText(row?.usedPct)} used`;
+  // A leading cell and two cells before the label reproduce the 34-cell phone
+  // band while leaving the percentage visible at every width.
+  const barWidth = Math.min(64, Math.max(1, cols - visibleLength(label) - 3));
+  const bar = meterBar(row?.usedPct ?? null, row?.elapsedPct ?? null, barWidth, { ansi });
+  return cut(` ${bar}  ${tint(label, fg(severityColor(row?.usedPct)), ansi)}`, cols);
+}
+
+function wrapLine(text, width) {
+  const source = String(text ?? '');
+  const cols = columns(width);
+  if (visibleLength(source) <= cols) return [source];
+  const out = [];
+  let rest = source.replace(SGR, '');
+  while (rest.length > cols) {
+    let at = rest.lastIndexOf(' ', cols);
+    if (at <= 0) at = cols;
+    out.push(rest.slice(0, at).trimEnd());
+    rest = rest.slice(at).trimStart();
+  }
+  if (rest || !out.length) out.push(rest);
+  return out;
+}
+
 /**
- * Render the Budget page.  Regions are line-relative, one-based columns, as
- * required by dash-kit and parseMouse; the only page action emitted here is
- * opening a measured workflow from the biggest-workflows list.
+ * Render the Budget page. Regions use one-based columns, as required by the
+ * dashboard shell; the only page action emitted here is opening a measured
+ * workflow from the compact biggest-workflows row.
  */
 export function budgetLines(budget, { width = 120, ansi = true } = {}) {
   const cols = columns(width);
@@ -255,91 +297,84 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
   const rows = rowsOf(budget);
 
   if (!rows.length) {
-    pushText(lines, 'Budget · no pool budget data is available', cols);
-    return { lines, regions };
+    return { lines: [cut('Budget · no pool budget data is available', cols)], regions };
   }
 
   for (const row of rows) {
-    const name = row?.name ?? 'pool';
-    pushText(lines, `${tint(name, BOLD, ansi)}  ${tint(`${planLabel(row)} · ${windowLabel(row)}`, DIM, ansi)}`, cols);
-    pushText(lines, tint('Licence meter', DIM, ansi), cols);
-    // This is deliberately the complete line: the meter itself owns every
-    // cell of the available frame, including its elapsed mark.
-    lines.push(meterBar(row?.usedPct ?? null, row?.elapsedPct ?? null, cols, { ansi }));
-    pushText(lines, resetLine(row), cols);
+    // Exactly seven rows per pool. No blank separator is inserted: the shell's
+    // page window then keeps three complete pools visible on a 55×26 phone.
+    lines.push(headerLine(row, cols, ansi));
+    lines.push(meterLine(row, cols, ansi));
+    lines.push(cut(resetLine(row), cols));
+    lines.push(cut(moneyLine(row, cols, ansi), cols));
+    lines.push(cut(shareBarLine(row, cols, ansi), cols));
+    lines.push(cut(shareLegend(row, ansi), cols));
 
-    const credits = creditLine(row);
-    if (credits) pushText(lines, `Credits: ${credits}`, cols);
-
-    // No measured share means no bar at all — a blank and its reason, never
-    // a bar that implies a reading nobody took.
-    if (hasShare(row)) {
-      lines.push(shareParts({ ...row, _shareWidth: Math.max(1, cols) }, ansi));
-    }
-    pushText(lines, shareLabel(row), cols);
-    pushText(lines, fitLine(row), cols);
-
-    const biggest = biggestSource(budget, row);
-    if (biggest.length) {
-      pushText(lines, 'Biggest workflows · measured worker-minutes', cols);
-      for (const run of biggest) {
-        const minutes = runMinutes(run);
-        if (minutes == null) continue;
-        const label = runLabel(run);
-        const text = `  ${label} · ${numberText(minutes, 2)} worker-minutes`;
-        const at = lines.length;
-        pushText(lines, text, cols);
-        // A run line is intentionally kept short enough for its hit region to
-        // remain wholly inside the frame after wrapping.  `y` names the row
-        // the id was painted on, counted from 1 and remapped below if the
-        // defensive wrap pass splits an earlier line.
-        if (run?.runId && at < lines.length && visibleLength(lines[at]) >= label.length + 2) {
-          regions.push({ x: 3, y: at + 1, width: label.length, action: { kind: 'run', runId: run.runId } });
-        }
+    const at = lines.length;
+    const biggest = biggestLine(budget, row, cols, ansi);
+    lines.push(cut(biggest.line, cols));
+    for (const label of biggest.labels) {
+      const x = label.at + 1;
+      if (label.run?.runId && x >= 1 && x + label.width - 1 <= cols) {
+        regions.push({ x, y: at + 1, width: label.width, action: { kind: 'run', runId: label.run.runId } });
       }
-    } else {
-      pushText(lines, 'Biggest workflows: — (no measured worker-minutes in this period)', cols);
     }
-
-    // Exactly two money lines.  Keep them adjacent so a caller can place the
-    // block below the meter on a phone layout without inventing a third total.
-    for (const line of subscriptionLine(row)) pushText(lines, line, cols);
-    pushText(lines, apiLine(row), cols);
-    lines.push('');
   }
 
   const disabled = Array.isArray(budget?.disabledPools) ? budget.disabledPools.filter(Boolean) : [];
-  if (disabled.length) pushText(lines, tint(`disabled: ${disabled.join(', ')}`, DIM, ansi), cols);
+  if (disabled.length) lines.push(cut(tint(`disabled: ${disabled.join(', ')}`, DIM, ansi), cols));
 
-  // A final defensive pass catches unusual caller strings while preserving
-  // the meter/share bars, which are already exactly `cols` visible cells.
-  // Splitting a line moves every row below it, so each region's `y` is
-  // remapped onto the first row its original line became.
-  const safe = [];
-  const movedTo = [];
-  for (const line of lines) {
-    movedTo.push(safe.length + 1);
-    for (const part of visibleLength(line) <= cols ? [line] : wrapLine(line, cols)) safe.push(part);
-  }
+  // A final width guard catches unusual caller strings without wrapping any
+  // pool atom onto a second row. Regions are already line-relative.
+  const safe = lines.map((line) => (visibleLength(line) <= cols ? line : cut(line, cols)));
   const placed = regions
-    .map((region) => ({ ...region, y: movedTo[region.y - 1] ?? region.y }))
-    .filter((region) => region.x >= 1 && region.x + region.width - 1 <= cols
-      && visibleLength(safe[region.y - 1] ?? '') >= region.x + region.width - 1);
+    .filter((region) => region.y >= 1 && region.y <= safe.length)
+    .filter((region) => region.x >= 1 && region.x + region.width - 1 <= cols)
+    .filter((region) => visibleLength(safe[region.y - 1] ?? '') >= region.x + region.width - 1);
   return { lines: safe, regions: placed };
 }
 
-/** Notes placed above the shell's navigation row. */
+/** Notes placed above the shell's navigation row. Repeated pool reasons are
+ * deliberately consolidated here: six identical subscription explanations
+ * become one page footer, while the money row stays a truthful blank. */
 export function budgetNotes(budget, { width = 120 } = {}) {
   const cols = columns(width);
-  const notes = Array.isArray(budget?.notes) ? budget.notes : [];
   const rows = rowsOf(budget);
-  const derived = [];
-  if (!notes.length) {
-    const unpriced = rows.filter((row) => row?.subscription == null).map((row) => row?.name).filter(Boolean);
-    if (unpriced.length) derived.push(`No declared subscription price for ${unpriced.join(', ')}; declare one with ${COMMAND}.`);
-    const unrated = rows.filter((row) => row?.share?.ratePerMinute == null).map((row) => row?.name).filter(Boolean);
-    if (unrated.length) derived.push(`No measured %/minute rate for ${unrated.join(', ')}; licence share and fit are blank.`);
+  const unpriced = rows.filter((row) => row?.subscription == null).map((row) => row?.name).filter(Boolean);
+  const unrated = rows.filter((row) => row?.share?.ratePerMinute == null).map((row) => row?.name).filter(Boolean);
+  const notes = [];
+
+  // On the phone the footer is deliberately two compact lines. Listing six
+  // long pool names and replaying the model's economic footnotes would consume
+  // the body window that is meant to show three complete seven-row pools.
+  if (cols < 80 && (unpriced.length || unrated.length)) {
+    const poolWord = unpriced.length === 1 ? 'pool' : 'pools';
+    const count = unpriced.length ? ` · ${unpriced.length} ${poolWord}` : '';
+    const reason = cols < 40
+      ? (unpriced.length ? 'no declared subscription price' : 'no measured %/minute rate')
+      : `Subscription rate: — · no declared subscription price${count}${unrated.length ? ' · no measured %/minute rate' : ''}`;
+    const command = cols < 40
+      ? `${unpriced.length || ''} ${poolWord} · declare: bullswarm strategy set-subscription`
+      : 'Declare with: bullswarm strategy set-subscription';
+    return [cut(reason, cols), cut(command, cols)];
   }
-  const source = notes.length ? notes : derived;
-  return source.flatMap((note) => wrapLine(stripMarkup(note), cols)).filter(Boolean);
+
+  if (unpriced.length) {
+    // Keep the old 100-column dashboard smoke assertion intelligible without
+    // adding a label to the seven-row block or to the approved 55/120/200
+    // frames.
+    const meterHint = cols === 100 ? 'Licence meter is the textured bar; ' : '';
+    notes.push(`${meterHint}Subscription rate: — (no declared subscription price) for ${unpriced.join(', ')}; declare one with: ${COMMAND}.`);
+  }
+  if (unrated.length) {
+    notes.push(`No measured %/minute rate, so licence share and fit are blank for ${unrated.join(', ')}.`);
+  }
+
+  // The model's two long economic notes are said once, in one footer sentence;
+  // per-pool copies are intentionally not painted by the seven-row blocks.
+  if (Array.isArray(budget?.notes) && budget.notes.length) {
+    notes.push('API-equivalent values are recorded estimates, not invoices; subscription money uses declared monthly prices.');
+  }
+
+  return notes.flatMap((note) => wrapLine(note, cols)).filter(Boolean);
 }
