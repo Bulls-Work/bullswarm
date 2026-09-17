@@ -33,6 +33,8 @@ export function parsePools(stdout: string): BullswarmPool[] {
         fiveHourUsedPct: num(p.fiveHourUsedPct),
         costRank: num(p.costRank),
         meterSource: str(p.meterSource),
+        meterError: str(p.meterError),
+        meterHoldUntil: num(p.meterHoldUntil),
         incumbentLane: Array.isArray(p.incumbentLane)
           ? p.incumbentLane.filter((l): l is string => typeof l === 'string')
           : [],

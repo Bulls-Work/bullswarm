@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import { retryAfterMsFromHeaders } from '../../meters/framework.js';
 
 export const name = 'claude-code';
 export const displayName = 'Claude';
@@ -24,9 +25,11 @@ const EXPIRY_SKEW_MS = 60_000;
 const HOME_MARKERS = ['.credentials.json', '.claude.json', 'settings.json', 'projects'];
 
 export class ClaudeMeterError extends Error {
-  constructor(message, code) {
+  constructor(message, code, { status = null, retryAfterMs = null } = {}) {
     super(message);
     this.code = code; // no_token | expired | http | parse | network
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -333,7 +336,10 @@ export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code
     throw new ClaudeMeterError(`Network error reaching Anthropic: ${err.message}`, 'network');
   }
   if (!res.ok) {
-    throw new ClaudeMeterError(`Usage endpoint returned ${res.status}`, 'http');
+    throw new ClaudeMeterError(`Usage endpoint returned ${res.status}`, 'http', {
+      status: res.status,
+      retryAfterMs: retryAfterMsFromHeaders(res.headers),
+    });
   }
   let body;
   try {

@@ -314,13 +314,36 @@ export function declaredResetPacing(snapshot, { pacingWindow = null, resetsAt = 
 
 // --- snapshot cache ---------------------------------------------------------
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** How old a cached reading may be before we re-poll (project-n cadence). */
 export const FRESH_MS = 5 * 60_000;
 /** Beyond this age the reading is labeled stale in output. */
 export const STALE_MS = 60 * 60_000;
+
+/**
+ * Decode an HTTP Retry-After header into a duration. Providers pass either a
+ * native Headers object or the lower-cased header map they already build.
+ * A missing or malformed header is null so the meter registry can use its
+ * named FRESH_MS fallback instead.
+ */
+export function retryAfterMsFromHeaders(headers, nowMs = Date.now()) {
+  if (!headers) return null;
+  let raw = typeof headers.get === 'function'
+    ? headers.get('retry-after')
+    : headers['retry-after'] ?? headers['Retry-After'];
+  if (Array.isArray(raw)) raw = raw[0];
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const retryAt = Date.parse(value);
+  return Number.isFinite(retryAt) && Number.isFinite(nowMs)
+    ? Math.max(0, retryAt - nowMs)
+    : null;
+}
 
 export class MeterCache {
   constructor(dir) {
@@ -330,6 +353,10 @@ export class MeterCache {
 
   #path(pool) {
     return join(this.dir, `${pool}.json`);
+  }
+
+  #holdPath(pool) {
+    return join(this.dir, `${pool}.hold.json`);
   }
 
   get(pool) {
@@ -344,6 +371,33 @@ export class MeterCache {
 
   put(pool, snapshot) {
     writeFileSync(this.#path(pool), `${JSON.stringify(snapshot, null, 2)}\n`);
+  }
+
+  /** The persisted negative-cache hold for a pool, or null when absent. */
+  getHold(pool) {
+    const p = this.#holdPath(pool);
+    if (!existsSync(p)) return null;
+    try {
+      const hold = JSON.parse(readFileSync(p, 'utf8'));
+      if (!hold || typeof hold !== 'object') return null;
+      return hold;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a failed poll's hold beside the latest snapshot. */
+  putHold(pool, hold) {
+    writeFileSync(this.#holdPath(pool), `${JSON.stringify(hold, null, 2)}\n`);
+  }
+
+  /** A successful live read releases any previous negative-cache hold. */
+  clearHold(pool) {
+    try {
+      unlinkSync(this.#holdPath(pool));
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
   }
 
   /**
