@@ -2,8 +2,12 @@
 
 ## Unreleased
 
-- meters: rate-limited or failed live reads now persist a per-pool negative-cache hold (honouring `Retry-After` or the five-minute freshness window), and `pools`/the Claude Mod identify the stale snapshot's error and retry time.
+## 0.32.1 — free models first, with graceful failover
 
+- meters: rate-limited or failed live reads now persist a per-pool negative-cache hold (honouring `Retry-After` or the five-minute freshness window), and `pools`/the Claude Mod identify the stale snapshot's error and retry time.
+- rename: the OpenCode pool is now `opencode`; the first run migrates saved
+  state, routing, provider, and meter names automatically, while historical
+  workflow run records keep their recorded `opencode2` name.
 - routing: a pool whose model for the effort tier costs nothing is ranked ahead
   of every metered pool while it is healthy. Free-ness is per (pool, effort
   tier) and comes from the connector — `modelProfiles[].free`, or a model name
