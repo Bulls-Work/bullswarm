@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 - routing: a pool whose model for the effort tier costs nothing is ranked ahead
   of every metered pool while it is healthy. Free-ness is per (pool, effort
   tier) and comes from the connector — `modelProfiles[].free`, or a model name

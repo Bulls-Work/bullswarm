@@ -159,6 +159,10 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       fiveHourResetsAt: null,
       nearFiveHourLimit: false,
       meterSnapshot: null,
+      // A failed reader is still useful context when the snapshot is stale;
+      // the CLI and Mod surface these without serializing an Error object.
+      meterError: null,
+      meterHoldUntil: null,
       subscription: {
         ...(conn.subscription ?? {}),
         ...(state.strategy?.subscriptions?.[name] ?? {}),
@@ -177,6 +181,12 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     const ps = state.pools[p.name] ?? {};
 
     const reading = readings[p.name];
+    if (reading) {
+      p.meterError = typeof reading.meterError === 'string' && reading.meterError
+        ? reading.meterError
+        : shortMeterError(reading.error);
+      p.meterHoldUntil = Number.isFinite(reading.holdUntil) ? reading.holdUntil : null;
+    }
     // The 5h gate is independent of the pacing window: a reading may carry a
     // 5h utilization with no weekly/monthly window to pace by, and routing
     // still has to see that the pool is close to its 5h limit.
@@ -221,6 +231,15 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
     }
   }
   return { state, connectors, pools };
+}
+
+function shortMeterError(error) {
+  const status = Number(error?.status);
+  if (Number.isFinite(status) && status > 0) return String(Math.trunc(status));
+  if (typeof error?.code === 'string' && error.code.trim()) return error.code.trim();
+  const message = error?.message ? String(error.message).trim() : '';
+  if (!message) return null;
+  return message.length > 80 ? `${message.slice(0, 77)}…` : message;
 }
 
 /**

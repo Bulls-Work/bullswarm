@@ -123,7 +123,7 @@ A relayed credential fails upstream, not in the CLI. When a provider's event str
 
 ## How the decision shows its work
 
-`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `QUARANTINED until …`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`.
+`bullswarm pools` prints one line per pool: `cost=`, `lanes=`, the meter it is paced from, `surplus=`, `inflight=`, the 5-hour column as `5h=<reading>%-><projected>%` with `(<n>% elapsed)`, `free=<model>` when its model costs nothing, then `ready`, `disabled`, `QUARANTINED until …`, `BENCHED until … (<reason>, <n> strikes)`, `NEAR-5H-LIMIT`, `BURST-GATED`, or `resets in … EXPIRING-SOON urgency=<n>`. A pool carrying an uncounted-out strike prints `strikes=<n>(<reason>)` beside `ready`. `pools` names no lane and therefore no effort tier, so when free-ness differs per tier the column names each one — `free=medium:opencode/union-alpha`. A stale meter held after a failed poll is marked `[stale · <status-or-kind>, retry in <time>]`; `pools --json` carries the same `meterError` and `meterHoldUntil` fields.
 
 ```text
 answerer       cost=3 lanes=analyze/build/chore unmetered surplus=0 inflight=0 ready

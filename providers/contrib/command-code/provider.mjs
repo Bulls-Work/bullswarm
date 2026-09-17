@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MeterError } from '../../../src/provider-kit.js';
+import { retryAfterMsFromHeaders } from '../../../src/meters/framework.js';
 
 export const name = 'command-code';
 export const displayName = 'Command Code';
@@ -39,8 +40,8 @@ const PLAN_CREDITS = {
 };
 
 export class CommandCodeMeterError extends MeterError {
-  constructor(message, code) {
-    super(message, code); // no_auth | http | parse | network
+  constructor(message, code, options = {}) {
+    super(message, code, options); // no_auth | http | parse | network
     this.name = 'CommandCodeMeterError';
   }
 }
@@ -176,13 +177,14 @@ async function fetchJson(url, key) {
   } catch (err) {
     throw new CommandCodeMeterError(`Network error reaching Command Code billing: ${err.message}`, 'network');
   }
+  const retryAfterMs = retryAfterMsFromHeaders(res.headers);
   let body = null;
   try {
     body = await res.json();
   } catch {
     /* leave null */
   }
-  return { status: res.status, body };
+  return { status: res.status, body, retryAfterMs };
 }
 
 /**
@@ -197,10 +199,16 @@ export async function readUsage(pool = name, ctx = {}) {
 
   const creditsRes = await fetchJson(`${base}${CREDITS_PATH}`, key);
   if (creditsRes.status === 401 || creditsRes.status === 403) {
-    throw new CommandCodeMeterError(`Command Code credits HTTP ${creditsRes.status}`, 'no_auth');
+    throw new CommandCodeMeterError(`Command Code credits HTTP ${creditsRes.status}`, 'no_auth', {
+      status: creditsRes.status,
+      retryAfterMs: creditsRes.retryAfterMs,
+    });
   }
   if (creditsRes.status < 200 || creditsRes.status >= 300) {
-    throw new CommandCodeMeterError(`Command Code credits HTTP ${creditsRes.status}`, 'http');
+    throw new CommandCodeMeterError(`Command Code credits HTTP ${creditsRes.status}`, 'http', {
+      status: creditsRes.status,
+      retryAfterMs: creditsRes.retryAfterMs,
+    });
   }
 
   const credits = parseCommandCodeCredits(creditsRes.body);

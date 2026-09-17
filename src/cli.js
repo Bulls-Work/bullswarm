@@ -73,6 +73,23 @@ export function parseArgs(argv) {
 
 // --- pools ----------------------------------------------------------------
 
+/** The bracketed meter source shown by `bullswarm pools`. */
+export function meterSourceLabel(pool, nowMs = Date.now()) {
+  const source = pool?.meterSource ?? 'none';
+  if (source === 'stale' && pool?.meterError) {
+    const holdUntil = Number(pool.meterHoldUntil);
+    const remainingMs = holdUntil - nowMs;
+    const retry = Number.isFinite(remainingMs) && remainingMs > 0
+      ? `, retry in ${remainingMs < 60_000
+        ? `${Math.ceil(remainingMs / 1000)}s`
+        : `${Math.ceil(remainingMs / 60_000)}m`}`
+      : '';
+    return `stale · ${pool.meterError}${retry}`;
+  }
+  const resetTag = pool?.resetSource === 'declared' ? ' declared-reset' : '';
+  return `${source}${resetTag}`;
+}
+
 async function cmdPools(opts) {
   const now = Date.now();
   const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
@@ -121,10 +138,9 @@ async function cmdPools(opts) {
     const window = p.pacingWindow && p.elapsedPct != null ? `${p.pacingWindow} ` : '';
     // A window whose end the operator declared (the provider reported none)
     // is paced from that date and says so; the used% is still the provider's.
-    const resetTag = p.resetSource === 'declared' ? ' declared-reset' : '';
     const meter = src === 'none'
       ? 'unmetered'
-      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}${resetTag}]`;
+      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${meterSourceLabel(p, now)}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it. When in-flight work makes

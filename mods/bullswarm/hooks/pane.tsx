@@ -69,6 +69,25 @@ export type PaneActions = {
   close: () => void
 }
 
+/** The single-row Usage header, including the oldest failed meter reason. */
+export function poolsHeaderText(
+  pools: readonly BullswarmPool[],
+  nowMs: number,
+  nameOf: (pool: string | null) => string = pool => pool ?? '',
+): string {
+  const sampled = pools
+    .filter(p => !!p.capturedAt)
+    .sort((a, b) => Date.parse(a.capturedAt!) - Date.parse(b.capturedAt!))
+  const oldest = sampled[0] ?? null
+  const oldestError = sampled.find(p => !!p.meterError) ?? null
+  const shown = oldestError ?? oldest
+  if (!shown) return 'Pools · no meter snapshot yet'
+  const age = ageOf(shown.capturedAt, nowMs) || '0m'
+  return oldestError
+    ? `Pools · ${nameOf(shown.name)} sampled ${age} ago · ${oldestError.meterError}`
+    : `Pools · sampled ${age} ago`
+}
+
 /** Below this many body rows the pane draws its compact layout (a phone terminal, a short inline pane). */
 export const COMPACT_ROWS = 20
 /** Blank rows drawn past the footer so the engine reports the pane's true height. */
@@ -253,13 +272,12 @@ export function paneView(
   const blank = (key: string) => <Text key={key}> </Text>
 
   if (model.poolsPage) {
-    const sampled = model.pools.map(p => p.capturedAt).filter((x): x is string => !!x).sort()[0] ?? null
     const header: RenderElement[] = [
       <Text key="h0" wrap="truncate-end">
         <Text bold color="cyan">
           Pools
         </Text>
-        <Text dimColor>{sampled ? ` · sampled ${ageOf(sampled, model.nowMs) || '0m'} ago` : ' · no meter snapshot yet'}</Text>
+        <Text dimColor>{poolsHeaderText(model.pools, model.nowMs, nameOf).slice('Pools'.length)}</Text>
       </Text>,
     ]
     if (!compact) header.push(nav)
