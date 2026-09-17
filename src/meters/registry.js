@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { MeterCache, paceSnapshot, FRESH_MS, STALE_MS } from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
+import { migratePoolNameHome } from '../lib/state.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
@@ -45,11 +46,80 @@ export function readerFor(pool, readerOpts = {}) {
   return () => readUsage(pool, { ...owner.ctx, subscription });
 }
 
+/** A compact, safe-to-display reason for a failed meter read. */
+export function meterErrorText(error) {
+  const status = Number(error?.status);
+  if (Number.isFinite(status) && status > 0) return String(Math.trunc(status));
+  if (typeof error?.code === 'string' && error.code.trim()) return error.code.trim();
+  const message = error?.message ? String(error.message).trim() : String(error ?? '').trim();
+  if (!message) return 'error';
+  return message.length > 80 ? `${message.slice(0, 77)}…` : message;
+}
+
+function holdUntilOf(hold) {
+  const failedAt = Date.parse(hold?.failed_at);
+  const retryAfterMs = Number(hold?.retry_after_ms);
+  if (!Number.isFinite(failedAt) || !Number.isFinite(retryAfterMs) || retryAfterMs < 0) return null;
+  return failedAt + retryAfterMs;
+}
+
+function errorFromHold(hold) {
+  const reason = typeof hold?.reason === 'string' && hold.reason ? hold.reason : 'meter poll failed';
+  const error = new Error(reason);
+  error.name = 'MeterError';
+  // HTTP reasons are persisted as their status string, so a later process can
+  // still expose the same status even though Error objects are not serializable.
+  if (/^\d+$/.test(reason)) error.status = Number(reason);
+  if (typeof hold?.code === 'string' && hold.code) error.code = hold.code;
+  error.retryAfterMs = Number.isFinite(Number(hold?.retry_after_ms))
+    ? Number(hold.retry_after_ms)
+    : null;
+  return error;
+}
+
+function holdForError(error, nowMs) {
+  const retryAfterMs = Number(error?.retryAfterMs);
+  // A zero/negative server hint is not a useful negative cache for a
+  // rate-limited endpoint; retain the named freshness window rather than
+  // immediately hammering it again. Positive Retry-After values are honored.
+  const retry = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : FRESH_MS;
+  const reason = meterErrorText(error);
+  return {
+    failed_at: new Date(nowMs).toISOString(),
+    retry_after_ms: retry,
+    reason,
+  };
+}
+
+function decorateError(error, hold, holdUntil) {
+  if (error && (typeof error === 'object' || typeof error === 'function')) {
+    error.holdUntil = holdUntil;
+    error.meterError = typeof hold?.reason === 'string' ? hold.reason : meterErrorText(error);
+  }
+  return error;
+}
+
+function staleResult(cached, nowMs, error, holdUntil, reason) {
+  const capturedMs = Date.parse(cached?.captured_at);
+  const ageMs = Number.isFinite(capturedMs) ? nowMs - capturedMs : null;
+  const meterError = reason ?? meterErrorText(error);
+  return {
+    snapshot: cached,
+    source: 'stale',
+    error,
+    meterError,
+    holdUntil,
+    ageMs,
+    ...paceSnapshot(cached, nowMs),
+  };
+}
+
 /**
  * Get a usable meter reading for a pool:
- *   1. fresh cache hit (<= FRESH_MS old) → use it
- *   2. live poll → cache + use
- *   3. poll failed → stale cache labeled stale, else the error
+ *   1. an active persisted hold (unless forced) → stale cache, no poll
+ *   2. fresh cache hit (<= FRESH_MS old) → use it
+ *   3. live poll → cache + use, clearing any hold
+ *   4. poll failed → persist a hold and use a stale cache, else the error
  * Never fabricates numbers. Every live poll is also appended to the pool's
  * reading history (see appendMeterHistory) so spend rates have a series.
  *
@@ -61,8 +131,29 @@ export function readerFor(pool, readerOpts = {}) {
  */
 export async function getMeterReading(pool, opts = {}) {
   const { force = false, nowMs = Date.now() } = opts;
-  const cache = new MeterCache(join(METERS_DIR(), 'meters'));
+  // A meter command may be the first command after an upgrade and can be
+  // called without a preceding state load. Keep the same idempotent home
+  // migration guarantee for cache/history files in that path.
+  const home = opts.bullswarmDir ?? METERS_DIR();
+  migratePoolNameHome(home);
+  const cache = new MeterCache(join(home, 'meters'));
   const cached = cache.get(pool);
+
+  // A persisted hold is checked before the ordinary freshness path: a failed
+  // poll is a reason to say stale even if another process happened to refresh
+  // the snapshot while this process was starting. `force` is the explicit
+  // operator escape hatch and always reaches the reader.
+  if (!force) {
+    const hold = cache.getHold(pool);
+    const holdUntil = holdUntilOf(hold);
+    if (holdUntil != null && nowMs < holdUntil) {
+      const error = decorateError(errorFromHold(hold), hold, holdUntil);
+      if (cached) return staleResult(cached, nowMs, error, holdUntil, hold.reason);
+      // Keep the historical no-cache contract (throw), but do not poll again;
+      // getAllMeterReadings turns this into a structured `source: error` row.
+      throw error;
+    }
+  }
 
   if (!force && cached && nowMs - Date.parse(cached.captured_at) <= FRESH_MS) {
     return { snapshot: cached, source: 'cache', ...paceSnapshot(cached, nowMs) };
@@ -97,21 +188,20 @@ export async function getMeterReading(pool, opts = {}) {
   try {
     const snapshot = await reader();
     cache.put(pool, snapshot);
+    try { cache.clearHold(pool); } catch { /* a later live read can retry cleanup */ }
     // The cache keeps only the latest reading; the spend model needs the
     // series, so every LIVE reading is also appended to the history log.
     appendMeterHistory(pool, snapshot, { dir: cache.dir });
     return { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
   } catch (err) {
+    const hold = holdForError(err, nowMs);
+    const holdUntil = nowMs + hold.retry_after_ms;
+    try { cache.putHold(pool, hold); } catch { /* negative cache is best effort */ }
+    decorateError(err, hold, holdUntil);
     if (cached) {
       const ageMs = nowMs - Date.parse(cached.captured_at);
-      if (ageMs <= STALE_MS) {
-        return {
-          snapshot: cached,
-          source: 'stale',
-          error: err,
-          ageMs,
-          ...paceSnapshot(cached, nowMs),
-        };
+      if (ageMs <= STALE_MS || nowMs < holdUntil) {
+        return staleResult(cached, nowMs, err, holdUntil, hold.reason);
       }
     }
     throw err;
@@ -134,7 +224,16 @@ export async function getAllMeterReadings(poolNames, opts = {}) {
       try {
         out[p] = await getMeterReading(p, opts);
       } catch (err) {
-        out[p] = { snapshot: null, source: 'error', error: err, pacing: null, burstGate: false, windows: {} };
+        out[p] = {
+          snapshot: null,
+          source: 'error',
+          error: err,
+          meterError: err?.meterError ?? meterErrorText(err),
+          holdUntil: Number.isFinite(err?.holdUntil) ? err.holdUntil : null,
+          pacing: null,
+          burstGate: false,
+          windows: {},
+        };
       } finally {
         completed += 1;
         opts.onProgress?.({ stage: 'complete', pool: p, completed, total: poolNames.length });

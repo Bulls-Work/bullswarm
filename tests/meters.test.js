@@ -11,12 +11,14 @@ import { extractCredentials } from '../src/providers/claude-code/provider.mjs';
 import {
   windowPace, paceSnapshot, monthlyWindowMs, FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT,
   pacingWindowFor, normalizePacingWindow, rollResetForward, declaredResetPacing,
+  MeterCache, FRESH_MS,
 } from '../src/meters/framework.js';
 import { readMeterHistoryByDay, readMeterHistoryDays, meterHistoryPath } from '../src/meters/registry.js';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { meterSourceLabel } from '../src/cli.js';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
 
@@ -305,6 +307,121 @@ test('a forced refresh keeps a cached reading for a pool with no live reader', a
     else process.env.BULLSWARM_HOME = previous;
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('a failed meter poll is held, honors Retry-After, then retries and clears on success', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'bs-meter-hold-'));
+  const previous = process.env.BULLSWARM_HOME;
+  const pool = 'rate-limited';
+  const at = (ms) => new Date(NOW + ms).toISOString();
+  let calls = 0;
+  try {
+    process.env.BULLSWARM_HOME = home;
+    const { getMeterReading } = await import(`../src/meters/registry.js?hold=${Date.now()}`);
+    const cache = new MeterCache(join(home, 'meters'));
+    cache.put(pool, {
+      captured_at: at(-FRESH_MS - 1),
+      pool,
+      five_hour: { utilization: 12, resets_at: at(3_600_000) },
+      seven_day: { utilization: 20, resets_at: at(3 * 86_400_000) },
+    });
+    const reader = async () => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('Usage endpoint returned 429');
+        error.code = 'http';
+        error.status = 429;
+        error.retryAfterMs = 3 * 60_000;
+        throw error;
+      }
+      return {
+        captured_at: at(3 * 60_000),
+        pool,
+        five_hour: { utilization: 13, resets_at: at(3_600_000) },
+        seven_day: { utilization: 21, resets_at: at(3 * 86_400_000) },
+      };
+    };
+
+    const first = await getMeterReading(pool, { nowMs: NOW, reader });
+    assert.equal(calls, 1);
+    assert.equal(first.source, 'stale');
+    assert.equal(first.meterError, '429');
+    assert.equal(first.holdUntil, NOW + 3 * 60_000);
+    assert.equal(first.error.status, 429);
+
+    const held = await getMeterReading(pool, { nowMs: NOW + 60_000, reader });
+    assert.equal(calls, 1, 'the reader is not called during the persisted hold');
+    assert.equal(held.source, 'stale');
+    assert.equal(held.holdUntil, NOW + 3 * 60_000);
+    const hold = new MeterCache(join(home, 'meters')).getHold(pool);
+    assert.equal(hold.retry_after_ms, 3 * 60_000);
+    assert.equal(hold.failed_at, new Date(NOW).toISOString());
+    assert.equal(hold.reason, '429');
+
+    const retried = await getMeterReading(pool, { nowMs: NOW + 3 * 60_000, reader });
+    assert.equal(calls, 2, 'the reader is called again once the hold expires');
+    assert.equal(retried.source, 'live');
+    assert.equal(retried.snapshot.seven_day.utilization, 21);
+    assert.equal(new MeterCache(join(home, 'meters')).getHold(pool), null, 'success clears the hold');
+  } finally {
+    if (previous === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('force bypasses a meter hold, and errors without Retry-After use FRESH_MS', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'bs-meter-force-hold-'));
+  const previous = process.env.BULLSWARM_HOME;
+  const pool = 'force-rate-limited';
+  let calls = 0;
+  try {
+    process.env.BULLSWARM_HOME = home;
+    const { getMeterReading } = await import(`../src/meters/registry.js?force-hold=${Date.now()}`);
+    const cache = new MeterCache(join(home, 'meters'));
+    cache.put(pool, {
+      captured_at: new Date(NOW - FRESH_MS - 1).toISOString(),
+      pool,
+      five_hour: { utilization: 12, resets_at: new Date(NOW + 3_600_000).toISOString() },
+      seven_day: { utilization: 20, resets_at: new Date(NOW + 3 * 86_400_000).toISOString() },
+    });
+    const reader = async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('offline'), { code: 'network' });
+      return {
+        captured_at: new Date(NOW + 60_000).toISOString(),
+        pool,
+        five_hour: { utilization: 13, resets_at: new Date(NOW + 3_600_000).toISOString() },
+        seven_day: { utilization: 21, resets_at: new Date(NOW + 3 * 86_400_000).toISOString() },
+      };
+    };
+    const failed = await getMeterReading(pool, { nowMs: NOW, reader });
+    assert.equal(failed.source, 'stale');
+    assert.equal(new MeterCache(join(home, 'meters')).getHold(pool).retry_after_ms, FRESH_MS);
+    const forced = await getMeterReading(pool, { nowMs: NOW + 60_000, force: true, reader });
+    assert.equal(calls, 2);
+    assert.equal(forced.source, 'live');
+    assert.equal(new MeterCache(join(home, 'meters')).getHold(pool), null);
+  } finally {
+    if (previous === undefined) delete process.env.BULLSWARM_HOME;
+    else process.env.BULLSWARM_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('pools labels a stale HTTP 429 with its retry time', () => {
+  assert.equal(
+    meterSourceLabel({
+      meterSource: 'stale', meterError: '429', meterHoldUntil: NOW + 3 * 60_000,
+    }, NOW),
+    'stale · 429, retry in 3m',
+  );
 });
 
 test('pace snapshot: monthly used when no weekly', () => {

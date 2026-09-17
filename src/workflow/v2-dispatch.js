@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { pickPool, isQuarantined } from '../lib/route.js';
+import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
 import {
-  assertDepthAllowed, childDepthEnv, loadState, quarantinePool, quarantineUpstreamSiblings,
-  updateState, upstreamGroupOf,
+  assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
+  quarantineUpstreamSiblings, recordPoolStrike, updateState, upstreamGroupOf,
 } from '../lib/state.js';
-import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from '../lib/strategy.js';
+import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier, rungRecord } from '../lib/strategy.js';
 import { isReasoningLevel, resolveReasoningLevel } from '../lib/reasoning.js';
 import { watchOnce } from '../lib/watch.js';
 import {
@@ -13,6 +13,7 @@ import {
   withLedger,
 } from '../lib/assignments.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
+import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
 const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'interrupted', 'schema', 'stalled']);
@@ -20,11 +21,17 @@ const MECHANICAL_KINDS = new Set(['auth', 'quota', 'provider', 'process', 'inter
 const POOL_FATAL_KINDS = new Set(['auth', 'quota']);
 
 // A worker that writes nothing at all for this long is stalled: its process is
-// stopped and the attempt fails as `stalled`, a mechanical failure that retries
-// once and otherwise hands the run back. It bounds silence, not run time: the
-// clock restarts on every byte, so an agent that keeps working is never cut off.
-// Without it one hung worker kept its whole run open forever.
+// stopped and the attempt fails as `stalled`. Metered failures use the bounded
+// mechanical retry allowance; a free stall can advance through each untried
+// eligible pool once without spending that allowance. It bounds silence, not
+// run time: the clock restarts on every byte, so an agent that keeps working is
+// never cut off. Without it one hung worker kept its whole run open forever.
 export const DEFAULT_WORKER_SILENCE_SEC = 60 * 60;
+// A free pool is stopped after one recorded rung median of silence. The floor
+// remains the spend model's minimum assignment length; callers may pass an
+// explicit silenceTimeoutSec (including a short fixture value) to override the
+// derived threshold for a probe or operator-directed run.
+export const FREE_STALL_P50_FACTOR = 1;
 
 export function workerSilenceTimeoutSec(env = process.env) {
   const raw = Number(env?.BULLSWARM_WORKER_SILENCE_SEC);
@@ -35,7 +42,31 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
-function classifyFailure(verdict) {
+function recordedRung(decisionLog, poolName, effort) {
+  // A stall is a transport failure, not a real duration sample. Excluding it
+  // here keeps the free-pool threshold from tightening after each timeout even
+  // when an older strategy.js has not yet applied the same guard.
+  const usable = (decisionLog ?? []).filter((entry) => entry?.failureKind !== 'stalled');
+  return rungRecord(usable, poolName, effort);
+}
+
+function attemptSilenceTimeoutSec(pool, effort, decisionLog, configuredSilenceSec, explicitOverride = false) {
+  if (pool?.free !== true) return configuredSilenceSec;
+  const configured = Number(configuredSilenceSec);
+  // An explicit value is an operator/test override. The default 3600-second
+  // watcher clock is replaced by the spend-derived free-pool threshold below.
+  if (explicitOverride && Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  const rung = recordedRung(decisionLog, pool.name, effort);
+  const trusted = rung && rung.dispatches >= MIN_DURATION_SAMPLES && rung.medianMinutes != null;
+  const medianSec = trusted
+    ? Math.round(Number(rung.medianMinutes) * 60 * FREE_STALL_P50_FACTOR)
+    : 0;
+  return Math.max(MIN_EXPECTED_MINUTES * 60, medianSec);
+}
+
+function classifyFailure(verdict, pool = null) {
   if (verdict?.ok) return null;
   if (verdict?.cancelled || verdict?.meta?.cancelled) return 'cancelled';
   // Quota outranks the quarantine hint: a usage limit also asks for a
@@ -46,6 +77,13 @@ function classifyFailure(verdict) {
   if (verdict?.failureKind === 'stalled' || verdict?.meta?.stalled) return 'stalled';
   if (verdict?.failureKind === 'provider' || verdict?.meta?.providerFailureType) return 'provider';
   if (verdict?.failureKind === 'schema') return 'schema';
+  // A free endpoint that returned literally no answer is indistinguishable
+  // from a dead provider for routing purposes. Keep semantic announcements and
+  // other verifier judgments intact; only the explicit empty-output verdict is
+  // eligible for the provider retry/bench path. Check this before a non-zero
+  // exit-code classification because some connectors terminate after emitting
+  // an empty response and still need the provider fallback.
+  if (pool?.free === true && verdict?.why === 'empty output') return 'provider';
   if (verdict?.failureKind === 'process' || (verdict?.meta?.exitCode != null && verdict.meta.exitCode !== 0)) return 'process';
   if (verdict?.meta?.signal) return 'interrupted';
   if (verdict?.meta?.timedOut || verdict?.meta?.spawnError) return 'provider';
@@ -61,18 +99,23 @@ function providerIdFromModel(model) {
 function preparePools(pools, action, effort, {
   preferredModel = null, strictPool = null, now = Date.now(),
   liveQuarantine = null,
+  liveBench = null,
   // Which pools COULD run this action were none of them paused: used to say
   // when work can be retried, and to refuse a pin that can never run it.
   ignoreQuarantine = false,
+  ignoreBench = false,
 } = {}) {
   const available = [];
   for (const pool of pools) {
     if (pool.enabled === false || pool.burstGate === true) continue;
     if (!ignoreQuarantine && isQuarantined(pool, now)) continue;
+    if (!ignoreBench && isBenched(pool, now)) continue;
     // The pool object may predate a quarantine written by another action or
     // another run. Core state is the shared record, so consult it directly.
     const live = !ignoreQuarantine && typeof liveQuarantine === 'function' ? liveQuarantine(pool.name) : null;
     if (live && isQuarantined({ quarantine: live }, now)) continue;
+    const liveBenchRecord = !ignoreBench && typeof liveBench === 'function' ? liveBench(pool.name) : null;
+    if (liveBenchRecord && isBenched({ bench: liveBenchRecord }, now)) continue;
     const connector = pool.connector ?? pool;
     // A discovered provider clone represents one concrete credential and its
     // meter. Retargeting it to another provider-qualified model would make the
@@ -94,7 +137,20 @@ function preparePools(pools, action, effort, {
       }, pool.name, effort),
     });
     if (!modelPolicy.eligible) continue;
-    available.push({ ...pool, modelPolicy });
+    // Free-ness is a property of the model selected for THIS effort tier, not
+    // of the connector's launch-time default. The pool list may have been
+    // built without an effortTier (workflow refreshes do that), so re-evaluate
+    // against the resolved policy before the stall clock and router see it.
+    const selectedModelForTier = modelPolicy.model ?? pool.freeModel ?? connector.model ?? null;
+    const free = selectedModelForTier == null
+      ? pool.free === true
+      : isFree({
+        ...pool,
+        free: undefined,
+        freeModel: selectedModelForTier,
+        modelPolicy,
+      });
+    available.push({ ...pool, modelPolicy, free, freeModel: selectedModelForTier });
   }
   // A strict pin defines the complete dispatch universe.
   return strictPool
@@ -127,7 +183,10 @@ function attemptPaths(base, ordinal) {
  * inside updateCoreState's cross-process lock on a fresh load — a plain
  * load/push/save dropped sibling entries and undid quarantines (S5, D5).
  */
-function appendDecision(bullswarmDir, record, { updateCoreState, quarantine = null }) {
+function appendDecision(bullswarmDir, record, {
+  updateCoreState, quarantine = null, strike = null, clearStrikes: clearPool = null,
+} = {}) {
+  let benchResult = null;
   updateCoreState(bullswarmDir, (state) => {
     state.decisionLog ??= [];
     state.decisionLog.push(record);
@@ -149,7 +208,19 @@ function appendDecision(bullswarmDir, record, { updateCoreState, quarantine = nu
         kind,
       });
     }
+    if (clearPool) clearPoolStrikes(state, clearPool);
+    if (strike?.pool) {
+      const until = recordPoolStrike(state, strike.pool, strike.reason, strike.now);
+      const bench = state.pools?.[strike.pool]?.bench ?? null;
+      benchResult = {
+        pool: strike.pool,
+        reason: bench?.reason ?? strike.reason ?? null,
+        count: Number(bench?.count ?? 1),
+        until: bench?.until ?? until ?? null,
+      };
+    }
   });
+  return benchResult;
 }
 
 function selectedModel(pool, effort, preferredModel = null) {
@@ -205,7 +276,7 @@ export async function dispatchV2Action({
   correctionTask = null,
   currentSession = null,
   maxMechanicalRetries = 1,
-  silenceTimeoutSec = workerSilenceTimeoutSec(parentEnv),
+  silenceTimeoutSec = null,
   shouldCancel = null,
   onAttempt = null,
   onSpawn = null,
@@ -213,6 +284,7 @@ export async function dispatchV2Action({
   onActivity = null,
   onAgentEvent = null,
   onAgentProgress = null,
+  evidence = null,
   dependencies = {},
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
@@ -234,6 +306,13 @@ export async function dispatchV2Action({
       : updateState);
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
+  const callerSilenceOverride = silenceTimeoutSec !== null && silenceTimeoutSec !== undefined;
+  const envSilenceOverride = Number.isFinite(Number(parentEnv?.BULLSWARM_WORKER_SILENCE_SEC))
+    && Number(parentEnv.BULLSWARM_WORKER_SILENCE_SEC) > 0;
+  const silenceOverride = callerSilenceOverride || envSilenceOverride;
+  const configuredSilenceTimeoutSec = callerSilenceOverride
+    ? silenceTimeoutSec
+    : workerSilenceTimeoutSec(parentEnv);
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
   const liveQuarantines = dependencies.liveQuarantines ?? (() => {
     try { return loadCoreState(bullswarmDir).pools ?? {}; }
@@ -244,6 +323,7 @@ export async function dispatchV2Action({
     return preparePools(poolList, action, effort, {
       preferredModel, strictPool, now: now(),
       liveQuarantine: (name) => live[name]?.quarantine ?? null,
+      liveBench: (name) => live[name]?.bench ?? null,
     });
   };
   const safeCoreState = () => {
@@ -256,9 +336,10 @@ export async function dispatchV2Action({
   // One expectation for the whole action: lane and effort do not change
   // between attempts, and the spend model is memoized per process anyway. The
   // decision log makes it a measured median instead of a documented default.
+  const spendDecisionLog = coreDecisionLog().filter((entry) => entry?.failureKind !== 'stalled');
   const expected = await expectedMinutesFromSpendModel(
     { lane: action.lane ?? 'chore', effort },
-    { decisionLog: coreDecisionLog() },
+    { decisionLog: spendDecisionLog },
   );
   let candidates = prepare(pools);
   // The unfiltered list, kept current across refreshes: a sibling benched for
@@ -277,6 +358,8 @@ export async function dispatchV2Action({
   const tried = new Set();
   let forceRefresh = false;
   let replayPool = null;
+  let fallbackWhy = null;
+  let lastPool = null;
 
   while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
@@ -303,14 +386,35 @@ export async function dispatchV2Action({
       }
     }
     const routePools = remaining.length ? remaining : candidates;
+    const pickAt = now();
+    // Keep active benches in the router's view even though they cannot be
+    // selected. Route owns the human explanation (benched with its deadline);
+    // the dispatch candidate list still excludes them so retry mechanics never
+    // mistake a paused pool for an available fallback.
+    const live = liveQuarantines();
+    const routeBenchCandidates = preparePools(allPools, action, effort, {
+      preferredModel, strictPool, now: pickAt,
+      liveQuarantine: (name) => live[name]?.quarantine ?? null,
+      ignoreBench: true,
+    }).filter((candidate) => {
+      const bench = live[candidate.name]?.bench ?? candidate.bench;
+      return isBenched({ bench }, pickAt);
+    }).map((candidate) => ({
+      ...candidate,
+      bench: live[candidate.name]?.bench ?? candidate.bench,
+    }));
+    const liveBenchedNames = new Set(routeBenchCandidates.map((candidate) => candidate.name));
+    const routingPools = [
+      ...routePools.filter((candidate) => !liveBenchedNames.has(candidate.name)),
+      ...routeBenchCandidates,
+    ];
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
     // others just registered. Cheap by construction — a directory read, no
     // meter poll and no network.
-    const pickAt = now();
-    attachForecast(routePools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
-    const route = pickPool(action.lane ?? 'chore', routePools, {
+    attachForecast(routingPools, bullswarmDir, { now: pickAt, decisionLog: coreDecisionLog() });
+    const route = pickPool(action.lane ?? 'chore', routingPools, {
       callerEligible: false,
       callerSession: false,
       preferredPool: effectivePreferredPool,
@@ -318,9 +422,11 @@ export async function dispatchV2Action({
       now: pickAt,
       candidateMinutes: expected.expectedMinutes,
       inflightPenaltyPct,
+      evidence,
     });
     if (!route.pick) break;
     const pool = route.pick.connector;
+    lastPool = pool;
     const connector = pool.connector ?? pool;
     const model = selectedModel(pool, effort, preferredModel);
     const ordinal = attempts.length + 1;
@@ -328,6 +434,13 @@ export async function dispatchV2Action({
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);
     const coreState = loadCoreState(bullswarmDir);
     assertDepthAllowed(coreState, parentEnv);
+    const attemptSilenceSec = attemptSilenceTimeoutSec(
+      pool,
+      effort,
+      coreState?.decisionLog ?? coreDecisionLog(),
+      configuredSilenceTimeoutSec,
+      silenceOverride,
+    );
     // Resolved per attempt, not per action: a retry lands on another pool with
     // another connector and another model, so the level is recomputed against
     // whatever this attempt actually spawns, reading the LIVE core strategy.
@@ -341,9 +454,11 @@ export async function dispatchV2Action({
         ?? (isReasoningLevel(action.reasoning) ? action.reasoning : null),
     });
     const startedAt = new Date(now()).toISOString();
+    const routeWhy = fallbackWhy ? `${fallbackWhy} · ${route.why}` : route.why;
+    fallbackWhy = null;
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
-      routeWhy: route.why,
+      routeWhy,
       routeCandidates: route.candidates.map((candidate) => ({
         pool: candidate.pool,
         effectiveSurplus: candidate.effectiveSurplus,
@@ -353,7 +468,7 @@ export async function dispatchV2Action({
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
       outFile: files.outFile, reasoning,
       routing: {
-        reason: route.why, candidates: route.candidates, effort,
+        reason: routeWhy, candidates: route.candidates, effort,
         lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
         // What this attempt was routed on: the pool's load and where its 5h
         // window is projected to land once this assignment has run.
@@ -380,7 +495,7 @@ export async function dispatchV2Action({
       reasoning,
       conversation: session?.invocation ?? null,
       shouldCancel,
-      silenceTimeoutSec,
+      silenceTimeoutSec: attemptSilenceSec,
       processGroup: true,
       onSpawn: (pid) => {
         workerPid = pid;
@@ -397,7 +512,7 @@ export async function dispatchV2Action({
       if (workerPid) onWorkerExit?.(workerPid);
     }
     const finishedAt = new Date(now()).toISOString();
-    const kind = classifyFailure(verdict);
+    const kind = classifyFailure(verdict, pool);
     // One dead upstream credential is ONE outage however many pool names front
     // it. The in-memory candidate list predates the quarantine written below,
     // and a refresher is optional, so the group is dropped here as well — the
@@ -412,10 +527,20 @@ export async function dispatchV2Action({
     }
     const remainingAfterAttempt = remaining.filter((candidate) => candidate.name !== pool.name);
     const canCorrectSchema = kind === 'schema' && !correctionUsed && typeof correctionTask === 'function';
+    // A free stall (and the provider-shaped verdict for literally empty free
+    // output) is bounded by the tried-set, not by the mechanical retry budget:
+    // it may move on to every other eligible pool even after a metered failure
+    // has spent today's allowance, but it is never replayed on the same pool.
+    const freeBudgetExempt = pool.free === true
+      && (kind === 'stalled' || (kind === 'provider' && verdict?.why === 'empty output'));
+    const hasUntriedPool = remainingAfterAttempt.length > 0;
+    const hasRetryBudget = retriesUsed < maxMechanicalRetries;
+    const canRetrySamePool = hasRetryBudget && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind);
     const canRetryMechanically = MECHANICAL_KINDS.has(kind)
       && kind !== 'schema'
-      && (remainingAfterAttempt.length > 0
-        || (retriesUsed < maxMechanicalRetries && candidates.length === 1 && !POOL_FATAL_KINDS.has(kind)));
+      && (freeBudgetExempt
+        ? hasUntriedPool
+        : hasRetryBudget && (hasUntriedPool || canRetrySamePool));
     const willRecover = canCorrectSchema || canRetryMechanically;
     Object.assign(record, {
       finishedAt,
@@ -430,6 +555,10 @@ export async function dispatchV2Action({
       why: verdict.why ?? null,
       usage: clone(verdict.meta?.usage ?? null),
       wallSec: verdict.meta?.wallSec ?? null,
+      willRetry: willRecover,
+      ...(kind === 'stalled'
+        ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
+        : {}),
     });
     // A schema-invalid answer still completed a real provider turn. Resume
     // that same physical conversation for the bounded correction instead of
@@ -440,8 +569,7 @@ export async function dispatchV2Action({
       currentSession = clone(record.session);
     }
     last = verdict;
-    onAttempt?.('finished', clone(record), verdict);
-    appendDecision(bullswarmDir, {
+    const bench = appendDecision(bullswarmDir, {
       ts: finishedAt, lane: action.lane ?? 'chore', picked: pool.name,
       keepOnClaude: false, ok: verdict.ok, failureKind: verdict.ok ? null : kind, why: verdict.why ?? null,
       wallSec: verdict.meta?.wallSec ?? null, model: record.model,
@@ -451,6 +579,10 @@ export async function dispatchV2Action({
       outFile: files.outFile, source: 'workflow-v2', actionId: action.id,
     }, {
       updateCoreState,
+      clearStrikes: verdict.ok ? pool.name : null,
+      strike: !verdict.ok && (kind === 'stalled' || kind === 'provider')
+        ? { pool: pool.name, reason: kind === 'stalled' ? 'stall' : 'provider', now: now() }
+        : null,
       quarantine: verdict.quarantineHint ? {
         pool: pool.name, reason: verdict.why, now: now(),
         until: verdict.quarantineUntil ?? null,
@@ -458,12 +590,18 @@ export async function dispatchV2Action({
         group: upstreamGroupOf(pool), groupPools: allPools,
       } : null,
     });
+    if (bench) record.bench = clone(bench);
+    onAttempt?.('finished', clone(record), verdict);
     // A quota failure invalidates this run's meter picture: poll live before
     // choosing where the work goes next.
     if (kind === 'quota') forceRefresh = true;
     if (verdict.ok) return { ok: true, status: 'succeeded', attempts, verdict, session: currentSession };
     if (kind === 'cancelled') return { ok: false, status: 'cancelled', failureKind: kind, attempts, verdict };
     if (!MECHANICAL_KINDS.has(kind)) return { ok: false, status: 'failed', failureKind: kind, attempts, verdict };
+
+    if (kind === 'stalled' && canRetryMechanically) {
+      fallbackWhy = `fallback from ${pool.name} after stall ${Math.round(attemptSilenceSec)}s`;
+    }
 
     const index = remaining.findIndex((candidate) => candidate.name === pool.name);
     if (index >= 0) remaining.splice(index, 1);
@@ -476,6 +614,13 @@ export async function dispatchV2Action({
       remaining.unshift(pool);
       replayPool = pool;
       continue;
+    }
+    // Free transport failures do not spend the mechanical retry budget. The
+    // selected pool was already removed above; continue only when an untried
+    // eligible pool remains, so a free-only action still terminates.
+    if (freeBudgetExempt) {
+      if (canRetryMechanically) continue;
+      break;
     }
     if (retriesUsed >= maxMechanicalRetries) break;
     retriesUsed += 1;
@@ -492,12 +637,17 @@ export async function dispatchV2Action({
   // comes back, so the caller knows when `workflow resume` will get through.
   const lane = action.lane ?? 'chore';
   const capable = preparePools(allPools, action, effort, {
-    preferredModel, strictPool, now: now(), ignoreQuarantine: true,
+    preferredModel, strictPool, now: now(), ignoreQuarantine: true, ignoreBench: true,
   });
   const live = liveQuarantines();
   let comesBack = null;
   for (const pool of capable) {
-    const deadlines = [pool.quarantine?.until, live[pool.name]?.quarantine?.until]
+    const deadlines = [
+      pool.quarantine?.until,
+      live[pool.name]?.quarantine?.until,
+      pool.bench?.until,
+      live[pool.name]?.bench?.until,
+    ]
       .map((value) => (typeof value === 'string' ? Date.parse(value) : Number(value)))
       .filter((value) => Number.isFinite(value) && value > now());
     // A capable pool that is not paused gives no single time to wait for.
@@ -506,7 +656,7 @@ export async function dispatchV2Action({
     comesBack = comesBack == null ? back : Math.min(comesBack, back);
   }
   const retryAfter = comesBack == null ? null : new Date(comesBack).toISOString();
-  const failureKind = last ? classifyFailure(last) : 'unavailable';
+  const failureKind = last ? classifyFailure(last, lastPool) : 'unavailable';
   const why = !capable.length
     ? strictPool
       ? `no eligible pool: the pinned pool ${strictPool} cannot run ${lane}/${effort} work (it is disabled or has no model on the ${effort} tier)`

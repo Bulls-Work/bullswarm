@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pickPool, paceScore, isQuarantined, isExhausted, fiveHourForecast,
+  pickPool, paceScore, isQuarantined, isBenched, isExhausted, fiveHourForecast,
   pacingForecast, DEFAULT_INFLIGHT_PENALTY_PCT,
 } from '../src/lib/route.js';
 import { FIVE_HOUR_NEAR_LIMIT_PCT } from '../src/meters/framework.js';
@@ -33,7 +33,7 @@ test('pace score: elapsed minus used; unmetered neutral', () => {
 
 test('cost guard in incumbency path: challenger must be cheaper', () => {
   // incumbent grok (rank 2). codex (rank 3 = pricier) has huge surplus but
-  // must NOT displace grok. opencode2 (rank 1) needs margin too.
+  // must NOT displace grok. opencode (rank 1) needs margin too.
   const inc = pool('grok', {
     incumbent: true, costRank: 2,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 40 }, // surplus 40−40=0
@@ -42,7 +42,7 @@ test('cost guard in incumbency path: challenger must be cheaper', () => {
     costRank: 3,
     meter: { type: 'weekly', windowStart: NOW - 84 * HOUR, usedPct: 10 }, // surplus +40
   });
-  const cheapNoMargin = pool('opencode2', {
+  const cheapNoMargin = pool('opencode', {
     costRank: 1,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 35 }, // surplus +5 < margin
   });
@@ -51,7 +51,7 @@ test('cost guard in incumbency path: challenger must be cheaper', () => {
 });
 
 test('incumbent displaced when cheaper challenger clears margin', () => {
-  const inc = pool('opencode2', {
+  const inc = pool('opencode', {
     incumbent: true, costRank: 1,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 40 }, // surplus 0
   });
@@ -87,6 +87,95 @@ test('quarantined pools excluded until expiry, then back in service', () => {
   assert.equal(isQuarantined(p, NOW + 2000), false);
   const after = pickPool('chore', [p], { callerEligible: false, now: NOW + 2000 });
   assert.equal(after.pick.pool, 'grok'); // re-probe path: automatic return
+});
+
+test('a healthy free pool tier wins ahead of metered pools without reordering meters', () => {
+  const r = pickPool('build', [
+    pool('metered-a', { pace: 40 }),
+    pool('free-slow', { pace: -5, free: true, freeModel: 'opencode/union-alpha' }),
+    pool('metered-b', { pace: 2 }),
+    pool('free-fast', { pace: 10, free: true, freeModel: 'opencode/union-alpha' }),
+  ], { callerEligible: false, callerSession: false, now: NOW });
+  assert.equal(r.pick.pool, 'free-fast');
+  assert.deepEqual(r.candidates.map((candidate) => candidate.pool), [
+    'free-fast', 'free-slow', 'metered-a', 'metered-b',
+  ]);
+  assert.equal(r.candidates[0].free, true);
+  assert.match(r.why, /^free pool first: free-fast/);
+  assert.match(r.why, /metered pools ranked below free: metered-a 40, metered-b 2/);
+});
+
+test('a benched free pool is skipped until its deadline, then returns automatically', () => {
+  const until = NOW + 1_000;
+  const free = pool('opencode2', {
+    free: true,
+    freeModel: 'opencode/union-alpha',
+    pace: -10,
+    bench: { until, reason: 'stall', count: 2 },
+  });
+  assert.equal(isBenched(free, NOW), true);
+  const during = pickPool('build', [free, pool('metered', { pace: 1 })], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(during.pick.pool, 'metered');
+  assert.match(during.why, new RegExp(
+    `benched \\(stall, back at ${new Date(until).toISOString()}\\): opencode2`,
+  ));
+  assert.equal(isBenched(free, until), false);
+  const after = pickPool('build', [free, pool('metered', { pace: 100 })], {
+    callerEligible: false, callerSession: false, now: until,
+  });
+  assert.equal(after.pick.pool, 'opencode2');
+  assert.match(after.why, /^free pool first: opencode2/);
+});
+
+test('evidence routing disables free-first and avoids a writer while another pool is eligible', () => {
+  const pools = [
+    pool('writer', { free: true, pace: 100 }),
+    pool('judge', { pace: -100 }),
+  ];
+  const normal = pickPool('analyze', pools, {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(normal.pick.pool, 'writer');
+  const evidence = pickPool('analyze', pools, {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['writer'] },
+  });
+  assert.equal(evidence.pick.pool, 'judge');
+  assert.equal(evidence.why, 'evidence step: normal routing (free tier not applied)');
+
+  const onlyWriter = pickPool('analyze', [pools[0]], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['writer'] },
+  });
+  assert.equal(onlyWriter.pick.pool, 'writer');
+  assert.equal(onlyWriter.why, 'evidence step: only the writer pool writer is eligible');
+});
+
+test('evidence routing treats a free non-writer like any other pool for ranking', () => {
+  const r = pickPool('analyze', [
+    pool('free-judge', { free: true, pace: -20 }),
+    pool('metered-judge', { pace: 20 }),
+  ], {
+    callerEligible: false, callerSession: false, now: NOW,
+    evidence: { writerPools: ['writer'] },
+  });
+  assert.equal(r.pick.pool, 'metered-judge');
+  assert.equal(r.why, 'evidence step: normal routing (free tier not applied)');
+});
+
+test('an exhausted free pool never reaches the free tier', () => {
+  const free = pool('opencode2', {
+    free: true,
+    meter: { type: '5h', windowStart: NOW - 4 * HOUR, usedPct: 100 },
+  });
+  assert.equal(isExhausted(free), true);
+  const r = pickPool('build', [free, pool('metered', { pace: -1 })], {
+    callerEligible: false, callerSession: false, now: NOW,
+  });
+  assert.equal(r.pick.pool, 'metered');
+  assert.equal(r.candidates.some((candidate) => candidate.pool === 'opencode2'), false);
 });
 
 test('unknown lane is refused, never guessed', () => {

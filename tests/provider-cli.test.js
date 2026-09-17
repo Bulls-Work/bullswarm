@@ -210,7 +210,7 @@ test('provider scaffold writes a commented provider that validate accepts unchan
     assert.deepEqual(JSON.parse(plainCheck.stdout).pools.map((p) => p.name), ['acme']);
 
     const target = join(f.home, 'elsewhere', 'relay2');
-    const cloned = await run(f, ['scaffold', 'relay2', '--from', 'opencode2', '--dir', target]);
+    const cloned = await run(f, ['scaffold', 'relay2', '--from', 'opencode', '--dir', target]);
     assert.equal(cloned.code, 0, cloned.stderr);
     const connector = JSON.parse(readFileSync(join(target, 'connector.json'), 'utf8'));
     assert.equal(connector.name, 'relay2');

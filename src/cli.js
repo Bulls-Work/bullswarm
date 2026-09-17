@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 
 import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import {
-  expiringSoonView, fiveHourElapsedPct, formatResetsIn, pickPool,
+  expiringSoonView, fiveHourElapsedPct, formatResetsIn, isBenched, pickPool,
 } from './lib/route.js';
 import { argvWithModel, watchOnce } from './lib/watch.js';
 import {
   isReasoningLevel, REASONING_DEFAULT, REASONING_LEVELS, resolveReasoningLevel,
 } from './lib/reasoning.js';
 import {
-  loadState, quarantinePool, quarantineUpstreamSiblings, sweepQuarantines, updateState,
-  assertDepthAllowed, childDepthEnv, upstreamGroupOf,
+  loadState, quarantinePool, quarantineUpstreamSiblings, sweepBenches, sweepQuarantines,
+  updateState, assertDepthAllowed, childDepthEnv, upstreamGroupOf,
 } from './lib/state.js';
 import { buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
@@ -73,6 +73,23 @@ export function parseArgs(argv) {
 
 // --- pools ----------------------------------------------------------------
 
+/** The bracketed meter source shown by `bullswarm pools`. */
+export function meterSourceLabel(pool, nowMs = Date.now()) {
+  const source = pool?.meterSource ?? 'none';
+  if (source === 'stale' && pool?.meterError) {
+    const holdUntil = Number(pool.meterHoldUntil);
+    const remainingMs = holdUntil - nowMs;
+    const retry = Number.isFinite(remainingMs) && remainingMs > 0
+      ? `, retry in ${remainingMs < 60_000
+        ? `${Math.ceil(remainingMs / 1000)}s`
+        : `${Math.ceil(remainingMs / 60_000)}m`}`
+      : '';
+    return `stale · ${pool.meterError}${retry}`;
+  }
+  const resetTag = pool?.resetSource === 'declared' ? ' declared-reset' : '';
+  return `${source}${resetTag}`;
+}
+
 async function cmdPools(opts) {
   const now = Date.now();
   const { state, pools } = await buildPoolsLive(getBullswarmDir(), now, {
@@ -84,12 +101,25 @@ async function cmdPools(opts) {
   // persists when it actually released something: `pools` is an observation
   // command and must not rewrite state.json just for being run.
   let released = [];
+  let unbenched = [];
   updateState(getBullswarmDir(), (fresh) => {
     released = sweepQuarantines(fresh, now);
-    return released.length > 0;
+    // A soft bench expires on the same terms and by the same rule (S6): the
+    // cooldown passing returns the pool to service, and the strike count stays
+    // so a stall immediately afterwards is still its second in a row.
+    unbenched = sweepBenches(fresh, now);
+    return released.length > 0 || unbenched.length > 0;
   });
   if (released.length && !opts.json) {
     console.error(`quarantine expired, returned to service: ${released.join(', ')}`);
+  }
+  if (unbenched.length && !opts.json) {
+    console.error(`bench expired, returned to service: ${unbenched.join(', ')}`);
+  }
+  // The sweep above wrote to state, not to the pool views built before it, so
+  // an expired bench would still print as BENCHED. Re-read what the sweep left.
+  for (const p of pools) {
+    if (p.bench && !isBenched(p, now)) p.bench = { ...p.bench, until: null };
   }
   // Current cross-process load, from the shared ledger rather than this
   // process's own memory: work another Bullswarm started still shows here —
@@ -108,10 +138,9 @@ async function cmdPools(opts) {
     const window = p.pacingWindow && p.elapsedPct != null ? `${p.pacingWindow} ` : '';
     // A window whose end the operator declared (the provider reported none)
     // is paced from that date and says so; the used% is still the provider's.
-    const resetTag = p.resetSource === 'declared' ? ' declared-reset' : '';
     const meter = src === 'none'
       ? 'unmetered'
-      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${src}${resetTag}]`;
+      : `${window}used ${p.usedPct ?? '?'}% elapsed ${p.elapsedPct ?? '?'}% [${meterSourceLabel(p, now)}]`;
     const burst = p.burstGate ? ' BURST-GATED' : '';
     // 5h is a gate, never a pace (doctrine M3): show the reading and whether
     // routing now deprioritizes this pool for it. When in-flight work makes
@@ -137,13 +166,32 @@ async function cmdPools(opts) {
       ? ` resets in ${formatResetsIn(expiring.minutesToReset)} EXPIRING-SOON`
         + ` urgency=${Math.round(expiring.urgency)}`
       : '';
+    // R12: the model this pool would run costs nothing, so routing puts it
+    // ahead of every metered pool while it is healthy. `pools` names no lane
+    // and therefore no effort tier, and free-ness is per tier — so the tiers
+    // that hold a free model are named one by one rather than collapsed into a
+    // single claim that would be untrue on the others.
+    const freeTiers = Object.entries(p.freeTiers ?? {});
+    const free = p.free === true
+      ? ` free=${p.freeModel ?? '?'}`
+      : freeTiers.length
+        ? ` free=${freeTiers.map(([tier, model]) => `${tier}:${model}`).join(',')}`
+        : '';
+    // A soft bench (S6) is not a quarantine: the pool is alive but was not
+    // producing. A first strike is counted without taking it out, so say that
+    // too — otherwise a pool one stall from the bench looks perfectly healthy.
+    const strikes = p.bench && !isBenched(p, now) && Number(p.bench.count ?? 0) > 0
+      ? ` strikes=${p.bench.count}(${p.bench.reason ?? '?'})`
+      : '';
     const status = !p.enabled
       ? 'disabled'
       : p.quarantine
         ? `QUARANTINED until ${new Date(p.quarantine.until).toLocaleTimeString()} (${p.quarantine.reason})`
-        : `ready${burst}${nearLimit}`;
+        : isBenched(p, now)
+          ? `BENCHED until ${new Date(Number(p.bench.until)).toLocaleTimeString()} (${p.bench.reason ?? '?'}, ${p.bench.count ?? '?'} strikes)`
+          : `ready${burst}${nearLimit}${strikes}`;
     console.log(
-      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour} ${status}${expiringNote}`,
+      `${p.name.padEnd(14)} cost=${p.costRank} lanes=${p.lanes.join('/')} ${meter} surplus=${p.pace ?? '-'} inflight=${p.inflight?.count ?? 0}${fiveHour}${free} ${status}${expiringNote}`,
     );
   }
   return 0;

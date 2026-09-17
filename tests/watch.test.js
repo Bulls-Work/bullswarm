@@ -734,7 +734,7 @@ const RELAY_NO_CHANNEL_EVENT = {
 // The SHIPPED connector, with only its command replaced: the phrases the
 // verdict matches are the ones the installation really carries.
 const packagedOpenCode2 = JSON.parse(
-  readFileSync(join(REPO_ROOT, 'providers/contrib/opencode2/connector.json'), 'utf8'),
+  readFileSync(join(REPO_ROOT, 'providers/contrib/opencode/connector.json'), 'utf8'),
 );
 // `--` closes node's own option list: the connector appends its real
 // event-stream args (`--format json`), which node would otherwise reject.

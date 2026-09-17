@@ -120,3 +120,41 @@ test('buildPools itself is unchanged: every connector still gets a pool view', (
     assert.equal(byName.gamma.quarantine.until, NOW + 60_000);
   } finally { f.cleanup(); }
 });
+
+test('buildPools exposes free for the model selected on the requested tier and preserves bench state', () => {
+  const f = home({
+    alpha: {
+      enabled: true,
+      bench: { until: NOW + 10 * 60_000, reason: 'provider', count: 2 },
+    },
+  }, { names: ['alpha'] });
+  try {
+    writeFileSync(join(f.dir, 'connectors/alpha.json'), JSON.stringify({
+      name: 'alpha', costRank: 1, lanes: ['analyze', 'build', 'chore'],
+      capabilities: ['code-reading', 'file-editing'],
+      model: 'opencode/gpt-5.6-sol',
+      modelSelection: { flag: '--model', mode: 'replace-or-append' },
+      modelProfiles: [
+        { match: 'union-alpha$', tier: 'medium', qualityRank: 3, free: true },
+        { match: 'gpt-5\\.6-sol$', tier: 'high', qualityRank: 6 },
+      ],
+      meter: { type: 'none' },
+    }));
+    writeFileSync(join(f.dir, 'state.json'), JSON.stringify({
+      version: 1,
+      pools: { alpha: { enabled: true, bench: { until: NOW + 10 * 60_000, reason: 'provider', count: 2 } } },
+      incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+      strategy: {
+        configuredTiers: ['medium'],
+        modelTiers: { alpha: { 'opencode/union-alpha': ['medium'] } },
+      },
+    }));
+    const { pools } = buildPools(f.dir, NOW, {}, { effortTier: 'medium' });
+    const alpha = pools.find((pool) => pool.name === 'alpha');
+    assert.equal(alpha.free, true);
+    assert.equal(alpha.freeModel, 'opencode/union-alpha');
+    assert.deepEqual(alpha.bench, {
+      until: NOW + 10 * 60_000, reason: 'provider', count: 2,
+    });
+  } finally { f.cleanup(); }
+});

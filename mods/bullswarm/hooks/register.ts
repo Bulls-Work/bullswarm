@@ -152,8 +152,20 @@ export function register(on: On, options: PluginOptions = {}) {
     nowMs = await h.now()
     if (selectedShortId && !runs.some(r => r.shortId === selectedShortId)) {
       // The selected run finished and left the ongoing list: keep its last
-      // detail on screen, fall to the newest run when one exists.
-      selectedShortId = runs[0]?.shortId ?? selectedShortId
+      // detail on screen, fall to the newest run when one exists. The open
+      // step belonged to the old run, so it goes too — otherwise the pane
+      // asks the new run for a step it never had (`run "w89k6s" has no
+      // action "accept"`, seen 2026-09-17 when tc6cpi finished with its
+      // accept step open).
+      const next = runs[0]?.shortId ?? selectedShortId
+      if (next !== selectedShortId) {
+        selectedActionId = null
+        step = null
+        outputTail = null
+        promptPreview = []
+        paneOffset = 0
+      }
+      selectedShortId = next
     }
     if (paneOpen) await readDetail(h)
     try {

@@ -116,7 +116,7 @@ A provider is a directory with `connector.json` and/or `provider.mjs`. Three tie
 
 ```bash
 # Write a local provider directory (default ~/.bullswarm/providers/<name>/).
-bullswarm provider scaffold relay --from opencode2
+bullswarm provider scaffold relay --from opencode
 bullswarm provider validate relay
 bullswarm provider probe relay
 ```

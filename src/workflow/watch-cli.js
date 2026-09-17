@@ -426,8 +426,24 @@ export function notableWatchEvents({
     if (payload.status === 'succeeded') { retry.delete(actionId); return; }
     const failureKind = payload.failureKind
       ?? (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId)?.failureKind;
+    const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
+    if (failureKind === 'stalled') {
+      const pool = record?.pool ?? payload.pool ?? null;
+      const why = payload.why ?? record?.why ?? null;
+      notable.push({
+        type: 'attempt.stalled',
+        actionId,
+        attemptId: payload.attemptId ?? record?.id ?? null,
+        pool,
+        why,
+        silentSec: payload.silentSec ?? record?.silentSec ?? null,
+        partialOutput: payload.partialOutput ?? record?.partialOutput ?? null,
+        willRetry: payload.willRetry === true,
+      });
+      moving.set(actionId, true);
+      return;
+    }
     if (failureKind === 'quota') {
-      const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
       const pool = record?.pool ?? payload.pool ?? null;
       const why = payload.why ?? record?.why ?? null;
       notable.push({
@@ -437,6 +453,7 @@ export function notableWatchEvents({
         pool,
         why,
         until: quotaDeadlineIso(bullswarmDir, pool, why),
+        willRetry: payload.willRetry === true,
       });
       moving.set(actionId, true);
       return;
@@ -519,6 +536,17 @@ export function notableWatchEvents({
         break;
       case 'attempt.finished':
         onAttemptFinished(payload.actionId, payload);
+        break;
+      case 'pool.benched':
+        notable.push({
+          type: 'pool.benched',
+          pool: payload.pool ?? null,
+          reason: payload.reason ?? null,
+          count: payload.count ?? null,
+          until: payload.until ?? null,
+          actionId: payload.actionId ?? null,
+          attemptId: payload.attemptId ?? null,
+        });
         break;
       case 'planner.attempt_finished':
         onAttemptFinished('workflow-planner', payload);
@@ -647,11 +675,24 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       return `${glyphs().started} ${event.actionId} started · ${event.pool ?? '?'}/${event.model ?? '?'} · attempt ${event.attempt ?? '?'}`;
     case 'attempt.retrying':
       return `${glyphs().reroute} ${event.actionId} retrying · ${event.failureKind}`;
+    case 'attempt.stalled':
+      return `${glyphs().warn} ${event.actionId} stalled on ${event.pool ?? '?'} · `
+        + `silent for ${formatDuration(event.silentSec)} · `
+        + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.quota':
       return `${glyphs().warn} ${event.actionId} usage limit on ${event.pool ?? '?'} · ` +
-        `paused until ${formatDeadline(event.until, now)} · retrying on another pool`;
+        `paused until ${formatDeadline(event.until, now)} · `
+        + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.moved':
       return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
+    case 'pool.benched':
+      {
+        const until = typeof event.until === 'number'
+          ? (Number.isFinite(event.until) ? new Date(event.until).toISOString() : null)
+          : event.until;
+        return `${glyphs().warn} ${event.pool ?? '?'} benched · ${event.count ?? '?'} stall${event.count === 1 ? '' : 's'} · `
+          + `back at ${formatDeadline(until, now)}`;
+      }
     case 'steering.delivered':
       return '→ steering delivered';
     case 'steering.received':
