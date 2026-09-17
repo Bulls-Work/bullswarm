@@ -46,6 +46,7 @@
     { "match": "gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "autoRecommend": true },
     { "match": "(?:opus|gpt-5\\.5$)", "tier": "high", "qualityRank": 5 },
     { "match": "(?:sonnet|terra|gpt-5\\.4$|deepseek-v4)", "tier": "medium", "qualityRank": 4 },
+    { "match": "(?:union-alpha|-free$)", "tier": "medium", "qualityRank": 3, "free": true },
     { "match": "(?:haiku|luna|(?:^|[/.-])mini(?:$|[/.-])|flash|free)", "tier": "low", "qualityRank": 2 }
   ],
   "subscription": { "plan": null, "monthlyPriceUsd": null, "includedValueUsd": null, "quotaWindow": null },

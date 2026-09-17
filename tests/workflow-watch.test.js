@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   formatDuration, timingBreakdown, watchSnapshot, snapshotFingerprint,
-  renderWatchSnapshot, runWorkflowWatch,
+  renderWatchEvent, renderWatchSnapshot, runWorkflowWatch,
 } from '../src/workflow/watch-cli.js';
 import { appendEvent } from '../src/workflow/events.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
@@ -19,6 +19,19 @@ process.env.BULLSWARM_UNICODE = '1';
 // BULLSWARM_ASCII outranks it, and it is the workaround the README hands
 // an affected user, so a contributor may well have it in their shell.
 delete process.env.BULLSWARM_ASCII;
+
+test("watch renders retry wording from the dispatcher's willRetry fact", () => {
+  const stalled = (willRetry) => renderWatchEvent({
+    type: 'attempt.stalled', actionId: 'write-report', pool: 'opencode2', silentSec: 8, willRetry,
+  });
+  const quota = (willRetry) => renderWatchEvent({
+    type: 'attempt.quota', actionId: 'write-report', pool: 'codex', until: '2026-09-17T03:00:00.000Z', willRetry,
+  }, { now: Date.parse('2026-09-17T02:00:00.000Z') });
+  assert.match(stalled(true), /retrying on another pool$/);
+  assert.match(stalled(false), /no retry left$/);
+  assert.match(quota(true), /retrying on another pool$/);
+  assert.match(quota(false), /no retry left$/);
+});
 
 test('watch snapshot is concise and stable between heartbeats', () => {
   const nowMs = Date.parse('2026-08-28T01:05:00.000Z');
@@ -1061,7 +1074,9 @@ test('V2 watch reports a usage-limit quota failure once, then the pool it moved 
           + new Date(untilMs).toISOString(),
         finishedAt: new Date(f.nowMs).toISOString(),
       };
-      f.emit('attempt.finished', { actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota' });
+      f.emit('attempt.finished', {
+        actionId: 'write-report', attemptId: 'write-report-1', status: 'failed', failureKind: 'quota', willRetry: true,
+      });
       await waitUntil(() => watch.output.includes('usage limit on command-code'), `quota line missing: ${watch.output}`);
       assert.match(watch.output, /⚠ write-report usage limit on command-code · paused until \S+ · retrying on another pool/);
       assert.equal(watch.output.match(/usage limit on command-code/g)?.length, 1, watch.output);

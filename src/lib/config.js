@@ -31,6 +31,11 @@ import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
 } from '../meters/framework.js';
 import { loadProviders } from './providers.js';
+import { isFreeModel } from './usage.js';
+import {
+  configuredModel, disabledModelsForPool, resolveDispatchModel, selectedModelsForTier,
+  STRATEGY_TIERS,
+} from './strategy.js';
 
 /**
  * Every pool by name, from every loaded provider (src/lib/providers.js).
@@ -63,6 +68,47 @@ function poolEnabled(conn, poolState) {
 }
 
 /**
+ * Resolve the model that a pool would run for an effort tier, then expose the
+ * connector-owned free declaration on the runtime view. Dispatch attaches the
+ * full model policy again at its pick site; this projection is for pool views,
+ * previews, and callers that build a list before dispatch.
+ */
+function freeSelection(connector, state, poolName, effortTier = null) {
+  const strategy = state.strategy ?? {};
+  const assignment = effortTier ? strategy.assignments?.[effortTier] ?? null : null;
+  const policy = effortTier
+    ? resolveDispatchModel(connector, effortTier, {
+      assignment,
+      excludedModels: [
+        ...(strategy.excludedModels ?? []),
+        ...disabledModelsForPool(strategy, poolName),
+      ],
+      allowedModels: selectedModelsForTier(strategy, poolName, effortTier),
+    })
+    : null;
+  const model = policy?.model
+    ?? (assignment?.pool === poolName ? assignment.model : null)
+    ?? configuredModel(connector);
+  return { model, free: isFreeModel(connector, model) };
+}
+
+/**
+ * Free-ness is a property of (pool, effort tier), not of the pool: the same
+ * pool can hold a free model on `medium` and a paid one on `high`. A caller
+ * that names no tier still needs to see that — `bullswarm pools` is read
+ * before any lane is chosen — so every tier is resolved for the view. Display
+ * only: routing reads `pool.free`, the answer for the tier it is routing.
+ */
+function freeTiersFor(connector, state, poolName) {
+  const tiers = {};
+  for (const tier of STRATEGY_TIERS) {
+    const { model, free } = freeSelection(connector, state, poolName, tier);
+    if (free && model) tiers[tier] = model;
+  }
+  return tiers;
+}
+
+/**
  * Build the runtime pool list: connector + state + meter reading.
  * Meter readings are injected by the caller (async — readers poll the
  * network); this function stays sync so tests can build pools without I/O.
@@ -70,9 +116,11 @@ function poolEnabled(conn, poolState) {
 export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir, opts);
+  const effortTier = opts?.effortTier ?? null;
   const pools = [];
   for (const [name, conn] of Object.entries(connectors)) {
     const ps = state.pools[name] ?? {};
+    const selected = freeSelection(conn, state, name, effortTier);
     const pool = {
       name,
       connector: conn,
@@ -84,6 +132,10 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       quarantine: isQuarantined({ quarantine: ps.quarantine ?? null }, now)
         ? ps.quarantine
         : null,
+      bench: ps.bench ?? null,
+      free: selected.free,
+      freeModel: selected.model ?? null,
+      freeTiers: freeTiersFor(conn, state, name),
       incumbentLane: Object.entries(state.incumbents ?? {})
         .filter(([, v]) => v === name)
         .map(([k]) => k),
@@ -214,7 +266,7 @@ function fiveHourFromReading(reading) {
  * Async variant that fetches live readings for pools with readers.
  */
 export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
-  force = false, getReadings, onProviderProgress, packaged = false,
+  force = false, getReadings, onProviderProgress, packaged = false, effortTier = null,
 } = {}) {
   const state = loadState(bullswarmDir);
   const connectors = loadConnectors(bullswarmDir, { packaged });
@@ -241,5 +293,5 @@ export async function buildPoolsLive(bullswarmDir, now = Date.now(), {
   // Forward the loader options: the pool list this returns must come from the
   // same tiers the polling decision above was made against, or a caller that
   // asked for the packaged tiers would poll them and then get none back.
-  return buildPools(bullswarmDir, now, readings, { packaged });
+  return buildPools(bullswarmDir, now, readings, { packaged, effortTier });
 }
