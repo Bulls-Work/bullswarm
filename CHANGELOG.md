@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- attempts: the prior-attempt handoff names a connector-default model as
+  `<pool> connector default` instead of `unknown`, keeps every `git diff --stat`
+  row exactly as git printed it (the first row used to lose its leading space),
+  and, when the prior pool declares no `eventStream`, says
+  `Last response events: none decoded (…)` instead of dropping the section.
+  The `watch` handoff line says `1 file`. An attempt interrupted by a kernel
+  `SIGKILL` now carries `outputFile`, `outputBytes`, `streamFile` and `diffFile`
+  after resume when those files exist on disk.
+- attempts: every attempt now persists the event stream its connector's
+  `eventStream` adapter decodes, as `stream-<action>-attempt-<n>.jsonl` in the
+  run directory — one JSON object per line with `seq`, `at` (ISO, stamped by
+  the kernel), `source`, `providerType`, `kind`, `status`, and `summary`. A
+  `response` event keeps its text there up to the response cap; the live pane
+  keeps its 180-character summary. A connector with no `eventStream` gets a bounded plain
+  `stdout-<action>-attempt-<n>.log` instead. The JSONL file is bounded as a
+  head, one `{"truncated":true,"dropped":<n>}` marker line, and a tail; the
+  plain stdout fallback is a marker-free bounded tail. Head records are
+  appended synchronously, and an over-cap tail is flushed to `.tail` every 32
+  events or 2 seconds, whichever comes first, so a kernel `SIGKILL` can lose
+  only the unflushed tail window. Core allows 1048576 bytes per file and 64000
+  bytes per response, and a connector manifest may override either in an
+  optional `eventStream.capture` block that `bullswarm provider validate` now
+  accepts — a contributed connector takes part with no code.
+- handoff: when an attempt ends without success and the step is retried (on
+  another pool or the same one; the schema-correction path is unchanged), the
+  task handed to the next attempt ends with a `## Prior attempt on this step`
+  block filled from on-disk facts: pool, model, start, end, duration, failure
+  kind and `why`; the files whose bytes changed inside the step's territory
+  (including new, staged, pre-dirty, and deleted files), with a `git diff
+  --stat` for tracked files and `+N lines (new)` for untracked files frozen at
+  the moment that worker exited, so a sibling's later edits are never blamed
+  on it; the path and byte count of its final or partial output; its last three
+  `response` events with timestamps, read back out of the persisted stream; the
+  stream's path, never its contents; and the sentence that the edits are
+  unverified and the new worker must report whether it kept, fixed, or reverted
+  them.
+- attempts: the attempt record and the `attempt.finished` event now carry
+  `outputFile` with `outputBytes` whenever the file exists — including on
+  failure, where `outputFile` used to be `null` with the file sitting on disk —
+  plus `streamFile`, `diffFile`, `changedFileCount`, `lastResponse`, and
+  `handoff: { from, bytes }` on the receiving attempt. `workflow action show`
+  prints all of them, and `workflow watch` prints one line at the handoff
+  naming the file count and what the previous worker said last.
+
 ## 0.32.1 — free models first, with graceful failover
 
 - meters: rate-limited or failed live reads now persist a per-pool negative-cache hold (honouring `Retry-After` or the five-minute freshness window), and `pools`/the Claude Mod identify the stale snapshot's error and retry time.

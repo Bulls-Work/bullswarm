@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { classifyV2DispatchFailure, dispatchV2Action } from '../src/workflow/v2-dispatch.js';
+import { classifyV2DispatchFailure, dispatchV2Action, trackedDiffStatForTests } from '../src/workflow/v2-dispatch.js';
+import { handoffBlock } from '../src/workflow/v2-runtime.js';
 import { loadState, saveState } from '../src/lib/state.js';
 import { listAssignments } from '../src/lib/assignments.js';
 import {
@@ -924,4 +926,382 @@ test('a stalled attempt survives the durable-state validator with its partial ou
   assert.equal(loaded.attempts[0].silentSec, 8);
   // An attempt recorded before the stall clock existed carries none of them.
   assert.equal(loaded.attempts[1].stalled, undefined);
+});
+
+test('the tracked diff stat keeps every row exactly as git printed it, leading space included', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-diffstat-'));
+  try {
+    const git = (...args) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' });
+    writeFileSync(join(dir, 'doomed.txt'), 'one\ntwo\n');
+    writeFileSync(join(dir, 'owned.txt'), 'one\n');
+    git('init', '-q'); git('add', '.');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'seed');
+    writeFileSync(join(dir, 'doomed.txt'), 'one\n');
+    writeFileSync(join(dir, 'owned.txt'), 'one\ntwo\n');
+    const stat = trackedDiffStatForTests(dir, ['doomed.txt', 'owned.txt'], execFileSync);
+    const rows = stat.split('\n');
+    assert.equal(rows.length, 3, stat);
+    // git indents every file row and the summary row by one space; the first
+    // row used to lose it to a .trim() and sit misaligned against the rest.
+    for (const row of rows) assert.match(row, /^ /, JSON.stringify(row));
+    assert.match(rows[0], /^ doomed\.txt\s+\|\s+1 -$/);
+    assert.match(rows[1], /^ owned\.txt\s+\|\s+1 \+$/);
+    assert.match(rows[2], /^ 2 files changed, 1 insertion\(\+\), 1 deletion\(-\)$/);
+    assert.doesNotMatch(stat, /\n$/, 'no trailing newline');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('handoffBlock is a pure template over on-disk facts', () => {
+  const block = handoffBlock({
+    pool: 'staller',
+    model: 'zen/union-free',
+    startedAt: '2026-09-17T02:30:20.000Z',
+    finishedAt: '2026-09-17T02:30:28.000Z',
+    failureKind: 'stalled',
+    why: 'stalled: the worker wrote nothing for 8 s and was stopped',
+    diffStatText: ' owned.txt | 1 +\n 1 file changed, 1 insertion(+)',
+    diffFile: '/tmp/run/diff-do-work-attempt-1.txt',
+    changedFiles: ['owned.txt'],
+    outputFile: '/tmp/run/out-do-work-attempt-1.md',
+    outputBytes: 88,
+    streamFile: null,
+    lastEvents: [
+      { at: '2026-09-17T02:30:21.000Z', kind: 'response', summary: 'reading owned.txt' },
+      { at: '2026-09-17T02:30:22.000Z', kind: 'response', summary: 'editing owned.txt' },
+      { at: '2026-09-17T02:30:23.000Z', kind: 'response', summary: 'going quiet' },
+    ],
+  });
+  assert.match(block, /^## Prior attempt on this step\n/);
+  assert.match(block, /^- Pool: staller$/m);
+  assert.match(block, /^- Model: zen\/union-free$/m);
+  assert.match(block, /^- Duration: 8s$/m);
+  assert.match(block, /^- Failure: stalled — stalled: the worker wrote nothing for 8 s and was stopped$/m);
+  assert.match(block, /owned\.txt/);
+  assert.match(block, /out-do-work-attempt-1\.md \(88 bytes\)/);
+  assert.match(block, /Stream file: no stream recorded/);
+  assert.match(block, /2026-09-17T02:30:23\.000Z: going quiet/);
+  assert.match(block, /Those edits are unverified\. You decide whether to keep, fix or revert them, and you must report which\./);
+  assert.doesNotMatch(block, /inlined stream/i);
+});
+
+test('handoffBlock identifies connector-default models without guessing a model name', () => {
+  assert.match(handoffBlock({ pool: 'codex', model: null }), /^- Model: codex connector default$/m);
+  assert.match(handoffBlock({ pool: 'claude-code:wati', model: null }), /^- Model: claude-code:wati connector default$/m);
+  assert.match(handoffBlock({ pool: null, model: null }), /^- Model: unknown$/m);
+});
+
+test('handoffBlock says why no response events were decoded for a pool without an eventStream', () => {
+  const block = handoffBlock({
+    pool: 'plain-cli', model: null, startedAt: '2026-09-17T02:30:20.000Z', finishedAt: '2026-09-17T02:30:28.000Z',
+    failureKind: 'provider', why: 'provider stream reported error', diffStatText: '', changedFiles: [],
+    streamFile: '/tmp/run/stdout-do-work-attempt-1.log', hasEventStream: false, lastEvents: [],
+  });
+  assert.match(block, /^- Last response events: none decoded \(the plain-cli connector declares no eventStream; see the stream file\)$/m);
+  // A pool that does declare one and simply said nothing gets no such line.
+  const quiet = handoffBlock({ pool: 'codex', hasEventStream: true, lastEvents: [] });
+  assert.doesNotMatch(quiet, /Last response events/);
+});
+
+test('a multi-line response stays one list item so it cannot break out of the block', () => {
+  const block = handoffBlock({
+    pool: 'staller',
+    model: 'zen/union-free',
+    startedAt: '2026-09-17T02:30:20.000Z',
+    finishedAt: '2026-09-17T02:30:28.000Z',
+    failureKind: 'stalled',
+    why: 'stalled',
+    diffStatText: '',
+    changedFiles: [],
+    streamFile: '/tmp/run/stream-do-work-attempt-1.jsonl',
+    lastEvents: [
+      { at: '2026-09-17T02:30:23.000Z', kind: 'response', summary: '## Partial\n\nEnumerated 3 files\nbefore going quiet.' },
+    ],
+  });
+  const lines = block.split('\n');
+  const heading = lines.filter((line) => line.startsWith('## '));
+  assert.deepEqual(heading, ['## Prior attempt on this step'], 'a response heading must not become a block heading');
+  assert.ok(lines.includes('  - 2026-09-17T02:30:23.000Z: ## Partial Enumerated 3 files before going quiet.'));
+  // The closing sentence is still the last line, not orphaned by a spill.
+  assert.match(lines.at(-1), /^- Those edits are unverified\./);
+});
+
+test('schema correction keeps its own block and does not append the prior-attempt handoff', async () => {
+  const tasks = [];
+  const pool = connector('luna-1', { conversation: { newArgs: ['--session', '{sessionId}'], resumeArgs: ['--resume', '{sessionId}'] } });
+  const h = harness([
+    () => ({ ok: false, why: 'invalid', failureKind: 'schema', structured: { errors: ['bad'] }, meta: { exitCode: 0 } }),
+    good,
+  ]);
+  const inner = h.dependencies.watchOnce;
+  h.dependencies.watchOnce = async (c, task, dir, paths, opts) => {
+    tasks.push(task);
+    return inner(c, task, dir, paths, opts);
+  };
+  const result = await dispatchV2Action({
+    action, taskText: 'plan', targetDir: '/tmp', paths, pools: [pool],
+    bullswarmDir: '/tmp/bs', outputValidator: () => ({ ok: true }),
+    correctionTask: () => 'correct it', currentSession: null, dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(tasks, ['plan', 'correct it']);
+  assert.doesNotMatch(tasks[1], /## Prior attempt on this step/);
+});
+
+test('a mechanical fallback appends the prior-attempt handoff to the next task', async () => {
+  const tasks = [];
+  const h = harness([
+    { ok: false, failureKind: 'provider', why: 'empty output', meta: { exitCode: 1 } },
+    good,
+  ]);
+  const inner = h.dependencies.watchOnce;
+  h.dependencies.watchOnce = async (c, task, dir, paths, opts) => {
+    tasks.push(task);
+    return inner(c, task, dir, paths, opts);
+  };
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('luna-1'), connector('luna-2')],
+    bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(tasks[0], 'do it');
+  assert.match(tasks[1], /## Prior attempt on this step/);
+  assert.match(tasks[1], /Pool: luna-1/);
+  assert.match(tasks[1], /Failure: provider — empty output/);
+  assert.match(tasks[1], /Stream file: no stream recorded/);
+  assert.match(tasks[1], /Those edits are unverified/);
+  assert.equal(result.attempts[1].handoff.from, 'do-work-1');
+  assert.ok(result.attempts[1].handoff.bytes > 0);
+  assert.equal(result.attempts[1].handoff.bytes, Buffer.byteLength(tasks[1].slice(tasks[1].indexOf('## Prior attempt on this step')), 'utf8'));
+});
+
+test('a free stall falls back with a frozen diff snapshot of the prior attempt', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-handoff-'));
+  const repo = join(root, 'repo');
+  const home = join(root, 'home');
+  mkdirSync(repo);
+  mkdirSync(home);
+  const stallerWorker = new URL('./fixtures/stalling-connector.mjs', import.meta.url).pathname;
+  const answererWorker = new URL('./fixtures/answering-connector.mjs', import.meta.url).pathname;
+  const fixturePool = (name, worker, model, extra = {}) => ({
+    name,
+    enabled: true,
+    costRank: name === 'staller' ? 1 : 3,
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+    spawn: { cmd: [process.execPath, worker, '{taskFile}'] },
+    outputExtraction: { strategy: 'stdout' },
+    meter: { type: 'none' },
+    model,
+    modelSelection: { flag: '--model' },
+    strategyAssignments: { low: { pool: name, model } },
+    ...extra,
+  });
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  writeFileSync(join(repo, 'owned.txt'), 'base\n');
+  execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
+  saveState(home, {
+    version: 1,
+    pools: { staller: { enabled: true }, answerer: { enabled: true } },
+    incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+  });
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'do-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+      taskText: 'perform the bounded fixture dispatch',
+      targetDir: repo,
+      paths: (ordinal) => ({
+        taskFile: join(home, `task-do-work-attempt-${ordinal}.md`),
+        outFile: join(home, `out-do-work-attempt-${ordinal}.md`),
+      }),
+      pools: [
+        fixturePool('staller', stallerWorker, 'zen/union-free', { free: true }),
+        fixturePool('answerer', answererWorker, 'paid/answerer'),
+      ],
+      bullswarmDir: home,
+      silenceTimeoutSec: 2,
+      maxMechanicalRetries: 1,
+      onAttempt: (stage, record) => {
+        if (stage === 'finished' && record.ordinal === 1) {
+          writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}SIBLING EDIT AFTER ATTEMPT END\n`);
+          writeFileSync(join(repo, 'later.txt'), 'later sibling\n');
+        }
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['staller', 'answerer']);
+    const task2 = readFileSync(join(home, 'task-do-work-attempt-2.md'), 'utf8');
+    assert.match(task2, /## Prior attempt on this step/);
+    assert.match(task2, /Pool: staller/);
+    assert.match(task2, /owned\.txt/);
+    assert.match(task2, /out-do-work-attempt-1\.md/);
+    assert.match(task2, /Those edits are unverified/);
+    assert.doesNotMatch(task2, /SIBLING EDIT AFTER ATTEMPT END/);
+    assert.doesNotMatch(task2, /later\.txt/);
+    assert.doesNotMatch(task2, /Your prior final structured output failed/);
+    const diff1 = readFileSync(join(home, 'diff-do-work-attempt-1.txt'), 'utf8');
+    assert.match(diff1, /owned\.txt/);
+    assert.doesNotMatch(diff1, /later\.txt/);
+    assert.doesNotMatch(diff1, /SIBLING EDIT AFTER ATTEMPT END/);
+    assert.equal(result.attempts[0].diffFile, join(home, 'diff-do-work-attempt-1.txt'));
+    assert.ok(result.attempts[0].outputBytes > 0);
+    assert.equal(result.attempts[0].outputFile, join(home, 'out-do-work-attempt-1.md'));
+    assert.equal(result.attempts[1].handoff.from, 'do-work-1');
+    assert.ok(result.attempts[1].handoff.bytes > 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('diff attribution compares bytes, including new, pre-dirty, staged and deleted files, but not outside files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-diff-attribution-'));
+  const repo = join(root, 'repo');
+  const home = join(root, 'home');
+  mkdirSync(repo);
+  mkdirSync(home);
+  const tracked = ['owned.txt', 'deleted.txt', 'outside.txt'];
+  for (const file of tracked) writeFileSync(join(repo, file), `${file} base\n`);
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  execFileSync('git', ['-C', repo, 'add', ...tracked]);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
+
+  // This is deliberately dirty before dispatch. The attempt must still be
+  // credited for the bytes it adds, rather than subtracting the whole path.
+  writeFileSync(join(repo, 'owned.txt'), 'owned.txt base\npre-dirty\n');
+  const h = harness([
+    ({ paths }) => {
+      writeFileSync(join(repo, 'owned.txt'), 'owned.txt base\npre-dirty\nduring-attempt\n');
+      // Staging must not hide the byte change from the snapshot.
+      execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
+      writeFileSync(join(repo, 'new-owned.txt'), 'line one\nline two\n');
+      rmSync(join(repo, 'deleted.txt'));
+      writeFileSync(join(repo, 'outside.txt'), 'outside changed\n');
+      // The stub still returns a normal failed worker verdict; output paths
+      // are irrelevant to this diff-only assertion.
+      return { ok: false, failureKind: 'provider', why: 'empty output', meta: { exitCode: 1 } };
+    },
+    good,
+  ]);
+  try {
+    const result = await dispatchV2Action({
+      action: {
+        id: 'diff-work', lane: 'build', effort: 'low',
+        ownedFiles: ['owned.txt', 'new-owned.txt', 'deleted.txt'],
+      },
+      taskText: 'attribute the attempt',
+      targetDir: repo,
+      paths: {
+        taskFile: join(home, 'task-diff-work.md'),
+        outFile: join(home, 'out-diff-work.md'),
+      },
+      pools: [connector('luna-1'), connector('luna-2')],
+      bullswarmDir: home,
+      dependencies: h.dependencies,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.attempts[0].changedFileCount, 3);
+    const diff = readFileSync(result.attempts[0].diffFile, 'utf8');
+    assert.match(diff, /owned\.txt/);
+    assert.match(diff, /deleted\.txt/);
+    assert.match(diff, /new-owned\.txt \| \+2 lines \(new\)/);
+    assert.doesNotMatch(diff, /outside\.txt/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The two halves as one feature: the sink writes the per-attempt stream, the
+// dispatcher records its path, and the handoff block's last-three responses are
+// read back out of that same file rather than out of kernel memory.
+test('the persisted stream feeds the handoff block on a real fixture fallback', { timeout: 30_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bs-handoff-stream-'));
+  const repo = join(root, 'repo');
+  const home = join(root, 'home');
+  mkdirSync(repo);
+  mkdirSync(home);
+  const stallerWorker = new URL('./fixtures/stalling-connector.mjs', import.meta.url).pathname;
+  const answererWorker = new URL('./fixtures/answering-connector.mjs', import.meta.url).pathname;
+  // The codex line shape, verbatim from the shipped manifest: the fixture
+  // workers speak it under BULLSWARM_FIXTURE_EVENTS=jsonl.
+  const eventStream = JSON.parse(readFileSync(
+    new URL('../src/providers/codex/connector.json', import.meta.url), 'utf8',
+  )).eventStream;
+  const streamingPool = (name, worker, model, extra = {}) => ({
+    name,
+    enabled: true,
+    costRank: name === 'staller' ? 1 : 3,
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+    spawn: { cmd: [process.execPath, worker, '{taskFile}'] },
+    outputExtraction: { strategy: 'event-stream' },
+    eventStream: { ...eventStream, args: [] },
+    meter: { type: 'none' },
+    model,
+    modelSelection: { flag: '--model' },
+    strategyAssignments: { low: { pool: name, model } },
+    ...extra,
+  });
+  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  writeFileSync(join(repo, 'owned.txt'), 'base\n');
+  execFileSync('git', ['-C', repo, 'add', 'owned.txt']);
+  execFileSync('git', ['-C', repo, 'commit', '-qm', 'base']);
+  saveState(home, {
+    version: 1,
+    pools: { staller: { enabled: true }, answerer: { enabled: true } },
+    incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+  });
+  try {
+    const result = await dispatchV2Action({
+      action: { id: 'do-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
+      taskText: 'perform the bounded fixture dispatch',
+      targetDir: repo,
+      paths: (ordinal) => ({
+        taskFile: join(home, `task-do-work-attempt-${ordinal}.md`),
+        outFile: join(home, `out-do-work-attempt-${ordinal}.md`),
+      }),
+      pools: [
+        streamingPool('staller', stallerWorker, 'zen/union-free', { free: true }),
+        streamingPool('answerer', answererWorker, 'paid/answerer'),
+      ],
+      bullswarmDir: home,
+      parentEnv: { ...process.env, BULLSWARM_FIXTURE_EVENTS: 'jsonl' },
+      silenceTimeoutSec: 2,
+      maxMechanicalRetries: 1,
+    });
+    assert.equal(result.ok, true);
+    const streamFile = join(home, 'stream-do-work-attempt-1.jsonl');
+    assert.equal(result.attempts[0].streamFile, streamFile, 'the dispatcher records the file the sink wrote');
+    const rows = readFileSync(streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    for (const row of rows) {
+      for (const key of ['seq', 'at', 'source', 'providerType', 'kind', 'status', 'summary']) {
+        assert.ok(Object.hasOwn(row, key), `stream row missing ${key}`);
+      }
+      assert.match(row.at, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+    }
+    const responses = rows.filter((row) => row.kind === 'response');
+    assert.ok(responses.length >= 3, 'the fixture speaks at least three responses');
+    assert.equal(result.attempts[0].lastResponse, responses.at(-1).summary);
+
+    const task2 = readFileSync(join(home, 'task-do-work-attempt-2.md'), 'utf8');
+    assert.match(task2, new RegExp(`- Stream file: ${streamFile.replace(/[.*+?^$()|[\]\\]/g, '\\$&')}$`, 'm'));
+    // Every one of the last three responses is in the block, on its own line,
+    // with the timestamp the sink stamped.
+    for (const row of responses.slice(-3)) {
+      assert.ok(
+        task2.includes(`  - ${row.at}: ${row.summary.replace(/\s+/g, ' ').trim()}`),
+        `block is missing the response at ${row.at}`,
+      );
+    }
+    // The stream is referenced by path, never inlined.
+    assert.ok(!task2.includes('"providerType"'), 'the stream must not be inlined into the task');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

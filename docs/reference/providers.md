@@ -125,6 +125,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `env` | merged into the child process environment verbatim, never inspected |
 | `conversation.newArgs`, `resumeArgs` | dispatch session resume |
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
+| `eventStream.capture.responseBytes`, `capture.fileBytes` (both optional positive integers) | the per-attempt stream sink (`src/lib/attempt-stream.js`). Core defaults are 64000 bytes per persisted `response` event and 1048576 bytes per stream file; set either only when this CLI's answers or event volume make the default the wrong size. Omit the block and a connector still gets a persisted stream with no code |
 | `authSignatures`, `quotaSignatures` | verdict classification and quarantine. Generic phrases stay core defaults; list only this CLI's own |
 | `modelProfiles[]` (`match`, `tier`, `qualityRank`, `pricing`, `pricingSource`, `pricingUpdatedAt`, `autoRecommend`, `free`, `benchmark`) | rungs, the spend model, benchmarks |
 | `reasoning.flag` or `args`, `levels`, `defaults`, `skipModels` | the reasoning precedence chain ([Configuration](/reference/configuration)) |
@@ -133,6 +134,17 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `costRank` (default 5), `lanes` (default all), `capabilities`, `flags.testFixture`, `flags.isCaller`, `flags.stealth` | routing and strategy |
 | `credentialGroup` (a string; the older `upstreamGroup` is still read) | quarantining siblings that share a credential, and dispatch avoidance |
 | `profile.providerId` | dispatch accepts an `<id>/<model>` pin only on this pool. `profile.configDir` and `profile.command` are display only |
+
+For each attempt, a connector with `eventStream.format: "jsonl"` leaves a
+bounded `stream-<actionId>-attempt-<n>.jsonl` file: head records, one
+`{"truncated":true,"dropped":<n>}` marker, then tail records. A connector with
+no event stream leaves a marker-free bounded
+`stdout-<actionId>-attempt-<n>.log` tail instead. The sink appends head records
+synchronously and flushes its in-memory tail to `.tail` every 32 events or 2
+seconds, whichever comes first; normal close folds the segments into the final
+file. After a kernel `SIGKILL` the head is on disk in the final file, the
+flushed `.tail` sibling is left as an orphan that nothing folds back in, and
+the still-unflushed events are lost.
 
 `meter.readerCmd` and the `{outFile}` placeholder appeared in the old schema but nothing ever read them. They are gone.
 

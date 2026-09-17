@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   loadProviders, providerFor, ownsPoolName, readProvidersConfig, loadTemplates, providerDirs,
 } from '../src/lib/providers.js';
+import { validateProvider } from '../src/provider-cli.js';
 import * as kit from '../src/provider-kit.js';
 
 const FIXTURES = fileURLToPath(new URL('./fixtures/providers/', import.meta.url));
@@ -237,4 +238,60 @@ test('providerFor resolves the owning provider by loaded pools, then longest pre
   assert.equal(providerFor(providers, 'relayx'), null);
   assert.equal(providerFor(providers, null), null);
   assert.equal(providerFor(null, 'relay'), null);
+});
+
+test('provider validate accepts every shipped connector, including a capture override', () => {
+  const { home, cleanup } = fixtureHome();
+  const REPO = fileURLToPath(new URL('..', import.meta.url));
+  try {
+    const loaderOpts = {
+      dirs: {
+        firstClass: join(REPO, 'src/providers'),
+        contrib: join(REPO, 'providers/contrib'),
+        local: join(home, 'providers'),
+        legacy: join(home, 'connectors'),
+      },
+    };
+    const shipped = [
+      join(REPO, 'src/providers/claude-code'),
+      join(REPO, 'src/providers/codex'),
+      join(REPO, 'src/providers/echo'),
+      join(REPO, 'src/providers/grok'),
+      join(REPO, 'providers/contrib/command-code'),
+      join(REPO, 'providers/contrib/opencode'),
+    ];
+    for (const dir of shipped) {
+      const report = validateProvider(home, dir, loaderOpts);
+      assert.equal(report.ok, true, `${dir}: ${JSON.stringify(report.errors)} ${JSON.stringify(report.pools?.flatMap((p) => p.errors))}`);
+    }
+
+    const withCapture = join(home, 'captor');
+    mkdirSync(withCapture);
+    writeFileSync(join(withCapture, 'connector.json'), JSON.stringify({
+      name: 'captor',
+      spawn: { cmd: ['echo', '{taskFile}'] },
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        capture: { responseBytes: 12, fileBytes: 400 },
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+      model: 'local',
+    }));
+    const accepted = validateProvider(home, withCapture, loaderOpts);
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
+
+    writeFileSync(join(withCapture, 'connector.json'), JSON.stringify({
+      name: 'captor',
+      spawn: { cmd: ['echo', '{taskFile}'] },
+      outputExtraction: { strategy: 'stdout' },
+      eventStream: { format: 'jsonl', capture: { responseBytes: 0, extra: true } },
+      model: 'local',
+    }));
+    const rejected = validateProvider(home, withCapture, loaderOpts);
+    assert.equal(rejected.ok, false);
+    const errors = rejected.pools[0].errors.join('\n');
+    assert.match(errors, /eventStream\.capture\.responseBytes: must be a positive integer/);
+    assert.match(errors, /eventStream\.capture\.extra: unknown capture field/);
+  } finally { cleanup(); }
 });

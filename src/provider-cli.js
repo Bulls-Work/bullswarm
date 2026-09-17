@@ -236,6 +236,23 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
   if (strategy === 'event-stream' && !Array.isArray(pool.eventStream?.output)) {
     warnings.push('eventStream.output: event-stream extraction without output rules falls back to raw stdout');
   }
+  const capture = pool.eventStream?.capture;
+  if (capture !== undefined) {
+    if (!capture || typeof capture !== 'object' || Array.isArray(capture)) {
+      errors.push('eventStream.capture: must be an object');
+    } else {
+      for (const key of ['responseBytes', 'fileBytes']) {
+        if (capture[key] !== undefined && !(Number.isInteger(capture[key]) && capture[key] > 0)) {
+          errors.push(`eventStream.capture.${key}: must be a positive integer`);
+        }
+      }
+      for (const key of Object.keys(capture)) {
+        if (!key.startsWith('$') && key !== 'responseBytes' && key !== 'fileBytes') {
+          errors.push(`eventStream.capture.${key}: unknown capture field`);
+        }
+      }
+    }
+  }
 
   const hasModel = (typeof pool.model === 'string' && pool.model !== '')
     || (isStringArray(pool.knownModels) && pool.knownModels.length > 0)

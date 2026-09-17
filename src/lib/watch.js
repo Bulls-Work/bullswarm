@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
 import { estimateInvocationUsage } from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
+import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
@@ -96,6 +97,21 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
       .replaceAll('{bullswarmDir}', BULLSWARM_DIR)
       .replaceAll('{cwd}', cwd),
   );
+}
+
+function resolveAttemptStream(connector, opts = {}) {
+  if (opts.attemptStream) return opts.attemptStream;
+  const streamFile = opts.streamFile ?? null;
+  const stdoutFile = opts.stdoutFile ?? null;
+  if (!streamFile && !stdoutFile) return null;
+  const { capBytes, responseBytes } = captureLimits(connector.eventStream);
+  const jsonl = connector.eventStream?.format === 'jsonl';
+  return createAttemptStreamSink({
+    streamFile: jsonl ? streamFile : null,
+    stdoutFile: jsonl ? null : (stdoutFile ?? streamFile),
+    capBytes,
+    responseBytes,
+  });
 }
 
 /**
@@ -205,8 +221,9 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     // Assistant prose only. Tool results are quoted file/command output and
     // routinely contain limit wording that says nothing about OUR quota.
     let responseText = '';
+    const attemptStream = resolveAttemptStream(connector, opts);
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
-      onEvent: (event) => {
+      onEvent: (event, fullSummary) => {
         if (event?.kind === 'response' && typeof event.summary === 'string'
           // A truncation marker means a long answer, not a bare limit notice;
           // judging the collapsed head of a real report would kill a healthy
@@ -214,7 +231,8 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
           && !event.summary.endsWith('\u2026')) {
           responseText = `${responseText}${event.summary}\n`.slice(-8000);
         }
-        opts.onAgentEvent?.(event);
+        attemptStream?.event(event, fullSummary);
+        opts.onAgentEvent?.(event, fullSummary);
       },
       onProgress: (event) => {
         if (event.model) detectedModel = event.model;
@@ -297,6 +315,11 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         const at = new Date().toISOString();
         opts.onActivity?.({ stream, bytes: d.length, at });
         eventDecoder?.push(d, stream, at);
+        if (!eventDecoder) {
+          const text = typeof d === 'string' ? d : d.toString();
+          attemptStream?.stdout(text, stream);
+          opts.onStdoutChunk?.(text, stream);
+        }
         stopOnFatalSignature();
       } catch (error) {
         captureError ??= error?.message ?? String(error);
@@ -312,8 +335,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         : stderrCapture.text(),
       captureTruncated: { stdout: stdoutCapture.dropped, stderr: stderrCapture.dropped },
     });
-    child.on('error', (err) => {
+    const finishStream = () => {
       eventDecoder?.finish();
+      return attemptStream?.close() ?? null;
+    };
+    child.on('error', (err) => {
+      const streamStats = finishStream();
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
@@ -333,11 +360,12 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         detectedModel,
         providerFailureType,
         spawnError: true,
+        ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
     child.on('close', (code, signal) => {
       if (opts.processGroup && (cancelled || timedOut || stalled || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
-      eventDecoder?.finish();
+      const streamStats = finishStream();
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
@@ -349,6 +377,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         eventOutput: eventDecoder?.output() ?? '',
         detectedModel,
         providerFailureType,
+        ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
   });
@@ -427,7 +456,11 @@ function providerErrorText(obs) {
 export async function watchOnce(connector, taskText, targetDir, paths, opts = {}) {
   writeFileSync(paths.taskFile, taskText);
   const startedAt = Date.now();
-  const obs = await runDelegate(connector, paths.taskFile, targetDir, opts);
+  const obs = await runDelegate(connector, paths.taskFile, targetDir, {
+    ...opts,
+    streamFile: opts.streamFile ?? paths.streamFile,
+    stdoutFile: opts.stdoutFile ?? paths.stdoutFile,
+  });
   const wallSec = Math.round((Date.now() - startedAt) / 100) / 10;
 
   const output = extractOutput(connector, obs);
@@ -585,6 +618,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       providerFailureType: obs.providerFailureType,
       wallSec,
       outBytes: output.length,
+      ...(obs.streamFile ? { streamFile: obs.streamFile } : {}),
       usage,
       // The level this attempt actually ran at, exactly as resolved. Reported
       // even when nothing was appended, so a record can say WHY it was silent.

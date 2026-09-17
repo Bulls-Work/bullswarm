@@ -42,6 +42,7 @@ const UNICODE = Object.freeze({
   reroute: '↺',
   started: '▶',
   inflight: '⚙',
+  handoff: '↪',
 });
 
 const ASCII = Object.freeze({
@@ -63,6 +64,7 @@ const ASCII = Object.freeze({
   reroute: '%',
   started: '>',
   inflight: 'w',
+  handoff: '<',
 });
 
 // Every glyph ASCII mode is responsible for. Tests assert a rendered frame

@@ -23,5 +23,20 @@ if (candidatePath && requirementIds.length) {
     }])),
   }));
 }
-console.log('The answering fixture completed the bounded dispatch and recorded the selected fallback pool.');
-console.log('The durable result contains the observed answer and the routing decision for later inspection.');
+const ANSWER = [
+  'The answering fixture completed the bounded dispatch and recorded the selected fallback pool.',
+  'The durable result contains the observed answer and the routing decision for later inspection.',
+].join('\n');
+// BULLSWARM_FIXTURE_EVENTS=jsonl makes this worker speak the codex line shape
+// (src/providers/codex/connector.json) so a connector manifest carrying that
+// `eventStream` block exercises the persisted per-attempt stream. Unset, the
+// worker prints the same two plain lines it always has.
+if (process.env.BULLSWARM_FIXTURE_EVENTS === 'jsonl') {
+  const say = (row) => console.log(JSON.stringify(row));
+  say({ type: 'item.started', item: { id: 'a1', type: 'command_execution', command: 'cat owned.txt' } });
+  say({ type: 'item.completed', item: { id: 'a1', type: 'command_execution', command: 'cat owned.txt' } });
+  say({ type: 'item.completed', item: { id: 'a2', type: 'agent_message', text: 'Reviewed the prior attempt block and kept the edit it left in owned.txt.' } });
+  say({ type: 'item.completed', item: { id: 'a3', type: 'agent_message', text: ANSWER } });
+} else {
+  console.log(ANSWER);
+}
