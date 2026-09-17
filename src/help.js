@@ -59,7 +59,7 @@ const top = rich({
     + 'it as done. There are exactly two ways to start work: `bullswarm run` dispatches one '
     + 'bounded task to a single agent, and `bullswarm workflow goal` executes a program you '
     + 'author across a coordinated multi-agent run. Bare `bullswarm` opens the dashboard — '
-    + 'Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help — once this machine is configured, and the setup control '
+    + 'Home, Runs, Run, Step, Budget, Stats, Fleet, Help — once this machine is configured, and the setup control '
     + "center when it is not. Reach for a specific command's --help for full options.",
   argsTitle: 'Commands',
   args: [
@@ -776,7 +776,7 @@ const workflowText = rich({
   usage: 'bullswarm workflow [<command>] [options]',
   purpose: 'Plan, execute, observe, and audit durable multi-agent workflows with the '
     + 'single V2 action/evidence engine. With no command on a TTY, opens the dashboard '
-    + '(Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help) — the same screen bare `bullswarm` opens on a '
+    + '(Home, Runs, Run, Step, Budget, Stats, Fleet, Help) — the same screen bare `bullswarm` opens on a '
     + 'configured machine.',
   argsTitle: 'Commands',
   args: [
@@ -788,7 +788,7 @@ const workflowText = rich({
     { name: 'capabilities', desc: 'show pools, lanes, models, meters, and routing constraints' },
     { name: 'runs ...', desc: 'search ongoing and historical workflow instances' },
     { name: 'reindex', desc: 'backfill the run-rollup history index, including minimal legacy records' },
-    { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, History, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
+    { name: 'tui [runId]', desc: 'open the dashboard (Home, Runs, Run, Step, Budget, Stats, Fleet, Help) or one run timeline; bare `bullswarm` opens the same dashboard once configured, and bare workflow is equivalent on a TTY' },
     { name: 'watch <runId>', desc: 'follow low-noise progress until terminal' },
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
@@ -1189,14 +1189,16 @@ const workflowTuiText = rich({
     + 'controls visible. The pages are Home (today\'s tiles, active/recent workflows, and pool/model/project '
     + 'breakdown), Runs (the workflow catalogue, integration status, and commands), Run (plan, Live, Next, ETA, '
     + 'and budget), Step (one action\'s full panel), Budget (quota, measured worker-time share, labelled money, '
-    + 'fit, and biggest workflows), Stats (Overview, Trends, Pools, Models, Projects), History (a dated workflow '
-    + 'timeline), Fleet (lane/provider rungs), and Help. Keys: r Runs, b Budget, s Stats, y History, f Fleet, '
-    + 'h or ? Help, 1–9 open a run, Tab cycles sub-tabs, Shift+Tab cycles workflows, p cycles the period, '
+    + 'fit, and biggest workflows), Stats (Overview, Trends, Pools, Models, Projects), Fleet (lane/provider '
+    + 'rungs), and Help. The tab row is Home, Runs, Budget, Stats, Fleet; History is the day table inside Runs. '
+    + 'Keys: h Home, r Runs, b Budget, s Stats, y the first day of the Runs history, f Fleet, '
+    + '? Help, 1–9 open a run, Tab cycles sub-tabs, Shift+Tab cycles workflows, p cycles the period, '
     + 'Esc or the left arrow moves out, arrows move one line, PgUp/PgDn scroll a screen, Home/End jump to '
     + 'top/bottom, ctrl+s copies the screen, and q quits. Enter, the right arrow, or l opens a selection. In '
-    + '0.33.0, r no longer refreshes, b no longer moves out, and Tab no longer cycles workflows; the view refreshes '
-    + 'itself, Esc/left moves out, and Shift+Tab still cycles workflows. The mouse clicks tabs, tiles, bars, runs, '
-    + 'steps, dates, and controls; a non-interactive caller gets a static/JSON snapshot instead.',
+    + '0.33.0, r no longer refreshes, b no longer moves out, Tab no longer cycles workflows, and h opens Home '
+    + 'rather than Help; the view refreshes itself, Esc/left moves out, and Shift+Tab still cycles workflows. '
+    + 'The mouse clicks tabs, tiles, bars, runs, steps, dates, and controls; a non-interactive caller gets a '
+    + 'static/JSON snapshot instead.',
   args: [{ name: '[<runId>]', desc: 'shortId or runId to open directly in detail view; omit to see the run picker' }],
   options: [
     { flag: '--json', desc: "print a JSON snapshot instead of opening the interactive browser (list of ongoing runs, or one run's state/report/events when a runId is given)", default: "opens the interactive browser on a TTY; without a TTY, a given runId instead prints one static text detail tree" },

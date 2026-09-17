@@ -42,6 +42,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonSafe } from '../lib/fsjson.js';
+import { projectName } from '../lib/project.js';
 import { legacyRollupRecord, readLegacyRunFacts, readRollups, rollupRecord } from './rollup.js';
 import { isLegacyRunState, isOngoing } from './short-id.js';
 import { readGoalProject } from './goal.js';
@@ -154,7 +155,12 @@ function uncoveredRun(bullswarmDir, name, now) {
   }
 
   const shortId = state.shortId ?? null;
-  const project = readGoalProject(runDir)?.name ?? null;
+  // The same derivation `workflow reindex` uses (runs-cli.js projectFor): the
+  // recorded goal project first, then the run's own working directory. A
+  // finished run the index has not caught up with is named by its project,
+  // never `unknown project`, when a cwd is on record.
+  const project = readGoalProject(runDir)?.name
+    ?? projectName(state.intent?.cwd ?? null);
   const startedAt = state.lifecycle?.startedAt ?? null;
   if (state.lifecycle?.finishedAt) {
     // Finished, and the index simply has not caught up (a home nothing has

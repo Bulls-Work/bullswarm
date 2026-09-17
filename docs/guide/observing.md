@@ -27,9 +27,11 @@ bullswarm workflow tui
 bullswarm workflow tui ab12cd
 ```
 
-Every page has a sticky header and a sticky bottom nav. The tab row opens the
-page directly; the nav keeps run buttons and the narrow-layout `[Top] [End]
-[Help]` tail visible. A long body shows its `first–last/total` row window
+Every page has a sticky header and a sticky bottom nav. The tab row is five
+tabs — Home, Runs, Budget, Stats, Fleet — and opens the page directly; `Run`
+and `Step` mark `Runs`, and `Help` appears in the row only while it is open.
+The nav keeps run buttons and the narrow-layout `[Top] [End] [?.Help]` tail
+visible. A long body shows its `first–last/total` row window
 while it scrolls. The dashboard's Help page (`?`) prints the same page and key
 map.
 
@@ -38,12 +40,11 @@ The pages answer different questions:
 | Page | What it answers |
 | --- | --- |
 | **Home** | What happened today, what is verified, what API-equivalent/licence figures are available, and which workflows are active or recent? It also shows the period breakdown by pool, model, and project. |
-| **Runs** | Which workflows are active or in the catalogue, and where are the integration and command actions? `/` filters, `a` switches active/all, and `i` installs the agent integration. |
+| **Runs** | Which workflows are active or in the catalogue, in one `active` block above the History day table? `/` filters and `a` switches active/all; the agents and `run it` blocks moved to Help (`?`). |
 | **Run** | Where is this workflow in its plan, which workers are live or next, and what are the current ETA and measured budget shares? |
 | **Step** | What is this action doing — its model, reasoning, route, attempt, activity, verdict or failure, prompt, usage, events, output, and artifact paths? |
 | **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
 | **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time, broken down by pool, model, and project? Its sub-tabs are Overview, Trends, Pools, Models, and Projects. |
-| **History** | Which workflows started or finished on each recorded date, with verification, duration, and measured or labelled spend; legacy rows are read-only and carry no figures. |
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
 | **Help** | What every key, click, layout rule, and dashboard command does. |
 
@@ -51,20 +52,21 @@ The visual-fidelity pass keeps the same real data but composes it like the
 approved prototype. `Home` puts its 7-day breakdown in four columns and adds a
 `budget · this week` block; `Run` shows the plan strip with per-step bars and a
 `budget` / `live` / `so far` band (stacked on the phone); `Budget` gives each
-pool a seven-row block and one consolidated footer; `Stats` → `Trends` uses
-coloured stacked columns; and `History` uses fixed columns. At 55 columns the
-phone layouts keep one row per item — every `Home` today tile and per-step bar,
-every `Stats` `Models` model, `Stats` `Projects` project and its sparkline,
-every `Stats` `Pools` and `Fleet` pool row, and every `History` run row — rather
-than wrapping an item into a second form. Three places deliberately keep more
-than one row: `Budget`'s seven-row pool block, `Home`'s `budget · this week`
-pool, which carries its reset line under the meter as the prototype frame does,
-and the `Runs` list, which keeps a worker-count line and a phase line under each
-run. `Stats` `Pools` charts licence per day with a reset mark instead of
-repeating full-width rows, and at 200 columns every page composes to the frame
-rather than staying at the 120-column composition — measured on the real binary,
-the widest painted row is 200 cells on every page except `Fleet`, which reaches
-188.
+pool a header over four labelled rows (`used`, `by bullswarm`, `room`,
+`so far`) and one consolidated footer; `Stats` → `Trends` uses coloured stacked
+columns drawn to eighth-block precision; and the `Runs` history table uses
+fixed columns. At 55 columns the phone layouts keep one row per item — every
+`Home` today tile and per-step bar, every `Stats` `Models` model, `Stats`
+`Projects` project and its sparkline, every `Stats` `Pools` and `Fleet` pool
+row, and every run row in the `Runs` history table — rather than wrapping an
+item into a second form. Three places deliberately keep more than one row:
+`Budget`'s per-pool block, `Home`'s `budget · this week` pool, which carries its
+reset line under the meter as the prototype frame does, and the `Runs`
+`active` entry, which keeps a plan strip and a per-step bar under each run.
+`Stats` `Pools` gives every pool its own seven-day sparkline on its own row,
+with `▏` on a day the quota window rolled over, instead of one shared chart;
+and at 200 columns every page composes to the frame rather than staying at the
+120-column composition.
 
 The shared keyboard table is:
 
@@ -73,9 +75,10 @@ The shared keyboard table is:
 | `r` | open Runs; the view refreshes itself, so `r` is no longer refresh |
 | `b` | open Budget; it is no longer move-out |
 | `s` | open Stats |
-| `y` | open History, except that it confirms a pending stop |
+| `y` | open Runs at its History table (the first day header), except that it confirms a pending stop |
 | `f` | open Fleet |
-| `h` / `?` | open Help |
+| `h` | open Home |
+| `?` | open Help |
 | `1`–`9` | open that run from the nav |
 | `Tab` | cycle the current page's sub-tabs (Stats and Fleet) |
 | `Shift+Tab` | cycle workflows |
@@ -95,15 +98,16 @@ is enabled while the dashboard is open: click any tab, tile, bar, run, step,
 date, or control, and use the wheel to scroll the body.
 
 ::: tip
-`r`, `b`, and `Tab` were rebound in 0.33.0: the view refreshes itself, Esc and
-the left arrow move out, and Shift+Tab still cycles workflows. `q` quits the
+`r`, `b`, `Tab`, and `h` were rebound in 0.33.0: the view refreshes itself, Esc
+and the left arrow move out, Shift+Tab still cycles workflows, and `h` opens
+Home (`?` alone opens Help; in 0.32.0 both keys opened Help). `q` quits the
 dashboard and leaves the run going; only `c` stops it, and that asks the kernel
 for a cooperative stop at its next safe checkpoint.
 :::
 
 ## The history index and `workflow reindex`
 
-Home, Budget, Stats, and History read a per-run rollup, written to
+Home, Runs, Budget, and Stats read a per-run rollup, written to
 `<run dir>/rollup.json` when a run finishes and appended to the history index
 at `~/.bullswarm/history/runs.jsonl`. Nothing rescans every run directory on
 each frame. Runs finished before 0.33.0 have no rollup yet, so a freshly
@@ -251,7 +255,7 @@ BULLSWARM_UNICODE=1 bullswarm workflow
 Inside Claude Code, the Bullswarm mod (`mods/bullswarm`) is the dashboard's
 read-only counterpart. Its pane shows **Run**, **Step**, and the **Usage/Pools**
 page (meter windows and fleet rungs); it does not show **Home**, **Runs**,
-**Budget**, **Stats**, **History**, **Fleet**, or **Help** as dashboard pages.
+**Budget**, **Stats**, **Fleet**, or **Help** as dashboard pages.
 The strip remains the run list. The pane's bottom row is `back` (on a step), the
 run buttons, `usage` and `close`, with no dashboard `[edit]` or `[install]`
 actions. Its strip and pane re-read ongoing runs every 20 seconds; the full

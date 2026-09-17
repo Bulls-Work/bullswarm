@@ -374,7 +374,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
       stale: shareRange.stale === true,
       exceedsMeter: workflowsPct != null && usedPct != null && workflowsPct > usedPct,
       basis: rate.ratePerMinute == null
-        ? 'no licence share: the pool has no measured %/minute rate'
+        ? 'no measured usage rate yet'
       : `≈ ${formatDashboardValue(rate.ratePerMinute, 'rate')} × measured worker-minutes (rate source: ${rate.source ?? 'unknown'})`,
     },
     subscription,
@@ -383,7 +383,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     fits,
     fitsBasis: fits == null
       ? (rate.ratePerMinute == null
-        ? 'not computable: the pool has no measured %/minute rate'
+        ? 'no measured usage rate yet'
         : medianRunMinutes == null
           ? 'not computable: no run on this pool recorded worker-minutes in the period'
           : 'not computable: the licence meter reports no used%')
@@ -465,7 +465,7 @@ export function budgetModel(pools, { rollups = [], prices = null, period = 'week
   }
   const unrated = rows.filter((row) => row.share.ratePerMinute == null).map((row) => row.name);
   if (unrated.length) {
-    notes.push(`no measured %/minute rate, so no licence share and no fit: ${unrated.join(', ')}`);
+    notes.push(`no measured usage rate yet, so the share and room are unknown: ${unrated.join(', ')}`);
   }
 
   const model = {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule,
+  absentLine, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule,
   shareBar, sparkline, stackedBars, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
@@ -76,7 +76,7 @@ const ROWS = Object.freeze([
 
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle',
+    'absentLine', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle',
     'progressBar', 'rule', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
   ]);
 });
@@ -325,7 +325,7 @@ test('columnBars keeps magnitude, value labels and cumulative totals in a narrow
   ], ['2026-09-15', '2026-09-16'], {
     width: 55, height: 6, col: 8, barW: 3, cumulative: true, colors: false,
   });
-  assert.equal(chart.length, 9, 'axis rows plus labels, values and cumulative rows');
+  assert.equal(chart.length, 7, 'four evenly spaced axis rows plus labels, values and cumulative rows');
   assert.ok(chart.meta.columns[1].height > chart.meta.columns[0].height, '36x value is visibly taller than 1x');
   assert.deepEqual(chart.meta.sums, [1, 36]);
   assert.ok(chart.some((line) => visible(line).includes('36')), 'value row carries the total');
@@ -358,6 +358,110 @@ test('columnBars marks every money figure it prints and blanks the column with n
   assert.match(totalsRow, /≈\$37/);
   assert.deepEqual(unmarkedDollars(rows.join('\n')), [], 'no `$` is painted without its mark');
   for (const line of rows) assert.ok(line.length <= 55, `column chart overran 55: ${line}`);
+});
+
+test('columnBars floors $2.93 to eighths under an evenly spaced $3 axis', () => {
+  withEnv(UNICODE_ENV, () => {
+    const chart = columnBars([{ values: [2.93] }], ['day'], {
+      height: 8, mark: '≈', colors: false, col: 4, barW: 3, totals: false,
+    });
+    assert.deepEqual([...chart], [
+      '≈$3.00 ┤ ▆▆▆',
+      '≈$2.50 ┤ ███',
+      '≈$2.00 ┤ ███',
+      '≈$1.50 ┤ ███',
+      '≈$1.00 ┤ ███',
+      '≈$0.50 ┤ ███',
+      '≈$0.00 ┼day ',
+    ]);
+    assert.equal(chart.meta.columns[0].eighths, 46);
+    assert.equal(chart.meta.columns[0].height, 6);
+    assert.equal(chart.meta.axisTop, 3);
+  });
+  for (const height of [2, 3, 5, 6, 8, 9, 12, 20]) {
+    for (const value of [0.01, 0.3, 2.93, 36, 293]) {
+      const chart = columnBars([{ values: [value] }], ['day'], { height, colors: false });
+      const meta = chart.meta;
+      assert.ok(meta.chartRows <= height);
+      const ticks = chart.slice(0, meta.chartRows).flatMap((line, row) => visible(line).split(/[┤|]/)[0].trim() ? [row] : []);
+      for (let at = 1; at < ticks.length; at += 1) assert.equal(ticks[at] - ticks[at - 1], meta.rowsPerTick);
+      assert.ok(meta.columns[0].eighths / 8 / meta.chartRows * meta.axisTop <= value + 1e-12);
+      assert.equal(meta.axisRow, meta.chartRows + 1);
+    }
+  }
+});
+
+test('columnBars gives a one-cent slice one eighth at the top without increasing the total', () => {
+  withEnv(UNICODE_ENV, () => {
+    const chart = columnBars([
+      { values: [0.01], color: METER_COLORS.red },
+      { values: [2.99], color: METER_COLORS.green },
+    ], ['day'], { height: 6, barW: 3 });
+    const column = chart.meta.columns[0];
+    assert.equal(column.eighths, 48);
+    assert.deepEqual(column.segments.map((entry) => [entry.sourceIndex, entry.eighths]), [[1, 47], [0, 1]]);
+    assert.match(chart[0], /\x1b\[48;2;191;108;105m\x1b\[38;2;182;189;115m▇\x1b\[0m/);
+    assert.equal(visible(chart[0]).match(/▇/g).length, 3);
+    assert.match(chart[1], /\x1b\[38;2;182;189;115m█/);
+    assert.equal(column.height, 6);
+  });
+});
+
+test('columnBars keeps several tiny pools coloured in a shared top cell and colours a partial peak', () => {
+  withEnv(UNICODE_ENV, () => {
+    const chart = columnBars([
+      { values: [2.98], color: METER_COLORS.green },
+      { values: [0.01], color: METER_COLORS.red },
+      { values: [0.01], color: METER_COLORS.cyan },
+    ], ['day'], { height: 6, barW: 3 });
+    assert.deepEqual(chart.meta.columns[0].segments.map((entry) => entry.eighths), [46, 1, 1]);
+    for (const color of ['182;189;115', '191;108;105', '143;199;207']) {
+      assert.ok(chart[0].includes(`\x1b[38;2;${color}m`), color);
+    }
+    const partial = columnBars([{ values: [2.93], color: METER_COLORS.red }], ['day'], { height: 6 });
+    assert.match(partial[0], /\x1b\[38;2;191;108;105m▆\x1b\[0m/);
+  });
+});
+
+test('absentLine is a dim single row of words bounded by width', () => {
+  assert.equal(visible(absentLine('opencode', 'free model · no licence meter')), 'opencode   free model · no licence meter');
+  for (const width of [0, 1, 12, ...WIDTHS]) {
+    const line = absentLine('opencode', 'free model · no licence meter', { width });
+    assert.ok(visibleLength(line) <= width);
+    assert.doesNotMatch(visible(line), /[▁▂▃▄▅▆▇█▓▒░·]{2,}/);
+    if (width) assert.ok(line.startsWith('\x1b[2m'));
+  }
+  assert.doesNotMatch(absentLine('pool\nname', 'no\rmeter\tyet'), /[\r\n\t]/);
+  assert.equal(absentLine(null, null), '');
+});
+
+test('partial glyphs opt into licence slivers without changing default bars', () => {
+  withEnv(UNICODE_ENV, () => {
+    assert.equal(progressBar(0.004, 10, { partialGlyph: '▏' }), `▏${'░'.repeat(9)}`);
+    assert.equal(progressBar(0.24, 10, { partialGlyph: '▍' }), `▇▇▍${'░'.repeat(7)}`);
+    assert.equal(progressBar(0, 10, { partialGlyph: '▏' }), '░'.repeat(10));
+    assert.equal(progressBar(1, 10, { partialGlyph: '▏' }), '▇'.repeat(10));
+    const parts = [{ value: 0.4, glyph: '▇', color: METER_COLORS.red }, { value: 99.6, glyph: '░' }];
+    const bar = shareBar(parts, { width: 10, partialGlyph: '▏' });
+    assert.equal(visible(bar), `▏${'░'.repeat(9)}`);
+    assert.match(bar, /\x1b\[38;2;191;108;105m▏/);
+    assert.equal(visible(shareBar(parts, { width: 10 })), '░'.repeat(10));
+  });
+  withEnv(ASCII_ENV, () => {
+    assert.equal(progressBar(0.004, 10, { partialGlyph: '▏' }), '|.........');
+    assert.equal(shareBar([{ value: 0.4 }, { value: 99.6 }], { width: 10, colors: false, partialGlyph: '▏' }), '|.........');
+  });
+});
+
+test('sparkline reset markers replace original indexes even in a cropped window', () => {
+  withEnv(UNICODE_ENV, () => {
+    assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 8, { markers: [2, 5] }), '▁▂▏▄▅▏▇█');
+    assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 3, { markers: [2, 5, 7] }), '▏▅▏');
+    assert.equal(sparkline([1, null, 3], 3, { markers: [1] }), '▁▏█');
+    assert.equal(sparkline([null, null], 2, { markers: [1] }), '');
+    assert.equal(sparkline([1, 2], 9, { markers: [-1, 7] }), '▁█');
+  });
+  withEnv(ASCII_ENV, () => assert.equal(sparkline([0, 1, 2], 3, { markers: [1] }), '.|#'));
 });
 
 test('columnBars without a mark paints a measured figure bare', () => {

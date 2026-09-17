@@ -21,7 +21,7 @@
 
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import {
-  columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, sparkline, tabsRow,
+  absentLine, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, sparkline, tabsRow,
 } from './dash-kit.js';
 import { METER_COLORS, paceWord, severityColor } from './usage-view.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
@@ -1127,6 +1127,22 @@ function licenceChart(rows, cols, ansi) {
   });
 }
 
+/**
+ * Whether this day rolled the pool's quota window over. The producer says so
+ * outright when it read the meter log; the `resetsAt` fallback exists for a
+ * caller that only carries the boundary, and it allows a minute of slack
+ * because providers restate the same boundary with sub-second jitter on every
+ * read. A falling reading is never treated as a reset on its own — a refund
+ * or a corrected reading looks the same.
+ */
+const RESET_SLACK_MS = 60_000;
+function windowReset(segment, previous) {
+  if (segment?.reset === true || segment?.windowReset === true) return true;
+  const now = Date.parse(segment?.resetsAt ?? '');
+  const before = Date.parse(previous?.resetsAt ?? '');
+  return Number.isFinite(now) && Number.isFinite(before) && Math.abs(now - before) >= RESET_SLACK_MS;
+}
+
 /** A pool's own measured figures, one line's worth, or null when there are none. */
 function poolFacts(row) {
   const runs = finite(row?.runs);
@@ -1146,22 +1162,16 @@ function poolMeterLines(model, lines, regions, cols, ansi) {
   if (!liveRows.length && Array.isArray(model?.licence?.pools)) {
     for (const meter of model.licence.pools) liveRows.push({ name: meter.name, live: meter });
   }
-  if (history.length && licenceSeries(history).some((value) => value != null)) {
-    for (const line of licenceChart(history, cols, ansi)) pushLine(lines, regions, line, cols, ansi);
-    const historyReason = textOf(model?.meterHistoryReason, '');
-    if (historyReason) pushWrapped(lines, regions, historyReason, cols, ansi, ' ');
-  } else if (history.length) {
-    pushWrapped(lines, regions, ' Licence-per-day chart unavailable: no measured licence readings are retained.', cols, ansi, ' ');
-  } else {
-    const reason = textOf(model?.meterHistoryReason, 'meter history is not loaded');
-    pushWrapped(lines, regions, ` Licence-per-day chart unavailable: ${reason.replace(/\.$/, '')}.`, cols, ansi, ' ');
+  if (!history.length || !licenceSeries(history).some((value) => value != null)) {
+    const reason = textOf(model?.meterHistoryReason, 'no measured licence readings are retained');
+    pushWrapped(lines, regions, `Usage history unavailable: ${reason.replace(/\.$/, '')}.`, cols, ansi, ' ');
   }
   if (!liveRows.length) {
     pushWrapped(lines, regions, 'No live pool meter is available; licence usage is not measured.', cols, ansi, ' ');
     return;
   }
   lines.push('');
-  const nameWidth = Math.min(14, Math.max(7, Math.floor(cols / 4)));
+  const nameWidth = Math.min(cols < 90 ? 16 : 28, Math.max(7, ...liveRows.map((row) => textOf(row.name, 'unknown').length)));
   for (const row of liveRows) {
     const meter = modelObject(row.live) ? row.live : row;
     const used = finite(meter?.usedPct);
@@ -1169,31 +1179,46 @@ function poolMeterLines(model, lines, regions, cols, ansi) {
     // The pace word, not the reading pair: `48% · hot`, `37% · on track`.
     const word = paceWord(used, elapsed).text.replace(/\s*[+−]\d+pp$/, '');
     const reading = used == null ? 'meter unavailable' : `${Math.round(used)}%${word ? ` · ${word}` : ''}`;
-    // The meter keeps the width the frame gives it; the pool's own measured
-    // figures take the room beside it where a frame has any.
     const facts = poolFacts(row);
-    const tail = facts && cols >= 96 ? `  ${facts}` : '';
     const name = cut(textOf(row.name, 'unknown'), nameWidth).padEnd(nameWidth);
-    // Keep the reading intact on very narrow terminals; the bar is the first
-    // thing to give cells back, down to one visible glyph.
-    // Let the bar consume the frame at desktop and wide widths.  A fixed
-    // 40-cell ceiling made a 200-column Pools page look like a narrow capture
-    // surrounded by blank space; the same subtraction still keeps the reading
-    // and measured facts intact at phone width.
-    const barWidth = Math.max(1, cols - nameWidth - reading.length - visible(tail).length - 4);
-    // No meter is a blank with its reason and a dotted track, never a zero.
-    const track = asciiGlyphsPreferred() ? '.' : '·';
-    const bar = used == null ? track.repeat(barWidth) : progressBar(used / 100, barWidth);
-    const color = used == null ? METER_COLORS.track : severityColor(used);
+    const actions = [{ x: 1, width: cols, action: { kind: 'page', page: 'budget', pool: textOf(row.name, 'unknown') } }];
+    if (used == null) {
+      // The name keeps the metered rows' one-cell indent and the reason starts
+      // where their bar starts (` name spark `), so an unmetered pool reads as
+      // another row rather than a stray line.
+      const absent = absentLine(name, `meter unavailable${facts ? ` · ${facts}` : ''}`, { width: cols - 1, labelWidth: nameWidth + 9 });
+      pushLine(lines, regions, absent ? ` ${absent}` : absent, cols, ansi, actions);
+      continue;
+    }
+    const days = history.slice(-7);
+    const segments = days.map((day) => Array.isArray(day.segments)
+      ? day.segments.find((segment) => segment.name === row.name)
+      : day.pools?.[row.name]);
+    const values = segments.map((segment) => historyValue(segment));
+    const markers = segments.flatMap((segment, index) => {
+      const previous = segments[index - 1];
+      return windowReset(segment, previous) ? [index] : [];
+    });
+    const shape = sparkline(values, 7, { markers });
+    const historyText = shape ? [...shape].map((glyph, index) => values[index] == null && !markers.includes(index) ? ' ' : glyph).join('').padStart(7) : 'no history';
+    const spark = painted(historyText, METER_COLORS.orange, ansi);
+    const tail = facts && cols >= 96 ? `  ${facts}` : '';
+    const prefix = ` ${name} ${spark} `;
+    const barWidth = Math.max(1, Math.min(64, cols - visible(prefix).length - reading.length - visible(tail).length - 2));
+    const bar = progressBar(used / 100, barWidth);
+    const color = severityColor(used);
     const markAt = used == null || elapsed == null
       ? null
       : Math.max(0, Math.min(barWidth - 1, Math.floor((elapsed / 100) * barWidth)));
     const paintedBar = markAt == null
       ? painted(bar, color, ansi)
       : `${painted(bar.slice(0, markAt), color, ansi)}${painted(asciiGlyphsPreferred() ? '|' : '▏', METER_COLORS.mark, ansi)}${painted(bar.slice(markAt + 1), color, ansi)}`;
-    pushLine(lines, regions, ` ${name} ${paintedBar}  ${reading}${tail}`, cols, ansi, [
-      { x: 1, width: cols, action: { kind: 'page', page: 'budget', pool: textOf(row.name, 'unknown') } },
-    ]);
+    pushLine(lines, regions, `${prefix}${paintedBar}  ${reading}${tail}`, cols, ansi, actions);
+    if (facts && cols < 96) pushLine(lines, regions, ` ${facts}`, cols, ansi, actions);
+  }
+  if (history.some((day) => historySegments(day).some((segment) => segment.value != null))) {
+    pushWrapped(lines, regions, "each glyph is that day's usage at day end · a drop after ▏ is the window resetting", cols, ansi, ' ');
+    if (model?.meterHistoryReason) pushWrapped(lines, regions, model.meterHistoryReason, cols, ansi, ' ');
   }
   const licence = modelObject(model?.licence);
   if (licence?.basis) pushWrapped(lines, regions, `Basis: ${licence.basis}.`, cols, ansi, ' ');
@@ -1201,7 +1226,7 @@ function poolMeterLines(model, lines, regions, cols, ansi) {
 
 function poolLines(model, lines, regions, cols, period, ansi) {
   lines.push('');
-  addTitleRule(lines, regions, cols < 90 ? 'licence per day' : 'licence used per day, by pool', period, cols, ansi);
+  addTitleRule(lines, regions, 'licence by pool · last 7 days', period, cols, ansi);
   poolMeterLines(model, lines, regions, cols, ansi);
 }
 

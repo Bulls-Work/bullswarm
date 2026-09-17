@@ -539,31 +539,39 @@ test('Overview rounds total minutes before splitting hours and paints the heat i
   assert.doesNotMatch(text.join('\n'), /79h60m/);
 });
 
-test('the Pools page charts the licence history with severity colour and the reset mark', () => {
-  const view = statsLines(models(), { width: 120, tab: 'pools', period: '7d', ansi: true });
-  const rows = view.lines.map(visible);
-  const text = rows.join('\n');
-  assert.match(text, /── licence used per day/);
-  // A real y axis: the percentage ladder, not a borrowed one.
-  assert.match(text, /100%┤/);
-  assert.match(text, / 75%┤/);
-  assert.match(text, /  0%┼/);
-  // The reset mark sits in the axis row, as the prototype draws it.
-  const labelRow = rows.find((line) => line.includes('▏ reset'));
-  assert.ok(labelRow, rows.join('\n'));
-  assert.ok(labelRow.trimEnd().endsWith('▏ reset'));
-  // Severity colour per segment on the line, and no seven identical rows.
-  const chart = view.lines.slice(rows.findIndex((line) => line.includes('100%┤')), rows.findIndex((line) => line.includes('▏ reset')));
-  const painted = new Set(chart.flatMap((line) => [...String(line).matchAll(/\x1b\[38;2;(\d+;\d+;\d+)m/g)].map((match) => match[1])));
-  assert.ok(painted.size >= 2, 'the line changes colour with its severity');
-  assert.equal(rows.filter((line) => /^2026-\d\d-\d\d/.test(line)).length, 0, 'no identical full-width day rows');
+test('Pools gives each pool its own seven-day reset-marked sparkline and complete tails', () => {
+  const fixture = models();
+  fixture.pools.rows[1].live = { usedPct: 30, elapsedPct: 40 };
+  fixture.pools.licencePerDay = Array.from({ length: 8 }, (_, index) => ({
+    date: `2026-09-${10 + index}`,
+    segments: [
+      { name: 'claude-code', value: [90, 10, 20, 30, 40, 50, 60, 70][index], reset: index === 1 },
+      { name: 'codex', value: [10, 20, 30, 40, 50, 5, 10, 15][index], reset: index === 5 },
+    ],
+  }));
+  for (const width of [55, 60, 170, 200]) {
+    const view = statsLines(fixture, { width, tab: 'pools', period: '7d', ansi: true });
+    const rows = view.lines.map(visible);
+    assert.doesNotMatch(rows.join('\n'), /100%┤|licence used per day, by pool/);
+    assert.match(rows.find((line) => line.includes('claude-code')), /▏▂▃▅▆▇█/);
+    assert.match(rows.find((line) => line.includes('codex') && line.includes('30%')), /▃▅▆█▏▂▃/);
+    assert.match(rows.join(' ').replace(/\s+/g, ' '), /a drop after ▏ is the window resetting/);
+    if (width >= 170) {
+      assert.match(rows.find((line) => line.includes('claude-code')), /3 runs · ✓ 67% · ≈ \$0.37 API$/);
+      assert.match(rows.find((line) => line.includes('codex') && line.includes('30%')), /2 runs · ✓ 100%$/);
+    }
+    assert.ok(rows.every((line) => line.length <= width));
+  }
 });
 
-test('a pool with no meter keeps its blank and its dotted track', () => {
+test('a pool with no meter uses words without an empty track', () => {
   const view = statsLines(models(), { width: 120, tab: 'pools', period: '7d', ansi: false });
   const row = view.lines.map(visible).find((line) => line.includes('codex'));
   assert.ok(row, view.lines.map(visible).join('\n'));
-  assert.match(row, /^ codex\s+·{10,}\s+meter unavailable/);
+  // The name keeps the metered rows' one-cell indent, and the reason starts in
+  // the column their meter bar starts in.
+  assert.match(row, /^ codex\s+meter unavailable · 2 runs · ✓ 100%/);
+  assert.doesNotMatch(row, /[░▇]|·{2,}/);
   assert.equal(/(^|\D)0%\b/.test(row), false, 'an unmeasured pool is never painted as zero');
   const meters = view.regions.filter((region) => region.action.kind === 'page' && region.action.page === 'budget');
   assert.deepEqual(meters.map((region) => region.action.pool).sort(), ['claude-code', 'codex']);
@@ -584,7 +592,7 @@ test('a period with no meter history states the empty state instead of an axis',
   fixture.pools = { ...fixture.pools, licencePerDay: null, meterHistoryReason: 'meter logs retain data from 2026-09-14; earlier days in 30d are blank.' };
   const view = statsLines(fixture, { width: 120, tab: 'pools', period: '30d', ansi: false });
   const text = view.lines.map(visible).join('\n');
-  assert.match(text, /Licence-per-day chart unavailable: meter logs retain data from 2026-09-14/);
+  assert.match(text, /Usage history unavailable: meter logs retain data from 2026-09-14/);
   assert.equal(text.includes('┼'), false, 'no invented axis');
   assert.match(text, /meter unavailable/);
 });
@@ -670,4 +678,26 @@ test('a phone Models row that fits keeps its last field whole', () => {
   assert.equal(row.includes('…'), false, `a row with room to spare is not cut: ${row}`);
   assert.match(row, /p50 54m$/);
   assert.ok(row.length <= 54, `and it still stays inside the frame: ${row.length}`);
+});
+
+test('a Pools sparkline marks a real window rollover and ignores restated boundaries', () => {
+  // Seven days of one pool. Only 09-16 moves the boundary a week on; the other
+  // days restate the same instant with the sub-second jitter every provider
+  // read carries, and must not be drawn as resets.
+  const fixture = models();
+  fixture.pools.rows[1].live = { usedPct: 31, elapsedPct: 35 };
+  const boundary = (n) => n < 4 ? `2026-09-16T05:00:00.${String(100 + n)}022+00:00` : `2026-09-23T05:00:00.${String(300 + n)}155+00:00`;
+  fixture.pools.licencePerDay = [30, 45, 60, 90, 8, 20, 31].map((value, index) => ({
+    date: `2026-09-${12 + index}`,
+    segments: [{
+      name: 'codex', value, resetsAt: boundary(index), ...(index === 4 ? { reset: true } : {}),
+    }],
+  }));
+  const view = statsLines(fixture, { width: 140, tab: 'pools', period: '7d', ansi: false });
+  const rows = view.lines.map(visible);
+  const row = rows.find((line) => line.includes('codex') && line.includes('31%'));
+  assert.ok(row, rows.join('\n'));
+  const spark = row.slice(0, row.search(/[\u2587\u2591]/));
+  assert.equal((spark.match(/\u258f/g) ?? []).length, 1, `one reset mark, got ${JSON.stringify(spark)}`);
+  assert.match(rows.join(' ').replace(/\s+/g, ' '), /a drop after \u258f is the window resetting/);
 });
