@@ -33,7 +33,7 @@ test('pace score: elapsed minus used; unmetered neutral', () => {
 
 test('cost guard in incumbency path: challenger must be cheaper', () => {
   // incumbent grok (rank 2). codex (rank 3 = pricier) has huge surplus but
-  // must NOT displace grok. opencode2 (rank 1) needs margin too.
+  // must NOT displace grok. opencode (rank 1) needs margin too.
   const inc = pool('grok', {
     incumbent: true, costRank: 2,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 40 }, // surplus 40−40=0
@@ -42,7 +42,7 @@ test('cost guard in incumbency path: challenger must be cheaper', () => {
     costRank: 3,
     meter: { type: 'weekly', windowStart: NOW - 84 * HOUR, usedPct: 10 }, // surplus +40
   });
-  const cheapNoMargin = pool('opencode2', {
+  const cheapNoMargin = pool('opencode', {
     costRank: 1,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 35 }, // surplus +5 < margin
   });
@@ -51,7 +51,7 @@ test('cost guard in incumbency path: challenger must be cheaper', () => {
 });
 
 test('incumbent displaced when cheaper challenger clears margin', () => {
-  const inc = pool('opencode2', {
+  const inc = pool('opencode', {
     incumbent: true, costRank: 1,
     meter: { type: '5h', windowStart: NOW - 2 * HOUR, usedPct: 40 }, // surplus 0
   });

@@ -40,7 +40,7 @@ second login), skip most of this: clone the shipped template.
 
 ```bash
 bullswarm provider scaffold <name>
-bullswarm provider scaffold <name> --from opencode2
+bullswarm provider scaffold <name> --from opencode
 ```
 
 This writes a commented `provider.mjs` with every export. `--from` copies

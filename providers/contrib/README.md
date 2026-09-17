@@ -7,7 +7,7 @@ Bullswarm loads one only when your machine opts in. The providers under
 | provider | what it runs | meter |
 |---|---|---|
 | `command-code` | the Command Code CLI (`command-code -p`) | monthly credits, 5-hour and weekly windows from the Command Code billing API |
-| `opencode2` | the OpenCode CLI (`opencode run`) | none; also the template reseller providers clone as `ctx.templates.opencode2` |
+| `opencode` | the OpenCode CLI (`opencode run`) | none; also the template reseller providers clone as `ctx.templates.opencode` |
 
 ## Enabling one
 
