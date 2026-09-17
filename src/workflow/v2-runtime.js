@@ -462,6 +462,9 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     ...(record.lastActivityAt !== undefined ? { lastActivityAt: record.lastActivityAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
     ...(record.outputBytesObserved !== undefined ? { outputBytesObserved: record.outputBytesObserved } : {}),
+    ...(record.stalled !== undefined ? { stalled: record.stalled } : {}),
+    ...(record.partialOutput !== undefined ? { partialOutput: record.partialOutput } : {}),
+    ...(record.silentSec !== undefined ? { silentSec: record.silentSec } : {}),
     // The dispatch-time byte ledger (see attemptBytes). Only the kernel's
     // 'started' call carries it; a later normalize of the same attempt leaves
     // the recorded object in place instead of erasing it.
@@ -1309,6 +1312,14 @@ async function runV2Kernel({
       : digest ? buildDigestTask(state, action, targetDir) : buildWorkTask(state, action, targetDir);
     const dispatchedBytes = attemptBytes(state, action, taskText, { evidence, digest });
     const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence, digest });
+    const writerPools = evidence
+      ? [...new Set(state.attempts
+        .filter((attempt) => attempt.status === 'succeeded'
+          && (definition(state, attempt.actionId)?.affects ?? [])
+            .some((id) => action.evidenceFor.includes(id)))
+        .map((attempt) => attempt.pool)
+        .filter(Boolean))]
+      : [];
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
       taskText,
@@ -1321,15 +1332,11 @@ async function runV2Kernel({
       // The program author's per-action override outranks the run-wide level.
       reasoningOverride: action.reasoning ?? null,
       runReasoning: state.config.workerRouting?.reasoning ?? null,
-      // Evidence routes like any other action; no pool is steered away from.
-      // Steering it away from the pools that did the work bought a weak kind
-      // of independence (the judging model is chosen by tier, not by pool, so
-      // a "different" pool is often the same model) and cost real pacing
-      // control: on 2026-09-14 it pushed a high-effort verify onto a pool with
-      // 15.5 surplus while the pool it skipped held 24 and had 8 hours left
-      // before its weekly window reset, and the printed reason never said a
-      // better pool had been excluded on purpose. Simpler routing the operator
-      // can predict beats independence the router cannot explain.
+      // Evidence prefers normal routing but passes the pools that authored the
+      // inspected work so the router can prefer a different eligible pool. A
+      // writer remains a valid fallback when it is the only eligible choice;
+      // the route reason names that exception for operators.
+      evidence: evidence ? { writerPools } : null,
       maxMechanicalRetries: config.maxMechanicalRetries,
       // A plan revision or a pause --now can stop this one action while the
       // rest of the run carries on.
@@ -1359,7 +1366,31 @@ async function runV2Kernel({
             observeAttemptBytes(attempt, { authorPrompt: dispatchedBytes.authorPrompt, requirements: observedRequirementBytes });
           }
           addUsage(state, record);
-          emit('attempt.finished', { actionId: action.id, attemptId: currentAttemptId, status: record.status, failureKind: record.failureKind ?? null });
+          emit('attempt.finished', {
+            actionId: action.id,
+            attemptId: currentAttemptId,
+            status: record.status,
+            failureKind: record.failureKind ?? null,
+            pool: record.pool ?? attempt?.pool ?? null,
+            model: record.model ?? attempt?.model ?? null,
+            why: record.why ?? null,
+            willRetry: record.willRetry === true,
+            ...(record.stalled ? {
+              stalled: true,
+              partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
+              silentSec: record.silentSec ?? null,
+            } : {}),
+          });
+          if (record.bench?.until != null) {
+            emit('pool.benched', {
+              pool: record.bench.pool ?? record.pool ?? null,
+              reason: record.bench.reason ?? null,
+              count: record.bench.count ?? null,
+              until: record.bench.until,
+              actionId: action.id,
+              attemptId: currentAttemptId,
+            });
+          }
         }
       },
       onActivity: ({ at, bytes }) => {

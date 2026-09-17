@@ -3,7 +3,7 @@
 // connector JSON. Core only executes and normalizes those declarations.
 
 import { execFileSync } from 'node:child_process';
-import { modelProfile } from './usage.js';
+import { isFreeModel, modelProfile } from './usage.js';
 import { openRouterMetadata } from './openrouter-models.js';
 import { isReasoningLevel, REASONING_LEVELS, resolveReasoningLevel } from './reasoning.js';
 import { attemptWindow } from './spend.js';
@@ -523,7 +523,7 @@ export function discoverConnectorModels(connector, { executor = defaultExecutor 
       pricingSource: profile?.pricingSource ?? null,
       pricingUpdatedAt: profile?.pricingUpdatedAt ?? null,
       autoRecommend: profile?.autoRecommend !== false,
-      free: profile?.free === true || /(?:^|[/:-])free(?:$|[/:-])/i.test(id),
+      free: isFreeModel(connector, id),
       configured: id === configured,
     };
   });

@@ -59,6 +59,20 @@ export function modelProfile(connector, model) {
   return null;
 }
 
+/**
+ * One definition of "this model costs nothing", for routing (R12), for the
+ * model recommendation score, and for the pool view. The connector's own
+ * `modelProfiles[].free` declaration is authoritative; the name pattern is the
+ * fallback for a discovered model no profile matched (`openrouter/x:free`).
+ * It is deliberately narrow — a bare "free" inside a word never matches.
+ */
+export function isFreeModel(connector, model) {
+  const id = String(model ?? connector?.model ?? '');
+  if (!id) return false;
+  return modelProfile(connector, id)?.free === true
+    || /(?:^|[/:-])free(?:$|[/:-])/i.test(id);
+}
+
 function tokenCost(tokens, usdPerMillion) {
   const count = finiteNonNegative(tokens);
   const rate = finiteNonNegative(usdPerMillion);

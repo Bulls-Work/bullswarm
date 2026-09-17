@@ -232,6 +232,78 @@ export function sweepQuarantines(state, now = Date.now()) {
   return released;
 }
 
+// --- soft bench -----------------------------------------------------------
+// S6. A bench is the SOFT counterpart of a quarantine, for a pool that is
+//     alive but not producing: it stalled, the provider errored, or it
+//     answered with nothing. It is written here, beside `quarantine`, so the
+//     dispatcher that records a failure and the router that reads the pool
+//     list share one record — the same file, the same lock, the same shape.
+//     Two differences from quarantine are deliberate:
+//       - `until: null` means "one strike counted, still in service", the
+//         OPPOSITE of quarantine's null (which means forever). A pool is out
+//         only once it has a concrete future deadline, which is why
+//         `isBenched()` (src/lib/route.js) tests `until != null && now < until`.
+//       - `count` is CONSECUTIVE failures. It survives the cooldown expiring
+//         and is cleared only by a success, so a pool that stalls once every
+//         hour is not benched forever while one that stalls twice in a row is.
+//     Auth is untouched: `quarantinePool` still owns that path, and a bench
+//     never shortens or replaces a quarantine deadline.
+
+/** The re-probe window a bench waits out — the same 10 minutes quarantine uses. */
+export const BENCH_COOLDOWN_MS = 10 * 60_000;
+/** Consecutive qualifying failures before a pool is actually taken out. */
+export const BENCH_AFTER_STRIKES = 2;
+/** Failure kinds that count as a strike, as classified by the dispatcher. */
+export const BENCH_REASONS = new Set(['stall', 'provider', 'empty']);
+
+/**
+ * Record one qualifying failure against a pool.
+ *
+ * @returns {number|null} the bench deadline when this strike benched the pool,
+ *                        null when it was only counted.
+ */
+export function recordPoolStrike(state, poolName, reason, now = Date.now()) {
+  state.pools ??= {};
+  state.pools[poolName] ??= {};
+  const prior = state.pools[poolName].bench ?? null;
+  const count = Number.isFinite(Number(prior?.count)) ? Number(prior.count) + 1 : 1;
+  if (count < BENCH_AFTER_STRIKES) {
+    state.pools[poolName].bench = { until: null, reason, count };
+    return null;
+  }
+  const until = now + BENCH_COOLDOWN_MS;
+  state.pools[poolName].bench = { until, reason, count };
+  // Same rule as quarantine: a pool that is not serving work cannot hold a
+  // lane against its own return.
+  for (const [lane, name] of Object.entries(state.incumbents ?? {})) {
+    if (name === poolName) delete state.incumbents[lane];
+  }
+  return until;
+}
+
+/** A success clears the consecutive-failure record entirely. */
+export function clearPoolStrikes(state, poolName) {
+  if (state.pools?.[poolName]?.bench) delete state.pools[poolName].bench;
+}
+
+/**
+ * Drop bench records whose cooldown has passed. Unlike a quarantine sweep this
+ * keeps the strike count: the pool is back in service, but a fresh stall right
+ * after the cooldown is still its second in a row.
+ */
+export function sweepBenches(state, now = Date.now()) {
+  const released = [];
+  for (const name of Object.keys(state.pools ?? {})) {
+    const bench = state.pools[name]?.bench;
+    if (!bench || bench.until == null) continue;
+    if (now >= Number(bench.until)) {
+      state.pools[name].bench = { until: null, reason: bench.reason ?? null, count: Number(bench.count ?? 0) };
+      released.push(name);
+    }
+  }
+  return released;
+}
+
 // --- recursion ------------------------------------------------------------
 
 export const DEPTH_ENV = 'BULLSWARM_DEPTH';

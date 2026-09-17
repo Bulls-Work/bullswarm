@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   loadState, saveState, updateState, quarantinePool, quarantineUpstreamSiblings,
   sweepQuarantines, upstreamGroupOf,
+  recordPoolStrike, clearPoolStrikes, sweepBenches, BENCH_COOLDOWN_MS, BENCH_AFTER_STRIKES,
   acquireStateLock, releaseStateLock, stateLockPath, STATE_LOCK_STALE_MS,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
 } from '../src/lib/state.js';
@@ -329,4 +330,74 @@ test('benching the group is a no-op without a group, a pool, or any members', ()
   assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: null, group: GROUP, now }), []);
   assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'relay', group: GROUP, now }), []);
   assert.deepEqual(Object.keys(s.pools), []);
+});
+
+// --- soft bench (S6) ------------------------------------------------------
+// The bench is written by the dispatcher and read by the router out of the one
+// shared record, so these are the writers both sides depend on.
+
+test('the first strike is counted without taking the pool out of service', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
+  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 1 });
+});
+
+test('the second consecutive strike benches the pool for the cooldown and drops its incumbency', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  s.incumbents = { build: 'opencode2', analyze: 'codex' };
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  const until = recordPoolStrike(s, 'opencode2', 'stall', now);
+  assert.equal(until, now + BENCH_COOLDOWN_MS);
+  assert.deepEqual(s.pools.opencode2.bench, { until, reason: 'stall', count: BENCH_AFTER_STRIKES });
+  // A pool that is not serving work cannot hold the lane against its return.
+  assert.deepEqual(s.incumbents, { analyze: 'codex' });
+});
+
+test('a success clears the strike record entirely', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'provider', now);
+  recordPoolStrike(s, 'opencode2', 'provider', now);
+  clearPoolStrikes(s, 'opencode2');
+  assert.equal(s.pools.opencode2.bench, undefined);
+  // The next failure starts over at one strike, still in service.
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
+  assert.equal(s.pools.opencode2.bench.count, 1);
+});
+
+test('sweeping releases an expired bench but keeps the strike count', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS - 1), []);
+  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS), ['opencode2']);
+  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 2 });
+  // Still two in a row: a stall right after the cooldown benches it again at once.
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now + BENCH_COOLDOWN_MS), now + 2 * BENCH_COOLDOWN_MS);
+});
+
+test('a bench is written beside the quarantine and neither touches the other', () => {
+  const { dir, cleanup } = tmpDir();
+  try {
+    const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+    const s = loadState(dir);
+    s.pools.opencode2 = { enabled: true };
+    quarantinePool(s, 'opencode2', 'upstream auth failure', now);
+    recordPoolStrike(s, 'opencode2', 'stall', now);
+    saveState(dir, s);
+    const reloaded = loadState(dir);
+    assert.equal(reloaded.pools.opencode2.quarantine.reason, 'upstream auth failure');
+    assert.deepEqual(reloaded.pools.opencode2.bench, { until: null, reason: 'stall', count: 1 });
+    // Sweeping benches leaves the quarantine deadline alone.
+    sweepBenches(reloaded, now + 10 * BENCH_COOLDOWN_MS);
+    assert.equal(reloaded.pools.opencode2.quarantine.until, now + 10 * 60_000);
+    // ...and the router reads the bench back off the pool view it builds.
+    saveState(dir, reloaded);
+    const { pools } = buildPools(dir, now);
+    const pool = pools.find((p) => p.name === 'opencode2');
+    if (pool) assert.deepEqual(pool.bench, reloaded.pools.opencode2.bench);
+  } finally { cleanup(); }
 });

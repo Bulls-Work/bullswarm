@@ -33,6 +33,12 @@ const ATTEMPT_FIELDS = new Set([
   'finishedAt', 'taskFile', 'outputFile', 'failure', 'failureKind', 'why',
   'usage', 'routing', 'reasoning', 'continued', 'lastActivityAt', 'lastEventAt',
   'outputBytesObserved', 'bytes', 'lastAgentEvent', 'wallSec', 'routeWhy', 'routeCandidates',
+  // A stalled attempt: `stalled` marks it, `partialOutput` points at the bytes
+  // the worker had already written before it was stopped (kept, never
+  // overwritten — the retry writes a new -attempt-N file), and `silentSec` is
+  // the threshold that ended it. Absent on every attempt that did not stall,
+  // and on every attempt recorded before the free-pool stall clock existed.
+  'stalled', 'partialOutput', 'silentSec',
 ]);
 // `state.attempts[].bytes` — the kernel's byte ledger for one dispatch, written
 // at dispatch and completed when the attempt ends (src/workflow/v2-runtime.js
