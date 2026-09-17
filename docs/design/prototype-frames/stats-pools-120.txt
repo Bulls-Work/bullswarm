@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                                                              
+ Overview  Trends  Pools  Models  Projects                                                                              
+                                                                                                                        
+ ── licence used per day, by pool ───────────────────────────────────────────── All time · Last 7 days · Last 30 days ──
+  100%┤                                                                                                                 
+   75%┤                              ┌──                                                                                
+   50%┤        ┌──┐      ┌────┐  │                                                                                      
+   25%┤  ┌─────┘  └──────┼────┘    └──┘                                                                                 
+    0%┼──┘                                                                                                              
+      Sep 10        Sep 12        Sep 14        Sep 16   ▏ reset                                                        
+                                                                                                                        
+ claude-code    ▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  37% · on track                                                
+ codex          ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  29% · slow                                                    
+ grok           ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇  77% · on track                                                
+ command-code   ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏  93% · on track                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ 1.mbpzj2 ] [ 2.ywnyga ]                         r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

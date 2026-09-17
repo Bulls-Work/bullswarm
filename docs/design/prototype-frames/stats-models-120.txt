@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                                                              
+ Overview  Trends  Pools  Models  Projects                                                                              
+                                                                                                                        
+ ── spend per day ───────────────────────────────────────────────────────────── All time · Last 7 days · Last 30 days ──
+   $12┤                                                                                                                 
+    $9┤              ┌──┐                                                                                               
+    $6┤     ┌─┐     │  │      ┌──┐                                                                                      
+    $3┤  ┌──┼─┼────┐ │  │  ┌───┼──┼──                                                                                   
+    $0┼──┘  │ │    └─┘  └──┘   │  │                                                                                     
+      Sep 10        Sep 12        Sep 14        Sep 16                                                                  
+ ● Opus 5 · ● gpt-5.6-luna · ● grok-4.6 · ● deepseek                                                                    
+                                                                                                                        
+ ● Opus 5 (52%)                                                                                                         
+   claude-code · 118 steps · 99% ok · p50 15m                                                                           
+ ● gpt-5.6-luna (21%)                                                                                                   
+   codex · 41 steps · 97% ok · p50 9m                                                                                   
+ ● grok-4.6 (15%)                                                                                                       
+   grok · 33 steps · 100% ok · p50 10m                                                                                  
+ ● deepseek-v4.1-flash (8%)                                                                                             
+   command-code · 65 steps · 89% ok · p50 4m                                                                            
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ 1.mbpzj2 ] [ 2.ywnyga ]                         r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

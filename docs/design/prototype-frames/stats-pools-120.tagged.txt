@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                                                              
+ {k:stats:0|Overview}  {k:stats:1|Trends}  {k:stats:2|{sub|Pools}}  {k:stats:3|Models}  {k:stats:4|Projects}                                                                              
+                                                                                                                        
+ {d|── }{b|licence used per day, by pool}{d| ─────────────────────────────────────────────} {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}{d| ──}
+  100%┤                                                                                                                 
+   75%┤                              {r|┌──}                                                                                
+   50%┤        {g|┌──┐}      {a|┌────┐}  {r|│}                                                                                      
+   25%┤  {g|┌─────┘  └──────┼────┘    └──┘}                                                                                 
+    0%┼{g|──┘}                                                                                                              
+      {d|Sep 10        Sep 12        Sep 14        Sep 16   ▏ reset}                                                        
+                                                                                                                        
+ {k:pool:claude-code|claude-code   } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  37% · on track                                                
+ {k:pool:codex|codex         } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  29% · slow                                                    
+ {k:pool:grok|grok          } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  77% · on track                                                
+ {k:pool:command-code|command-code  } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏  93% · on track                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                         {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {on|Runs}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}          {d| · 1–21/35}
+ {b|mbpzj2} · {c|running} · 16m · project-a                    
+ sample text …                                         
+ sample text …                                         
+ {d|── }{b|plan}{d| ──────} phase 2 of 6 · 3/8 steps · ETA 19:03{d| ──}
+ {k:step:mbpzj2:scan|{g|✓}}{k:step:mbpzj2:scan| scan} ─┬─ {k:step:mbpzj2:widget-core|{g|✓}}{k:step:mbpzj2:widget-core| widget-core} ─┬─ {k:step:mbpzj2:widget-lib|{c|▶}}{k:step:mbpzj2:widget-lib| widget-lib}             
+         └─ {k:step:mbpzj2:inbox-page|{g|✓}}{k:step:mbpzj2:inbox-page| inbox-page} ──┘  {k:step:mbpzj2:inbox-api|{c|▶}}{k:step:mbpzj2:inbox-api| inbox-api}              
+   ─┬─ {k:step:mbpzj2:widget-docs|○ widget-docs} ─┬─ {k:step:mbpzj2:integrate|○ integrate} ─ {k:step:mbpzj2:verify|○ verify}        
+                                                       
+ {d|── }{b|budget}{d| ────────────────────────────────────────────}
+ cmd      {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } {p|1.2%}                        
+ codex    {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } {p|1.5%}                        
+ claude   {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } {p|0.0%}                        
+ {d|so far $1.05 · forecast $5.51}                         
+                                                       
+ {d|── }{b|live}{d| ──────────────────────────────────────────────}
+ {k:step:mbpzj2:widget-lib|widget-lib } {c|▇▅▃▁▂▃▅▇▅▃▂} 15m/17m                       
+   {d|sample text …                                 }      
+ {k:step:mbpzj2:inbox-api|inbox-api  } {c|▆▇▅▃▁▂▃▅▇▅▃} 4m/11m                        
+   {d|sample text …                     }                  
+                                                       
+ {d|── }{b|timeline}{d| ──────────────────────────────────────────}
+ {d|── Preflight ─────────────────────────────── 0s ──}    
+ {d|18:25}  {g|●} Goal accepted                                
+ {d|── Phase 1 · scan · inbox-page} {d|────────────── 4m10s ──}
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}         {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

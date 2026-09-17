@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                                                              
+ {k:stats:0|{sub|Overview}}  {k:stats:1|Trends}  {k:stats:2|Pools}  {k:stats:3|Models}  {k:stats:4|Projects}                                                                              
+                                                                                                                        
+        {d|Jun          Jul          Aug          Sep}                                                                      
+ Mon    {d|·} {d|·} {d|·} {d|·} {d|·} {d|·} {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  } {d|·}                                                                 
+ Wed    {d|·} {d|·} {d|·} {d|·} {d|·} {d|·}  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}                                                                 
+ Fri    {d|·} {d|·} {d|·} {d|·} {d|·} {d|·} {d|·}  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  } {d|·}                                                                 
+        {d|·} {d|·} {d|·} {d|·} {d|·} {d|·}  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·} {d|·}                                                                 
+ {d|Less}  }  }  }  } {d|More   workflows per day}                                                                                  
+                                                                                                                        
+ {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}                                                                                  
+                                                                                                                        
+ Workflows: {o|23} · verified {o|83%}          Total agent time: {o|187h}              Spent: {o|$38.20} {d|· ≈ $296.00 API · 7.7×}         
+ Active days: {o|55}{d| / 123}                  Longest run: {o|2h 41m} (qv6242)        Favorite pool: {o|claude-code} (41%)            
+ Most active day: {o|Sep 14} (11 runs)      Current streak: {o|3} days              Favorite model: {o|Opus 5} (52%)                
+ Busiest project: {o|bullswarm} (11)       Median run: {o|38m} · 6 steps           Longest streak: {o|18} days                      
+                                                                                                                        
+ {p|Your longest run would have taken a person about 3 working days}                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                         {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                           ▶ widget-lib · run mbpzj2 · running
+ Status    running · deepseek-v4.1-flash · max                                                                          
+ Pool      command-code · attempt 1 · medium lane · max                                                                 
+ Purpose   sample text …                                                                                                
+ Route     medium lane → command-code: pace on track +5.0, record 54 runs · 89% ok · p50 10m                            
+ Time      started 18:26 · elapsed 15m00s of 17m expected                                                               
+                                                                                                                        
+ ── budget ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ cmd      ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  0.80% of the monthly window · $0.24 ≈ $1.80 API                               
+                                                                                                                        
+ ── task · first lines ─────────────────────────────────────────────────────────────────────────────────────────────────
+   sample text …                                                                                                        
+   write the outcome to the output file. Do not touch other territories.                                                
+                                                                                                                        
+ ── output ──────────────────────────────────────────────────────────────────────────────── live · 0 kB · ▇▅▃▁▂▃▅▇▅▃▂ ──
+   > sample text …                                                                                                      
+   > sample text …                                                                                                      
+   > npm test                                                                                                           
+     12 pass, 0 fail                                                                                                    
+   > sample text …                                                                                                      
+   > bundle 9.8 kB gzip                                                                                                 
+   sample text …                                                                                                        
+                                                                                                                        
+ ── artifacts ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+   task:   ~/.bullswarm/workflows/wf-mbpzj2/tasks/widget-lib.md                                                         
+   output: ~/.bullswarm/workflows/wf-mbpzj2/outputs/widget-lib.md                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ ← back ] [ ● 1.mbpzj2 ] [ 2.ywnyga ]            r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

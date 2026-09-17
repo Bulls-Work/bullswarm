@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                                                              
+ Overview  Trends  Pools  Models  Projects                                                                              
+                                                                                                                        
+        Jun          Jul          Aug          Sep                                                                      
+ Mon    · · · · · · ·         ·         ·         ·   ·                                                                 
+ Wed    · · · · · ·     ·         ·         ·         ·                                                                 
+ Fri    · · · · · · ·       ·         ·         ·     ·                                                                 
+        · · · · · ·   ·         ·         ·         · ·                                                                 
+ Less         More   workflows per day                                                                                  
+                                                                                                                        
+ All time · Last 7 days · Last 30 days                                                                                  
+                                                                                                                        
+ Workflows: 23 · verified 83%          Total agent time: 187h              Spent: $38.20 · ≈ $296.00 API · 7.7×         
+ Active days: 55 / 123                  Longest run: 2h 41m (qv6242)        Favorite pool: claude-code (41%)            
+ Most active day: Sep 14 (11 runs)      Current streak: 3 days              Favorite model: Opus 5 (52%)                
+ Busiest project: bullswarm (11)       Median run: 38m · 6 steps           Longest streak: 18 days                      
+                                                                                                                        
+ Your longest run would have taken a person about 3 working days                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ 1.mbpzj2 ] [ 2.ywnyga ]                         r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

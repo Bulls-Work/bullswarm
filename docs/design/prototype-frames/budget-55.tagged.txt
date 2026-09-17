@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {on|Budget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}          {d| · 1–23/45}
+ {k:budgetTab:0|{sub|This week}}  {k:budgetTab:1|This month}  {k:budgetTab:2|All time}                       
+ {b|claude-code}  {d|Max 20x · $200/mo · weekly window}        
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  37% used          
+ {d|resets 5d1h · 28% elapsed · on track}                  
+ $18.50 of $50 used                                    
+ {g|5 medium runs still fit}                               
+ {p|▓▓▓▓▓}{d|▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░}                    
+ {p|▓ runs 16%} · {d|▒ you 22%} · {d|░ free 62%}                   
+ {d|biggest:} {k:recent:qv6242|qv6242} 6.1% · $3.05 · {k:recent:gcxzza|gcxzza} 4.4% · $2.20    
+                                                       
+ {b|codex}  {d|Pro · $200/mo · weekly window}                  
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  29% used          
+ {d|resets 5d1h · 48% elapsed · slow}                      
+ $14.50 of $50 used                                    
+ {g|5 medium runs still fit}                               
+ {p|▓▓▓▓▓▓▓▓▓}{d|▒░░░░░░░░░░░░░░░░░░░░░░░░}                    
+ {p|▓ runs 28%} · {d|▒ you 3%} · {d|░ free 70%}                    
+ {d|biggest:} {k:recent:qv6242|qv6242} 6.1% · $3.05 · {k:recent:gcxzza|gcxzza} 4.4% · $2.20    
+                                                       
+ {b|grok}  {d|Heavy · $300/mo · weekly window}                 
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  77% used          
+ {d|resets 5d1h · 74% elapsed · on track}                  
+ $57.75 of $75 used                                    
+ {a|1 medium run still fits}                               
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}           {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

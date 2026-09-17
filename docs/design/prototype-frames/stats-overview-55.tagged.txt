@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}                    
+ {k:stats:0|{sub|Overview}}  {k:stats:1|Trends}  {k:stats:2|Pools}  {k:stats:3|Models}  {k:stats:4|Projects}             
+                                                       
+      {d|Jul      Aug      Sep}                            
+ Mon  {d|·} {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  }                  
+ Wed  {d|·}  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}  }  }                  
+ Fri  {d|·} {d|·}  }  }  } {d|·}  }  }  }  } {d|·}  }  }  }  } {d|·}                  
+ {d|Less}  }  }  }  } {d|More   workflows per day}                 
+                                                       
+ {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}                 
+                                                       
+ Workflows: {o|23} · verified {o|83%}                          
+ Agent time: {o|187h} · Spent: {o|$38.20}                      
+ Active days: {o|55}{d| / 123} · streak {o|3}                      
+ Favorite pool: {o|claude-code} (41%)                      
+ Favorite model: {o|Opus 5} (52%)                          
+ Busiest project: {o|bullswarm} (11)                       
+                                                       
+ {p|Your longest run would have taken a person about 3 wo}{d|…}
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}           {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}
