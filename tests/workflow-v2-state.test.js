@@ -163,3 +163,50 @@ test('durable state carries program advisories, validates their shape, and toler
   delete legacy.advisories;
   assert.equal(validateV2DurableState(legacy), true);
 });
+
+test('round trips attempt handoff fields and rejects unknown ones', () => {
+  const goal = createV2GoalDocument(input());
+  const state = createV2DurableState(goal, { runId: 'wf-handoff', shortId: 'hnd234' });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [{
+      id: 'do-work', purpose: 'Do the thing', dependsOn: [], affects: ['result-versioned'], ownedFiles: ['owned.txt'],
+      prompt: 'Do the thing.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+    }],
+  };
+  state.actions = [{ id: 'do-work', status: 'succeeded', attempts: 2, programRevision: 1 }];
+  state.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['do-work'], startedAt: null, completedAt: null }] };
+  state.attempts = [{
+    id: 'do-work-1', actionId: 'do-work', ordinal: 1, status: 'interrupted',
+    pool: 'staller', model: 'zen/union-free', startedAt: '2026-09-17T02:30:20.000Z',
+    finishedAt: '2026-09-17T02:30:28.000Z', failureKind: 'stalled',
+    why: 'stalled: the worker wrote nothing for 8 s and was stopped',
+    outputFile: '/tmp/out-do-work-attempt-1.md', outputBytes: 88,
+    streamFile: '/tmp/stream-do-work-attempt-1.jsonl',
+    diffFile: '/tmp/diff-do-work-attempt-1.txt', changedFileCount: 1,
+    lastResponse: 'Read the task file and enumerated 3 candidate files.',
+    stalled: true, partialOutput: '/tmp/out-do-work-attempt-1.md', silentSec: 8,
+  }, {
+    id: 'do-work-2', actionId: 'do-work', ordinal: 2, status: 'succeeded',
+    pool: 'answerer', model: 'paid/answerer', startedAt: '2026-09-17T02:30:29.000Z',
+    finishedAt: '2026-09-17T02:30:30.000Z',
+    handoff: { from: 'do-work-1', bytes: 512 },
+  }];
+  const loaded = deserializeV2DurableState(JSON.stringify(state));
+  assert.equal(loaded.attempts[0].outputBytes, 88);
+  assert.equal(loaded.attempts[0].streamFile, '/tmp/stream-do-work-attempt-1.jsonl');
+  assert.equal(loaded.attempts[0].diffFile, '/tmp/diff-do-work-attempt-1.txt');
+  assert.equal(loaded.attempts[0].changedFileCount, 1);
+  assert.equal(loaded.attempts[0].lastResponse, 'Read the task file and enumerated 3 candidate files.');
+  assert.deepEqual(loaded.attempts[1].handoff, { from: 'do-work-1', bytes: 512 });
+  assert.throws(
+    () => deserializeV2DurableState(JSON.stringify({
+      ...state,
+      attempts: [
+        state.attempts[0],
+        { ...state.attempts[1], handoff: { from: 'do-work-1', bytes: 512, extra: true } },
+      ],
+    })),
+    /handoff.extra is not allowed/,
+  );
+});

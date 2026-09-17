@@ -77,7 +77,12 @@
         "mode": "last|concat",
         "separator": "optional separator"
       }
-    ]
+    ],
+    "capture": {
+      "responseBytes": 64000,
+      "fileBytes": 1048576
+    },
+    "$comment-capture": "Optional. Core defaults (src/lib/attempt-stream.js): responseBytes 64000, fileBytes 1048576. Applied when the block is omitted, so a contributed connector needs no code to take part. Both fields are optional positive integers."
   },
   "meter": {
     "$comment": "none | declared (manual) | reader (programmatic: the owning provider exports readUsage)",

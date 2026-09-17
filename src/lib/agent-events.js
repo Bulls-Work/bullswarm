@@ -118,6 +118,8 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
         const summary = rule.summaryMode === 'concat' && typeof rawSummary === 'string'
           ? rawSummary.slice(0, 180)
           : compact(rawSummary);
+        const fullSummary = typeof rawSummary === 'string' ? rawSummary
+          : (typeof rawSummary === 'number' || typeof rawSummary === 'boolean' ? String(rawSummary) : null);
         const rawKind = compact(firstValue(context, rule.kindPaths) ?? rule.kind, 80) ?? 'agent';
         const normalized = {
           id,
@@ -129,7 +131,9 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
           summary,
           summaryMode: rule.summaryMode ?? 'replace',
         };
-        onEvent?.(normalized);
+        // Second arg is the pre-compaction scalar so a persist sink can keep
+        // full response text; the pane reads `normalized.summary` only.
+        onEvent?.(normalized, fullSummary);
         if (rule.aggregate === 'consecutive') {
           activeAggregate = {
             ruleIndex,

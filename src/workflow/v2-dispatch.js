@@ -1,5 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { basename, dirname, join } from 'node:path';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { handoffBlock } from './v2-runtime.js';
 import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
 import {
   assertDepthAllowed, childDepthEnv, clearPoolStrikes, loadState, quarantinePool,
@@ -174,8 +177,220 @@ function attemptPaths(base, ordinal) {
   if (ordinal === 1) return base;
   const suffix = `-attempt-${ordinal}`;
   const insert = (path) => path.replace(/(\.[^./]+)?$/, `${suffix}$1`);
-  return { taskFile: insert(base.taskFile), outFile: insert(base.outFile) };
+  return {
+    taskFile: insert(base.taskFile),
+    outFile: insert(base.outFile),
+    ...(base.streamFile ? { streamFile: insert(base.streamFile) } : {}),
+    ...(base.stdoutFile ? { stdoutFile: insert(base.stdoutFile) } : {}),
+    ...(base.diffFile ? { diffFile: insert(base.diffFile) } : {}),
+  };
 }
+
+function artifactBesideTask(taskFile, kind, ext) {
+  const name = basename(taskFile);
+  const trimmed = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : 'attempt';
+  return join(dirname(taskFile), `${kind}-${trimmed}${ext}`);
+}
+
+function withAttemptArtifacts(files, actionId, ordinal) {
+  return {
+    ...files,
+    streamFile: files.streamFile ?? artifactBesideTask(files.taskFile, 'stream', '.jsonl'),
+    stdoutFile: files.stdoutFile ?? artifactBesideTask(files.taskFile, 'stdout', '.log'),
+    diffFile: files.diffFile ?? join(dirname(files.taskFile), `diff-${actionId}-attempt-${ordinal}.txt`),
+  };
+}
+
+/**
+ * The artifacts an attempt left beside its task file, read back from disk by
+ * the same naming `withAttemptArtifacts` writes with. Used when the kernel
+ * itself died mid-attempt and the record never reached `attempt.finished`, so
+ * a resume can still say where the partial output and the stream are.
+ */
+export function attemptArtifactsOnDisk(taskFile, actionId, ordinal) {
+  if (!taskFile) return {};
+  const files = withAttemptArtifacts({ taskFile }, actionId, ordinal);
+  const outputFile = artifactBesideTask(taskFile, 'out', '.md');
+  const streamFile = existsSync(files.streamFile) ? files.streamFile
+    : existsSync(files.stdoutFile) ? files.stdoutFile
+      : null;
+  const outputBytes = existsSync(outputFile) ? fileBytes(outputFile) : null;
+  return {
+    ...(existsSync(outputFile) ? { outputFile } : {}),
+    ...(outputBytes != null ? { outputBytes } : {}),
+    ...(streamFile ? { streamFile } : {}),
+    ...(existsSync(files.diffFile) ? { diffFile: files.diffFile } : {}),
+  };
+}
+
+const GIT_OPTS = {
+  encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+  maxBuffer: 16 * 1024 * 1024,
+};
+
+function gitText(execFile, args, cwd) {
+  try {
+    return execFile('git', args, { cwd, ...GIT_OPTS });
+  } catch {
+    return null;
+  }
+}
+
+function parseGitZPaths(output) {
+  if (typeof output !== 'string') return [];
+  return output.split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.length >= 3 && entry[2] === ' ' ? entry.slice(3) : entry)
+    .filter(Boolean);
+}
+
+function trackedFiles(targetDir, execFile) {
+  const output = gitText(execFile, ['ls-files', '-z'], targetDir);
+  return output == null ? null : new Set(output.split('\0').filter(Boolean));
+}
+
+function unignoredStatusFiles(targetDir, execFile) {
+  const output = gitText(execFile, [
+    'status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all',
+  ], targetDir);
+  return output == null ? null : new Set(parseGitZPaths(output));
+}
+
+function territoryFiles(targetDir, ownedFiles, execFile) {
+  const declared = Array.isArray(ownedFiles) ? ownedFiles.filter(Boolean) : [];
+  const tracked = trackedFiles(targetDir, execFile);
+  if (tracked == null) return { ok: false, files: new Set(), tracked: new Set() };
+  if (declared.length) {
+    return {
+      ok: true,
+      files: new Set(declared),
+      tracked: new Set(declared.filter((file) => tracked.has(file))),
+    };
+  }
+  const status = unignoredStatusFiles(targetDir, execFile);
+  if (status == null) return { ok: false, files: new Set(), tracked };
+  return {
+    ok: true,
+    files: new Set([...tracked, ...status]),
+    tracked,
+  };
+}
+
+function fileDigest(targetDir, relativePath) {
+  try {
+    const bytes = readFileSync(join(targetDir, relativePath));
+    return createHash('sha1').update(bytes).digest('hex');
+  } catch {
+    // A missing file is represented by null. A directory or an unreadable
+    // path is treated the same way: if it becomes readable, the bytes differ
+    // and the path is attributed; if it stays that way, there is no change to
+    // report.
+    return null;
+  }
+}
+
+function hashTerritory(targetDir, territory) {
+  const hashes = new Map();
+  for (const file of territory.files) hashes.set(file, fileDigest(targetDir, file));
+  return {
+    ok: territory.ok,
+    files: new Set(territory.files),
+    tracked: new Set(territory.tracked),
+    hashes,
+  };
+}
+
+function lineCount(path) {
+  try {
+    const body = readFileSync(path, 'utf8');
+    if (!body) return 0;
+    return body.split(/\r\n|\n|\r/).length - (/[\r\n]$/.test(body) ? 1 : 0);
+  } catch {
+    return null;
+  }
+}
+
+function trackedStat(targetDir, files, execFile) {
+  if (!files.length) return '';
+  // HEAD includes both staged and unstaged bytes. Fall back to the plain diff
+  // (and its cached counterpart) for repositories whose initial commit has
+  // not been created yet.
+  const args = ['--stat', 'HEAD', '--', ...files];
+  const fromHead = gitText(execFile, ['diff', ...args], targetDir);
+  if (fromHead != null) return fromHead.replace(/\s+$/, '');
+  return [
+    gitText(execFile, ['diff', '--stat', '--cached', '--', ...files], targetDir),
+    gitText(execFile, ['diff', '--stat', '--', ...files], targetDir),
+  ].filter((text) => text != null).map((text) => text.replace(/\s+$/, '')).filter(Boolean).join('\n');
+}
+
+function untrackedStat(targetDir, files) {
+  return files.map((file) => {
+    const lines = lineCount(join(targetDir, file));
+    return lines == null
+      ? `${file} | deleted (untracked)`
+      : `${file} | +${lines} lines (new)`;
+  }).join('\n');
+}
+
+/**
+ * Compare byte hashes taken immediately before and after the attempt. This
+ * deliberately does not subtract the pre-attempt dirty set: a further edit
+ * to a pre-dirty file is a change during this attempt, while new and deleted
+ * paths compare against a missing hash. The stat is captured at this same
+ * boundary, before sibling callbacks can edit the territory.
+ */
+function captureDiffSnapshot(targetDir, ownedFiles, before, execFile = execFileSync) {
+  if (!before?.ok) return { ok: false, statText: '', changedFiles: [] };
+  const afterTerritory = territoryFiles(targetDir, ownedFiles, execFile);
+  if (!afterTerritory.ok) return { ok: false, statText: '', changedFiles: [] };
+  const after = hashTerritory(targetDir, afterTerritory);
+  const files = new Set([...before.files, ...after.files]);
+  const changedFiles = [...files].filter((file) => before.hashes.get(file) !== after.hashes.get(file)).sort();
+  const tracked = changedFiles.filter((file) => before.tracked.has(file) || after.tracked.has(file));
+  const untracked = changedFiles.filter((file) => !before.tracked.has(file) && !after.tracked.has(file));
+  const pieces = [
+    trackedStat(targetDir, tracked, execFile),
+    untrackedStat(targetDir, untracked),
+  ].filter(Boolean);
+  return { ok: true, statText: pieces.join('\n'), changedFiles };
+}
+
+function writeFileIfChanged(path, body) {
+  try {
+    if (readFileSync(path, 'utf8') === body) return;
+  } catch { /* first write */ }
+  try { writeFileSync(path, body); } catch { /* best effort */ }
+}
+
+function fileBytes(path) {
+  try { return statSync(path).size; } catch { return null; }
+}
+
+function lastResponseEvents(streamFile, limit = 3) {
+  if (!streamFile) return [];
+  try {
+    const events = [];
+    for (const line of readFileSync(streamFile, 'utf8').split('\n')) {
+      if (!line) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      if (parsed?.truncated === true) continue;
+      if (parsed?.kind === 'response') {
+        events.push({
+          at: parsed.at ?? null,
+          kind: 'response',
+          summary: parsed.summary ?? parsed.response ?? null,
+        });
+      }
+    }
+    return events.slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+export { handoffBlock };
 
 /**
  * Append this attempt's decision to shared core state. Concurrent actions in
@@ -274,6 +489,7 @@ export async function dispatchV2Action({
   runReasoning = null,
   outputValidator = null,
   correctionTask = null,
+  handoffBlock: formatHandoff = handoffBlock,
   currentSession = null,
   maxMechanicalRetries = 1,
   silenceTimeoutSec = null,
@@ -292,6 +508,7 @@ export async function dispatchV2Action({
   if (!Array.isArray(pools)) throw new TypeError('pools must be an array');
   if (typeof bullswarmDir !== 'string' || !bullswarmDir) throw new TypeError('bullswarmDir is required');
   const watch = dependencies.watchOnce ?? watchOnce;
+  const execFile = dependencies.execFile ?? execFileSync;
   const loadCoreState = dependencies.loadState ?? loadState;
   // Injectable for tests; the default is the locked read-modify-write. A test
   // that only stubs loadState/saveState still gets a locked update built from
@@ -360,6 +577,9 @@ export async function dispatchV2Action({
   let replayPool = null;
   let fallbackWhy = null;
   let lastPool = null;
+  // The prior attempt's durable facts, carried into the next attempt's task as
+  // a `## Prior attempt on this step` handoff block. Null on the first attempt.
+  let priorHandoff = null;
 
   while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
@@ -430,7 +650,13 @@ export async function dispatchV2Action({
     const connector = pool.connector ?? pool;
     const model = selectedModel(pool, effort, preferredModel);
     const ordinal = attempts.length + 1;
-    const files = attemptPaths(paths, ordinal);
+    const files = withAttemptArtifacts(attemptPaths(paths, ordinal), action.id, ordinal);
+    const beforeAttempt = hashTerritory(
+      targetDir,
+      territoryFiles(targetDir, action.ownedFiles, execFile),
+    );
+    const incomingHandoff = priorHandoff;
+    priorHandoff = null;
     const session = sessionFor(connector, pool, model, currentSession, now(), uuid);
     const coreState = loadCoreState(bullswarmDir);
     assertDepthAllowed(coreState, parentEnv);
@@ -466,7 +692,8 @@ export async function dispatchV2Action({
         forecastPacingPct: candidate.forecastPacingPct,
       })),
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
-      outFile: files.outFile, reasoning,
+      outFile: files.outFile, outputFile: files.outFile, reasoning,
+      ...(incomingHandoff ? { handoff: { from: incomingHandoff.from, bytes: incomingHandoff.bytes } } : {}),
       routing: {
         reason: routeWhy, candidates: route.candidates, effort,
         lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
@@ -489,28 +716,43 @@ export async function dispatchV2Action({
     }));
     let workerPid = null;
     let verdict;
-    try { verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
-      env: childDepthEnv(parentEnv),
-      model,
-      reasoning,
-      conversation: session?.invocation ?? null,
-      shouldCancel,
-      silenceTimeoutSec: attemptSilenceSec,
-      processGroup: true,
-      onSpawn: (pid) => {
-        workerPid = pid;
-        if (ledgerEntry) withLedger(() => updateAssignment(bullswarmDir, ledgerEntry.id, { workerPid: pid }));
-        onSpawn?.(pid);
-      },
-      outputValidator,
-      onActivity,
-      onAgentEvent,
-      onAgentProgress,
-      bullswarmDir,
-    }); } finally {
+    let snapshot = { ok: false, statText: '', changedFiles: [] };
+    try {
+      verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
+        env: childDepthEnv(parentEnv),
+        model,
+        reasoning,
+        conversation: session?.invocation ?? null,
+        shouldCancel,
+        silenceTimeoutSec: attemptSilenceSec,
+        processGroup: true,
+        onSpawn: (pid) => {
+          workerPid = pid;
+          if (ledgerEntry) withLedger(() => updateAssignment(bullswarmDir, ledgerEntry.id, { workerPid: pid }));
+          onSpawn?.(pid);
+        },
+        outputValidator,
+        onActivity,
+        onAgentEvent,
+        onAgentProgress,
+        bullswarmDir,
+      });
+      // Capture before releasing the in-flight ledger entry or invoking the
+      // worker-exit callback. Either can let a sibling begin editing this
+      // territory, which must not be attributed to the attempt that ended.
+      snapshot = captureDiffSnapshot(targetDir, action.ownedFiles, beforeAttempt, execFile);
+    } finally {
       if (ledgerEntry) withLedger(() => releaseAssignment(bullswarmDir, ledgerEntry.id));
       if (workerPid) onWorkerExit?.(workerPid);
     }
+    // The saved file is the attribution record; later sibling edits are not
+    // replayed into it.
+    if (snapshot.ok) writeFileIfChanged(files.diffFile, snapshot.statText ? `${snapshot.statText}\n` : '');
+    const outputBytes = fileBytes(files.outFile);
+    const streamFile = verdict?.meta?.streamFile
+      ?? (files.streamFile && existsSync(files.streamFile) ? files.streamFile : null)
+      ?? (files.stdoutFile && existsSync(files.stdoutFile) ? files.stdoutFile : null);
+    const lastEvents = lastResponseEvents(streamFile);
     const finishedAt = new Date(now()).toISOString();
     const kind = classifyFailure(verdict, pool);
     // One dead upstream credential is ONE outage however many pool names front
@@ -556,6 +798,11 @@ export async function dispatchV2Action({
       usage: clone(verdict.meta?.usage ?? null),
       wallSec: verdict.meta?.wallSec ?? null,
       willRetry: willRecover,
+      outputFile: files.outFile,
+      ...(outputBytes != null ? { outputBytes } : {}),
+      ...(streamFile ? { streamFile } : {}),
+      ...(snapshot.ok ? { diffFile: files.diffFile, changedFileCount: snapshot.changedFiles.length } : {}),
+      lastResponse: lastEvents.at(-1)?.summary ?? null,
       ...(kind === 'stalled'
         ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
         : {}),
@@ -614,6 +861,31 @@ export async function dispatchV2Action({
       remaining.unshift(pool);
       replayPool = pool;
       continue;
+    }
+    if (canRetryMechanically) {
+      const facts = {
+        pool: pool.name,
+        model: record.model,
+        startedAt,
+        finishedAt,
+        failureKind: kind,
+        why: verdict.why ?? null,
+        diffStatText: snapshot.statText,
+        diffFile: snapshot.ok ? files.diffFile : null,
+        changedFiles: snapshot.changedFiles,
+        outputFile: files.outFile,
+        partialOutput: kind === 'stalled' ? files.outFile : null,
+        outputBytes,
+        streamFile,
+        hasEventStream: connector.eventStream != null,
+        lastEvents,
+      };
+      const block = formatHandoff(facts);
+      nextTask = `${taskText}\n\n${block}`;
+      priorHandoff = {
+        from: `${action.id}-${ordinal}`,
+        bytes: Buffer.byteLength(block, 'utf8'),
+      };
     }
     // Free transport failures do not spend the mechanical retry budget. The
     // selected pool was already removed above; continue only when an untried
@@ -674,4 +946,4 @@ export async function dispatchV2Action({
   };
 }
 
-export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools };
+export { classifyFailure as classifyV2DispatchFailure, preparePools as prepareV2DispatchPools, trackedStat as trackedDiffStatForTests };

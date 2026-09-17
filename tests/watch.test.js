@@ -847,3 +847,100 @@ test('an agent that merely reads auth source is not an upstream failure: no erro
     ctx.cleanup();
   }
 });
+
+test('watchOnce persists the normalized event stream and reports streamFile on the verdict', async () => {
+  const ctx = makeCtx();
+  try {
+    const long = `Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures. ${'x'.repeat(80)}`;
+    const rows = [
+      { type: 'tool', model: 'fixture-model', id: 't1', name: 'shell', command: 'npm test', status: 'completed' },
+      { type: 'response', id: 'r1', text: long },
+    ];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        modelPaths: ['model'],
+        rules: [
+          { rootMatch: { path: 'type', equals: 'tool' }, idPaths: ['id'], kindPaths: ['name'], summaryPaths: ['command'], statusPath: 'status' },
+          { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        ],
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+      model: 'fixture-model',
+    };
+    const pane = [];
+    const streamFile = join(ctx.dir, 'stream-act-attempt-1.jsonl');
+    const verdict = await watchOnce(streamed, 'Implement and verify the requested change.', ctx.dir, ctx.paths, {
+      streamFile,
+      onAgentEvent: (event) => pane.push(event),
+    });
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(verdict.meta.streamFile, streamFile);
+    const persisted = readFileSync(streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    assert.equal(persisted.length, 2);
+    assert.equal(persisted[0].kind, 'shell');
+    assert.equal(persisted[0].summary, 'npm test');
+    const paneResponse = pane.find((event) => event.kind === 'response');
+    const fileResponse = persisted.find((event) => event.kind === 'response');
+    assert.equal(paneResponse.summary.length, 180);
+    assert.equal(paneResponse.summary.endsWith('\u2026'), true);
+    assert.equal(fileResponse.summary, long);
+    assert.equal(fileResponse.seq, 2);
+    assert.equal(typeof fileResponse.at, 'string');
+    assert.ok(Number.isFinite(Date.parse(fileResponse.at)));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('eventStream.capture.responseBytes overrides the core per-event bound', async () => {
+  const ctx = makeCtx();
+  try {
+    const long = `Completed the requested implementation. ${'y'.repeat(200)}`;
+    const streamed = {
+      name: 'fixture-capture',
+      spawn: { cmd: [process.execPath, '-e', `console.log(JSON.stringify({type:'response',id:'r1',text:${JSON.stringify(long)}}))`] },
+      authSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        capture: { responseBytes: 24, fileBytes: 4096 },
+        rules: [
+          { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        ],
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const streamFile = join(ctx.dir, 'stream.jsonl');
+    const verdict = await watchOnce(streamed, 'Do the thing.', ctx.dir, { ...ctx.paths, streamFile });
+    assert.equal(verdict.ok, true, verdict.why);
+    const persisted = JSON.parse(readFileSync(streamFile, 'utf8').trimEnd().split('\n')[0]);
+    assert.equal(persisted.kind, 'response');
+    assert.ok(Buffer.byteLength(persisted.summary, 'utf8') <= 24);
+    assert.notEqual(persisted.summary, long);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a connector with no eventStream persists a bounded stdout log instead of jsonl', async () => {
+  const ctx = makeCtx();
+  try {
+    const stdoutFile = join(ctx.dir, 'stdout-act-attempt-1.log');
+    const v = await watchOnce(connector, 'Do the thing.', ctx.dir, ctx.paths, {
+      timeoutSec: 60,
+      stdoutFile,
+    });
+    assert.equal(v.ok, true, v.why);
+    assert.equal(v.meta.streamFile, stdoutFile);
+    const body = readFileSync(stdoutFile, 'utf8');
+    assert.match(body, /Completed/);
+    assert.doesNotMatch(body, /"truncated":true/);
+  } finally {
+    ctx.cleanup();
+  }
+});

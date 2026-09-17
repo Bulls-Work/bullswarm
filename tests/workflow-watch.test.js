@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   formatDuration, timingBreakdown, watchSnapshot, snapshotFingerprint,
-  renderWatchEvent, renderWatchSnapshot, runWorkflowWatch,
+  renderWatchEvent, renderWatchSnapshot, runWorkflowWatch, notableWatchEvents,
 } from '../src/workflow/watch-cli.js';
 import { appendEvent } from '../src/workflow/events.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
@@ -19,6 +19,46 @@ process.env.BULLSWARM_UNICODE = '1';
 // BULLSWARM_ASCII outranks it, and it is the workaround the README hands
 // an affected user, so a contributor may well have it in their shell.
 delete process.env.BULLSWARM_ASCII;
+
+test('watch renders one handoff line naming the file count and last response', () => {
+  const line = renderWatchEvent({
+    type: 'attempt.handoff',
+    actionId: 'stats-pages',
+    pool: 'command-code',
+    files: 1,
+    lastSaid: 'editing src/workflow/stats-view.js',
+  });
+  assert.equal(
+    line,
+    '↪ stats-pages handed off from command-code · 1 file · last said "editing src/workflow/stats-view.js"',
+  );
+  for (const files of [0, 1, 2]) {
+    assert.ok(renderWatchEvent({ type: 'attempt.handoff', files }).includes(`· ${files} ${files === 1 ? 'file' : 'files'} ·`));
+  }
+  const collected = notableWatchEvents({
+    events: [
+      {
+        type: 'attempt.finished',
+        payload: {
+          actionId: 'stats-pages', attemptId: 'stats-pages-1', status: 'interrupted',
+          failureKind: 'stalled', willRetry: true, pool: 'command-code',
+          changedFileCount: 1, lastResponse: 'editing src/workflow/stats-view.js',
+        },
+      },
+      {
+        type: 'attempt.started',
+        payload: { actionId: 'stats-pages', attemptId: 'stats-pages-2', pool: 'codex', model: 'gpt-5.4' },
+      },
+    ],
+    state: { attempts: [{ id: 'stats-pages-1', actionId: 'stats-pages', pool: 'command-code', changedFileCount: 1 }] },
+  });
+  const handoff = collected.notable.find((event) => event.type === 'attempt.handoff');
+  assert.equal(handoff.actionId, 'stats-pages');
+  assert.equal(handoff.pool, 'command-code');
+  assert.equal(handoff.files, 1);
+  assert.equal(handoff.lastSaid, 'editing src/workflow/stats-view.js');
+  assert.equal(collected.notable.filter((event) => event.type === 'attempt.handoff').length, 1);
+});
 
 test("watch renders retry wording from the dispatcher's willRetry fact", () => {
   const stalled = (willRetry) => renderWatchEvent({
