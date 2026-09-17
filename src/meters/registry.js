@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { MeterCache, paceSnapshot, FRESH_MS, STALE_MS } from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
+import { migratePoolNameHome } from '../lib/state.js';
 
 export const METERS_DIR = () =>
   process.env.BULLSWARM_HOME?.trim() || join(homedir(), '.bullswarm');
@@ -130,7 +131,12 @@ function staleResult(cached, nowMs, error, holdUntil, reason) {
  */
 export async function getMeterReading(pool, opts = {}) {
   const { force = false, nowMs = Date.now() } = opts;
-  const cache = new MeterCache(join(METERS_DIR(), 'meters'));
+  // A meter command may be the first command after an upgrade and can be
+  // called without a preceding state load. Keep the same idempotent home
+  // migration guarantee for cache/history files in that path.
+  const home = opts.bullswarmDir ?? METERS_DIR();
+  migratePoolNameHome(home);
+  const cache = new MeterCache(join(home, 'meters'));
   const cached = cache.get(pool);
 
   // A persisted hold is checked before the ordinary freshness path: a failed

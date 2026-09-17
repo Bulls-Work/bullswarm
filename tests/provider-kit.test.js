@@ -8,7 +8,7 @@ import {
 import { REASONING_LEVELS as CORE_LEVELS } from '../src/lib/reasoning.js';
 
 const template = {
-  name: 'opencode2',
+  name: 'opencode',
   spawn: { cmd: ['opencode', 'run', '--auto', '{taskFile}'], cwdMode: 'pwd' },
   modelSelection: { flag: '--model', mode: 'replace-or-append' },
   env: { KEEP: '1' },

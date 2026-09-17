@@ -1,5 +1,5 @@
 {
-  "name": "opencode2",
+  "name": "opencode",
   "bin": "opencode",
   "configDirs": ["~/.config/opencode"],
   "spawn": {

@@ -49,7 +49,7 @@ function retargetModelFlag(cmd, flag, model) {
  * pinned in spawn.cmd through the template's `modelSelection.flag` (default
  * `--model`, replace-or-append), so the argv and `pool.model` agree.
  *
- * @param {object} template  a connector.json object, e.g. ctx.templates.opencode2
+ * @param {object} template  a connector.json object, e.g. ctx.templates.opencode
  * @param {object} [overrides]
  * @returns {object}
  */

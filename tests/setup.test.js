@@ -188,11 +188,11 @@ test('connector metadata upgrades additive provider concurrency preferences', ()
   try {
     const dir = join(d, 'connectors');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
-      name: 'opencode2', capabilities: ['custom-local-capability'],
+    writeFileSync(join(dir, 'opencode.json'), `${JSON.stringify({
+      name: 'opencode', capabilities: ['custom-local-capability'],
     }, null, 2)}\n`);
-    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
-    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
     assert.equal(installed.preferredConcurrency, 1);
     assert.ok(installed.capabilities.includes('custom-local-capability'));
     assert.deepEqual(upgradeConnectorMetadata(d), []);
@@ -204,11 +204,11 @@ test('connector metadata backfills a missing reasoning block but never a customi
   try {
     const dir = join(d, 'connectors');
     mkdirSync(dir, { recursive: true });
-    // An installation that predates the opencode2 reasoning block: rungs would
+    // An installation that predates the opencode reasoning block: rungs would
     // report `unsupported` until the upgrade hands it the packaged one.
-    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({ name: 'opencode2' }, null, 2)}\n`);
-    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
-    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    writeFileSync(join(dir, 'opencode.json'), `${JSON.stringify({ name: 'opencode' }, null, 2)}\n`);
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
     assert.deepEqual(installed.reasoning, {
       flag: '--variant',
       levels: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -221,12 +221,12 @@ test('connector metadata backfills a missing reasoning block but never a customi
     // A block the operator customised is their answer about how deeply this
     // CLI should think, and survives the upgrade untouched.
     const custom = { flag: '--variant', levels: ['low', 'high'], defaults: { high: 'high' } };
-    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
-      name: 'opencode2', reasoning: custom,
+    writeFileSync(join(dir, 'opencode.json'), `${JSON.stringify({
+      name: 'opencode', reasoning: custom,
     }, null, 2)}\n`);
     upgradeConnectorMetadata(d);
     assert.deepEqual(
-      JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8')).reasoning,
+      JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8')).reasoning,
       custom,
     );
   } finally { cleanup(); }
@@ -237,15 +237,15 @@ test('connector metadata upgrades expensive-model recommendation guards idempote
   try {
     const dir = join(d, 'connectors');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'opencode2.json'), `${JSON.stringify({
-      name: 'opencode2',
+    writeFileSync(join(dir, 'opencode.json'), `${JSON.stringify({
+      name: 'opencode',
       capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
       modelProfiles: [
         { match: '(?:fable|opus|gpt-5\\.6-sol)', tier: 'high', qualityRank: 5 },
       ],
     }, null, 2)}\n`);
-    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode2.json']);
-    const installed = JSON.parse(readFileSync(join(dir, 'opencode2.json'), 'utf8'));
+    assert.deepEqual(upgradeConnectorMetadata(d), ['opencode.json']);
+    const installed = JSON.parse(readFileSync(join(dir, 'opencode.json'), 'utf8'));
     assert.equal(installed.modelProfiles[0].match, '(?:^|/)claude-fable-');
     assert.equal(installed.modelProfiles[0].autoRecommend, false);
     assert.equal(installed.modelProfiles[1].match, 'gpt-5\\.6-sol$');

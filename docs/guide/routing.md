@@ -43,7 +43,7 @@ The rest of the order is untouched. Free sits *below* the forecast gate and the 
 The reason line says which rule applied, and names what it passed over:
 
 ```text
-free pool first: opencode2 (free model opencode/union-alpha, 5h used 12.0%, 1 in flight) · metered pools ranked below free: codex 40.0, grok 12.3
+free pool first: opencode (free model opencode/union-alpha, 5h used 12.0%, 1 in flight) · metered pools ranked below free: codex 40.0, grok 12.3
 ```
 
 ## Soft bench: alive, but not producing
@@ -78,8 +78,8 @@ trying each pool at most once for the action, so the tried-set remains the
 termination bound. A stall on a metered pool keeps the mechanical accounting.
 
 ```text
-fallback from opencode2 after stall 300s · most-behind capable pool (surplus 40)
-benched (stall, back at 2026-09-17T02:40:36.911Z): opencode2
+fallback from opencode after stall 300s · most-behind capable pool (surplus 40)
+benched (stall, back at 2026-09-17T02:40:36.911Z): opencode
 ```
 
 The run's events carry the same facts: `attempt.finished` gains `stalled`,
@@ -127,7 +127,7 @@ A relayed credential fails upstream, not in the CLI. When a provider's event str
 
 ```text
 answerer       cost=3 lanes=analyze/build/chore unmetered surplus=0 inflight=0 ready
-opencode2      cost=1 lanes=analyze/build/chore unmetered surplus=0 inflight=0 free=opencode/union-alpha BENCHED until 10:40:36 AM (stall, 2 strikes)
+opencode       cost=1 lanes=analyze/build/chore unmetered surplus=0 inflight=0 free=opencode/union-alpha BENCHED until 10:40:36 AM (stall, 2 strikes)
 ```
 
 ```bash

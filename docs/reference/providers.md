@@ -16,7 +16,7 @@ A provider is a directory holding a `connector.json`, a `provider.mjs`, or both.
 | Tier | Directory | Loaded when | Members |
 |---|---|---|---|
 | first-class | `src/providers/<name>/` | always | `claude-code`, `codex`, `grok`, `echo` |
-| contrib | `providers/contrib/<name>/` | listed in `~/.bullswarm/providers.json` | `command-code`, `opencode2` |
+| contrib | `providers/contrib/<name>/` | listed in `~/.bullswarm/providers.json` | `command-code`, `opencode` |
 | local | `~/.bullswarm/providers/<name>/` | always | your own, never in the repository |
 
 First-class and contrib providers ship in the package. A contrib provider loads only on a machine that lists it:
@@ -80,7 +80,7 @@ Every method receives the same `ctx`:
 
 `readUsage` also receives `subscription`: the pool's entry in `state.strategy.subscriptions`, or `null`. It carries `includedValueUsd`, `quotaWindow`, `resetsAt`, `plan`, and `monthlyPriceUsd`.
 
-`templates` exists so a provider can build on a shipped CLI without copying its template: a reseller of OpenCode access clones `templates.opencode2`.
+`templates` exists so a provider can build on a shipped CLI without copying its template: a reseller of OpenCode access clones `templates.opencode`.
 
 ## The kit
 
@@ -143,7 +143,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 
 ## Example: a reseller named relay
 
-Relay sells OpenCode access through two accounts. The provider clones the shipped `opencode2` template once per account, pins each account's model and reasoning variants, groups both under one credential so a usage limit on one benches its sibling, and reports spend from a wallet:
+Relay sells OpenCode access through two accounts. The provider clones the shipped `opencode` template once per account, pins each account's model and reasoning variants, groups both under one credential so a usage limit on one benches its sibling, and reports spend from a wallet:
 
 ```js
 // ~/.bullswarm/providers/relay/provider.mjs
@@ -152,7 +152,7 @@ export const displayName = 'Relay';
 
 export function connectors({ kit, templates }) {
   const accounts = [{ id: 'a', models: ['gpt-5.6-sol'] }, { id: 'b', models: ['gpt-5.6-sol'] }];
-  return accounts.map((acc, i) => kit.clonePool(templates.opencode2, {
+  return accounts.map((acc, i) => kit.clonePool(templates.opencode, {
     name: i === 0 ? 'relay' : `relay:${acc.id}`,
     model: `${acc.id}/gpt-5.6-sol`,
     env: { OPENCODE_CONFIG_CONTENT: kit.opencodeVariants(acc.id, acc.models) },
@@ -187,7 +187,7 @@ The `usedUsd = 12.5` line is a placeholder: a real `readUsage` fetches the walle
 
 ```bash
 # Author a local provider from a shipped template, then check shape and spawn.
-bullswarm provider scaffold relay --from opencode2
+bullswarm provider scaffold relay --from opencode
 bullswarm provider validate relay
 bullswarm provider probe relay --json
 ```

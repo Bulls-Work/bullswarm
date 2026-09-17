@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- meters: rate-limited or failed live reads now persist a per-pool negative-cache hold (honouring `Retry-After` or the five-minute freshness window), and `pools`/the Claude Mod identify the stale snapshot's error and retry time.
 
 - routing: a pool whose model for the effort tier costs nothing is ranked ahead
   of every metered pool while it is healthy. Free-ness is per (pool, effort
