@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History           · 1–23/45
+ This week  This month  All time                       
+ claude-code  Max 20x · $200/mo · weekly window        
+ ▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  37% used          
+ resets 5d1h · 28% elapsed · on track                  
+ $18.50 of $50 used                                    
+ 5 medium runs still fit                               
+ ▓▓▓▓▓▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░                    
+ ▓ runs 16% · ▒ you 22% · ░ free 62%                   
+ biggest: qv6242 6.1% · $3.05 · gcxzza 4.4% · $2.20    
+                                                       
+ codex  Pro · $200/mo · weekly window                  
+ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  29% used          
+ resets 5d1h · 48% elapsed · slow                      
+ $14.50 of $50 used                                    
+ 5 medium runs still fit                               
+ ▓▓▓▓▓▓▓▓▓▒░░░░░░░░░░░░░░░░░░░░░░░░                    
+ ▓ runs 28% · ▒ you 3% · ░ free 70%                    
+ biggest: qv6242 6.1% · $3.05 · gcxzza 4.4% · $2.20    
+                                                       
+ grok  Heavy · $300/mo · weekly window                 
+ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇  77% used          
+ resets 5d1h · 74% elapsed · on track                  
+ $57.75 of $75 used                                    
+ 1 medium run still fits                               
+ [ 1.mbpzj2 ] [ 2.ywnyga ]           [Top] [End] [Help]

@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                                                              
+ {k:stats:0|Overview}  {k:stats:1|{sub|Trends}}  {k:stats:2|Pools}  {k:stats:3|Models}  {k:stats:4|Projects}                                                                              
+                                                                                                                        
+ {k:trend:finished|runs finished}  {k:trend:verified|verified share}  {k:trend:spent|{sub|spent}}  {k:trend:licence|licence used}                                                                     
+ {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}                                                                                  
+                                                                                                                        
+ {d|── }{b|spent · last 7 days · per day}{d| ──────────────────────────────────────────────────────────────────────────────────────}
+    $16┤                                                                                                                
+       ┤                                                                                                                
+    $12┤                {c|████████████}                                                                                    
+       ┤                {g|████████████}                                                                                    
+     $8┤ {c|▄▄▄▄▄▄▄▄▄▄▄▄}   {a|████████████}                                 {c|████████████}                                       
+       ┤ {c|████████████}   {a|████████████}                                 {g|████████████}                  {c|████████████}         
+     $4┤ {a|████████████}   {p|████████████}   {g|████████████}                  {a|████████████}   {g|████████████}   {a|████████████}         
+     $2┤ {p|████████████}   {p|████████████}   {p|████████████}                  {p|████████████}   {p|████████████}   {p|████████████}         
+     $0┼ {d|10 Sep        } {d|11 Sep        } {d|12 Sep        } {d|13 Sep        } {d|14 Sep        } {d|15 Sep        } {d|today         }       
+         $7.0           $12            $3.7           {d|—}              $8.5           $3.8           $6.4                 
+ {d| total}  {d|$7.0}           {d|$19}            {d|$22}                           {d|$31}            {d|$35}            {d|$41}                  
+ {p|█} claude-code · {a|█} codex · {g|█} grok · {c|█} command-code                                                                      
+                                                                                                                        
+ {o|$40.93} {d|over last 7 days}                                                                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                         {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

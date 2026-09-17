@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {on|Runs}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}          {d| · 1–23/28}
+ {c|▶} {b|widget-lib} · run mbpzj2 · running                   
+ Status    {c|running}                                     
+ Pool      command-code · deepseek-v4.1-flash · max    
+ Purpose   Package the widget as src/widget/lib.js wi… 
+ Route     {d|medium lane → command-code: pace on track}   
+           {d|+5.0, record 54 runs · 89% ok · p50 10m}     
+ Time      started 18:26 · elapsed 15m00s of 17m expec{d|…}
+                                                       
+ {d|── }{b|budget}{d| ────────────────────────────────────────────}
+ cmd      {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  {p|0.80%} · $0.24              
+                                                       
+ {d|── }{b|task · first lines}{d| ────────────────────────────────}
+   {d|Package the widget as src/widget/lib.js with tests.} 
+   {d|Work only in the files your territory names, run}    
+   {d|the tests, and write the outcome to the output}      
+   {d|file. Do not touch other territories.}               
+                                                       
+ {d|── }{b|output}{d| ─────────────────────────────} {c|live} · 0 kB{d| ──}
+   > reading src/widget/core.js                        
+   > wrote src/widget/lib.js (214 lines)               
+   > npm test                                          
+     12 pass, 0 fail                                   
+   > wrote test/widget-lib.test.js                     
+   > bundle 9.8 kB gzip                                
+ {k:back|[ ← back ]} {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}{k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|e}{d|…}

@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {on|Budget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                             {d|weekly resets 5d1h · monthly resets 16h · 1–37/44}
+ {k:budgetTab:0|{sub|This week}}  {k:budgetTab:1|This month}  {k:budgetTab:2|All time}                                                                                        
+ {b|claude-code}  {d|Max 20x · $200/mo · weekly window}                                                                         
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  37% used                                             
+ {d|Resets Sep 21 at 8pm (Asia/Hong_Kong) · 28% of the window elapsed · on track}                                           
+ $18.50 of $50 used · {d|worth ≈ $212 at API rates} · {g|5 medium runs still fit}                                               
+ {p|▓▓▓▓▓▓▓▓▓▓}{d|▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░}                                                       
+ {p|▓ workflows 16%} · {d|▒ you, interactive 22%} · {d|░ unused 62%}                                                                
+ {d|biggest workflows:}  {k:recent:qv6242|qv6242} 6.1% · $3.05   {k:recent:gcxzza|gcxzza} 4.4% · $2.20   {k:recent:ywnyga|ywnyga} 0.8% · $0.55   {k:recent:mbpzj2|mbpzj2} 0.0% · $0.00              
+                                                                                                                        
+ {b|codex}  {d|Pro · $200/mo · weekly window}                                                                                   
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  29% used                                             
+ {d|Resets Sep 21 at 8pm (Asia/Hong_Kong) · 48% of the window elapsed · slow}                                               
+ $14.50 of $50 used · {d|worth ≈ $96 at API rates} · {g|5 medium runs still fit}                                                
+ {p|▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓}{d|▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░}                                                       
+ {p|▓ workflows 28%} · {d|▒ you, interactive 3%} · {d|░ unused 70%}                                                                 
+ {d|biggest workflows:}  {k:recent:qv6242|qv6242} 6.1% · $3.05   {k:recent:gcxzza|gcxzza} 4.4% · $2.20   {k:recent:mbpzj2|mbpzj2} 1.5% · $0.74                                    
+                                                                                                                        
+ {b|grok}  {d|Heavy · $300/mo · weekly window}                                                                                  
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  77% used                                             
+ {d|Resets Sep 21 at 8pm (Asia/Hong_Kong) · 74% of the window elapsed · on track}                                           
+ $57.75 of $75 used · {d|worth ≈ $140 at API rates} · {a|1 medium run still fits}                                               
+ {p|▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓}{d|▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░}                                                       
+ {p|▓ workflows 40%} · {d|▒ you, interactive 37%} · {d|░ unused 23%}                                                                
+ {d|biggest workflows:}  {k:recent:qv6242|qv6242} 6.1% · $3.05   {k:recent:gcxzza|gcxzza} 4.4% · $2.20                                                          
+                                                                                                                        
+ {b|command-code}  {d|credits · $70/mo · monthly window}                                                                        
+ {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏  93% used                                             
+ {d|Resets Sep 17 at 11am (Asia/Hong_Kong) · 98% of the window elapsed · on track}                                          
+ 65.1 of 70 credits used · {d|worth ≈ $9 at API rates} · {a|low lane only until the reset}                                      
+ {p|▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓}{d|▒▒░░░░}                                                       
+ {p|▓ workflows 91%} · {d|▒ you, interactive 3%} · {d|░ unused 6%}                                                                  
+ {d|biggest workflows:}  {k:recent:qv6242|qv6242} 6.1% · $3.05   {k:recent:gcxzza|gcxzza} 4.4% · $2.20   {k:recent:mbpzj2|mbpzj2} 1.2% · $0.31                                    
+                                                                                                                        
+ {d|── }{b|spent per day this week, by pool}{d| ───────────────────────────────────────────────────────} {d|running total underneath ──}
+    $12┤                                                                                                                
+       ┤                                                                                                                
+     $8┤                                                                                                                
+       ┤             {c|████████}                                                                                           
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                         {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

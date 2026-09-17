@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History           · 1–23/54
+ newest first · scroll for older days                  
+ ── Today · today ─────────────────── 4 runs · $6.40 ──
+ ✓ gcxzza  bullswarm docs site r…   41m · $2.10  16:41 
+ ✗ 2v57ri  bullseye… tidy · fail…   22m · $0.90  18:06 
+ ✓ m2a1qx  agentic-… ingest benc…   12m · $0.40  15:41 
+ ✓ k8s2xa  bullswarm issue watch…    6m · $0.12  09:12 
+                                                       
+ ── Tue 15 Sep ────────────────────── 2 runs · $3.66 ──
+ ✓ rgkgc6  bullseye… release che…   30m · $1.87  18:53 
+ ✓ 9ujvt5  agentic-… widget mile…   45m · $2.25  19:42 
+                                                       
+ ── Mon 14 Sep ────────────────────── 4 runs · $8.48 ──
+ ✓ hn2wp9  agentic-… triage issu…   20m · $2.28  13:15 
+ ✓ tc9j31  agentic-… docs pass      50m · $1.95  12:21 
+ ✓ 1e4jbf  bullswarm release che…   36m · $1.72  13:14 
+ ✗ h38kii  agentic-… benchmark i…   27m · $1.88  11:00 
+                                                       
+ ── Sun 13 Sep ────────────────────── 0 runs · $0.00 ──
+ no workflows                                          
+                                                       
+ ── Sat 12 Sep ────────────────────── 3 runs · $3.64 ──
+ ✓ bd47ap  bullseye… benchmark i…   40m · $0.77  16:56 
+ ✓ 7pdeix  bullseye  benchmark i…   11m · $1.30  20:06 
+ ✗ qkxe4v  bullseye  tidy and pu…   49m · $1.63  10:36 
+ [ ● 1.mbpzj2 ] [ 2.ywnyga ]         [Top] [End] [Help]

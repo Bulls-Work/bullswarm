@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet  Help                                                                        
+ every key and click on this dashboard                                                                                  
+ ── pages ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  r b s y f       Runs · Budget · Stats · History · Fleet                                                               
+  h  ?            this help                                                                                             
+  Esc  ←          back from a step, otherwise Home                                                                      
+  1 … 9           open the numbered run in the nav                                                                      
+  Tab             next sub-tab on Stats, Budget and Fleet                                                               
+  p               cycle the period: 7 days · 30 days · all time                                                         
+                                                                                                                        
+ ── moving ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ↑ ↓  j k        scroll one line                                                                                       
+  PgUp PgDn       scroll a screen                                                                                       
+  Home End        top · bottom                                                                                          
+  wheel           scrolls the body under the sticky header                                                              
+                                                                                                                        
+ ── clicks ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  tile            a today number opens its chart in Stats › Trends                                                      
+  bar             a day bar in the 7-day breakdown opens its chart                                                      
+  pool            a pool name opens Budget on that pool                                                                 
+  step            a step name opens the step page                                                                       
+  run             a run row or nav button opens the run                                                                 
+                                                                                                                        
+ ── other ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  e               edit the fleet (on Fleet)                                                                             
+  ctrl+s          copy the screen as plain text                                                                         
+  q               quit to the shell; workflows keep running                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ ● 1.mbpzj2 ] [ 2.ywnyga ]                       r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

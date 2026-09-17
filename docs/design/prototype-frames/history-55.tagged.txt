@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {on|History}          {d| · 1–23/54}
+ {d|newest first · scroll for older days}                  
+ {d|── }{b|Today · today}{d| ───────────────────} 4 runs · {o|$6.40}{d| ──}
+ {g|✓} {k:recent:gcxzza|{b|gcxzza}}  bullswarm docs site r…   41m · $2.10  {d|16:41} 
+ {r|✗} {k:recent:2v57ri|{b|2v57ri}}  bullseye… tidy · fail…   22m · $0.90  {d|18:06} 
+ {g|✓} {k:recent:m2a1qx|{b|m2a1qx}}  agentic-… ingest benc…   12m · $0.40  {d|15:41} 
+ {g|✓} {k:recent:k8s2xa|{b|k8s2xa}}  bullswarm issue watch…    6m · $0.12  {d|09:12} 
+                                                       
+ {d|── }{b|Tue 15 Sep}{d| ──────────────────────} 2 runs · {o|$3.66}{d| ──}
+ {g|✓} {k:recent:rgkgc6|{b|rgkgc6}}  bullseye… release che…   30m · $1.87  {d|18:53} 
+ {g|✓} {k:recent:9ujvt5|{b|9ujvt5}}  agentic-… widget mile…   45m · $2.25  {d|19:42} 
+                                                       
+ {d|── }{b|Mon 14 Sep}{d| ──────────────────────} 4 runs · {o|$8.48}{d| ──}
+ {g|✓} {k:recent:hn2wp9|{b|hn2wp9}}  agentic-… triage issu…   20m · $2.28  {d|13:15} 
+ {g|✓} {k:recent:tc9j31|{b|tc9j31}}  agentic-… docs pass      50m · $1.95  {d|12:21} 
+ {g|✓} {k:recent:1e4jbf|{b|1e4jbf}}  bullswarm release che…   36m · $1.72  {d|13:14} 
+ {r|✗} {k:recent:h38kii|{b|h38kii}}  agentic-… benchmark i…   27m · $1.88  {d|11:00} 
+                                                       
+ {d|── }{b|Sun 13 Sep}{d| ──────────────────────} 0 runs · {o|$0.00}{d| ──}
+ {d|no workflows}                                          
+                                                       
+ {d|── }{b|Sat 12 Sep}{d| ──────────────────────} 3 runs · {o|$3.64}{d| ──}
+ {g|✓} {k:recent:bd47ap|{b|bd47ap}}  bullseye… benchmark i…   40m · $0.77  {d|16:56} 
+ {g|✓} {k:recent:7pdeix|{b|7pdeix}}  bullseye  benchmark i…   11m · $1.30  {d|20:06} 
+ {r|✗} {k:recent:qkxe4v|{b|qkxe4v}}  bullseye  tidy and pu…   49m · $1.63  {d|10:36} 
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}         {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

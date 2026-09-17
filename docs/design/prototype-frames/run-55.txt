@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History           · 1–21/35
+ mbpzj2 · running · 16m · bullseye                     
+ Milestone 2a of Bullseye, "Widget": build the browser 
+ widget and the read-only inbox page in the            
+ ── plan ────── phase 2 of 6 · 3/8 steps · ETA 19:03 ──
+ ✓ scan ─┬─ ✓ widget-core ─┬─ ▶ widget-lib             
+         └─ ✓ inbox-page ──┘  ▶ inbox-api              
+   ─┬─ ○ widget-docs ─┬─ ○ integrate ─ ○ verify        
+                                                       
+ ── budget ────────────────────────────────────────────
+ cmd      ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 1.2%                        
+ codex    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 1.5%                        
+ claude   ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 0.0%                        
+ so far $1.05 · forecast $5.51                         
+                                                       
+ ── live ──────────────────────────────────────────────
+ widget-lib  ▇▅▃▁▂▃▅▇▅▃▂ 15m/17m                       
+   > done: lib exported as Widget.mount(el, opts)      
+ inbox-api   ▆▇▅▃▁▂▃▅▇▅▃ 4m/11m                        
+   > added GET /api/inbox (read-only)                  
+                                                       
+ ── timeline ──────────────────────────────────────────
+ ── Preflight ─────────────────────────────── 0s ──    
+ 18:25  ● Goal accepted                                
+ ── Phase 1 · scan · inbox-page ────────────── 4m10s ──
+ [ ● 1.mbpzj2 ] [ 2.ywnyga ]         [Top] [End] [Help]

@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {on|Runs}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                           {c|▶} {b|widget-lib} · run mbpzj2 · running
+ Status    {c|running} · deepseek-v4.1-flash · max                                                                          
+ Pool      command-code · attempt 1 · medium lane · max                                                                 
+ Purpose   Package the widget as src/widget/lib.js with tests                                                           
+ Route     {d|medium lane → command-code: pace on track +5.0, record 54 runs · 89% ok · p50 10m}                            
+ Time      started 18:26 · elapsed 15m00s of 17m expected                                                               
+                                                                                                                        
+ {d|── }{b|budget}{d| ─────────────────────────────────────────────────────────────────────────────────────────────────────────────}
+ cmd      {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  {p|0.80%} of the monthly window · $0.24 {d|≈ $1.80 API}                               
+                                                                                                                        
+ {d|── }{b|task · first lines}{d| ─────────────────────────────────────────────────────────────────────────────────────────────────}
+   {d|Package the widget as src/widget/lib.js with tests. Work only in the files your territory names, run the tests, and}  
+   {d|write the outcome to the output file. Do not touch other territories.}                                                
+                                                                                                                        
+ {d|── }{b|output}{d| ────────────────────────────────────────────────────────────────────────────────} {c|live} · 0 kB · ▇▅▃▁▂▃▅▇▅▃▂{d| ──}
+   > reading src/widget/core.js                                                                                         
+   > wrote src/widget/lib.js (214 lines)                                                                                
+   > npm test                                                                                                           
+     12 pass, 0 fail                                                                                                    
+   > wrote test/widget-lib.test.js                                                                                      
+   > bundle 9.8 kB gzip                                                                                                 
+   > done: lib exported as Widget.mount(el, opts)                                                                       
+                                                                                                                        
+ {d|── }{b|artifacts}{d| ──────────────────────────────────────────────────────────────────────────────────────────────────────────}
+   {d|task:   ~/.bullswarm/workflows/wf-mbpzj2/tasks/widget-lib.md}                                                         
+   {d|output: ~/.bullswarm/workflows/wf-mbpzj2/outputs/widget-lib.md}                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:back|[ ← back ]} {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}            {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}
