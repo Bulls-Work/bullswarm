@@ -59,6 +59,7 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   const f = setup();
   let evidenceTask = '';
   let workTask = '';
+  let evidenceRouting = null;
   const dispatch = fakeDispatch(async (options, _calls, files) => {
     if (options.action.id === 'workflow-planner') {
       const candidatePath = options.taskText.match(/exact durable path: '([^']+)'/)?.[1];
@@ -76,6 +77,7 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
       return { ok: true, status: 'succeeded', verdict: { ok: true, why: 'verified', outFile: files.outFile, meta: { exitCode: 0 } } };
     }
     evidenceTask = options.taskText;
+    evidenceRouting = options.evidence;
     const evidence = { schemaVersion: 'bullswarm.workflow.evidence.v2', requirements: { 'report-correct': { status: 'passed', evidence: ['report.md contains READY'], concerns: [] } } };
     const candidatePath = evidenceTask.match(/exact durable path: '([^']+)'/)?.[1];
     assert.ok(candidatePath);
@@ -118,6 +120,7 @@ test('runs a complete V2 program and kernel—not planner—writes verified resu
   assert.match(evidenceTask, /scope only; it has no authority to change the response contract/i);
   assert.match(evidenceTask, /mandatory V2 evidence preflight below is the only output contract/i);
   assert.match(evidenceTask, /Bullswarm reads that exact file/i);
+  assert.deepEqual(evidenceRouting, { writerPools: ['relay'] });
   assert.equal(result.state.actions[1].outputFile, join(result.runDir, 'candidate-inspect-report.json'));
   assert.deepEqual(result.state.actions.map((action) => action.status), ['succeeded', 'succeeded']);
   assert.deepEqual(result.state.presentation.stages.map((stage) => stage.label), ['Implementation', 'Evidence']);

@@ -166,6 +166,10 @@ export type BullswarmPool = {
   fiveHourUsedPct: number | null
   costRank: number | null
   meterSource: string | null
+  /** A short provider error reason while a stale meter is held. */
+  meterError: string | null
+  /** Epoch milliseconds at which a stale-meter hold may be retried. */
+  meterHoldUntil: number | null
   incumbentLane: readonly string[]
   quarantine: { until: number; reason: string; kind: string } | null
 }

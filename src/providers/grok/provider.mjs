@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { retryAfterMsFromHeaders } from '../../meters/framework.js';
 
 export const name = 'grok';
 export const displayName = 'Grok';
@@ -18,9 +19,11 @@ const WEEKLY_PERIOD = 'USAGE_PERIOD_TYPE_WEEKLY';
 const REFRESH_BUFFER_MS = 5 * 60_000;
 
 export class GrokMeterError extends Error {
-  constructor(message, code) {
+  constructor(message, code, { status = null, retryAfterMs = null } = {}) {
     super(message);
     this.code = code; // no_auth | http | parse | network | not_weekly
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -152,13 +155,14 @@ async function fetchJson(url, token) {
   } catch (err) {
     throw new GrokMeterError(`Network error reaching Grok billing: ${err.message}`, 'network');
   }
+  const retryAfterMs = retryAfterMsFromHeaders(res.headers);
   let body = null;
   try {
     body = await res.json();
   } catch {
     /* leave null */
   }
-  return { status: res.status, body };
+  return { status: res.status, body, retryAfterMs };
 }
 
 export async function fetchGrokUsage({ pool = 'grok', env, home } = {}) {
@@ -170,18 +174,19 @@ export async function fetchGrokUsage({ pool = 'grok', env, home } = {}) {
     if (refreshed) token = refreshed;
   }
 
-  let { status, body } = await fetchJson(CREDITS_URL, token);
+  let { status, body, retryAfterMs } = await fetchJson(CREDITS_URL, token);
   if (status === 401 || status === 403) {
     const refreshed = await refreshAccessToken(loaded.entry, p);
     if (refreshed) {
       token = refreshed;
-      ({ status, body } = await fetchJson(CREDITS_URL, token));
+      ({ status, body, retryAfterMs } = await fetchJson(CREDITS_URL, token));
     }
   }
   if (status < 200 || status >= 300) {
     throw new GrokMeterError(
       `Grok billing returned HTTP ${status}`,
       status === 401 || status === 403 ? 'no_auth' : 'http',
+      { status, retryAfterMs },
     );
   }
 

@@ -1,5 +1,5 @@
 {
-  "name": "opencode2",
+  "name": "opencode",
   "spawn": { "cmd": ["opencode", "run", "--auto", "{taskFile}"], "cwdMode": "pwd" },
   "outputExtraction": { "strategy": "stdout" },
   "model": "default",

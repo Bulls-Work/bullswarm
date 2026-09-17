@@ -3,7 +3,7 @@ export const name = 'relay';
 export const displayName = 'Relay';
 export function connectors({ kit, templates }) {
   const accounts = [{ id: 'a', models: ['gpt-5.6-sol'] }, { id: 'b', models: ['gpt-5.6-sol'] }];
-  return accounts.map((acc, i) => kit.clonePool(templates.opencode2, {
+  return accounts.map((acc, i) => kit.clonePool(templates.opencode, {
     name: i === 0 ? 'relay' : `relay:${acc.id}`,
     model: `${acc.id}/gpt-5.6-sol`,
     env: { OPENCODE_CONFIG_CONTENT: kit.opencodeVariants(acc.id, acc.models) },

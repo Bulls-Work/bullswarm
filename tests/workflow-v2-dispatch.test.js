@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyV2DispatchFailure, dispatchV2Action } from '../src/workflow/v2-dispatch.js';
 import { loadState, saveState } from '../src/lib/state.js';
+import { listAssignments } from '../src/lib/assignments.js';
 import {
   createV2GoalDocument, createV2DurableState, deserializeV2DurableState,
 } from '../src/workflow/v2-state.js';
@@ -106,6 +107,64 @@ test('failure classification does not invent a process crash when exit metadata 
   assert.equal(classifyV2DispatchFailure({ ok: false, failureKind: 'provider' }), 'provider');
 });
 
+test('literal empty output from a free pool is a provider failure, not semantic work', () => {
+  assert.equal(classifyV2DispatchFailure(
+    { ok: false, why: 'empty output', meta: { exitCode: 1 } },
+    { free: true },
+  ), 'provider');
+  assert.equal(classifyV2DispatchFailure(
+    { ok: false, why: 'empty output', meta: { exitCode: 1 } },
+    { free: false },
+  ), 'process');
+  assert.equal(classifyV2DispatchFailure(
+    { ok: false, why: 'announcement without substance', meta: { exitCode: 0 } },
+    { free: true },
+  ), 'semantic');
+});
+
+test('a free pool derives its silence clock from the trusted rung median', async () => {
+  let observedSilence = null;
+  const h = harness([
+    ({ opts }) => { observedSilence = opts.silenceTimeoutSec; return good; },
+  ], {
+    decisionLog: [
+      { picked: 'free-rung', lane: 'build', routing: { effort: 'low' }, ok: true, wallSec: 7 * 60, ts: '2026-08-31T00:10:00Z' },
+      { picked: 'free-rung', lane: 'build', routing: { effort: 'low' }, ok: true, wallSec: 8 * 60, ts: '2026-08-31T00:20:00Z' },
+      { picked: 'free-rung', lane: 'build', routing: { effort: 'low' }, ok: true, wallSec: 9 * 60, ts: '2026-08-31T00:30:00Z' },
+    ],
+  });
+  const pool = connector('free-rung', {
+    model: 'provider/union-free',
+    modelProfiles: [{ match: 'union-free', tier: 'medium', free: true }],
+    strategyAssignments: { low: { pool: 'free-rung', model: 'provider/union-free' } },
+  });
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [pool], bullswarmDir: '/tmp/bs', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(observedSilence, 8 * 60);
+});
+
+test('the worker silence environment override still controls a free-pool probe', async () => {
+  let observedSilence = null;
+  const h = harness([
+    ({ opts }) => { observedSilence = opts.silenceTimeoutSec; return good; },
+  ]);
+  const pool = connector('free-env', {
+    model: 'provider/union-free',
+    modelProfiles: [{ match: 'union-free', tier: 'medium', free: true }],
+    strategyAssignments: { low: { pool: 'free-env', model: 'provider/union-free' } },
+  });
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [pool], bullswarmDir: '/tmp/bs', parentEnv: { BULLSWARM_WORKER_SILENCE_SEC: '7' },
+    dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(observedSilence, 7);
+});
+
 test('a usage limit is classified quota, never process, semantic or auth', () => {
   // The real shape: non-zero exit AND a quarantine hint, both of which used to
   // win over the usage limit itself.
@@ -132,6 +191,96 @@ test('semantic rejection is observed once and never retried', async () => {
   const result = await dispatchV2Action({ action, taskText: 'do it', targetDir: '/tmp', paths, pools: [connector('luna-1'), connector('luna-2')], bullswarmDir: '/tmp/bs', dependencies: h.dependencies });
   assert.equal(result.failureKind, 'semantic');
   assert.equal(result.attempts.length, 1);
+});
+
+test('a free stall does not spend the mechanical retry and falls through to the next pool', async () => {
+  const stalled = { ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null, wallSec: 2 } };
+  const h = harness([stalled, good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('free', {
+      model: 'provider/union-free',
+      modelProfiles: [{ match: 'union-free', free: true }],
+      strategyAssignments: { low: { pool: 'free', model: 'provider/union-free' } },
+    }), connector('paid')],
+    bullswarmDir: '/tmp/bs', maxMechanicalRetries: 0, dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['free', 'paid']);
+  assert.equal(result.attempts[0].willRetry, true);
+  assert.match(result.attempts[1].routeWhy, /^fallback from free after stall 300s/);
+});
+
+test('a free empty-output provider failure also leaves the mechanical retry untouched', async () => {
+  const h = harness([
+    { ok: false, why: 'empty output', meta: { exitCode: 1, wallSec: 0.1 } },
+    good,
+  ]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('free', {
+      model: 'provider/union-free',
+      modelProfiles: [{ match: 'union-free', free: true }],
+      strategyAssignments: { low: { pool: 'free', model: 'provider/union-free' } },
+    }), connector('paid')],
+    bullswarmDir: '/tmp/bs', maxMechanicalRetries: 0, dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['free', 'paid']);
+  assert.equal(result.attempts[0].failureKind, 'provider');
+  assert.equal(result.attempts[0].willRetry, true);
+});
+
+test('a metered stall still spends the mechanical retry allowance', async () => {
+  const stalled = { ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null, wallSec: 2 } };
+  const h = harness([stalled, good]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('metered')],
+    bullswarmDir: '/tmp/bs', maxMechanicalRetries: 1, dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['metered', 'metered']);
+  assert.equal(result.attempts[0].willRetry, true);
+});
+
+test('a free stall still falls through after an earlier schema correction spends the retry budget', async () => {
+  const schema = {
+    ok: false, failureKind: 'schema', why: 'invalid evidence', structured: { errors: ['bad'] }, meta: { exitCode: 0 },
+  };
+  const stalled = { ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null, wallSec: 2 } };
+  const h = harness([schema, schema, stalled, good]);
+  const free = connector('free', {
+    model: 'provider/union-free',
+    modelProfiles: [{ match: 'union-free', free: true }],
+    strategyAssignments: { low: { pool: 'free', model: 'provider/union-free' } },
+  });
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('answerer'), free, connector('metered')],
+    evidence: { writerPools: ['free', 'metered'] },
+    bullswarmDir: '/tmp/bs', maxMechanicalRetries: 1,
+    correctionTask: () => 'correct it', dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.pool), ['answerer', 'answerer', 'free', 'metered']);
+  assert.equal(result.attempts[2].willRetry, true);
+});
+
+test('willRetry is false when a free stall is the last eligible pool', async () => {
+  const h = harness([{ ok: false, failureKind: 'stalled', why: 'stalled: no output', meta: { exitCode: null } }]);
+  const result = await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('free', {
+      model: 'provider/union-free',
+      modelProfiles: [{ match: 'union-free', free: true }],
+      strategyAssignments: { low: { pool: 'free', model: 'provider/union-free' } },
+    })],
+    bullswarmDir: '/tmp/bs', maxMechanicalRetries: 1, dependencies: h.dependencies,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].willRetry, false);
 });
 
 test('schema correction is bounded and resumes one physical planner session', async () => {
@@ -666,4 +815,113 @@ test('an auth failure on a pool with no upstream group benches nothing else', as
   assert.equal(result.ok, true);
   assert.ok(h.core.pools['claude-code:alt'].quarantine);
   assert.equal(h.core.pools['claude-code']?.quarantine, undefined, 'a separate seat is a separate credential');
+});
+
+test('a free stall keeps partial output, falls back, releases the ledger, and benches on the second strike', { timeout: 30_000 }, async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-free-stall-dispatch-'));
+  const stallerWorker = new URL('./fixtures/stalling-connector.mjs', import.meta.url).pathname;
+  const answererWorker = new URL('./fixtures/answering-connector.mjs', import.meta.url).pathname;
+  const fixturePool = (name, worker, model, extra = {}) => ({
+    name,
+    enabled: true,
+    costRank: name === 'staller' ? 1 : 3,
+    lanes: ['analyze', 'build', 'chore'],
+    capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+    spawn: { cmd: [process.execPath, worker, '{taskFile}'] },
+    outputExtraction: { strategy: 'stdout' },
+    meter: { type: 'none' },
+    model,
+    modelSelection: { flag: '--model' },
+    strategyAssignments: { low: { pool: name, model } },
+    ...extra,
+  });
+  const staller = fixturePool('staller', stallerWorker, 'zen/union-free', { free: true });
+  const answerer = fixturePool('answerer', answererWorker, 'paid/answerer');
+  saveState(home, {
+    version: 1,
+    pools: { staller: { enabled: true }, answerer: { enabled: true } },
+    incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
+  });
+  const pathsFor = (prefix) => (ordinal) => ({
+    taskFile: join(home, `${prefix}-task-${ordinal}.md`),
+    outFile: join(home, `${prefix}-out-${ordinal}.md`),
+  });
+  const runOnce = (prefix) => dispatchV2Action({
+    action: { id: `stall-fallback-${prefix}`, lane: 'build', effort: 'low' },
+    taskText: 'perform the bounded fixture dispatch',
+    targetDir: home,
+    paths: pathsFor(prefix),
+    pools: [staller, answerer],
+    bullswarmDir: home,
+    silenceTimeoutSec: 2,
+    maxMechanicalRetries: 1,
+  });
+  try {
+    const first = await runOnce('first');
+    assert.equal(first.ok, true);
+    assert.deepEqual(first.attempts.map((attempt) => attempt.pool), ['staller', 'answerer']);
+    assert.equal(first.attempts[0].failureKind, 'stalled');
+    assert.equal(first.attempts[0].stalled, true);
+    assert.equal(first.attempts[0].silentSec, 2);
+    assert.equal(first.attempts[0].routeWhy.startsWith('fallback from'), false);
+    assert.ok(existsSync(first.attempts[0].partialOutput));
+    assert.match(readFileSync(first.attempts[0].partialOutput, 'utf8'), /## Partial/);
+    assert.match(first.attempts[1].routeWhy, /^fallback from staller after stall 2s · /);
+    assert.deepEqual(listAssignments(home), []);
+    assert.equal(loadState(home).pools.staller.bench.count, 1);
+    assert.equal(loadState(home).pools.staller.bench.until, null);
+
+    const second = await runOnce('second');
+    assert.equal(second.ok, true);
+    assert.deepEqual(second.attempts.map((attempt) => attempt.pool), ['staller', 'answerer']);
+    assert.equal(second.attempts[0].failureKind, 'stalled');
+    const bench = loadState(home).pools.staller.bench;
+    assert.equal(bench.reason, 'stall');
+    assert.equal(bench.count, 2);
+    assert.ok(Number.isFinite(bench.until) && bench.until > Date.now());
+    assert.deepEqual(listAssignments(home), []);
+
+    const third = await runOnce('third');
+    assert.equal(third.ok, true);
+    assert.deepEqual(third.attempts.map((attempt) => attempt.pool), ['answerer']);
+    assert.match(third.attempts[0].routeWhy, /benched \(stall, back at /);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a stalled attempt survives the durable-state validator with its partial output', () => {
+  const goal = createV2GoalDocument({
+    goal: 'Free pool stalls', cwd: '/tmp/repo',
+    requirements: [{ id: 'r1', text: 'Do the thing' }], settings: {},
+  });
+  const state = createV2DurableState(goal, { runId: 'wf-stall', shortId: 'stl123' });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [{
+      id: 'do-work', purpose: 'Do the thing', dependsOn: [], affects: [], ownedFiles: [],
+      prompt: 'Do the thing.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+    }],
+  };
+  state.actions = [{ id: 'do-work', status: 'succeeded', attempts: 2, programRevision: 1 }];
+  state.presentation = { stages: [{ id: 'r1-evidence', label: 'Evidence', revision: 1, actionIds: ['do-work'], startedAt: null, completedAt: null }] };
+  // The attempt the free pool stalled on, exactly as normalizeAttempt writes it:
+  // `stalled`, the partial file kept on disk, and the threshold that ended it.
+  state.attempts = [{
+    id: 'do-work-1', actionId: 'do-work', ordinal: 1, status: 'interrupted',
+    pool: 'staller', model: 'zen/union-free', startedAt: '2026-09-17T02:30:20.000Z',
+    finishedAt: '2026-09-17T02:30:28.000Z', failureKind: 'stalled',
+    why: 'stalled: the worker wrote nothing for 8 s and was stopped',
+    stalled: true, partialOutput: '/tmp/out-do-work-attempt-1.md', silentSec: 8,
+  }, {
+    id: 'do-work-2', actionId: 'do-work', ordinal: 2, status: 'succeeded',
+    pool: 'answerer', model: 'paid/answerer', startedAt: '2026-09-17T02:30:29.000Z',
+    finishedAt: '2026-09-17T02:30:30.000Z',
+  }];
+  const loaded = deserializeV2DurableState(JSON.stringify(state));
+  assert.equal(loaded.attempts[0].stalled, true);
+  assert.equal(loaded.attempts[0].partialOutput, '/tmp/out-do-work-attempt-1.md');
+  assert.equal(loaded.attempts[0].silentSec, 8);
+  // An attempt recorded before the stall clock existed carries none of them.
+  assert.equal(loaded.attempts[1].stalled, undefined);
 });

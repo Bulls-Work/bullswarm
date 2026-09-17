@@ -722,7 +722,7 @@ const strategySetSubscriptionText = rich({
   safety: ['writes state.strategy.subscriptions[pool] and invalidates the cached report'],
   examples: [
     { cmd: 'bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000' },
-    { cmd: 'bullswarm strategy set-subscription opencode2 --resets-at 2026-09-17T01:46:01Z', note: 'a wallet whose usage is reported but whose refill date is not' },
+    { cmd: 'bullswarm strategy set-subscription opencode --resets-at 2026-09-17T01:46:01Z', note: 'a wallet whose usage is reported but whose refill date is not' },
   ],
   next: 'bullswarm strategy refresh to recompute recommendations with the new economics.',
 });
@@ -1509,7 +1509,7 @@ const providerScaffoldText = rich({
     { flag: '--dir <path>', desc: 'the provider directory to create', default: '~/.bullswarm/providers/<name>/' },
   ],
   safety: ['writes only inside the target directory, and refuses one that already exists and is not empty'],
-  examples: [{ cmd: 'bullswarm provider scaffold relay --from opencode2', note: 'a reseller that runs through opencode' }],
+  examples: [{ cmd: 'bullswarm provider scaffold relay --from opencode', note: 'a reseller that runs through opencode' }],
   next: 'bullswarm provider validate <name>, then bullswarm provider probe <name>.',
 });
 const providerProbeText = rich({

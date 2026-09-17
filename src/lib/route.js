@@ -104,11 +104,18 @@
 //       urgency. No pacing window, no parsable paceResetsAt, a reset already
 //       in the past, or any window other than weekly/monthly means there is
 //       no lead time to measure and nothing about the pool changes (R8).
+//  R12. A healthy free model forms a tier ahead of metered pools while it is
+//       available; metered pools keep their R1-R11 ordering. A soft-benched
+//       pool is out until its re-probe deadline, and the bench never overrides
+//       quarantine, exhaustion, 5h headroom or burst gates. Evidence steps do
+//       normal routing (and prefer a pool that did not write the evidence) so
+//       a free model cannot judge its own work unless it is the only option.
 
 import { FIVE_HOUR_NEAR_LIMIT_PCT, BURST_BLOCK_PCT, WINDOW_MS } from '../meters/framework.js';
 // One strict numeric coercion for the whole codebase (src/lib/num.js): a
 // missing measurement stays null instead of becoming a confident zero.
 import { finiteOrNull as num } from './num.js';
+import { isFreeModel } from './usage.js';
 
 export const LANES = ['analyze', 'build', 'chore'];
 
@@ -201,6 +208,27 @@ export function isQuarantined(pool, now = Date.now()) {
   if (!pool.quarantine) return false;
   if (pool.quarantine.until == null) return true;
   return now < pool.quarantine.until;
+}
+
+/** Whether the model selected for this pool/tier is declared free. */
+export function isFree(pool) {
+  if (pool?.free === true) return true;
+  // Dispatchers that predate the pool-view projection still carry the resolved
+  // model policy. Infer the same connector-owned declaration as a compatibility
+  // path so free-first does not silently disappear between config and routing.
+  const connector = pool?.connector ?? pool;
+  const model = pool?.modelPolicy?.model ?? pool?.freeModel ?? connector?.model ?? null;
+  return isFreeModel(connector, model);
+}
+
+/**
+ * A soft bench is active only while it has a concrete future deadline.
+ * `until: null` records a first strike without taking the pool out of service;
+ * this is deliberately different from quarantine, where null means forever.
+ */
+export function isBenched(pool, now = Date.now()) {
+  const until = pool?.bench?.until;
+  return until != null && Number.isFinite(Number(until)) && now < Number(until);
 }
 
 /** Round to one decimal for human-readable routing reasons. */
@@ -648,6 +676,7 @@ export function isExhausted(pool) {
  *                        projectedWeeklyPct, projectedPacingPct.
  * @param {object} [opts] { callerEligible=true, callerName='claude', now,
  *                        requiredCapabilities, preferredPool, effortTier,
+ *                        evidence: { writerPools: string[] },
  *                        callerSession, candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
  *                        inflightPenaltyPct=DEFAULT_INFLIGHT_PENALTY_PCT
@@ -665,9 +694,13 @@ export function pickPool(lane, pools, opts = {}) {
     preferredPool = null,
     candidateMinutes = null,
     inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT,
+    evidence = null,
   } = opts;
 
   const candidateMins = num(candidateMinutes);
+  const writerPools = new Set(
+    Array.isArray(evidence?.writerPools) ? evidence.writerPools : [],
+  );
 
   if (!LANES.includes(lane)) {
     return {
@@ -683,7 +716,7 @@ export function pickPool(lane, pools, opts = {}) {
   // emptied it (D7). A pool the model policy rejected is not a pool that lacks
   // a capability, and reporting the wrong one sends an operator to fix a
   // connector when the fix is `strategy set-rung`.
-  const laneCapable = pools.filter(
+  const laneCapableBeforeBench = pools.filter(
     (p) =>
       p.enabled !== false &&
       (p.lanes ?? LANES).includes(lane) &&
@@ -692,6 +725,8 @@ export function pickPool(lane, pools, opts = {}) {
       !isQuarantined(p, now) &&
       !isExhausted(p),
   );
+  const benchedOut = laneCapableBeforeBench.filter((p) => isBenched(p, now));
+  const laneCapable = laneCapableBeforeBench.filter((p) => !isBenched(p, now));
   // resolveDispatchModel() marks a pool ineligible when the persisted routing
   // policy cannot name a model for this tier — most often an effort tier whose
   // allow-list selects models on other pools only. Filtering here (instead of
@@ -723,6 +758,11 @@ export function pickPool(lane, pools, opts = {}) {
       // urgent first, draining last, everything else in the middle — the tier
       // R11 adds under R7's 5h tier and above the pace comparison.
       urgencyRank: expiring.state === 'urgent' ? 0 : expiring.state === 'draining' ? 2 : 1,
+      // R12: a free model gets its own tier, but only after the hard forecast
+      // gates and 5h headroom tiers have been applied below.
+      freeRank: isFree(p) ? 0 : 1,
+      // Evidence prefers a pool that did not write the work it is judging.
+      writerRank: writerPools.has(p.name) ? 1 : 0,
       // R8b: R7's tier, applied to the forecast instead of the reading — and
       // R10: only for a pool further through its 5h quota than through its 5h
       // window. A pool at 88% with 23 minutes left keeps its tier 0.
@@ -733,14 +773,17 @@ export function pickPool(lane, pools, opts = {}) {
       gated: forecast.forecasted && forecast.forecast != null && forecast.forecast >= BURST_BLOCK_PCT,
     };
   });
-  // R8 before R7 before R11 before R2: forecast-gated pools last, then 5h
-  // headroom, then urgent < normal < draining, then the group's own score —
-  // urgency among the urgent, most-behind-after-load everywhere else. The
-  // candidate list is reported in this exact preference order.
+  // R8 before R7 before R12/R11 before R2: forecast-gated pools last, then 5h
+  // headroom, then the evidence/writer and free tiers, then urgent < normal <
+  // draining, then the group's own score — urgency among the urgent,
+  // most-behind-after-load everywhere else. The candidate list is reported in
+  // this exact preference order.
   scored.sort(
     (a, b) =>
       (a.gated ? 1 : 0) - (b.gated ? 1 : 0) ||
       a.tier - b.tier ||
+      a.writerRank - b.writerRank ||
+      (evidence ? 1 : a.freeRank) - (evidence ? 1 : b.freeRank) ||
       a.urgencyRank - b.urgencyRank ||
       (a.urgencyRank === 0
         ? b.expiring.urgency - a.expiring.urgency
@@ -780,6 +823,11 @@ export function pickPool(lane, pools, opts = {}) {
     urgency: e.expiring.urgency == null ? null : tenth(e.expiring.urgency),
     forecastPacingPct: e.expiring.forecast == null ? null : tenth(e.expiring.forecast),
     urgencyState: e.expiring.state,
+    free: isFree(e.pool),
+    freeModel: e.pool.freeModel ?? null,
+    // A benched pool is filtered before scoring; this explicit false keeps the
+    // candidate shape stable for callers that render routing explanations.
+    benched: false,
   }));
   const gatedNames = scored.filter((e) => e.gated).map((e) => e.pool.name);
   const forecastReport = { candidateMinutes: candidateMins, gated: gatedNames };
@@ -792,18 +840,21 @@ export function pickPool(lane, pools, opts = {}) {
     const withCapabilities = requiredCapabilities.length
       ? ` with capabilities: ${requiredCapabilities.join(', ')}`
       : '';
+    const emptyDelegateWhy = blocked ?? `no eligible delegate pool${withCapabilities}`;
+    const emptyPoolWhy = blocked ?? `no eligible pool${withCapabilities}`;
+    const benchWhy = formatBenched(benchedOut);
     return callerEligible
       ? {
           pick: null,
           keepOnClaude: true,
-          why: `${blocked ?? `no eligible delegate pool${withCapabilities}`}; caller takes the lane`,
+          why: `${emptyDelegateWhy}; caller takes the lane${benchWhy ? ` · ${benchWhy}` : ''}`,
           candidates,
           forecast: forecastReport,
         }
       : {
           pick: null,
           keepOnClaude: false,
-          why: blocked ?? `no eligible pool${withCapabilities}`,
+          why: `${emptyPoolWhy}${benchWhy ? ` · ${benchWhy}` : ''}`,
           candidates,
           forecast: forecastReport,
         };
@@ -820,6 +871,8 @@ export function pickPool(lane, pools, opts = {}) {
   let winnerEntry;
   let skippedNearLimit = [];
   let skippedDraining = [];
+  let skippedFree = [];
+  let evidenceOnlyWriter = false;
   if (allGated) {
     winnerEntry = [...scored].sort(
       (a, b) =>
@@ -832,17 +885,30 @@ export function pickPool(lane, pools, opts = {}) {
     const headroomSet = withHeadroom.length ? withHeadroom : open;
     skippedNearLimit = withHeadroom.length ? open.filter((e) => e.tier === 1) : [];
 
+    // R12 evidence and free tiers sit above the ordinary R11 selection. An
+    // evidence step disables free-first and prefers non-writers whenever one
+    // remains eligible; a writer is selected only when every eligible pool is
+    // one of its writers.
+    const nonWriter = headroomSet.filter((e) => e.writerRank === 0);
+    const evidenceBase = nonWriter.length ? nonWriter : headroomSet;
+    const freeSet = evidence ? [] : headroomSet.filter((e) => e.freeRank === 0);
+    skippedFree = freeSet.length
+      ? evidenceBase.filter((e) => e.freeRank !== 0)
+      : [];
+
     // R11, by the same mechanism and one rung below it: while any pool's
     // quota is about to expire with room to spend it, that pool is the only
     // selectable one — which is what puts urgency ahead of incumbency and of
     // a configured effort assignment, both of which are resolved inside
     // `selectable` below. A draining pool is the mirror image: out of
     // selection until nothing else is left.
-    const urgentSet = headroomSet.filter((e) => e.urgencyRank === 0);
-    const notDraining = headroomSet.filter((e) => e.urgencyRank !== 2);
+    const urgentSet = evidenceBase.filter((e) => e.urgencyRank === 0);
+    const notDraining = evidenceBase.filter((e) => e.urgencyRank !== 2);
     const selectable =
-      urgentSet.length ? urgentSet : notDraining.length ? notDraining : headroomSet;
-    skippedDraining = notDraining.length ? headroomSet.filter((e) => e.urgencyRank === 2) : [];
+      freeSet.length ? freeSet
+      : urgentSet.length ? urgentSet
+      : notDraining.length ? notDraining : evidenceBase;
+    skippedDraining = notDraining.length ? evidenceBase.filter((e) => e.urgencyRank === 2) : [];
 
     const preferredEntry = preferredPool
       ? selectable.find((entry) => entry.pool.name === preferredPool)
@@ -882,6 +948,7 @@ export function pickPool(lane, pools, opts = {}) {
       winnerEntry = selectable[0];
     }
   }
+  evidenceOnlyWriter = Boolean(evidence) && winnerEntry?.writerRank === 1;
   // R8c visibility: pools that would have won on raw pace and lost only
   // because of the work they are already carrying. Empty unless a caller
   // attached in-flight counts, so today's reasons are unchanged.
@@ -897,6 +964,10 @@ export function pickPool(lane, pools, opts = {}) {
   const why = routingReason(winnerEntry, {
     preferred: !allGated && Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
     effortTier: opts.effortTier,
+    evidence,
+    evidenceOnlyWriter,
+    skippedFree,
+    benchedOut,
     skippedNearLimit,
     skippedDraining,
     gated: allGated ? [] : gatedEntries,
@@ -964,6 +1035,17 @@ function modelPolicyReason(blocked, effortTier) {
   }`;
 }
 
+function formatBenched(benchedOut) {
+  return (benchedOut ?? []).map((p) => {
+    const reason = p.bench?.reason ?? 'unknown';
+    const until = p.bench?.until;
+    const backAt = Number.isFinite(Number(until))
+      ? new Date(Number(until)).toISOString()
+      : 'unknown';
+    return `benched (${reason}, back at ${backAt}): ${p.name}`;
+  }).join(' · ');
+}
+
 /**
  * Explain the pick: why this pool, at what 5h utilization (reading and, when a
  * forecast exists, the projection), how much work it is already carrying, and
@@ -974,6 +1056,10 @@ function routingReason(
   {
     preferred,
     effortTier,
+    evidence = null,
+    evidenceOnlyWriter = false,
+    skippedFree = [],
+    benchedOut = [],
     skippedNearLimit = [],
     skippedDraining = [],
     gated = [],
@@ -987,10 +1073,22 @@ function routingReason(
     .filter(Boolean)
     .join(', ');
   let base;
-  if (gatedFallback) {
+  if (evidenceOnlyWriter) {
+    base = `evidence step: only the writer pool ${winnerEntry.pool.name} is eligible`;
+  } else if (evidence) {
+    base = 'evidence step: normal routing (free tier not applied)';
+  } else if (gatedFallback) {
     base = `every capable pool is forecast-gated at/above ${BURST_BLOCK_PCT}% of its 5h window; least loaded wins (${
       [winnerEntry.pool.name, note, inflight].filter(Boolean).join(', ')
     })`;
+  } else if (winnerEntry.freeRank === 0) {
+    const freeModel = winnerEntry.pool.freeModel ?? winnerEntry.pool.modelPolicy?.model ?? null;
+    const freeDetail = [
+      freeModel ? `free model ${freeModel}` : null,
+      note,
+      inflight,
+    ].filter(Boolean).join(', ');
+    base = `free pool first: ${winnerEntry.pool.name}${freeDetail ? ` (${freeDetail})` : ''}`;
   } else if (preferred) {
     base = `configured ${effortTier ?? 'effort'} assignment (${
       [winnerEntry.pool.name, note, inflight].filter(Boolean).join(', ')
@@ -1012,6 +1110,15 @@ function routingReason(
     base = `most-behind capable pool${standing} (${detail})`;
   }
   const clauses = [base];
+  if (skippedFree.length) {
+    clauses.push(
+      `metered pools ranked below free: ${skippedFree
+        .map((e) => `${e.pool.name} ${tenth(e.effective)}`)
+        .join(', ')}`,
+    );
+  }
+  const benchWhy = formatBenched(benchedOut);
+  if (benchWhy) clauses.push(benchWhy);
   if (skippedNearLimit.length) {
     const projected = skippedNearLimit.some((e) => e.forecast.forecasted);
     clauses.push(

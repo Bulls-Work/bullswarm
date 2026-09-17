@@ -531,7 +531,7 @@ Record known subscription pricing for a pool so refresh's value-multiple math is
 ```bash
 # Record plan economics, then declare a refill date a wallet does not report.
 bullswarm strategy set-subscription claude --plan max --monthly-usd 200 --included-usd 1000
-bullswarm strategy set-subscription opencode2 --resets-at 2026-09-17T01:46:01Z
+bullswarm strategy set-subscription opencode --resets-at 2026-09-17T01:46:01Z
 ```
 
 | Flag | Meaning | Default |
@@ -628,7 +628,7 @@ Write a commented provider directory: a `provider.mjs` skeleton showing every ex
 
 ```bash
 # Scaffold a reseller that runs through OpenCode.
-bullswarm provider scaffold relay --from opencode2
+bullswarm provider scaffold relay --from opencode
 ```
 
 | Flag | Meaning | Default |

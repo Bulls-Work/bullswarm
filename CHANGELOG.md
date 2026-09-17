@@ -1,5 +1,7 @@
 # bullswarm changelog
 
+## 0.33.0 — the dashboard release
+
 - dashboard: the visual-fidelity pass now composes `Home` with a four-column
   7-day breakdown and a budget block, `Run` with a plan strip, per-step bars
   and a `budget` / `live` / `so far` band, `Budget` with seven rows per pool
@@ -58,25 +60,6 @@
   and `routeCandidates` (each pool's effective surplus, urgency state and
   pacing forecast at pick time); `workflow action show --json` and
   `runs result --json` print them, and older state files still load.
-
-- routing: a pool whose pacing window is about to reset is `draining` only
-  when its forecast is at or above 95% *and* ahead of the window's own clock,
-  the same clock-relative shape the 5h near-limit line already has. A pool on
-  or behind pace keeps spending right up to its reset instead of being ranked
-  last by a fixed line (observed 2026-09-16: command-code at 94.9% used with
-  98% of the month gone was passed over while +3 points of quota expired).
-  The skip reason now reads `expiring but draining (forecast >= 95% and past
-  its clock): <pool> <forecast>% (<elapsed>% elapsed)`.
-- workflow goal: refuses to launch a duplicate of a run that is already going.
-  Before anything is validated or launched, an ongoing run with the same goal
-  text and cwd exits 2, naming that run's shortId, age, and watch command
-  (JSON: `{"error":"duplicate-goal",...}`); `--again` starts the copy anyway
-  (observed 2026-09-16: a caller whose JSON parser failed on the first
-  launch's output retried five seconds later and two identical workflows ran
-  side by side in the same directory).
-
-## 0.33.0 — the dashboard release
-
 - dashboard: the full-screen surface now has nine pages — Home, Runs, Run,
   Step, Budget, Stats, History, Fleet, and Help. Home answers what happened
   today and what is active; Runs is the catalogue and integration actions; Run
@@ -119,6 +102,84 @@
 - docs: the observing guide, README, CLI reference, command help, and Claude
   Mod README now describe the nine pages, the full key map, the measured/
   labelled money rule, and the Mod's smaller Run/Step/Usage-Pools surface.
+
+## 0.32.1 — free models first, with graceful failover
+
+- meters: rate-limited or failed live reads now persist a per-pool negative-cache hold (honouring `Retry-After` or the five-minute freshness window), and `pools`/the Claude Mod identify the stale snapshot's error and retry time.
+- rename: the OpenCode pool is now `opencode`; the first run migrates saved
+  state, routing, provider, and meter names automatically, while historical
+  workflow run records keep their recorded `opencode2` name.
+- routing: a pool whose model for the effort tier costs nothing is ranked ahead
+  of every metered pool while it is healthy. Free-ness is per (pool, effort
+  tier) and comes from the connector — `modelProfiles[].free`, or a model name
+  carrying a standalone `free` segment. The free tier sits below the forecast
+  gate and the 5-hour headroom tier and above expiring-soon urgency, so an
+  expiring metered window can now go unspent while free work runs; the ranking
+  among metered pools is unchanged. The reason reads `free pool first: <pool>
+  (free model <model>, …) · metered pools ranked below free: <pool> <surplus>`.
+- routing: a pool that stalls, returns a server error, or (on a free pool) hands
+  back literally empty output takes a strike. The first is recorded; the second
+  consecutive one soft-benches the pool for a 10-minute cooldown, after which it
+  returns automatically. The strike count survives the cooldown and is cleared
+  only by a success. Auth is untouched: an upstream auth failure still
+  quarantines and still spreads across a credential group. An answer the
+  verifier judged thin but not empty stays semantic and is not retried
+  elsewhere.
+- workflow: a free pool's silence clock is the median wall time of its own
+  recorded runs at that (pool, effort) rung — the `p50`, once 3 runs exist there
+  — with a 5-minute floor, instead of the one-hour default a metered pool keeps.
+  The multiplier on that median is 1 (`FREE_STALL_P50_FACTOR`): a worker silent
+  for as long as the whole rung usually takes has stopped working. Stalled
+  attempts are excluded from the median so a pool cannot tighten its own
+  threshold by stalling.
+- workflow: a stalled attempt ends, keeps its partial output on disk (the retry
+  writes a new `-attempt-N` file beside it, never over it), releases its
+  in-flight ledger entry, and re-dispatches the same action on the next eligible
+  pool in the same run. The attempt record and `attempt.finished` carry
+  `stalled`, `partialOutput`, `silentSec` and `willRetry`; a new `pool.benched` event names
+  the pool, reason, strike count and deadline; the retry's reason is prefixed
+  `fallback from <pool> after stall <n>s`. A free-pool stall (and the
+  free-only literally-empty-output provider reclassification) does not spend
+  `maxMechanicalRetries`; the tried-set is the bound and each pool is tried at
+  most once for the action. A metered-pool stall keeps the mechanical retry
+  accounting.
+- workflow: evidence and acceptance steps are exempt from the free tier and
+  route on pace as before, with one preference — a pool that wrote the work
+  being judged is chosen last, and only when no other pool is eligible, which
+  the reason then says (`evidence step: only the writer pool <pool> is
+  eligible`). This restores, in prefer-not rather than forbid form, the steering
+  removed in `eb83b79`; the reason line now names the exception, which its
+  absence was half the reason for that removal.
+- pools: `bullswarm pools` prints `free=<model>` for a pool whose model costs
+  nothing (`free=<tier>:<model>` when it differs per effort tier, since `pools`
+  names no lane), `BENCHED until <time> (<reason>, <n> strikes)` for a benched
+  pool, and `strikes=<n>(<reason>)` for one carrying an uncounted-out strike. It
+  sweeps expired benches the same way it sweeps expired quarantines.
+- routing: measured pacing rates now charge timed in-flight work at the actual
+  `rate × remaining minutes` with no 3-point floor, so an expiring-soon pool
+  with a known burn rate is not demoted by a tie-breaker meant for unmeasured
+  pools. `config.inflightPenaltyPct` remains the per-agent fallback for pools
+  without a measured rate (and for in-flight records with unknown duration).
+- workflow: every attempt record now carries `routeWhy` (the router's reason)
+  and `routeCandidates` (each pool's effective surplus, urgency state and
+  pacing forecast at pick time); `workflow action show --json` and
+  `runs result --json` print them, and older state files still load.
+
+- routing: a pool whose pacing window is about to reset is `draining` only
+  when its forecast is at or above 95% *and* ahead of the window's own clock,
+  the same clock-relative shape the 5h near-limit line already has. A pool on
+  or behind pace keeps spending right up to its reset instead of being ranked
+  last by a fixed line (observed 2026-09-16: command-code at 94.9% used with
+  98% of the month gone was passed over while +3 points of quota expired).
+  The skip reason now reads `expiring but draining (forecast >= 95% and past
+  its clock): <pool> <forecast>% (<elapsed>% elapsed)`.
+- workflow goal: refuses to launch a duplicate of a run that is already going.
+  Before anything is validated or launched, an ongoing run with the same goal
+  text and cwd exits 2, naming that run's shortId, age, and watch command
+  (JSON: `{"error":"duplicate-goal",...}`); `--again` starts the copy anyway
+  (observed 2026-09-16: a caller whose JSON parser failed on the first
+  launch's output retried five seconds later and two identical workflows ran
+  side by side in the same directory).
 
 ## 0.32.0 — the dashboard is the main screen
 

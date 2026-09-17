@@ -415,6 +415,24 @@ test('dashboard JSON show includes live state and report when present', () => {
   } finally { cleanup(); }
 });
 
+test('dashboard loads a legacy opencode2 attempt without rewriting its run history', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const statePath = join(home, 'workflows', 'wf-test', 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.attempts.push({
+      id: 'legacy-1', actionId: 'audit-files', ordinal: 1,
+      pool: 'opencode2', model: 'kaihk/gpt-5.6-luna', status: 'succeeded',
+    });
+    writeFileSync(statePath, JSON.stringify(state));
+    const before = readFileSync(statePath, 'utf8');
+    const shown = dashboardJson(home, { token: 'abc234' });
+    assert.equal(shown.state.attempts.at(-1).pool, 'opencode2');
+    assert.ok(dashboardRows(home)[0], 'the dashboard still indexes the run');
+    assert.equal(readFileSync(statePath, 'utf8'), before);
+  } finally { cleanup(); }
+});
+
 test('dashboard rows expose the running action and its live attempt', () => {
   const { home, cleanup } = fixture();
   try {

@@ -35,7 +35,7 @@ A working prototype installed at `~/.bullswarm/` with:
 2. **Connector registry** (`~/.bullswarm/connectors/*.json`): declarative per-CLI
    spawn command, auth-failure signatures, output extraction, verify contract,
    quirk fields (e.g. PWD resolution). Seeded with codex, grok,
-   command-code, opencode2 — extracted from the proven `/offload` skill.
+   command-code, opencode — extracted from the proven `/offload` skill.
 3. **Meter layer**: per-pool window definition (5h / weekly / none) with
    programmatic readers where providers expose usage, manual declaration
    (`--meter pool=window,pct`) where they don't. Unmetered pools pace as

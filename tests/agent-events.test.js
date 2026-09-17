@@ -55,7 +55,7 @@ test('connector adapters normalize semantic tool and response actions', () => {
       { type: 'event', event: { type: 'message_end', content: [{ type: 'text', text: 'DONE' }] } },
       { type: 'result', finalText: 'DONE' },
     ],
-    opencode2: [
+    opencode: [
       { type: 'tool_use', part: { callID: 't1', tool: 'bash', state: { status: 'completed', input: { command: 'pwd' } } } },
       { type: 'text', part: { id: 'r1', text: 'DONE' } },
     ],
@@ -73,7 +73,7 @@ test('connector adapters normalize semantic tool and response actions', () => {
 });
 
 test('event stream CLI flags are connector-owned and appended to direct argv', () => {
-  for (const name of ['codex', 'claude-code', 'grok', 'command-code', 'opencode2']) {
+  for (const name of ['codex', 'claude-code', 'grok', 'command-code', 'opencode']) {
     const definition = connector(name);
     const argv = argvWithModel(definition, { taskFile: '/tmp/task.md', cwd: '/tmp' });
     for (const arg of definition.eventStream.args) assert.ok(argv.includes(arg), `${name}: ${arg}`);

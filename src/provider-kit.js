@@ -12,13 +12,16 @@
 
 export { REASONING_LEVELS } from './lib/reasoning.js';
 import { REASONING_LEVELS } from './lib/reasoning.js';
+import { retryAfterMsFromHeaders } from './meters/framework.js';
 
 /** A meter failure. `code` is informational; the core never branches on it. */
 export class MeterError extends Error {
-  constructor(message, code) {
+  constructor(message, code, { status = null, retryAfterMs = null } = {}) {
     super(message);
     this.name = 'MeterError';
     this.code = code;
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -46,7 +49,7 @@ function retargetModelFlag(cmd, flag, model) {
  * pinned in spawn.cmd through the template's `modelSelection.flag` (default
  * `--model`, replace-or-append), so the argv and `pool.model` agree.
  *
- * @param {object} template  a connector.json object, e.g. ctx.templates.opencode2
+ * @param {object} template  a connector.json object, e.g. ctx.templates.opencode
  * @param {object} [overrides]
  * @returns {object}
  */
@@ -106,7 +109,10 @@ export async function bearerJson(url, token, { headers } = {}) {
     throw new MeterError(`Network error reaching ${url}: ${err?.message ?? err}`, 'network');
   }
   if (!res.ok) {
-    throw new MeterError(`${url} returned ${res.status}`, 'http');
+    throw new MeterError(`${url} returned ${res.status}`, 'http', {
+      status: res.status,
+      retryAfterMs: retryAfterMsFromHeaders(res.headers),
+    });
   }
   try {
     return await res.json();

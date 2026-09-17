@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { retryAfterMsFromHeaders } from '../../meters/framework.js';
 
 export const name = 'codex';
 export const displayName = 'Codex';
@@ -18,9 +19,11 @@ const SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60;
 const REFRESH_BUFFER_MS = 5 * 60_000;
 
 export class CodexMeterError extends Error {
-  constructor(message, code) {
+  constructor(message, code, { status = null, retryAfterMs = null } = {}) {
     super(message);
     this.code = code; // no_auth | api_key_only | http | parse | network
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -218,13 +221,14 @@ async function fetchUsageResponse(accessToken, accountId) {
   }
   const headers = {};
   res.headers.forEach((value, key) => (headers[key.toLowerCase()] = value));
+  const retryAfterMs = retryAfterMsFromHeaders(res.headers);
   let body = null;
   try {
     body = await res.json();
   } catch {
     /* parse layer errors if needed */
   }
-  return { status: res.status, body, headers };
+  return { status: res.status, body, headers, retryAfterMs };
 }
 
 export async function fetchCodexUsage({ pool = 'codex', env, home } = {}) {
@@ -241,18 +245,19 @@ export async function fetchCodexUsage({ pool = 'codex', env, home } = {}) {
     }
   }
 
-  let { status, body, headers } = await fetchUsageResponse(access, accountId);
+  let { status, body, headers, retryAfterMs } = await fetchUsageResponse(access, accountId);
   if (status === 401 || status === 403) {
     const refreshed = await refreshAccessToken(auth, loaded.path);
     if (refreshed) {
       access = refreshed.accessToken;
-      ({ status, body, headers } = await fetchUsageResponse(access, accountId));
+      ({ status, body, headers, retryAfterMs } = await fetchUsageResponse(access, accountId));
     }
   }
   if (status < 200 || status >= 300) {
     throw new CodexMeterError(
       `Codex usage returned HTTP ${status}`,
       status === 401 || status === 403 ? 'no_auth' : 'http',
+      { status, retryAfterMs },
     );
   }
 

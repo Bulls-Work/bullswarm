@@ -175,7 +175,7 @@ bullswarm workflow · route-review · run wf-a1b2c3
 ▐ phase 2/2 · review                                      ⏳ running
   ⟡ per-file-review[0/47]       grok         31.0s   … verifying
   ✓ per-file-review[1/47]       command-code 28.9s   ok
-  ✗ per-file-review[2/47]       opencode2    40.1s   fail · announcement without substance
+  ✗ per-file-review[2/47]       opencode    40.1s   fail · announcement without substance
     ↳ escalate → codex
   ⋈ per-file-review[3/47]       —            —       quarantined pool, waiting
 

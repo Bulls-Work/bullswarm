@@ -1,15 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   loadState, saveState, updateState, quarantinePool, quarantineUpstreamSiblings,
   sweepQuarantines, upstreamGroupOf,
+  recordPoolStrike, clearPoolStrikes, sweepBenches, BENCH_COOLDOWN_MS, BENCH_AFTER_STRIKES,
   acquireStateLock, releaseStateLock, stateLockPath, STATE_LOCK_STALE_MS,
   assertDepthAllowed, currentDepth, childDepthEnv, DEPTH_ENV,
+  migratePoolNameHome,
 } from '../src/lib/state.js';
 import { buildPools } from '../src/lib/config.js';
+import { getMeterReading } from '../src/meters/registry.js';
 
 function tmpDir() {
   const d = mkdtempSync(join(tmpdir(), 'bullswarm-state-'));
@@ -27,6 +32,117 @@ test('state round-trips through disk', () => {
   } finally {
     cleanup();
   }
+});
+
+test('OpenCode pool migration rewrites state, config, snapshots, and history idempotently', () => {
+  const { dir, cleanup } = tmpDir();
+  try {
+    mkdirSync(join(dir, 'meters', 'history'), { recursive: true });
+    writeFileSync(join(dir, 'state.json'), `${JSON.stringify({
+      version: 1,
+      pools: {
+        opencode2: { enabled: true },
+        'opencode2:kaihk-2': { enabled: false },
+        // Equal values exercise the safe both-present merge.
+        opencode: { enabled: true },
+      },
+      incumbents: { build: 'opencode2:kaihk-2' },
+      decisionLog: [{
+        picked: 'opencode2',
+        routing: { candidates: [{ pool: 'opencode2:kaihk-2' }] },
+      }],
+      config: { depthLimit: 2 },
+      strategy: {
+        assignments: { high: { pool: 'opencode2' } },
+        subscriptions: {
+          opencode2: { resetsAt: '2026-09-20T00:00:00.000Z' },
+          'opencode2:kaihk-3': { quotaWindow: 'monthly' },
+        },
+        reasoning: { pools: { opencode2: { high: 'default' } } },
+        modelTiers: { 'opencode2:kaihk-3': { 'kaihk-3/gpt-5.6-luna': ['low'] } },
+        disabledModels: { opencode2: ['kaihk/gpt-5.6-terra'] },
+        lastReport: {
+          discoveries: { opencode2: { pool: 'opencode2' } },
+          providerSuggestions: { 'opencode2:kaihk-3': { low: {} } },
+          subscriptions: [{ pool: 'opencode2:kaihk-3' }],
+        },
+      },
+    }, null, 2)}\n`);
+    writeFileSync(join(dir, 'routing.json'), `${JSON.stringify({
+      build: { order: ['opencode2', 'opencode', 'opencode2:kaihk-3'], fallback: 'caller' },
+    }, null, 2)}\n`);
+    writeFileSync(join(dir, 'providers.json'), JSON.stringify({ enabled: ['opencode2', 'opencode'] }));
+    writeFileSync(join(dir, 'meters', 'opencode2.json'), `${JSON.stringify({ pool: 'opencode2', monthly: {} })}\n`);
+    writeFileSync(join(dir, 'meters', 'history', 'opencode2:kaihk-3.jsonl'), `${JSON.stringify({
+      pool: 'opencode2:kaihk-3', monthly: { utilization: 4 },
+    })}\n`);
+
+    const migrated = loadState(dir);
+    assert.deepEqual(Object.keys(migrated.pools).sort(), ['opencode', 'opencode:kaihk-2']);
+    assert.equal(migrated.incumbents.build, 'opencode:kaihk-2');
+    assert.equal(migrated.decisionLog[0].picked, 'opencode');
+    assert.equal(migrated.decisionLog[0].routing.candidates[0].pool, 'opencode:kaihk-2');
+    assert.ok(migrated.strategy.subscriptions.opencode);
+    assert.ok(migrated.strategy.subscriptions['opencode:kaihk-3']);
+    assert.ok(migrated.strategy.reasoning.pools.opencode);
+    assert.ok(migrated.strategy.modelTiers['opencode:kaihk-3']);
+    assert.ok(migrated.strategy.disabledModels.opencode);
+    assert.ok(migrated.strategy.lastReport.discoveries.opencode);
+    assert.ok(migrated.strategy.lastReport.providerSuggestions['opencode:kaihk-3']);
+    assert.equal(migrated.strategy.lastReport.subscriptions[0].pool, 'opencode:kaihk-3');
+
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'routing.json'))).build.order,
+      ['opencode', 'opencode:kaihk-3']);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'providers.json'))).enabled, ['opencode']);
+    assert.deepEqual(readdirSync(join(dir, 'meters')).sort(), ['history', 'opencode.json']);
+    assert.deepEqual(readdirSync(join(dir, 'meters', 'history')).sort(), ['opencode:kaihk-3.jsonl']);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'meters', 'opencode.json'))).pool, 'opencode');
+    assert.equal(JSON.parse(readFileSync(join(dir, 'meters', 'history', 'opencode:kaihk-3.jsonl'))).pool,
+      'opencode:kaihk-3');
+
+    const files = [
+      'state.json', 'routing.json', 'providers.json',
+      'meters/opencode.json', 'meters/history/opencode:kaihk-3.jsonl',
+    ];
+    const bytes = files.map((file) => readFileSync(join(dir, file)));
+    loadState(dir);
+    assert.deepEqual(files.map((file) => readFileSync(join(dir, file))), bytes,
+      'the second load is byte-identical');
+  } finally { cleanup(); }
+});
+
+test('OpenCode pool migration keeps conflicting entries and warns once per file', () => {
+  const { dir, cleanup } = tmpDir();
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({
+      pools: { opencode2: { enabled: false }, opencode: { enabled: true } },
+    }));
+    assert.deepEqual(Object.keys(loadState(dir).pools).sort(), ['opencode', 'opencode2']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /state\.json/);
+    assert.equal(migratePoolNameHome(dir), false);
+  } finally {
+    console.warn = originalWarn;
+    cleanup();
+  }
+});
+
+test('a meter-only read runs the home migration before opening the cache', async () => {
+  const { dir, cleanup } = tmpDir();
+  try {
+    mkdirSync(join(dir, 'meters'), { recursive: true });
+    writeFileSync(join(dir, 'meters', 'opencode2.json'), `${JSON.stringify({
+      pool: 'opencode2', captured_at: new Date().toISOString(),
+      five_hour: { utilization: null, resets_at: null },
+    })}\n`);
+    const reading = await getMeterReading('opencode', { bullswarmDir: dir });
+    assert.equal(reading.snapshot.pool, 'opencode');
+    assert.equal(existsSync(join(dir, 'meters', 'opencode2.json')), false);
+    assert.equal(existsSync(join(dir, 'meters', 'opencode.json')), true);
+  } finally { cleanup(); }
 });
 
 test('quarantine auto-releases after the probe window (S1)', () => {
@@ -329,4 +445,74 @@ test('benching the group is a no-op without a group, a pool, or any members', ()
   assert.deepEqual(quarantineUpstreamSiblings(s, relayPools(), { pool: null, group: GROUP, now }), []);
   assert.deepEqual(quarantineUpstreamSiblings(s, null, { pool: 'relay', group: GROUP, now }), []);
   assert.deepEqual(Object.keys(s.pools), []);
+});
+
+// --- soft bench (S6) ------------------------------------------------------
+// The bench is written by the dispatcher and read by the router out of the one
+// shared record, so these are the writers both sides depend on.
+
+test('the first strike is counted without taking the pool out of service', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
+  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 1 });
+});
+
+test('the second consecutive strike benches the pool for the cooldown and drops its incumbency', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  s.incumbents = { build: 'opencode2', analyze: 'codex' };
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  const until = recordPoolStrike(s, 'opencode2', 'stall', now);
+  assert.equal(until, now + BENCH_COOLDOWN_MS);
+  assert.deepEqual(s.pools.opencode2.bench, { until, reason: 'stall', count: BENCH_AFTER_STRIKES });
+  // A pool that is not serving work cannot hold the lane against its return.
+  assert.deepEqual(s.incumbents, { analyze: 'codex' });
+});
+
+test('a success clears the strike record entirely', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'provider', now);
+  recordPoolStrike(s, 'opencode2', 'provider', now);
+  clearPoolStrikes(s, 'opencode2');
+  assert.equal(s.pools.opencode2.bench, undefined);
+  // The next failure starts over at one strike, still in service.
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now), null);
+  assert.equal(s.pools.opencode2.bench.count, 1);
+});
+
+test('sweeping releases an expired bench but keeps the strike count', () => {
+  const s = loadState('/nonexistent-bullswarm-test');
+  const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  recordPoolStrike(s, 'opencode2', 'stall', now);
+  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS - 1), []);
+  assert.deepEqual(sweepBenches(s, now + BENCH_COOLDOWN_MS), ['opencode2']);
+  assert.deepEqual(s.pools.opencode2.bench, { until: null, reason: 'stall', count: 2 });
+  // Still two in a row: a stall right after the cooldown benches it again at once.
+  assert.equal(recordPoolStrike(s, 'opencode2', 'stall', now + BENCH_COOLDOWN_MS), now + 2 * BENCH_COOLDOWN_MS);
+});
+
+test('a bench is written beside the quarantine and neither touches the other', () => {
+  const { dir, cleanup } = tmpDir();
+  try {
+    const now = Date.UTC(2026, 8, 17, 12, 0, 0);
+    const s = loadState(dir);
+    s.pools.opencode = { enabled: true };
+    quarantinePool(s, 'opencode', 'upstream auth failure', now);
+    recordPoolStrike(s, 'opencode', 'stall', now);
+    saveState(dir, s);
+    const reloaded = loadState(dir);
+    assert.equal(reloaded.pools.opencode.quarantine.reason, 'upstream auth failure');
+    assert.deepEqual(reloaded.pools.opencode.bench, { until: null, reason: 'stall', count: 1 });
+    // Sweeping benches leaves the quarantine deadline alone.
+    sweepBenches(reloaded, now + 10 * BENCH_COOLDOWN_MS);
+    assert.equal(reloaded.pools.opencode.quarantine.until, now + 10 * 60_000);
+    // ...and the router reads the bench back off the pool view it builds.
+    saveState(dir, reloaded);
+    const { pools } = buildPools(dir, now);
+    const pool = pools.find((p) => p.name === 'opencode');
+    if (pool) assert.deepEqual(pool.bench, reloaded.pools.opencode.bench);
+  } finally { cleanup(); }
 });

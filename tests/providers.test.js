@@ -39,7 +39,7 @@ test('tiers load first-class, contrib, local in that order', () => {
     assert.ok(tiers.lastIndexOf('contrib') < firstLocal);
     assert.deepEqual(
       providers.filter((p) => p.tier === 'first-class').map((p) => p.dir.split('/').pop()),
-      ['broken-json', 'echo', 'opencode2'],
+      ['broken-json', 'echo', 'opencode'],
     );
   } finally { cleanup(); }
 });
@@ -81,7 +81,7 @@ test('templates cover every shipped connector.json, enabled or not', () => {
   const { home, cleanup } = fixtureHome();
   try {
     const templates = loadTemplates(dirs(home));
-    assert.deepEqual(Object.keys(templates).sort(), ['echo', 'opencode2', 'relaykit']);
+    assert.deepEqual(Object.keys(templates).sort(), ['echo', 'opencode', 'relaykit']);
     // sidecar is disabled here, but clones the disabled relaykit template when probed.
     const { connectors } = loadProviders(home, { dirs: dirs(home), enabled: ['sidecar'] });
     assert.deepEqual(connectors.sidecar.spawn.cmd, ['relaykit', '{taskFile}']);
@@ -104,7 +104,7 @@ test('the relay reseller example yields prefixed pools with variants and a meter
     assert.equal(connectors['relay:b'].credentialGroup, 'relay:relay.example');
     assert.equal(connectors.relay.env.OPENCODE_CONFIG_CONTENT, kit.opencodeVariants('a', ['gpt-5.6-sol']));
     // The shared template is untouched by the clones.
-    assert.deepEqual(connectors.opencode2.spawn.cmd, ['opencode', 'run', '--auto', '{taskFile}']);
+    assert.deepEqual(connectors.opencode.spawn.cmd, ['opencode', 'run', '--auto', '{taskFile}']);
 
     const owner = providerFor(providers, 'relay:b');
     const snap = await owner.module.readUsage('relay:b', {
@@ -141,21 +141,21 @@ test('an existing pool name is never overwritten', () => {
   const { home, cleanup } = fixtureHome();
   try {
     const { connectors, providers } = loadProviders(home, { dirs: dirs(home) });
-    assert.equal(entry(providers, 'opencode2').tier, 'first-class');
-    // squatter (local) cannot claim opencode2 (prefix) — a local provider named
-    // opencode2 through the legacy dir cannot overwrite it either.
+    assert.equal(entry(providers, 'opencode').tier, 'first-class');
+    // squatter (local) cannot claim opencode (prefix) — a local provider named
+    // opencode through the legacy dir cannot overwrite it either.
     mkdirSync(join(home, 'connectors'));
-    writeFileSync(join(home, 'connectors', 'opencode2.json'), JSON.stringify({ name: 'opencode2', model: 'legacy-copy' }));
+    writeFileSync(join(home, 'connectors', 'opencode.json'), JSON.stringify({ name: 'opencode', model: 'legacy-copy' }));
     writeFileSync(join(home, 'connectors', 'mine.json'), JSON.stringify({ name: 'mine', model: 'm' }));
     const again = loadProviders(home, { dirs: dirs(home) });
-    assert.equal(again.connectors.opencode2.model, 'default');
-    const legacyCopy = again.providers.find((p) => p.dir.endsWith('connectors/opencode2.json'));
+    assert.equal(again.connectors.opencode.model, 'default');
+    const legacyCopy = again.providers.find((p) => p.dir.endsWith('connectors/opencode.json'));
     assert.equal(legacyCopy.tier, 'local');
     assert.deepEqual(legacyCopy.pools, []);
     assert.equal(legacyCopy.skipped[0].reason, 'duplicate');
-    assert.match(legacyCopy.skipped[0].message, /already defined by provider "opencode2"/);
+    assert.match(legacyCopy.skipped[0].message, /already defined by provider "opencode"/);
     assert.equal(again.connectors.mine.model, 'm');
-    assert.equal(connectors.opencode2.model, 'default');
+    assert.equal(connectors.opencode.model, 'default');
   } finally { cleanup(); }
 });
 
@@ -183,12 +183,12 @@ test('a provider mutating its templates cannot change what the next provider clo
     mkdirSync(join(local, 'aaa-mutator'));
     writeFileSync(join(local, 'aaa-mutator', 'provider.mjs'), [
       "export const name = 'mutator';",
-      'export function connectors({ templates }) { templates.opencode2.spawn.cmd.push("--evil"); return []; }',
+      'export function connectors({ templates }) { templates.opencode.spawn.cmd.push("--evil"); return []; }',
     ].join('\n'));
     cpSync(join(FIXTURES, 'local', 'relay'), join(local, 'relay'), { recursive: true });
     const { connectors } = loadProviders(home, { dirs: dirs(home, { local }) });
     assert.ok(!connectors.relay.spawn.cmd.includes('--evil'));
-    assert.ok(!connectors.opencode2.spawn.cmd.includes('--evil'));
+    assert.ok(!connectors.opencode.spawn.cmd.includes('--evil'));
   } finally { cleanup(); rmSync(local, { recursive: true, force: true }); }
 });
 
