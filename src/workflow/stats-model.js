@@ -620,6 +620,66 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
   return model;
 }
 
+function dailyTableSeries(records, rows, kind, range) {
+  const byDay = new Map();
+  for (const record of records) {
+    const key = dayKeyOf(recordTimeMs(record));
+    const day = byDay.get(key) ?? [];
+    day.push(record);
+    byDay.set(key, day);
+  }
+  const oldest = records.length ? Math.min(...records.map(recordTimeMs)) : null;
+  const buckets = [];
+  for (let at = oldest == null ? Infinity : startOfDay(oldest); at <= range.to; at = addDays(at, 1)) {
+    const key = dayKeyOf(at);
+    const day = byDay.get(key) ?? [];
+    const segments = rows.map(({ name }) => {
+      const matching = day.filter((record) => kind === 'project'
+        ? recordProject(record) === name
+        : mapEntries(record.models).some(([model]) => model === name));
+      let minutes = null;
+      let attempts = null;
+      for (const record of matching) {
+        minutes = add(minutes, kind === 'project' ? recordWorkerMinutes(record) : finite(record.models[name]?.minutes));
+        attempts = add(attempts, kind === 'project'
+          ? mapEntries(record.pools).reduce((sum, [, entry]) => add(sum, finite(entry?.attempts)), null)
+          : finite(record.models[name]?.attempts));
+      }
+      return { name, runs: matching.length, attempts, minutes: round(minutes, 2), value: kind === 'project' ? matching.length : round(minutes, 2) };
+    });
+    const runs = segments.reduce((sum, segment) => sum + (finite(segment.runs) ?? 0), 0);
+    let value = null;
+    for (const segment of segments) value = add(value, segment.value);
+    buckets.push({ key, label: key, from: at, to: addDays(at, 1), weekday: weekdayIndex(at), runs, value: round(value, 2), segments });
+  }
+  for (const row of rows) {
+    row.daily = buckets.map((bucket) => {
+      const { name, ...values } = bucket.segments.find((entry) => entry.name === row.name);
+      return { date: bucket.key, ...values };
+    });
+  }
+  const seriesRows = kind === 'project' ? records.length
+    : records.filter((record) => mapEntries(record.models).some(([, entry]) => finite(entry?.minutes) != null || finite(entry?.attempts) != null)).length;
+  let total = null;
+  const cumulative = buckets.map((bucket) => {
+    total = add(total, bucket.value);
+    return round(total, 2);
+  });
+  return {
+    seriesRows,
+    seriesTotalRows: records.length,
+    trend: {
+      metric: kind === 'project' ? 'runs' : 'minutes',
+      unit: kind === 'project' ? 'runs' : 'worker-minutes',
+      bucketBy: 'day',
+      buckets,
+      total: round(total, 2),
+      cumulative,
+      max: buckets.reduce((most, bucket) => (bucket.value == null ? most : Math.max(most ?? bucket.value, bucket.value)), null),
+    },
+  };
+}
+
 // ------------------------------------------------------------------ tables
 
 /**
@@ -683,13 +743,14 @@ export function modelsModel(rollups, { period = '7d', now = Date.now() } = {}) {
   const rows = finishRows(buildRows(records, 'model'), { rankBy: 'attempts' });
   const model = {
     kind: 'models',
+    ...dailyTableSeries(records, rows, 'model', range),
     period: range.period,
     from: range.from,
     to: range.to,
     rows,
     totals: rowTotals(rows),
     mostUsed: rows.find((row) => row.attempts > 0)?.name ?? null,
-    notes: ['apiEquivalentUsd is null for every model: the rollup record measures cost per pool, not per model'],
+    notes: ['no per-model money: the rollup record measures cost per pool, not per model'],
   };
   model.nulls = nullPaths({ rows: rows.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianWallMinutes: row.medianWallMinutes })) });
   return model;
@@ -702,6 +763,7 @@ export function projectsModel(rollups, { period = '7d', now = Date.now() } = {})
   const rows = finishRows(buildRows(records, 'project'), { rankBy: 'runs' });
   const model = {
     kind: 'projects',
+    ...dailyTableSeries(records, rows, 'project', range),
     period: range.period,
     from: range.from,
     to: range.to,

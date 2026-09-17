@@ -47,6 +47,25 @@ The pages answer different questions:
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
 | **Help** | What every key, click, layout rule, and dashboard command does. |
 
+The visual-fidelity pass keeps the same real data but composes it like the
+approved prototype. `Home` puts its 7-day breakdown in four columns and adds a
+`budget · this week` block; `Run` shows the plan strip with per-step bars and a
+`budget` / `live` / `so far` band (stacked on the phone); `Budget` gives each
+pool a seven-row block and one consolidated footer; `Stats` → `Trends` uses
+coloured stacked columns; and `History` uses fixed columns. At 55 columns the
+phone layouts keep one row per item — every `Home` today tile and per-step bar,
+every `Stats` `Models` model, `Stats` `Projects` project and its sparkline,
+every `Stats` `Pools` and `Fleet` pool row, and every `History` run row — rather
+than wrapping an item into a second form. Three places deliberately keep more
+than one row: `Budget`'s seven-row pool block, `Home`'s `budget · this week`
+pool, which carries its reset line under the meter as the prototype frame does,
+and the `Runs` list, which keeps a worker-count line and a phase line under each
+run. `Stats` `Pools` charts licence per day with a reset mark instead of
+repeating full-width rows, and at 200 columns every page composes to the frame
+rather than staying at the 120-column composition — measured on the real binary,
+the widest painted row is 200 cells on every page except `Fleet`, which reaches
+188.
+
 The shared keyboard table is:
 
 | Key | Does |
@@ -100,9 +119,10 @@ still in flight are skipped. The command is idempotent, so a second run
 writes nothing new, and `--force` rewrites every record. See
 [`workflow reindex`](/reference/cli#reindex) for the flags and the JSON it prints.
 
-Budget's meter cells use the same green (`#b6bd73`), amber (`#e9c880`), red
-(`#bf6c69`), and dark-track (`#3a3a3a`) palette as the live pool view. A white
-`▏` marks elapsed time. Money and licence figures are measured when their
+Budget's meter cells use the shared green (`#b6bd73`), amber (`#e9c880`), red
+(`#bf6c69`), and dark-track (`#3a3a3a`) palette. The other shared roles are
+`purple`, `orange`, `cyan`, `dim`, `others`, and a four-shade `heat` ramp. A
+white `▏` marks elapsed time. Money and licence figures are measured when their
 source supports it; otherwise they are blank or carry `≈` with their basis.
 The Fleet `[edit]` action hands the terminal to setup and returns with fresh
 data. Runs' `[install]` runs the same as `bullswarm integrate install --yes`;

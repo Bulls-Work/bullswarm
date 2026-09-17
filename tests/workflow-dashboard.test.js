@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, read
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { DASHBOARD_KEYS, activeDashboardRows, dashboardModel, dashboardRows, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
+import { DASHBOARD_KEYS, activeDashboardRows, dashboardModel, dashboardRows, overviewSnapshot, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
 import { readRollups } from '../src/workflow/rollup.js';
 import { SUBSTITUTED_GLYPHS } from '../src/lib/glyphs.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
@@ -105,17 +105,22 @@ function addV2HistoricalRun(home) {
 // panel geometry, or the terminal width in use.
 // ---------------------------------------------------------------------------
 
+// 0.33.0 draws the timeline flat: a `── timeline ──` rule and the rows under
+// it, one column in from the left margin, down to the sticky nav. The pane is
+// still read structurally, so the assertions do not depend on dash padding or
+// the terminal width in use.
 function timelinePaneRows(screen) {
   const rows = screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split('\n');
-  const top = rows.findIndex((line) => line.includes('Workflow timeline ·'));
+  const top = rows.findIndex((line) => /^──+ timeline ──/.test(line.trimEnd()));
   if (top < 0) return [];
-  const left = rows[top].indexOf('┌ Workflow timeline');
   const pane = [];
   for (const line of rows.slice(top + 1)) {
-    const cell = line.slice(left);
-    if (!cell.startsWith('│')) break; // the Live divider closes the timeline pane
-    pane.push(cell.replace(/^│/, '').replace(/│$/, '').trimEnd());
+    if (/^\s*\[.+\]\s*$/.test(line)) break; // the sticky nav closes the page
+    pane.push(line.replace(/^ /, '').trimEnd());
   }
+  // The nav is sticky, so a short body is padded out to it; those blanks are
+  // the frame's, not the timeline's.
+  while (pane.length && !pane.at(-1).trim()) pane.pop();
   return pane;
 }
 
@@ -124,6 +129,7 @@ function timelineSegments(screen) {
   for (const line of timelinePaneRows(screen)) {
     const header = /^─{2,}\s+(.+?)\s+─{2,}\s+(\S+)\s+─+$/.exec(line);
     if (header) segments.push({ label: header[1].replace(/^Phase \d+ · /, ''), elapsed: header[2], rows: [] });
+    else if (/^─{2,}[^─]*$/.test(line)) segments.push({ label: line.replace(/─+/g, ' ').trim().replace(/^Phase \d+ · /, ''), elapsed: null, rows: [] });
     else if (/^─{2,}/.test(line)) segments.push({ label: line.replace(/─+/g, ' ').trim().replace(/^Phase \d+ · /, ''), elapsed: null, rows: [] });
     else if (segments.length && line.trim()) segments[segments.length - 1].rows.push(line);
   }
@@ -207,18 +213,22 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.match(screen, /── Phase 2 · Evidence/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
     assert.match(screen, /check-result · relay:b · gpt-5\.6-luna/);
-    assert.doesNotMatch(screen, /Live[^]*implement-result · relay/);
-    assert.match(screen, /Waiting for 1 worker/);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
+    // The Run page draws no panel border at any width: flat rules only. The
+    // timeline's own ├─/│ tree glyphs are content, not a frame, so the test
+    // looks for a border at the edge of a row.
+    for (const line of plain(screen).split('\n')) {
+      assert.ok(!/^[┌│└]/.test(line) || !/[┐│┘]$/.test(line.trimEnd()),
+        `a panel border survived: ${line}`);
+    }
     const narrowTimeline = renderWorkflowTui(row, { width: 60, height: 26, focus: 0 });
     const narrowPhases = renderWorkflowTui(row, { width: 60, height: 26, focus: 0, mobileTimeline: false });
     const narrowAgents = renderWorkflowTui(row, { width: 60, height: 26, focus: 1 });
-    assert.match(narrowTimeline, /Workflow timeline/);
-    assert.doesNotMatch(narrowTimeline, /Phases · 2/);
-    assert.match(narrowPhases, /Phases · 2/);
-    assert.doesNotMatch(narrowPhases, /Workflow timeline/);
-    assert.match(narrowAgents, /Evidence · 0\/1 complete/);
-    assert.doesNotMatch(narrowAgents, /Workflow timeline/);
+    assert.match(plain(narrowTimeline), /── timeline ─/);
+    assert.doesNotMatch(plain(narrowTimeline), /── phases · 2/);
+    assert.match(plain(narrowPhases), /── phases · 2/);
+    assert.doesNotMatch(plain(narrowPhases), /── timeline ─/);
+    assert.match(plain(narrowAgents), /Evidence · 0\/1 complete/);
     const cancelled = requestCancel(home, 'v2d234', { source: 'test', requesterPid: 1234 });
     assert.equal(cancelled.state.cancellation.requested, true);
     assert.equal(cancelled.state.cancellation.source, 'test');
@@ -301,7 +311,7 @@ test('a run ID passed to the dashboard opens that run on the Run page', async ()
     const session = shellSession(home, { columns: 120, rows: 30, token: 'v2n456' });
     const runPage = lastFrame(session.output);
     assert.match(frameHeader(runPage), /^ v2n456 completed · .* · 0\/0 actions · done/);
-    assert.match(plain(runPage), /Workflow timeline/);
+    assert.match(plain(runPage), /── timeline ─/);
     session.press('\r'); // the run page opens its agents
     session.press(ESC_KEY);
     assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
@@ -326,7 +336,7 @@ test('recent-list V2 selection opens that run on the Run page', async () => {
     assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
     session.press('\r');
     assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
-    assert.match(plain(lastFrame(session.output)), /Phases ·/);
+    assert.match(plain(lastFrame(session.output)), /── plan ─/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -345,9 +355,9 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
 
     // Mobile: the run page opens on the timeline, t exposes the phases.
     const mobile = shellSession(home, { columns: 80, rows: 30, token: 'abc234' });
-    assert.match(mobile.press('t'), /Phases ·/);
-    assert.doesNotMatch(mobile.press('t'), /Phases ·/);
-    assert.match(mobile.press('t'), /Phases ·/);
+    assert.match(plain(mobile.press('t')), /── phases ·/);
+    assert.doesNotMatch(plain(mobile.press('t')), /── phases ·/);
+    assert.match(plain(mobile.press('t')), /── phases ·/);
     assert.equal(await mobile.quit(), 0);
 
     // Bare active view: no active rows show the explicit recent-runs escape.
@@ -373,7 +383,7 @@ test('tui with a run ID prints a historical text tree without a TTY', async () =
     assert.equal(code, 0);
     assert.match(printed, /bullswarm · abc234/);
     assert.match(printed, /presentation stages:/);
-    assert.match(printed, /Workflow timeline/);
+    assert.match(printed, /── timeline ─/);
     assert.match(printed, /── Preflight/);
     assert.doesNotMatch(printed, /Press b to go back/);
     assert.doesNotMatch(printed, /\x1b/);
@@ -476,7 +486,7 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     assert.match(plain(lastFrame(session.output)), /Showing workflows matching “def”/);
     assert.match(plain(lastFrame(session.output)), /Runs · all/);
     assert.match(plain(lastFrame(session.output)), /def345 · Audit documentation/);
-    assert.match(session.output.text, /Workflow timeline/);
+    assert.match(plain(session.output.text), /── timeline ─/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
     assert.match(session.output.text, /\x1b\[\?1049l/);
@@ -560,16 +570,14 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     session.press('t');
     const phasesText = lastFrame(session.output);
     assert.equal(await session.quit(), 0);
-    assert.match(plain(timelineText), /Workflow timeline/);
+    assert.match(plain(timelineText), /── timeline ─/);
     assert.match(preflightText, /\x1b\[7m── Preflight/);
     assert.match(plannerText, /Workflow Planner · overview/);
     assert.match(agentsText, /Implementation · 1\/1 complete/);
-    const visibleWidths = paintedRows(timelineText)
-      .filter((line) => line.includes('│') || line.includes('┐') || line.includes('┘'))
-      .map((line) => line.length);
+    const visibleWidths = paintedRows(timelineText).map((line) => plain(line).length);
     assert.ok(visibleWidths.every((lineWidth) => lineWidth <= 80 - 1), 'mobile frames reserve the terminal wrap column');
-    assert.match(plain(phasesText), /Phases · 2/);
-    assert.doesNotMatch(plain(phasesText), /Workflow timeline/);
+    assert.match(plain(phasesText), /── phases · 2/);
+    assert.doesNotMatch(plain(phasesText), /── timeline ─/);
   } finally { cleanup(); }
 });
 
@@ -1007,7 +1015,15 @@ test('the nav records a hit region for every button, run row, tile, bar and step
       page: 'home', width: 100, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     });
     const kinds = (frame, kind) => frame.regions.filter((region) => region.action.kind === kind);
-    assert.deepEqual(kinds(homeFrame, 'trend').map((region) => region.action.metric), ['runs', 'verified', 'spend']);
+    // One region per today tile, plus the breakdown's own spent-per-day column.
+    assert.deepEqual(
+      [...new Set(kinds(homeFrame, 'trend').map((region) => region.action.metric))],
+      ['runs', 'verified', 'spend'],
+    );
+    for (const metric of ['runs', 'verified']) {
+      assert.equal(kinds(homeFrame, 'trend').filter((region) => region.action.metric === metric).length, 1,
+        `the ${metric} tile records exactly one hit region`);
+    }
     assert.ok(kinds(homeFrame, 'tab').length >= 1, 'the licence tile and the bars open a Stats tab');
     assert.deepEqual(kinds(homeFrame, 'period').map((region) => region.action.period), ['7d', '30d', 'all']);
     const runRows = kinds(homeFrame, 'run').filter((region) => region.y !== homeFrame.lines.length);
@@ -1030,11 +1046,13 @@ test('the nav records a hit region for every button, run row, tile, bar and step
     const fleetFrame = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30 });
     const fleetTabs = fleetFrame.regions.filter((region) => region.action.kind === 'tab');
     assert.deepEqual(fleetTabs.map((region) => region.action.tab), ['lane', 'provider']);
+    // fleet-view paints the row and records the regions; the shell only moves
+    // them onto the frame, so each one still covers the words it was drawn on.
     const tabsRowText = plain(fleetFrame.lines[fleetTabs[0].y - 1]);
-    assert.equal(tabsRowText.slice(fleetTabs[0].x1 - 1, fleetTabs[0].x2), '[● by lane]');
-    assert.equal(tabsRowText.slice(fleetTabs[1].x1 - 1, fleetTabs[1].x2), '[by provider]');
+    assert.match(tabsRowText.slice(fleetTabs[0].x1 - 1, fleetTabs[0].x2), /by lane/);
+    assert.match(tabsRowText.slice(fleetTabs[1].x1 - 1, fleetTabs[1].x2), /by provider/);
     const edit = fleetFrame.regions.find((region) => region.action.kind === 'edit');
-    assert.equal(plain(fleetFrame.lines[edit.y - 1]).slice(edit.x1 - 1, edit.x2), '[edit]');
+    assert.match(plain(fleetFrame.lines[edit.y - 1]).slice(edit.x1 - 1, edit.x2), /edit/);
 
     // Stats' five sub-tabs are the same five Tab walks.
     const statsFrame = renderDashboardPage(model, { page: 'stats', width: 100, height: 30 });
@@ -1263,8 +1281,8 @@ test('V2 planned steps name each action work or evidence, never undefined', () =
 
     const row = dashboardRows(home)[0];
     const agentPane = renderWorkflowTui(row, { width: 120, height: 30, focus: 1 });
-    assert.match(agentPane, /No agent selected\./);
-    assert.match(agentPane, /Planned steps in this phase:/);
+    assert.match(plain(agentPane), /no agent has started in this phase yet/);
+    assert.match(plain(agentPane), /planned steps in this phase:/);
     assert.doesNotMatch(agentPane, /undefined/);
     assert.match(agentPane, /shell-and-visual-system · work · running/);
     assert.match(agentPane, /space-and-spaces · work · pending/);
@@ -1353,7 +1371,7 @@ test('program dashboard projects saved categories into dependency levels with ov
     assert.match(screen, /Phase 2/);
     // The phases are the program's dependency groups, never keyword-inferred.
     assert.doesNotMatch(screen, /Documentation/);
-    assert.match(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false }), /Phases · 2/);
+    assert.match(plain(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false })), /── phases · 2/);
   }
   assert.equal(JSON.stringify(state), before);
 });
@@ -1405,7 +1423,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     emit('presentation.stage_started', iso(6), { stageId: 'r1-evidence', label: 'Evidence' });
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const before = renderWorkflowTui(dashboardRows(home)[0], { width: 120, height: 30 });
-    const milestones = /Workflow timeline · (\d+) milestones?/.exec(before)[1];
+    const milestones = /── timeline ─+ (\d+) milestones? ──/.exec(before)[1];
     assert.match(segmentRows(before, 'Evidence').join('\n'), /├─ started/);
     assert.doesNotMatch(segmentRows(before, 'Evidence').join('\n'), /check-result/);
 
@@ -1422,7 +1440,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     // the spinner animates with the frame counter like the Live pane
     assert.match(segmentRows(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 3 }), 'Evidence').join('\n'), /├─⠸ check-result/);
     // a live row is not a durable milestone
-    assert.equal(/Workflow timeline · (\d+) milestones?/.exec(running)[1], milestones);
+    assert.equal(/── timeline ─+ (\d+) milestones? ──/.exec(running)[1], milestones);
     // the level header still reads running rather than a finished duration
     assert.equal(timelineSegments(running).find((segment) => segment.label === 'Evidence').elapsed, 'running');
 
@@ -1430,7 +1448,9 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     const agents = renderWorkflowTui(row, { width: 130, height: 22, focus: 1, spinnerFrame: 0 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
     assert.match(agents, /check-result · relay:b · gpt-5\.6-luna · #1 · 1m0[5-9]s/);
     assert.doesNotMatch(agents, /#1 · pending/);
-    assert.match(agents, /Tokens · pending/);
+    // Token usage only arrives when an attempt finishes, so a running worker's
+    // row carries its elapsed time and no token count at all.
+    assert.doesNotMatch(agents, /check-result[^\n]*tok/);
 
     // once the worker finishes, its durable row replaces the live one
     const finishedAt = new Date().toISOString();
@@ -1442,7 +1462,7 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     const doneRows = segmentRows(done, 'Evidence').map(normalizeRow);
     assert.equal(doneRows.filter((line) => line.includes('check-result')).length, 1, doneRows.join('\n'));
     assert.match(doneRows.join('\n'), /├─✓ check-result 1m0[5-9]s/);
-    assert.match(renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 130, height: 22, focus: 1, phaseIndex: 1 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), /#1 · 1m0[5-9]s · 1\.2k tok/);
+    assert.match(renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 130, height: 22, focus: 1, phaseIndex: 1 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), /#1 · 1\.2k tok · 1m0[5-9]s/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -1492,15 +1512,14 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     assert.match(live, /check-result · relay:b · gpt-5\.6-luna · high/);
     // Phase 1 holds the finished attempt; its own override reads next to the model.
     const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
-    assert.match(phaseOne, /implement-result · relay · gpt-5\.6-luna · max · #1/);
-    assert.match(phaseOne, /succeeded · gpt-5\.6-luna · max/);
+    assert.match(plain(phaseOne), /implement-result · relay · gpt-5\.6-luna · max · #1/);
     // The drilled-in agent pane states it as a labelled field beside effort.
-    const agentPane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 });
+    const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
     assert.match(agentPane, /succeeded · gpt-5\.6-luna · max/);
     // The V2 tier lives under attempt.routing; both fields read correctly.
     assert.match(agentPane, /relay · attempt 1 · effort low · reasoning max/);
     // Narrow mode keeps the same fact on the single full-width agent pane.
-    const narrow = renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 1, agentIndex: 0 });
+    const narrow = plain(renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 1, agentIndex: 0 }));
     assert.match(narrow, /gpt-5\.6-luna · max/);
     // The durable record is what observation reads, so JSON carries it too.
     assert.deepEqual(
@@ -1543,7 +1562,7 @@ test('attempts without a reasoning record render exactly as before', () => {
     assert.doesNotMatch(live, /gpt-5\.6-luna · /);
     const pane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(pane, /implement-result · relay · gpt-5\.6-luna · #1/);
-    const agentPane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 });
+    const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
     assert.match(agentPane, /relay · attempt 1 · effort auto/);
     assert.doesNotMatch(agentPane, /reasoning/);
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -1878,11 +1897,11 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
   try {
     const row = run.row();
     // With room for every row the phase is introduced once and never continued.
-    const tall = renderWorkflowTui(row, { width: 100, height: 46 });
+    const tall = renderWorkflowTui(row, { width: 100, height: 60 });
     assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implementation']);
     assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
 
-    const short = renderWorkflowTui(row, { width: 100, height: 22 });
+    const short = renderWorkflowTui(row, { width: 100, height: 34 });
     const pane = timelinePaneRows(short);
     const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
     assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
@@ -1900,7 +1919,7 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
   const run = longPhaseV2Run();
   try {
     const row = run.row();
-    const following = renderWorkflowTui(row, { width: 100, height: 22 });
+    const following = renderWorkflowTui(row, { width: 100, height: 34 });
     const pane = timelinePaneRows(following);
     // Auto-follow ends on the newest event — the running worker — and never
     // claims there is anything newer below the viewport.
@@ -1909,7 +1928,7 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
     assert.match(frameHeader(following), /^ lng234 /);
 
     // Scrolling back holds older rows in place and says how much is newer.
-    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 22, detailScroll: 4 }));
+    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 34, detailScroll: 4 }));
     assert.match(scrolled.at(-1), /↓ 4 newer timeline rows/);
     assert.deepEqual(scrolled.filter((line) => line.includes('work-tail')), []);
     assert.match(scrolled[0], /↑ \d+ earlier timeline rows/);
@@ -1924,7 +1943,7 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
   try {
     const row = run.row();
     // Tall enough that the whole timeline fits: nothing here is a scroll artifact.
-    const screen = renderWorkflowTui(row, { width: 60, height: 44 });
+    const screen = renderWorkflowTui(row, { width: 60, height: 60 });
     assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
     assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
     assert.match(segmentRows(screen, 'Discovery').join('\n'), /├─✓ discover-a/);
@@ -1945,7 +1964,7 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     }
 
     // And the narrow viewport re-emits the continuation header when it scrolls.
-    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 22 });
+    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 34 });
     const narrowPane = timelinePaneRows(scrolled);
     const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
     assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
@@ -1958,20 +1977,25 @@ test('a narrow terminal wraps the agent detail pane to its full width, not the s
   const { home, cleanup } = fixture();
   try {
     const row = dashboardRows(home)[0];
-    const contentWidths = (screen) => plain(screen).split('\n')
-      .filter((line) => line.startsWith('│') && line.endsWith('│'))
-      .map((line) => line.slice(1, -1).trimEnd().length);
+    const contentWidths = (screen) => plain(screen).split('\n').map((line) => line.trimEnd().length);
     const narrow = renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 });
-    assert.match(plain(narrow), /audit-files · planner-agent/);
+    // The step and the pool it ran on are both named, each on its own row of
+    // the label/value table the page now is.
+    assert.match(plain(narrow), /audit-files · run abc234/);
+    assert.match(plain(narrow), /Pool {6}planner-agent/);
     const widest = Math.max(...contentWidths(narrow));
     // 60 columns minus the 34-column sidebar minus padding is 22: the width the
     // detail used to wrap at even though the narrow pane spans the whole screen.
     assert.ok(widest > 22, `narrow detail still wraps at ${widest} columns`);
-    assert.ok(widest <= 58, `narrow detail overflows the panel: ${widest} columns`);
+    assert.ok(widest <= 60, `narrow detail overflows the frame: ${widest} columns`);
     const wide = plain(renderWorkflowTui(row, { width: 120, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 }));
-    assert.match(wide, /audit-files · planner-agent/);
-    // Wide layout is unchanged: two panels side by side on every body row.
-    assert.ok(wide.split('\n').some((line) => /^│.*││.*│$/.test(line)));
+    assert.match(wide, /audit-files · run abc234/);
+    assert.match(wide, /Pool {6}planner-agent/);
+    // And no panel border survives on either: the page is flat rules now.
+    for (const line of `${wide}\n${plain(narrow)}`.split('\n')) {
+      assert.ok(!/^[┌│└]/.test(line) || !/[┐│┘]$/.test(line.trimEnd()),
+        `a panel border survived: ${line}`);
+    }
   } finally { cleanup(); }
 });
 
@@ -2050,7 +2074,7 @@ test('the Fleet page draws the rungs under its two tabs, with the read-only note
   const byLane = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30 });
   const text = plain(byLane.lines.join('\n'));
   assert.match(frameHeader(text), /^ Fleet · by lane$/);
-  assert.match(text, /\[● by lane\] \[by provider\]/);
+  assert.match(text, /by lane\s+by provider\s+\[ edit \]/);
   assert.match(text, /read-only here · edit opens bullswarm setup/);
   assert.match(text, /gpt-5\.6-luna · high/);
   assert.match(text, /3 runs · 67% ok · p50 12m/);
@@ -2058,7 +2082,7 @@ test('the Fleet page draws the rungs under its two tabs, with the read-only note
   const byProvider = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30, fleetBy: 'provider' });
   const providerText = plain(byProvider.lines.join('\n'));
   assert.match(frameHeader(providerText), /^ Fleet · by provider$/);
-  assert.match(providerText, /\[by lane\] \[● by provider\]/);
+  assert.match(providerText, /by lane\s+by provider/);
   assert.match(providerText, /relay/);
 });
 
@@ -2124,7 +2148,7 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
     assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
     assert.match(plain(lastFrame(session.output)), /read-only here · edit opens bullswarm setup/);
     // Fleet's own sub-tab click is the same move Tab makes.
-    clickOn(session, '[by provider]');
+    clickOn(session, 'by provider');
     assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · by provider$/);
     session.press('\t');
     assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · by lane$/);
@@ -2134,7 +2158,9 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
     clickOn(session, '1.aaa111');
     assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
-    clickOn(session, 'build-alpha');
+    // `build-alpha ` with its trailing space: the plan band also names
+    // `build-alpha-evidence`, and a bare prefix would click that instead.
+    clickOn(session, 'build-alpha ');
     const step = lastFrame(session.output);
     assert.match(frameHeader(step), /build-alpha · run aaa111/);
     assert.equal(navButtons(step)[0], 'back');
@@ -2489,7 +2515,7 @@ test('a run with no recorded estimate and no measured rate paints blanks, not ze
       page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     }).lines.join('\n'));
     assert.match(text, /no attempt recorded an API-equivalent estimate/);
-    assert.match(text, /— no measured %\/minute rate for this pool/);
+    assert.match(text, /— no measured %\/minute rate for \S+/);
     assert.doesNotMatch(text, /\$0\.00/);
   } finally { cleanup(); }
 });
@@ -2651,5 +2677,293 @@ test('History loads seven more days each time the reader nears the bottom', asyn
     session.press('\x1b[6~');
     assert.match(frameHeader(lastFrame(session.output)), /^ History · (14|21) days/);
     assert.equal(await session.quit(), 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// 0.33.0 visual fidelity: the composition the approved prototype frames draw.
+//
+// Home, Run, Step and Help are asserted against what the frames in
+// docs/design/prototype-frames/ actually contain — the four-column breakdown
+// band, the `── budget · this week ──` block, the flat Run page, the Step
+// label/value table and the grouped Help rows — at the three widths the pass
+// is judged at. The numbers stay the product's own; only the shape is pinned.
+// ---------------------------------------------------------------------------
+
+/** The model the fidelity assertions render, with real rollups and meters. */
+function fidelityModel() {
+  const { home, cleanup } = shellFixture();
+  const rows = dashboardRows(home, { all: true });
+  const row = rows.find((entry) => entry.runId === 'wf-alpha');
+  const model = dashboardModel(row, {
+    runs: rows.filter((entry) => entry.ongoing),
+    usage: usageFixture(),
+    rollups: rollupFixture(),
+    days: dayFixture(),
+    prices: { subscriptions: {} },
+  });
+  return { home, rows, row, model, cleanup };
+}
+
+const FIDELITY_SIZES = [[120, 40], [55, 26], [200, 50]];
+
+test('no page paints past the width or comes up blank at 120x40, 55x26 and 200x50', () => {
+  const f = fidelityModel();
+  try {
+    for (const [width, height] of FIDELITY_SIZES) {
+      for (const name of DASHBOARD_PAGE_NAMES) {
+        const frame = renderDashboardPage(f.model, {
+          page: name, width, height, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
+          phaseIndex: 0, agentIndex: 0,
+        });
+        const painted = paintedRows(frame.lines.join('\n'));
+        for (const line of painted) {
+          assert.ok([...line].length <= width, `${name} at ${width}x${height} painted ${[...line].length} columns: ${line}`);
+        }
+        assert.ok(painted.filter((line) => line.trim()).length >= 3, `${name} at ${width}x${height} came up blank`);
+        assert.match(plain(painted.at(-1)), /\[/, `${name} at ${width}x${height} lost its nav`);
+      }
+    }
+  } finally { f.cleanup(); }
+});
+
+test("Home's 7-day breakdown is four columns on one band at 120 and 200, and one column at 55", () => {
+  const f = fidelityModel();
+  try {
+    const bandOf = (width) => {
+      const frame = renderDashboardPage(f.model, {
+        page: 'home', width, height: 90, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
+      });
+      const lines = paintedRows(frame.lines.join('\n')).map(plain);
+      const head = lines.findIndex((line) => /spent per day/.test(line));
+      assert.ok(head >= 0, `no breakdown band at ${width} columns:\n${lines.join('\n')}`);
+      return { lines, head };
+    };
+    // 120 and 200: the four headings share one row, in the prototype's order.
+    for (const width of [120, 200]) {
+      const { lines, head } = bandOf(width);
+      assert.match(lines[head], /spent per day.*by pool.*by model.*by project/,
+        `the four columns did not share a row at ${width}`);
+      // And the bars under them are proportional to the percentage beside them.
+      const pool = lines.slice(head + 1, head + 5).find((line) => /\d+%$/.test(line.trim()));
+      const share = Number(/(\d+)%$/.exec(pool.trim())[1]);
+      const bar = /([▇█]+)[░\s]*\s\d+%$/.exec(pool.trim());
+      const track = /([▇█]+)([░]*)\s\d+%$/.exec(pool.trim());
+      assert.ok(bar, `no bar beside the percentage at ${width}: ${pool}`);
+      const filled = track[1].length;
+      const cells = filled + track[2].length;
+      assert.ok(Math.abs(filled / cells - share / 100) <= 0.12,
+        `the bar is ${filled}/${cells} cells for ${share}% at ${width}: ${pool}`);
+    }
+    // 55: the same four sections, one under the other.
+    const narrow = bandOf(55);
+    assert.doesNotMatch(narrow.lines[narrow.head], /by pool/, 'the phone kept four columns on one row');
+    for (const heading of ['by pool', 'by model', 'by project']) {
+      assert.ok(narrow.lines.slice(narrow.head).some((line) => line.trim().startsWith(heading)),
+        `the phone lost the ${heading} column`);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('Home phone tiles and every live step keep their bars on one row', () => {
+  const f = fidelityModel();
+  try {
+    const running = f.model.runs[0];
+    running.state.actions = [
+      { ...running.state.actions[0], id: 'first-live-action', status: 'running' },
+      { ...running.state.actions[0], id: 'second-live-action', status: 'running' },
+    ];
+    const frame = renderDashboardPage(f.model, {
+      page: 'home', width: 54, height: 120, rows: f.rows, allRows: f.rows,
+    });
+    const lines = paintedRows(frame.lines.join('\n')).map(plain);
+    const today = lines.slice(lines.findIndex((line) => /── today/.test(line)) + 1,
+      lines.findIndex((line) => /── running/.test(line))).filter((line) => line.trim());
+    assert.equal(today.filter((line) => /^ finished\s/.test(line)).length, 1);
+    assert.equal(today.filter((line) => /^ spent\s/.test(line)).length, 1);
+    assert.ok(today.length <= 4, today.join('\n'));
+    for (const id of ['first-live-action', 'second-live-action']) {
+      const row = lines.find((line) => line.includes(id));
+      assert.ok(row, `missing ${id}`);
+      assert.match(row, /░{4,}.*\/—/, `missing indeterminate bar: ${row}`);
+    }
+    for (const line of lines) {
+      assert.ok([...line].length <= 54, line);
+      for (const match of line.matchAll(/\$/g)) {
+        assert.match(line.slice(Math.max(0, match.index - 2), match.index), /≈/, line);
+      }
+    }
+  } finally { f.cleanup(); }
+});
+
+test("Home's budget block meters every pool and prints no bare number with no declared price", () => {
+  const f = fidelityModel();
+  try {
+    for (const [width, height] of FIDELITY_SIZES) {
+      const text = plain(renderDashboardPage(f.model, {
+        page: 'home', width, height: Math.max(height, 90), rows: f.rows, allRows: f.rows,
+      }).lines.join('\n'));
+      assert.match(text, /── budget · this week ─/, `no budget block at ${width}`);
+      // Inside the block every money figure is either an estimate carrying its
+      // ≈ or money at a declared subscription rate, and the block says which.
+      const rows = text.split('\n');
+      const from = rows.findIndex((line) => /── budget · this week ─/.test(line));
+      const to = rows.findIndex((line, index) => index > from && /^── /.test(line));
+      const block = rows.slice(from, to < 0 ? rows.length : to).join('\n');
+      const declared = block.includes('at the declared subscription price');
+      for (const match of block.matchAll(/\$\s?[\d.]+/g)) {
+        const before = block.slice(Math.max(0, match.index - 2), match.index);
+        assert.ok(before.includes('≈') || declared,
+          `the budget block at ${width} painted a bare ${match[0]} with no basis`);
+      }
+      // The reason is said once for the block, not once per pool row.
+      const reasons = block.split('\n').filter((line) => /no declared subscription price/.test(line));
+      assert.equal(reasons.length, 1, `the declare-a-price reason was repeated at ${width}`);
+      assert.match(block, /bullswarm strategy set-subscription/,
+        `the block at ${width} did not say how to declare a price`);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('Run and Step draw no box-drawing panel at any of the three widths', () => {
+  const f = fidelityModel();
+  try {
+    for (const [width, height] of FIDELITY_SIZES) {
+      for (const page of ['run', 'step']) {
+        for (const focus of page === 'run' ? [0, 1] : [2]) {
+          const text = plain(renderDashboardPage(f.model, {
+            page, width, height, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
+            focus, phaseIndex: 0, agentIndex: 0,
+          }).lines.join('\n'));
+          for (const line of text.split('\n')) {
+            assert.ok(!/^[┌│└]/.test(line) || !/[┐│┘]$/.test(line.trimEnd()),
+              `${page} at ${width} kept a panel border: ${line}`);
+          }
+        }
+      }
+    }
+    // Run carries the prototype's triptych, and Step its label/value table.
+    const run = plain(renderDashboardPage(f.model, {
+      page: 'run', width: 120, height: 40, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
+    }).lines.join('\n'));
+    assert.match(run, /── budget ─.*── live ─.*── so far ─/, 'the Run triptych is not one row band');
+    assert.match(run, /── plan ─/);
+    assert.match(run, /── timeline ─/);
+    // And says `no expected duration recorded` once, not twice.
+    assert.equal(run.split('\n').filter((line) => /no expected duration/.test(line)).length, 1);
+    const step = plain(renderDashboardPage(f.model, {
+      page: 'step', width: 120, height: 40, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
+      focus: 2, phaseIndex: 0, agentIndex: 0,
+    }).lines.join('\n'));
+    for (const field of ['Status', 'Pool', 'Purpose', 'Time']) {
+      assert.match(step, new RegExp(`^ ${field}\\s{2,}\\S`, 'm'), `Step lost its ${field} row`);
+    }
+    for (const section of ['budget', 'task · first lines', 'output', 'artifacts']) {
+      assert.match(step, new RegExp(`── ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} ─`), `Step lost its ${section} section`);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('Help groups the keys that share a purpose and names every key the shell runs', () => {
+  const rendered = renderDashboardPage(dashboardModel(null, {}), { page: 'help', width: 120, height: 90 });
+  const whole = plain(rendered.lines.join('\n'));
+  // Every binding the shell reads is named on the page.
+  for (const name of Object.keys(DASHBOARD_KEYS)) {
+    assert.ok(whole.includes(DASHBOARD_KEYS[name].keys), `help lost ${name} (${DASHBOARD_KEYS[name].keys})`);
+  }
+  // The page keys are one row, the way the prototype groups them.
+  assert.match(whole, /^ r b s y f\s+Runs · Budget · Stats · History · Fleet$/m);
+  assert.match(whole, /^ ↑\/k ↓\/j\s+scroll one line$/m);
+  // Budget has no sub-tabs, so the page does not say it has.
+  assert.doesNotMatch(whole, /sub-tab[^\n]*Budget/);
+  assert.match(whole, /next sub-tab on Stats and Fleet/);
+  // And the page is about thirty rows, not the fifty-five it used to be.
+  const body = renderDashboardPage(dashboardModel(null, {}), { page: 'help', width: 120, height: 90 });
+  assert.ok(body.body.total <= 36, `help is ${body.body.total} rows`);
+  assert.ok(body.body.total >= 25, `help is only ${body.body.total} rows`);
+  assert.match(rendered.lines.join('\n'), /\x1b\[38;2;124;127;138m/, 'Help secondary copy uses the shared grey role');
+});
+
+test('`workflow tui --overview` keeps the two shapes the Claude mod pane parses', () => {
+  const { home, cleanup } = fixture();
+  try {
+    const snapshot = overviewSnapshot(home, 'abc234', { width: 100, height: 30 });
+    const text = snapshot.lines.join('\n');
+    // parseOverview reads `── ` section rules and `HH:MM ` milestones, and
+    // strips the box border; all three are still what this command prints.
+    assert.ok(snapshot.lines.some((line) => /^┌/.test(line)), 'the overview lost its box');
+    const inner = snapshot.lines.map((line) => line.replace(/^│/, '').replace(/│$/, ''));
+    assert.ok(inner.some((line) => /^── /.test(line)), 'the overview lost its section rules');
+    assert.ok(inner.some((line) => /^\d{2}:\d{2}\s/.test(line)), 'the overview lost its milestones');
+    // The goal preview only the Run page dropped is still here.
+    assert.ok(inner.some((line) => /Goal accepted/.test(line)));
+    assert.ok(inner.some((line) => /Audit every file autonomously\./.test(line)),
+      'the overview lost the goal text the mod pane shows');
+  } finally { cleanup(); }
+});
+
+// A fan the next level closes: the prototype (docs/design/prototype-frames/
+// run-120.txt) rules each branch across to the joint and closes the last one
+// with `┘`, so the plan never draws a `┴` with nothing beneath it — observed
+// on run gqq2ra, 2026-09-17, where `stream-persist ─┴─ integrate` sat over a
+// longer `└─ handoff-preamble` that connected to nothing.
+test('the plan DAG closes a fan with ruled branches and a corner, never a hanging ┴', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-fan-'));
+  try {
+    const startedAt = '2026-09-17T06:46:00.000Z';
+    const document = createV2GoalDocument({
+      goal: 'fan and join', cwd: tmpdir(),
+      requirements: [{ id: 'requirement-1', text: 'Both halves land.', mandatory: true }],
+      settings: { scout: false, executionMode: 'program' },
+    });
+    let state = createV2State(document, { runId: 'wf-fan', shortId: 'fan111' });
+    const step = (id, dependsOn, extra = {}) => ({
+      id, purpose: `${id} purpose`, dependsOn, affects: ['requirement-1'], ownedFiles: [`${id}.md`], prompt: `${id}.`,
+      lane: 'build', effort: 'low', evidenceFor: [], inputs: dependsOn, produces: [id], ...extra,
+    });
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Fan then join.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions: [
+        step('design-map', []),
+        step('stream-persist', ['design-map']),
+        step('handoff-preamble', ['design-map']),
+        step('integrate', ['stream-persist', 'handoff-preamble']),
+        step('verify', ['integrate'], { affects: [], evidenceFor: ['requirement-1'], lane: 'analyze', ownedFiles: [], produces: [] }),
+      ] },
+    });
+    state.lifecycle = { status: 'running', startedAt, finishedAt: null, resultFile: null };
+    for (const action of state.actions.slice(0, 3)) Object.assign(action, { status: 'succeeded', startedAt, finishedAt: startedAt, attempts: 1 });
+    Object.assign(state.actions[3], { status: 'running', startedAt, attempts: 1 });
+    state.attempts = state.actions.slice(0, 4).map((action, index) => ({
+      id: `${action.id}-1`, actionId: action.id, ordinal: 1, pool: 'codex', model: 'luna',
+      status: index < 3 ? 'succeeded' : 'running', startedAt, finishedAt: index < 3 ? startedAt : null,
+    }));
+    state.runner = { pid: process.pid, lastHeartbeatAt: new Date().toISOString() };
+    const dir = join(home, 'workflows', 'wf-fan');
+    mkdirSync(dir, { recursive: true });
+    // Durable action events give each dependency level its own phase, the
+    // way a real run does; the plan reads its levels from those phases.
+    appendEvent(dir, state, 'action.started', { actionId: 'design-map' });
+    appendEvent(dir, state, 'action.finished', { actionId: 'design-map', status: 'succeeded' });
+    for (const id of ['stream-persist', 'handoff-preamble']) appendEvent(dir, state, 'action.started', { actionId: id });
+    for (const id of ['stream-persist', 'handoff-preamble']) appendEvent(dir, state, 'action.finished', { actionId: id, status: 'succeeded' });
+    appendEvent(dir, state, 'action.started', { actionId: 'integrate' });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+
+    const rows = dashboardRows(home, { all: true });
+    const model = dashboardModel(rows[0], { runs: rows, usage: usageFixture() });
+    const frame = renderDashboardPage(model, { page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-fan' });
+    const text = frame.lines.map(plain);
+    const top = text.find((line) => line.includes('stream-persist'));
+    const bottom = text.find((line) => line.includes('handoff-preamble'));
+    assert.ok(top && bottom, 'both branches of the fan are drawn');
+    assert.doesNotMatch(text.join('\n'), /┴/, 'no ┴ hangs over a branch that never connects');
+    // The fan opens and closes with ┬ on the top row.
+    assert.match(top, /design-map ─┬─ . stream-persist ─+┬── . integrate/);
+    // The longer lower branch hangs under the ┬ that opened the fan, is ruled
+    // across to the joint, and closes with ┘ exactly under the closing ┬.
+    assert.match(bottom, /└─ . handoff-preamble ─+┘/);
+    assert.equal(bottom.indexOf('└'), top.indexOf('┬'), 'the branch hangs under the joint that opened it');
+    assert.equal(bottom.indexOf('┘'), top.lastIndexOf('┬'), 'the corner sits under the joint it closes');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

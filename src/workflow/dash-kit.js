@@ -1,6 +1,7 @@
 // The render kit the 0.33.0 pages compose from: the thin rules, the page tab
 // row and the period toggle, the share, progress and stacked bars, the
-// sparkline and the heat row, the axis step and the visible-cell truncation.
+// sparkline and the heat row, the column band and the compact row, the axis
+// step and the visible-cell truncation.
 // Every function is pure — strings in, strings out — so a page renders and is
 // asserted without a terminal, and none of them reads a TTY.
 //
@@ -16,13 +17,13 @@
 //      levels reads as well over five.
 //
 // Colours come from the one palette the product has, METER_COLORS in
-// usage-view.js, and this file invents none. The approved prototype's accent,
-// purple, grey and four heat shades exist only in its CSS, so where it used
-// them this kit substitutes attributes that need no colour: the active tab and
-// the active period are inverted, every key letter is underlined, the parts
-// after the first in a share bar are dimmed, and the heat ramp is blended from
-// the palette's own track and amber. Those four missing constants are a
-// request for the integrator, not a second palette to add here.
+// usage-view.js, and this file invents none. That palette now carries the
+// prototype's purple, orange, cyan and dim roles, its "others" band and its
+// four heat shades, so the heat ramp is the palette's own and a caller names a
+// role rather than a hex. Where the prototype used colour for an affordance
+// this kit still substitutes attributes that need no colour: the active tab
+// and the active period are inverted, every key letter is underlined, and the
+// parts after the first in a share bar are dimmed.
 //
 // A region is `{ x, width, action }` with `x` the 1-based column inside the
 // returned line — the same base as parseMouse()'s coordinates — so the shell
@@ -43,10 +44,22 @@ const HEX = /^#[0-9a-f]{6}$/i;
 const visibleLength = (text) => String(text ?? '').replace(SGR, '').length;
 
 /** A width as a whole number of columns; anything unusable falls back. */
-function columns(width, fallback) {
+function colsOf(width, fallback) {
   const value = Number(width);
   if (!Number.isFinite(value)) return Math.max(0, Math.trunc(fallback));
   return Math.max(0, Math.trunc(value));
+}
+
+/**
+ * A whole number of cells, or the fallback: a gap, a fixed field width or a
+ * floor. Null, undefined and the empty string are "not given" rather than the
+ * zero `Number()` calls them, and Infinity is not a number of cells — it would
+ * reach String#repeat and throw.
+ */
+function cellsOf(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : fallback;
 }
 
 const rgbOf = (hex) => {
@@ -84,7 +97,7 @@ export function formatDashboardValue(value, kind) {
  * returned untouched.
  */
 export function cut(text, width = 20) {
-  const cols = columns(width, 20);
+  const cols = colsOf(width, 20);
   const source = String(text ?? '');
   if (cols <= 0) return '';
   if (visibleLength(source) <= cols) return source;
@@ -113,13 +126,186 @@ export function cut(text, width = 20) {
  * pair too long for the width is cut rather than allowed to overrun it.
  */
 export function rule(title = null, right = null, width = 120) {
-  const cols = columns(width, 120);
+  const cols = colsOf(width, 120);
   if (cols <= 0) return '';
   const head = title == null || `${title}` === '' ? '' : `── ${title} `;
   const tail = right == null || `${right}` === '' ? '' : ` ${right} ──`;
   const used = visibleLength(head) + visibleLength(tail);
   if (used >= cols) return cut(`${head}${tail}`, cols);
   return `${head}${'─'.repeat(cols - used)}${tail}`;
+}
+
+/**
+ * N cells laid side by side across `width`, one text block back: Home's
+ * four-column breakdown, Run's budget/live/so-far triptych and Stats
+ * Overview's three-column figure grid are the same problem in three places,
+ * and this is the one helper all three call.
+ *
+ * A cell is `{ rule, rows, width }` — `rule` an optional column heading drawn
+ * by rule() across that column, `rows` the lines beneath it, `width` a fixed
+ * width for a column the caller has measured (the prototype's Run triptych is
+ * 37/36/29, not three equal thirds). Cells without a width share what is left
+ * evenly, the leftmost taking the odd column. The block is as tall as its
+ * tallest cell, short columns ending in blanks so the columns below stay
+ * aligned, and a line wider than its column is cut(), never wrapped: a band is
+ * a band, and a caller that wants wrapping wraps before it calls. Trailing
+ * blanks are trimmed, so no line and no column reaches past `width`, and cells
+ * that cannot be given a column each are dropped from the right rather than
+ * painted at zero width.
+ *
+ * The returned array of lines carries a non-enumerable `meta`,
+ * `{ gap, columns: [{ x, width, rows }] }` with `x` the 1-based column the
+ * cell starts at, so a page maps hit regions onto it without arithmetic.
+ */
+export function columns(cells, { width = 120, gap = 2 } = {}) {
+  const cols = colsOf(width, 120);
+  const list = (Array.isArray(cells) ? cells : []).filter(Boolean);
+  const space = cellsOf(gap, 2);
+  const band = (lines, meta) => {
+    Object.defineProperty(lines, 'meta', { enumerable: false, value: meta });
+    return lines;
+  };
+  if (cols <= 0 || !list.length) return band([], { gap: space, columns: [] });
+
+  let kept = list;
+  while (kept.length > 1 && cols < kept.length + space * (kept.length - 1)) kept = kept.slice(0, -1);
+  const count = kept.length;
+  const inner = Math.max(count, cols - space * (count - 1));
+
+  const asked = kept.map((cell) => {
+    const value = Number(cell.width);
+    return Number.isFinite(value) && value >= 1 ? Math.trunc(value) : null;
+  });
+  const elastic = asked.filter((value) => value == null).length;
+  const claimed = asked.reduce((sum, value) => sum + (value ?? 0), 0);
+  let widths;
+  if (claimed + elastic <= inner) {
+    const free = inner - claimed;
+    const base = elastic ? Math.floor(free / elastic) : 0;
+    const extra = elastic ? free - base * elastic : 0;
+    let seen = 0;
+    widths = asked.map((value) => {
+      if (value != null) return value;
+      const own = base + (seen < extra ? 1 : 0);
+      seen += 1;
+      return own;
+    });
+  } else {
+    // The widths asked for do not fit: an even split is the one answer that
+    // never paints past the band, and a caller sees it in `meta`.
+    const base = Math.floor(inner / count);
+    const extra = inner - base * count;
+    widths = kept.map((_, index) => base + (index < extra ? 1 : 0));
+  }
+
+  const titled = kept.some((cell) => cell.rule != null && `${cell.rule}` !== '');
+  const blocks = kept.map((cell, index) => {
+    const rows = (Array.isArray(cell.rows) ? cell.rows : []).map((row) => String(row ?? ''));
+    if (!titled) return rows;
+    const head = cell.rule == null || `${cell.rule}` === '' ? '' : rule(cell.rule, null, widths[index]);
+    return [head, ...rows];
+  });
+  const height = blocks.reduce((most, block) => Math.max(most, block.length), 0);
+  const pad = (text, own) => {
+    const clipped = cut(text, own);
+    return `${clipped}${' '.repeat(Math.max(0, own - visibleLength(clipped)))}`;
+  };
+  const lines = [];
+  for (let row = 0; row < height; row += 1) {
+    const line = blocks
+      .map((block, index) => pad(block[row] ?? '', widths[index]))
+      .join(' '.repeat(space));
+    lines.push(line.replace(/ +$/, ''));
+  }
+  let at = 1;
+  const regions = widths.map((own, index) => {
+    const x = at;
+    at += own + space;
+    return { x, width: own, rows: blocks[index].length };
+  });
+  return band(lines, { gap: space, columns: regions });
+}
+
+/**
+ * One row of fields across `width` whose elastic field shrinks before anything
+ * is dropped: History's two-rows-per-run, Home's two-rows-per-tile and
+ * Budget's seventeen-rows-per-pool are the same problem in three places, and
+ * this is the one helper all three call.
+ *
+ * A field is `{ text, width, min, grow, align, gap }`, or a bare string for a
+ * plain one. `width` fixes a column — a result mark, a run id, a duration;
+ * `grow` marks the elastic field, which takes whatever the fixed fields leave
+ * and gives it back first, never below `min` (1 by default); `align: 'right'`
+ * pads inside the field's own width; `gap` is the blanks in front of the
+ * field, one by default. Because the elastic field absorbs the slack, the
+ * fields after it sit against the right edge of the row — which is how a
+ * person, a pool, a duration and a cost fit on one phone row.
+ *
+ * Shrinking is cut(), so a squeezed field ends in `…` rather than vanishing.
+ * Only when the fixed fields alone will not fit are fields dropped, from the
+ * right, and the first field — the one that says what the row is — is never
+ * dropped. The row is at most `width` visible cells and carries no trailing
+ * blanks.
+ */
+export function compactRow(fields, { width = 55, gap = 1 } = {}) {
+  const cols = colsOf(width, 55);
+  const space = cellsOf(gap, 1);
+  const list = (Array.isArray(fields) ? fields : [])
+    .filter((field) => field != null && field !== false)
+    .map((field) => {
+      const spec = typeof field === 'object' ? field : { text: field };
+      return {
+        text: String(spec.text ?? ''),
+        fixed: cellsOf(spec.width, null),
+        min: cellsOf(spec.min, 1),
+        lead: cellsOf(spec.gap, space),
+        grow: spec.grow === true,
+        right: spec.align === 'right',
+      };
+    });
+  if (cols <= 0 || !list.length) return '';
+
+  const leadOf = (field, index) => (index === 0 ? 0 : field.lead);
+  const paint = (field, size) => {
+    if (size <= 0) return '';
+    const clipped = cut(field.text, size);
+    const fill = ' '.repeat(Math.max(0, size - visibleLength(clipped)));
+    return field.right ? `${fill}${clipped}` : `${clipped}${fill}`;
+  };
+
+  let kept = list;
+  for (;;) {
+    const sizes = kept.map((field) => field.fixed ?? visibleLength(field.text));
+    let used = kept.reduce((sum, field, index) => sum + leadOf(field, index) + sizes[index], 0);
+    if (used > cols) {
+      // The elastic fields give their cells back first, the rightmost first,
+      // and never below their floor: cut() before anything is dropped.
+      for (let index = kept.length - 1; index >= 0 && used > cols; index -= 1) {
+        if (!kept[index].grow) continue;
+        const give = Math.min(sizes[index] - kept[index].min, used - cols);
+        if (give > 0) {
+          sizes[index] -= give;
+          used -= give;
+        }
+      }
+    } else if (used < cols) {
+      const growers = kept.flatMap((field, index) => (field.grow ? [index] : []));
+      if (growers.length) {
+        const free = cols - used;
+        const base = Math.floor(free / growers.length);
+        const extra = free - base * growers.length;
+        growers.forEach((index, at) => { sizes[index] += base + (at < extra ? 1 : 0); });
+        used = cols;
+      }
+    }
+    if (used <= cols || kept.length <= 1) {
+      const line = kept
+        .map((field, index) => `${' '.repeat(leadOf(field, index))}${paint(field, sizes[index])}`)
+        .join('');
+      return cut(line, cols).replace(/ +$/, '');
+    }
+    kept = kept.slice(0, -1);
+  }
 }
 
 /** A label whose key letter is underlined; inverted too when it is active. */
@@ -137,7 +323,7 @@ function keyedText(label, key, active) {
  * active one, which is the reader's position and never falls off.
  */
 function itemRow(items, { active = null, width = 120, separator = '  ', leading = true, action }) {
-  const cols = width == null ? null : columns(width, 120);
+  const cols = width == null ? null : colsOf(width, 120);
   const kept = (Array.isArray(items) ? items : []).filter(Boolean).map((item) => {
     const label = String(item.label ?? '');
     const isActive = active != null && String(item.id) === String(active);
@@ -254,7 +440,7 @@ const SHARE_ASCII = Object.freeze(['#', '.', '|', '#']);
  * bright `▓` over quieter `▒` and `░`.
  */
 export function shareBar(parts, { width = 20, colors = true } = {}) {
-  const cols = columns(width, 20);
+  const cols = colsOf(width, 20);
   if (cols <= 0) return '';
   const ascii = asciiGlyphsPreferred();
   const list = (Array.isArray(parts) ? parts : []).filter(Boolean).map((part, index) => ({
@@ -293,7 +479,7 @@ const SPARK_ASCII = Object.freeze(['.', ':', '-', '=', '#']);
  * An ascii terminal gets `.:-=#`.
  */
 export function sparkline(values, width = 20) {
-  const cols = columns(width, 20);
+  const cols = colsOf(width, 20);
   const list = Array.isArray(values) ? values : [];
   if (cols <= 0 || !list.length) return '';
   const window = list.slice(-cols).map(reading);
@@ -318,7 +504,7 @@ export function sparkline(values, width = 20) {
  * ascii terminal gets `#` and `.`.
  */
 export function progressBar(fraction, width = 20) {
-  const cols = columns(width, 20);
+  const cols = colsOf(width, 20);
   if (cols <= 0) return '';
   const value = Number(fraction);
   const filled = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) * cols : 0;
@@ -342,7 +528,7 @@ export function progressBar(fraction, width = 20) {
  * the segment keeps the terminal's colour. An ascii terminal gets `#`.
  */
 export function stackedBars(rows, { width = 120, colors = true } = {}) {
-  const cols = columns(width, 120);
+  const cols = colsOf(width, 120);
   const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
   if (cols <= 0 || !list.length) return [];
   const labels = list.map((row) => String(row.label ?? ''));
@@ -398,7 +584,7 @@ export function columnBars(series, labels, {
   }));
   if (!sourceLabels.length) return [];
 
-  const requested = width == null || !Number.isFinite(Number(width)) ? null : columns(width, 0);
+  const requested = width == null || !Number.isFinite(Number(width)) ? null : colsOf(width, 0);
   const maxColumns = requested == null ? sourceLabels.length : Math.max(1, requested - 2);
   const offset = Math.max(0, sourceLabels.length - maxColumns);
   const labelsView = sourceLabels.slice(offset);
@@ -559,27 +745,22 @@ export function columnBars(series, labels, {
 
 const HEAT_SHADES = Object.freeze(['░', '▒', '▓', '█']);
 const HEAT_ASCII = Object.freeze(['.', ':', '=', '#']);
-/** Where each heat step sits between the palette's track and its amber. */
-const HEAT_STEPS = Object.freeze([0.3, 0.55, 0.8, 1]);
 
 /**
- * The four heat backgrounds, blended from the palette's own track and amber.
- * Built at call time: usage-view.js imports this module in the views, so a
- * top-level read of METER_COLORS would be a temporal-dead-zone trap.
+ * The four heat backgrounds: the palette's own ramp, darkest first, which is
+ * the prototype's `.t1`-`.t4`. Built at call time, not at import: usage-view.js
+ * imports this module in the views, so a top-level read of METER_COLORS would
+ * be a temporal-dead-zone trap.
  */
 function heatRamp() {
-  const from = rgbOf(METER_COLORS.track);
-  const to = rgbOf(METER_COLORS.amber);
-  return HEAT_STEPS.map((step) => bgOf(from.map(
-    (value, channel) => Math.round(value + (to[channel] - value) * step),
-  )));
+  return METER_COLORS.heat.map((hex) => bgOf(rgbOf(hex)));
 }
 
 /**
  * One row of heatmap cells for values 0..1, separated by a single space so a
  * cell and its gap are two columns: `▓ █ ▒`. With `ansi` each cell is a
- * background-coloured cell — the ramp is the palette's, four steps from its
- * track to its amber — and without it the cells are the density glyphs
+ * background-coloured cell — the ramp is the palette's four heat shades,
+ * darkest first — and without it the cells are the density glyphs
  * `░▒▓█`, `.:=#` on an ascii terminal. A cell that is null or not a number is
  * the empty marker `·`: no value was recorded, which is not the same as a
  * measured zero. Cells past `width` are dropped from the left, so a narrow
@@ -587,7 +768,7 @@ function heatRamp() {
  */
 export function heatRow(cells, { width = null, ansi = true } = {}) {
   const list = Array.isArray(cells) ? cells : [];
-  const cols = width == null || !Number.isFinite(Number(width)) ? null : columns(width, 0);
+  const cols = width == null || !Number.isFinite(Number(width)) ? null : colsOf(width, 0);
   const room = cols == null ? list.length : Math.max(0, Math.floor((cols + 1) / 2));
   const window = room >= list.length ? list : (room === 0 ? [] : list.slice(-room));
   if (!window.length) return '';

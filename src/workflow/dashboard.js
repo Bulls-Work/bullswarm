@@ -13,11 +13,11 @@ import { presentationStageStatus, projectV2DependencyStages } from './v2-present
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
-import { loadUsage, parseMouse } from './usage-view.js';
+import { loadUsage, parseMouse, METER_COLORS, meterBar, paceWord, untilText } from './usage-view.js';
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -997,7 +997,7 @@ function timelineSegmentDisplayName(name, model) {
   return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
 }
 
-function workflowTimelineLines(model, width, spinnerFrame = 0) {
+function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true } = {}) {
   const { state } = model;
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
@@ -1022,8 +1022,12 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
   if (goalLines.length === GOAL_PREVIEW_LINES && wrapLines(goalSource, goalWidth).length > GOAL_PREVIEW_LINES) {
     goalLines[GOAL_PREVIEW_LINES - 1] = truncate(`${goalLines[GOAL_PREVIEW_LINES - 1]} …`, goalWidth);
   }
+  // The Run page prints the goal above the timeline, where the reader sees it
+  // without scrolling; there it passes `goalPreview: false` so the same five
+  // wrapped rows are not replayed inside the first milestone. The mod pane's
+  // `--overview` frame keeps them.
   add(state.lifecycle.startedAt, `${glyphs().ongoing} Goal accepted`, '', [
-    ...goalLines,
+    ...(goalPreview ? goalLines : []),
     runDir ? `goal file · ${join(runDir, 'goal.json')}` : null,
     model.dependencyGroups ? 'phases may overlap as actions become ready' : 'preparing repository reconnaissance',
   ], 'Preflight');
@@ -1297,6 +1301,71 @@ function plannerUsageSummary(model) {
 
 function dimText(value, width) {
   return `\x1b[2m${truncate(value, width)}\x1b[0m`;
+}
+
+// ------------------------------------------------- the palette on the page
+//
+// The pages name a role — `orange`, `cyan`, `purple`, `green`, `red`, `dim` —
+// and never a hex. Every value comes from METER_COLORS in usage-view.js, the
+// one palette the product has; this file adds none. Colour is off wherever
+// the meters are off, so an ascii terminal and a plain-text capture read the
+// same words with no escapes in them.
+
+const SGR_RESET = '\x1b[0m';
+const SGR_BOLD = '\x1b[1m';
+const SGR_NO_BOLD = '\x1b[22m';
+
+const rgbOf = (hex) => {
+  const value = Number.parseInt(String(hex).slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+};
+
+/** `text` in the palette's `role`, or untouched where colour is off. */
+function tint(text, role) {
+  const body = String(text ?? '');
+  if (!body || !meterAnsi()) return body;
+  const hex = METER_COLORS[role];
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return body;
+  return `\x1b[38;2;${rgbOf(hex).join(';')}m${body}${SGR_RESET}`;
+}
+
+/** A key figure or a key name, bold where the terminal can be bold. */
+function strong(text) {
+  const body = String(text ?? '');
+  if (!body || !meterAnsi()) return body;
+  return `${SGR_BOLD}${body}${SGR_NO_BOLD}`;
+}
+
+/** The run marks, each in the colour the tagged prototype frame gives it. */
+const okMark = () => tint(glyphs().ok, 'green');
+const failMark = () => tint(glyphs().fail, 'red');
+const runningMark = () => tint(glyphs().started, 'cyan');
+const pendingMark = () => dimText(glyphs().pending, 2);
+
+/**
+ * A `columns()` band painted into the body at `indent`, each column clickable
+ * over its own rows. `cells` carry an optional `action`; a cell columns()
+ * dropped for want of room simply has no region.
+ */
+function pushColumns(body, cells, { width, gap = 2, indent = 1 } = {}) {
+  const lines = columns(cells, { width, gap });
+  const base = body.lines.length;
+  for (const line of lines) body.push(`${' '.repeat(indent)}${line}`);
+  for (const [index, column] of (lines.meta?.columns ?? []).entries()) {
+    const action = cells[index]?.action;
+    if (!action) continue;
+    // A cell may name the rows it reacts to — a tile is one click on its
+    // number, not three on a number, a label and a caption.
+    const only = cells[index]?.actionRows ?? null;
+    for (let row = 0; row < column.rows; row += 1) {
+      if (only && !only.includes(row)) continue;
+      const painted = visibleLength(body.lines[base + row] ?? '');
+      const x1 = column.x + indent;
+      const x2 = Math.min(painted, x1 + Math.max(1, column.width) - 1);
+      if (x2 >= x1) body.regions.push({ x1, x2, y: base + row + 1, action });
+    }
+  }
+  return lines;
 }
 
 function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
@@ -2102,8 +2171,252 @@ function tileText(tile, width) {
 }
 
 /**
- * Home: today's four tiles, the period's breakdown by pool, model and
- * project, the runs in flight, and the recent list.
+ * `widget-lib@cmd ▇▇▇▇▇▇░░░░ 15m/17m`, the per-step bar the prototype draws
+ * beside the plan strip.
+ *
+ */
+function stepBarText(action, assignment, { width = 24, nowMs = Date.now(), pool = null } = {}) {
+  const expected = finiteOrNull(assignment?.expectedMinutes);
+  const startedMs = Date.parse(assignment?.startedAt ?? action?.startedAt ?? '');
+  const elapsed = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 60_000) : null;
+  const short = pool == null ? null : String(pool).split(':').pop();
+  const name = short ? `${action.id}@${short}` : String(action.id);
+  const clock = elapsed == null ? blank() : minutesText(elapsed);
+  const measured = expected != null && expected > 0 && elapsed != null;
+  const timing = `${clock}/${measured ? minutesText(expected) : blank()}`;
+  const bars = Math.max(4, Math.min(10, width - visibleLength(name) - visibleLength(timing) - 2));
+  const bar = measured
+    ? tint(progressBar(elapsed / expected, bars), 'green')
+    : tint((asciiGlyphsPreferred() ? '.' : '░').repeat(bars), 'dim');
+  return {
+    measured,
+    text: compactRow([
+      { text: name, grow: true, min: 1 },
+      bar,
+      timing,
+    ], { width }),
+  };
+}
+
+/** The assignment a run's step was dispatched under, if one was recorded. */
+function assignmentOf(model, runId, actionId) {
+  return (model.assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === actionId) ?? null;
+}
+
+/** The pool a step's newest attempt ran on, for the `step@pool` label. */
+function stepPool(row, actionId) {
+  const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === actionId);
+  return attempt?.pool ?? null;
+}
+
+/**
+ * The `── budget · this week ──` block: one meter row per pool and one dim
+ * reset/pace row beneath it.
+ *
+ * The money column is the one place this block could invent a figure, and it
+ * does not: `monthlyPriceUsd` is null on every pool here, so the column is a
+ * blank and the reason is printed once under the block rather than six times
+ * inside it.
+ */
+function paceOnly(text) {
+  const word = String(text ?? '').replace(/\s*[+\u2212-]\d+pp$/, '').trim();
+  return word || blank();
+}
+
+function budgetWeekLines(body, model, { width, narrow, nowMs }) {
+  const rows = (model.budget?.rows ?? [])
+    .filter((row) => row.usedPct != null)
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0))
+    .slice(0, narrow ? 3 : 4);
+  body.push('');
+  body.push(rule('budget · this week', null, width));
+  if (!rows.length) {
+    body.push(dimText(' no pool reported a licence meter · bullswarm doctor checks the meters', width));
+    return;
+  }
+  const nameWidth = Math.min(narrow ? 9 : 13, rows.reduce((most, row) => Math.max(most, String(row.name).length), 0));
+  const unpriced = [];
+  for (const row of rows) {
+    const name = cut(String(row.name), nameWidth).padEnd(nameWidth);
+    const used = percentText(row.usedPct) ?? blank();
+    const pace = paceWord(row.usedPct, row.elapsedPct);
+    const money = row.subscription?.windowUsd == null
+      ? blank()
+      : formatDashboardValue(row.subscription.windowUsd, 'money');
+    if (row.subscription?.windowUsd == null) unpriced.push(row.name);
+    const fits = row.fits == null
+      ? null
+      : `${row.fits} medium run${row.fits === 1 ? '' : 's'} fit${row.fits === 1 ? 's' : ''}`;
+    const tail = narrow
+      ? visibleLength(`${name} ${used} `) + 12
+      : visibleLength(`${name} `) + 46;
+    // The meter is capped: past 64 cells a longer bar says nothing more, so
+    // the extra width at 200 columns goes to the row's words instead.
+    const bar = meterBar(row.usedPct, row.elapsedPct, Math.max(4, Math.min(64, width - tail - 2)), { ansi: meterAnsi() });
+    const severity = row.usedPct >= 80 ? 'red' : row.usedPct >= 50 ? 'amber' : 'green';
+    body.row(
+      narrow
+        ? compactRow([
+          { text: ` ${name}`, width: nameWidth + 1 },
+          bar,
+          { text: strong(used), width: 4, align: 'right' },
+          { text: tint(paceOnly(pace.text), severity), grow: true, min: 3 },
+        ], { width })
+        : compactRow([
+          { text: ` ${name}`, width: nameWidth + 1 },
+          bar,
+          { text: `${strong(used)} used`, width: 10, align: 'right', gap: 2 },
+          { text: money, width: 8, align: 'right', gap: 2 },
+          { text: tint(fits ?? blank(), severity), grow: true, min: 6, gap: 2 },
+        ], { width }),
+      { kind: 'page', page: 'budget', pool: row.name },
+    );
+    const reset = narrow
+      ? `resets ${row.resetsAt ? untilText(row.resetsAt, nowMs) : blank()}`
+      : `resets ${row.resetsText ?? blank()}`;
+    const elapsed = percentText(row.elapsedPct);
+    body.push(dimText(
+      `   ${[reset, ...(narrow ? [row.subscription?.windowUsd == null ? null : money] : [elapsed ? `${elapsed} elapsed` : null, pace.text || null])].filter(Boolean).join(' · ')}`,
+      width,
+    ));
+  }
+  if (unpriced.length) {
+    // The phone has no room for the reason and the command on one row, so it
+    // takes two rather than losing the command to a truncation.
+    if (narrow) {
+      body.push(dimText(` ${blank()} money: no declared subscription price`, width));
+      body.push(dimText('   bullswarm strategy set-subscription', width));
+    } else {
+      body.push(dimText(
+        ` ${blank()} money: no declared subscription price for ${unpriced.join(', ')} · bullswarm strategy set-subscription <pool> --monthly-usd`,
+        width,
+      ));
+    }
+  }
+  // B1. The figures that are there are money at a DECLARED rate, not the
+  // API-equivalent estimate every other `$` on this page is; say which.
+  if (unpriced.length < rows.length) {
+    body.push(dimText(' money at the declared subscription price, pro-rated over the window', width));
+  }
+}
+
+/**
+ * The four-column breakdown band: spent per day, by pool, by model, by
+ * project. One row band at 120 and 200 columns, one column at 55.
+ *
+ * Each bar is a fraction of the percentage printed beside it — the same
+ * number, drawn — rather than of the biggest row's minutes, which is what
+ * made the old band's bars and its figures disagree.
+ */
+function breakdownCells(model, opts, { cellWidth }) {
+  const { period } = opts;
+  const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
+  const spend = model.stats?.spendPerDay ?? null;
+  const rows = 4;
+  const barOf = (share, role, label, width) => {
+    const value = Number(share);
+    const text = shareText(share) ?? blank();
+    const bars = Math.max(3, width - visibleLength(label) - visibleLength(text) - 2);
+    const bar = Number.isFinite(value) ? tint(progressBar(value, bars), role) : ' '.repeat(bars);
+    return `${label} ${bar} ${text}`;
+  };
+  const listCell = (label, key, role, tab) => {
+    const list = (breakdown[key] ?? []).slice(0, rows);
+    const nameWidth = Math.min(
+      Math.max(6, Math.floor(cellWidth / 2)),
+      list.reduce((most, row) => Math.max(most, String(row.name ?? '?').length), 6),
+    );
+    return {
+      action: { kind: 'tab', tab },
+      rows: [
+        dimText(label, cellWidth),
+        ...(list.length
+          ? list.map((row) => barOf(row.minutesShare, role, cut(String(row.name ?? '?'), nameWidth).padEnd(nameWidth), cellWidth))
+          : [dimText('no finished run in this period', cellWidth)]),
+      ],
+    };
+  };
+  // Spent per day is the same series Stats charts, coloured the prototype's
+  // cyan; the axis row carries the weekday letters.
+  // S1/B5: with no recorded estimate in the period there is no series, and a
+  // `$0.00` axis would be a confident zero. The column says so instead.
+  const buckets = spend?.total == null ? [] : (spend?.buckets ?? []);
+  const chart = buckets.length
+    ? columnBars(
+      [{ name: 'spent', values: buckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
+      buckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
+      {
+        width: cellWidth, height: rows - 1, col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, buckets.length))),
+        barW: 3, unit: '$', mark: about(), totals: false, colors: meterAnsi(),
+      },
+    )
+    : [dimText(spend?.total == null && (spend?.buckets ?? []).length
+      ? 'no finished run recorded an estimate'
+      : 'no finished run in this period', cellWidth)];
+  return [
+    {
+      action: { kind: 'trend', metric: 'spend' },
+      rows: [dimText(`spent per ${spend?.bucketBy === 'week' ? 'week' : 'day'}`, cellWidth), ...chart],
+    },
+    listCell('by pool', 'pools', 'green', 'pools'),
+    listCell('by model', 'models', 'purple', 'models'),
+    listCell('by project', 'projects', 'orange', 'projects'),
+  ].map((cell) => ({ ...cell, period }));
+}
+
+const WEEKDAY_LETTERS = Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']);
+
+/**
+ * The three-column summary band and the sentence that closes it.
+ *
+ * Every figure is the period's own measurement. The prototype's `7.7×`
+ * multiple and its `$38.20` of subscription money have no source here — no
+ * pool declares a price — so the sentence says what the runs recorded and
+ * names it as the API-equivalent estimate it is.
+ */
+function summaryBand(body, model, opts) {
+  const { width, narrow } = opts;
+  const overview = model.stats?.overview ?? null;
+  const keys = overview?.keys ?? null;
+  if (!keys) return;
+  const projects = model.stats?.projects ?? null;
+  const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
+  const runs = keys.workflows ?? 0;
+  const spent = projects?.totals?.apiEquivalentUsd ?? null;
+  const money = moneyText(spent);
+  const share = runs ? shareText(verified / runs) : null;
+  const named = (row) => (row?.name ? String(row.name) : blank());
+  const figures = [
+    [
+      `Workflows: ${strong(tint(String(runs), 'orange'))} · verified ${tint(String(verified), 'orange')}${share ? ` (${share})` : ''}`,
+      `Busiest project: ${tint(named(keys.busiestProject), 'orange')}${keys.busiestProject ? ` (${keys.busiestProject.runs})` : ''}`,
+    ],
+    [
+      `Favourite pool: ${tint(named(keys.favouritePool), 'orange')}`,
+      `Favourite model: ${tint(named(keys.favouriteModel), 'orange')}`,
+    ],
+    [
+      `Spent: ${tint(money ?? blank(), 'orange')}${money ? ' API' : ''}`,
+      `Median run: ${tint(minutesText(keys.medianRunMinutes) ?? blank(), 'orange')}`,
+    ],
+  ];
+  body.push('');
+  if (narrow) {
+    for (const cell of figures) body.push(cut(` ${cell.join(' · ')}`, width));
+  } else {
+    pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
+  }
+  body.push('');
+  const sentence = money
+    ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${money} of API-equivalent work`
+    : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
+  body.push(cut(` ${tint(sentence, 'purple')}`, width));
+}
+
+/**
+ * Home: today's four tiles, the runs in flight, this week's licence budget,
+ * the period's breakdown in four columns, the summary band and the recent
+ * list.
  */
 function homePage(model, opts, body) {
   const { width, narrow, nowMs } = opts;
@@ -2112,85 +2425,115 @@ function homePage(model, opts, body) {
   const today = overview?.today ?? null;
   const licence = today?.licence ?? null;
   const sparks = stats?.sparklines ?? {};
-  const sparkWidth = narrow ? 7 : 7;
+  const sparkWidth = 7;
 
-  body.push(rule(`today · ${today?.date ?? '—'}`, null, width));
+  body.push(rule(`today · ${today?.date ?? blank()}`, null, width));
   const tiles = [
     {
       key: 'finished',
       label: 'finished',
-      value: today ? String(today.finished) : blank(),
-      spark: sparkline(sparks.runs ?? [], sparkWidth),
-      note: today ? `${today.verified} verified · ${model.runs.length} in flight` : 'no index yet',
+      value: today ? strong(String(today.finished)) : blank(),
+      spark: tint(sparkline(sparks.runs ?? [], sparkWidth), 'orange'),
+      note: today
+        ? `${okMark()} ${today.verified} · ${failMark()} ${Math.max(0, today.finished - today.verified)} · ${model.runs.length} in flight`
+        : 'no index yet',
+      // The tagged frame paints this line's marks and leaves the rest plain;
+      // dimText() measures with String#length, so a line carrying escapes
+      // must not go through it.
+      plain: true,
       action: { kind: 'trend', metric: 'runs' },
     },
     {
       key: 'verified',
       label: 'verified',
-      value: shareText(today?.verifiedShare) ?? blank(),
-      spark: sparkline(sparks.verified ?? [], sparkWidth),
+      value: strong(shareText(today?.verifiedShare) ?? blank()),
+      spark: tint(sparkline(sparks.verified ?? [], sparkWidth), 'orange'),
       note: today?.verifiedShare == null
         ? 'no run finished today'
-        : `${today.verified} of ${today.finished} today`,
+        : `${today.verified} of ${today.finished} · today`,
       action: { kind: 'trend', metric: 'verified' },
     },
     {
       key: 'spend',
       label: 'spent',
-      value: moneyText(today?.apiEquivalentUsd) ?? blank(),
-      spark: sparkline(sparks.spend ?? [], sparkWidth),
+      value: strong(moneyText(today?.apiEquivalentUsd) ?? blank()),
+      spark: tint(sparkline(sparks.spend ?? [], sparkWidth), 'orange'),
       note: today?.apiEquivalentUsd == null
         ? 'no finished run recorded an estimate'
         : `API-equivalent · ${today.pricedRuns} of ${today.finished} priced`,
       action: { kind: 'trend', metric: 'spend' },
     },
-    {
-      key: 'licence',
-      label: 'licence',
-      value: licence?.maxUsedPct == null
-        ? blank()
-        : `${licence.maxPool} ${percentText(licence.maxUsedPct)}`,
-      spark: '',
-      note: licence?.maxUsedPct == null
-        ? String(licence?.basis ?? 'no pool reported a licence meter')
-        : `busiest of ${licence.metered} metered pool${licence.metered === 1 ? '' : 's'}`,
-      action: { kind: 'tab', tab: 'pools' },
-    },
   ];
+  // The licence tile is the prototype's fourth column: one meter row per
+  // metered pool rather than a number and a caption.
+  const licencePools = [...(licence?.pools ?? [])]
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0))
+    .slice(0, 2);
+  const licenceRow = (pool, cell) => {
+    const name = cut(String(pool.name), Math.max(4, Math.min(12, cell - 18)));
+    const used = percentText(pool.usedPct) ?? blank();
+    const bars = Math.max(4, Math.min(32, cell - visibleLength(name) - visibleLength(used) - 3));
+    return `${name} ${meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() })} ${used}`;
+  };
 
-  const columns = narrow ? 1 : Math.max(1, Math.min(4, Math.floor((width - 1) / 28)));
-  if (columns === 1) {
-    for (const tile of tiles) {
-      const label = ` ${tile.label.padEnd(9)}`;
-      body.parts([
-        { text: label },
-        { text: tileText(tile, width - visibleLength(label)), action: tile.action },
-      ]);
-      body.push(dimText(`   ${cut(tile.note, width - 4)}`, width));
+  if (narrow) {
+    // One row per tile with its context inline, then one row per metered pool.
+    for (const tile of tiles.filter((entry) => entry.key !== 'verified')) {
+      body.row(compactRow([
+        { text: ` ${tile.label}`, width: 9 },
+        { text: `${tile.value}${tile.spark ? `  ${tile.spark}` : ''}`, width: 16 },
+        { text: tile.plain ? tile.note : dimText(tile.note, width), grow: true, min: 6 },
+      ], { width }), tile.action);
+    }
+    if (licencePools.length) {
+      licencePools.forEach((pool, index) => {
+        body.row(compactRow([
+          { text: index === 0 ? ' licence' : '', width: 9 },
+          licenceRow(pool, width - 11),
+        ], { width }), { kind: 'tab', tab: 'pools' });
+      });
+    } else {
+      body.row(compactRow([
+        { text: ' licence', width: 9 },
+        { text: dimText(String(licence?.basis ?? 'no pool reported a licence meter'), width), grow: true },
+      ], { width }), { kind: 'tab', tab: 'pools' });
     }
   } else {
-    // Every column is the same `cell` columns wide, so the label, the number
-    // and the note under it line up whatever each one says.
-    const cell = Math.floor((width - 1) / columns);
-    const pad = (text) => {
-      const shown = cut(text, cell - 1);
-      return `${shown}${' '.repeat(Math.max(0, cell - visibleLength(shown)))}`;
-    };
-    for (let start = 0; start < tiles.length; start += columns) {
-      const group = tiles.slice(start, start + columns);
-      body.push(dimText(` ${group.map((tile) => pad(tile.label)).join('')}`, width));
-      const parts = [{ text: ' ' }];
-      for (const tile of group) {
-        const text = tileText(tile, cell - 1);
-        parts.push({ text, action: tile.action });
-        parts.push({ text: ' '.repeat(Math.max(0, cell - visibleLength(text))) });
-      }
-      body.parts(parts);
-      body.push(dimText(` ${group.map((tile) => pad(tile.note)).join('')}`, width));
-    }
+    const gap = 2;
+    const inner = Math.max(4, width - 1 - gap * 3);
+    const base = Math.floor(inner / 4);
+    const extra = inner - base * 4;
+    const cellWidths = [0, 1, 2, 3].map((index) => base + (index < extra ? 1 : 0));
+    const cells = tiles.map((tile, index) => ({
+      width: cellWidths[index],
+      action: tile.action,
+      actionRows: [1],
+      rows: [
+        dimText(tile.label, cellWidths[index]),
+        `   ${tileText(tile, cellWidths[index] - 3)}`,
+        tile.plain ? ` ${cut(tile.note, cellWidths[index] - 1)}` : dimText(` ${tile.note}`, cellWidths[index]),
+      ],
+    }));
+    cells.push({
+      width: cellWidths[3],
+      action: { kind: 'tab', tab: 'pools' },
+      actionRows: [1, 2],
+      rows: [
+        dimText('licence today', cellWidths[3]),
+        ...(licencePools.length
+          ? licencePools.map((pool) => licenceRow(pool, cellWidths[3]))
+          : [dimText(String(licence?.basis ?? 'no pool reported a licence meter'), cellWidths[3])]),
+      ],
+    });
+    pushColumns(body, cells, { width: width - 1, gap });
   }
-  body.push(dimText(' click a tile for its chart in Stats', width));
-  if (today?.basis) body.push(dimText(` ${cut(`money: ${today.basis}`, width - 2)}`, width));
+  if (!narrow) body.push(dimText(' click a tile for its chart', width));
+  if (!narrow && today?.basis) {
+    body.push(dimText(
+      ` ${cut(narrow ? 'money: API-equivalent estimates of the runs that finished today' : `money: ${today.basis}`, width - 2)}`,
+      width,
+    ));
+  }
 
   // The runs in flight are always visible, whatever else the page carries.
   body.push('');
@@ -2198,32 +2541,75 @@ function homePage(model, opts, body) {
   if (!model.runs.length) {
     body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
   }
+  const unratedPools = new Set();
   model.runs.forEach((run, index) => {
     const progress = planProgress(run, { assignments: model.assignments, nowMs });
-    const right = `${progress.phases ? `phase ${progress.phase} of ${progress.phases} · ` : ''}${progress.done}/${progress.total} steps${progress.eta ? ` · ETA ${progress.eta}` : ''}`;
-    const label = ` ${glyphs().ongoing} ${index < 9 ? `${index + 1}.` : ''}${run.shortId ?? run.runId}`;
+    const elapsed = ageText(stateStartedAt(run.state), nowMs);
+    const right = [
+      progress.phases ? `phase ${progress.phase}/${progress.phases}` : null,
+      `${progress.done}/${progress.total}`,
+      elapsed || null,
+    ].filter(Boolean).join(' · ');
+    const label = ` ${tint(glyphs().ongoing, 'cyan')} ${index < 9 ? `${index + 1}.` : ''}${run.shortId ?? run.runId}`;
     const title = `  ${cut(workflowRunLabel(run), Math.max(8, width - visibleLength(label) - visibleLength(right) - 4))}`;
-    const head = `${label}${title}`;
+    const head = `${label}${strong('')}${title}`;
     body.parts([
       { text: head, action: { kind: 'run', runId: run.runId } },
       { text: ' '.repeat(Math.max(1, width - visibleLength(head) - visibleLength(right) - 1)) },
       { text: dimText(right, width) },
     ]);
-    body.parts([{ text: '   ' }, ...planStripParts(run, { runId: run.runId })]);
-    const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
-    for (const action of live) {
-      const assignment = model.assignments.find((entry) => entry.runId === run.runId && entry.actionId === action.id);
-      const text = `   ${stepProgressText(action, assignment, { width, nowMs })}`;
-      body.row(cut(text, width), { kind: 'step', runId: run.runId, actionId: action.id });
-    }
+
     const economics = runEconomics(run, model.pools, nowMs);
-    const draw = economics.pools.map((pool) => (pool.sharePct == null
-      ? `${pool.name} ${blank()}`
-      : `${pool.name} ${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`)).join(' · ');
+    for (const pool of economics.pools) if (pool.sharePct == null) unratedPools.add(pool.name);
+    const draw = economics.pools.reduce(
+      (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
+      null,
+    );
     const money = moneyText(economics.apiEquivalentUsd);
-    const spent = money ? `${money} API-equivalent estimate` : `${blank()} no attempt recorded an estimate`;
-    body.push(dimText(cut(`   ${draw ? `${draw} · ` : ''}${spent}`, width), width));
+    const cost = `${tint(draw == null ? blank() : formatDashboardValue(draw, 'percent'), 'purple')} · ${tint(money ?? blank(), 'purple')}`;
+
+    const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
+    const bars = live.map((action) => {
+      const bar = stepBarText(action, assignmentOf(model, run.runId, action.id), {
+        width: narrow ? width - 4 : 30, nowMs, pool: stepPool(run, action.id),
+      });
+      return { action, ...bar };
+    });
+
+    if (narrow) {
+      // The phone keeps the prototype's shape: the strip, one row per live
+      // step, then the run's own draw and cost.
+      body.parts([{ text: '   ' }, ...planStripParts(run, { runId: run.runId })]);
+      for (const bar of bars) {
+        body.row(`   ${bar.text}`, { kind: 'step', runId: run.runId, actionId: bar.action.id });
+      }
+      body.push(cut(`   ${cost}`, width));
+    } else {
+      // Two rows per run: the head above, and the strip, the per-step bars
+      // and the cost on one band here.
+      const strip = planStripParts(run, { runId: run.runId });
+      const stripWidth = strip.reduce((sum, part) => sum + visibleLength(part.text), 0);
+      const parts = [{ text: '   ' }, ...strip];
+      let used = 3 + stripWidth;
+      const room = width - visibleLength(cost) - 2;
+      for (const bar of bars) {
+        const span = visibleLength(bar.text) + 2;
+        if (used + span > room) break;
+        parts.push({ text: '  ' });
+        parts.push({ text: bar.text, action: { kind: 'step', runId: run.runId, actionId: bar.action.id } });
+        used += span;
+      }
+      parts.push({ text: ' '.repeat(Math.max(1, width - used - visibleLength(cost) - 1)) });
+      parts.push({ text: cost });
+      body.parts(parts);
+    }
   });
+  // The reasons, once for the whole section rather than on every row.
+  if (unratedPools.size) {
+    body.push(dimText(` ${blank()} no measured %/minute rate for ${[...unratedPools].join(', ')}, so no licence draw`, width));
+  }
+
+  budgetWeekLines(body, model, { width, narrow, nowMs });
 
   // The period's breakdown, and the toggle that changes it.
   const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
@@ -2236,32 +2622,27 @@ function homePage(model, opts, body) {
     const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
     body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
   }
-  const breakdown = overview?.breakdown ?? { pools: [], models: [], projects: [] };
-  const sections = [
-    { key: 'pools', label: 'by pool', tab: 'pools' },
-    { key: 'models', label: 'by model', tab: 'models' },
-    { key: 'projects', label: 'by project', tab: 'projects' },
-  ];
-  let any = false;
-  for (const section of sections) {
-    const rows = (breakdown[section.key] ?? []).slice(0, narrow ? 3 : 4);
-    if (!rows.length) continue;
-    any = true;
-    body.push(dimText(` ${section.label} · share is measured worker-minutes`, width));
-    const label = narrow ? 12 : 22;
-    const top = rows.reduce((most, row) => Math.max(most, finiteOrNull(row.minutes) ?? 0), 0);
-    const barWidth = Math.max(4, width - label - 12);
-    for (const row of rows) {
-      const minutes = Math.max(0, finiteOrNull(row.minutes) ?? 0);
-      const share = shareText(row.minutesShare);
-      const bar = top > 0 ? progressBar(minutes / top, barWidth) : ' '.repeat(barWidth);
-      const text = ` ${cut(String(row.name ?? '?'), label).padEnd(label)} ${bar} ${share ?? blank()}`;
-      body.row(cut(text, width), { kind: 'tab', tab: section.tab });
+  if (narrow) {
+    // One column on the phone: the same four sections, stacked.
+    for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
+      const base = body.lines.length;
+      const rows = cell.action?.kind === 'trend' ? cell.rows : [cell.rows[0], cell.rows.slice(1).join(' · ')];
+      for (const line of rows) body.push(` ${cut(line, width - 1)}`);
+      if (cell.action) {
+        for (let row = base + 1; row <= body.lines.length; row += 1) {
+          body.regions.push({ x1: 1, x2: width, y: row, action: cell.action });
+        }
+      }
     }
+  } else {
+    const gap = 2;
+    const inner = Math.max(4, width - 1 - gap * 3);
+    const cellWidth = Math.floor(inner / 4);
+    pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
   }
-  if (!any) {
-    body.push(dimText(' no finished run in this period · bullswarm workflow reindex backfills older runs', width));
-  }
+  if (!narrow) body.push(dimText(' spent per day is the recorded API-equivalent estimate · share is measured worker-minutes · click a column for its Stats tab', width));
+
+  summaryBand(body, model, opts);
 
   // The recent list: the newest finished runs the index holds.
   body.push('');
@@ -2273,15 +2654,22 @@ function homePage(model, opts, body) {
     body.push(dimText(' no run has been rolled up yet · bullswarm workflow reindex backfills them', width));
   }
   for (const record of recent) {
-    const ok = record.verified === true ? glyphs().ok : record.status === 'completed' ? glyphs().pending : glyphs().fail;
+    const ok = record.verified === true ? okMark() : record.status === 'completed' ? pendingMark() : failMark();
     const money = moneyText(recordCost(record));
-    const right = `${minutesText(record.minutes?.wall) ?? blank()} · ${money ? `${money}` : blank()}  ${ageText(record.finishedAt, nowMs)} ago`;
-    const left = ` ${ok} ${record.shortId ?? record.runId}  ${cut(`${record.project ?? '—'} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - visibleLength(right) - 14))}`;
-    body.row(
-      cut(`${left}${' '.repeat(Math.max(1, width - visibleLength(left) - visibleLength(right) - 1))}${right}`, width),
-      { kind: 'run', runId: record.runId },
-    );
+    body.row(compactRow([
+      { text: ` ${ok}`, width: 2 },
+      { text: strong(record.shortId ?? record.runId), width: 7 },
+      {
+        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34)),
+        grow: true,
+        min: 6,
+        gap: 2,
+      },
+      { text: `${minutesText(record.minutes?.wall) ?? blank()} · ${money ?? blank()}`, width: 16, align: 'right', gap: 2 },
+      { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
+    ], { width }), { kind: 'run', runId: record.runId });
   }
+  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · click tiles for charts', width));
   return ' bullswarm · home';
 }
 
@@ -2305,7 +2693,15 @@ function runsPage(model, opts, body) {
   const active = allRows.filter((row) => row.ongoing).length;
   const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
   const recent = Math.max(0, allRows.length - active);
-  body.push(dimText(` Runs · ${opts.filter === 'all' ? 'all' : 'active'}${opts.query ? ` · filter “${opts.query}”` : ''} · ${active} active · ${waiting} waiting · ${recent} recent`, width));
+  // The Runs list has no prototype frame: it keeps its behaviour and its
+  // structure and takes only the shared vocabulary — the section rules, the
+  // palette and the marks the other pages use.
+  body.push(rule(
+    `Runs · ${opts.filter === 'all' ? 'all' : 'active'}`,
+    `${tint(String(active), 'cyan')} active · ${waiting} waiting · ${recent} recent`,
+    width,
+  ));
+  if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
   const selected = clamp(opts.selected ?? 0, 0, Math.max(0, rows.length - 1));
   if (!rows.length) {
     body.row(' No workflows in this view.');
@@ -2322,6 +2718,7 @@ function runsPage(model, opts, body) {
   });
 
   body.push('');
+  body.push(rule('agents', null, width));
   const installed = model.integration?.ok === true;
   const button = installed ? `[installed ${glyphs().ok}]` : '[install]';
   const prefix = ' agent integration  ';
@@ -2344,139 +2741,598 @@ function runsPage(model, opts, body) {
   }
 
   body.push('');
-  body.push(dimText(' run it', width));
+  body.push(rule('run it', null, width));
   for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
   return ' bullswarm · runs';
 }
 
+// ------------------------------------------------------------ Run and Step
+
 /**
- * Run: the plan strip, the phase count and the ETA, the pool share and the
- * spend, then the timeline/Live/Next overview the viewer has always drawn.
+ * The plan as the prototype draws it: the levels across the width with their
+ * branch topology, a per-step bar on whatever is running, and the pool and
+ * model each level ran on underneath.
  *
- * The overview panel below is what `bullswarm workflow tui <id> --overview`
- * prints and what the Claude mod's `parseOverview` reads, so its box borders,
- * its `── ` section prefixes and its `HH:MM ` milestones are untouched: every
- * line this function adds is painted above it, outside the box.
+ * A plan with no real fan-out — every level exactly one step — keeps the
+ * linear `▶──○` strip the page has always drawn; the topology only appears
+ * where there is topology to draw.
  */
-function runPage(model, opts, body) {
-  const { width, bodyHeight, nowMs } = opts;
-  const row = model.row;
-  const progress = planProgress(row, { assignments: model.assignments, nowMs });
-  const head = frameBuilder();
-  const eta = progress.eta
-    ? `ETA ${progress.eta}`
-    : progress.remaining
-      ? `ETA ${blank()}`
-      : null;
-  const right = [
-    progress.phases ? `phase ${progress.phase} of ${progress.phases}` : null,
-    `${progress.done}/${progress.total} steps`,
-    eta,
-  ].filter(Boolean).join(' · ');
-  head.push(rule('plan', right, width));
-  // The strip, and beside it whatever is running, so the plan costs the
-  // timeline below it as few rows as it can.
-  const strip = planStripParts(row, { runId: row?.runId ?? null });
-  const live = (row?.state?.actions ?? []).filter((entry) => entry.status === 'running');
-  const stripWidth = strip.reduce((sum, part) => sum + visibleLength(part.text), 0);
-  const liveTexts = live.map((action) => ({
-    action,
-    text: stepProgressText(
-      action,
-      (model.assignments ?? []).find((entry) => entry.runId === row?.runId && entry.actionId === action.id),
-      { width, nowMs },
-    ),
-  }));
-  const inline = liveTexts.length === 1 && stripWidth + visibleLength(liveTexts[0].text) + 6 <= width;
-  head.parts(inline
-    ? [{ text: '  ' }, ...strip, { text: '  ' }, {
-      text: liveTexts[0].text,
-      action: { kind: 'step', actionId: liveTexts[0].action.id },
-    }]
-    : [{ text: '  ' }, ...strip]);
-  if (!inline) {
-    for (const entry of liveTexts) {
-      head.row(cut(`  ${entry.text}`, width), { kind: 'step', actionId: entry.action.id });
+function planDagLines(row, {
+  width, runId = null, assignments = [], nowMs = Date.now(), pools = true, selectedId = null,
+} = {}) {
+  const levels = planLevels(row).filter((level) => level.length);
+  if (!levels.length) return [];
+  const fanOut = levels.some((level) => level.length > 1);
+  const mark = glyphs();
+  const glyphOf = (action) => (action.status === 'succeeded' ? okMark()
+    : action.status === 'running' ? runningMark()
+      : ['failed', 'blocked', 'cancelled'].includes(action.status) ? failMark()
+        : dimText(mark.pending, 2));
+  if (!fanOut) {
+    // The fallback: one glyph per step, joined, exactly as Home draws it —
+    // and beneath it the pool and model row, which a linear plan has nowhere
+    // else to say.
+    const parts = [];
+    levels.forEach((level, index) => {
+      if (index) parts.push({ text: '──' });
+      parts.push({
+        text: glyphOf(level[0]),
+        action: { kind: 'step', actionId: level[0].id, ...(runId ? { runId } : {}) },
+      });
+    });
+    const out = [{ parts: [{ text: ' ' }, ...parts] }];
+    if (!pools) return out;
+    for (const level of levels) {
+      for (const action of level) {
+        if (action.status !== 'running') continue;
+        const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
+        if (!attempt) continue;
+        const reasoning = reasoningText(attempt);
+        const text = `${[action.id, attempt.pool, attempt.model, reasoning || null].filter(Boolean).join(' · ')}  ${durationText(attempt.startedAt, attempt.finishedAt)}`;
+        out.push({
+          parts: [{
+            text: dimText(` ${runningMark()} ${cut(text, Math.max(10, width - 4))}`, width + 24),
+            action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+          }],
+        });
+      }
     }
-  }
-  if (!progress.eta && progress.remaining) {
-    const reason = `${progress.remaining - progress.measuredRemaining} of ${progress.remaining} remaining steps recorded no expected duration`;
-    head.push(dimText(cut(`  ${reason}`, width), width));
+    return out;
   }
 
-  const economics = runEconomics(row, model.pools, nowMs);
-  const money = moneyText(economics.apiEquivalentUsd);
-  const spent = money
-    ? `${money} API-equivalent estimate · ${economics.pricedAttempts} of ${economics.attempts} attempts priced`
-    : `spend ${blank()} · no attempt recorded an API-equivalent estimate`;
-  head.push(rule('budget', spent, width));
-  if (!economics.pools.length) {
-    head.push(dimText(' no attempt has recorded a pool yet', width));
+  const cellOf = (action) => {
+    const assignment = (assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === action.id);
+    const bar = action.status === 'running'
+      ? stepBarText(action, assignment, { width: Math.max(18, Math.min(44, Math.floor(width / 3))), nowMs })
+      : null;
+    const name = selectedId && action.id === selectedId ? `\x1b[7m${action.id}\x1b[0m` : action.id;
+    return {
+      id: action.id,
+      text: `${glyphOf(action)} ${name}${bar ? ` ${bar.text.replace(`${action.id} `, '')}` : ''}`,
+      action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+    };
+  };
+  // A level twelve steps wide would spend twelve rows on one phase and leave
+  // the timeline nothing. Each level shows at most `depthCap` of its steps,
+  // whatever is running or failed first, and says how many it did not draw.
+  const depthCap = width < 100 ? 3 : 5;
+  const rank = (action) => (action.status === 'running' ? 0
+    : ['failed', 'blocked', 'cancelled'].includes(action.status) ? 1
+      : DONE_STATUS.has(action.status) ? 3 : 2);
+  const blocks = levels.map((level) => {
+    if (level.length <= depthCap) return level.map(cellOf);
+    const ordered = level
+      .map((action, index) => ({ action, index }))
+      .sort((a, b) => rank(a.action) - rank(b.action) || a.index - b.index)
+      .slice(0, depthCap - 1)
+      .sort((a, b) => a.index - b.index)
+      .map((entry) => entry.action);
+    return [...ordered.map(cellOf), { id: null, text: dimText(`+${level.length - ordered.length} more`, 20), action: null }];
+  });
+  // The first level has no joint slot to hold its `├─ `/`└─ ` branch, so its
+  // column is as wide as its widest branch; every later level's branch lives
+  // in the joint slot in front of it, under the `┬` that opened the fan.
+  const cellWidth = blocks.map((block, index) => block.reduce((most, cell, at) => Math.max(most, visibleLength(cell.text) + (index === 0 && at ? 3 : 0)), 0));
+  const poolText = levels.map((level) => {
+    const seen = [];
+    for (const action of level) {
+      const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
+      const text = [attempt?.pool, attempt?.model, attempt?.routing?.effort].filter(Boolean).join(' · ');
+      if (text && !seen.includes(text)) seen.push(text);
+    }
+    return seen.join(' / ');
+  });
+
+  // Levels are packed into bands that fit the width, so a 55-column phone
+  // continues the plan on the next row rather than losing its right-hand end.
+  const avail = Math.max(10, width - 2);
+  const bands = [];
+  let band = [];
+  let used = 0;
+  levels.forEach((_, index) => {
+    const need = cellWidth[index] + (band.length ? 5 : 0);
+    if (band.length && used + need > avail) { bands.push(band); band = []; used = 0; }
+    band.push(index);
+    used += need + (band.length === 1 ? 0 : 0);
+  });
+  if (band.length) bands.push(band);
+
+  const out = [];
+  const pad = (text, own) => `${text}${' '.repeat(Math.max(0, own - visibleLength(text)))}`;
+  const branchOf = (block, rowIndex) => (rowIndex === 0 || rowIndex >= block.length ? null
+    : rowIndex === block.length - 1 ? '└─ ' : '├─ ');
+  for (const [bandIndex, indexes] of bands.entries()) {
+    const depth = indexes.reduce((most, index) => Math.max(most, blocks[index].length), 1);
+    // A fan that a later level in the same band closes is ruled: every branch
+    // runs `─` across to the joint, the way the prototype draws
+    // `└─ ✓ inbox-page ──┘`, so the corner meets a line instead of hanging.
+    const ruled = (at) => blocks[indexes[at]].length > 1 && at < indexes.length - 1;
+    for (let rowIndex = 0; rowIndex < depth; rowIndex += 1) {
+      const parts = [{ text: bandIndex === 0 ? ' ' : '   ' }];
+      indexes.forEach((index, at) => {
+        const block = blocks[index];
+        if (at) {
+          // The five-cell joint slot: the fan before it closes on the left
+          // (`┬` on the top row, `┤` on each lower branch, `┘` on the last),
+          // and the fan it opens hangs its branches on the right, under the
+          // `┬` that opened it.
+          const prior = blocks[indexes[at - 1]];
+          const closing = ruled(at - 1);
+          const branch = branchOf(block, rowIndex);
+          const joint = rowIndex === 0
+            ? (closing ? '─┬── ' : block.length > 1 ? ' ─┬─ ' : ' ─── ')
+            : `${closing && rowIndex < prior.length ? (rowIndex === prior.length - 1 ? '─┘' : '─┤') : '  '}${branch ?? '   '}`;
+          parts.push({ text: joint.trim() ? dimText(joint, 5) : joint });
+        }
+        const cell = block[rowIndex];
+        const own = cellWidth[index] + (ruled(at) ? 1 : 0);
+        if (!cell) { parts.push({ text: ' '.repeat(own) }); return; }
+        const lead = at === 0 && block.length > 1
+          ? (rowIndex === 0 ? '   ' : dimText(branchOf(block, rowIndex), 3))
+          : '';
+        const label = `${lead}${cell.text}`;
+        const gap = Math.max(0, cellWidth[index] - visibleLength(label));
+        const text = ruled(at) ? `${label} ${dimText('─'.repeat(gap), gap)}` : pad(label, own);
+        parts.push(cell.action ? { text, action: cell.action } : { text });
+      });
+      out.push({ parts });
+    }
+    if (pools && poolText.some((text, index) => indexes.includes(index) && text)) {
+      const parts = [{ text: '   ' }];
+      indexes.forEach((index, at) => {
+        if (at) parts.push({ text: '     ' });
+        parts.push({ text: dimText(pad(cut(poolText[index], cellWidth[index]), cellWidth[index]), cellWidth[index] + 8) });
+      });
+      out.push({ parts });
+    }
   }
-  const nameWidth = economics.pools.reduce((most, pool) => Math.max(most, String(pool.name).length), 0);
-  const barWidth = Math.max(4, Math.min(24, width - nameWidth - 46));
+  return out;
+}
+
+/**
+ * The timeline, flat: the same rows the mod pane reads, windowed to the space
+ * the page has for them and with no box drawn around them.
+ *
+ * `renderWorkflowOverviewPanel` still draws the boxed frame for
+ * `bullswarm workflow tui <id> --overview`, untouched; this is the page's own
+ * reading of the same lines.
+ */
+function flatTimelineLines(panel, { width, rows, scroll = 0, selectedSegment = null, spinnerFrame = 0 } = {}) {
+  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false });
+  const room = Math.max(1, Number(rows) || 1);
+  const selectedHeader = selectedSegment
+    ? timeline.lines.findIndex((line) => line?.header && line.segment === selectedSegment)
+    : -1;
+  const maxScroll = Math.max(0, timeline.lines.length - room);
+  const at = clamp(scroll, 0, maxScroll);
+  // The newest rows fill the window, which is what a reader watching a run
+  // wants; a selected segment only re-anchors it when that segment has
+  // already scrolled out of view, so choosing a phase never empties the page.
+  let end = Math.max(0, timeline.lines.length - at);
+  let start = Math.max(0, end - room);
+  const anchored = selectedHeader >= 0 && (selectedHeader < start || selectedHeader >= end);
+  if (anchored) {
+    start = selectedHeader;
+    end = Math.min(timeline.lines.length, selectedHeader + room);
+  }
+  if (start > 0 && !anchored) {
+    start = Math.max(0, end - Math.max(0, room - 1));
+    while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
+  }
+  let visible = timeline.lines.slice(start, end);
+  if (start > 0 && !anchored) {
+    visible.unshift(dimText(`↑ ${start} earlier timeline rows`, width));
+    const continuation = visible.find((line) => line?.segment)?.segment ?? currentTimelineSegment(panel);
+    if (continuation) {
+      const prior = timeline.lines.find((line) => line?.header && line.segment === continuation);
+      const header = continuationHeader(
+        timelineSegmentDisplayName(continuation, panel),
+        prior?.elapsed ?? 'running',
+        width,
+        visible.find((line) => line?.segment === continuation)?.at,
+      );
+      header.segment = continuation;
+      visible.splice(1, 0, header);
+    }
+    visible = visible.filter((line) => timelineText(line) !== '');
+  }
+  if (end < timeline.lines.length && visible.length && !anchored) {
+    const marker = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, width);
+    if (visible.length >= room) visible[visible.length - 1] = marker;
+    else visible.push(marker);
+  }
+  visible = visible.length > room
+    ? [visible[0], visible[1], ...visible.slice(-(room - 2))]
+    : visible;
+  const out = visible.slice(0, room).map((line) => {
+    const text = timelineText(line);
+    if (line?.header) {
+      return line.segment === selectedSegment ? `\x1b[7m${text}\x1b[0m` : dimText(text, width);
+    }
+    return text;
+  });
+  // The milestone count the panel used to carry in its title; the mod pane and
+  // the tests both read it, and a live row is still not a milestone.
+  Object.defineProperty(out, 'milestones', { enumerable: false, value: timeline.milestoneCount });
+  return out;
+}
+
+/** `✓ 3  ▶ 2  ○ 3`, the run's steps by the state they are in. */
+function stepTally(row) {
+  const actions = row?.state?.actions ?? [];
+  const done = actions.filter((action) => action.status === 'succeeded').length;
+  const running = actions.filter((action) => action.status === 'running').length;
+  const failed = actions.filter((action) => ['failed', 'blocked', 'cancelled'].includes(action.status)).length;
+  const waiting = Math.max(0, actions.length - done - running - failed);
+  return [
+    `${okMark()} ${done}`,
+    running ? `${runningMark()} ${running}` : null,
+    failed ? `${failMark()} ${failed}` : null,
+    `${dimText(glyphs().pending, 2)} ${waiting}`,
+  ].filter(Boolean).join('  ');
+}
+
+/** The `budget` cell of the Run page's triptych: one row per pool it drew on. */
+function runBudgetRows(economics, { width }) {
+  if (!economics.pools.length) return [dimText('no attempt has recorded a pool yet', width)];
+  const nameWidth = Math.min(14, economics.pools.reduce((most, pool) => Math.max(most, String(pool.name).length), 0));
+  const rows = [];
+  let unrated = false;
   for (const pool of economics.pools) {
+    const share = pool.sharePct == null ? blank() : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')}`;
+    if (pool.sharePct == null) unrated = true;
+    const bars = Math.max(4, width - nameWidth - visibleLength(share) - 3);
     const bar = pool.sharePct == null || pool.usedPct == null
-      ? ' '.repeat(barWidth)
+      ? dimText('·'.repeat(bars), bars + 8)
       : shareBar([
         { value: Math.min(pool.sharePct, pool.usedPct) },
         { value: Math.max(0, pool.usedPct - pool.sharePct) },
         { value: Math.max(0, 100 - pool.usedPct) },
-      ], { width: barWidth, colors: meterAnsi() });
-    const share = pool.sharePct == null
-      ? `${blank()} no measured %/minute rate for this pool`
-      : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`;
-    head.row(cut(` ${String(pool.name).padEnd(nameWidth)} ${bar}  ${share} · ${minutesText(pool.minutes)} measured`, width), { kind: 'page', page: 'budget' });
+      ], { width: bars, colors: meterAnsi() });
+    rows.push(`${cut(String(pool.name), nameWidth).padEnd(nameWidth)} ${bar} ${tint(share, 'purple')}`);
   }
-  // The share bands only need naming where there is room to name them.
-  if (Number(bodyHeight) >= 30 && economics.pools.some((pool) => pool.sharePct != null)) {
-    const [mine, rest, free] = asciiGlyphsPreferred() ? ['#', '.', '|'] : ['▓', '▒', '░'];
-    head.push(dimText(cut(` ${mine} this run · ${rest} the rest of the window · ${free} unused · share is the pool's measured %/minute × this run's minutes`, width), width));
-  }
-
-  const frame = runFrame(model.row, {
-    ...opts,
-    focus: opts.focus === 1 ? 1 : 0,
-    bodyHeight: Math.max(6, bodyHeight - head.lines.length),
-  });
-  const { state, status, elapsed, terminalLabel } = frame;
-  drawWindow(body, head, windowOf(head, { height: head.lines.length }));
-  for (const line of frame.body) body.push(line);
-  markStepRows(body, frame.body, frame.model);
-  const shortId = state.shortId ?? model.row?.shortId ?? model.row?.runId ?? '------';
-  const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
-  const total = (state.actions ?? []).length;
-  const age = elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : '';
-  return truncate(` ${shortId} ${status}${age} · ${done}/${total} actions${terminalLabel}`, width);
+  const [mine, rest, free] = asciiGlyphsPreferred() ? ['#', '.', '|'] : ['▓', '▒', '░'];
+  if (!unrated) rows.push(dimText(`${mine} this run · ${rest} others · ${free} free`, width));
+  return rows;
 }
 
-/** Step: the agent panel the viewer always drew, with `[back]` in the nav. */
-function stepPage(model, opts, body) {
-  const { width, spinnerFrame, nowMs } = opts;
-  const frame = runFrame(model.row, { ...opts, focus: 2 });
-  const state = frame.model.state;
-  const agent = frame.model.selectedAgent;
-  const shortId = state.shortId ?? model.row?.shortId ?? '';
-  const action = (state.actions ?? []).find((entry) => entry.id === agent?.action?.id) ?? null;
-  if (action) {
-    const assignment = (model.assignments ?? []).find((entry) => entry.runId === model.row?.runId && entry.actionId === action.id);
-    body.push(action.status === 'running'
-      ? cut(` ${stepProgressText(action, assignment, { width, nowMs })}`, width)
-      : dimText(cut(` ${action.id} · ${action.status}`, width), width));
-    const pool = agent?.pool ?? null;
-    const economics = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === pool) ?? null;
-    const money = moneyText(finiteOrNull(agent?.attempt?.usage?.cost?.estimatedUsd));
-    body.push(dimText(cut(` ${pool ?? 'pool pending'} · ${economics?.sharePct == null
-      ? `${blank()} no measured %/minute rate`
-      : `${about()} ${formatDashboardValue(economics.sharePct, 'percent')} of its ${economics.window ?? 'pacing'} window for the whole run`} · ${money ? `${money} API-equivalent estimate` : `${blank()} this attempt recorded no estimate`}`, width), width));
-    body.push('');
+/** The `live` cell: what is running now and the last thing each one did. */
+function runLiveRows(panel, { width, nowMs, limit = 3 }) {
+  const running = (panel.state.attempts ?? []).filter((attempt) => attempt.status === 'running');
+  // A run whose kernel is gone says so, and says the two things a reader can
+  // do about it — the same words `renders` and `workflow runs show` use.
+  const dead = [];
+  if (!stateFinishedAt(panel.state)) {
+    const liveness = panel.row?.liveness ?? v2RunnerLiveness(panel.state, { runDir: panel.row?.runDir });
+    if (!liveness.alive) {
+      dead.push(dimText(cut(`${glyphs().fail} kernel not running · ${liveness.reason}`, width), width + 8));
+      dead.push(dimText(cut(`  resume it · bullswarm workflow resume ${panel.state.shortId ?? panel.state.runId}`, width), width + 8));
+    }
   }
-  for (const line of frame.body) body.push(line);
-  markStepRows(body, frame.body, frame.model);
-  const label = agent
-    ? `${statusIcon(agent.status, spinnerFrame)} ${agent.action.id} · run ${shortId}`
-    : `${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`;
-  return truncate(` ${label}`, width);
+  if (panel.row?.kernelStderrTail?.length) dead.push(dimText('  kernel log: available', width + 8));
+  if (!running.length) {
+    return [dimText(stateFinishedAt(panel.state)
+      ? `no live agents · workflow ${panel.state.lifecycle.status}`
+      : 'waiting for the next dispatch', width), ...dead];
+  }
+  const rows = [...dead];
+  for (const attempt of running.slice(0, limit)) {
+    const elapsed = durationText(attempt.startedAt);
+    rows.push(cut(`${runningMark()} ${attempt.actionId} ${dimText(`· ${attempt.pool ?? 'unassigned'} · ${elapsed}`, width)}`, width));
+    const event = attempt.lastAgentEvent;
+    rows.push(dimText(cut(`  ${glyphs().detail} ${event
+      ? `${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
+      : 'waiting for the first semantic action event'}`, width), width + 8));
+  }
+  return rows;
+}
+
+/** The `so far` cell: the steps, the time, the spend and what is not measured. */
+function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
+  const money = moneyText(economics.apiEquivalentUsd);
+  const elapsed = durationText(stateStartedAt(panel.state), stateFinishedAt(panel.state));
+  const label = (name, value) => `${name.padEnd(9)}${value}`;
+  return [
+    label('steps', stepTally(row)),
+    label('time', `${elapsed}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`),
+    label('spent', tint(money ?? blank(), 'purple')),
+    money ? dimText(cut(`${economics.pricedAttempts} of ${economics.attempts} attempts priced`, width), width + 8) : '',
+  ];
+}
+
+/** Why the triptych's blanks are blank, once, across the page's own width. */
+function runBlankReasons(economics, progress) {
+  const unrated = economics.pools.filter((pool) => pool.sharePct == null).map((pool) => pool.name);
+  return [
+    economics.apiEquivalentUsd == null ? 'no attempt recorded an API-equivalent estimate' : null,
+    unrated.length ? `no measured %/minute rate for ${unrated.join(', ')}` : null,
+    !progress.eta && progress.remaining
+      ? `${progress.remaining - progress.measuredRemaining} of ${progress.remaining} remaining steps recorded no expected duration`
+      : null,
+  ].filter(Boolean);
+}
+
+/**
+ * Run: the goal, the plan with its topology and its bars, the budget / live /
+ * so far triptych, and the timeline — all flat, with no panel borders.
+ *
+ * The boxed frame `bullswarm workflow tui <id> --overview` prints is
+ * `renderWorkflowOverviewPanel`, which this function no longer calls and did
+ * not change; the Claude mod's `parseOverview` still reads exactly what it
+ * read before. The `o` planner view and the `v` technical view keep their
+ * panels: the prototype has no frame for either, and they are diagnostic
+ * sub-views a reader opens deliberately.
+ */
+function runPage(model, opts, body) {
+  const { width, bodyHeight, nowMs, narrow, spinnerFrame } = opts;
+  const row = model.row;
+  const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
+  const state = panel.state;
+  const status = row?.status ?? stateStatus(state) ?? 'starting';
+  const shortId = state.shortId ?? row?.shortId ?? row?.runId ?? '------';
+  const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
+  const total = (state.actions ?? []).length;
+  const elapsed = durationText(stateStartedAt(state), stateFinishedAt(state));
+  const terminalLabel = stateFinishedAt(state)
+    ? ` · ${status === 'completed' ? 'done' : status}${isProgramWorkflow(state) && status === 'completed' ? hasPassingRequirementEvidence(state) ? ' · evidence passed' : ' · unverified' : ''}`
+    : '';
+  const header = truncate(` ${shortId} ${status}${elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : ''} · ${done}/${total} actions${terminalLabel}`, width);
+
+  // The planner and technical views keep the panels they always drew: the
+  // prototype has no frame for either and both are opened deliberately.
+  if (opts.orchestratorDetail || opts.workflowVerbose) {
+    const frame = runFrame(row, { ...opts, focus: opts.focus === 1 ? 1 : 0, bodyHeight });
+    for (const line of frame.body) body.push(line);
+    markStepRows(body, frame.body, frame.model);
+    return header;
+  }
+
+  // The goal, above the timeline rather than replayed inside it.
+  const goal = String(state.intent?.goal ?? state.workflow ?? '').trim();
+  const goalRows = wrapLines(goal.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), width - 2)
+    .slice(0, narrow ? 2 : 2);
+  for (const line of goalRows) body.push(cut(` ${line}`, width));
+
+  const progress = planProgress(row, { assignments: model.assignments, nowMs });
+  const right = [
+    progress.phases ? `phase ${progress.phase} of ${progress.phases}` : null,
+    `${progress.done}/${progress.total} steps`,
+    progress.eta ? `ETA ${progress.eta}` : progress.remaining ? `ETA ${blank()}` : null,
+  ].filter(Boolean).join(' · ');
+  body.push(rule('plan', right, width));
+  const selectedId = opts.focus === 1 ? panel.selectedAgent?.action?.id ?? null : null;
+  for (const line of planDagLines(row, {
+    width, runId: row?.runId ?? null, assignments: model.assignments, nowMs, pools: !narrow, selectedId,
+  })) body.parts(line.parts);
+
+  // The prototype's budget / live / so far triptych: one row band at the
+  // desktop widths, three stacked sections on the phone.
+  const economics = runEconomics(row, model.pools, nowMs);
+  body.push('');
+  if (narrow) {
+    // The phone spends the prototype's rows: the budget, one `so far` line
+    // under it, then what is live — and leaves the timeline the rest.
+    body.push(rule('budget', null, width));
+    for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
+    const money = moneyText(economics.apiEquivalentUsd);
+    body.push(cut(` so far ${tint(money ?? blank(), 'purple')} · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
+    body.push('');
+    body.push(rule('live', null, width));
+    for (const line of runLiveRows(panel, { width: width - 2, nowMs, limit: 2 })) body.push(` ${cut(line, width - 1)}`);
+  } else {
+    const gap = 2;
+    const inner = Math.max(9, width - gap * 2);
+    const cellWidth = Math.floor(inner / 3);
+    // The rules sit on the page's own left margin; the rows under them are
+    // indented one column, the way every other section on the page is.
+    const inset = (rows) => rows.map((line) => ` ${cut(line, cellWidth - 1)}`);
+    pushColumns(body, [
+      { rule: 'budget', rows: inset(runBudgetRows(economics, { width: cellWidth - 1 })), action: { kind: 'page', page: 'budget' } },
+      { rule: 'live', rows: inset(runLiveRows(panel, { width: cellWidth - 1, nowMs })) },
+      { rule: 'so far', rows: inset(runSoFarRows(row, panel, progress, economics, { width: cellWidth - 1, nowMs })) },
+    ], { width, gap, indent: 0 });
+  }
+  // Every blank in the three cells above, and the reason for it, once.
+  for (const reason of runBlankReasons(economics, progress)) {
+    body.push(dimText(` ${blank()} ${reason}`, width));
+  }
+
+  body.push('');
+  // What fills the rest of the body: the timeline, the phase list `t` shows
+  // instead of it, or the selected phase's steps once Enter has walked in.
+  const used = body.lines.length;
+  const rows = Math.max(3, Math.max(6, Number(bodyHeight) || 24) - used - 1);
+  if (opts.focus === 1) {
+    const phase = panel.selectedPhase;
+    body.push(rule(`${phase.label} · ${phase.completed}/${phase.total} complete`, null, width));
+    if (!panel.agents.length) {
+      const blocked = phase.blockedActions ?? [];
+      for (const entry of blocked) {
+        body.push(dimText(` ${glyphs().blocked} ${entry.id} · never dispatched · blocked by ${entry.blockedBy.length ? entry.blockedBy.join(', ') : 'a failed dependency'}`, width));
+      }
+      // No agent has been dispatched, so the phase says what it plans to run
+      // and the role the kernel gave each step — never `undefined`.
+      body.push(dimText(' no agent has started in this phase yet', width));
+      body.push(dimText(' planned steps in this phase:', width));
+      for (const entry of phase.actions) {
+        if (blocked.some((item) => item.id === entry.id)) continue;
+        body.row(
+          cut(` ${statusIcon(entry.status, spinnerFrame)} ${entry.id} · ${actionRoleLabel(entry)} · ${entry.status}`, width),
+          { kind: 'step', actionId: entry.id },
+        );
+      }
+      if (!phase.actions.length) body.push(dimText(' waiting for the planner to add work', width));
+    }
+    panel.agents.forEach((agent, index) => {
+      const reasoning = reasoningText(agent.attempt) || reasoningText(agent.active);
+      const age = durationText(agent.attempt?.startedAt ?? agent.active?.startedAt, agent.attempt?.finishedAt);
+      const tokens = tokenText(agent.attempt?.usage);
+      body.row(
+        selectLine(
+          `${statusIcon(agent.status, spinnerFrame)} ${agent.action.id} · ${agent.pool} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}${tokens ? ` · ${tokens}` : ''}${age !== 'time pending' ? ` · ${age}` : ''}`,
+          index === panel.agentIndex, true, width,
+        ),
+        { kind: 'step', actionId: agent.action.id },
+      );
+    });
+    // Whatever the step list leaves goes back to the timeline rather than to
+    // blank rows: the reader is still reading a run.
+    const left = rows - (body.lines.length - used) - 2;
+    if (left >= 4) {
+      body.push('');
+      const tail = flatTimelineLines(panel, {
+        width: width - 1, rows: left - 1, scroll: opts.detailScroll ?? 0, spinnerFrame,
+      });
+      body.push(rule('timeline', `${tail.milestones} milestone${tail.milestones === 1 ? '' : 's'}`, width));
+      const from = body.lines.length;
+      for (const line of tail) body.push(` ${cut(line, width - 1)}`);
+      markStepRows(body, body.lines.slice(from), panel, row?.runId ?? null);
+    }
+  } else if (opts.mobileTimeline === false) {
+    body.push(rule(`phases · ${panel.phases.length}`, null, width));
+    panel.phases.forEach((phase, index) => {
+      body.push(selectLine(
+        `${index + 1} ${statusIcon(phase.status, spinnerFrame)} ${phase.label}${phase.total ? ` ${phase.completed}/${phase.total}` : ''}`,
+        index === panel.phaseIndex, true, width,
+      ));
+    });
+  } else {
+    // The timeline follows the newest event by default. It only re-anchors on
+    // a phase the reader chose — `phaseIndex` is null while the page is
+    // following the active one — so choosing nothing never stops the follow.
+    const selectedSegment = opts.mobileTimeline !== false && opts.timelineSelection != null
+      ? (opts.timelineSelection === 0 ? 'Preflight' : panel.phases[opts.timelineSelection - 1]?.label ?? null)
+      : opts.phaseIndex != null ? panel.phases[panel.phaseIndex]?.label ?? null : null;
+    const lines = flatTimelineLines(panel, {
+      width: width - 1, rows: rows - 1, scroll: opts.detailScroll ?? 0, selectedSegment, spinnerFrame,
+    });
+    body.push(rule('timeline', `${lines.milestones} milestone${lines.milestones === 1 ? '' : 's'}`, width));
+    const from = body.lines.length;
+    for (const line of lines) body.push(` ${cut(line, width - 1)}`);
+    markStepRows(body, body.lines.slice(from), panel, row?.runId ?? null);
+  }
+  return header;
+}
+
+/**
+ * Step: a label/value table — Status, Pool, Purpose, Route, Time — then the
+ * budget, the first lines of the task, the output so far and the artifacts.
+ */
+function stepPage(model, opts, body) {
+  const { width, spinnerFrame, nowMs, narrow } = opts;
+  const panel = workflowPanelModel(model.row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
+  const state = panel.state;
+  const agent = panel.selectedAgent;
+  const shortId = state.shortId ?? model.row?.shortId ?? '';
+  if (!agent) {
+    body.push(dimText(' no step selected in this phase', width));
+    for (const line of agentDetailLines(panel, Math.max(20, width - 2), spinnerFrame)) body.push(` ${cut(line, width - 1)}`);
+    return truncate(` ${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`, width);
+  }
+  const { action, attempt, active } = agent;
+  const routing = attempt?.routing ?? active?.routing ?? null;
+  const reasoning = reasoningText(attempt) || reasoningText(active);
+  const labelWidth = narrow ? 10 : 10;
+  const field = (name, value) => body.push(cut(` ${String(name).padEnd(labelWidth)}${value}`, width));
+
+  const assignment = (model.assignments ?? []).find((entry) => entry.runId === model.row?.runId && entry.actionId === action.id);
+  const expected = finiteOrNull(assignment?.expectedMinutes);
+  const startedAt = attempt?.startedAt ?? active?.startedAt ?? action?.startedAt ?? null;
+  const startedMs = Date.parse(startedAt ?? '');
+  const ranFor = Number.isFinite(startedMs)
+    ? durationText(startedAt, attempt?.finishedAt)
+    : null;
+
+  field('Status', `${tint(agent.status, agent.status === 'running' ? 'cyan' : agent.status === 'succeeded' ? 'green' : 'dim')} · ${tint(agent.model, 'cyan')}${reasoning ? ` · ${reasoning}` : ''}`);
+  // V1 stores the tier on the attempt, V2 under routing; reading only the V1
+  // shape made every V2 attempt read `effort auto` beside its resolved level.
+  field('Pool', `${tint(agent.pool, 'cyan')} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? routing?.effort ?? active?.effort ?? 'auto'}${reasoning ? ` · reasoning ${reasoning}` : ''}`);
+  field('Purpose', dimText(String(action.purpose ?? actionRoleLabel(action)), width - labelWidth - 1));
+  if (routing?.reason) {
+    const text = `${routing.lane ? `${routing.lane} lane → ` : ''}${agent.pool}: ${routing.reason}`;
+    const wrapped = wrapLines([text], Math.max(10, width - labelWidth - 2));
+    field('Route', dimText(wrapped[0] ?? '', width));
+    for (const line of wrapped.slice(1, narrow ? 2 : 3)) {
+      body.push(dimText(cut(` ${' '.repeat(labelWidth)}${line}`, width), width + 8));
+    }
+  }
+  field('Time', dimText(`${startedAt ? `started ${clockText(startedAt)}` : 'not started'}${ranFor && ranFor !== 'time pending' ? ` · elapsed ${ranFor}` : ''}${expected == null ? ` · no expected duration recorded` : ` of ${minutesText(expected)} expected`}`, width));
+  if (attempt?.failureReason) field('Failure', cut(String(attempt.failureReason), width - labelWidth - 1));
+  if (active?.stall?.status === 'suspected_stalled') {
+    field('Stall', `${glyphs().warn} ${active.stall.silentForSec}s without evidence; never auto-killed`);
+  }
+
+  // The budget for this one attempt: a licence share only where the pool has
+  // a measured rate, and the estimate only where the attempt recorded one.
+  body.push('');
+  body.push(rule('budget', null, width));
+  const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
+  const money = moneyText(finiteOrNull(attempt?.usage?.cost?.estimatedUsd));
+  const share = pool?.sharePct == null
+    ? blank()
+    : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`;
+  const name = cut(String(agent.pool), 14).padEnd(Math.min(14, String(agent.pool).length));
+  const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
+  const bar = pool?.usedPct == null
+    ? dimText('·'.repeat(bars), bars + 8)
+    : meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
+  body.row(
+    cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money ?? blank(), 'purple')}${money ? ' API-equivalent estimate' : ''}`, width),
+    { kind: 'page', page: 'budget', pool: agent.pool },
+  );
+  // Each blank above says which measurement it is waiting for, on one row.
+  const why = [
+    pool?.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
+    money == null ? 'this attempt recorded no estimate' : null,
+  ].filter(Boolean);
+  if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
+
+  const taskFile = attempt?.taskFile ?? active?.taskFile ?? null;
+  const prompt = wrapLines(taskPreview(taskFile, Infinity), width - 4);
+  const taskRows = narrow ? 4 : 2;
+  body.push('');
+  body.push(rule('task · first lines', null, width));
+  if (!prompt.length) body.push(dimText('   no task file was recorded for this attempt', width));
+  for (const line of prompt.slice(0, taskRows)) body.push(cut(`   ${line}`, width));
+  if (prompt.length > taskRows) body.push(dimText(`   … ${prompt.length - taskRows} more lines`, width));
+
+  const output = state.outputs?.[action.id];
+  const outFile = attempt?.outFile ?? active?.outFile ?? output?.outFile ?? null;
+  const outcome = outcomePreview(outFile, output);
+  const bytes = finiteOrNull(active?.outputBytesObserved ?? attempt?.outputBytesObserved);
+  const live = agent.status === 'running' ? 'live' : 'recorded';
+  body.push('');
+  body.push(rule('output', `${live} · ${bytes == null ? blank() : formatBytes(bytes)}`, width));
+  if (!outcome.length) body.push(dimText('   nothing has been written to the output file yet', width));
+  const outRows = narrow ? 6 : 10;
+  for (const line of wrapLines(outcome.slice(0, outRows), width - 4)) body.push(cut(`   ${line}`, width));
+
+  body.push('');
+  body.push(rule('artifacts', null, width));
+  body.push(dimText(cut(`   task:   ${taskFile ?? blank()}`, width), width + 8));
+  body.push(dimText(cut(`   output: ${outFile ?? blank()}`, width), width + 8));
+
+  return truncate(` ${statusIcon(agent.status, spinnerFrame)} ${action.id} · run ${shortId} · ${agent.status}`, width);
 }
 
 /** Budget: every pool's licence meter, its money and what still fits. */
@@ -2499,19 +3355,10 @@ function fleetPage(model, opts, body) {
   const view = fleetLines(model.pools, model.rungs, { width, by, nowMs: opts.nowMs, ansi: meterAnsi() });
   const before = body.lines.length;
   pushView(body, view);
-  // fleet-view paints its own `[● by lane] [by provider]` tabs as text; the
-  // shell makes them the same click Tab is.
-  for (let index = before; index < body.lines.length; index += 1) {
-    const plain = String(body.lines[index]).replace(ANSI_SGR, '');
-    for (const [needle, id] of [['by lane]', 'lane'], ['by provider]', 'provider']]) {
-      const at = plain.indexOf(needle);
-      const start = at < 0 ? -1 : plain.lastIndexOf('[', at);
-      if (start >= 0) {
-        body.regions.push({ x1: start + 1, x2: at + needle.length, y: index + 1, action: { kind: 'tab', tab: id } });
-        body.anchor = { tabs: index + 1 };
-      }
-    }
-  }
+  // fleet-view records its own sub-tab and `[ edit ]` regions, so the shell
+  // only has to remember which row they were painted on for the scroll.
+  const tabs = (view?.regions ?? []).find((region) => region?.action?.kind === 'tab');
+  if (tabs?.y) body.anchor = { tabs: before + Number(tabs.y) };
   return ` Fleet · by ${by}`;
 }
 
@@ -2550,63 +3397,68 @@ function historyPageNotes(model, { width }, notes) {
   for (const line of historyNote(model.days ?? [], { width })) notes.push(dimText(line, width));
 }
 
-/** Help: every key and every click, in rows that fit 55 columns. */
+/**
+ * Help: every key and every click, grouped by what it is for.
+ *
+ * Keys that do the same kind of thing share a row — `r b s y f → Runs ·
+ * Budget · Stats · History · Fleet` — so the page is about thirty rows rather
+ * than one row per binding, and every row still fits the 54 columns the phone
+ * frame paints. The key names are bold; the sentence beside them is not.
+ *
+ * Nothing here claims a key the shell does not run: the rows are built from
+ * DASHBOARD_KEYS, so a rebinding moves the page with it.
+ */
 function helpPage(model, opts, body) {
   const { width } = opts;
-  const keyWidth = width < 60 ? 11 : 16;
-  const row = (keys, text) => body.push(truncate(` ${String(keys).padEnd(keyWidth)}${text}`, width));
-  const named = (name, text) => row(DASHBOARD_KEYS[name].keys, text ?? DASHBOARD_KEYS[name].label);
+  const narrow = width < 60;
+  const keyWidth = narrow ? 12 : 16;
+  const row = (keys, text) => {
+    const label = ` ${strong(String(keys))}`;
+    const pad = ' '.repeat(Math.max(1, keyWidth - visibleLength(String(keys))));
+    body.push(cut(`${label}${pad}${text}`, width));
+  };
+  /** One row from several key names, the way the shell groups them. */
+  const grouped = (names, text) => row(names.map((name) => DASHBOARD_KEYS[name].keys).join(' '), text);
 
+  body.push(tint(truncate(narrow ? ' keys and clicks' : ' every key and click on this dashboard', width), 'dim'));
   body.push(rule('pages', null, width));
-  named('runs', 'Runs · every workflow');
-  named('budget', 'Budget · licence and money');
-  named('stats', 'Stats · charts');
-  named('history', 'History · by date');
-  named('fleet', 'Fleet · the rungs');
-  named('help', 'this help');
-  named('openRun', 'open that run from the nav');
-  named('in', 'open the run, its steps, then one step');
-  named('out', 'back one page, then Home');
+  grouped(['runs', 'budget', 'stats', 'history', 'fleet'], 'Runs · Budget · Stats · History · Fleet');
+  row(DASHBOARD_KEYS.help.keys, 'this help');
+  row(DASHBOARD_KEYS.out.keys, narrow ? 'back, then Home' : 'back from a step, otherwise Home');
+  row(DASHBOARD_KEYS.openRun.keys, 'open the numbered run in the nav');
+  row(DASHBOARD_KEYS.in.keys, 'open the run, its steps, then one step');
+  // Budget has no sub-tabs; Stats and Fleet do, and this says only that.
+  row(DASHBOARD_KEYS.nextTab.keys, 'next sub-tab on Stats and Fleet');
+  row(DASHBOARD_KEYS.cycleWorkflow.keys, 'cycle workflows');
+  row(DASHBOARD_KEYS.period.keys, narrow ? 'period: 7 days · 30 days · all' : 'cycle the period: 7 days · 30 days · all time');
+
   body.push('');
-  body.push(rule('inside a page', null, width));
-  named('nextTab', 'Stats and Fleet sub-tabs');
-  named('cycleWorkflow', 'cycle workflows');
-  named('period', '7 days · 30 days · all time');
-  named('up', 'scroll one line');
-  named('down', 'scroll one line');
-  named('pageUp', 'a screen');
-  named('pageDown', 'a screen');
-  named('top', 'top of the page');
-  named('end', 'bottom of the page');
-  row('wheel', 'scrolls under the sticky header');
+  body.push(rule('moving', null, width));
+  grouped(['up', 'down'], 'scroll one line');
+  grouped(['pageUp', 'pageDown'], 'scroll a screen');
+  grouped(['top', 'end'], 'top · bottom');
+  row('wheel', 'scrolls the body under the sticky header');
+
   body.push('');
   body.push(rule('clicks', null, width));
-  row('tab', 'the tab row opens that page');
-  row('tile', "today's number opens its chart");
-  row('bar', 'a breakdown bar opens its Stats tab');
-  row('trend bar', 'a Trends column opens History at its day');
-  row('pool bar', 'a Pools meter opens Budget on that pool');
-  row('model/project', 'a Models/Projects row opens History');
-  row('period', 'the toggle sets the period');
-  row('run', 'a run row or nav button opens it');
-  row('step', 'a plan glyph or step row opens it');
-  row('day', 'a History row opens that run');
+  row('tab · period', 'the tab row opens a page · the toggle sets the period');
+  row('tile', narrow ? 'a today number opens its chart' : "a today number opens its chart in Stats › Trends");
+  row('bar', 'a breakdown bar opens its Stats tab · a trend bar opens its day');
+  row('pool', 'a pool name or meter opens Budget on it');
+  row('step', 'a plan glyph or step row opens the step');
+  row('run', 'a run row or nav button opens the run');
+
   body.push('');
   body.push(rule('other', null, width));
-  named('copy', 'copy the screen · OSC 52, else pbcopy/wl-copy');
-  row('c · y', 'stop this workflow · y confirms it');
-  row('e', 'edit the fleet (on Fleet)');
+  row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
   row('o · v · t', 'planner · technical · phases (on Run)');
-  named('detach', 'quit; the workflows keep running');
-  body.push('');
-  body.push(rule('layout', null, width));
+  row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
+  row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
   row('under 100', 'the nav tail is [Top] [End] [Help]');
   row('rebound', 'r was refresh · b was back · Tab was workflows');
-  body.push('');
-  body.push(dimText(' the commands that operate the product', width));
-  for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
+  body.push(tint(truncate(` ${DASHBOARD_COMMANDS[0]} · Runs lists every command`, width), 'dim'));
   return ' bullswarm · help';
 }
 
@@ -2751,6 +3603,9 @@ export function dashboardModel(row, {
       // The Trends tab charts the metric the reader chose, so the tile they
       // clicked and the chart it opened are the same series.
       trend: trendModel(records, { metric: TREND_METRICS.includes(metric) ? metric : 'runs', period, now: nowMs }),
+      // Home's breakdown band always charts spend per day, whatever metric
+      // the reader last opened in Trends; Trends keeps `trend` above.
+      spendPerDay: trendModel(records, { metric: 'spend', period, now: nowMs }),
       pools: {
         ...poolsModel(records, pools, { period, now: nowMs }),
         licencePerDay: meterHistory?.rows ?? null,
@@ -2885,10 +3740,20 @@ export async function runDashboard(bullswarmDir, {
   // The pools, the ledger and the rungs are read off disk (live meter reads
   // included), so the read lands after the frame it was asked for: the frame
   // paints at once and repaints when the data arrives. A later read wins.
+  //
+  // One read at a time. The refresh timer fires every second and loadUsage
+  // shells out to the provider CLIs, which on a busy machine takes longer
+  // than that: every tick used to issue a new ticket, so every result that
+  // arrived was already superseded and the meters never landed at all — the
+  // licence tile and the `budget · this week` block read "no pool reported a
+  // licence meter" forever. A read in flight now absorbs the tick.
   let usageTicket = 0;
+  let usageInFlight = false;
   const readUsage = () => {
+    if (usageInFlight) return Promise.resolve(undefined);
     const ticket = (usageTicket += 1);
-    return loadUsage(bullswarmDir).then((loaded) => {
+    usageInFlight = true;
+    return loadUsage(bullswarmDir).finally(() => { usageInFlight = false; }).then((loaded) => {
       if (ticket !== usageTicket) return undefined;
       // Budget's licence share is `ratePerMinute x measured minutes`, and
       // loadUsage now measures that rate itself — once per meter snapshot,

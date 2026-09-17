@@ -12,24 +12,48 @@ import { finiteOrNull } from '../lib/num.js';
 import { getAllMeterReadings } from '../meters/registry.js';
 import { attachForecast } from '../lib/forecast.js';
 import { loadState } from '../lib/state.js';
+import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 
 /**
- * The truecolour meter palette: green below 50% used, amber from 50%, red
- * from 80%, on this track. Named, not ANSI-coloured, because a terminal
- * theme remaps the basic colours.
+ * The one palette the product draws from. The first four are the truecolour
+ * meter set the Claude Mod's status line renders with — green below 50% used,
+ * amber from 50%, red from 80%, over this track. The rest are the roles the
+ * approved prototype paints, every value lifted from its own CSS
+ * (docs/design/dashboard-prototype.html, the `:root` block at line 7 and the
+ * `.t1`-`.t4` heat classes at line 41), named by the role the prototype gives
+ * them and not by where they happen to be used:
+ *
+ *   purple  --purple    `.p`: a run's licence share, its cost, budget figures
+ *   orange  --coral     `.o`: sparklines, key figures, the by-project bars
+ *   cyan    --cyan      `.c`: run markers, model names, live sparklines
+ *   dim     --term-dim  `.d`: secondary text, reasons, an empty track
+ *   others  --others    the "everything else" band of a share bar
+ *   mark    .mark       the white mark at the elapsed point of a meter
+ *   heat    .t1-.t4     the four shades of the heatmap ramp, darkest first
+ *
+ * Named, not ANSI-coloured, because a terminal theme remaps the basic colours.
+ * mods/bullswarm/hooks/pool-rows.tsx holds its own copy of green, amber, red
+ * and the track for the Claude Mod pane; those two copies are kept in step by
+ * hand, so a change to any of those four belongs in both files.
  */
 export const METER_COLORS = Object.freeze({
   green: '#b6bd73',
   amber: '#e9c880',
   red: '#bf6c69',
   track: '#3a3a3a',
+  purple: '#a99cf0',
+  orange: '#d2856b',
+  cyan: '#8fc7cf',
+  dim: '#7c7f8a',
+  others: '#55575f',
+  mark: '#ffffff',
+  heat: Object.freeze(['#4a3f38', '#7a5a48', '#b07a5b', '#d2856b']),
 });
 
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
 const CYAN = '\x1b[36m';
-const WHITE = '\x1b[38;2;255;255;255m';
 const SGR = /\x1b\[[0-9;]*m/g;
 
 const chase = (text, code) => `${code}${text}${RESET}`;
@@ -50,11 +74,16 @@ export function severityColor(usedPct) {
 }
 
 /**
- * A bar of exactly `width` cells: filled up to used% in the severity colour
- * over the track, with a white `▏` at the cell elapsed% falls in (a `▕` in
- * the last cell once the window has fully elapsed). Without ansi the cells
- * are `#`, `.` and `|`, so a fixture can be asserted as text. A pool with no
- * meter draws a dotted track and no mark.
+ * A bar of exactly `width` cells: a `▇` texture filled up to used% in the
+ * severity colour, `░` over the track beyond it, and a white `▏` at the cell
+ * elapsed% falls in (a `▕` in the last cell once the window has fully
+ * elapsed). The glyphs carry the reading, so the bar is legible in a terminal
+ * that drops colour and in a plain-text capture of one; the cells keep the
+ * background they always had, so a colour terminal reads the same solid band
+ * as before. An ascii terminal gets `#`, `.` and `|` in place of the three
+ * glyphs. Without ansi the cells are `#`, `.` and `|` with no escapes at all,
+ * so a fixture can be asserted as text. A pool with no meter draws a dotted
+ * track and no mark.
  */
 export function meterBar(usedPct, elapsedPct, width, { ansi = true } = {}) {
   const cells = Math.max(0, Math.trunc(width));
@@ -78,19 +107,27 @@ export function meterBar(usedPct, elapsedPct, width, { ansi = true } = {}) {
     for (let i = 0; i < cells; i += 1) out += i === mark ? '|' : i < filled ? '#' : '.';
     return out;
   }
+  const ascii = asciiGlyphsPreferred();
+  const fillGlyph = ascii ? '#' : '▇';
+  const trackGlyph = ascii ? '.' : '░';
+  const markGlyph = ascii ? '|' : glyph;
   let out = '';
   let i = 0;
   while (i < cells) {
     const cellBg = i < filled ? fill : METER_COLORS.track;
     if (i === mark) {
-      out += `${bg(cellBg)}${WHITE}${glyph}`;
+      out += `${bg(cellBg)}${fg(METER_COLORS.mark)}${markGlyph}`;
       i += 1;
       continue;
     }
     const runFill = i < filled;
     let j = i;
     while (j < cells && j !== mark && (j < filled) === runFill) j += 1;
-    out += `${bg(runFill ? fill : METER_COLORS.track)}${' '.repeat(j - i)}`;
+    const color = runFill ? fill : METER_COLORS.track;
+    // The glyph is painted in the cell's own colour: a colour terminal sees
+    // the solid band it always saw, and a reader without colour sees the
+    // texture rather than a row of blanks.
+    out += `${bg(color)}${fg(color)}${(runFill ? fillGlyph : trackGlyph).repeat(j - i)}`;
     i = j;
   }
   return `${out}${RESET}`;

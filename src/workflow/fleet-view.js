@@ -1,16 +1,21 @@
 // Fleet page rendering: the read-only strategy rungs grouped by lane or
-// provider.  Setup remains the edit control centre; this page emits only the
-// documented { kind: 'edit' } region for it.
+// provider. Setup remains the edit control centre; this page emits the
+// documented { kind: 'edit' } region and the existing tab actions for it.
 
-import { glyphs } from '../lib/glyphs.js';
 import { STRATEGY_TIERS } from '../lib/strategy.js';
-import { untilText } from './usage-view.js';
+import { METER_COLORS, untilText } from './usage-view.js';
+import { columns, compactRow, cut, tabsRow } from './dash-kit.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const CYAN = '\x1b[36m';
+const UNDERLINE = '\x1b[4m';
+const NO_UNDERLINE = '\x1b[24m';
+
+const FLEET_TABS = Object.freeze([
+  { id: 'lane', label: 'by lane', key: null },
+  { id: 'provider', label: 'by provider', key: null },
+]);
 
 const LANE_BLURB = Object.freeze({
   high: 'integration · architecture · adversarial-acceptance',
@@ -18,7 +23,7 @@ const LANE_BLURB = Object.freeze({
   low: 'mechanical · io-read · digest',
 });
 
-function columns(width) {
+function widthOf(width) {
   const value = Number(width);
   return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 120;
 }
@@ -39,49 +44,41 @@ function numberText(value, places = 0) {
   return number.toFixed(places).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
 }
 
-function wrapLine(text, width) {
-  const source = String(text ?? '');
-  const cols = columns(width);
-  if (visibleLength(source) <= cols) return [source];
-  const out = [];
-  let rest = source.replace(SGR, '');
-  while (rest.length > cols) {
-    // The last space that still fits; a hard cut only for a single word
-    // longer than the frame.  See the same fix in budget-view.js.
-    let at = rest.lastIndexOf(' ', cols);
-    if (at <= 0) at = cols;
-    out.push(rest.slice(0, at).trimEnd());
-    rest = rest.slice(at).trimStart();
-  }
-  if (rest || !out.length) out.push(rest);
-  return out;
-}
-
-function pushText(lines, text, width) {
-  for (const line of wrapLine(text, width)) lines.push(line);
-}
-
-// The defensive wrap pass can split a line and push every row below it down,
-// so each region's `y` is remapped onto the first row its line became, and a
-// region whose row no longer reaches it is dropped rather than misplaced.
-function placed(lines, regions, cols) {
-  const safe = [];
-  const movedTo = [];
-  for (const line of lines) {
-    movedTo.push(safe.length + 1);
-    for (const part of wrapLine(line, cols)) safe.push(part);
-  }
-  return {
-    lines: safe,
-    regions: regions
-      .map((region) => ({ ...region, y: movedTo[region.y - 1] ?? region.y }))
-      .filter((region) => region.x >= 1 && region.x + region.width - 1 <= cols
-        && visibleLength(safe[region.y - 1] ?? '') >= region.x + region.width - 1),
-  };
-}
-
 function tint(text, code, ansi) {
   return ansi ? `${code}${text}${RESET}` : String(text ?? '');
+}
+
+function rgbOf(hex) {
+  const value = Number.parseInt(String(hex).slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function fgOf(hex) {
+  return `\x1b[38;2;${rgbOf(hex).join(';')}m`;
+}
+
+function painted(text, color, ansi) {
+  return tint(text, fgOf(color), ansi);
+}
+
+function clean(text, ansi) {
+  return ansi ? String(text ?? '') : String(text ?? '').replace(SGR, '');
+}
+
+function fleetPhoneRow(sub, model, reasoning, record, cols, ansi) {
+  return compactRow([
+    { text: ` ${sub}`, width: Math.min(15, Math.floor(cols / 4)) },
+    { text: painted(`${model}${reasoning ? ` · ${reasoning}` : ''}`, METER_COLORS.cyan, ansi), width: Math.max(8, Math.floor(cols / 3)) },
+    { text: painted(record, METER_COLORS.dim, ansi), grow: true, min: 4 },
+  ], { width: cols, gap: 1 });
+}
+
+function fit(text, width, ansi) {
+  return clean(cut(text, width), ansi);
+}
+
+function underlined(text, ansi) {
+  return ansi ? `${UNDERLINE}${text}${NO_UNDERLINE}` : String(text ?? '');
 }
 
 function enabledPools(pools) {
@@ -162,52 +159,112 @@ function providerGroups(pools, rungs, nowMs) {
 }
 
 /**
- * Render Fleet.  Tabs are keyboard-controlled by the shell, so this module
- * does not invent a tab action kind; the edit control is the sole non-run
- * region emitted by the page.
+ * Render Fleet. The shell still owns keyboard navigation, while this view
+ * records the same tab actions for mouse hits and keeps the edit control's
+ * existing action kind.
  */
 export function fleetLines(
   pools,
   rungs,
   { width = 120, by = 'lane', nowMs = Date.now(), ansi = true } = {},
 ) {
-  const cols = columns(width);
+  const cols = widthOf(width);
   const lines = [];
   const regions = [];
   const visible = enabledPools(pools);
-  const groups = by === 'provider'
+  const byLane = by === 'provider' ? 'provider' : 'lane';
+  const groups = byLane === 'provider'
     ? providerGroups(visible, rungs, nowMs)
     : laneGroups(visible, rungs);
+  const sideBySide = cols >= 200;
 
-  // The active marker comes from the shared glyph table, so ASCII mode
-  // substitutes it here exactly as it does on every other page.
-  const mark = glyphs().ongoing;
-  pushText(lines, by === 'provider' ? `[by lane] [${mark} by provider]` : `[${mark} by lane] [by provider]`, cols);
-  // Keeping the edit button on its own line makes its hit region stable on a
-  // 55-column terminal and leaves the note visibly attached to it.
-  lines.push('[edit] read-only here · edit opens bullswarm setup');
-  regions.push({ x: 1, y: lines.length, width: 6, action: { kind: 'edit' } });
+  // `tabsRow` owns the same 1-based region arithmetic as every other page.
+  // Fleet's prototype uses plain labels (the active one is still inverted by
+  // the kit), not bracketed labels, and puts the edit affordance on this same
+  // row.  The note is intentionally omitted in the phone layout: the button
+  // itself is the complete hint at 55 columns, as in the captured frame.
+  const nav = tabsRow(FLEET_TABS, {
+    active: by === 'provider' ? 'provider' : 'lane',
+    width: sideBySide ? 100 : cols,
+    action: (item) => ({ kind: 'tab', tab: item.id }),
+  });
+  const navText = clean(nav.text, ansi);
+  const editText = `[ ${underlined('e', ansi)}dit ]`;
+  const note = cols >= 100
+    ? ` ${painted('read-only here · edit opens bullswarm setup', METER_COLORS.dim, ansi)}`
+    : '';
+  const editX = visibleLength(navText) + 3 + 1;
+  const subTabs = fit(`${navText}${' '.repeat(3)}${editText}${note}`, cols, ansi);
+  lines.push(subTabs);
+  for (const region of nav.regions) {
+    if (region.x + region.width - 1 <= visibleLength(subTabs)) {
+      regions.push({ x: region.x, y: lines.length, width: region.width, action: region.action });
+    }
+  }
+  if (editX + 8 - 1 <= visibleLength(subTabs)) {
+    regions.push({ x: editX, y: lines.length, width: 8, action: { kind: 'edit' } });
+  }
   lines.push('');
 
   if (!groups.length) {
-    pushText(lines, 'No configured fleet rungs are available.', cols);
-    return placed(lines, regions, cols);
+    lines.push(fit('No configured fleet rungs are available.', cols, ansi));
+    return { lines, regions };
   }
 
-  const subWidth = Math.max(16, ...groups.flatMap((group) => (
-    group.rows.map((row) => String(row.sub ?? '').length + 1)
-  )));
-  for (const group of groups) {
-    pushText(lines, tint(`${group.title}${group.blurb ? ` · ${group.blurb}` : ''}`, BOLD, ansi), cols);
+  // The phone keeps one row per pool — pool, model and record share it, cut
+  // rather than wrapped, as the prototype's own frame does.  At 200 the two
+  // tab views sit beside each other so the frame's width is not wasted.
+  if (cols < 80) {
+    for (const group of groups) {
+      const heading = `${tint(group.title, BOLD, ansi)}${group.blurb
+        ? ` ${painted(`· ${group.blurb}`, METER_COLORS.dim, ansi)}`
+        : ''}`;
+      lines.push(fit(heading, cols, ansi));
+      for (const row of group.rows) {
+        const sub = String(row.sub ?? '');
+        const model = shortModel(modelOf(row.rung));
+        const reasoning = reasoningOf(row.rung);
+        lines.push(fit(fleetPhoneRow(sub, model, reasoning, recordOf(row.rung), cols, ansi), cols, ansi));
+      }
+      lines.push('');
+    }
+    return { lines, regions };
+  }
+
+  const groupLines = (group, width) => {
+    const out = [];
+    const heading = `${tint(group.title, BOLD, ansi)}${group.blurb
+      ? ` ${painted(`· ${group.blurb}`, METER_COLORS.dim, ansi)}`
+      : ''}`;
+    out.push(fit(heading, width, ansi));
+    const subWidth = Math.max(16, ...group.rows.map((row) => String(row.sub ?? '').length + 1));
     for (const row of group.rows) {
       const sub = String(row.sub ?? '').padEnd(subWidth).slice(0, subWidth);
-      const model = tint(shortModel(modelOf(row.rung)), CYAN, ansi);
+      const model = painted(shortModel(modelOf(row.rung)), METER_COLORS.cyan, ansi);
       const reasoning = reasoningOf(row.rung);
-      pushText(lines, `  ${sub}${model}${reasoning ? ` · ${reasoning}` : ''}`, cols);
-      pushText(lines, tint(`${' '.repeat(subWidth + 2)}${recordOf(row.rung)}`, DIM, ansi), cols);
+      out.push(fit(`  ${sub}${model}${reasoning ? ` · ${reasoning}` : ''}`, width, ansi));
+      out.push(fit(painted(`${' '.repeat(subWidth + 2)}${recordOf(row.rung)}`, METER_COLORS.dim, ansi), width, ansi));
     }
-    lines.push('');
+    return out;
+  };
+
+  if (sideBySide && byLane === 'lane') {
+    // The 200-column frame shows both compositions at once: by lane on the
+    // left, by provider beside it, neither one capped below the frame width.
+    const laneLines = laneGroups(visible, rungs).map((group) => groupLines(group, Math.floor(cols / 2) - 2, ansi));
+    const providerLines = providerGroups(visible, rungs, nowMs).map((group) => groupLines(group, Math.floor(cols / 2) - 2, ansi));
+    const left = laneLines.flat();
+    const right = providerLines.flat();
+    const rows = Math.max(left.length, right.length);
+    for (let index = 0; index < rows; index += 1) {
+      lines.push(fit(compactRow([
+        { text: left[index] ?? '', width: Math.floor(cols / 2) - 2 },
+        { text: right[index] ?? '', grow: true, min: 1 },
+      ], { width: cols, gap: 4 }), cols, ansi));
+    }
+  } else {
+    for (const group of groups) lines.push(...groupLines(group, cols, ansi));
   }
 
-  return placed(lines, regions, cols);
+  return { lines, regions };
 }
