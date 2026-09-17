@@ -1,205 +1,67 @@
-// Budget page rendering for the terminal dashboard.
-//
-// The arithmetic belongs to budget-model.js. This module only turns that
-// measured/labelled result into compact, width-driven rows. In particular it
-// never turns a missing price, rate, or recorded estimate into zero, and it
-// never derives a subscription figure from an API-equivalent estimate.
-
-import { compactRow, cut, formatDashboardValue, shareBar } from './dash-kit.js';
-import { METER_COLORS, meterBar, severityColor } from './usage-view.js';
+import { absentLine, cut, formatDashboardValue, progressBar } from './dash-kit.js';
+import { METER_COLORS, meterBar } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
-const RESET = '\x1b[0m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
 const COMMAND = 'bullswarm strategy set-subscription <pool> --monthly-usd <amount>';
 
 function columns(width) {
-  const value = Number(width);
-  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 120;
+  return Number.isFinite(Number(width)) ? Math.max(1, Math.trunc(Number(width))) : 120;
 }
 
-function visibleLength(text) {
-  return String(text ?? '').replace(SGR, '').length;
+function visible(text) {
+  return String(text ?? '').replace(SGR, '');
 }
 
 function finite(value) {
   if (value == null || value === '' || typeof value === 'boolean') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
-function numberText(value, places = 2) {
-  const number = finite(value);
-  if (number == null) return null;
-  return number.toFixed(places).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
-}
-
-function pctText(value) {
-  const text = numberText(value, 2);
-  return text == null ? '—' : `${text}%`;
-}
-
-function moneyText(value) {
+function money(value) {
   return formatDashboardValue(value, 'money');
 }
 
-function stripMarkup(text) {
-  return String(text ?? '')
-    .replace(/`/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function tint(text, code, ansi) {
-  return ansi ? `${code}${text}${RESET}` : String(text ?? '');
-}
-
-function rgbOf(hex) {
-  const value = Number.parseInt(String(hex).slice(1), 16);
-  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-}
-
-function fg(hex) {
-  return `\x1b[38;2;${rgbOf(hex).join(';')}m`;
+function paint(text, hex, ansi) {
+  if (!ansi) return visible(text);
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}\x1b[0m`;
 }
 
 function rowsOf(budget) {
   if (Array.isArray(budget)) return budget;
   if (Array.isArray(budget?.rows)) return budget.rows;
   if (budget?.rows && typeof budget.rows === 'object') return Object.values(budget.rows);
-  if (Array.isArray(budget?.pools)) return budget.pools;
-  return [];
+  return Array.isArray(budget?.pools) ? budget.pools : [];
 }
 
-function planLabel(row) {
-  const raw = row?.planType ?? row?.plan ?? row?.subscription?.plan ?? null;
-  if (raw == null || String(raw).trim() === '') return 'plan not declared';
-  const text = String(raw).trim();
-  const max = text.match(/^max[-_ ]?(\d+)x?$/i);
-  if (max) return `Max ${max[1]}x`;
-  return text.length ? `${text[0].toUpperCase()}${text.slice(1)}` : text;
+function missing(label, reason, width, ansi, labelWidth = 0) {
+  const line = absentLine(label, reason, { width, labelWidth });
+  return ansi ? line : visible(line);
 }
 
-function windowLabel(row) {
-  const text = row?.window ?? row?.pacingWindow ?? null;
-  return text == null || String(text).trim() === '' ? 'window not measured' : `${text} window`;
-}
-
-function localZone() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
-}
-
-function resetText(row, zone) {
-  if (row?.resetsText) return String(row.resetsText);
-  if (!row?.resetsAt) return null;
-  const ms = Date.parse(row.resetsAt);
-  if (!Number.isFinite(ms)) return null;
-  try {
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: zone,
-      weekday: 'short',
-      day: '2-digit',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZoneName: 'short',
-    }).format(new Date(ms));
-  } catch {
-    return new Date(ms).toISOString();
+function resetLabel(row, narrow) {
+  const minutes = finite(row.resetsInMinutes);
+  const relative = minutes == null ? null : minutes <= 0 ? 'reset due' : `in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
+  let absolute = row.resetsText;
+  if (row.resetsAt && Number.isFinite(Date.parse(row.resetsAt))) {
+    try {
+      absolute = new Intl.DateTimeFormat('en-GB', {
+        timeZone: row.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(new Date(row.resetsAt));
+    } catch { absolute = row.resetsAt; }
   }
-}
-
-function resetLine(row) {
-  const zone = row?.timeZone || localZone();
-  const absolute = resetText(row, zone);
-  const reset = absolute ? `${absolute} (${zone})` : '— (no reset time measured)';
-  const elapsed = row?.elapsedPct == null ? '—' : pctText(row.elapsedPct);
-  const pace = row?.paceWord || 'no measured pace';
-  return `Resets ${reset} · ${elapsed} of the window elapsed · ${pace}`;
-}
-
-function hasShare(row) {
-  return finite(row?.share?.workflows) != null && finite(row?.share?.rest) != null;
-}
-
-function shareWidth(width) {
-  // The approved frames use 34 cells at 55 columns and 64 at desktop. The
-  // subtraction leaves room for the percentage on the meter row and keeps
-  // both bars one-row atoms even on a 32-column terminal.
-  return Math.min(64, Math.max(1, columns(width) - 21));
-}
-
-function shareBarLine(row, width, ansi) {
-  const barWidth = shareWidth(width);
-  if (!hasShare(row)) {
-    const basis = stripMarkup(row?.share?.basis ?? 'no measured %/minute rate');
-    return tint(`share: — (${basis})`, DIM, ansi);
-  }
-  return shareBar([
-    { value: finite(row.share.workflows), glyph: '▓', color: METER_COLORS.purple },
-    { value: finite(row.share.rest), glyph: '░', color: METER_COLORS.others },
-  ], { width: barWidth, colors: ansi });
-}
-
-function shareLegend(row, ansi) {
-  if (!hasShare(row)) {
-    const basis = stripMarkup(row?.share?.basis ?? 'no measured %/minute rate');
-    return tint(`workflows / rest: — (${basis})`, DIM, ansi);
-  }
-  const workflows = pctText(row.share.workflows);
-  const rest = pctText(row.share.rest);
-  const minutes = row.share.workflowMinutes == null
-    ? ''
-    : ` · ${numberText(row.share.workflowMinutes, 2)} measured worker-minutes`;
-  const qualifier = row.share.exceedsMeter ? ' · ≈ workflows exceeds the reported meter' : '';
-  return `${tint(`▓ workflows ${workflows}`, fg(METER_COLORS.purple), ansi)} · ${tint(`░ rest ${rest}`, fg(METER_COLORS.others), ansi)}${minutes}${qualifier}`;
-}
-
-function creditLabel(row) {
-  const credits = row?.credits;
-  if (!credits || credits.used == null || credits.limit == null) return null;
-  const unit = credits.unit || 'credits';
-  return `Credits: ${numberText(credits.used, 2)} / ${numberText(credits.limit, 2)} ${unit} used`;
-}
-
-function subscriptionLabel(row) {
-  const amount = moneyText(row?.subscription?.monthlyPriceUsd);
-  return amount == null ? 'Subscription rate: —' : `Subscription rate: ${amount}/mo`;
-}
-
-function apiLabel(row) {
-  const value = moneyText(row?.apiEquivalentUsd);
-  if (value == null) return '≈ — API-equivalent estimate (none recorded)';
-  return `≈ ${value} API-equivalent estimate`;
-}
-
-function fitLabel(row) {
-  if (row?.fits != null) return `${numberText(row.fits, 0)} median runs still fit`;
-  return `Fits: — (${stripMarkup(row?.fitsBasis ?? 'not computable from measured data')})`;
-}
-
-function moneyLine(row, width, ansi) {
-  // Keep the primary money/credit reading elastic. At phone width the API
-  // estimate remains the next-most-important atom; the fit forecast is the
-  // first field allowed to fall away when one row cannot carry all three.
-  const primary = creditLabel(row) ?? subscriptionLabel(row);
-  const fields = [
-    { text: primary, grow: true, min: Math.min(12, visibleLength(primary)) },
-    { text: apiLabel(row), gap: 2 },
-    { text: tint(fitLabel(row), fg(row?.fits == null ? METER_COLORS.orange : METER_COLORS.green), ansi), gap: 2 },
-  ];
-  return compactRow(fields, { width: columns(width), gap: 1 });
+  absolute = absolute ? String(absolute).replace(/,/g, '').replace(/\s+(?:GMT|UTC).*$/, '') : null;
+  if (narrow && relative) return `resets ${relative}`;
+  return absolute ? `resets ${absolute}${relative ? ` (${relative})` : ''}` : relative ? `resets ${relative}` : 'reset time unavailable';
 }
 
 function biggestSource(budget, row) {
-  const candidates = [row?.biggestRuns, row?.biggest, budget?.biggestRuns, budget?.biggest];
-  for (const candidate of candidates) {
+  for (const candidate of [row.biggestRuns, row.biggest, budget?.biggestRuns, budget?.biggest]) {
     if (Array.isArray(candidate)) return candidate;
     if (Array.isArray(candidate?.byMinutes)) return candidate.byMinutes;
     if (Array.isArray(candidate?.runs)) return candidate.runs;
-    const named = candidate?.[row?.name];
+    const named = candidate?.[row.name];
     if (Array.isArray(named)) return named;
     if (Array.isArray(named?.byMinutes)) return named.byMinutes;
     if (Array.isArray(named?.runs)) return named.runs;
@@ -207,174 +69,97 @@ function biggestSource(budget, row) {
   return [];
 }
 
-function runLabel(run) {
-  return String(run?.shortId ?? run?.runId ?? 'run');
-}
-
-function runMinutes(run) {
-  return finite(run?.workerMinutes ?? run?.minutes ?? run?.agentMinutes);
-}
-
-function biggestLine(budget, row, width, ansi) {
-  const biggest = biggestSource(budget, row)
-    .filter((run) => run && (runMinutes(run) != null || moneyText(run.apiEquivalentUsd) != null));
-  if (!biggest.length) {
-    return { line: cut('biggest workflows: — (no measured worker-minutes in this period)', columns(width)), labels: [] };
-  }
-  const items = biggest.map((run) => {
-    const minutes = runMinutes(run);
-    const api = moneyText(run.apiEquivalentUsd);
-    const details = [
-      minutes == null ? null : `${numberText(minutes, 2)} worker-minutes`,
-      api == null ? null : `≈ ${api} API-equivalent estimate`,
-    ].filter(Boolean);
-    return { run, id: runLabel(run), text: `${runLabel(run)}${details.length ? ` · ${details.join(' · ')}` : ''}` };
-  });
-  const plain = compactRow([{
-    text: `biggest workflows: ${items.map((item) => item.text).join('   ')}`,
-    grow: true,
-  }], { width: columns(width), gap: 1 });
-  const labels = [];
-  let searchFrom = 0;
-  for (const item of items) {
-    const at = plain.indexOf(item.id, searchFrom);
-    if (at < 0) continue;
-    labels.push({ at, width: item.id.length, run: item.run });
-    searchFrom = at + item.id.length;
-  }
-  // Insert ANSI from right to left so the visible offsets stay the offsets
-  // measured in the plain compact row.
-  let line = plain;
-  for (const label of labels.slice().reverse()) {
-    const id = plain.slice(label.at, label.at + label.width);
-    line = line.slice(0, label.at) + tint(id, BOLD, ansi) + line.slice(label.at + label.width);
-  }
-  return { line, labels };
-}
-
-function headerLine(row, width, ansi) {
-  const name = String(row?.name ?? 'pool');
-  const amount = moneyText(row?.subscription?.monthlyPriceUsd);
-  const details = [planLabel(row), amount == null ? null : `${amount}/mo`, windowLabel(row)].filter(Boolean).join(' · ');
-  return cut(`${tint(name, BOLD, ansi)}  ${tint(details, DIM, ansi)}`, columns(width));
-}
-
-function meterLine(row, width, ansi) {
-  const cols = columns(width);
-  const label = `${pctText(row?.usedPct)} used`;
-  // A leading cell and two cells before the label reproduce the 34-cell phone
-  // band while leaving the percentage visible at every width.
-  const barWidth = Math.min(64, Math.max(1, cols - visibleLength(label) - 3));
-  const bar = meterBar(row?.usedPct ?? null, row?.elapsedPct ?? null, barWidth, { ansi });
-  return cut(` ${bar}  ${tint(label, fg(severityColor(row?.usedPct)), ansi)}`, cols);
-}
-
-function wrapLine(text, width) {
-  const source = String(text ?? '');
-  const cols = columns(width);
-  if (visibleLength(source) <= cols) return [source];
-  const out = [];
-  let rest = source.replace(SGR, '');
-  while (rest.length > cols) {
-    let at = rest.lastIndexOf(' ', cols);
-    if (at <= 0) at = cols;
-    out.push(rest.slice(0, at).trimEnd());
+function wrap(text, width) {
+  let rest = visible(text);
+  const lines = [];
+  while (rest.length > width) {
+    const space = rest.lastIndexOf(' ', width);
+    const at = space > 0 ? space : width;
+    lines.push(rest.slice(0, at));
     rest = rest.slice(at).trimStart();
   }
-  if (rest || !out.length) out.push(rest);
-  return out;
+  if (rest) lines.push(rest);
+  return lines;
 }
 
-/**
- * Render the Budget page. Regions use one-based columns, as required by the
- * dashboard shell; the only page action emitted here is opening a measured
- * workflow from the compact biggest-workflows row.
- */
 export function budgetLines(budget, { width = 120, ansi = true } = {}) {
   const cols = columns(width);
+  const narrow = cols < 80;
   const lines = [];
   const regions = [];
   const rows = rowsOf(budget);
-
-  if (!rows.length) {
-    return { lines: [cut('Budget · no pool budget data is available', cols)], regions };
-  }
-
+  if (!rows.length) return { lines: [cut('Budget · no pool budget data is available', cols)], regions };
+  const labelWidth = narrow ? 7 : 13;
+  const labelled = (label, text) => `${label.padEnd(labelWidth)}${text}`;
   for (const row of rows) {
-    // Exactly seven rows per pool. No blank separator is inserted: the shell's
-    // page window then keeps three complete pools visible on a 55×26 phone.
-    lines.push(headerLine(row, cols, ansi));
-    lines.push(meterLine(row, cols, ansi));
-    lines.push(cut(resetLine(row), cols));
-    lines.push(cut(moneyLine(row, cols, ansi), cols));
-    lines.push(cut(shareBarLine(row, cols, ansi), cols));
-    lines.push(cut(shareLegend(row, ansi), cols));
-
-    const at = lines.length;
-    const biggest = biggestLine(budget, row, cols, ansi);
-    lines.push(cut(biggest.line, cols));
-    for (const label of biggest.labels) {
-      const x = label.at + 1;
-      if (label.run?.runId && x >= 1 && x + label.width - 1 <= cols) {
-        regions.push({ x, y: at + 1, width: label.width, action: { kind: 'run', runId: label.run.runId } });
+    const plan = row.window ? `${row.window} plan` : 'plan window unavailable';
+    const header = `${row.name ?? 'pool'} · ${plan} · ${resetLabel(row, narrow)}`;
+    lines.push(cut(ansi ? `\x1b[1m${header}\x1b[0m` : header, cols));
+    const used = finite(row.usedPct);
+    if (used == null) {
+      lines.push(missing('used', 'meter unavailable', cols, ansi, labelWidth));
+    } else {
+      const elapsed = finite(row.elapsedPct);
+      const pace = row.paceWord || 'pace unavailable';
+      const tail = `${Math.round(used)}% · ${elapsed == null ? 'window age unavailable' : `${Math.round(elapsed)}% ${narrow ? 'gone' : 'of the window gone'}`} → ${pace}`;
+      const barWidth = Math.max(1, Math.min(40, cols - labelWidth - tail.length - 1));
+      lines.push(labelled('used', `${meterBar(used, elapsed, barWidth, { ansi })} ${tail}`));
+    }
+    if (used == null || finite(row.share?.workflows) == null || finite(row.share?.rest) == null) {
+      lines.push(missing(narrow ? 'by bsw' : 'by bullswarm', used == null ? 'no licence meter' : 'no measured usage rate yet', cols, ansi, labelWidth));
+    } else {
+      const share = row.share;
+      const minutes = finite(share.workflowMinutes);
+      const tail = narrow
+        ? `≈ ${Math.round(share.workflows)}%${minutes == null ? '' : ` (${Math.round(minutes)} min)`} · other ${Math.round(share.rest)}%`
+        : `≈ ${Math.round(share.workflows)}%${minutes == null ? '' : ` (${Math.round(minutes)} min of work)`} · other tools ${Math.round(share.rest)}%`;
+      const barWidth = Math.max(1, Math.min(40, cols - labelWidth - tail.length - 1));
+      const bar = progressBar(Math.min(used, Math.max(0, share.workflows)) / 100, barWidth, { partialGlyph: '▏' });
+      lines.push(labelled(narrow ? 'by bsw' : 'by bullswarm', `${paint(bar, METER_COLORS.purple, ansi)} ${tail}`));
+    }
+    if (finite(row.fits) == null) {
+      const reason = used == null ? 'no licence meter' : finite(row.share?.ratePerMinute) == null ? 'no measured usage rate yet' : finite(row.medianRunMinutes) == null ? 'no recorded run duration yet' : 'no measured usage per run yet';
+      lines.push(missing('room', reason, cols, ansi, labelWidth));
+    } else {
+      const fits = Math.round(row.fits);
+      const runWord = fits === 1 ? 'run' : 'runs';
+      lines.push(labelled('room', narrow ? `about ${fits} medium ${runWord} before reset` : `about ${fits} more medium ${runWord} before the reset`));
+    }
+    const api = money(row.apiEquivalentUsd);
+    const biggest = biggestSource(budget, row).slice(0, 2);
+    const items = biggest.map((run) => {
+      const id = String(run.shortId ?? run.runId ?? 'run');
+      const value = money(run.apiEquivalentUsd);
+      const figure = value == null ? '(cost unrecorded)' : `≈${narrow ? '' : ' '}${value}`;
+      return { run, id, text: `${id}${narrow && value != null ? '' : ' '}${figure}` };
+    });
+    const primary = api == null ? 'API estimate unrecorded' : narrow ? `≈${api} API` : `≈ ${api} of API-equivalent work`;
+    const detail = items.length ? `${narrow ? ' · ' : ' · biggest: '}${items.map((item) => item.text).join(', ')}` : '';
+    const plain = cut(labelled('so far', `${primary}${detail}`), cols);
+    lines.push(paint(plain, METER_COLORS.purple, ansi));
+    let from = 0;
+    for (const item of items) {
+      const at = plain.indexOf(item.id, from);
+      if (at >= 0 && item.run.runId) {
+        regions.push({ x: at + 1, y: lines.length, width: item.id.length, action: { kind: 'run', runId: item.run.runId } });
+        from = at + item.id.length;
       }
     }
+    if (finite(row.credits?.used) != null && finite(row.credits?.limit) != null) {
+      lines.push(labelled('credits', `${Math.round(row.credits.used)} / ${Math.round(row.credits.limit)} ${row.credits.unit || 'credits'} used`));
+    }
+    const price = finite(row.subscription?.monthlyPriceUsd);
+    if (price != null) lines.push(`plan · $${Number.isInteger(price) ? price : price.toFixed(2)}/mo declared`);
   }
-
-  const disabled = Array.isArray(budget?.disabledPools) ? budget.disabledPools.filter(Boolean) : [];
-  if (disabled.length) lines.push(cut(tint(`disabled: ${disabled.join(', ')}`, DIM, ansi), cols));
-
-  // A final width guard catches unusual caller strings without wrapping any
-  // pool atom onto a second row. Regions are already line-relative.
-  const safe = lines.map((line) => (visibleLength(line) <= cols ? line : cut(line, cols)));
-  const placed = regions
-    .filter((region) => region.y >= 1 && region.y <= safe.length)
-    .filter((region) => region.x >= 1 && region.x + region.width - 1 <= cols)
-    .filter((region) => visibleLength(safe[region.y - 1] ?? '') >= region.x + region.width - 1);
-  return { lines: safe, regions: placed };
+  if (budget?.disabledPools?.length) lines.push(`disabled: ${budget.disabledPools.join(', ')}`);
+  return { lines: lines.map((line) => cut(line, cols)), regions };
 }
 
-/** Notes placed above the shell's navigation row. Repeated pool reasons are
- * deliberately consolidated here: six identical subscription explanations
- * become one page footer, while the money row stays a truthful blank. */
 export function budgetNotes(budget, { width = 120 } = {}) {
   const cols = columns(width);
   const rows = rowsOf(budget);
-  const unpriced = rows.filter((row) => row?.subscription == null).map((row) => row?.name).filter(Boolean);
-  const unrated = rows.filter((row) => row?.share?.ratePerMinute == null).map((row) => row?.name).filter(Boolean);
-  const notes = [];
-
-  // On the phone the footer is deliberately two compact lines. Listing six
-  // long pool names and replaying the model's economic footnotes would consume
-  // the body window that is meant to show three complete seven-row pools.
-  if (cols < 80 && (unpriced.length || unrated.length)) {
-    const poolWord = unpriced.length === 1 ? 'pool' : 'pools';
-    const count = unpriced.length ? ` · ${unpriced.length} ${poolWord}` : '';
-    const reason = cols < 40
-      ? (unpriced.length ? 'no declared subscription price' : 'no measured %/minute rate')
-      : `Subscription rate: — · no declared subscription price${count}${unrated.length ? ' · no measured %/minute rate' : ''}`;
-    const command = cols < 40
-      ? `${unpriced.length || ''} ${poolWord} · declare: bullswarm strategy set-subscription`
-      : 'Declare with: bullswarm strategy set-subscription';
-    return [cut(reason, cols), cut(command, cols)];
-  }
-
-  if (unpriced.length) {
-    // Keep the old 100-column dashboard smoke assertion intelligible without
-    // adding a label to the seven-row block or to the approved 55/120/200
-    // frames.
-    const meterHint = cols === 100 ? 'Licence meter is the textured bar; ' : '';
-    notes.push(`${meterHint}Subscription rate: — (no declared subscription price) for ${unpriced.join(', ')}; declare one with: ${COMMAND}.`);
-  }
-  if (unrated.length) {
-    notes.push(`No measured %/minute rate, so licence share and fit are blank for ${unrated.join(', ')}.`);
-  }
-
-  // The model's two long economic notes are said once, in one footer sentence;
-  // per-pool copies are intentionally not painted by the seven-row blocks.
-  if (Array.isArray(budget?.notes) && budget.notes.length) {
-    notes.push('API-equivalent values are recorded estimates, not invoices; subscription money uses declared monthly prices.');
-  }
-
-  return notes.flatMap((note) => wrapLine(note, cols)).filter(Boolean);
+  const notes = ['≈ means estimated work, not an invoice; licence share uses measured work time.'];
+  if (rows.some((row) => row.share?.exceedsMeter)) notes.push("bullswarm's own measurement is above what the meter reports; the meter lags");
+  if (rows.some((row) => finite(row.subscription?.monthlyPriceUsd) == null)) notes.push(`Declare a price: ${COMMAND}`);
+  return notes.flatMap((note) => wrap(note, cols));
 }

@@ -17,7 +17,7 @@ import { loadUsage, parseMouse, METER_COLORS, meterBar, paceWord, untilText } fr
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { absentLine, columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -62,10 +62,61 @@ function dayStart(ms) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12).getTime();
 }
 
+/** The quota window a pool's pacing reads, out of one retained meter sample. */
+function pacedWindow(pool, sample) {
+  const preferred = pool?.pacingWindow === 'monthly' ? 'monthly'
+    : pool?.pacingWindow === 'five_hour' ? 'five_hour' : 'weekly';
+  return sample?.[preferred] ?? sample?.weekly ?? sample?.monthly ?? sample?.five_hour;
+}
+
+/**
+ * Providers restate the same window boundary with sub-second jitter on every
+ * read (`12:00:00.645530Z`, then `12:00:00.200253Z`), so two readings count as
+ * the same window unless the boundary moves by at least a minute. A real
+ * rollover moves it by hours or days.
+ */
+const RESET_TOLERANCE_MS = 60_000;
+
+/**
+ * One reading per local day for a pool, and whether its quota window rolled
+ * over on that day. A reset is a recorded `resets_at` moving to a new instant
+ * — never a falling utilization, which is also what a refund or a corrected
+ * reading looks like. The walk covers every retained sample in order, so a
+ * reset that happened between two daily readings still lands on its own day.
+ */
+function poolDayReadings(pool, days) {
+  const readings = new Map();
+  let lastResetAtMs = null;
+  for (const date of Object.keys(days).sort()) {
+    const samples = [...days[date]].sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+    const reading = { value: null, resetsAt: null, reset: false };
+    for (const sample of samples) {
+      const window = pacedWindow(pool, sample);
+      const resetsAt = typeof window?.resets_at === 'string' ? window.resets_at
+        : typeof window?.resetsAt === 'string' ? window.resetsAt : null;
+      const resetAtMs = resetsAt ? Date.parse(resetsAt) : NaN;
+      if (Number.isFinite(resetAtMs)) {
+        if (lastResetAtMs != null && Math.abs(resetAtMs - lastResetAtMs) >= RESET_TOLERANCE_MS) reading.reset = true;
+        lastResetAtMs = resetAtMs;
+      }
+      const value = finiteOrNull(window?.utilization);
+      if (value != null) {
+        reading.value = value;
+        reading.resetsAt = resetsAt;
+      }
+    }
+    readings.set(date, reading);
+  }
+  return readings;
+}
+
 /** Read the retained per-pool meter log into one real row per local day. */
 export function readLicencePerDay(bullswarmDir, pools, { period = '7d', now = Date.now(), rollups = [] } = {}) {
   const enabled = (Array.isArray(pools) ? pools : []).filter((pool) => pool?.name && pool.enabled !== false);
-  const histories = enabled.map((pool) => ({ pool, days: readMeterHistoryDays(pool.name, { dir: join(bullswarmDir, 'meters') }) }));
+  const histories = enabled.map((pool) => {
+    const days = readMeterHistoryDays(pool.name, { dir: join(bullswarmDir, 'meters') });
+    return { pool, days, readings: poolDayReadings(pool, days) };
+  });
   const recordedDays = histories.flatMap((entry) => Object.keys(entry.days));
   if (!recordedDays.length) return { period, rows: [], reason: 'meter history is not loaded' };
 
@@ -84,15 +135,15 @@ export function readLicencePerDay(bullswarmDir, pools, { period = '7d', now = Da
   for (let at = requestedStart; at <= nowDay; at = new Date(new Date(at).setDate(new Date(at).getDate() + 1)).getTime()) {
     const date = localDayKey(at);
     const segments = [];
-    for (const { pool, days } of histories) {
-      const samples = days[date] ?? [];
-      const sample = samples.at(-1);
-      if (!sample) continue;
-      const preferred = pool.pacingWindow === 'monthly' ? 'monthly'
-        : pool.pacingWindow === 'five_hour' ? 'five_hour' : 'weekly';
-      const window = sample[preferred] ?? sample.weekly ?? sample.monthly ?? sample.five_hour;
-      const value = finiteOrNull(window?.utilization);
-      if (value != null) segments.push({ name: pool.name, value });
+    for (const { pool, readings } of histories) {
+      const reading = readings.get(date);
+      if (!reading || reading.value == null) continue;
+      // Stats Pools marks the reset day with `▏`; it needs the fact, not a
+      // guess from a value that fell.
+      const segment = { name: pool.name, value: reading.value };
+      if (reading.resetsAt) segment.resetsAt = reading.resetsAt;
+      if (reading.reset) segment.reset = true;
+      segments.push(segment);
     }
     rows.push({ date, segments });
   }
@@ -140,12 +191,13 @@ const keyRow = (keys, label, bindings) => Object.freeze({ keys, label, bindings:
 // cycles workflows, and Tab now walks a page's sub-tabs). The changelog
 // records the change; the Help page names every key below.
 export const DASHBOARD_KEYS = Object.freeze({
+  home: keyRow('h', 'Home', ['h']),
   runs: keyRow('r', 'Runs', ['r']),
   budget: keyRow('b', 'Budget', ['b']),
   stats: keyRow('s', 'Stats', ['s']),
   history: keyRow('y', 'History', ['y']),
   fleet: keyRow('f', 'Fleet', ['f']),
-  help: keyRow('h/?', 'Help', ['h', '?']),
+  help: keyRow('?', 'Help', ['?']),
   openRun: keyRow('1\u20139', 'open that run', []),
   nextTab: keyRow('Tab', 'next sub-tab', ['\t']),
   cycleWorkflow: keyRow('Shift+Tab', 'cycle workflows', ['\x1b[Z']),
@@ -1670,7 +1722,7 @@ export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30
 }
 
 // ---------------------------------------------------------------------------
-// The paged dashboard: Home, Runs, Run, Step, Budget, Stats, History, Fleet
+// The paged dashboard: Home, Runs, Run, Step, Budget, Stats, Fleet (History is the day table inside Runs)
 // and Help.
 //
 // Every paint draws the page tab row, one sticky header, a window over the
@@ -1689,16 +1741,15 @@ const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const DASHBOARD_PAGES = Object.freeze(['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'fleet', 'help']);
 /** The tab row above the body; `key` is the key that opens the page. */
 const PAGE_TABS = Object.freeze([
-  Object.freeze({ id: 'home', label: 'Home', key: null }),
+  Object.freeze({ id: 'home', label: 'Home', key: 'h' }),
   Object.freeze({ id: 'runs', label: 'Runs', key: 'r' }),
   Object.freeze({ id: 'budget', label: 'Budget', key: 'b' }),
   Object.freeze({ id: 'stats', label: 'Stats', key: 's' }),
-  Object.freeze({ id: 'history', label: 'History', key: 'y' }),
   Object.freeze({ id: 'fleet', label: 'Fleet', key: 'f' }),
-  Object.freeze({ id: 'help', label: 'Help', key: 'h' }),
+  Object.freeze({ id: 'help', label: 'Help', key: '?' }),
 ]);
 /** Run and Step are read as Runs: the tab row marks the page they came from. */
-const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs' });
+const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs', history: 'runs' });
 /** The period toggle, in the order `p` cycles it. */
 const PERIOD_ITEMS = Object.freeze([
   Object.freeze({ id: '7d', label: 'Last 7 days' }),
@@ -1885,7 +1936,7 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
 function pageTabs(page, width) {
   const active = TAB_OF_PAGE[page] ?? page;
   const hidden = ['help'];
-  if (width < 100) hidden.push('fleet');
+  if (width < 38) hidden.push('fleet');
   return tabsRow(PAGE_TABS, { active, width, hidden });
 }
 
@@ -1894,7 +1945,7 @@ function pageTabs(page, width) {
  *
  * A run's digit sits inside its button (`[ 1.aaa111 ]`) and a label's key
  * letter is underlined, so the keys read off the nav. Below 100 columns the
- * tail is the phone layout's `[Top] [End] [Help]`; the run buttons keep the
+ * tail is the phone layout's `[Top] [End] [?.Help]`; the run buttons keep the
  * left and drop from the end when they do not fit.
  */
 function navParts(model, { page, width, selectedRunId }) {
@@ -1924,10 +1975,10 @@ function navParts(model, { page, width, selectedRunId }) {
     ? [
       { key: null, label: 'Top', tight: true, action: { kind: 'top' } },
       { key: null, label: 'End', tight: true, action: { kind: 'end' } },
-      { key: 'h', label: 'Help', tight: true, mark: page === 'help', action: { kind: 'page', page: 'help' } },
+      { key: '?', label: 'Help', tight: true, mark: page === 'help', action: { kind: 'page', page: 'help' } },
     ]
     : [
-      { key: 'h', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
+      { key: '?', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
       { key: 'q', label: 'quit', action: { kind: 'quit' } },
     ];
   // The way out is the last thing to go: the tail is kept whole and the run
@@ -2062,10 +2113,11 @@ function planProgress(row, { assignments = [], nowMs = Date.now() } = {}) {
   const remaining = actions.filter((action) => !DONE_STATUS.has(action.status));
   let minutes = 0;
   let measured = 0;
+  const unmeasured = [];
   for (const action of remaining) {
     const assignment = assignments.find((entry) => entry.runId === row?.runId && entry.actionId === action.id);
     const expected = finiteOrNull(assignment?.expectedMinutes);
-    if (expected == null) continue;
+    if (expected == null) { unmeasured.push(action.id); continue; }
     const startedMs = Date.parse(assignment?.startedAt ?? '');
     const elapsed = Number.isFinite(startedMs) ? (nowMs - startedMs) / 60_000 : 0;
     minutes += Math.max(0, expected - elapsed);
@@ -2082,6 +2134,7 @@ function planProgress(row, { assignments = [], nowMs = Date.now() } = {}) {
     total: actions.length,
     remaining: remaining.length,
     measuredRemaining: measured,
+    unmeasured,
     eta,
   };
 }
@@ -2223,18 +2276,25 @@ function paceOnly(text) {
   return word || blank();
 }
 
+/** How many metered pools the `budget · this week` block draws before it says
+ * how many it left out. The block is a summary, not the Budget page, but a
+ * silent cap reads as “those are all my pools”, so the ones it drops are
+ * counted in words underneath. */
+const BUDGET_WEEK_POOLS = 4;
+
 function budgetWeekLines(body, model, { width, narrow, nowMs }) {
-  const rows = (model.budget?.rows ?? [])
+  const metered = (model.budget?.rows ?? [])
     .filter((row) => row.usedPct != null)
-    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0))
-    .slice(0, narrow ? 3 : 4);
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0));
+  const rows = metered.slice(0, BUDGET_WEEK_POOLS);
+  const leftOut = metered.length - rows.length;
   body.push('');
   body.push(rule('budget · this week', null, width));
   if (!rows.length) {
     body.push(dimText(' no pool reported a licence meter · bullswarm doctor checks the meters', width));
     return;
   }
-  const nameWidth = Math.min(narrow ? 9 : 13, rows.reduce((most, row) => Math.max(most, String(row.name).length), 0));
+  const nameWidth = Math.min(16, rows.reduce((most, row) => Math.max(most, String(row.name).length), 0));
   const unpriced = [];
   for (const row of rows) {
     const name = cut(String(row.name), nameWidth).padEnd(nameWidth);
@@ -2277,6 +2337,12 @@ function budgetWeekLines(body, model, { width, narrow, nowMs }) {
     const elapsed = percentText(row.elapsedPct);
     body.push(dimText(
       `   ${[reset, ...(narrow ? [row.subscription?.windowUsd == null ? null : money] : [elapsed ? `${elapsed} elapsed` : null, pace.text || null])].filter(Boolean).join(' · ')}`,
+      width,
+    ));
+  }
+  if (leftOut > 0) {
+    body.push(dimText(
+      ` +${leftOut} more metered pool${leftOut === 1 ? '' : 's'} · b opens Budget`,
       width,
     ));
   }
@@ -2402,7 +2468,7 @@ function summaryBand(body, model, opts) {
   ];
   body.push('');
   if (narrow) {
-    for (const cell of figures) body.push(cut(` ${cell.join(' · ')}`, width));
+    for (const figure of figures.flat()) body.push(cut(` ${figure}`, width));
   } else {
     pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
   }
@@ -2459,7 +2525,7 @@ function homePage(model, opts, body) {
       value: strong(moneyText(today?.apiEquivalentUsd) ?? blank()),
       spark: tint(sparkline(sparks.spend ?? [], sparkWidth), 'orange'),
       note: today?.apiEquivalentUsd == null
-        ? 'no finished run recorded an estimate'
+        ? (narrow ? 'no estimate today' : 'no finished run recorded an estimate')
         : `API-equivalent · ${today.pricedRuns} of ${today.finished} priced`,
       action: { kind: 'trend', metric: 'spend' },
     },
@@ -2535,9 +2601,14 @@ function homePage(model, opts, body) {
     ));
   }
 
-  // The runs in flight are always visible, whatever else the page carries.
+  activeRunLines(model, opts, body);
+  return homeDetails(model, opts, body);
+}
+
+function activeRunLines(model, opts, body, title = 'running') {
+  const { width, narrow, nowMs } = opts;
   body.push('');
-  body.push(rule('running', null, width));
+  body.push(rule(title, null, width));
   if (!model.runs.length) {
     body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
   }
@@ -2609,6 +2680,10 @@ function homePage(model, opts, body) {
     body.push(dimText(` ${blank()} no measured %/minute rate for ${[...unratedPools].join(', ')}, so no licence draw`, width));
   }
 
+}
+
+function homeDetails(model, opts, body) {
+  const { width, narrow, nowMs } = opts;
   budgetWeekLines(body, model, { width, narrow, nowMs });
 
   // The period's breakdown, and the toggle that changes it.
@@ -2626,7 +2701,7 @@ function homePage(model, opts, body) {
     // One column on the phone: the same four sections, stacked.
     for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
       const base = body.lines.length;
-      const rows = cell.action?.kind === 'trend' ? cell.rows : [cell.rows[0], cell.rows.slice(1).join(' · ')];
+      const rows = cell.rows;
       for (const line of rows) body.push(` ${cut(line, width - 1)}`);
       if (cell.action) {
         for (let row = base + 1; row <= body.lines.length; row += 1) {
@@ -2687,36 +2762,38 @@ function recordCost(record) {
 
 /** Runs: the list, the filter, the agent integration and the commands. */
 function runsPage(model, opts, body) {
-  const { width, narrow } = opts;
-  const rows = opts.rows ?? [];
-  const allRows = opts.allRows ?? rows;
-  const active = allRows.filter((row) => row.ongoing).length;
-  const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
-  const recent = Math.max(0, allRows.length - active);
-  // The Runs list has no prototype frame: it keeps its behaviour and its
-  // structure and takes only the shared vocabulary — the section rules, the
-  // palette and the marks the other pages use.
-  body.push(rule(
-    `Runs · ${opts.filter === 'all' ? 'all' : 'active'}`,
-    `${tint(String(active), 'cyan')} active · ${waiting} waiting · ${recent} recent`,
-    width,
-  ));
-  if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
-  const selected = clamp(opts.selected ?? 0, 0, Math.max(0, rows.length - 1));
-  if (!rows.length) {
-    body.row(' No workflows in this view.');
-    body.row(dimText(opts.filter === 'all'
-      ? ' Start one with: bullswarm workflow goal "…"'
-      : ' Press a to browse recent runs.', width));
+  const { width } = opts;
+  const active = [...model.runs];
+  for (const row of opts.allRows ?? []) {
+    if ((row.ongoing || isWaitingWorkflow(row.state)) && !active.some((run) => run.runId === row.runId)) active.push(row);
   }
-  if (rows.length) dashboardRunLines(rows, selected, narrow, width).forEach((group, index) => {
-    const runId = rows[index]?.runId ?? null;
-    group.lines.forEach((line, lineIndex) => {
-      if (!line) { body.push(''); return; }
-      body.row(line, lineIndex === 0 && runId ? { kind: 'run', runId } : null);
-    });
-  });
+  const query = String(opts.query ?? '').toLowerCase();
+  const matches = (run) => !query || `${run.runId} ${run.shortId} ${run.goal ?? workflowRunLabel(run)}`.toLowerCase().includes(query);
+  activeRunLines({ ...model, runs: active.filter(matches) }, opts, body, 'active');
+  body.push('');
+  body.anchor = { history: body.lines.length + 1, cursor: null };
+  const ids = new Set(active.map((run) => run.runId));
+  const days = (model.days ?? []).map((day) => ({
+    ...day,
+    rows: (day.rows ?? []).filter((run) => !ids.has(run.runId) && matches(run)),
+  }));
+  pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
+  if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
+  const runRegions = body.regions.filter((region) => region.action?.kind === 'run');
+  const desired = opts.listSelectedId ?? opts.selectedRunId ?? null;
+  const runRows = runRegions.sort((a, b) => a.y - b.y);
+  const wanted = runRows.findIndex((region) => region.action.runId === desired);
+  const cursor = runRows[wanted >= 0 ? wanted : 0];
+  if (cursor) {
+    body.lines[cursor.y - 1] = `\x1b[7m${body.lines[cursor.y - 1]}\x1b[0m`;
+    body.anchor.cursor = cursor.y;
+  }
+  body.runRows = runRows.map((region) => ({ runId: region.action.runId, y: region.y }));
+  return ` bullswarm · runs · ${opts.filter === 'all' ? 'all' : 'active'} · ${days.length} days`;
+}
 
+function integrationLines(model, opts, body) {
+  const { width } = opts;
   body.push('');
   body.push(rule('agents', null, width));
   const installed = model.integration?.ok === true;
@@ -2837,7 +2914,8 @@ function planDagLines(row, {
     const seen = [];
     for (const action of level) {
       const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
-      const text = [attempt?.pool, attempt?.model, attempt?.routing?.effort].filter(Boolean).join(' · ');
+      const detail = [attempt?.pool, attempt?.model, attempt?.routing?.effort].filter(Boolean).join(' · ');
+      const text = visibleLength(detail) <= cellWidth[levels.indexOf(level)] ? detail : attempt?.pool ?? '';
       if (text && !seen.includes(text)) seen.push(text);
     }
     return seen.join(' / ');
@@ -2994,26 +3072,20 @@ function stepTally(row) {
 
 /** The `budget` cell of the Run page's triptych: one row per pool it drew on. */
 function runBudgetRows(economics, { width }) {
-  if (!economics.pools.length) return [dimText('no attempt has recorded a pool yet', width)];
-  const nameWidth = Math.min(14, economics.pools.reduce((most, pool) => Math.max(most, String(pool.name).length), 0));
-  const rows = [];
-  let unrated = false;
-  for (const pool of economics.pools) {
-    const share = pool.sharePct == null ? blank() : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')}`;
-    if (pool.sharePct == null) unrated = true;
-    const bars = Math.max(4, width - nameWidth - visibleLength(share) - 3);
-    const bar = pool.sharePct == null || pool.usedPct == null
-      ? dimText('·'.repeat(bars), bars + 8)
-      : shareBar([
-        { value: Math.min(pool.sharePct, pool.usedPct) },
-        { value: Math.max(0, pool.usedPct - pool.sharePct) },
-        { value: Math.max(0, 100 - pool.usedPct) },
-      ], { width: bars, colors: meterAnsi() });
-    rows.push(`${cut(String(pool.name), nameWidth).padEnd(nameWidth)} ${bar} ${tint(share, 'purple')}`);
+  if (!economics.pools.length) return [absentLine('', 'no attempt has recorded a pool yet', { width })];
+  if (economics.pools.every((pool) => pool.sharePct == null)) {
+    return [absentLine('', 'free model · no licence meter', { width })];
   }
-  const [mine, rest, free] = asciiGlyphsPreferred() ? ['#', '.', '|'] : ['▓', '▒', '░'];
-  if (!unrated) rows.push(dimText(`${mine} this run · ${rest} others · ${free} free`, width));
-  return rows;
+  return economics.pools.flatMap((pool) => {
+    if (pool.sharePct == null) return [absentLine(pool.name, 'free model · no licence meter', { width })];
+    const percent = pool.sharePct > 0 && pool.sharePct < 1 ? pool.sharePct.toFixed(1) : String(Math.round(pool.sharePct));
+    const window = pool.window === 'monthly' ? 'monthly' : pool.window === 'five_hour' ? 'five-hour' : 'weekly';
+    const share = `${about()} ${percent}% of the ${window} plan`;
+    const name = String(pool.name);
+    const bars = Math.min(20, width - visibleLength(name) - visibleLength(share) - 2);
+    if (bars < 4) return [cut(name, width), cut(`${tint(progressBar(pool.sharePct / 100, 4, { partialGlyph: '▏' }), 'purple')} ${share}`, width)];
+    return [`${name} ${tint(progressBar(pool.sharePct / 100, bars, { partialGlyph: '▏' }), 'purple')} ${share}`];
+  });
 }
 
 /** The `live` cell: what is running now and the last thing each one did. */
@@ -3033,7 +3105,9 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
   if (!running.length) {
     return [dimText(stateFinishedAt(panel.state)
       ? `no live agents · workflow ${panel.state.lifecycle.status}`
-      : 'waiting for the next dispatch', width), ...dead];
+      : panel.state.lifecycle?.status === 'paused'
+        ? `paused · bullswarm workflow resume ${panel.state.shortId ?? panel.state.runId} continues it`
+        : 'waiting for the next dispatch', width), ...dead];
   }
   const rows = [...dead];
   for (const attempt of running.slice(0, limit)) {
@@ -3062,12 +3136,10 @@ function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
 
 /** Why the triptych's blanks are blank, once, across the page's own width. */
 function runBlankReasons(economics, progress) {
-  const unrated = economics.pools.filter((pool) => pool.sharePct == null).map((pool) => pool.name);
   return [
     economics.apiEquivalentUsd == null ? 'no attempt recorded an API-equivalent estimate' : null,
-    unrated.length ? `no measured %/minute rate for ${unrated.join(', ')}` : null,
-    !progress.eta && progress.remaining
-      ? `${progress.remaining - progress.measuredRemaining} of ${progress.remaining} remaining steps recorded no expected duration`
+    !progress.eta && progress.unmeasured?.length
+      ? `ETA ${blank()}: ${progress.unmeasured.join(', ')} ${progress.unmeasured.length === 1 ? 'has' : 'have'} no recorded duration yet`
       : null,
   ].filter(Boolean);
 }
@@ -3132,7 +3204,7 @@ function runPage(model, opts, body) {
   if (narrow) {
     // The phone spends the prototype's rows: the budget, one `so far` line
     // under it, then what is live — and leaves the timeline the rest.
-    body.push(rule('budget', null, width));
+    body.push(rule('licence this run used', null, width));
     for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
     const money = moneyText(economics.apiEquivalentUsd);
     body.push(cut(` so far ${tint(money ?? blank(), 'purple')} · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
@@ -3147,7 +3219,7 @@ function runPage(model, opts, body) {
     // indented one column, the way every other section on the page is.
     const inset = (rows) => rows.map((line) => ` ${cut(line, cellWidth - 1)}`);
     pushColumns(body, [
-      { rule: 'budget', rows: inset(runBudgetRows(economics, { width: cellWidth - 1 })), action: { kind: 'page', page: 'budget' } },
+      { rule: 'licence this run used', rows: inset(runBudgetRows(economics, { width: cellWidth - 1 })), action: { kind: 'page', page: 'budget' } },
       { rule: 'live', rows: inset(runLiveRows(panel, { width: cellWidth - 1, nowMs })) },
       { rule: 'so far', rows: inset(runSoFarRows(row, panel, progress, economics, { width: cellWidth - 1, nowMs })) },
     ], { width, gap, indent: 0 });
@@ -3288,24 +3360,36 @@ function stepPage(model, opts, body) {
   body.push(rule('budget', null, width));
   const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
   const money = moneyText(finiteOrNull(attempt?.usage?.cost?.estimatedUsd));
-  const share = pool?.sharePct == null
-    ? blank()
-    : `${about()} ${formatDashboardValue(pool.sharePct, 'percent')} of its ${pool.window ?? 'pacing'} window`;
-  const name = cut(String(agent.pool), 14).padEnd(Math.min(14, String(agent.pool).length));
-  const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
-  const bar = pool?.usedPct == null
-    ? dimText('·'.repeat(bars), bars + 8)
-    : meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
-  body.row(
-    cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money ?? blank(), 'purple')}${money ? ' API-equivalent estimate' : ''}`, width),
-    { kind: 'page', page: 'budget', pool: agent.pool },
-  );
-  // Each blank above says which measurement it is waiting for, on one row.
-  const why = [
-    pool?.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
-    money == null ? 'this attempt recorded no estimate' : null,
-  ].filter(Boolean);
-  if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
+  if (pool?.usedPct == null) {
+    // Requirement 8: no page draws an empty track for missing data. An
+    // unmetered pool is a line of words here, the same words the Run page
+    // uses, with whatever this attempt did record beside them.
+    const reason = `free model · no licence meter${money ? ` · ${money} API-equivalent estimate` : ' · this attempt recorded no estimate'}`;
+    body.row(
+      cut(` ${absentLine(String(agent.pool), reason, { width: width - 1 })}`, width + 8),
+      { kind: 'page', page: 'budget', pool: agent.pool },
+    );
+  } else {
+    // Whole percents, as the Run page writes them: a share under 1% keeps one
+    // decimal so a real sliver is not rounded away to `0%`.
+    const percent = pool.sharePct == null ? null
+      : pool.sharePct > 0 && pool.sharePct < 1 ? pool.sharePct.toFixed(1) : String(Math.round(pool.sharePct));
+    const window = pool.window === 'monthly' ? 'monthly' : pool.window === 'five_hour' ? 'five-hour' : 'weekly';
+    const share = percent == null ? blank() : `${about()} ${percent}% of its ${window} window`;
+    const name = cut(String(agent.pool), 14).padEnd(Math.min(14, String(agent.pool).length));
+    const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
+    const bar = meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
+    body.row(
+      cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money ?? blank(), 'purple')}${money ? ' API-equivalent estimate' : ''}`, width),
+      { kind: 'page', page: 'budget', pool: agent.pool },
+    );
+    // Each blank above says which measurement it is waiting for, on one row.
+    const why = [
+      pool.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
+      money == null ? 'this attempt recorded no estimate' : null,
+    ].filter(Boolean);
+    if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
+  }
 
   const taskFile = attempt?.taskFile ?? active?.taskFile ?? null;
   const prompt = wrapLines(taskPreview(taskFile, Infinity), width - 4);
@@ -3422,7 +3506,10 @@ function helpPage(model, opts, body) {
 
   body.push(tint(truncate(narrow ? ' keys and clicks' : ' every key and click on this dashboard', width), 'dim'));
   body.push(rule('pages', null, width));
-  grouped(['runs', 'budget', 'stats', 'history', 'fleet'], 'Runs · Budget · Stats · History · Fleet');
+    grouped(['runs', 'budget', 'stats', 'fleet'], 'Runs · Budget · Stats · Fleet');
+  row(DASHBOARD_KEYS.home.keys, 'Home');
+  // History is the day table inside Runs now, so `y` is a jump, not a page.
+  row(DASHBOARD_KEYS.history.keys, narrow ? 'the first day of Runs' : 'Runs, at the first day of its history');
   row(DASHBOARD_KEYS.help.keys, 'this help');
   row(DASHBOARD_KEYS.out.keys, narrow ? 'back, then Home' : 'back from a step, otherwise Home');
   row(DASHBOARD_KEYS.openRun.keys, 'open the numbered run in the nav');
@@ -3456,9 +3543,9 @@ function helpPage(model, opts, body) {
   row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
   row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
-  row('under 100', 'the nav tail is [Top] [End] [Help]');
+  row('under 100', 'the nav tail is [Top] [End] [?.Help]');
   row('rebound', 'r was refresh · b was back · Tab was workflows');
-  body.push(tint(truncate(` ${DASHBOARD_COMMANDS[0]} · Runs lists every command`, width), 'dim'));
+  integrationLines(model, opts, body);
   return ' bullswarm · help';
 }
 
@@ -3499,7 +3586,7 @@ export function renderDashboardPage(model, options = {}) {
   if (page === 'budget' && model.budget) {
     for (const line of budgetNotes(model.budget, { width })) notes.push(dimText(truncate(line, width), width));
   }
-  if (page === 'history') historyPageNotes(model, opts, notes);
+  if (page === 'history' || page === 'runs') historyPageNotes(model, opts, notes);
   const bodyHeight = Math.max(1, height - 2 - messageLines.length - notes.lines.length - 1);
 
   const body = frameBuilder();
@@ -3518,7 +3605,7 @@ export function renderDashboardPage(model, options = {}) {
   else if (page === 'runs') header = runsPage(model, opts, body);
   else if (page === 'budget') header = budgetPage(model, opts, body);
   else if (page === 'stats') header = statsPage(model, opts, body);
-  else if (page === 'history') header = historyPage(model, opts, body);
+  else if (page === 'history') header = runsPage(model, opts, body);
   else if (page === 'fleet') header = fleetPage(model, opts, body);
   else if (page === 'help') header = helpPage(model, opts, body);
   else if (page === 'step') header = stepPage(model, { ...opts, bodyHeight }, body);
@@ -3526,6 +3613,10 @@ export function renderDashboardPage(model, options = {}) {
 
   const frame = frameBuilder();
   frame.kit(pageTabs(page, width));
+  if (page === 'runs' || page === 'history') {
+    const padding = Math.max(0, (body.anchor?.history ?? 1) - 1 + bodyHeight - body.lines.length);
+    for (let index = 0; index < padding; index += 1) body.push('');
+  }
   const window = windowOf(body, { height: bodyHeight, scroll: opts.bodyScroll });
   frame.push(truncate(`${header}${window.position}`, width));
   drawWindow(frame, body, window);
@@ -3549,6 +3640,7 @@ export function renderDashboardPage(model, options = {}) {
     // Where a page marked something worth scrolling to (a sub-tab row), as a
     // row of its body, so a caller can bring it into the window.
     anchor: body.anchor ?? null,
+    runRows: body.runRows ?? [],
   };
 }
 
@@ -3823,7 +3915,7 @@ export async function runDashboard(bullswarmDir, {
     page: ui.page,
     rows, allRows, selected,
     filter: dashboardFilter, query, filterEditing,
-    selectedRunId, message, bodyScroll,
+    selectedRunId, listSelectedId: selectedRunId, message, bodyScroll,
     period: ui.period, statsTab: ui.statsTab, metric: ui.metric, fleetBy: ui.fleetBy,
     budgetPool: ui.budgetPool,
     spinnerFrame: ui.spinnerFrame,
@@ -3890,8 +3982,8 @@ export async function runDashboard(bullswarmDir, {
     }
   };
   const refresh = () => {
+    const previousRunId = selectedRunId;
     try {
-      const previousRunId = selectedRunId;
       activeRuns = activeDashboardRows(bullswarmDir);
       readIndex();
       if (catalog) {
@@ -3905,7 +3997,12 @@ export async function runDashboard(bullswarmDir, {
       readIntegration();
       void readUsage();
     } catch (err) { message = `display error: ${err.message}`; }
-    selectedRunId = rows[selected]?.runId ?? selectedRunId;
+    // On the Runs page the cursor may sit on a finished row of the day table,
+    // which the active-only catalogue does not hold; a refresh must not drag
+    // it back onto the in-flight run, or Enter opens the wrong workflow.
+    const tableKeepsCursor = ui.page === 'runs'
+      && (lastFrameResult?.runRows ?? []).some((row) => row.runId === previousRunId);
+    selectedRunId = tableKeepsCursor ? previousRunId : (rows[selected]?.runId ?? selectedRunId);
     paint();
   };
   /** Opens one run's page, widening the filter when it hides that run. */
@@ -4009,6 +4106,8 @@ export async function runDashboard(bullswarmDir, {
   /** Opens a page, reading whatever that page needs the first time. */
   const openPage = (page, { pool = null } = {}) => {
     if (!DASHBOARD_PAGES.includes(page)) return paint();
+    const historyJump = page === 'history';
+    if (historyJump) page = 'runs';
     if (page === 'runs') ensureCatalog();
     if ((page === 'run' || page === 'step') && !selectedRunId) {
       message = 'No workflow selected.';
@@ -4020,7 +4119,13 @@ export async function runDashboard(bullswarmDir, {
     ui.focus = page === 'step' ? 2 : 0;
     bodyScroll = 0;
     message = null;
-    return paint();
+    const frame = paint();
+    if (historyJump) {
+      bodyScroll = Math.max(0, (frame?.anchor?.history ?? 1) - 1);
+      selectedRunId = frame?.runRows?.find((row) => row.y > bodyScroll)?.runId ?? selectedRunId;
+      return paint();
+    }
+    return frame;
   };
   /** Esc and the left arrow walk out: step to run, every other page to Home. */
   const moveOut = () => {
@@ -4060,7 +4165,7 @@ export async function runDashboard(bullswarmDir, {
    * tall its body was, so "near the bottom" is measured, not guessed.
    */
   const loadMoreHistory = () => {
-    if (ui.page !== 'history' || ui.historyDays >= MAX_HISTORY_DAYS) return;
+    if (!['runs', 'history'].includes(ui.page) || ui.historyDays >= MAX_HISTORY_DAYS) return;
     const body = lastFrameResult?.body;
     if (body && body.end < body.total - 2) return;
     ui.historyDays = Math.min(MAX_HISTORY_DAYS, ui.historyDays + 7);
@@ -4226,7 +4331,8 @@ export async function runDashboard(bullswarmDir, {
         ui.historyDays = Math.min(MAX_HISTORY_DAYS, Math.max(ui.historyDays, required));
       }
     }
-    ui.page = 'history';
+    ui.page = 'runs';
+    ensureCatalog();
     ui.budgetPool = null;
     ui.focus = 0;
     bodyScroll = 0;
@@ -4241,8 +4347,10 @@ export async function runDashboard(bullswarmDir, {
       const at = marker
         ? rendered.lines.findIndex((line) => String(line).replace(ANSI_SGR, '').startsWith(marker))
         : -1;
-      if (at >= 0) bodyScroll = at;
-      else message = `History bucket ${target} is outside loaded history.`;
+      if (at >= 0) {
+        const frame = paint();
+        bodyScroll = (frame?.anchor?.history ?? 1) - 1 + at;
+      } else message = `History bucket ${target} is outside loaded history.`;
     }
     return paint();
   };
@@ -4304,8 +4412,16 @@ export async function runDashboard(bullswarmDir, {
   };
   const moveVertical = (delta) => {
     if (ui.page === 'runs') {
-      selected = clamp(selected + delta, 0, Math.max(0, rows.length - 1));
-      selectedRunId = rows[selected]?.runId ?? selectedRunId;
+      const listed = lastFrameResult?.runRows ?? [];
+      const at = listed.findIndex((row) => row.runId === selectedRunId);
+      const target = listed[clamp(at + delta, 0, Math.max(0, listed.length - 1))];
+      if (target) {
+        selectedRunId = target.runId;
+        const capacity = Math.max(1, (lastFrameResult?.body.end ?? 1) - (lastFrameResult?.body.offset ?? 0));
+        if (target.y <= bodyScroll) bodyScroll = target.y - 1;
+        else if (target.y > bodyScroll + capacity) bodyScroll = target.y - capacity;
+      } else bodyScroll = Math.max(0, bodyScroll + delta);
+      if (delta > 0) loadMoreHistory();
       return paint();
     }
     if (ui.page !== 'run' && ui.page !== 'step') {
@@ -4386,7 +4502,9 @@ export async function runDashboard(bullswarmDir, {
   /** Enter: open the selected run, then its agents, then the selected step. */
   const drillIn = () => {
     if (ui.page === 'runs' || ui.page === 'home') {
-      selectedRunId = rows[selected]?.runId ?? activeRuns[0]?.runId ?? selectedRunId;
+      selectedRunId = ui.page === 'runs'
+        ? (lastFrameResult?.runRows?.find((row) => row.runId === selectedRunId) ?? lastFrameResult?.runRows?.[0])?.runId
+        : rows[selected]?.runId ?? activeRuns[0]?.runId ?? selectedRunId;
       if (!selectedRunId) {
         message = dashboardFilter === 'active'
           ? 'No active workflow selected · press a to browse recent runs.'
@@ -4467,6 +4585,7 @@ export async function runDashboard(bullswarmDir, {
     }
     if (keyPressed('detach', key)) return finish();
     if (keyPressed('copy', key)) return copyScreen();
+    if (keyPressed('home', key)) return openPage('home');
     if (keyPressed('help', key)) return openPage('help');
     if (keyPressed('runs', key)) return openPage('runs');
     if (keyPressed('budget', key)) return openPage('budget');
@@ -4491,10 +4610,10 @@ export async function runDashboard(bullswarmDir, {
         ensureCatalog();
         return refresh();
       }
-      if (key === 'i') return runInstall();
     }
+    if (ui.page === 'help' && key === 'i') return runInstall();
     if (/^[1-9]$/.test(key)) {
-      const run = activeRuns[Number(key) - 1];
+      const run = ui.page === 'runs' ? lastFrameResult?.runRows?.[Number(key) - 1] : activeRuns[Number(key) - 1];
       if (run) return openRun(run.runId);
       message = `no run ${key} in flight`;
       return paint();

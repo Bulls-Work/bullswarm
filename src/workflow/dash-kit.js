@@ -5,6 +5,10 @@
 // Every function is pure — strings in, strings out — so a page renders and is
 // asserted without a terminal, and none of them reads a TTY.
 //
+// A page never draws a dotted or blank track, meter or bar for missing data;
+// it writes the reason in words on that row with absentLine(). Measured zero
+// is data, not absence. Legacy bar defaults require callers to guard absence.
+//
 // Two rules hold for every function here:
 //
 //   1. Nothing paints past `width`. Distances are counted in visible cells
@@ -425,6 +429,18 @@ function reading(value) {
   return null;
 }
 
+export function absentLine(label, reason, { width = 55, labelWidth = 0 } = {}) {
+  const [name, why] = [label, reason].map((value) => String(value ?? '').replace(/[\r\n\t]+/g, ' ').trim());
+  // `labelWidth` lets a page that already lays its rows out in a label column
+  // (Budget's `used` / `by bullswarm` / `room`) keep an absent row in the same
+  // column instead of shifting it left by the default three-space join.
+  const pad = Math.trunc(Number(labelWidth)) || 0;
+  const joined = name && why && pad > 0 ? `${name.padEnd(pad)}${why}`
+    : [name, why].filter(Boolean).join('   ');
+  const text = cut(joined, colsOf(width, 55));
+  return text ? `${DIM}${text}${RESET}` : '';
+}
+
 const SHARE_GLYPHS = Object.freeze(['▓', '▒', '░', '█']);
 const SHARE_ASCII = Object.freeze(['#', '.', '|', '#']);
 
@@ -439,7 +455,7 @@ const SHARE_ASCII = Object.freeze(['#', '.', '|', '#']);
  * the first are dimmed — the closest this palette comes to the prototype's
  * bright `▓` over quieter `▒` and `░`.
  */
-export function shareBar(parts, { width = 20, colors = true } = {}) {
+export function shareBar(parts, { width = 20, colors = true, partialGlyph = null } = {}) {
   const cols = colsOf(width, 20);
   if (cols <= 0) return '';
   const ascii = asciiGlyphsPreferred();
@@ -452,13 +468,25 @@ export function shareBar(parts, { width = 20, colors = true } = {}) {
     index,
   }));
   const counts = allocate(list.map((part) => part.value), cols);
+  const partials = new Set();
+  if (typeof partialGlyph === 'string' && [...partialGlyph].length === 1) {
+    list.forEach((part, index) => {
+      if (!(part.value > 0) || counts[index]) return;
+      const donor = counts.reduce((best, count, at) => count > counts[best] ? at : best, 0);
+      if (counts[donor] > 1) {
+        counts[donor] -= 1;
+        counts[index] = 1;
+        partials.add(index);
+      }
+    });
+  }
   if (!counts.some((count) => count > 0)) return ' '.repeat(cols);
   let out = '';
   let painted = 0;
   list.forEach((part, index) => {
     const count = counts[index];
     if (!count) return;
-    const run = part.glyph.repeat(count);
+    const run = partials.has(index) ? (ascii ? '|' : partialGlyph) : part.glyph.repeat(count);
     if (colors && part.color) out += `${fgOf(part.color)}${run}${RESET}`;
     else if (colors && part.index > 0) out += `${DIM}${run}${RESET}`;
     else out += run;
@@ -476,9 +504,10 @@ const SPARK_ASCII = Object.freeze(['.', ':', '-', '=', '#']);
  * than the width returns that many cells rather than padding the line; a value
  * that is missing (null, NaN) is drawn at the low end, never as a peak; a flat
  * series sits at its low end unless it is a flat non-zero, which sits mid.
- * An ascii terminal gets `.:-=#`.
+ * An ascii terminal gets `.:-=#`. `markers` names indexes in the original
+ * values: ▏ replaces that day's glyph for a licence window reset (| in ascii).
  */
-export function sparkline(values, width = 20) {
+export function sparkline(values, width = 20, { markers = [] } = {}) {
   const cols = colsOf(width, 20);
   const list = Array.isArray(values) ? values : [];
   if (cols <= 0 || !list.length) return '';
@@ -489,7 +518,10 @@ export function sparkline(values, width = 20) {
   const low = Math.min(...numbers);
   const span = Math.max(...numbers) - low;
   const middle = Math.floor((glyphs.length - 1) / 2);
-  return window.map((value) => {
+  const marked = new Set(Array.isArray(markers) ? markers : []);
+  const offset = list.length - window.length;
+  return window.map((value, index) => {
+    if (marked.has(offset + index)) return asciiGlyphsPreferred() ? '|' : '▏';
     if (value == null) return glyphs[0];
     if (!span) return value > 0 ? glyphs[middle] : glyphs[0];
     const level = Math.round(((value - low) / span) * (glyphs.length - 1));
@@ -503,14 +535,17 @@ export function sparkline(values, width = 20) {
  * painting NaN cells. Plain glyphs, so a caller colours the bar it draws; an
  * ascii terminal gets `#` and `.`.
  */
-export function progressBar(fraction, width = 20) {
+export function progressBar(fraction, width = 20, { partialGlyph = null } = {}) {
   const cols = colsOf(width, 20);
   if (cols <= 0) return '';
   const value = Number(fraction);
   const filled = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) * cols : 0;
-  const whole = Math.max(0, Math.min(cols, Math.round(filled)));
-  const [full, empty] = asciiGlyphsPreferred() ? ['#', '.'] : ['▇', '░'];
-  return full.repeat(whole) + empty.repeat(cols - whole);
+  const partial = typeof partialGlyph === 'string' && [...partialGlyph].length === 1;
+  const whole = Math.max(0, Math.min(cols, partial ? Math.floor(filled) : Math.round(filled)));
+  const ascii = asciiGlyphsPreferred();
+  const [full, empty] = ascii ? ['#', '.'] : ['▇', '░'];
+  const sliver = partial && filled > whole && whole < cols ? (ascii ? '|' : partialGlyph) : '';
+  return full.repeat(whole) + sliver + empty.repeat(cols - whole - (sliver ? 1 : 0));
 }
 
 /**
@@ -572,6 +607,16 @@ export function stackedBars(rows, { width = 120, colors = true } = {}) {
  * prints: the axis ticks, the per-column value row and the running totals. A
  * column nobody recorded a figure for is still a blank; there is no reading to
  * qualify, and the caller states the reason beside the chart.
+ *
+ * The axis top and the row count are chosen together from `height`: the ticks
+ * `niceStep` implies are laid one whole row apart (`meta.rowsPerTick`), so
+ * every tick label sits on a row and the spacing between labels is even. Bars
+ * are measured in eighths of a row and their top cell uses ▁▂▃▄▅▆▇█, so a bar
+ * never rises above its own value; stacked slices are laid smallest-on-top,
+ * every non-zero slice keeps at least one eighth (taken from the largest
+ * slice), and a partial top cell carries the colour of its own slice. `meta`
+ * exposes `axisTop`, `tickStep`, `rowsPerTick`, and per-column `eighths` and
+ * `segments` (`{ sourceIndex, eighths, low, high }`) for hit regions.
  */
 export function columnBars(series, labels, {
   width = null, height = 6, col = 8, barW = 6, unit = '$', mark = '', totals = true, cumulative = false,
@@ -593,7 +638,7 @@ export function columnBars(series, labels, {
     values: entry.values.slice(offset),
   }));
   const n = labelsView.length;
-  const rowCount = Math.max(1, Math.trunc(Number(height)) || 6);
+  const requestedRows = Math.max(1, cellsOf(height, 6));
   const baseCol = Math.max(1, Math.trunc(Number(col)) || 8);
   const markText = typeof mark === 'string' ? mark : '';
   // The tick gutter, the axis column, and the cell the mark needs in front of
@@ -627,12 +672,36 @@ export function columnBars(series, labels, {
     return total;
   });
   const max = sums.reduce((most, value) => value != null ? Math.max(most, value) : most, 0);
-  const axisInfo = niceStep(max, rowCount);
+  const axisInfo = niceStep(max, requestedRows);
   const axisTop = axisInfo.ticks.at(-1) ?? 0;
+  const intervals = Math.max(1, axisInfo.ticks.length - 1);
+  const rowsPerTick = Math.max(1, Math.floor(requestedRows / intervals));
+  const rowCount = intervals * rowsPerTick;
   const scale = axisTop > 0 ? axisTop : 1;
-  const heights = sums.map((value) => value == null || value <= 0
+  const eighths = sums.map((value) => value == null || value <= 0
     ? 0
-    : Math.max(1, Math.min(rowCount, Math.ceil((value / scale) * rowCount))));
+    : Math.min(rowCount * 8, Math.floor(Number(((value / scale) * rowCount * 8).toPrecision(14)))));
+  const heights = eighths.map((value) => Math.ceil(value / 8));
+  const stacks = sums.map((_, index) => {
+    const entries = seriesView.map((entry, sourceIndex) => ({
+      color: entry.color, sourceIndex, value: Math.max(0, readAt(entry, index) ?? 0),
+    })).filter((entry) => entry.value > 0).sort((a, b) => b.value - a.value || a.sourceIndex - b.sourceIndex);
+    const counts = allocate(entries.map((entry) => entry.value), eighths[index]);
+    for (let at = 0; at < counts.length; at += 1) {
+      if (counts[at] > 0) continue;
+      const donor = counts.reduce((best, count, candidate) => count > counts[best] ? candidate : best, 0);
+      if (counts[donor] > 1) {
+        counts[donor] -= 1;
+        counts[at] = 1;
+      }
+    }
+    let cursor = 0;
+    return entries.map((entry, at) => {
+      const low = cursor;
+      cursor += counts[at];
+      return { ...entry, low, high: cursor, eighths: counts[at] };
+    });
+  });
 
   const numberText = (value) => {
     const number = reading(value);
@@ -670,38 +739,35 @@ export function columnBars(series, labels, {
     if (!text || !colors || ascii || !isHex(color)) return text;
     return `${fgOf(color)}${text}${RESET}`;
   };
-  const segmentAt = (index, low, high) => {
-    const total = sums[index];
-    if (total == null || total <= low) return null;
-    let cursor = 0;
-    for (const entry of seriesView) {
-      const value = readAt(entry, index);
-      if (value == null || value <= 0) continue;
-      const next = cursor + value;
-      if (next > low && cursor < high) return entry;
-      cursor = next;
+  const ticksByRow = new Map(axisInfo.ticks.map((tick, index) => [index * rowsPerTick, tick]));
+  const segmentCell = (index, row) => {
+    const low = (row - 1) * 8;
+    const filled = Math.max(0, Math.min(8, eighths[index] - low));
+    if (!filled) return columnCell();
+    const segments = stacks[index].filter((entry) => entry.high > low && entry.low < low + filled);
+    const top = segments.at(-1);
+    const glyph = ascii ? (filled === 8 ? block : '.') : SPARK_UNICODE[filled - 1];
+    if (segments.length < 2 || !colors || ascii) return columnCell('', colored(glyph, top?.color));
+    if (filled === 8 && segments.length === 2 && segments.every((entry) => isHex(entry.color))) {
+      const lower = segments[0];
+      const bottomGlyph = SPARK_UNICODE[lower.high - low - 1];
+      return columnCell('', `${bgOf(rgbOf(top.color))}${fgOf(lower.color)}${bottomGlyph}${RESET}`);
     }
-    return null;
+    const lanes = allocate(segments.map((entry) => Math.min(entry.high, low + filled) - Math.max(entry.low, low)), barWidth);
+    for (let at = lanes.length - 1; at >= 0; at -= 1) {
+      if (lanes[at]) continue;
+      const donor = lanes.findIndex((count) => count > 1);
+      if (donor >= 0) { lanes[donor] -= 1; lanes[at] = 1; }
+    }
+    const run = segments.map((entry, at) => colored(glyph.repeat(lanes[at]), entry.color)).join('');
+    return cellWidth <= 1 ? run : ` ${run}${' '.repeat(cellWidth - barWidth - 1)}`;
   };
-  const ticksByRow = new Map();
-  if (axisTop > 0) {
-    for (const tick of axisInfo.ticks.filter((value) => value > 0)) {
-      const row = Math.max(1, Math.min(rowCount, Math.round(tick / axisTop * rowCount)));
-      ticksByRow.set(row, tick);
-    }
-  }
 
   const lines = [];
   for (let row = rowCount; row >= 1; row -= 1) {
-    const high = axisTop * row / rowCount;
-    const low = axisTop * (row - 1) / rowCount;
     const tick = axisTop ? ticksByRow.get(row) ?? null : (row === 1 ? 0 : null);
     let line = cellText(numberText(tick) ?? '', axisWidth) + axis;
-    for (let index = 0; index < n; index += 1) {
-      const segment = segmentAt(index, low, high);
-      if (!segment) line += columnCell();
-      else line += columnCell('', colored(block, segment.color));
-    }
+    for (let index = 0; index < n; index += 1) line += segmentCell(index, row);
     lines.push(line);
   }
   let labelsLine = cellText(numberText(0) ?? '0', axisWidth) + baseAxis;
@@ -732,10 +798,12 @@ export function columnBars(series, labels, {
     enumerable: false,
     value: {
       axisWidth, cellWidth, barWidth, chartRows: rowCount, axisRow: rowCount + 1,
+      axisTop, tickStep: axisInfo.step, rowsPerTick,
       valueRow: totals ? valueRow + 1 : null, cumulativeRow,
       columns: labelsView.map((label, index) => ({
         label, x: axisWidth + 2 + index * cellWidth, width: cellWidth,
-        barWidth, height: heights[index], sourceIndex: offset + index,
+        barWidth, height: heights[index], eighths: eighths[index], sourceIndex: offset + index,
+        segments: stacks[index],
       })),
       sums,
     },

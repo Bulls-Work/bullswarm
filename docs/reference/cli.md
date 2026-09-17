@@ -27,24 +27,27 @@ defaults (default: prompts on a TTY; auto-initializes for a non-TTY caller).
 Once setup has completed, bare `bullswarm` opens the full-screen dashboard on
 Home. `bullswarm --setup` or `bullswarm setup` opens the setup control centre;
 `bullswarm workflow tui` is the explicit dashboard form. The dashboard has
-Home, Runs, Run, Step, Budget, Stats, History, Fleet, and Help pages. Home
-answers what happened today and what is active; Runs is the catalogue and
-integration actions; Run and Step explain a workflow and one action; Budget
+Home, Runs, Run, Step, Budget, Stats, Fleet, and Help pages, and a five-tab row
+— Home, Runs, Budget, Stats, Fleet. Home answers what happened today and what
+is active; Runs is the `active` block over the day-grouped history table, plus
+the product commands; Run and Step explain a workflow and one action; Budget
 shows quota, measured worker-time share, and labelled money; Stats shows
-period trends and pool/model/project breakdowns; History is the dated timeline;
-Fleet shows lane/provider rungs; Help names the controls. A sticky header and
-bottom nav keep the page and run controls visible. The shared keys are `r`
-(Runs), `b` (Budget), `s` (Stats), `y` (History), `f` (Fleet), `h`/`?` (Help),
+period trends and pool/model/project breakdowns; Fleet shows lane/provider
+rungs; Help names the controls. A sticky header and bottom nav keep the page
+and run controls visible. The shared keys are `h` (Home), `r` (Runs), `b`
+(Budget), `s` (Stats), `y` (the first day header of the Runs history table),
+`f` (Fleet), `?` (Help),
 `1`–`9` (open a run), `Tab` (sub-tabs), `Shift+Tab` (workflows), `p` (period),
 `Esc`/`←` (back), arrows (one line), `PgUp`/`PgDn` (one screen), `Home`/`End`
 (top/bottom), `ctrl+s` (copy), and `q` (quit). `Enter`/`→`/`l` opens the
-selection. In 0.33.0, `r` no longer refreshes, `b` no longer moves out, and
-`Tab` no longer cycles workflows; the view refreshes itself, Esc/left moves out,
-and Shift+Tab still cycles workflows. Mouse reporting lets you click any tab,
-tile, bar, run, step, date, or control, and the wheel scrolls the body.
+selection. In 0.33.0, `r` no longer refreshes, `b` no longer moves out, `Tab`
+no longer cycles workflows, and `h` opens Home rather than Help; the view
+refreshes itself, Esc/left moves out, and Shift+Tab still cycles workflows.
+Mouse reporting lets you click any tab, tile, bar, run, step, date, or control,
+and the wheel scrolls the body.
 The Claude Mod is this dashboard's read-only counterpart: its pane keeps only
 Run, Step, and its Usage/Pools view; it does not expose the dashboard's Home,
-Runs, Budget, Stats, History, Fleet, or Help pages, nor edit/install actions.
+Runs, Budget, Stats, Fleet, or Help pages, nor edit/install actions.
 
 ```bash
 # main screen after setup
@@ -951,22 +954,25 @@ Read-only. Performs live pool discovery; nothing is written.
 
 Open the interactive full-screen workflow dashboard, or print a static/JSON snapshot for a non-interactive caller. Bare `bullswarm workflow` is equivalent on a TTY.
 
-The interactive dashboard has nine pages: Home (today's tiles, active and
-recent workflows, and pool/model/project breakdown), Runs (the catalogue,
-integration status, and commands), Run (plan, Live, Next, ETA, and budget),
-Step (one action's full panel), Budget (quota, measured worker-time share,
-labelled money, fit, and biggest workflows), Stats (Overview, Trends, Pools,
-Models, Projects), History (a dated workflow timeline), Fleet (lane/provider
-rungs), and Help. Every page has a sticky header and bottom nav; the current
-run or page is marked `●`, and Step prepends `[ back ]`. The shared keys are
-`r` Runs, `b` Budget, `s` Stats, `y` History, `f` Fleet, `h`/`?` Help, `1`–`9`
-to open a run, `Tab` for sub-tabs, `Shift+Tab` for workflows, `p` for the
-period, `Esc`/`←` for back, arrows for one line, `PgUp`/`PgDn` for a screen,
-`Home`/`End` for top/bottom, `ctrl+s` to copy, and `q` to quit. `Enter`/`→`/`l`
-opens a selection. In 0.33.0, `r` no longer refreshes, `b` no longer moves
-out, and `Tab` no longer cycles workflows; the view refreshes itself,
-Esc/left moves out, and Shift+Tab still cycles workflows. Click any tab, tile,
-bar, run, step, date, or control; the mouse wheel scrolls.
+The interactive dashboard has eight pages: Home (today's tiles, active and
+recent workflows, and pool/model/project breakdown), Runs (the `active` block
+over the day-grouped history table, plus the commands), Run (plan, Live, Next,
+ETA, and budget), Step (one action's full panel), Budget (quota, measured
+worker-time share, labelled money, fit, and biggest workflows), Stats
+(Overview, Trends, Pools, Models, Projects), Fleet (lane/provider rungs), and
+Help. The tab row is Home, Runs, Budget, Stats, Fleet — Run and Step read as
+Runs, and Help appears only while it is open. Every page has a sticky header
+and bottom nav; the current run or page is marked `●`, and Step prepends
+`[ back ]`. The shared keys are `h` Home, `r` Runs, `b` Budget, `s` Stats,
+`y` the first day header of the Runs history table, `f` Fleet, `?` Help,
+`1`–`9` to open a run, `Tab` for sub-tabs, `Shift+Tab` for workflows, `p` for
+the period, `Esc`/`←` for back, arrows for one line, `PgUp`/`PgDn` for a
+screen, `Home`/`End` for top/bottom, `ctrl+s` to copy, and `q` to quit.
+`Enter`/`→`/`l` opens a selection. In 0.33.0, `r` no longer refreshes, `b` no
+longer moves out, `Tab` no longer cycles workflows, and `h` opens Home rather
+than Help; the view refreshes itself, Esc/left moves out, and Shift+Tab still
+cycles workflows. Click any tab, tile, bar, run, step, date, or control; the
+mouse wheel scrolls.
 
 ```bash
 # One plain-text frame of the timeline, live, and next sections.

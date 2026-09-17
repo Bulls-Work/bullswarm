@@ -297,14 +297,15 @@ test('all-runs ordering uses the V2 lifecycle start time and keeps the initial l
     const output = new FakeOutput();
     const running = cmdWorkflow([], { bullswarmDir: home, input, output });
     input.emit('data', Buffer.from('r')); // Home -> Runs
-    assert.match(output.text, /Runs · active/);
-    assert.match(output.text, /abc234 · Audit every file/);
+    assert.match(plain(lastFrame(output)), /── active ─/);
+    assert.match(plain(lastFrame(output)), /abc234  Audit every file/);
     input.emit('data', Buffer.from('q'));
     assert.equal(await running, 0);
   } finally { cleanup(); }
 });
 
-test('a run ID passed to the dashboard opens that run on the Run page', async () => {
+test('a run ID passed to the dashboard opens that run on the Run page', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
   try {
     addV2HistoricalRun(home);
@@ -318,12 +319,30 @@ test('a run ID passed to the dashboard opens that run on the Run page', async ()
     session.press(ESC_KEY); // and out to Home
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
     session.press('r'); // where r lists every run
-    assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
+    assert.match(plain(lastFrame(session.output)), /v2n456.*Newer V2 dashboard run/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
 
-test('recent-list V2 selection opens that run on the Run page', async () => {
+test('a Runs-table cursor on a finished run survives the refresh tick, so Enter opens that run', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
+  const { home, cleanup } = fixture();
+  try {
+    addV2HistoricalRun(home);
+    // A short refresh so several ticks land between the arrow key and Enter.
+    const session = shellSession(home, { columns: 120, rows: 30, refreshMs: 10 });
+    session.press('r'); // Home -> Runs (active filter, the day table below)
+    session.press('\u001b[B'); // active run -> the finished run's table row
+    assert.match(plain(lastFrame(session.output)), /v2n456.*Newer V2 dashboard run/);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    session.press('\r');
+    assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('recent-list V2 selection opens that run on the Run page', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
   try {
     addHistoricalRun(home);
@@ -332,8 +351,8 @@ test('recent-list V2 selection opens that run on the Run page', async () => {
     session.press('r'); // Home -> Runs
     session.press('a'); // active -> all
     session.press('\u001b[B'); // active run -> newer V2 run
-    assert.match(plain(lastFrame(session.output)), /Runs · all/);
-    assert.match(plain(lastFrame(session.output)), /v2n456 · Newer V2 dashboard run/);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · all/);
+    assert.match(plain(lastFrame(session.output)), /v2n456.*Newer V2 dashboard run/);
     session.press('\r');
     assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
     assert.match(plain(lastFrame(session.output)), /── plan ─/);
@@ -341,7 +360,8 @@ test('recent-list V2 selection opens that run on the Run page', async () => {
   } finally { cleanup(); }
 });
 
-test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty active fallback', async () => {
+test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty active fallback', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
   try {
     addV2HistoricalRun(home);
@@ -360,17 +380,52 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
     assert.match(plain(mobile.press('t')), /── phases ·/);
     assert.equal(await mobile.quit(), 0);
 
-    // Bare active view: no active rows show the explicit recent-runs escape.
+    // Bare active view: the merged Runs page still shows the day table, and
+    // `a` toggles to the all-runs filter.
     const emptyHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-empty-'));
     addV2HistoricalRun(emptyHome);
     const empty = shellSession(emptyHome, { columns: 120, rows: 30 });
     empty.press('r');
-    assert.match(plain(lastFrame(empty.output)), /Press a to browse recent runs\./);
+    assert.match(plain(lastFrame(empty.output)), /── active ─/);
+    assert.match(plain(lastFrame(empty.output)), /nothing in flight/);
     empty.press('a');
-    assert.match(plain(lastFrame(empty.output)), /Runs · all/);
-    assert.match(plain(lastFrame(empty.output)), /v2n456 · Newer V2 dashboard run/);
+    assert.match(plain(lastFrame(empty.output)), /v2n456.*Newer V2 dashboard run/);
     assert.equal(await empty.quit(), 0);
     rmSync(emptyHome, { recursive: true, force: true });
+  } finally { cleanup(); }
+});
+
+test('the Runs active block draws a live run exactly as Home\u2019s running section does', () => {
+  // Requirement 7: the `active` block is the same renderer as Home's
+  // `running` section, so a live run gets its plan strip and per-step bar on
+  // both pages. Compare the painted rows, not the section title.
+  const { home, cleanup } = fixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const live = rows.filter((entry) => entry.ongoing);
+    assert.equal(live.length, 1, 'the fixture must have one live run');
+    const model = dashboardModel(live[0], { runs: live, rollups: readRollups(home) });
+    const opts = { width: 120, height: 60, rows, allRows: rows, selectedRunId: live[0].runId };
+    const homeFrame = renderDashboardPage(model, { ...opts, page: 'home' }).lines.map(plain);
+    const runsFrame = renderDashboardPage(model, { ...opts, page: 'runs' }).lines.map(plain);
+
+    const section = (lines, title, stopAt) => {
+      const at = lines.findIndex((line) => line.startsWith(`\u2500\u2500 ${title} \u2500`));
+      assert.ok(at >= 0, `no ${title} section in ${lines.join('\n')}`);
+      const rest = lines.slice(at + 1);
+      const end = rest.findIndex((line) => /^\u2500\u2500 /.test(line) || stopAt.test(line));
+      return rest.slice(0, end === -1 ? rest.length : end).filter((line) => line.trim());
+    };
+    const running = section(homeFrame, 'running', /^ \u2500 /);
+    const active = section(runsFrame, 'active', /No workflow history|days loaded/);
+    assert.ok(running.length, homeFrame.join('\n'));
+    // Every row Home paints for the live run is the row Runs paints for it.
+    for (const line of running) assert.ok(active.includes(line), `Runs is missing Home's row:\n${line}\n---\n${active.join('\n')}`);
+    // And it really is a live run with its plan strip, not the empty state.
+    const strip = running.find((line) => line.includes('abc234'));
+    assert.ok(strip, running.join('\n'));
+    assert.match(running.join('\n'), /\u25b6\u2500\u2500\u25cb\s+audit-files/);
+    assert.ok(!active.some((line) => line.includes('nothing in flight')), active.join('\n'));
   } finally { cleanup(); }
 });
 
@@ -486,7 +541,8 @@ test('the interactive TUI takes the alternate screen with mouse reporting, and q
   } finally { cleanup(); }
 });
 
-test('bare workflow dashboard navigates active and recent runs on mobile', async () => {
+test('bare workflow dashboard navigates active and recent runs on mobile', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
   try {
     addHistoricalRun(home);
@@ -502,8 +558,10 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     session.press('def');
     session.press('\r');
     assert.match(plain(lastFrame(session.output)), /Showing workflows matching “def”/);
-    assert.match(plain(lastFrame(session.output)), /Runs · all/);
-    assert.match(plain(lastFrame(session.output)), /def345 · Audit documentation/);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · all/);
+    // The project derives from the run's goal.json cwd (requirement 3), so the
+    // temp fixture home names the row, not `unknown project`.
+    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit documentation fr…/);
     assert.match(plain(session.output.text), /── timeline ─/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
@@ -837,14 +895,14 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
       assert.deepEqual(
         tabNames(page(name)),
         name === 'help'
-          ? ['Home', 'Runs', 'Budget', 'Stats', 'History', 'Fleet', 'Help']
-          : ['Home', 'Runs', 'Budget', 'Stats', 'History', 'Fleet'],
+          ? ['Home', 'Runs', 'Budget', 'Stats', 'Fleet', 'Help']
+          : ['Home', 'Runs', 'Budget', 'Stats', 'Fleet'],
         `${name} painted the wrong tab row`,
       );
     }
     // Run and Step are read as Runs, so the tab row marks Runs on both.
     for (const [name, active] of [['home', 'Home'], ['runs', 'Runs'], ['run', 'Runs'], ['step', 'Runs'],
-      ['budget', 'Budget'], ['stats', 'Stats'], ['history', 'History'], ['fleet', 'Fleet'], ['help', 'Help']]) {
+      ['budget', 'Budget'], ['stats', 'Stats'], ['history', 'Runs'], ['fleet', 'Fleet'], ['help', 'Help']]) {
       assert.ok(String(page(name)).includes(`\x1b[7m`), `${name} painted no active tab`);
       assert.ok(activeTab(page(name)).includes(active), `${name} marked ${activeTab(page(name))}, not ${active}`);
     }
@@ -857,17 +915,17 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     assert.match(frameHeader(page('step')), /^ .* build-alpha · run aaa111/);
     assert.match(frameHeader(page('budget')), /^ Budget · /);
     assert.match(frameHeader(page('stats')), /^ Stats · overview/);
-    assert.match(frameHeader(page('history')), /^ History · \d+ day/);
+    assert.match(frameHeader(page('history')), /^ bullswarm · runs · \S+ · \d+ day/);
     assert.match(frameHeader(page('fleet')), /^ Fleet · by lane/);
     assert.match(frameHeader(page('help')), /^ bullswarm · help/);
 
     // One button per ongoing run, then help and quit, the current run marked.
-    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('run')), ['● aaa111', 'bbb222', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', 'help', 'quit']);
-    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● help', 'quit']);
+    assert.deepEqual(navButtons(page('home')), ['● aaa111', 'bbb222', '?.help', 'quit']);
+    assert.deepEqual(navButtons(page('run')), ['● aaa111', 'bbb222', '?.help', 'quit']);
+    assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', '?.help', 'quit']);
+    assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● ?.help', 'quit']);
     // Step prepends the way back out.
-    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', 'help', 'quit']);
+    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', '?.help', 'quit']);
 
     for (const name of DASHBOARD_PAGE_NAMES) {
       const frame = renderDashboardPage(model, {
@@ -896,7 +954,7 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
     const key = (text) => `\x1b[4m${text}\x1b[24m`;
     assert.ok(nav.includes(`[ ● ${key('1')}.aaa111 ]`), 'the current run carries 1. inside its button');
     assert.ok(nav.includes(`[ ${key('2')}.bbb222 ]`), 'the second run carries 2. inside its button');
-    assert.ok(nav.includes(`[ ${key('h')}elp ]`), 'help underlines its h');
+    assert.ok(nav.includes(`[ ${key('?')}.help ]`), 'help underlines its ?');
     assert.ok(nav.includes(`[ ${key('q')}uit ]`), 'quit underlines its q');
     // b is Budget now, so the way back out of a step carries no key letter.
     const step = renderDashboardPage(model, {
@@ -910,7 +968,6 @@ test('every nav button is prefixed by its underlined key, and digits open runs i
       assert.ok(tabs.includes(`${key(letter.toUpperCase())}${label}`) || tabs.includes(`${key(letter)}${label}`),
         `the ${label} tab does not underline ${letter}`);
     }
-    assert.ok(tabs.includes(`Histor${key('y')}`), 'the History tab underlines its y');
 
     // The digit a button shows is the digit that opens that run.
     const session = shellSession(home, { columns: 100, rows: 24 });
@@ -985,9 +1042,11 @@ test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [He
     const rows = dashboardRows(home, { all: true });
     const model = dashboardModel(rows[0], { runs: rows.filter((entry) => entry.ongoing), usage: usageFixture() });
     const narrow = renderDashboardPage(model, { page: 'home', width: 54, height: 26, rows, allRows: rows });
-    assert.deepEqual(tabNames(narrow.lines.join('\n')), ['Home', 'Runs', 'Budget', 'Stats', 'History']);
+    // With History merged into Runs there is room for the whole tab row again;
+    // Fleet only leaves below 38 columns.
+    assert.deepEqual(tabNames(narrow.lines.join('\n')), ['Home', 'Runs', 'Budget', 'Stats', 'Fleet']);
     const nav = plain(narrow.lines.at(-1));
-    assert.match(nav, /\[Top\] \[End\] \[Help\]\s*$/);
+    assert.match(nav, /\[Top\] \[End\] \[\?\.Help\]\s*$/);
     assert.doesNotMatch(nav, /\[ quit \]/);
     // Fleet comes back the moment it is the page being read.
     const fleet = renderDashboardPage(model, { page: 'fleet', width: 54, height: 26, rows, allRows: rows });
@@ -997,7 +1056,7 @@ test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [He
     assert.deepEqual(tail.map((region) => region.action.kind).slice(-3), ['top', 'end', 'page']);
     // And the Help page says which layout the reader is looking at.
     const help = plain(renderDashboardPage(model, { page: 'help', width: 54, height: 60 }).lines.join('\n'));
-    assert.match(help, /\[Top\] \[End\] \[Help\]/);
+    assert.match(help, /\[Top\] \[End\] \[\?\.Help\]/);
     assert.match(help, /Fleet leaves the tab row/);
   } finally { cleanup(); }
 });
@@ -1058,7 +1117,7 @@ test('the nav records a hit region for every button, run row, tile, bar and step
 
     // The page tab row opens its page from every page.
     const tabs = homeFrame.regions.filter((region) => region.action.kind === 'page' && region.y === 1);
-    assert.deepEqual(tabs.map((region) => region.action.page), ['home', 'runs', 'budget', 'stats', 'history', 'fleet']);
+    assert.deepEqual(tabs.map((region) => region.action.page), ['home', 'runs', 'budget', 'stats', 'fleet']);
 
     // Fleet's own tabs switch the grouping, and `[edit]` is the e key.
     const fleetFrame = renderDashboardPage(model, { page: 'fleet', width: 100, height: 30 });
@@ -1108,9 +1167,13 @@ test('the nav records a hit region for every button, run row, tile, bar and step
     const historyRuns = historyFrame.regions.filter((region) => region.action.kind === 'run'
       && region.y !== historyFrame.lines.length);
     assert.ok(historyRuns.length >= 1, 'a History row opens its run');
-    assert.equal(
-      plain(historyFrame.lines[historyRuns[0].y - 1]).slice(historyRuns[0].x1 - 1, historyRuns[0].x2),
-      'zzz999',
+    // The merged page opens with the active runs (aaa111), so pick the
+    // finished run's region explicitly.
+    const zzzRun = historyRuns.find((region) => region.action.runId === 'wf-zzz');
+    assert.ok(zzzRun, 'a finished run row opens its run');
+    assert.match(
+      plain(historyFrame.lines[zzzRun.y - 1]).slice(zzzRun.x1 - 1, zzzRun.x2),
+      /zzz999/,
     );
   } finally { cleanup(); }
 });
@@ -2031,15 +2094,16 @@ test('the Budget page draws every pool meter, its money and what still fits', ()
   const text = plain(frame.lines.join('\n'));
 
   assert.match(frameHeader(text), /^ Budget · \d+ days to /);
-  assert.match(text, /relay/);
-  assert.match(text, /Licence meter/);
-  assert.match(text, /27% of the window elapsed/);
-  assert.match(text, /Credits: 63\.5 \/ 70 credits/);
+  assert.match(text, /relay · weekly plan/);
+  // The reworked pool rows (requirement 8): the used meter, the blank shares
+  // with their reasons, the room row, and the money line with its basis.
+  assert.match(text, /no measured usage rate yet/);
+  assert.match(text, /27% of the window gone/);
+  assert.match(text, /64 \/ 70 credits used/);
   // Money is the recorded estimate, labelled, and the undeclared plan price is
   // a blank with the reason — never a number.
-  assert.match(text, /≈ \$0\.42 API-equivalent estimate/);
-  assert.match(text, /Subscription rate: — \(no declared subscription price\)/);
-  assert.match(text, /bullswarm strategy set-subscription/);
+  assert.match(text, /≈ \$0\.42 of API-equivalent work/);
+  assert.match(text, /Declare a price: bullswarm strategy set-subscription/);
   // The notes sit above the nav, and the nav is still whole.
   assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
 });
@@ -2086,6 +2150,40 @@ test('Stats Pools loads retained meter-history days and leaves older days blank 
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test('Stats Pools marks the day a pool\u2019s quota window reset, and ignores the jitter in resets_at', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-meter-reset-'));
+  try {
+    const historyDir = join(home, 'meters', 'history');
+    mkdirSync(historyDir, { recursive: true });
+    // The provider restates the same boundary with sub-second jitter on every
+    // read; only the 09-16 line moves the window a week on, which is a reset.
+    writeFileSync(join(historyDir, 'relay.jsonl'), [
+      JSON.stringify({ captured_at: '2026-09-14T12:00:00Z', weekly: { utilization: 60, resets_at: '2026-09-16T05:00:00.449022+00:00' } }),
+      JSON.stringify({ captured_at: '2026-09-15T12:00:00Z', weekly: { utilization: 90, resets_at: '2026-09-16T05:00:00.112700+00:00' } }),
+      JSON.stringify({ captured_at: '2026-09-16T12:00:00Z', weekly: { utilization: 8, resets_at: '2026-09-23T05:00:00.803155+00:00' } }),
+    ].join('\n'));
+    const pools = [{ name: 'relay', enabled: true, pacingWindow: 'weekly', usedPct: 8, elapsedPct: 12 }];
+    const history = readLicencePerDay(home, pools, {
+      period: '7d', now: Date.parse('2026-09-16T18:00:00Z'), rollups: [],
+    });
+    const on = (date) => history.rows.find((row) => row.date === date)?.segments[0];
+    assert.equal(on('2026-09-14')?.reset, undefined);
+    assert.equal(on('2026-09-15')?.reset, undefined);
+    assert.equal(on('2026-09-16')?.reset, true);
+    assert.equal(on('2026-09-16')?.resetsAt, '2026-09-23T05:00:00.803155+00:00');
+
+    const model = dashboardModel(null, {
+      usage: { pools, assignments: [], rungs: [] }, rollups: [], period: '7d', meterHistory: history,
+    });
+    const text = plain(renderDashboardPage(model, {
+      page: 'stats', statsTab: 'pools', period: '7d', width: 120, height: 100,
+    }).lines.join('\n'));
+    const row = text.split('\n').find((line) => line.includes('relay') && line.includes('%'));
+    assert.match(row, /\u258f/, row);
+    assert.match(text, /a drop after \u258f is the window resetting/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('the Fleet page draws the rungs under its two tabs, with the read-only note', () => {
   const usage = usageFixture();
   const model = dashboardModel(null, { usage });
@@ -2124,8 +2222,9 @@ test('the Runs integration line offers [install] until every agent is installed,
         { agent: 'claude', skill: { status: 'missing' }, awareness: false, mod: { status: 'missing' }, hooksFlag: false },
       ],
     },
-  }), { page: 'runs', width: 100, height: 30 });
+  }), { page: 'help', width: 100, height: 60 });
   const text = offered.lines.join('\n');
+  // Requirement 7: the agents block lives on Help now, not Runs.
   assert.match(text, /agent integration\s+\[install\]/);
   assert.match(text, /codex\s+skill ✓ · awareness ✓/);
   assert.match(text, /claude\s+skill — · awareness — · mod — · hooks —/);
@@ -2138,7 +2237,7 @@ test('the Runs integration line offers [install] until every agent is installed,
       ok: true,
       agents: [{ agent: 'claude', skill: { status: 'installed' }, awareness: true, mod: { status: 'installed' }, hooksFlag: true }],
     },
-  }), { page: 'runs', width: 100, height: 30 });
+  }), { page: 'help', width: 100, height: 60 });
   const doneText = done.lines.join('\n');
   assert.match(doneText, /\[installed ✓\]/);
   assert.match(doneText, /claude\s+skill ✓ · awareness ✓ · mod ✓ · hooks ✓/);
@@ -2189,6 +2288,19 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
   } finally { cleanup(); }
 });
 
+test('Runs history jump reaches the first day without creating an unbounded scroll area', () => {
+  const model = dashboardModel(null, { days: dayFixture().slice(0, 1) });
+  const options = { page: 'runs', width: 120, height: 50 };
+  const first = renderDashboardPage(model, options);
+  const offset = first.anchor.history - 1;
+  const jumped = renderDashboardPage(model, { ...options, bodyScroll: offset });
+  assert.equal(jumped.body.offset, offset);
+  assert.match(plain(jumped.lines[2]), /^── .* ──/);
+  const beyond = renderDashboardPage(model, { ...options, bodyScroll: 100000 });
+  assert.equal(beyond.body.total, first.body.total);
+  assert.equal(beyond.body.offset, offset);
+});
+
 test('a Trends column opens History at its first bucket day', async () => {
   const { home, cleanup } = shellFixture();
   try {
@@ -2199,7 +2311,7 @@ test('a Trends column opens History at its first bucket day', async () => {
     const label = `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][today.getDay()]} ${today.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][today.getMonth()]}`;
     assert.ok(plain(lastFrame(session.output)).includes(label), `trend chart did not paint today's bucket: ${label}`);
     clickOn(session, label);
-    assert.match(frameHeader(lastFrame(session.output)), /^ History · /);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · /);
     assert.ok(plain(lastFrame(session.output)).includes(label), 'History did not land on the clicked bucket day');
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
@@ -2233,8 +2345,8 @@ test('the Runs [install] button installs the agent integration in-process', asyn
   const { home, cleanup } = shellFixture();
   const agentHome = mkdtempSync(join(tmpdir(), 'bs-dashboard-integrate-'));
   try {
-    const session = shellSession(home, { columns: 100, rows: 30, homeDir: agentHome });
-    session.press('r');
+    const session = shellSession(home, { columns: 100, rows: 60, homeDir: agentHome });
+    session.press('?');
     assert.match(plain(lastFrame(session.output)), /\[install\]/);
     session.press('i');
     const frame = plain(lastFrame(session.output));
@@ -2294,14 +2406,14 @@ test('every key in the table reaches its page or its action', async () => {
     const header = () => frameHeader(lastFrame(session.output));
     const screen = () => plain(lastFrame(session.output));
 
-    // r b s y f h ? — one key per page.
+    // r b s y f ? — one key per page; y is Runs at its History table.
     for (const [key, expected] of [
       ['r', /^ bullswarm · runs/],
       ['b', /^ Budget · /],
       ['s', /^ Stats · overview/],
-      ['y', /^ History · /],
+      ['y', /^ bullswarm · runs · /],
       ['f', /^ Fleet · by lane/],
-      ['h', /^ bullswarm · help/],
+      ['?', /^ bullswarm · help/],
     ]) {
       session.press(key);
       assert.match(header(), expected, `${key} did not open its page`);
@@ -2399,9 +2511,9 @@ test('a pending stop still takes y, and Help says so', async () => {
     session.press('y');
     assert.match(plain(lastFrame(session.output)), /Stop requested for aaa111/);
     assert.equal(existsSync(join(home, 'workflows', 'wf-alpha', 'cancellation.json')), true);
-    // And with no question on the screen, y is History again.
+    // And with no question on the screen, y is Runs at its History table.
     session.press('y');
-    assert.match(frameHeader(lastFrame(session.output)), /^ History · /);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · /);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -2447,7 +2559,7 @@ test('every clickable atom runs the same action its key runs', async () => {
       ['Runs', 'r', /^ bullswarm · runs/],
       ['Budget', 'b', /^ Budget · /],
       ['Stats', 's', /^ Stats · overview/],
-      ['History', 'y', /^ History · /],
+      ['Runs', 'y', /^ bullswarm · runs · /],
       ['Fleet', 'f', /^ Fleet · by lane/],
       ['Home', null, /^ bullswarm · home/],
     ]) {
@@ -2458,6 +2570,14 @@ test('every clickable atom runs the same action its key runs', async () => {
       if (!key) continue;
       session.press(ESC_KEY);
       session.press(key);
+      if (key === 'y') {
+        // y opens Runs at its first day header; the tab click opens it at the
+        // top, so the pair is compared by page and filter, not scroll offset.
+        assert.match(header(), /^ bullswarm · runs · /, `clicking ${needle} and pressing ${key} disagree`);
+        assert.equal(header().replace(/ · [\d–]+\/\d+$/, ''), clicked.replace(/ · [\d–]+\/\d+$/, ''),
+          `clicking ${needle} and pressing ${key} disagree`);
+        continue;
+      }
       assert.equal(header(), clicked, `clicking ${needle} and pressing ${key} disagree`);
     }
 
@@ -2515,10 +2635,13 @@ test('with no declared price and no measured licence rate, no bare number is pai
   // phone layout gives each tile its own row, so the whole reason is there.
   const home = plain(renderDashboardPage(model, { page: 'home', width: 54, height: 40 }).lines.join('\n'));
   assert.match(home, /no finished run recorded an estimate/);
-  // Budget says what is missing and how to declare it.
+  // Budget says what is missing and how to declare it. The reworked pool rows
+  // (requirement 8) put the blank-with-reason inline: no measured rate, and
+  // the declare-price command in the notes.
   const budget = plain(renderDashboardPage(model, { page: 'budget', width: 120, height: 40 }).lines.join('\n'));
-  assert.match(budget, /Subscription rate: — \(no declared subscription price\)/);
-  assert.match(budget, /no measured %\/minute rate/);
+  assert.match(budget, /no measured usage rate yet/);
+  assert.match(budget, /API estimate unrecorded/);
+  assert.match(budget, /Declare a price: bullswarm strategy set-subscription/);
 });
 
 test('a run with no recorded estimate and no measured rate paints blanks, not zeroes', () => {
@@ -2533,8 +2656,68 @@ test('a run with no recorded estimate and no measured rate paints blanks, not ze
       page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     }).lines.join('\n'));
     assert.match(text, /no attempt recorded an API-equivalent estimate/);
-    assert.match(text, /— no measured %\/minute rate for \S+/);
+    // Requirement 8: an unmetered pool is one line of words, never a track.
+    assert.match(text, /free model · no licence meter/);
+    assert.match(text, /— ETA —: build-alpha, build-alpha-evidence have no recorded duration yet/);
     assert.doesNotMatch(text, /\$0\.00/);
+  } finally { cleanup(); }
+});
+
+test('the Step page writes an unmetered pool in words, never a dotted track', () => {
+  // Requirement 8 applies to every page, not just Run: the owner's Step frame
+  // showed `opencode ······················  — · —`.
+  const { home, cleanup } = shellFixture();
+  try {
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const usage = usageFixture();
+    for (const pool of usage.pools) delete pool.spend;
+    const model = dashboardModel(row, { runs: rows.filter((entry) => entry.ongoing), usage });
+    for (const width of [55, 120, 170, 200]) {
+      const lines = plain(renderDashboardPage(model, {
+        page: 'step', width, height: 50, rows, allRows: rows, selectedRunId: 'wf-alpha',
+        phaseIndex: 0, agentIndex: 0,
+      }).lines.join('\n')).split('\n');
+      for (const line of lines) {
+        assert.ok(!/·{6,}/.test(line), `${width} kept a dotted track: ${line}`);
+      }
+      const budget = lines.findIndex((line) => /^── budget ─/.test(line));
+      assert.ok(budget >= 0, lines.join('\n'));
+      assert.match(lines[budget + 1], /free model · no licence meter/, `${width}: ${lines[budget + 1]}`);
+    }
+  } finally { cleanup(); }
+});
+
+test('a paused run\u2019s live block says how to continue it, not that it is waiting', () => {
+  // Requirement 8: the owner's screenshot showed `waiting for the next
+  // dispatch` under a run that was paused, which reads as \u201cany moment now\u201d.
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    const state = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    state.lifecycle.status = 'paused';
+    delete state.lifecycle.finishedAt;
+    for (const attempt of state.attempts ?? []) {
+      if (attempt.status === 'running') attempt.status = 'cancelled';
+    }
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const rows = dashboardRows(home, { all: true });
+    const row = rows.find((entry) => entry.runId === 'wf-alpha');
+    const model = dashboardModel(row, { runs: rows.filter((entry) => entry.ongoing), usage: usageFixture() });
+    // The band is three columns at 120, so the sentence needs the wide frame to
+    // be read whole; both widths must have dropped `waiting for the next
+    // dispatch`.
+    const wide = plain(renderDashboardPage(model, {
+      page: 'run', width: 200, height: 50, rows, allRows: rows, selectedRunId: 'wf-alpha',
+    }).lines.join('\n'));
+    assert.match(wide, /paused · bullswarm workflow resume \w+ continues it/, wide);
+    for (const width of [55, 120, 200]) {
+      const text = plain(renderDashboardPage(model, {
+        page: 'run', width, height: 50, rows, allRows: rows, selectedRunId: 'wf-alpha',
+      }).lines.join('\n'));
+      assert.match(text, /paused · bullswarm workflow resume/, text);
+      assert.doesNotMatch(text, /waiting for the next dispatch/, text);
+    }
   } finally { cleanup(); }
 });
 
@@ -2689,11 +2872,11 @@ test('History loads seven more days each time the reader nears the bottom', asyn
 
     const session = shellSession(home, { columns: 100, rows: 20 });
     session.press('y');
-    assert.match(frameHeader(lastFrame(session.output)), /^ History · 7 days/);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · \S+ · 7 days/);
     // End is the bottom of what is loaded, so the next scroll asks for more.
     session.press('\x1b[F');
     session.press('\x1b[6~');
-    assert.match(frameHeader(lastFrame(session.output)), /^ History · (14|21) days/);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · \S+ · (14|21) days/);
     assert.equal(await session.quit(), 0);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
@@ -2724,6 +2907,57 @@ function fidelityModel() {
 }
 
 const FIDELITY_SIZES = [[120, 40], [55, 26], [200, 50]];
+
+test('phone Home keeps four named pools, separate breakdown rows and whole percentages', () => {
+  const f = fidelityModel();
+  try {
+    const names = ['claude-code:acme', 'claude-code', 'codex', 'grok'];
+    f.model.budget.rows = names.map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
+    for (const key of ['pools', 'models', 'projects']) {
+      f.model.stats.overview.breakdown[key] = names.map((name) => ({ name, minutesShare: 0.24 }));
+    }
+    f.model.stats.overview.today.apiEquivalentUsd = null;
+    for (const width of [55, 60]) {
+      const text = plain(renderDashboardPage(f.model, { page: 'home', width, height: 150 }).lines.join('\n'));
+      const budget = text.split('budget · this week')[1].split('last 7 days')[0];
+      for (const name of names) assert.ok(budget.includes(name), budget);
+      assert.match(text, /no estimate today/);
+      const lines = text.split('\n');
+      for (const heading of ['by pool', 'by model', 'by project']) {
+        const at = lines.findIndex((line) => line.trim() === heading);
+        assert.ok(at > 0);
+        for (const row of lines.slice(at + 1, at + 4)) assert.match(row.trim(), /24%$/);
+      }
+      for (const label of ['Busiest project', 'Favourite model', 'Median run']) {
+        assert.ok(lines.some((line) => line.startsWith(` ${label}:`)), text);
+      }
+    }
+  } finally { f.cleanup(); }
+});
+
+test('the Home budget block says how many metered pools it left out', () => {
+  const f = fidelityModel();
+  try {
+    const names = ['claude-code:acme', 'claude-code', 'codex', 'grok', 'command-code', 'opencode'];
+    f.model.budget.rows = names.map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
+    for (const width of [55, 60, 120, 200]) {
+      const text = plain(renderDashboardPage(f.model, { page: 'home', width, height: 150 }).lines.join('\n'));
+      const block = text.split('budget · this week')[1].split('last 7 days')[0];
+      // Four pools are drawn and the two it dropped are counted in words, so
+      // the block never reads as “those are all my pools”.
+      for (const name of names.slice(0, 4)) assert.ok(block.includes(name), `${name} missing at ${width}: ${block}`);
+      assert.match(block, /\+2 more metered pools · b opens Budget/, `${width}: ${block}`);
+    }
+    // Exactly four: nothing was left out, so nothing is counted.
+    f.model.budget.rows = names.slice(0, 4).map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
+    const four = plain(renderDashboardPage(f.model, { page: 'home', width: 55, height: 150 }).lines.join('\n'));
+    assert.doesNotMatch(four.split('budget · this week')[1].split('last 7 days')[0], /more metered pool/);
+    // Five: singular.
+    f.model.budget.rows = names.slice(0, 5).map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
+    const five = plain(renderDashboardPage(f.model, { page: 'home', width: 55, height: 150 }).lines.join('\n'));
+    assert.match(five.split('budget · this week')[1].split('last 7 days')[0], /\+1 more metered pool · b opens Budget/);
+  } finally { f.cleanup(); }
+});
 
 test('no page paints past the width or comes up blank at 120x40, 55x26 and 200x50', () => {
   const f = fidelityModel();
@@ -2864,11 +3098,12 @@ test('Run and Step draw no box-drawing panel at any of the three widths', () => 
     const run = plain(renderDashboardPage(f.model, {
       page: 'run', width: 120, height: 40, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
     }).lines.join('\n'));
-    assert.match(run, /── budget ─.*── live ─.*── so far ─/, 'the Run triptych is not one row band');
+    assert.match(run, /── licence this run used ─.*── live ─.*── so far ─/, 'the Run triptych is not one row band');
     assert.match(run, /── plan ─/);
     assert.match(run, /── timeline ─/);
-    // And says `no expected duration recorded` once, not twice.
-    assert.equal(run.split('\n').filter((line) => /no expected duration/.test(line)).length, 1);
+    // And says `no recorded duration yet` once, not twice (requirement 8's
+    // `ETA —:` wording).
+    assert.equal(run.split('\n').filter((line) => /no recorded duration yet/.test(line)).length, 1);
     const step = plain(renderDashboardPage(f.model, {
       page: 'step', width: 120, height: 40, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
       focus: 2, phaseIndex: 0, agentIndex: 0,
@@ -2889,15 +3124,23 @@ test('Help groups the keys that share a purpose and names every key the shell ru
   for (const name of Object.keys(DASHBOARD_KEYS)) {
     assert.ok(whole.includes(DASHBOARD_KEYS[name].keys), `help lost ${name} (${DASHBOARD_KEYS[name].keys})`);
   }
-  // The page keys are one row, the way the prototype groups them.
-  assert.match(whole, /^ r b s y f\s+Runs · Budget · Stats · History · Fleet$/m);
+  // The page keys are one row, the way the prototype groups them. With
+  // History merged into Runs and h rebound to Home, the pages row is r b s f
+  // and h and ? get their own rows.
+  assert.match(whole, /^ r b s f\s+Runs · Budget · Stats · Fleet$/m);
+  assert.match(whole, /^ h\s+Home$/m);
+  // `y` is a jump into Runs' history table now, not a page of its own.
+  assert.match(whole, /^ y\s+Runs, at the first day of its history$/m);
+  assert.match(whole, /^ \?\s+this help$/m);
   assert.match(whole, /^ ↑\/k ↓\/j\s+scroll one line$/m);
   // Budget has no sub-tabs, so the page does not say it has.
   assert.doesNotMatch(whole, /sub-tab[^\n]*Budget/);
   assert.match(whole, /next sub-tab on Stats and Fleet/);
-  // And the page is about thirty rows, not the fifty-five it used to be.
+  // And the page stays compact. Requirement 7 moved the agents and `run it`
+  // blocks here from Runs, so the bound now covers 49 rows: the thirty the
+  // page had, plus the two moved blocks.
   const body = renderDashboardPage(dashboardModel(null, {}), { page: 'help', width: 120, height: 90 });
-  assert.ok(body.body.total <= 36, `help is ${body.body.total} rows`);
+  assert.ok(body.body.total <= 52, `help is ${body.body.total} rows`);
   assert.ok(body.body.total >= 25, `help is only ${body.body.total} rows`);
   assert.match(rendered.lines.join('\n'), /\x1b\[38;2;124;127;138m/, 'Help secondary copy uses the shared grey role');
 });

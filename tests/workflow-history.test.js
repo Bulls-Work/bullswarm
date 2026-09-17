@@ -342,6 +342,46 @@ function everyWorkflowHome() {
   return { ...h, indexedRunId };
 }
 
+test('H6: a finished run with no index entry and no goal-project file is named by its working directory', () => {
+  // Requirement 3: `workflow reindex` derives the project from the run's
+  // goal.json `intent.cwd` (`src/lib/project.js`); a finished run the index
+  // has not caught up with must read the same way, never `unknown project`.
+  // `unknown project` remains only when no cwd is recorded.
+  const h = home();
+  try {
+    // A real git checkout so projectName() has an origin to name.
+    const repo = mkdtempSync(join(tmpdir(), 'bs-project-'));
+    const git = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+    git(['init']);
+    git(['remote', 'add', 'origin', 'https://github.com/Bulls-Work/bullswarm-handoff.git']);
+    // The run: goal.json records a cwd, no goal-project.json, no rollup.
+    runDir(h.dir, {
+      runId: 'wf-goal-cwd-000001',
+      state: { ...v2State({
+        runId: 'wf-goal-cwd-000001', shortId: 'cwd001', goal: 'finished, never reindexed',
+        status: 'completed', startedAt: localNoon(2026, 9, 16, 9), finishedAt: localNoon(2026, 9, 16, 9, 10),
+      }), intent: { goal: 'finished, never reindexed', cwd: repo, requirements: [] } },
+    });
+    // And a twin with no cwd anywhere: it keeps `unknown project`.
+    runDir(h.dir, {
+      runId: 'wf-no-cwd-000001',
+      state: { ...v2State({
+        runId: 'wf-no-cwd-000001', shortId: 'nocwd1', goal: 'no cwd on record',
+        status: 'completed', startedAt: localNoon(2026, 9, 16, 10), finishedAt: localNoon(2026, 9, 16, 10, 5),
+      }), intent: { goal: 'no cwd on record', cwd: null, requirements: [] } },
+    });
+    const [today] = historyDays(h.dir, { days: 1, now: Date.parse(localNoon(2026, 9, 16, 20)) });
+    const withCwd = today.rows.find((row) => row.runId === 'wf-goal-cwd-000001');
+    assert.equal(withCwd.project, 'bullswarm-handoff', 'the cwd derives the same name reindex writes');
+    const noCwd = today.rows.find((row) => row.runId === 'wf-no-cwd-000001');
+    assert.equal(noCwd.project, null, 'no working directory, no invented project');
+    // And the page text agrees: the row is named, the blank stays blank.
+    const text = historyLines([today], { width: 100, ansi: false }).lines.join('\n');
+    assert.match(text, /bullswarm-handoff/);
+    assert.match(text, /unknown project/);
+  } finally { h.cleanup(); }
+});
+
 test('H6: the timeline holds every workflow — indexed, un-indexed, partial, legacy, running and stopped', () => {
   const h = everyWorkflowHome();
   try {

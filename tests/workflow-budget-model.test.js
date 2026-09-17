@@ -258,7 +258,7 @@ test('poolBudget: no measured rate means no licence share at all (B2)', () => {
   assert.equal(row.share.rest, null);
   assert.equal(row.share.ratePerMinute, null);
   assert.equal(row.share.workflowMinutes, 7, 'the minutes are still measured');
-  assert.match(row.share.basis, /no measured %\/minute rate/);
+  assert.match(row.share.basis, /no measured usage rate yet/);
   assert.ok(row.nulls.includes('share.workflows'));
   assert.ok(row.nulls.includes('share.rest'));
 });
@@ -293,7 +293,7 @@ test('poolBudget: fits is null, with the reason, whenever it cannot be computed'
   const rollups = indexOf(corpus());
   const noRate = poolBudget(unrated(), { rollups, now: NOW });
   assert.equal(noRate.fits, null);
-  assert.match(noRate.fitsBasis, /no measured %\/minute rate/);
+  assert.match(noRate.fitsBasis, /no measured usage rate yet/);
 
   // A rate, but nothing ran there this period: no median run to divide by.
   const noRuns = poolBudget(metered({ name: 'never-used' }), { rollups, now: NOW });
@@ -372,7 +372,7 @@ test('budgetModel: one row per pool, with totals that name what is missing', () 
   assert.deepEqual(model.totals.priced, []);
   assert.deepEqual(model.totals.unpriced, ['claude-code', 'codex', 'unmetered-pool']);
   assert.ok(model.notes.some((note) => /no declared subscription price/.test(note)));
-  assert.ok(model.notes.some((note) => /no measured %\/minute rate/.test(note) && /codex/.test(note)));
+  assert.ok(model.notes.some((note) => /no measured usage rate yet/.test(note) && /codex/.test(note)));
   assert.equal(model.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
   assertNoNaN(model);
 });
