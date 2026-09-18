@@ -265,6 +265,17 @@ const HISTORY_WINDOWS = [
   ['monthly', 'monthly'],
 ];
 
+// `captured_at` is stored as an ISO instant. Grouping for a dashboard is in
+// the machine's local zone, matching the workflow history view rather than
+// silently treating UTC midnight as the operator's day boundary.
+const HISTORY_DAY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  year: 'numeric', month: '2-digit', day: '2-digit',
+});
+
+function historyDayKey(capturedAtMs) {
+  return HISTORY_DAY_FORMATTER.format(new Date(capturedAtMs));
+}
+
 /** Default meters directory — the same one MeterCache writes snapshots into. */
 export function metersDir() {
   return join(METERS_DIR(), 'meters');
@@ -342,7 +353,11 @@ function capturedAtOf(line) {
  * @returns {Array<{captured_at: string, capturedAtMs: number}>}
  */
 export function readMeterHistory(pool, opts = {}) {
-  const { dir = metersDir(), sinceMs = null } = opts;
+  const {
+    dir = metersDir(), sinceMs = null, untilMs = null,
+    day = null, date = null,
+  } = opts;
+  const wantedDay = day ?? date;
   let raw;
   try {
     raw = readFileSync(meterHistoryPath(pool, dir), 'utf8');
@@ -362,10 +377,54 @@ export function readMeterHistory(pool, opts = {}) {
     const capturedAtMs = Date.parse(entry.captured_at);
     if (!Number.isFinite(capturedAtMs)) continue;
     if (sinceMs != null && capturedAtMs < sinceMs) continue;
+    if (untilMs != null && capturedAtMs > untilMs) continue;
+    if (wantedDay != null && historyDayKey(capturedAtMs) !== historyDayKeyFor(wantedDay)) continue;
     out.push({ ...entry, capturedAtMs });
   }
   out.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
   return out;
+}
+
+function historyDayKeyFor(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return historyDayKey(value);
+  if (value instanceof Date && Number.isFinite(value.getTime())) return historyDayKey(value.getTime());
+  const text = String(value ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? historyDayKey(parsed) : text;
+}
+
+/**
+ * Read one pool's history for a local calendar day. This is deliberately a
+ * thin filter over readMeterHistory, so missing files, torn JSONL lines and
+ * undated entries have exactly the same tolerant behavior as the base reader.
+ *
+ * @param {string} pool
+ * @param {string|number|Date} day YYYY-MM-DD, an epoch instant, or a Date
+ * @param {{dir?: string, sinceMs?: number|null, untilMs?: number|null}} [opts]
+ */
+export function readMeterHistoryByDay(pool, day, opts = {}) {
+  if (day && typeof day === 'object' && !(day instanceof Date)) {
+    return readMeterHistory(pool, day);
+  }
+  return readMeterHistory(pool, { ...opts, day });
+}
+
+/** Alias used by callers that name the result rather than the operation. */
+export const meterHistoryForDay = readMeterHistoryByDay;
+export const readMeterHistoryForDay = readMeterHistoryByDay;
+
+/**
+ * Group a pool's retained readings by local day. The returned object only has
+ * days present in the capped log; it never fabricates older empty days.
+ */
+export function readMeterHistoryDays(pool, opts = {}) {
+  const grouped = {};
+  for (const entry of readMeterHistory(pool, opts)) {
+    const day = historyDayKey(entry.capturedAtMs);
+    (grouped[day] ??= []).push(entry);
+  }
+  return grouped;
 }
 
 export { FRESH_MS, STALE_MS };

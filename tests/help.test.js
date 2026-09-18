@@ -249,18 +249,32 @@ test('help describes the bare command as the dashboard with setup as the fallbac
   assert.match(tuiHelp, /the same screen bare `bullswarm` opens on a configured terminal/);
   assert.match(tuiHelp, /sticky header/);
   assert.match(tuiHelp, /sticky bottom nav/);
-  for (const page of ['Home (ongoing', 'Run (the selected', 'Step (one agent', 'Usage (every meter', 'and Help.']) {
+  for (const page of ['Home (today', 'Runs (the workflow', 'Run (plan', 'Step (one action', 'Budget (quota', 'Stats (Overview', 'Fleet (lane/provider', 'and Help.']) {
     assert.ok(tuiHelp.includes(page), `workflow tui --help must describe the ${page.split(' ')[0]} page`);
   }
-  for (const key of ['q quit', '? help', 'u usage', 'e edit', 'i install', 'l and p switch the Usage grouping']) {
+  // 0.33.0 merged History into Runs, so the tab row is five tabs and the help
+  // names the day table rather than a History page.
+  assert.ok(tuiHelp.includes('The tab row is Home, Runs, Budget, Stats, Fleet'), tuiHelp);
+  assert.ok(tuiHelp.includes('History is the day table inside Runs'), tuiHelp);
+  assert.ok(!/History \(a dated/.test(tuiHelp), tuiHelp);
+  for (const key of ['q quits', 'h Home', '? Help', 'r Runs', 'b Budget', 's Stats', 'y the first day of the Runs history', 'f Fleet', 'Tab cycles sub-tabs', 'Shift+Tab cycles workflows', 'ctrl+s copies']) {
     assert.ok(tuiHelp.includes(key), `workflow tui --help must document the ${key.split(' ')[0]} key`);
   }
-  assert.match(tuiHelp, /the mouse clicks any button, tab, run or step and the wheel scrolls/);
+  assert.ok(!tuiHelp.includes('h or ? Help'), 'h no longer opens Help');
+  assert.match(tuiHelp, /The mouse clicks tabs, tiles, bars, runs, steps, dates, and controls/);
   assert.match(tuiHelp, /the explicit form of the same dashboard/);
 
   // The workflow command list points at the same dashboard, with the same
   // pages named.
-  assert.match(helpText(['workflow']), /open the dashboard \(Home, Run, Step, Usage, Help\)/);
+  assert.match(helpText(['workflow']), /open the dashboard \(Home, Runs, Run, Step, Budget, Stats, Fleet, Help\)/);
+});
+
+test('workflow reindex help exposes the exact usage line and flags', () => {
+  const text = helpText(['workflow', 'reindex']);
+  assert.equal(text.split('\n')[0], 'Usage: bullswarm workflow reindex [--json] [--force]');
+  assert.match(text, /--json/);
+  assert.match(text, /--force/);
+  assert.match(helpForArgs(['workflow', 'reindex', '--help']), /Usage: bullswarm workflow reindex \[--json\] \[--force\]/);
 });
 
 // Preserved behavior: --help must never spawn a delegate coding-agent CLI

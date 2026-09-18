@@ -48,17 +48,33 @@ export function readOAuthCredentials() {
   return readFromCredentialsFile();
 }
 
-export function readFromMacKeychain(service = DEFAULT_KEYCHAIN_SERVICE) {
+// `security find-generic-password` takes 100–300 ms and blocks the caller;
+// the dashboard used to pay it on every one-second tick. A login changes the
+// keychain entry rarely, so one read serves a minute of callers.
+const KEYCHAIN_CACHE_MS = 60_000;
+const keychainCache = new Map();
+
+/** Forget cached keychain reads (tests, or after a fresh `claude login`). */
+export function resetKeychainCache() {
+  keychainCache.clear();
+}
+
+export function readFromMacKeychain(service = DEFAULT_KEYCHAIN_SERVICE, { now = Date.now() } = {}) {
+  const cached = keychainCache.get(service);
+  if (cached && now - cached.at < KEYCHAIN_CACHE_MS) return cached.value;
+  let value = null;
   try {
     const blob = execFileSync(
       'security',
       ['find-generic-password', '-s', service, '-w'],
       { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' },
     );
-    return extractCredentials(blob);
+    value = extractCredentials(blob);
   } catch {
-    return null;
+    value = null;
   }
+  keychainCache.set(service, { at: now, value });
+  return value;
 }
 
 function readFromCredentialsFile() {

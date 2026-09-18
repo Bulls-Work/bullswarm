@@ -1,0 +1,914 @@
+<title>Bullswarm Dashboard Design</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  :root {
+    --bg: #f3f1ec; --ink: #23252b; --muted: #6b6e78; --line: #dcd8cf; --panel: #ffffff;
+    --accent: #7a6fd9; --term-bg: #2b2d36; --term-fg: #d7d8de; --term-dim: #7c7f8a;
+    --term-bold: #f1f1f4; --lav: #b5b0ff; --coral: #d2856b; --cyan: #8fc7cf;
+    --green: #b6bd73; --amber: #e9c880; --red: #bf6c69; --track: #3a3a3a; --purple: #a99cf0; --others: #55575f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1b1c21; --ink: #e6e6ea; --muted: #9a9ca6; --line: #33353d; --panel: #23252b; --accent: #a99cf0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1b1c21; --ink: #e6e6ea; --muted: #9a9ca6; --line: #33353d; --panel: #23252b; --accent: #a99cf0;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: "IBM Plex Sans", system-ui, sans-serif; padding-block: 24px 56px; padding-inline: 16px; }
+  .wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+  header h1 { font-size: 24px; font-weight: 600; margin: 0 0 6px; text-wrap: balance; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); max-width: 72ch; line-height: 1.5; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding-block: 10px; }
+  .seg { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+  .seg span { margin-right: 6px; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
+  .seg button { font: inherit; font-size: 13px; font-weight: 500; color: var(--ink); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  .seg button[aria-selected="true"] { background: var(--panel); border-color: var(--line); color: var(--accent); }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .term-shell { overflow-x: auto; background: var(--term-bg); border-radius: 10px; padding: 14px 18px 12px; box-shadow: 0 1px 0 rgba(0,0,0,.25), 0 12px 40px rgba(0,0,0,.18); outline: none; position: relative; }
+  .term-shell:focus-visible { box-shadow: 0 0 0 2px var(--accent), 0 12px 40px rgba(0,0,0,.18); }
+  .term-shell.phone { max-width: 470px; }
+  .term { margin: 0; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.42; color: var(--term-fg); white-space: pre; font-variant-numeric: tabular-nums; }
+  .term .d { color: var(--term-dim); }
+  .term .b { color: var(--term-bold); font-weight: 700; }
+  .term .g { color: var(--green); } .term .a { color: var(--amber); } .term .r { color: var(--red); }
+  .term .c { color: var(--cyan); } .term .p { color: var(--purple); } .term .o { color: var(--coral); }
+  .term .u { text-decoration: underline; text-underline-offset: 2px; }
+  .term .on { background: #f1f1f4; color: #2b2d36; font-weight: 700; padding: 0 2px; }
+  .term .sub { background: var(--coral); color: #2b2d36; font-weight: 700; padding: 0 2px; }
+  .term .cell { display: inline-block; width: 1ch; }
+  .term .mark { color: #ffffff; }
+  .term .t1 { background: #4a3f38; } .term .t2 { background: #7a5a48; } .term .t3 { background: #b07a5b; } .term .t4 { background: #d2856b; }
+  .term [data-act] { cursor: pointer; }
+  .term [data-act]:hover { background: rgba(255,255,255,.08); }
+  .term .sel { background: rgba(255,255,255,.14); }
+  .msg { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; color: var(--term-dim); margin-top: 6px; min-height: 1.4em; }
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .note { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .note h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+  .note ul { margin: 0; padding-left: 18px; line-height: 1.5; font-size: 14px; }
+  .note li + li { margin-top: 4px; }
+  .note code, header code { font-family: "JetBrains Mono", monospace; font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 3px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); align-items: center; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 6px 0 0; }
+  @media (max-width: 640px) {
+    .term { font-size: 11px; }
+    header h1 { font-size: 21px; }
+    /* 55 columns must fit the frame's content box: JetBrains Mono advances 0.6em per cell,
+       so the size follows the viewport (gutters 16px + frame padding 12px each side). */
+    .term-shell.phone { padding: 12px 12px 10px; }
+    .term-shell.phone .term { font-size: min(11px, calc((100vw - 56px) / 33.5)); }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Bullswarm dashboard, working model</h1>
+    <p>Click into the terminal and drive it: <code>r b s y f</code> switch pages, <code>h</code> opens help, <code>1</code>–<code>9</code> open a run, click any step, bar or value, <code>↑ ↓ PgUp PgDn</code> and the wheel scroll under the sticky header and nav, <code>Esc</code> or <code>←</code> goes back and then Home, <code>p</code> cycles the period, <code>Tab</code> cycles sub-tabs, <code>ctrl+s</code> copies the screen. Time runs eight times faster than real, so the two runs finish while you watch. Numbers are illustrative.</p>
+  </header>
+
+  <div class="bar">
+    <div class="seg" role="group" aria-label="Terminal size">
+      <span>Terminal</span>
+      <button id="w-desktop" data-width="desktop" aria-selected="true">120 × 40</button>
+      <button id="w-phone" data-width="phone" aria-selected="false">Phone · 55 × 26</button>
+    </div>
+    <div class="seg" role="group" aria-label="Clock">
+      <span>Clock</span>
+      <button id="s-pause" data-speed="0" aria-selected="false">Paused</button>
+      <button id="s-run" data-speed="8" aria-selected="true">8× real time</button>
+      <button id="s-reset" data-speed="reset" aria-selected="false">Restart</button>
+    </div>
+  </div>
+
+  <div>
+    <div class="term-shell" id="shell" tabindex="0" aria-label="Simulated bullswarm dashboard"><pre class="term" id="term"></pre></div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--green)"></i>under 50% used</span>
+    <span><i style="background:var(--amber)"></i>50% and over</span>
+    <span><i style="background:var(--red)"></i>80% and over</span>
+    <span><i style="background:#fff;border:1px solid var(--line)"></i>▏ where the window's time has elapsed</span>
+    <span><i style="background:var(--purple)"></i>this run's share</span>
+    <span>underline = the key that presses it</span>
+  </div>
+
+  <h2>Where each piece comes from</h2>
+  <div class="notes">
+    <div class="note">
+      <h3>From Claude Code's stats and usage screens</h3>
+      <ul>
+        <li>No borders: bold section titles on thin rules, whitespace between.</li>
+        <li>Page tabs on top, sub-tabs beneath; the active tab inverted.</li>
+        <li>Period toggle <code>All time · Last 7 days · Last 30 days</code>, one key cycles it.</li>
+        <li>Weekday-by-month heatmap with a Less/More legend.</li>
+        <li>Two-column key-value block with values in the accent colour.</li>
+        <li><code>Resets Sep 21 at 8pm (Asia/Hong_Kong)</code> under every meter.</li>
+        <li>One playful comparison line, and <code>ctrl+s</code> to copy the screen.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>From the card-grid draft</h3>
+      <ul>
+        <li>Tiles with one number and a seven-day sparkline.</li>
+        <li>Running strip: plan graph, step in flight with progress, the run's licence draw and money so far.</li>
+        <li>Budget meters with the elapsed mark, pace word, money of money, and what still fits.</li>
+        <li>Cumulative spend by model over the week.</li>
+        <li>Breakdown bars by pool, model and project; no pies in a monospace grid.</li>
+        <li>Every value clickable, opening its page filtered to it.</li>
+        <li>Run buttons with the digit inside, underlined; letters underlined in labels.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Data it needs</h3>
+      <ul>
+        <li>A plan price table plus the existing <code>strategy set-subscription</code> override, giving subscription cost next to the API-equivalent cost already recorded per attempt.</li>
+        <li>A seven-day rollup written when a run finishes, so Home never scans hundreds of run directories.</li>
+        <li>Meter samples around each attempt, so a run's licence draw is measured from the pool's meter and split among concurrent consumers by token share; estimated from tokens when a meter has not moved. Measured numbers are plain, estimated ones carry ≈.</li>
+        <li>Stats and the key-value block need only the run directories, so they can ship first.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ---------- markup ----------
+  // A line is text with nested tags: {{b|bold}}, {{k|action|clickable}}, and
+  // three atoms drawn as cells: {{meter|used,elapsed,width}},
+  // {{share|mine,others,width}}, {{heat|cells}}. The tokenizer turns a line
+  // into cells so width, padding, clipping and HTML all agree.
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  function tokens(line) {
+    const s = String(line), out = [], stack = [];
+    let i = 0;
+    while (i < s.length) {
+      if (s.startsWith('{{', i)) {
+        const bar = s.indexOf('|', i);
+        const tag = bar > 0 ? s.slice(i + 2, bar) : '';
+        if (tag === 'meter' || tag === 'share' || tag === 'heat') {
+          const close = s.indexOf('}}', bar);
+          const body = s.slice(bar + 1, close);
+          let atom, width;
+          if (tag === 'meter') { const [u, e, w] = body.split(',').map(Number); atom = meterHtml(u, e, w); width = w; }
+          else if (tag === 'share') { const [m, o, w] = body.split(',').map(Number); atom = shareHtml(m, o, w); width = w; }
+          else { atom = heatHtml(body); width = body.length * 2 - 1; }
+          out.push({ atom, width, text: tag === 'heat' ? body : '▇'.repeat(width), tags: stack.slice() });
+          i = close + 2; continue;
+        }
+        if (tag === 'k') { const bar2 = s.indexOf('|', bar + 1); stack.push('k|' + s.slice(bar + 1, bar2)); i = bar2 + 1; continue; }
+        if (/^\w+$/.test(tag)) { stack.push(tag); i = bar + 1; continue; }
+      }
+      if (s.startsWith('}}', i) && stack.length) { stack.pop(); i += 2; continue; }
+      const cp = s.codePointAt(i), ch = String.fromCodePoint(cp);
+      out.push({ ch, width: 1, tags: stack.slice() });
+      i += ch.length;
+    }
+    return out;
+  }
+  const widthOf = (toks) => toks.reduce((a, t) => a + t.width, 0);
+  const vis = (line) => widthOf(tokens(line));
+  function clip(toks, w) {
+    if (widthOf(toks) <= w) return toks;
+    const out = []; let used = 0;
+    for (const t of toks) { if (used + t.width > w - 1) break; out.push(t); used += t.width; }
+    out.push({ ch: '…', width: 1, tags: ['d'] });
+    return out;
+  }
+  function tokensHtml(toks) {
+    let out = '', open = [];
+    const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const openTags = (tags) => tags.map(t => t.startsWith('k|') ? `<span data-act="${esc(t.slice(2))}">` : `<span class="${t}">`).join('');
+    for (const t of toks) {
+      if (!same(open, t.tags)) { out += '</span>'.repeat(open.length); open = t.tags; out += openTags(open); }
+      out += t.atom !== undefined ? t.atom : esc(t.ch);
+    }
+    return out + '</span>'.repeat(open.length);
+  }
+  const html = (line) => tokensHtml(tokens(line));
+  const plainText = (line) => tokens(line).map(t => t.atom !== undefined ? t.text : t.ch).join('');
+  const pad = (s, n) => s + ' '.repeat(Math.max(0, n - vis(s)));
+  const rpad = (s, n) => ' '.repeat(Math.max(0, n - vis(s))) + s;
+  function cut(s, n) { // plain text only
+    const a = Array.from(s); return a.length > n ? a.slice(0, Math.max(0, n - 1)).join('') + '…' : s;
+  }
+  function meterHtml(used, elapsed, width) {
+    const color = used >= 80 ? 'var(--red)' : used >= 50 ? 'var(--amber)' : 'var(--green)';
+    const usedCells = Math.round(width * Math.min(100, used) / 100);
+    const markAt = Math.min(width - 1, Math.round(width * elapsed / 100));
+    let out = '';
+    for (let i = 0; i < width; i++) {
+      const bg = i < usedCells ? color : 'var(--track)';
+      out += `<span class="cell${i === markAt ? ' mark' : ''}" style="background:${bg}">${i === markAt ? '▏' : ' '}</span>`;
+    }
+    return out;
+  }
+  function shareHtml(mine, others, width) {
+    const o = Math.round(width * others / 100), m = Math.max(mine > 0 ? 1 : 0, Math.round(width * mine / 100));
+    let out = '';
+    for (let i = 0; i < width; i++) {
+      const bg = i < o ? 'var(--others)' : i < o + m ? 'var(--purple)' : 'var(--track)';
+      out += `<span class="cell" style="background:${bg}"> </span>`;
+    }
+    return out;
+  }
+  const heatHtml = (cells) => cells.split('').map(c => c === '.' ? '<span class="d">·</span>' : `<span class="cell t${c}"> </span>`).join(' ');
+  const K = (act, text) => `{{k|${act}|${text}}}`;
+  const fmtM = (sec) => { const m = Math.floor(sec / 60); return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m`; };
+  const fmtMS = (sec) => { const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return m ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`; };
+  const money = (v) => `$${v.toFixed(2)}`;
+  const bar = (frac, w) => { const f = Math.round(w * Math.max(0, Math.min(1, frac))); return `{{g|${'▇'.repeat(f)}}}{{d|${'░'.repeat(w - f)}}}`; };
+
+  // ---------- world ----------
+  const POOLS = {
+    'claude-code':  { short: 'claude',  plan: 'Max 20x', price: 200, window: 'weekly',  used: 37, elapsed: 28, resets: 'Sep 21 at 8pm', left: '5d1h', api: 212, runsShare: 15, you: 22, perMin: 0.14, drawMin: 0.20, model: 'claude-opus-5' },
+    'codex':        { short: 'codex',   plan: 'Pro',     price: 200, window: 'weekly',  used: 29, elapsed: 48, resets: 'Sep 21 at 8pm', left: '5d1h', api: 96,  runsShare: 26, you: 3,  perMin: 0.11, drawMin: 0.22, model: 'gpt-5.6-luna' },
+    'grok':         { short: 'grok',    plan: 'Heavy',   price: 300, window: 'weekly',  used: 77, elapsed: 74, resets: 'Sep 21 at 8pm', left: '5d1h', api: 140, runsShare: 40, you: 37, perMin: 0.06, drawMin: 0.18, model: 'grok-4.6' },
+    'command-code': { short: 'cmd',     plan: 'credits', price: 70,  window: 'monthly', used: 93, elapsed: 98, resets: 'Sep 17 at 11am', left: '16h', api: 9,   runsShare: 90, you: 3,  perMin: 0.02, drawMin: 0.08, model: 'deepseek-v4.1-flash' },
+  };
+  const ZONE = 'Asia/Hong_Kong';
+  const pace = (p) => { const d = p.elapsed - p.used; return d >= 15 ? { w: 'slow', c: 'g' } : d <= -15 ? { w: 'hot', c: 'r' } : { w: 'on track', c: 'a' }; };
+  const weekMoney = (p) => p.window === 'weekly' ? p.price / 4 : p.price;
+
+  function makeWorld() {
+    const step = (id, pool, expected, deps, purpose, extra) => Object.assign({ id, pool, expected, deps, purpose, status: 'waiting', started: null, finished: null, cost: 0, draw: 0, bytes: 0, model: POOLS[pool].model, reasoning: pool === 'claude-code' ? 'xhigh' : 'max', lane: 'medium' }, extra || {});
+    const runs = [
+      { id: 'mbpzj2', project: 'bullseye', started: -16 * 60, status: 'running', goal: 'Milestone 2a of Bullseye, "Widget": build the browser widget and the read-only inbox page in the open-source repo, on a branch with a pull request, so that a visitor can embed the widget and read their inbox.',
+        steps: [
+          step('scan', 'command-code', 121, [], 'Read the repo and list the files the widget touches', { status: 'done', started: -15 * 60, finished: -15 * 60 + 121, cost: 0.02, draw: 0.1, lane: 'low' }),
+          step('inbox-page', 'command-code', 250, [], 'Build the read-only inbox page', { status: 'done', started: -15 * 60, finished: -15 * 60 + 250, cost: 0.05, draw: 0.3 }),
+          step('widget-core', 'codex', 302, ['scan'], 'Implement the embeddable widget core', { status: 'done', started: -13 * 60, finished: -13 * 60 + 302, cost: 0.44, draw: 0.9 }),
+          step('widget-lib', 'command-code', 1020, ['widget-core'], 'Package the widget as src/widget/lib.js with tests', { status: 'running', started: -15 * 60, cost: 0.24, draw: 0.8 }),
+          step('inbox-api', 'codex', 660, ['inbox-page'], 'Expose the inbox read endpoint the page consumes', { status: 'running', started: -4 * 60, cost: 0.30, draw: 0.6 }),
+          step('widget-docs', 'codex', 540, ['widget-lib'], 'Write the embed guide', {}),
+          step('integrate', 'claude-code', 660, ['widget-docs', 'inbox-api'], 'Land every territory on one branch and open the pull request', { lane: 'high', reasoning: 'xhigh' }),
+          step('verify', 'claude-code', 480, ['integrate'], 'Adversarial acceptance of the five requirements', { lane: 'high', reasoning: 'xhigh' }),
+        ] },
+      { id: 'ywnyga', project: 'bullseye', started: -11 * 60, status: 'running', goal: "Tidy the open-source repo bullseye to Bullswarm's engineering standard and give it a real, pushed git history before milestone 2.",
+        steps: [
+          step('tidy', 'claude-code', 1020, [], 'Bring the repo to the engineering standard', { status: 'running', started: -11 * 60, cost: 0.55, draw: 0.8 }),
+          step('accept', 'claude-code', 660, ['tidy'], 'Acceptance against the standard', { lane: 'high', reasoning: 'xhigh' }),
+        ] },
+    ];
+    const recent = [
+      { id: 'gcxzza', project: 'bullswarm', label: 'docs site rebuilt', ok: true, verified: '5/5', minutes: 41, cost: 2.10, api: 16, ago: 2 * 3600 },
+      { id: '2v57ri', project: 'bullseye-platform', label: 'tidy · failed at accept after 2 attempts', ok: false, minutes: 22, cost: 0.90, api: 6, ago: 35 * 60 },
+      { id: 'm2a1qx', project: 'agentic-knowledge-system', label: 'ingest benchmark', ok: true, verified: '3/3', minutes: 12, cost: 0.40, api: 3, ago: 3 * 3600 },
+    ];
+    return { t: 0, runs, recent, today: { finished: 4, ok: 3, fail: 1, spent: 6.40, api: 41, steps: 31, agentSec: 3 * 3600 + 12 * 60 }, licence: { 'claude-code': 9, codex: 5, 'command-code': 1 }, events: [] };
+  }
+  let W = makeWorld();
+
+  const OUTPUT = {
+    'widget-lib': ['> reading src/widget/core.js', '> wrote src/widget/lib.js (214 lines)', '> npm test', '  12 pass, 0 fail', '> wrote test/widget-lib.test.js', '> bundle 9.8 kB gzip', '> done: lib exported as Widget.mount(el, opts)'],
+    'inbox-api': ['> reading api/routes.js', '> added GET /api/inbox (read-only)', '> npm test', '  12 pass, 0 fail', '> done'],
+    'tidy': ['> eslint --fix src', '> 41 files reformatted', '> moved scripts/ into tools/', '> wrote CONTRIBUTING.md', '> git commit -m "tidy to bullswarm standard"', '> git push origin main'],
+    'widget-docs': ['> reading src/widget/lib.js', '> wrote docs/embed.md', '> done'],
+    'integrate': ['> git checkout -b milestone-2a', '> merging 6 territories', '> npm test: 48 pass', '> gh pr create', '> https://github.com/…/pull/42'],
+    'verify': ['> requirement 1: PASS', '> requirement 2: PASS', '> requirement 3: PASS', '> requirement 4: PASS', '> requirement 5: PASS'],
+    'accept': ['> checking standard: 12 rules', '> all rules met', '> PASS'],
+  };
+
+  // ---------- simulation ----------
+  let speed = 8;
+  function tick(dt) {
+    W.t += dt;
+    for (const run of W.runs) {
+      if (run.status !== 'running') continue;
+      for (const s of run.steps) {
+        if (s.status === 'running') {
+          const el = W.t - s.started;
+          const p = POOLS[s.pool];
+          s.cost += p.perMin * dt / 60; s.draw += p.drawMin * dt / 60; s.bytes += 9 * dt;
+          p.used += p.drawMin * dt / 60 / 6;
+          W.licence[s.pool] = (W.licence[s.pool] || 0) + p.drawMin * dt / 60;
+          if (el >= s.expected) { s.status = 'done'; s.finished = s.started + s.expected; W.today.steps += 1; W.events.push({ t: W.t, text: `✓ ${s.id} ${fmtMS(s.expected)}`, run: run.id }); }
+        }
+      }
+      for (const s of run.steps) {
+        if (s.status === 'waiting' && s.deps.every(d => run.steps.find(x => x.id === d).status === 'done')) { s.status = 'running'; s.started = W.t; W.events.push({ t: W.t, text: `▶ ${s.id} on ${s.pool}`, run: run.id }); }
+      }
+      if (run.steps.every(s => s.status === 'done')) {
+        run.status = 'done'; run.finished = W.t;
+        const cost = run.steps.reduce((a, s) => a + s.cost, 0);
+        W.today.finished += 1; W.today.ok += 1; W.today.spent += cost; W.today.api += cost * 7.5;
+        W.recent.unshift({ id: run.id, project: run.project, label: run.goal.split(':')[0].replace(/^Milestone 2a of Bullseye, /, ''), ok: true, verified: 'verified', minutes: Math.round((W.t - run.started) / 60), cost, api: cost * 7.5, ago: 0, finishedAt: W.t });
+        msg(`${run.id} completed · verified · ${money(cost)}`);
+      }
+    }
+  }
+  const running = () => W.runs.filter(r => r.status === 'running');
+  const runCost = (r) => r.steps.reduce((a, s) => a + s.cost, 0);
+  const runDraw = (r) => r.steps.reduce((a, s) => a + s.draw, 0);
+  const done = (r) => r.steps.filter(s => s.status === 'done').length;
+  const phaseOf = (r) => { const depth = (s) => s.deps.length ? 1 + Math.max(...s.deps.map(d => depth(r.steps.find(x => x.id === d)))) : 0; const ph = r.steps.map(depth); const cur = r.steps.filter(s => s.status === 'running').map(depth); return { cur: (cur.length ? Math.min(...cur) : Math.max(...ph)) + 1, total: Math.max(...ph) + 1 }; };
+  const eta = (r) => { const rem = r.steps.filter(s => s.status !== 'done').reduce((a, s) => a + (s.status === 'running' ? Math.max(0, s.expected - (W.t - s.started)) : s.expected), 0); return clock(W.t + rem * 0.6); };
+  function clock(t) { const base = 18 * 3600 + 41 * 60; const s = base + t; return `${String(Math.floor(s / 3600) % 24).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}`; };
+
+  // ---------- ui state ----------
+  const ui = { page: 'home', run: 'mbpzj2', step: null, period: 1, statsTab: 0, fleetTab: 0, budgetTab: 0, scroll: 0, width: 'desktop', metric: 'spent', historyDays: 10 };
+  const PERIODS = ['All time', 'Last 7 days', 'Last 30 days'];
+  const STATS_TABS = ['Overview', 'Trends', 'Pools', 'Models', 'Projects'];
+  const METRICS = { finished: 'runs finished', verified: 'verified share', spent: 'spent', licence: 'licence used' };
+  const cols = () => ui.width === 'phone' ? 55 : 120;
+  const rows = () => ui.width === 'phone' ? 26 : 40;
+  const narrow = () => ui.width === 'phone';
+
+  function tabsRow(active) {
+    const pages = [['home', 'Home', -1], ['run', 'Runs', 0], ['budget', 'Budget', 0], ['stats', 'Stats', 0], ['history', 'History', 6], ['fleet', 'Fleet', 0]];
+    const tabs = pages.filter(p => !(narrow() && p[0] === 'fleet' && active !== 'fleet')).map(([id, label, at]) => id === active ? `{{on|${label}}}` : K(`page:${id}`, at < 0 ? label : `${label.slice(0, at)}{{u|${label[at]}}}${label.slice(at + 1)}`));
+    if (active === 'help') tabs.push('{{on|Help}}');
+    return ' ' + tabs.join('  ');
+  }
+  function navRow() {
+    const parts = [];
+    if (ui.page === 'step') parts.push(K('back', '[ ← back ]'));
+    running().forEach((r, i) => parts.push(K(`run:${r.id}`, `[ ${ui.page !== 'home' && ui.page !== 'budget' && ui.page !== 'stats' && ui.page !== 'fleet' && r.id === ui.run ? '{{c|●}} ' : ''}{{u|${i + 1}}}.${r.id} ]`)));
+    if (!running().length) parts.push('{{d|no run in flight}}');
+    const hint = narrow() ? `${K('top', '[Top]')} ${K('end', '[End]')} ${K('page:help', '[{{u|H}}elp]')}` : `{{d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }}${K('page:help', '{{u|h}}elp')}{{d| · q}}`;
+    const left = ' ' + parts.join(' ');
+    return pad(left, cols() - vis(hint)) + hint;
+  }
+  const rule = (title, right) => {
+    const w = cols();
+    const head = ` {{d|── }}{{b|${title}}}{{d| ─}}`;
+    const tail = right ? ` ${right}{{d| ──}}` : '';
+    const mid = Math.max(1, w - vis(head) - vis(tail));
+    return head + `{{d|${'─'.repeat(mid)}}}` + tail;
+  };
+  const periodToggle = () => PERIODS.map((p, i) => K('period:' + i, i === ui.period ? `{{o|${p}}}` : p)).join(' · ');
+
+  // ---------- charts ----------
+  // Stacked bars, one column per label; series = [{color, values[]}].
+  function stackedBars(series, labels, { height = 6, col = 8, barW = 6, unit = '$', totals = true, cumulative = false } = {}) {
+    const n = labels.length;
+    const sums = labels.map((_, i) => series.reduce((a, sr) => a + (sr.values[i] || 0), 0));
+    const max = Math.max(1, ...sums);
+    const stp = niceStep(max / height);
+    const rowsOut = [];
+    for (let r = height; r >= 1; r--) {
+      const lo = (r - 1) * stp, hi = r * stp;
+      let line = rpad(r === height || r % 2 === 0 || r === 1 ? `${unit}${fmtNum(hi)}` : '', 6) + '┤';
+      for (let i = 0; i < n; i++) {
+        let acc = 0, color = null, half = false;
+        for (const sr of series) {
+          const v = sr.values[i] || 0; if (v <= 0) continue;
+          const from = acc, to = acc + v; acc = to;
+          if (to > lo + stp * 0.25 && from < hi) { color = sr.color; half = to < hi && to - lo < stp * 0.6; }
+        }
+        line += color ? ' ' + `{{${color}|${(half ? '▄' : '█').repeat(barW)}}}` + ' '.repeat(col - barW - 1) : ' '.repeat(col);
+      }
+      rowsOut.push(line);
+    }
+    rowsOut.push(rpad(`${unit}0`, 6) + '┼' + labels.map(l => ' ' + `{{d|${pad(l, col - 1)}}}`).join(''));
+    if (totals) rowsOut.push(pad('', 7) + sums.map(v => ' ' + pad(v ? `${unit}${fmtNum(v)}` : '{{d|—}}', col - 1)).join(''));
+    if (cumulative) { let c = 0; rowsOut.push(pad('{{d| total}}', 7) + sums.map(v => { c += v; return ' ' + pad(v ? `{{d|${unit}${fmtNum(c)}}}` : '', col - 1); }).join('')); }
+    return rowsOut;
+  }
+  const niceStep = (x) => { const p = Math.pow(10, Math.floor(Math.log10(Math.max(x, 0.01)))); const m = x / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
+  const fmtNum = (v) => v >= 100 ? String(Math.round(v)) : v >= 10 ? v.toFixed(0) : Number.isInteger(v) ? String(v) : v.toFixed(1);
+  // Deterministic pseudo-history: the same day always yields the same numbers.
+  const rnd = (seed) => { const x = Math.sin(seed * 9301 + 49297) * 233280; return x - Math.floor(x); };
+  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const TODAY = new Date(2026, 8, 16);
+  const dayAt = (back) => new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate() - back);
+  function dayStats(back) {
+    if (back === 0) { const T = W.today; return { runs: T.finished, ok: T.ok, spent: T.spent, byPool: { 'claude-code': T.spent * 0.45, codex: T.spent * 0.3, grok: T.spent * 0.15, 'command-code': T.spent * 0.1 }, licence: { 'claude-code': W.licence['claude-code'], codex: W.licence.codex } }; }
+    const d = dayAt(back), wk = d.getDay() === 0 || d.getDay() === 6;
+    const runs = wk ? Math.round(rnd(back * 3) * 3) : 2 + Math.round(rnd(back * 3) * 5);
+    const ok = Math.max(0, runs - Math.round(rnd(back * 5) * Math.min(2, runs)));
+    const spent = runs ? +(runs * (1.2 + rnd(back * 7) * 1.4)).toFixed(2) : 0;
+    const mix = [0.35 + rnd(back * 11) * 0.3, 0.15 + rnd(back * 13) * 0.2, 0.1 + rnd(back * 17) * 0.15]; const rest = Math.max(0, 1 - mix[0] - mix[1] - mix[2]);
+    return { runs, ok, spent, byPool: { 'claude-code': spent * mix[0], codex: spent * mix[1], grok: spent * mix[2], 'command-code': spent * rest }, licence: { 'claude-code': runs ? 4 + rnd(back * 19) * 9 : 0, codex: runs ? 2 + rnd(back * 23) * 6 : 0 } };
+  }
+  const POOL_COLOR = { 'claude-code': 'p', codex: 'a', grok: 'g', 'command-code': 'c' };
+  const dayLabel = (back, long) => { const d = dayAt(back); return back === 0 ? 'today' : long ? `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}` : `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+
+  // ---------- pages ----------
+  function stepGlyph(s) { return s.status === 'done' ? '{{g|✓}}' : s.status === 'running' ? '{{c|▶}}' : '○'; }
+  function planStrip(r) { return r.steps.map(s => K(`step:${r.id}:${s.id}`, stepGlyph(s))).join('──'); }
+  function liveText(s) { const el = W.t - s.started; return `${s.id}@${POOLS[s.pool].short} ${bar(el / s.expected, 10)} ${fmtM(el)}/${fmtM(s.expected)}`; }
+
+  function pageHome() {
+    const w = cols(), n = narrow();
+    const body = [];
+    const T = W.today;
+    body.push(rule('today'));
+    if (!n) {
+      body.push(` {{d|finished}}            {{d|verified}}           {{d|spent}}                     {{d|licence today}}`);
+      body.push(`    ${K('trend:finished', `{{b|${T.finished}}}  {{o|▂▅▃▇▆▄▅}}`)}       ${K('trend:verified', `{{b|${Math.round(100 * T.ok / T.finished)}%}}  {{o|▄▆▅▇▇▆▇}}`)}      ${K('trend:spent', `{{b|${money(T.spent)}}}  {{o|▁▃▂▆▅▃▄}}`)}          ${K('trend:licence', `claude  {{meter|${W.licence['claude-code']},45,20}} ${W.licence['claude-code'].toFixed(0)}%`)}`);
+      body.push(` {{g|✓ ${T.ok}}} · {{r|✗ ${T.fail}}} · ${running().length} run    ${T.ok} of ${T.finished} · today     {{d|≈ ${money(T.api)} API · ${(T.api / T.spent).toFixed(1)}×}}         ${K('trend:licence', `codex   {{meter|${W.licence.codex},45,20}} ${W.licence.codex.toFixed(0)}%`)}`);
+      body.push(` {{d|click a tile for its chart}}`);
+    } else {
+      body.push(` {{d|finished}}  ${K('trend:finished', `{{b|${T.finished}}}  {{o|▂▅▃▇▆▄▅}}`)}   {{g|✓ ${T.ok}}} · {{r|✗ ${T.fail}}}`);
+      body.push(` {{d|spent}}  ${K('trend:spent', `{{b|${money(T.spent)}}}  {{o|▁▃▂▆▅▃▄}}`)}   {{d|≈ ${money(T.api)} API}}`);
+      body.push(` {{d|licence}}   claude {{meter|${W.licence['claude-code']},45,12}} ${W.licence['claude-code'].toFixed(0)}%`);
+      body.push(`           codex  {{meter|${W.licence.codex},45,12}} ${W.licence.codex.toFixed(0)}%`);
+    }
+    body.push('');
+    body.push(rule('running'));
+    if (!running().length) body.push(' {{d|nothing in flight · bullswarm workflow goal "<goal>" launches one}}');
+    running().forEach((r, i) => {
+      const ph = phaseOf(r), live = r.steps.filter(s => s.status === 'running');
+      const right = n ? `{{d|${done(r)}/${r.steps.length} · ${fmtM(W.t - r.started)}}}` : `{{d|phase ${ph.cur}/${ph.total} · ${done(r)}/${r.steps.length} · ${fmtM(W.t - r.started)}}}`;
+      const head = ` {{c|●}} ${K(`run:${r.id}`, `{{b|${i + 1}.${r.id}}}`)}  ${r.project} · ${cut(r.goal.split(':')[0], n ? 14 : 40)}`;
+      body.push(pad(head, w - vis(right)) + right);
+      if (!n) {
+        const liveTxt = live.map(s => K(`step:${r.id}:${s.id}`, liveText(s))).join('   ');
+        const tail = `{{p|${runDraw(r).toFixed(1)}%}} · ${money(runCost(r))}`;
+        body.push(pad(`   ${pad(planStrip(r), 20)}  ${liveTxt}`, w - vis(tail)) + tail);
+      } else {
+        body.push(`   ${planStrip(r)}`);
+        live.forEach(s => body.push(`   ${K(`step:${r.id}:${s.id}`, liveText(s))}`));
+        body.push(`   {{p|${runDraw(r).toFixed(1)}%}} · ${money(runCost(r))} so far`);
+      }
+    });
+    body.push('');
+    body.push(rule('budget · this week'));
+    for (const [id, p] of Object.entries(POOLS)) {
+      const pc = pace(p);
+      const fits = p.used < 50 ? `{{g|${Math.floor((100 - p.used) / 12)} medium runs fit}}` : p.used >= 80 ? '{{a|low lane only}}' : '{{a|1 medium run fits}}';
+      if (!n) {
+        body.push(` ${K('pool:' + id, pad(id, 13))} {{meter|${p.used},${p.elapsed},50}}  ${rpad(p.used.toFixed(0) + '% used', 9)}   ${pad(p.window === 'monthly' ? `${(p.used * 0.7).toFixed(1)} of 70 credits` : `${money(weekMoney(p) * p.used / 100)} of $${weekMoney(p)}`, 20)} ${fits}`);
+        body.push(`               {{d|Resets ${p.resets} (${ZONE}) · ${p.elapsed}% elapsed · ${pc.w}}}`);
+      } else {
+        body.push(` ${K('pool:' + id, pad(p.short, 8))} {{meter|${p.used},${p.elapsed},22}} ${p.used.toFixed(0)}%  {{${pc.c}|${pc.w}}}`);
+        body.push(`   {{d|resets ${p.left} · ${money(weekMoney(p) * p.used / 100)} of $${weekMoney(p)}}}`);
+      }
+    }
+    body.push('');
+    const per = periodStats();
+    body.push(rule(PERIODS[ui.period].toLowerCase(), periodToggle()));
+    if (!n) {
+      body.push(` {{d|spent per day}}                         {{d|by pool}}                  {{d|by model}}                {{d|by project}}     {{d|click a bar for its chart}}`);
+      const sp = spendSparkRows();
+      body.push(` ${pad(sp[0], 38)}${K('pool:claude-code', 'claude   {{g|████████}} 41%')}    ${K('stats:3', 'opus-5   {{p|██████████}} 52%')}  ${K('stats:4', 'bullswarm {{o|███████}} 11')}`);
+      body.push(` ${pad(sp[1], 38)}${K('pool:claude-code', 'claude:w {{g|█████}} 24%   ')}    ${K('stats:3', 'luna     {{p|████}} 21%    ')}    ${K('stats:4', 'bullseye  {{o|████}} 7')}`);
+      body.push(` ${pad(sp[2], 38)}${K('pool:codex', 'codex    {{g|████}} 18%    ')}    ${K('stats:3', 'grok-4.6 {{p|███}} 15%     ')}    ${K('stats:4', 'aks       {{o|██}} 3')}`);
+      body.push(` ${pad(sp[3], 38)}${K('pool:grok', 'grok {{g|██}} 12% · cmd {{g|█}} 5%')}   ${K('stats:3', 'deepseek {{p|█}} 8%       ')}     ${K('stats:4', '{{d|2 more…}}')}`);
+      body.push('');
+      body.push(` Workflows: ${K('trend:finished', `{{o|${per.runs}}}`)} · verified ${K('trend:verified', `{{o|${per.ok}}}`)} (${Math.round(100 * per.ok / per.runs)}%)     Favorite pool: ${K('pool:claude-code', '{{o|claude-code}}')}      Spent: ${K('trend:spent', `{{o|${money(per.spent)}}}`)} {{d|(≈ ${money(per.api)} API · ${(per.api / per.spent).toFixed(1)}×)}}`);
+      body.push(` Busiest project: ${K('stats:4', '{{o|bullswarm}}')} (${per.top})       Favorite model: ${K('stats:3', '{{o|Opus 5}}')}          Median run: ${K('page:history', `{{o|${per.median}m}}`)} · ${per.steps} steps`);
+      body.push('');
+      body.push(` {{p|Your ${per.runs} runs ${per.label} did ${money(per.api)} of API work for ${money(per.spent)}}}`);
+    } else {
+      body.push(` {{o|▂▅▃▇▆▄▅}}  ${per.runs} runs · {{o|${per.ok}}} ✓ · {{o|${money(per.spent)}}}`);
+      body.push(` pool  ${K('pool:claude-code', '{{g|████████}} claude 41%')}`);
+      body.push(` model ${K('stats:3', '{{p|██████████}} opus-5 52%')}`);
+      body.push(` proj  ${K('stats:4', '{{o|███████}} bullswarm 11')}`);
+    }
+    body.push('');
+    body.push(rule('recent', K('page:history', '{{d|history ›}}')));
+    W.recent.slice(0, n ? 3 : 4).forEach(r => {
+      const ago = r.finishedAt != null ? `${fmtM(Math.max(0, W.t - r.finishedAt))} ago` : `${fmtM(r.ago + W.t)} ago`;
+      const left = ` ${r.ok ? '{{g|✓}}' : '{{r|✗}}'} ${K('recent:' + r.id, `{{b|${r.id}}}`)}  ${n ? cut(r.project, 9) : r.project} · ${cut(r.label, n ? 10 : 44)}${r.ok && r.verified && !n ? ` · ${r.verified}` : ''} · ${r.minutes}m · ${money(r.cost)}${n ? '' : ` {{d|(≈ ${money(r.api)} API)}}`}`;
+      body.push(pad(left, w - vis(ago) - 1) + `{{d|${ago}}}`);
+    });
+    const header = [tabsRow('home'), ''];
+    return { header, right: n ? `{{d|${clock(W.t)}}}` : `{{d|${DAY_NAMES[TODAY.getDay()]} ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()]} · ${clock(W.t)} · 0m old}}`, body, footer: [navRow()] };
+  }
+  function spendSparkRows() {
+    const days = [6, 5, 4, 3, 2, 1, 0];
+    const series = Object.keys(POOL_COLOR).map(id => ({ color: POOL_COLOR[id], values: days.map(b => dayStats(b).byPool[id] || 0) }));
+    const rows = stackedBars(series, days.map(b => DAY_NAMES[dayAt(b).getDay()][0]), { height: 3, col: 4, barW: 3, totals: false });
+    return rows.map(r => K('trend:spent', r));
+  }
+  function periodStats() {
+    const extraOk = W.recent.filter(r => r.finishedAt != null).length;
+    const base = [{ runs: 291, ok: 244, spent: 412, api: 3180, top: 118, median: 38, steps: 6, label: 'all time' }, { runs: 23, ok: 19, spent: 38.2, api: 296, top: 11, median: 38, steps: 6, label: 'this week' }, { runs: 87, ok: 74, spent: 141, api: 1090, top: 41, median: 36, steps: 6, label: 'this month' }][ui.period];
+    return Object.assign({}, base, { runs: base.runs + extraOk, ok: base.ok + extraOk });
+  }
+
+  function pageRun() {
+    const r = W.runs.find(x => x.id === ui.run) || W.runs[0];
+    const w = cols(), n = narrow();
+    const ph = phaseOf(r);
+    const status = r.status === 'running' ? '{{c|running}}' : '{{g|completed · verified}}';
+    const statusLine = `{{b|${r.id}}} · ${status} · ${fmtM((r.finished ?? W.t) - r.started)} · ${r.project}`;
+    const right = n ? '' : statusLine;
+    const header = [tabsRow('run')];
+    if (n) header.push(' ' + statusLine);
+    const goal = wrap(r.goal, w - 2);
+    (n ? goal.slice(0, 2) : goal).forEach(l => header.push(' ' + l));
+    const body = [];
+    body.push(rule('plan', `phase ${ph.cur} of ${ph.total} · ${done(r)}/${r.steps.length} steps · ETA ${eta(r)}`));
+    const S = Object.fromEntries(r.steps.map(s => [s.id, s]));
+    const g = (id, label) => K(`step:${r.id}:${id}`, `${stepGlyph(S[id])} ${label}`);
+    const prog = (id) => { const s = S[id]; if (s.status === 'running') return ` ${bar((W.t - s.started) / s.expected, 8)} ${fmtM(W.t - s.started)}/${fmtM(s.expected)}`; if (s.status === 'done') return ` {{d|${fmtMS(s.expected)}}}`; return ''; };
+    if (r.id === 'mbpzj2') {
+      if (!n) {
+        body.push(`  ${g('scan', 'scan')} ─┬─ ${g('widget-core', 'widget-core')} ─┬─ ${g('widget-lib', 'widget-lib')}${prog('widget-lib')} ─┬─ ${g('widget-docs', 'widget-docs')}${prog('widget-docs')} ─┬─ ${g('integrate', 'integrate')}${prog('integrate')} ─ ${g('verify', 'verify')}${prog('verify')}`);
+        body.push(`          └─ ${g('inbox-page', 'inbox-page')} ──┘  ${g('inbox-api', 'inbox-api')}${prog('inbox-api')} ─┘                 │`);
+        body.push(`  {{d|  cmd · low    codex          cmd · deepseek · max            codex · luna    claude · opus · xhigh   claude · opus}}`);
+      } else {
+        body.push(` ${g('scan', 'scan')} ─┬─ ${g('widget-core', 'widget-core')} ─┬─ ${g('widget-lib', 'widget-lib')}`);
+        body.push(`         └─ ${g('inbox-page', 'inbox-page')} ──┘  ${g('inbox-api', 'inbox-api')}`);
+        body.push(`   ─┬─ ${g('widget-docs', 'widget-docs')} ─┬─ ${g('integrate', 'integrate')} ─ ${g('verify', 'verify')}`);
+      }
+    } else {
+      body.push(`  ${g('tidy', 'tidy')}${prog('tidy')} ── ${g('accept', 'accept')}${prog('accept')}`);
+      if (!n) body.push(`  {{d|  claude · opus · xhigh          claude · opus · xhigh}}`);
+    }
+    body.push('');
+    const live = r.steps.filter(s => s.status === 'running');
+    const touched = [...new Set(r.steps.map(s => s.pool))];
+    const cost = runCost(r), forecast = cost + r.steps.filter(s => s.status !== 'done').reduce((a, s) => a + POOLS[s.pool].perMin * (s.expected / 60) * (s.status === 'running' ? Math.max(0, 1 - (W.t - s.started) / s.expected) : 1), 0);
+    if (!n) {
+      body.push(` {{d|── }}{{b|budget}}{{d| ───────────────────────────  ── }}{{b|live}}{{d| ────────────────────────────  ── }}{{b|so far}}{{d| ───────────────────}}`);
+      const L = touched.map(id => { const p = POOLS[id]; const mine = r.steps.filter(s => s.pool === id).reduce((a, s) => a + s.draw, 0); return ` ${pad(p.short, 8)} {{share|${mine},${p.used},22}}  {{p|${mine.toFixed(1)}%}}`; });
+      L.push(' {{d|▓ this run · ▒ others · ░ free}}');
+      const M = [];
+      live.forEach(s => { M.push(`${K(`step:${r.id}:${s.id}`, pad(s.id, 11))} {{c|${spark(s)}}}  ${fmtM(W.t - s.started)}/${fmtM(s.expected)}`); M.push(`  {{d|${lastLine(s)}}}`); });
+      if (!live.length) M.push('{{d|no worker running}}');
+      const R = [`steps   {{g|✓ ${done(r)}}}  {{c|▶ ${live.length}}}  ○ ${r.steps.length - done(r) - live.length}`, `time    ${fmtM((r.finished ?? W.t) - r.started)} · ETA ${eta(r)}`, `spent   ${money(cost)} {{d|≈ ${money(cost * 7.5)} API}}`, `forecast ${money(forecast)} · {{p|${(runDraw(r) * forecast / Math.max(cost, 0.01)).toFixed(1)}% 7d}}`];
+      for (let i = 0; i < Math.max(L.length, M.length, R.length); i++) body.push(pad(L[i] || '', 44) + pad(M[i] || '', 42) + (R[i] || ''));
+    } else {
+      body.push(rule('budget'));
+      touched.forEach(id => { const p = POOLS[id]; const mine = r.steps.filter(s => s.pool === id).reduce((a, s) => a + s.draw, 0); body.push(` ${pad(p.short, 8)} {{share|${mine},${p.used},16}} {{p|${mine.toFixed(1)}%}}`); });
+      body.push(` {{d|so far ${money(cost)} · forecast ${money(forecast)}}}`);
+      body.push('');
+      body.push(rule('live'));
+      live.forEach(s => { body.push(` ${K(`step:${r.id}:${s.id}`, pad(s.id, 11))} {{c|${spark(s)}}} ${fmtM(W.t - s.started)}/${fmtM(s.expected)}`); body.push(`   {{d|${lastLine(s)}}}`); });
+    }
+    body.push('');
+    body.push(rule('timeline'));
+    timeline(r).forEach(l => body.push(l));
+    return { header, right, body, footer: [navRow()] };
+  }
+  function spark(s) { const el = W.t - s.started; const seq = '▁▂▃▅▇▅▃▂▁▂▃▅▆▇▅▃'; const i = Math.floor(el / 20) % seq.length; return (seq + seq).slice(i, i + 11); }
+  function lastLine(s) { const lines = OUTPUT[s.id] || ['> working']; const el = W.t - s.started; const i = Math.min(lines.length - 1, Math.floor(el / s.expected * lines.length)); return lines[i]; }
+  function timeline(r) {
+    const out = [];
+    out.push(` {{d|── Preflight ${'─'.repeat(Math.max(1, cols() - 24))} 0s ──}}`);
+    out.push(` {{d|${clock(r.started)}}}  {{g|●}} Goal accepted`);
+    const depth = (s) => s.deps.length ? 1 + Math.max(...s.deps.map(d => depth(r.steps.find(x => x.id === d)))) : 0;
+    const phases = {};
+    r.steps.forEach(s => { (phases[depth(s)] = phases[depth(s)] || []).push(s); });
+    Object.keys(phases).sort().forEach(k => {
+      const ps = phases[k];
+      const started = ps.filter(s => s.started != null).map(s => s.started);
+      if (!started.length) { out.push(` {{d|── Phase ${Number(k) + 1} · ${ps.map(s => s.id).join(' · ')} ── waiting}}`); return; }
+      const t0 = Math.min(...started);
+      const allDone = ps.every(s => s.status === 'done');
+      const span = allDone ? fmtMS(Math.max(...ps.map(s => s.finished)) - t0) : fmtMS(W.t - t0);
+      const title = ` {{d|── Phase ${Number(k) + 1} · ${ps.map(s => s.id).join(' · ')}}}`;
+      const fill = Math.max(1, cols() - vis(title) - vis(span) - 5);
+      out.push(title + ` {{d|${'─'.repeat(fill)} ${span} ──}}`);
+      out.push(` {{d|${clock(t0)}}}  ├─ started`);
+      ps.forEach((s, i) => {
+        const last = i === ps.length - 1;
+        if (s.status === 'done') out.push(` {{d|${clock(s.finished)}}}  │ ${last ? '└' : '├'}─{{g|✓}} ${K(`step:${r.id}:${s.id}`, s.id)} ${fmtMS(s.expected)}`);
+        else if (s.status === 'running') out.push(` {{d|${clock(W.t)}}}  │ ${last ? '└' : '├'}─{{c|▶}} ${K(`step:${r.id}:${s.id}`, s.id)} ${fmtM(W.t - s.started)} · ${s.pool} · ${lastLine(s).replace(/^> /, '')}`);
+        else out.push(`        │ ${last ? '└' : '├'}─○ ${K(`step:${r.id}:${s.id}`, s.id)} {{d|waits}}`);
+      });
+      if (allDone) out.push(` {{d|${clock(Math.max(...ps.map(s => s.finished)))}}}  └─{{g|✓}} completed ${ps.length}/${ps.length}`);
+    });
+    return out;
+  }
+  function wrap(text, width) { const words = text.split(' '); const lines = []; let cur = ''; for (const wd of words) { if ((cur + ' ' + wd).trim().length > width) { lines.push(cur.trim()); cur = wd; } else cur += ' ' + wd; } if (cur.trim()) lines.push(cur.trim()); return lines; }
+
+  function pageStep() {
+    const r = W.runs.find(x => x.id === ui.run); const s = r && r.steps.find(x => x.id === ui.step);
+    if (!s) { ui.page = 'run'; return pageRun(); }
+    const w = cols(), n = narrow(), p = POOLS[s.pool];
+    const el = s.status === 'waiting' ? 0 : (s.finished ?? W.t) - s.started;
+    const statusLine = `${stepGlyph(s)} {{b|${s.id}}} · run ${r.id} · ${s.status}`;
+    const right = n ? '' : statusLine;
+    const header = [tabsRow('run')];
+    if (n) header.push(' ' + statusLine);
+    const body = [];
+    body.push(` ${pad('Status', 10)}${s.status === 'done' ? '{{g|succeeded}}' : s.status === 'running' ? '{{c|running}}' : '{{d|waiting on ' + s.deps.join(', ') + '}}'}${n ? '' : ` · ${s.model} · ${s.reasoning}`}`);
+    body.push(` ${pad('Pool', 10)}${s.pool} · ${n ? s.model : `attempt 1 · ${s.lane} lane`} · ${s.reasoning}`);
+    body.push(` ${pad('Purpose', 10)}${cut(s.purpose, w - 12)}`);
+    wrap(`${s.lane} lane → ${s.pool}: ${pace(p).w === 'slow' ? 'spare' : 'pace ' + pace(p).w} ${(p.elapsed - p.used) >= 0 ? '+' : ''}${(p.elapsed - p.used).toFixed(1)}, record 54 runs · 89% ok · p50 10m`, w - 12).forEach((l, i) => body.push(` ${pad(i ? '' : 'Route', 10)}{{d|${l}}}`));
+    body.push(` ${pad('Time', 10)}${s.started != null ? `started ${clock(s.started)} · ` : ''}${s.status === 'done' ? `finished ${clock(s.finished)} · ${fmtMS(el)}` : s.status === 'running' ? `elapsed ${fmtMS(el)} of ${fmtM(s.expected)} expected` : 'not started'}`);
+    body.push('');
+    body.push(rule('budget'));
+    body.push(` ${pad(p.short, 8)} {{share|${s.draw},${p.used},${n ? 16 : 30}}}  {{p|${s.draw.toFixed(2)}%}}${n ? '' : ` of the ${p.window} window`} · ${money(s.cost)}${n ? '' : ` {{d|≈ ${money(s.cost * 7.5)} API}}`}`);
+    body.push('');
+    body.push(rule('task · first lines'));
+    wrap(`${s.purpose}. Work only in the files your territory names, run the tests, and write the outcome to the output file. Do not touch other territories.`, w - 4).forEach(l => body.push(`   {{d|${l}}}`));
+    body.push('');
+    body.push(rule('output', s.status === 'running' ? `{{c|live}} · ${Math.round(s.bytes / 100) / 10} kB${n ? '' : ` · ${spark(s)}`}` : `${Math.round(s.bytes / 100) / 10} kB`));
+    const lines = OUTPUT[s.id] || ['> working'];
+    const shown = s.status === 'waiting' ? [] : lines.slice(0, s.status === 'done' ? lines.length : Math.min(lines.length, 1 + Math.floor(el / s.expected * lines.length)));
+    if (!shown.length) body.push('   {{d|nothing yet}}');
+    shown.forEach(l => body.push(`   ${l}`));
+    body.push('');
+    body.push(rule('artifacts'));
+    body.push(`   {{d|task:   ~/.bullswarm/workflows/wf-${r.id}/tasks/${s.id}.md}}`);
+    body.push(`   {{d|output: ~/.bullswarm/workflows/wf-${r.id}/outputs/${s.id}.md}}`);
+    return { header, right, body, footer: [navRow()] };
+  }
+
+  function pageBudget() {
+    const w = cols(), n = narrow();
+    const right = n ? '' : `{{d|weekly resets 5d1h · monthly resets 16h}}`;
+    const header = [tabsRow('budget'), ' ' + ['This week', 'This month', 'All time'].map((t, i) => K('budgetTab:' + i, i === ui.budgetTab ? `{{sub|${t}}}` : t)).join('  ')];
+    const body = [];
+    for (const [id, p] of Object.entries(POOLS)) {
+      const pc = pace(p);
+      const spentMoney = weekMoney(p) * p.used / 100;
+      body.push(` {{b|${id}}}  {{d|${p.plan} · $${p.price}/mo · ${p.window} window}}`);
+      body.push(` {{meter|${p.used},${p.elapsed},${n ? 34 : 64}}}  ${p.used.toFixed(0)}% used`);
+      body.push(n ? ` {{d|resets ${p.left} · ${p.elapsed}% elapsed · ${pc.w}}}` : ` {{d|Resets ${p.resets} (${ZONE}) · ${p.elapsed}% of the window elapsed · ${pc.w}}}`);
+      const fit = p.used < 50 ? `{{g|${Math.floor((100 - p.used) / 12)} medium runs still fit}}` : p.used >= 80 ? '{{a|low lane only until the reset}}' : '{{a|1 medium run still fits}}';
+      body.push(` ${p.window === 'monthly' ? `${(p.used * 0.7).toFixed(1)} of 70 credits used` : `${money(spentMoney)} of $${weekMoney(p)} used`}${n ? '' : ` · {{d|worth ≈ $${p.api} at API rates}} · ${fit}`}`);
+      if (n) body.push(` ${fit}`);
+      const runs = W.runs.reduce((a, r) => a + r.steps.filter(s => s.pool === id).reduce((b, s) => b + s.draw, 0), 0) + p.runsShare;
+      const you = p.you, free = Math.max(0, 100 - runs - you);
+      const bw = n ? 34 : 64;
+      const rc = Math.round(bw * runs / 100), yc = Math.round(bw * you / 100);
+      body.push(` {{p|${'▓'.repeat(rc)}}}{{d|${'▒'.repeat(yc)}${'░'.repeat(Math.max(0, bw - rc - yc))}}}`);
+      body.push(n ? ` {{p|▓ runs ${runs.toFixed(0)}%}} · {{d|▒ you ${you}%}} · {{d|░ free ${free.toFixed(0)}%}}` : ` {{p|▓ workflows ${runs.toFixed(0)}%}} · {{d|▒ you, interactive ${you}%}} · {{d|░ unused ${free.toFixed(0)}%}}`);
+      const byRun = W.runs.filter(r => r.steps.some(s => s.pool === id)).map(r => ({ id: r.id, d: r.steps.filter(s => s.pool === id).reduce((b, s) => b + s.draw, 0), c: r.steps.filter(s => s.pool === id).reduce((b, s) => b + s.cost, 0) }));
+      byRun.push({ id: 'qv6242', d: 6.1, c: 3.05 }, { id: 'gcxzza', d: 4.4, c: 2.2 });
+      byRun.sort((a, b) => b.d - a.d);
+      const items = byRun.slice(0, n ? 2 : 4).map(x => `${K('recent:' + x.id, x.id)} ${x.d.toFixed(1)}% · ${money(x.c)}`);
+      body.push(n ? ` {{d|biggest:}} ${items.join(' · ')}` : ` {{d|biggest workflows:}}  ${items.join('   ')}`);
+      body.push('');
+    }
+    body.push(rule(n ? 'spent per day' : 'spent per day this week, by pool', n ? '' : `{{d|running total underneath}}`));
+    const days = [1, 0, -1, -2, -3, -4, -5];
+    const dd = days.map(b => b >= 0 ? dayStats(b) : null);
+    const series = Object.keys(POOL_COLOR).map(id => ({ color: POOL_COLOR[id], values: dd.map(d => d ? d.byPool[id] || 0 : 0) }));
+    const labels = days.map(b => b === 0 ? 'today' : DAY_NAMES[dayAt(b).getDay()]);
+    stackedBars(series, n ? labels.map(l => l.slice(0, 3)) : labels, { height: n ? 4 : 6, col: n ? 6 : 12, barW: n ? 4 : 8, totals: true, cumulative: true }).forEach(l => body.push(' ' + l));
+    body.push(` ${Object.entries(POOL_COLOR).map(([id, c]) => `{{${c}|█}} ${n ? POOLS[id].short : id}`).join(' · ')}`);
+    if (!n) body.push(` {{d|the four plans together allow $${Object.values(POOLS).reduce((a, p) => a + weekMoney(p), 0)} this week}}`);
+    return { header, right, body, footer: [navRow()] };
+  }
+
+  function pageStats() {
+    const w = cols(), n = narrow();
+    const header = [tabsRow('stats'), ' ' + STATS_TABS.map((t, i) => K('stats:' + i, i === ui.statsTab ? `{{sub|${t}}}` : t)).join('  ')];
+    const body = [];
+    const per = periodStats();
+    if (ui.statsTab === 0) {
+      body.push('');
+      if (!n) {
+        body.push('        {{d|Jun          Jul          Aug          Sep}}');
+        body.push(' Mon    {{heat|.......2341.2341.2341.2.}}');
+        body.push(' Wed    {{heat|......12.2341.3412.3412.}}');
+        body.push(' Fri    {{heat|.......341.2341.2341.23.}}');
+        body.push('        {{heat|......2.3412.3412.3412..}}');
+      } else {
+        body.push('      {{d|Jul      Aug      Sep}}');
+        body.push(' Mon  {{heat|..2341.2341.2341}}');
+        body.push(' Wed  {{heat|.12.2341.3412.34}}');
+        body.push(' Fri  {{heat|..341.2341.2341.}}');
+      }
+      body.push(' {{d|Less}} {{heat|1234}} {{d|More   workflows per day}}');
+      body.push('');
+      body.push(' ' + periodToggle());
+      body.push('');
+      if (!n) {
+        body.push(` Workflows: {{o|${per.runs}}} · verified {{o|${Math.round(100 * per.ok / per.runs)}%}}          Total agent time: {{o|187h}}              Spent: {{o|${money(per.spent)}}} {{d|· ≈ ${money(per.api)} API · ${(per.api / per.spent).toFixed(1)}×}}`);
+        body.push(` Active days: {{o|55}}{{d| / 123}}                  Longest run: {{o|2h 41m}} (qv6242)        Favorite pool: {{o|claude-code}} (41%)`);
+        body.push(` Most active day: {{o|Sep 14}} (11 runs)      Current streak: {{o|3}} days              Favorite model: {{o|Opus 5}} (52%)`);
+        body.push(` Busiest project: {{o|bullswarm}} (${per.top})       Median run: {{o|${per.median}m}} · ${per.steps} steps           Longest streak: {{o|18}} days`);
+      } else {
+        body.push(` Workflows: {{o|${per.runs}}} · verified {{o|${Math.round(100 * per.ok / per.runs)}%}}`);
+        body.push(` Agent time: {{o|187h}} · Spent: {{o|${money(per.spent)}}}`);
+        body.push(` Active days: {{o|55}}{{d| / 123}} · streak {{o|3}}`);
+        body.push(` Favorite pool: {{o|claude-code}} (41%)`);
+        body.push(` Favorite model: {{o|Opus 5}} (52%)`);
+        body.push(` Busiest project: {{o|bullswarm}} (${per.top})`);
+      }
+      body.push('');
+      body.push(' {{p|Your longest run would have taken a person about 3 working days}}');
+    } else if (ui.statsTab === 1) {
+      body.push('');
+      body.push(' ' + Object.entries(METRICS).map(([k, label]) => K('trend:' + k, k === ui.metric ? `{{sub|${label}}}` : label)).join('  '));
+      body.push(' ' + periodToggle());
+      body.push('');
+      const span = ui.period === 1 ? 7 : ui.period === 2 ? 30 : 84;
+      const bucket = span > 14 ? 7 : 1;
+      const buckets = [];
+      for (let back = span - bucket; back >= 0; back -= bucket) buckets.push(back);
+      const agg = (back) => { let r = 0, ok = 0, sp = 0, lc = 0, lx = 0; for (let b = back; b < back + bucket; b++) { const d = dayStats(b); r += d.runs; ok += d.ok; sp += d.spent; lc += d.licence['claude-code'] || 0; lx += d.licence.codex || 0; } return { r, ok, sp, lc, lx }; };
+      const data = buckets.map(agg);
+      const labels = buckets.map(b => bucket === 1 ? (b === 0 ? (n ? 'now' : 'today') : n ? String(dayAt(b).getDate()) : `${dayAt(b).getDate()} ${MONTHS[dayAt(b).getMonth()]}`) : n ? String(dayAt(b).getDate()) : `${dayAt(b + bucket - 1).getDate()}–${dayAt(b).getDate()}`);
+      const col = n ? Math.max(3, Math.floor((w - 10) / buckets.length)) : Math.max(8, Math.floor((w - 10) / buckets.length));
+      const barW = Math.max(2, col - (n ? 1 : 3));
+      let series;
+      if (ui.metric === 'finished') series = [{ color: 'g', values: data.map(d => d.ok) }, { color: 'r', values: data.map(d => d.r - d.ok) }];
+      else if (ui.metric === 'verified') series = [{ color: 'g', values: data.map(d => d.r ? Math.round(100 * d.ok / d.r) : 0) }];
+      else if (ui.metric === 'spent') series = Object.keys(POOL_COLOR).map(id => ({ color: POOL_COLOR[id], values: buckets.map(b => { let v = 0; for (let x = b; x < b + bucket; x++) v += dayStats(x).byPool[id] || 0; return v; }) }));
+      else series = [{ color: 'p', values: data.map(d => d.lc) }, { color: 'a', values: data.map(d => d.lx) }];
+      const unit = ui.metric === 'spent' ? '$' : '';
+      body.push(rule(n ? METRICS[ui.metric] : `${METRICS[ui.metric]} · ${PERIODS[ui.period].toLowerCase()}${bucket > 1 ? ' · per week' : ' · per day'}`));
+      stackedBars(series, labels, { height: n ? 5 : 8, col, barW, unit, totals: true, cumulative: ui.metric === 'spent' }).forEach(l => body.push(' ' + l));
+      const legend = ui.metric === 'finished' ? '{{g|█}} verified · {{r|█}} failed' : ui.metric === 'verified' ? '{{g|█}} verified share, percent' : ui.metric === 'spent' ? Object.entries(POOL_COLOR).map(([id, c]) => `{{${c}|█}} ${n ? POOLS[id].short : id}`).join(' · ') : `{{p|█}} claude · {{a|█}} codex${n ? '' : '   {{d|licence percent drawn}}'}`;
+      body.push(' ' + legend);
+      body.push('');
+      const total = ui.metric === 'spent' ? money(data.reduce((a, d) => a + d.sp, 0)) : ui.metric === 'finished' ? `${data.reduce((a, d) => a + d.r, 0)} runs` : ui.metric === 'verified' ? `${Math.round(100 * data.reduce((a, d) => a + d.ok, 0) / Math.max(1, data.reduce((a, d) => a + d.r, 0)))}% overall` : `${data.reduce((a, d) => a + d.lc, 0).toFixed(0)}% claude · ${data.reduce((a, d) => a + d.lx, 0).toFixed(0)}% codex`;
+      body.push(` {{o|${total}}} {{d|over ${PERIODS[ui.period].toLowerCase()}}}`);
+    } else if (ui.statsTab === 3) {
+      body.push('');
+      body.push(rule('spend per day', n ? '' : periodToggle()));
+      if (n) body.push(' ' + periodToggle());
+      body.push('   $12┤');
+      body.push('    $9┤              {{p|┌──┐}}');
+      body.push('    $6┤     {{p|┌─┐}}     {{p|│  │}}      {{p|┌──┐}}');
+      body.push('    $3┤  {{a|┌──┼─┼────┐}} {{p|│  │}}  {{a|┌───┼──┼──}}');
+      body.push('    $0┼{{g|──┘}}  {{g|│ │}}    {{g|└─┘  └──┘}}   {{g|│  │}}');
+      body.push('      {{d|Sep 10        Sep 12        Sep 14        Sep 16}}');
+      body.push(' {{p|●}} Opus 5 · {{a|●}} gpt-5.6-luna · {{g|●}} grok-4.6 · {{c|●}} deepseek');
+      body.push('');
+      [['Opus 5', 52, 'claude-code', 118, 99, 15], ['gpt-5.6-luna', 21, 'codex', 41, 97, 9], ['grok-4.6', 15, 'grok', 33, 100, 10], ['deepseek-v4.1-flash', 8, 'command-code', 65, 89, 4]].forEach(([m, pct, pool, steps, ok, p50]) => {
+        body.push(` {{p|●}} {{b|${m}}} {{d|(${pct}%)}}`);
+        body.push(`   {{d|${pool} · ${steps} steps · ${ok}% ok · p50 ${p50}m}}`);
+      });
+    } else if (ui.statsTab === 2) {
+      body.push('');
+      body.push(rule(n ? 'licence per day' : 'licence used per day, by pool', n ? '' : periodToggle()));
+      if (n) body.push(' ' + periodToggle());
+      body.push('  100%┤');
+      body.push('   75%┤                              {{r|┌──}}');
+      body.push('   50%┤        {{g|┌──┐}}      {{a|┌────┐}}  {{r|│}}');
+      body.push('   25%┤  {{g|┌─────┘  └──────┼────┘    └──┘}}');
+      body.push('    0%┼{{g|──┘}}');
+      body.push('      {{d|Sep 10        Sep 12        Sep 14        Sep 16   ▏ reset}}');
+      body.push('');
+      Object.entries(POOLS).forEach(([id, p]) => body.push(` ${K('pool:' + id, pad(id, 14))} {{meter|${p.used},${p.elapsed},${n ? 20 : 40}}}  ${p.used.toFixed(0)}% · ${pace(p).w}`));
+    } else {
+      body.push('');
+      body.push(' ' + periodToggle());
+      body.push('');
+      [['bullswarm', 11, 91, 19.4, 38, '▂▅▃▇▆▄▅'], ['bullseye', 7 + W.recent.filter(r => r.finishedAt != null).length, 71, 12.1, 52, '▁▂▃▂▅▃▂'], ['agentic-knowledge-system', 3, 100, 4.8, 21, '▁▁▂▁▁▂▁']].forEach(([name, runs, ok, spent, med, sp]) => {
+        body.push(` {{b|${name}}}   {{o|${sp}}}`);
+        body.push(`   ${runs} runs · ✓ ${ok}% · ${money(spent)} · ${med}m median`);
+      });
+    }
+    return { header, body, footer: [navRow()] };
+  }
+
+  function pageHistory() {
+    const w = cols(), n = narrow();
+    const header = [tabsRow('history'), n ? ` {{d|newest first · scroll for older days}}` : ` {{d|every workflow, newest first · scroll down for older days}}`];
+    const body = [];
+    for (let back = 0; back < ui.historyDays; back++) {
+      const d = dayStats(back);
+      const count = back === 0 ? W.today.finished : d.runs;
+      body.push(rule(`${back === 0 ? 'Today · ' : ''}${dayLabel(back, true)}`, `${count} run${count === 1 ? '' : 's'} · {{o|${money(back === 0 ? W.today.spent : d.spent)}}}`));
+      const rowsHere = [];
+      if (back === 0) {
+        W.recent.forEach(r => rowsHere.push({ ok: r.ok, id: r.id, project: r.project, label: r.label, mins: r.minutes, cost: r.cost, at: r.finishedAt != null ? clock(r.finishedAt) : clock(-r.ago) }));
+        rowsHere.push({ ok: true, id: 'k8s2xa', project: 'bullswarm', label: 'issue watcher: triage 3 new issues', mins: 6, cost: 0.12, at: '09:12' });
+      } else {
+        const projects = ['bullswarm', 'bullseye', 'agentic-knowledge-system', 'bullseye-platform'];
+        const goals = ['tidy and push', 'docs pass', 'widget milestone', 'benchmark ingest', 'release checks', 'triage issues', 'refactor router', 'dashboard polish'];
+        for (let i = 0; i < d.runs; i++) {
+          const seed = back * 100 + i;
+          rowsHere.push({ ok: i < d.ok, id: (0.3 + rnd(seed)).toString(36).slice(2, 8), project: projects[Math.floor(rnd(seed + 1) * projects.length)], label: goals[Math.floor(rnd(seed + 2) * goals.length)], mins: 8 + Math.round(rnd(seed + 3) * 70), cost: d.spent / d.runs * (0.6 + rnd(seed + 4) * 0.8), at: `${String(9 + Math.floor(rnd(seed + 5) * 12)).padStart(2, '0')}:${String(Math.floor(rnd(seed + 6) * 60)).padStart(2, '0')}` });
+        }
+      }
+      if (!rowsHere.length) body.push(' {{d|no workflows}}');
+      rowsHere.forEach(r => {
+        const left = ` ${r.ok ? '{{g|✓}}' : '{{r|✗}}'} ${K('recent:' + r.id, `{{b|${r.id}}}`)}  ${pad(cut(r.project, n ? 9 : 26), n ? 9 : 26)} ${cut(r.label, n ? 12 : 40)}`;
+        const rightTxt = `${r.mins}m · ${money(r.cost)}${n ? '' : ` {{d|(≈ ${money(r.cost * 7.5)} API)}}`}  {{d|${r.at}}}`;
+        body.push(pad(left, w - vis(rightTxt) - 1) + rightTxt);
+      });
+      body.push('');
+    }
+    body.push(` {{d|older days load as you scroll…}}`);
+    return { header, body, footer: [navRow()] };
+  }
+
+  function pageHelp() {
+    const n = narrow();
+    const header = [tabsRow('help'), ` {{d|${n ? 'keys and clicks' : 'every key and click on this dashboard'}}}`];
+    const body = [];
+    const row = (keys, what) => body.push(`  {{b|${pad(keys, n ? 12 : 16)}}}${what}`);
+    body.push(rule('pages'));
+    row('r b s y f', 'Runs · Budget · Stats · History · Fleet');
+    row('h  ?', 'this help');
+    row('Esc  ←', n ? 'back, then Home' : 'back from a step, otherwise Home');
+    row('1 … 9', 'open the numbered run in the nav');
+    row('Tab', 'next sub-tab on Stats, Budget and Fleet');
+    row('p', 'cycle the period: 7 days · 30 days · all time');
+    body.push('');
+    body.push(rule('moving'));
+    row('↑ ↓  j k', 'scroll one line');
+    row('PgUp PgDn', 'scroll a screen');
+    row('Home End', 'top · bottom');
+    row('wheel', 'scrolls the body under the sticky header');
+    body.push('');
+    body.push(rule('clicks'));
+    row('tile', 'a today number opens its chart in Stats › Trends');
+    row('bar', n ? 'a day bar opens its chart' : 'a day bar in the 7-day breakdown opens its chart');
+    row('pool', 'a pool name opens Budget on that pool');
+    row('step', 'a step name opens the step page');
+    row('run', 'a run row or nav button opens the run');
+    body.push('');
+    body.push(rule('other'));
+    row('e', 'edit the fleet (on Fleet)');
+    row('ctrl+s', 'copy the screen as plain text');
+    row('q', 'quit to the shell; workflows keep running');
+    return { header, body, footer: [navRow()] };
+  }
+  function pageFleet() {
+    const w = cols();
+    const header = [tabsRow('fleet'), ' ' + ['by lane', 'by provider'].map((t, i) => K('fleetTab:' + i, i === ui.fleetTab ? `{{sub|${t}}}` : t)).join('  ') + '   ' + K('edit', '[ {{u|e}}dit ]') + (narrow() ? '' : ' {{d|read-only here · edit opens bullswarm setup}}')];
+    const body = [''];
+    const rung = (pool, model, reasoning, rec) => { body.push(`   ${pad(pool, 14)} {{c|${model}}} · ${reasoning}`); body.push(`   ${pad('', 14)} {{d|${rec}}}`); };
+    if (ui.fleetTab === 0) {
+      body.push(' {{b|high}} {{d|· integration · architecture · adversarial-acceptance}}');
+      rung('claude-code', 'claude-opus-5', 'xhigh', '52 runs · 98% ok · p50 15m'); rung('codex', 'gpt-5.6-sol', 'medium', '2 runs · 0% ok · p50 18m'); rung('grok', 'grok-4.6', 'xhigh', '13 runs · 100% ok · p50 10m');
+      body.push(''); body.push(' {{b|medium}} {{d|· implement · check (the ordinary writers)}}');
+      rung('codex', 'gpt-5.6-luna', 'max', '1 run · 100% ok · p50 25m'); rung('grok', 'grok-4.6', 'high', '99 runs · 100% ok · p50 9m'); rung('command-code', 'deepseek-v4.1-flash', 'max', '54 runs · 89% ok · p50 10m');
+      body.push(''); body.push(' {{b|low}} {{d|· mechanical · io-read · digest}}');
+      rung('codex', 'gpt-5.6-luna', 'max', 'no runs yet'); rung('command-code', 'deepseek-v4.1-flash', 'low', '11 runs · 100% ok · p50 1m');
+    } else {
+      Object.entries(POOLS).forEach(([id, p]) => { body.push(` {{b|${id}}} {{d|· ${p.window} window · ${p.used.toFixed(0)}% used of ${p.elapsed}% elapsed}}`); rung('high', p.model, 'xhigh', '52 runs · 98% ok'); rung('medium', p.model, 'max', '99 runs · 100% ok'); body.push(''); });
+    }
+    return { header, body, footer: [navRow()] };
+  }
+
+  // ---------- frame ----------
+  const term = document.getElementById('term'), shell = document.getElementById('shell'), msgEl = document.getElementById('msg');
+  let lastFrame = null, msgTimer = null;
+  function msg(text) { msgEl.textContent = text; clearTimeout(msgTimer); msgTimer = setTimeout(() => { msgEl.textContent = ''; }, 4000); }
+  function frame() {
+    const p = ui.page === 'home' ? pageHome() : ui.page === 'run' ? pageRun() : ui.page === 'step' ? pageStep() : ui.page === 'budget' ? pageBudget() : ui.page === 'stats' ? pageStats() : ui.page === 'history' ? pageHistory() : ui.page === 'help' ? pageHelp() : pageFleet();
+    const w = cols();
+    const bodyRows = Math.max(3, rows() - p.header.length - p.footer.length);
+    const max = Math.max(0, p.body.length - bodyRows);
+    // History loads seven more days each time the reader nears the bottom.
+    if (ui.page === 'history' && ui.scroll >= max - 2 && ui.historyDays < 120) { ui.historyDays += 7; ui.scroll = Math.min(ui.scroll, max); return frame(); }
+    ui.scroll = Math.max(0, Math.min(ui.scroll, max));
+    const shown = p.body.slice(ui.scroll, ui.scroll + bodyRows);
+    while (shown.length < bodyRows) shown.push('');
+    const head = p.header.slice();
+    const pos = max > 0 ? `{{d| · ${ui.scroll + 1}–${Math.min(p.body.length, ui.scroll + bodyRows)}/${p.body.length}}}` : '';
+    const right = (p.right || '') + pos;
+    if (right) head[0] = pad(head[0], w - vis(right)) + right;
+    const lines = [...head, ...shown, ...p.footer].map(l => clip(tokens(pad(l, w)), w));
+    lastFrame = lines;
+    term.innerHTML = lines.map(tokensHtml).join('\n');
+    shell.classList.toggle('phone', narrow());
+  }
+
+  // ---------- actions ----------
+  function act(a) {
+    const [kind, ...rest] = a.split(':'); const arg = rest.join(':');
+    if (kind === 'page') { ui.page = arg; ui.scroll = 0; if (arg === 'run' && !W.runs.find(r => r.id === ui.run)) ui.run = W.runs[0].id; }
+    else if (kind === 'run') { ui.run = arg; ui.page = 'run'; ui.scroll = 0; }
+    else if (kind === 'recent') { const r = W.runs.find(x => x.id === arg); if (r) { ui.run = arg; ui.page = 'run'; ui.scroll = 0; } else { ui.page = 'history'; ui.scroll = 0; msg(`${arg} · a finished run opens its result envelope here in the real product`); } }
+    else if (kind === 'step') { const [run, step] = arg.split(':'); ui.run = run; ui.step = step; ui.page = 'step'; ui.scroll = 0; }
+    else if (kind === 'back') { ui.page = ui.page === 'step' ? 'run' : 'home'; ui.scroll = 0; }
+    else if (kind === 'pool') { ui.page = 'budget'; ui.scroll = 0; msg(`budget · ${arg}`); }
+    else if (kind === 'period') { ui.period = Number(arg); }
+    else if (kind === 'stats') { ui.page = 'stats'; ui.statsTab = Number(arg); ui.scroll = 0; }
+    else if (kind === 'trend') { ui.page = 'stats'; ui.statsTab = 1; ui.metric = arg; ui.scroll = 0; }
+    else if (kind === 'fleetTab') { ui.fleetTab = Number(arg); }
+    else if (kind === 'budgetTab') { ui.budgetTab = Number(arg); msg(arg === '0' ? '' : 'this prototype only carries this week\'s numbers'); }
+    else if (kind === 'edit') { msg('hands the terminal to `bullswarm setup` and returns here with the rungs re-read'); }
+    else if (kind === 'top') ui.scroll = 0;
+    else if (kind === 'end') ui.scroll = 1e9;
+    frame();
+  }
+  term.addEventListener('click', (e) => { const el = e.target.closest('[data-act]'); if (el) { shell.focus(); act(el.dataset.act); } });
+  shell.addEventListener('wheel', (e) => { e.preventDefault(); ui.scroll += e.deltaY > 0 ? 2 : -2; frame(); }, { passive: false });
+  shell.addEventListener('keydown', (e) => {
+    const k = e.key;
+    if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 's') { e.preventDefault(); const text = lastFrame.map(toks => toks.map(t => t.atom !== undefined ? t.text : t.ch).join('')).join('\n'); navigator.clipboard && navigator.clipboard.writeText(text).then(() => msg('screen copied as plain text')).catch(() => msg('copy blocked by the browser')); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const map = { h: 'page:help', '?': 'page:help', r: 'page:run', b: 'page:budget', s: 'page:stats', f: 'page:fleet', y: 'page:history', e: 'edit' };
+    if (/^[1-9]$/.test(k)) { const r = running()[Number(k) - 1]; if (r) act('run:' + r.id); else msg(`no run ${k}`); }
+    else if (map[k] && !(k === 'e' && ui.page !== 'fleet')) act(map[k]);
+    else if (k === 'p') act('period:' + ((ui.period + 1) % 3));
+    else if (k === 'Tab') { e.preventDefault(); if (ui.page === 'stats') ui.statsTab = (ui.statsTab + 1) % 5; else if (ui.page === 'fleet') ui.fleetTab = (ui.fleetTab + 1) % 2; else if (ui.page === 'budget') ui.budgetTab = (ui.budgetTab + 1) % 3; frame(); }
+    else if (k === 'Escape' || k === 'ArrowLeft') { if (ui.page === 'step') act('back'); else if (ui.page !== 'home') act('page:home'); }
+    else if (k === 'ArrowDown' || k === 'j') { ui.scroll += 1; frame(); }
+    else if (k === 'ArrowUp' || k === 'k') { ui.scroll -= 1; frame(); }
+    else if (k === 'PageDown') { ui.scroll += rows() - 4; frame(); }
+    else if (k === 'PageUp') { ui.scroll -= rows() - 4; frame(); }
+    else if (k === 'Home') act('top'); else if (k === 'End') act('end');
+    else if (k === 'q') msg('quit · a real dashboard returns you to the shell; the workflows keep running');
+    else return;
+    e.preventDefault();
+  });
+
+  // ---------- controls ----------
+  function setWidth(w) { ui.width = w; ui.scroll = 0; document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.width === w))); frame(); try { localStorage.setItem('bsw-width', w); } catch (err) {} }
+  document.querySelectorAll('[data-width]').forEach(b => b.addEventListener('click', () => setWidth(b.dataset.width)));
+  document.querySelectorAll('[data-speed]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.speed === 'reset') { W = makeWorld(); ui.page = 'home'; ui.step = null; ui.scroll = 0; ui.historyDays = 10; speed = 8; }
+    else speed = Number(b.dataset.speed);
+    document.querySelectorAll('[data-speed]').forEach(x => x.setAttribute('aria-selected', String(x.dataset.speed === String(speed))));
+    frame();
+  }));
+  try { const w = localStorage.getItem('bsw-width'); if (w === 'phone' || w === 'desktop') ui.width = w; } catch (err) {}
+  document.querySelectorAll('[data-width]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.width === ui.width)));
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  setInterval(() => { if (speed > 0) { tick(0.5 * speed); frame(); } }, reduced ? 1000 : 500);
+  frame();
+  window.__bsw = { act, frame, ui, tick };
+})();
+</script>

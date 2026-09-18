@@ -11,7 +11,7 @@ import {
 import { projectedUtilization, WINDOW_KEYS, monthlyWindowMs } from '../src/meters/framework.js';
 import {
   expectedMinutesFor, spendRateFor, workerMinutesForPool, attachSpend,
-  attemptWindow, remainingMinutesOf, MIN_EXPECTED_MINUTES, MIN_RATE_MINUTES,
+  attemptWindow, remainingMinutesOf, normalizeResetsAt, MIN_EXPECTED_MINUTES, MIN_RATE_MINUTES,
 } from '../src/lib/spend.js';
 import { fiveHourForecast } from '../src/lib/route.js';
 
@@ -166,6 +166,26 @@ test('spend rate is fitted over consecutive readings inside one window', () => {
   // Nothing reported a weekly window: unknown, not zero.
   assert.equal(rate.weekly.ratePerMinute, null);
   assert.equal(rate.weekly.source, null);
+});
+
+test('reset timestamps that differ only below a second stay in the same window', () => {
+  assert.equal(
+    normalizeResetsAt('2026-09-09T13:00:00.123Z'),
+    '2026-09-09T13:00:00.000Z',
+  );
+  const history = [
+    reading(NOW - 3 * HOUR, { fiveHour: { util: 10, resets: RESETS + 101 } }),
+    reading(NOW - 2 * HOUR, { fiveHour: { util: 20, resets: RESETS + 402 } }),
+    reading(NOW - HOUR, { fiveHour: { util: 30, resets: RESETS + 899 } }),
+  ];
+  const rate = spendRateFor('claude-code', {
+    history,
+    workerMinutesBetween: () => 50,
+    nowMs: NOW,
+  });
+  assert.equal(rate.fiveHour.source, 'history');
+  assert.equal(rate.fiveHour.samples, 2);
+  assert.equal(rate.fiveHour.ratePerMinute, 0.2);
 });
 
 test('one usable pair is not a fit: the rate bootstraps off the whole window', () => {

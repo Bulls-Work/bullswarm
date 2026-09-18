@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}                    
+ {k:stats:0|Overview}  {k:stats:1|{sub|Trends}}  {k:stats:2|Pools}  {k:stats:3|Models}  {k:stats:4|Projects}             
+                                                       
+ {k:trend:finished|runs finished}  {k:trend:verified|verified share}  {k:trend:spent|{sub|spent}}  {k:trend:licence|licence used}    
+ {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}                 
+                                                       
+ {d|── }{b|spent}{d| ─────────────────────────────────────────────}
+    $25┤                                               
+    $20┤                                               
+       ┤       {c|▄▄▄▄▄}                                   
+    $10┤ {c|▄▄▄▄▄} {g|█████}             {c|█████}       {c|▄▄▄▄▄}     
+     $5┤ {g|█████} {p|█████} {g|█████}       {a|█████} {g|█████} {g|█████}     
+     $0┼ {d|10   } {d|11   } {d|12   } {d|13   } {d|14   } {d|15   } {d|now  }     
+         $7.0  $12   $3.7  {d|—}     $8.5  $3.8  $6.4      
+ {d| total}  {d|$7.0}  {d|$19}   {d|$22}         {d|$31}   {d|$35}   {d|$41}       
+ {p|█} claude · {a|█} codex · {g|█} grok · {c|█} cmd                   
+                                                       
+ {o|$40.93} {d|over last 7 days}                               
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}           {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

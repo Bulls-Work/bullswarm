@@ -577,3 +577,210 @@ test('I10: runs show prints each attempt with the reasoning level it ran at', ()
     assert.equal(/prove #1.*reasoning/.test(shown.stdout), false);
   } finally { cleanup(); }
 });
+
+// --- I13: `workflow reindex` backfills the rollup history index ---------
+//
+// Runs that finished before 0.33.0 have no rollup. reindex builds one from
+// their durable state, writes it into the run directory, and appends it to
+// ~/.bullswarm/history/runs.jsonl. A legacy pre-0.27.0 run has no V2 state,
+// so it gets the minimal record instead: History is a timeline of every
+// workflow, and a run with no record is a run that never shows up.
+
+test('I13: reindex backfills finished V2 runs and legacy runs, skips the unfinished, and is idempotent', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    v2Run(home, { runId: 'wf-done-000001', shortId: 'done01', goal: 'first finished run' });
+    v2Run(home, {
+      runId: 'wf-done-000002', shortId: 'done02', goal: 'second finished run',
+      startedAt: '2026-09-01T01:00:00.000Z', finishedAt: '2026-09-01T01:30:00.000Z',
+    });
+    // Ongoing: a live kernel heartbeat, no finishedAt.
+    v2Run(home, {
+      runId: 'wf-live-000003', shortId: 'live03', goal: 'still running', status: 'running',
+      finishedAt: null, result: false,
+      runner: { pid: process.pid, startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString() },
+    });
+    // Legacy: an authored-graph state.json with no V2 schemaVersion, and no
+    // report.json — the little it recorded is all there is.
+    const legacyDir = join(home, 'workflows', 'wf-legacy-000004');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'state.json'), JSON.stringify({
+      workflow: 'authored-graph', goal: 'old run', status: 'completed', startedAt: '2026-07-01T00:00:00.000Z',
+    }));
+
+    const first = run(wf('reindex', '--json'), { home });
+    assert.equal(first.status, 0, first.stderr);
+    const report = JSON.parse(first.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.scanned, 4);
+    assert.equal(report.written, 3, 'both finished V2 runs and the legacy run are rolled up');
+    assert.equal(report.legacy, 1, 'counted as legacy, and no longer skipped');
+    assert.equal(report.unfinished, 1, 'the ongoing run has no result to roll up yet');
+    assert.equal(report.failed, 0);
+    assert.equal(report.indexPath, join(home, 'history', 'runs.jsonl'));
+
+    for (const runId of ['wf-done-000001', 'wf-done-000002']) {
+      const record = JSON.parse(readFileSync(join(home, 'workflows', runId, 'rollup.json'), 'utf8'));
+      assert.equal(record.schemaVersion, 'bullswarm.workflow.rollup.v1');
+      assert.equal(record.runId, runId);
+      assert.equal(record.legacy, false);
+      assert.ok(record.minutes.wall > 0);
+    }
+
+    // The legacy record is minimal and marked: identity, the times its own
+    // files prove, no cost and no pool minutes.
+    const legacyRecord = JSON.parse(readFileSync(join(legacyDir, 'rollup.json'), 'utf8'));
+    assert.equal(legacyRecord.legacy, true);
+    assert.equal(legacyRecord.runId, 'wf-legacy-000004');
+    assert.equal(legacyRecord.goal, 'authored-graph', 'the workflow name it recorded');
+    assert.equal(legacyRecord.status, 'completed');
+    assert.equal(legacyRecord.startedAt, '2026-07-01T00:00:00.000Z');
+    assert.deepEqual(legacyRecord.pools, {}, 'no attempt was ever measured for a legacy run');
+    assert.deepEqual(legacyRecord.models, {});
+    assert.deepEqual(legacyRecord.requirements, { passed: 0, total: 0 });
+    assert.equal(legacyRecord.verified, false);
+    assert.equal(legacyRecord.minutes.wall, null, 'its finish time is a file time, which is not the run stopping');
+    assert.equal(legacyRecord.timeSource, 'state+directory');
+    assert.equal(existsSync(join(home, 'workflows', 'wf-live-000003', 'rollup.json')), false, 'an unfinished run has nothing to record');
+
+    const lines = readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3, 'one index line per run, the legacy run included');
+    assert.deepEqual(
+      lines.map((line) => JSON.parse(line).runId).sort(),
+      ['wf-done-000001', 'wf-done-000002', 'wf-legacy-000004'],
+    );
+
+    // Running it again writes nothing new and leaves the index the same size:
+    // every run directory is accounted for as already indexed or unfinished.
+    const second = run(wf('reindex', '--json'), { home });
+    const secondReport = JSON.parse(second.stdout);
+    assert.equal(secondReport.written, 0);
+    assert.equal(secondReport.present, 3, 'all three rollups are already indexed');
+    assert.equal(secondReport.skipped, 4, 'nothing was written: three present and one unfinished');
+    assert.equal(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim().split('\n').length, 3);
+    const afterSecond = run(wf('reindex'), { home });
+    assert.match(afterSecond.stdout.trim(), /^✓ reindex: wrote 0, skipped 4 \(1 legacy, 1 unfinished, 3 already indexed\) of 4 run directories → /);
+
+    // A deleted index is rebuilt from the records the run directories hold.
+    rmSync(join(home, 'history'), { recursive: true, force: true });
+    const repaired = JSON.parse(run(wf('reindex', '--json'), { home }).stdout);
+    assert.equal(repaired.written, 3, 'a lost index is rebuilt from the run directories');
+    assert.equal(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim().split('\n').length, 3);
+  } finally { cleanup(); }
+});
+
+test('I13: reindex rolls up a legacy directory that has no state.json at all', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    const legacyDir = join(home, 'workflows', 'wf-legacy-nostate');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'report.json'), JSON.stringify({
+      workflow: 'smoke-two-step', status: 'completed',
+      startedAt: '2026-07-02T09:00:00.000Z', finishedAt: '2026-07-02T09:03:00.000Z',
+    }));
+    const report = JSON.parse(run(wf('reindex', '--json'), { home }).stdout);
+    assert.equal(report.written, 1);
+    assert.equal(report.legacy, 1);
+    const record = JSON.parse(readFileSync(join(legacyDir, 'rollup.json'), 'utf8'));
+    assert.equal(record.legacy, true);
+    assert.equal(record.goal, 'smoke-two-step');
+    assert.equal(record.minutes.wall, 3, 'both times came from the run report');
+    assert.equal(record.timeSource, 'report');
+  } finally { cleanup(); }
+});
+
+test('I13: reindex prints one plain summary line and refuses an unknown flag', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    v2Run(home, { runId: 'wf-plain-000001', shortId: 'plan01', goal: 'a finished run' });
+    const plain = run(wf('reindex'), { home });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(
+      plain.stdout.trim(),
+      /^✓ reindex: wrote 1, skipped 0 \(0 legacy, 0 unfinished, 0 already indexed\) of 1 run directories → \S+runs\.jsonl$/,
+    );
+    const bogus = run(wf('reindex', '--bogus-flag'), { home });
+    assert.equal(bogus.status, 2, bogus.stdout);
+    assert.match(bogus.stderr, /unknown flag --bogus-flag/);
+  } finally { cleanup(); }
+});
+
+test('I13: reindex records the project a run stamped at goal time, without touching git', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    v2Run(home, { runId: 'wf-proj-000001', shortId: 'proj01', goal: 'a finished run' });
+    writeFileSync(join(home, 'workflows', 'wf-proj-000001', 'project.json'), JSON.stringify({
+      schemaVersion: 'bullswarm.workflow.project.v1', name: 'bullseye',
+      remote: 'git@github.com:Bulls-Work/bullseye.git', toplevel: '/gone', cwd: '/gone',
+      recordedAt: '2026-09-01T00:00:00.000Z',
+    }));
+    assert.equal(run(wf('reindex', '--json'), { home }).status, 0);
+    const record = JSON.parse(readFileSync(join(home, 'workflows', 'wf-proj-000001', 'rollup.json'), 'utf8'));
+    assert.equal(record.project, 'bullseye', 'the goal-time record outlives the checkout it names');
+  } finally { cleanup(); }
+});
+
+test('I13: a partial run is terminal, indexes, and lists as finished', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    // 14 of the 190 V2 runs in the live home finished `partial`, and the V2
+    // kernel's own terminal set (v2-runtime.js TERMINAL) has always included
+    // it. The shared set now matches it, so nothing treats a partial run as
+    // unfinished work.
+    assert.equal(isTerminalWorkflowStatus('partial'), true, 'status.js and v2-runtime.js must agree');
+    // The case the set decides: partial with no finish time of its own.
+    v2Run(home, {
+      runId: 'wf-partial-00001', shortId: 'part01', goal: 'a partial run',
+      status: 'partial', finishedAt: null, result: false,
+    });
+    const report = JSON.parse(run(wf('reindex', '--json'), { home }).stdout);
+    assert.equal(report.written, 1, 'the status word is the kernel saying it finished');
+    assert.equal(report.unfinished, 0);
+    const record = JSON.parse(readFileSync(join(home, 'workflows', 'wf-partial-00001', 'rollup.json'), 'utf8'));
+    assert.equal(record.status, 'partial');
+    assert.equal(record.legacy, false);
+
+    // `workflow runs` lists it as finished: not ongoing, in the historical
+    // set, and named with the status it finished on.
+    const listed = JSON.parse(run(wf('runs', '--all', '--json'), { home }).stdout);
+    assert.equal(listed.count, 1);
+    assert.equal(listed.runs[0].status, 'partial');
+    assert.equal(listed.runs[0].ongoing, false);
+    assert.equal(listed.runs[0].finishedAt, null, 'the state never stamped one; it is not invented for the list');
+    // The record reindex wrote does carry a finish time, because rollupRecord
+    // has always stamped the moment it was asked about a terminal run with no
+    // time of its own. That stamp is the reindex instant, not a claim about
+    // when the run stopped, and it is the only derived time in the record.
+    assert.ok(Number.isFinite(Date.parse(record.finishedAt)), `expected a stamped finish, got ${record.finishedAt}`);
+    const ongoing = JSON.parse(run(wf('runs', '--json'), { home }).stdout);
+    assert.equal(ongoing.count, 0, 'a partial run is not ongoing work');
+    const historical = run(wf('runs', '--historical'), { home });
+    assert.equal(historical.status, 0, historical.stderr);
+    assert.match(historical.stdout, /wf-partial-00001/);
+    assert.match(historical.stdout, /partial/);
+  } finally { cleanup(); }
+});
+
+test('I13: reindex --force rewrites rollups that already exist', () => {
+  const { home, cleanup } = sandbox();
+  try {
+    v2Run(home, { runId: 'wf-force-000001', shortId: 'frc001', goal: 'a finished run' });
+    assert.equal(JSON.parse(run(wf('reindex', '--json'), { home }).stdout).written, 1);
+    const rollupPath = join(home, 'workflows', 'wf-force-000001', 'rollup.json');
+    // Simulate a record written by an older shape of this module.
+    writeFileSync(rollupPath, JSON.stringify({ ...JSON.parse(readFileSync(rollupPath, 'utf8')), project: 'stale-name' }));
+    // Without --force the run's own record is authoritative: it is left
+    // exactly as it is, and the index is brought into line with it.
+    run(wf('reindex', '--json'), { home });
+    assert.equal(JSON.parse(readFileSync(rollupPath, 'utf8')).project, 'stale-name');
+    assert.equal(
+      JSON.parse(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim()).project, 'stale-name',
+      'the index follows the record, never the other way round',
+    );
+
+    const forced = JSON.parse(run(wf('reindex', '--force', '--json'), { home }).stdout);
+    assert.equal(forced.written, 1, '--force rebuilds the record from durable state');
+    assert.notEqual(JSON.parse(readFileSync(rollupPath, 'utf8')).project, 'stale-name');
+    assert.equal(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim().split('\n').length, 1);
+  } finally { cleanup(); }
+});

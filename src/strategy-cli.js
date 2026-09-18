@@ -21,6 +21,7 @@ import { flagName, unknownFlagExit } from './lib/cli-flags.js';
 import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
+import { priceFor } from './lib/prices.js';
 
 // Strategy operates on what ships with the package plus what the operator
 // installed, so the packaged tiers load here even under node:test, where the
@@ -112,12 +113,25 @@ function refreshHoursValue(value) {
   return hours;
 }
 
+function subscriptionValueText(sub) {
+  const monthly = sub?.monthlyPriceUsd;
+  const included = sub?.includedValueUsd;
+  const basis = sub?.priceBasis ?? sub?.priceSource ?? 'declared subscription';
+  if (monthly != null && included != null) {
+    return `$${monthly}/mo → $${included} included (${basis})`;
+  }
+  if (monthly != null) {
+    return `$${monthly}/mo · included value unavailable (${basis})`;
+  }
+  return sub?.priceReason
+    ?? 'price unavailable: no published or operator-declared monthly price'
+    + ' (use strategy set-subscription --monthly-usd)';
+}
+
 function render(report, reasoning = null) {
   const lines = [`bullswarm strategy · ${report.capturedAt}`, '', 'subscriptions:'];
   for (const sub of report.subscriptions) {
-    const value = sub.monthlyPriceUsd == null || sub.includedValueUsd == null
-      ? 'value unknown'
-      : `$${sub.monthlyPriceUsd}/mo → ~$${sub.includedValueUsd} included (${sub.valueMultiple}×)`;
+    const value = subscriptionValueText(sub);
     // Which window paces this pool is the difference between "behind" and
     // "overspent" for the same reading, so the line names it.
     const paced = sub.pacingWindow ? `${sub.pacingWindow} ` : '';
@@ -282,9 +296,10 @@ export async function refreshStrategy(bullswarmDir, {
     externalCatalog = await openRouterLoader({ bullswarmDir, force: true });
   }
   onProgress('Comparing capability, quality, budget, and quota');
-  const report = buildStrategy({
+  const built = buildStrategy({
     connectors, pools, state, discoveries, openRouterCatalog: externalCatalog,
   });
+  const report = resolveReportPrices(built, state);
   // Under the lock (S5): discovery and live meter calls above take seconds, so
   // the copy loaded at the top of this function is stale by now. Only the two
   // report fields are written, onto a FRESH load — a `strategy set-provider`
@@ -295,6 +310,55 @@ export async function refreshStrategy(bullswarmDir, {
     fresh.strategy.lastRefreshedAt = report.capturedAt;
   });
   return report;
+}
+
+function resolveReportPrices(report, state) {
+  const subscriptions = state?.strategy?.subscriptions ?? {};
+  return {
+    ...report,
+    subscriptions: (report.subscriptions ?? []).map((entry) => {
+      const resolved = priceFor(entry.pool, { subscriptions });
+      if (resolved) {
+        return {
+          ...entry,
+          ...resolved,
+          valueMultiple: resolved.monthlyPriceUsd > 0 && resolved.includedValueUsd != null
+            ? Math.round((resolved.includedValueUsd / resolved.monthlyPriceUsd) * 100) / 100
+            : null,
+          priceSource: resolved.source,
+          priceUpdatedAt: resolved.updatedAt,
+          priceBasis: resolved.basis,
+          priceReason: null,
+        };
+      }
+      // Connector metadata predates the table and remains valid when the
+      // operator has not explicitly overridden its price fields.
+      const override = subscriptions[entry.pool];
+      const suppressConnector = override && (
+        Object.prototype.hasOwnProperty.call(override, 'monthlyPriceUsd')
+        || Object.prototype.hasOwnProperty.call(override, 'includedValueUsd')
+      );
+      if (!suppressConnector && entry.monthlyPriceUsd != null) {
+        return {
+          ...entry,
+          priceSource: entry.valueSource ?? 'connector',
+          priceUpdatedAt: null,
+          priceBasis: 'connector-declared subscription price',
+          priceReason: null,
+        };
+      }
+      return {
+        ...entry,
+        monthlyPriceUsd: null,
+        includedValueUsd: null,
+        valueMultiple: null,
+        priceSource: null,
+        priceUpdatedAt: null,
+        priceBasis: null,
+        priceReason: 'price unavailable: no published or operator-declared monthly price',
+      };
+    }),
+  };
 }
 
 function modelsForPool(pool, discovery, state) {
@@ -922,7 +986,8 @@ export async function cmdStrategy(args, {
     }
     if (sub === 'show') {
       const state = loadState(bullswarmDir);
-      const report = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
+      const cached = state.strategy?.lastReport ?? await refreshStrategy(bullswarmDir, { useOpenRouter: true });
+      const report = state.strategy?.lastReport ? resolveReportPrices(cached, state) : cached;
       console.log(opts.json ? JSON.stringify(report, null, 2) : render(report, reasoningReport(bullswarmDir)));
       return 0;
     }

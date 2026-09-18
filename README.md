@@ -55,9 +55,10 @@ as a Claude Mod (a plugin of TypeScript function hooks, behind
 prompt, the pools named in the model's context, Claude's general-purpose
 subagents routed to whichever pool has surplus and answered with the
 verified output, and the verdict appended to every `bullswarm run` the model
-runs. The Mod is the dashboard's read-only counterpart: the same Run, Step and
-Usage pages in the same meter colours, with no edit or install action. See
-[mods/bullswarm/README.md](mods/bullswarm/README.md).
+runs. The Mod is the dashboard's read-only counterpart: its pane shows Run,
+Step, and the Usage/Pools view in the same meter colours. It does not expose
+the dashboard's Home, Runs, Budget, Stats, Fleet, or Help pages, and
+it has no edit or install action. See [mods/bullswarm/README.md](mods/bullswarm/README.md).
 
 Three ways to load it:
 
@@ -83,12 +84,67 @@ over the skills-dir link, and Claude says so at startup.
 Once setup is complete, bare `bullswarm` opens the dashboard on its Home page.
 Use `bullswarm --setup` or `bullswarm setup` to open setup again, and use
 `bullswarm workflow tui` when you want the explicit dashboard command. The
-pages are Home, Run, Step, Usage, and Help. A sticky header and bottom nav
-(`[ 1.<run> ] … [ usage ] [ help ] [ quit ]`, each button's key
-underlined inside its label) carry `q` (quit),
-`h` or `?` (help), `u` (usage), `e` (edit), `i` (install), `l`/`p` (Usage tabs), arrows or
-PgUp/PgDn (scroll), and Enter; click any button, tab, run or step, or use the
-wheel to scroll.
+eight pages answer different questions:
+
+| Page | What it answers |
+|---|---|
+| Home | What happened today, what is verified, what measured or labelled money/licence data exists, and what is active or recent; includes pool/model/project breakdowns. |
+| Runs | Which workflows are active or historical — one `active` block and the History day table below it — plus the product commands; the integration line and `/` filter live here, and `?` carries the agents and `run it` blocks. |
+| Run | Where one workflow is in its plan, which workers are live or next, and its ETA and budget shares. |
+| Step | What one action is doing: route, attempt, activity, verdict/failure, prompt, usage, events, output, and artifacts. |
+| Budget | Pool quota windows, measured worker-minutes versus rest, measured or `≈` money, fit, and biggest workflows. |
+| Stats | Runs, spend, worker-minutes, and verification over 7d/30d/all, by pool, model, and project. |
+| Fleet | Lane/provider model and reasoning rungs, records, meter state, and the setup edit hand-off. |
+| Help | Every key, click, layout rule, and dashboard command. |
+
+The visual-fidelity pass keeps the same real numbers while composing and
+colouring these pages like the approved prototype. At 55 columns every Home
+today tile and per-step bar, every Stats model, project and its sparkline, every
+Stats and Fleet pool row, and every run row in the Runs history table keeps one
+row per item on the phone; Budget's per-pool block (a header over `used`,
+`by bullswarm`, `room` and `so far`), Home's `budget · this week` pool (meter
+plus a reset line, as the prototype draws it) and the Runs `active` entry are
+the deliberate exceptions. At 200 columns every page composes to the frame
+rather than capping at the 120-column composition. Estimated figures still
+carry `≈` and their basis; a figure that cannot be measured is a line of words
+saying so — no page draws an empty or dotted track for missing data.
+
+Every page has a sticky header, a page tab row, and a sticky bottom nav. The
+tab row is five tabs — Home, Runs, Budget, Stats, Fleet — with Run and Step
+marking Runs, and Help shown only while it is open. The shared key table is:
+
+| Key | Does |
+|---|---|
+| `r` | open Runs; the view refreshes itself, so `r` is no longer refresh |
+| `b` | open Budget; it is no longer move-out |
+| `s` | open Stats |
+| `y` | open Runs at its History table (the first day header), except that it confirms a pending stop |
+| `f` | open Fleet |
+| `h` | open Home |
+| `?` | open Help |
+| `1`–`9` | open that run from the nav |
+| `Tab` | cycle the current page's sub-tabs |
+| `Shift+Tab` | cycle workflows |
+| `p` | cycle the period on Home and Stats |
+| `Esc` / `←` | move out one page, then Home |
+| `↑`/`k`, `↓`/`j` | move one line |
+| `Enter` / `→` / `l` | open the selected run, step, tab, or action |
+| `PgUp` / `PgDn` | scroll one screen |
+| `Home` / `End` | jump to the top or bottom |
+| `ctrl+s` | copy the screen through OSC 52, falling back to `pbcopy`, `wl-copy`, or `xclip` |
+| `q` | quit the dashboard; workflows keep running |
+
+The 0.33.0 rebinding is deliberate: `r` no longer refreshes, `b` no longer
+moves out, and `Tab` no longer cycles workflows. Esc/left moves out, the view
+refreshes itself, and Shift+Tab still cycles workflows. Runs also provides `/`
+(filter), `a` (active/all), and `i` (install); Run provides `o`, `v`, and `t`,
+and Fleet provides `e` for setup. Click tabs, tiles, bars, runs, steps, dates,
+or controls, or use the wheel to scroll.
+
+Home, Runs, Budget, and Stats read a per-run rollup that every finishing
+run appends to `~/.bullswarm/history/runs.jsonl`. After upgrading, backfill
+the runs that finished before 0.33.0 once with `bullswarm workflow reindex`;
+legacy runs get a minimal record and only runs still in flight are skipped.
 
 One bounded outcome — a task with a clear finish line:
 
@@ -198,7 +254,7 @@ page maps its pages, keys, and mouse controls.
 | [Concepts](https://bulls-work.github.io/bullswarm/guide/concepts) | Pools, lanes, surplus, the two windows, verdicts, quarantine, and the run directory |
 | [Run one task](https://bulls-work.github.io/bullswarm/guide/run) | Every `bullswarm run` option, and what each verdict asks you to do |
 | [Workflows](https://bulls-work.github.io/bullswarm/guide/workflows) | Authoring the program `workflow goal` executes: territories, dependencies, integration, acceptance |
-| [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) | `workflow watch`, the Home/Run/Step/Usage/Help dashboard pages, keys, mouse, and terminal glyphs |
+| [Observing runs](https://bulls-work.github.io/bullswarm/guide/observing) | `workflow watch`, the Home/Runs/Run/Step/Budget/Stats/Fleet/Help dashboard pages, keys, mouse, and terminal glyphs |
 | [Routing](https://bulls-work.github.io/bullswarm/guide/routing) | How a pool is picked: pace, 5-hour headroom, urgency, load, quarantine |
 | [CLI reference](https://bulls-work.github.io/bullswarm/reference/cli) | Every verb and nested subcommand, with its flags and defaults |
 | [Workflow program](https://bulls-work.github.io/bullswarm/reference/program) | The `bullswarm.workflow.program.v2` document: action fields, kinds, validation rules |

@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                                                              
+ {k:stats:0|Overview}  {k:stats:1|Trends}  {k:stats:2|Pools}  {k:stats:3|{sub|Models}}  {k:stats:4|Projects}                                                                              
+                                                                                                                        
+ {d|── }{b|spend per day}{d| ─────────────────────────────────────────────────────────────} {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}{d| ──}
+   $12┤                                                                                                                 
+    $9┤              {p|┌──┐}                                                                                               
+    $6┤     {p|┌─┐}     {p|│  │}      {p|┌──┐}                                                                                      
+    $3┤  {a|┌──┼─┼────┐} {p|│  │}  {a|┌───┼──┼──}                                                                                   
+    $0┼{g|──┘}  {g|│ │}    {g|└─┘  └──┘}   {g|│  │}                                                                                     
+      {d|Sep 10        Sep 12        Sep 14        Sep 16}                                                                  
+ {p|●} Opus 5 · {a|●} gpt-5.6-luna · {g|●} grok-4.6 · {c|●} deepseek                                                                    
+                                                                                                                        
+ {p|●} {b|Opus 5} {d|(52%)}                                                                                                         
+   {d|claude-code · 118 steps · 99% ok · p50 15m}                                                                           
+ {p|●} {b|gpt-5.6-luna} {d|(21%)}                                                                                                   
+   {d|codex · 41 steps · 97% ok · p50 9m}                                                                                   
+ {p|●} {b|grok-4.6} {d|(15%)}                                                                                                       
+   {d|grok · 33 steps · 100% ok · p50 10m}                                                                                  
+ {p|●} {b|deepseek-v4.1-flash} {d|(8%)}                                                                                             
+   {d|command-code · 65 steps · 89% ok · p50 4m}                                                                            
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                         {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

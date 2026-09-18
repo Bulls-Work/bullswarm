@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {on|Runs}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}                                             {b|mbpzj2} · {c|running} · 16m · bullseye
+ Milestone 2a of Bullseye, "Widget": build the browser widget and the read-only inbox page in the open-source repo, on  
+ a branch with a pull request, so that a visitor can embed the widget and read their inbox.                             
+ {d|── }{b|plan}{d| ───────────────────────────────────────────────────────────────────────} phase 2 of 6 · 3/8 steps · ETA 19:03{d| ──}
+  {k:step:mbpzj2:scan|{g|✓}}{k:step:mbpzj2:scan| scan} ─┬─ {k:step:mbpzj2:widget-core|{g|✓}}{k:step:mbpzj2:widget-core| widget-core} ─┬─ {k:step:mbpzj2:widget-lib|{c|▶}}{k:step:mbpzj2:widget-lib| widget-lib} {g|▇▇▇▇▇▇▇}{d|░} 15m/17m ─┬─ {k:step:mbpzj2:widget-docs|○ widget-docs} ─┬─ {k:step:mbpzj2:integrate|○ integrate} ─ {k:step:mbpzj2:verify|○ verify}               
+          └─ {k:step:mbpzj2:inbox-page|{g|✓}}{k:step:mbpzj2:inbox-page| inbox-page} ──┘  {k:step:mbpzj2:inbox-api|{c|▶}}{k:step:mbpzj2:inbox-api| inbox-api} {g|▇▇▇}{d|░░░░░} 4m/11m ─┘                 │                                         
+  {d|  cmd · low    codex          cmd · deepseek · max            codex · luna    claude · opus · xhigh   claude · opus}   
+                                                                                                                        
+ {d|── }{b|budget}{d| ───────────────────────────  ── }{b|live}{d| ────────────────────────────  ── }{b|so far}{d| ───────────────────}             
+ cmd      {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  {p|1.2%}      {k:step:mbpzj2:widget-lib|widget-lib } {c|▇▅▃▁▂▃▅▇▅▃▂}  15m/17m          steps   {g|✓ 3}  {c|▶ 2}  ○ 3             
+ codex    {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  {p|1.5%}        {d|> done: lib exported as Widget.mount(el, opts)}time    16m · ETA 19:03     
+ claude   {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }  {p|0.0%}      {k:step:mbpzj2:inbox-api|inbox-api  } {c|▆▇▅▃▁▂▃▅▇▅▃}  4m/11m           spent   $1.05 {d|≈ $7.88 API}         
+ {d|▓ this run · ▒ others · ░ free}               {d|> added GET /api/inbox (read-only)}      forecast $5.51 · {p|14.2% 7d}         
+                                                                                                                        
+ {d|── }{b|timeline}{d| ───────────────────────────────────────────────────────────────────────────────────────────────────────────}
+ {d|── Preflight ──────────────────────────────────────────────────────────────────────────────────────────────── 0s ──}    
+ {d|18:25}  {g|●} Goal accepted                                                                                                 
+ {d|── Phase 1 · scan · inbox-page} {d|─────────────────────────────────────────────────────────────────────────────── 4m10s ──}
+ {d|18:26}  ├─ started                                                                                                      
+ {d|18:28}  │ ├─{g|✓} {k:step:mbpzj2:scan|scan} 2m01s                                                                                                
+ {d|18:30}  │ └─{g|✓} {k:step:mbpzj2:inbox-page|inbox-page} 4m10s                                                                                          
+ {d|18:30}  └─{g|✓} completed 2/2                                                                                               
+ {d|── Phase 2 · widget-core · inbox-api} {d|──────────────────────────────────────────────────────────────────────── 13m00s ──}
+ {d|18:28}  ├─ started                                                                                                      
+ {d|18:33}  │ ├─{g|✓} {k:step:mbpzj2:widget-core|widget-core} 5m02s                                                                                         
+ {d|18:41}  │ └─{c|▶} {k:step:mbpzj2:inbox-api|inbox-api} 4m · codex · added GET /api/inbox (read-only)                                                   
+ {d|── Phase 3 · widget-lib} {d|───────────────────────────────────────────────────────────────────────────────────── 15m00s ──}
+ {d|18:26}  ├─ started                                                                                                      
+ {d|18:41}  │ └─{c|▶} {k:step:mbpzj2:widget-lib|widget-lib} 15m · command-code · done: lib exported as Widget.mount(el, opts)                              
+ {d|── Phase 4 · widget-docs ── waiting}                                                                                    
+ {d|── Phase 5 · integrate ── waiting}                                                                                      
+ {d|── Phase 6 · verify ── waiting}                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                       {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

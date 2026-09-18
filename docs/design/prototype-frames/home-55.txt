@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History     18:41 · 1–23/37
+                                                       
+ ── today ─────────────────────────────────────────────
+ finished  4  ▂▅▃▇▆▄▅   ✓ 3 · ✗ 1                      
+ spent  $6.40  ▁▃▂▆▅▃▄   ≈ $41.00 API                  
+ licence   claude ▇▇▇▇▇▏▇▇▇▇▇▇ 9%                      
+           codex  ▇▇▇▇▇▏▇▇▇▇▇▇ 5%                      
+                                                       
+ ── running ───────────────────────────────────────────
+ ● 1.mbpzj2  bullseye · Milestone 2a …        3/8 · 16m
+   ✓──✓──✓──▶──▶──○──○──○                              
+   widget-lib@cmd ▇▇▇▇▇▇▇▇▇░ 15m/17m                   
+   inbox-api@codex ▇▇▇▇░░░░░░ 4m/11m                   
+   2.7% · $1.05 so far                                 
+ ● 2.ywnyga  bullseye · Tidy the open…        0/2 · 11m
+   ▶──○                                                
+   tidy@claude ▇▇▇▇▇▇░░░░ 11m/17m                      
+   0.8% · $0.55 so far                                 
+                                                       
+ ── budget · this week ────────────────────────────────
+ claude   ▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇ 37%  on track         
+   resets 5d1h · $18.50 of $50                         
+ codex    ▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇ 29%  slow             
+   resets 5d1h · $14.50 of $50                         
+ grok     ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇ 77%  on track         
+ [ 1.mbpzj2 ] [ 2.ywnyga ]           [Top] [End] [Help]

@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { buildPools, buildPoolsLive } from '../lib/config.js';
 import { getAllMeterReadings } from '../meters/registry.js';
-import { cmdRuns } from './runs-cli.js';
+import { cmdRuns, cmdReindex } from './runs-cli.js';
 import { newRunId, resolveRunId, listRuns, isLegacyRunDir, isLegacyRunState, isProcessAlive, legacyRunLine } from './short-id.js';
 import { runDashboard, dashboardJson, overviewSnapshot } from './dashboard.js';
 import { readEvents } from './events.js';
@@ -92,6 +92,8 @@ export async function cmdWorkflow(args, {
       return wfResume(opts);
     case 'runs':
       return cmdRuns(tail, runsAlias ? { alias: runsAlias } : {});
+    case 'reindex':
+      return cmdReindex(tail);
     case 'capabilities':
       return wfCapabilities(opts);
     case 'tui':
@@ -1854,7 +1856,7 @@ function wfAction(opts) {
 function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
-  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer'];
+  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
 

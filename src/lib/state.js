@@ -291,7 +291,29 @@ function containsMigratablePoolReference(value, parentKey = '') {
   ));
 }
 
+// The check parses state.json (hundreds of decision-log entries) and walks
+// every value; every state load asks it. The answer only changes when one
+// of the three files does, so it is remembered per file fingerprint.
+const migrationCheckCache = new Map();
+function homeMigrationFingerprint(bullswarmDir) {
+  return ['state.json', 'routing.json', 'providers.json'].map((name) => {
+    try {
+      const stat = statSync(join(bullswarmDir, name));
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch { return 'absent'; }
+  }).join('|');
+}
+
 function homeMigrationNeeded(bullswarmDir) {
+  const fingerprint = homeMigrationFingerprint(bullswarmDir);
+  const cached = migrationCheckCache.get(bullswarmDir);
+  if (cached && cached.fingerprint === fingerprint) return cached.needed;
+  const needed = homeMigrationNeededUncached(bullswarmDir);
+  migrationCheckCache.set(bullswarmDir, { fingerprint, needed });
+  return needed;
+}
+
+function homeMigrationNeededUncached(bullswarmDir) {
   const state = parseJson(join(bullswarmDir, 'state.json'));
   if (state && containsMigratablePoolReference(state)) return true;
   const routing = parseJson(join(bullswarmDir, 'routing.json'));
