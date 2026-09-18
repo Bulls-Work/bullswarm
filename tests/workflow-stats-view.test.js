@@ -145,13 +145,18 @@ test('bar regions carry durable hover payloads and the reserved row formats them
   const hovered = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', slice: slice.action, ansi: false });
   assert.match(visible(hovered.lines[2]), /Sep|2026/);
   assert.match(visible(hovered.lines[2]), /of the day/);
-  const share = plain.regions.find((region) => region.action.payload?.kind === 'share');
+  // The desktop grid now makes one all-four bar decision. The fixture's
+  // outcome value field forces that decision to drop panel bars together.
+  const share = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false }).regions
+    .find((region) => region.action.payload?.kind === 'share');
   assert.ok(share, 'a panel share row is clickable');
   assert.match(share.action.payload.unit, /usd|minutes|runs|attempts|count/);
 });
 
 test('every visible Spending panel track is covered cell-for-cell, including tiny bars', () => {
-  const view = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', ansi: false });
+  const desktop = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', ansi: false });
+  assert.equal(desktop.regions.filter((region) => region.action.payload?.kind === 'share').length, 0);
+  const view = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false });
   const glyph = /[▓▒░█#.|]/;
   const shares = view.regions.filter((region) => region.action.payload?.kind === 'share');
   assert.ok(shares.length > 0);
@@ -176,13 +181,17 @@ test('stack slices and outcome duration rows use measured values and matching un
     assert.doesNotMatch(label, /value unavailable/);
     if (region.action.payload.value != null) assert.doesNotMatch(label, /not measured/);
   }
-  const median = view.regions.find((region) => region.action.payload?.label === 'Median wall');
-  const longest = view.regions.find((region) => region.action.payload?.label === 'Longest wall');
+  // Panel bars are intentionally absent in this desktop fixture. At the
+  // stacked width each panel gets its own full-width geometry and exposes the
+  // measured outcome rows for the same hover assertions.
+  const stacked = statsLines(fixture(), { ...base, width: 55 });
+  const median = stacked.regions.find((region) => region.action.payload?.label === 'Median wall');
+  const longest = stacked.regions.find((region) => region.action.payload?.label === 'Longest wall');
   assert.ok(median && longest);
   assert.equal(median.action.payload.unit, 'minutes');
   assert.equal(longest.action.payload.unit, 'minutes');
-  assert.match(visible(statsLines(fixture(), { ...base, slice: median.action }).lines[2]), /54m/);
-  assert.match(visible(statsLines(fixture(), { ...base, slice: longest.action }).lines[2]), /9h03m/);
+  assert.match(visible(statsLines(fixture(), { ...base, width: 55, slice: median.action }).lines[2]), /54m/);
+  assert.match(visible(statsLines(fixture(), { ...base, width: 55, slice: longest.action }).lines[2]), /9h03m/);
 });
 
 test('model cost never becomes a fabricated dollar chart or panel value', () => {

@@ -57,6 +57,99 @@ function fit(text, width) {
   return visible(source).length <= cols ? source : cut(source, cols);
 }
 
+/**
+ * Return the reader-facing short form for a data-series name.
+ *
+ * The untouched name remains on every payload and in the legend; this helper
+ * is only for labels painted inside a bounded panel.  Pool scopes are the
+ * useful identity after the final colon.  Projects and models commonly carry
+ * a repository path or provider prefix, so their final dash/path segment is
+ * the compact form that is still useful at a glance.
+ */
+export function shortenLabel(value, context = {}) {
+  const source = String(value ?? '');
+  if (!source) return '';
+  const options = typeof context === 'string' ? { kind: context } : (context ?? {});
+  if (options.full === true) return source;
+
+  const scope = source.lastIndexOf(':');
+  if (scope >= 0 && scope < source.length - 1) return source.slice(scope + 1);
+
+  const pathSegments = source.split(/[\\/]/).filter(Boolean);
+  const lastPath = pathSegments.at(-1) ?? source;
+  const kind = String(options.kind ?? options.type ?? '').trim().toLowerCase();
+  if (pathSegments.length > 1 || kind === 'project' || kind === 'model') {
+    const dashSegments = lastPath.split('-').filter(Boolean);
+    if (dashSegments.length > 1) return dashSegments.at(-1);
+    return lastPath;
+  }
+  return source;
+}
+
+function middleCut(text, width) {
+  const source = visible(text);
+  const cols = widthOf(width);
+  if (source.length <= cols) return source;
+  if (cols <= 1) return '…'.slice(0, cols);
+
+  const budget = cols - 1;
+  const segments = source.split(/[:\\/\\-]/).filter(Boolean);
+  const suffixCandidate = segments.at(-1) ?? source;
+  // Keep a complete distinguishing tail whenever it fits.  This gives the
+  // scoped form `claude-co…acme` rather than losing the scope to a prefix cut.
+  const suffixLength = suffixCandidate.length < budget ? suffixCandidate.length : Math.max(1, Math.floor(budget / 2));
+  const leftLength = Math.max(1, budget - suffixLength);
+  let left = source.slice(0, leftLength).replace(/[:\\/\\-]+$/, '');
+  if (!left) left = source.slice(0, leftLength);
+  let right = suffixCandidate.slice(-suffixLength);
+  const remaining = cols - (left.length + 1 + right.length);
+  if (remaining < 0) right = right.slice(Math.max(0, -remaining));
+  return `${left}…${right}`.slice(0, cols);
+}
+
+function duplicateLabels(labels) {
+  const counts = new Map();
+  for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return [...counts.values()].some((count) => count > 1);
+}
+
+function collisionIndexes(labels) {
+  const indexes = new Set();
+  const grouped = new Map();
+  labels.forEach((label, index) => {
+    const entries = grouped.get(label) ?? [];
+    entries.push(index);
+    grouped.set(label, entries);
+  });
+  for (const entries of grouped.values()) if (entries.length > 1) entries.forEach((index) => indexes.add(index));
+  return indexes;
+}
+
+function uniqueLabels(labels, fullLabels, width) {
+  const out = [];
+  const used = new Set();
+  labels.forEach((label, index) => {
+    let candidate = label;
+    if (used.has(candidate)) {
+      const full = fullLabels[index] ?? candidate;
+      const base = middleCut(full, width);
+      candidate = base;
+      let attempt = 2;
+      while (used.has(candidate) && attempt < 100) {
+        const suffix = String(attempt);
+        candidate = widthOf(width) <= suffix.length
+          ? suffix.slice(-widthOf(width))
+          : `${middleCut(full, widthOf(width) - suffix.length - 1)} ${suffix}`;
+        candidate = fit(candidate, width);
+        attempt += 1;
+      }
+    }
+    out.push(candidate);
+    used.add(candidate);
+  });
+  return out;
+}
+
 function colourMarker(marker, colour, enabled) {
   if (!enabled || !HEX.test(String(colour ?? ''))) return marker;
   const value = Number.parseInt(String(colour).slice(1), 16);
@@ -219,13 +312,118 @@ function rowParts(row) {
   ];
 }
 
+function moreRow(row, label) {
+  return row?.id === '__more__' || /^\+\d+ more$/.test(String(label ?? ''));
+}
+
+/**
+ * Collect the geometry inputs for a panel without painting it.  The desktop
+ * grid uses this pass for all four panels before any one of them is rendered,
+ * so a local label/bar decision cannot leak into its neighbours.
+ */
+function panelMetrics({ rows, width, unit, labelKind, labelWidth = null, barWidth = null } = {}) {
+  const cols = widthOf(width, 55);
+  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const fullLabels = list.map((row) => String(row.fullLabel ?? row.label ?? row.id ?? ''));
+  const shortLabels = fullLabels.map((label) => shortenLabel(label, { kind: labelKind }));
+  const longest = shortLabels.reduce((most, label) => Math.max(most, visible(label).length), 0);
+  const suffixes = list.map((row) => {
+    if (finite(row.value) == null) return `— ${row.missingReason ?? 'value unavailable'}`;
+    const valueText = row.valueText ?? sourcedValue(row.value, unit, row.tokenSource);
+    const shareText = finite(row.share) == null ? '' : ` ${formatShare(row.share)}`;
+    return `${valueText}${shareText}`;
+  });
+  const suffixLongest = suffixes.reduce((most, value) => Math.max(most, visible(value).length), 0);
+  // A missing-value explanation is prose, not a measured value column.  It
+  // may be compacted in a narrow shared cell; measured readings and shares
+  // are the widths that decide whether a bar can remain.
+  const measuredSuffixLongest = list.reduce((most, row, index) => finite(row.value) == null
+    ? most
+    : Math.max(most, visible(suffixes[index]).length), 0);
+  const requestedLabel = labelWidth == null
+    ? Math.min(Math.max(1, longest + 1), Math.max(1, Math.floor(cols * 0.36)))
+    : Math.max(1, Math.trunc(Number(labelWidth)) || 1);
+  const requestedBar = barWidth == null ? Math.max(1, Math.floor(cols * 0.2)) : Math.max(1, Math.trunc(Number(barWidth)) || 1);
+  const moreLongest = list.reduce((most, row, index) => moreRow(row, fullLabels[index])
+    ? Math.max(most, visible(shortLabels[index]).length)
+    : most, 0);
+  return {
+    list,
+    fullLabels,
+    shortLabels,
+    suffixes,
+    longest,
+    suffixLongest,
+    measuredSuffixLongest,
+    moreLongest,
+    measuredLabel: labelWidth == null ? Math.max(1, longest) : requestedLabel,
+    requestedLabel,
+    requestedBar,
+  };
+}
+
+/**
+ * Measure one geometry for a desktop two-by-two panel grid.
+ *
+ * The returned label width is a grid-wide column.  Bars are an all-or-none
+ * affordance: retaining the requested bar in every cell is allowed only when
+ * the shared label and each panel's value field fit in that cell.  A narrow
+ * grid therefore drops every bar together, while a stacked phone render can
+ * continue to measure each panel independently.
+ */
+export function measurePanelGridLayout(panels, widths, { gap = 2 } = {}) {
+  const list = (Array.isArray(panels) ? panels : []).slice(0, 4);
+  const cells = list.map((panel, index) => panelMetrics({
+    ...panel,
+    width: Array.isArray(widths) ? widths[index] : widths,
+  }));
+  if (!cells.length) return { labelWidth: 1, barWidth: 0, barEnabled: false, gap: 1, cells: [] };
+
+  const desiredLabel = Math.max(1, ...cells.map((cell) => cell.measuredLabel));
+  const desiredBar = Math.max(1, ...cells.map((cell) => cell.requestedBar));
+  const valueGap = Math.max(1, Math.trunc(Number(gap)) || 2);
+  const barFits = cells.every((cell, index) => {
+    const width = widthOf(Array.isArray(widths) ? widths[index] : widths, 55);
+    const labels = cell.shortLabels.map((label) => cut(label, desiredLabel));
+    return desiredLabel + valueGap + desiredBar + cell.measuredSuffixLongest <= width
+      && !duplicateLabels(labels);
+  });
+
+  const barWidth = barFits ? desiredBar : 0;
+  const rowGap = barFits ? valueGap : 1;
+  const valueCaps = cells.map((cell, index) => {
+    const width = widthOf(Array.isArray(widths) ? widths[index] : widths, 55);
+    return Math.max(1, width - rowGap - barWidth - cell.measuredSuffixLongest);
+  });
+  const safeCap = Math.max(1, Math.min(...valueCaps));
+  const labelFloor = 3;
+  let labelWidth = Math.max(labelFloor, Math.min(desiredLabel, safeCap));
+
+  // A more-row label is a reader-facing count, not a disposable ellipsis.
+  // Preserve it when a long value field would otherwise make the shared
+  // column too small; the value renderer will compact that field to its
+  // already-reserved right-aligned column.
+  const moreWidth = Math.max(0, ...cells.map((cell) => cell.moreLongest));
+  if (moreWidth > labelWidth) labelWidth = moreWidth;
+
+  return {
+    labelWidth,
+    barWidth,
+    barEnabled: barWidth > 0,
+    gap: rowGap,
+    cells,
+    widths: Array.isArray(widths) ? widths.map((width) => widthOf(width, 55)) : cells.map(() => widthOf(widths, 55)),
+  };
+}
+
 /** A titled list of rows, each with a share bar and sourced value wording. */
 export function renderPanel({
   title, rows, width, labelWidth = null, barWidth = null,
-  tab, metric, period, unit, basis = null, colors = true,
+  tab, metric, period, unit, basis = null, colors = true, labelKind = null, layout = null,
 } = {}) {
   const cols = widthOf(width, 55);
-  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const measured = panelMetrics({ rows, width: cols, unit, labelKind, labelWidth, barWidth });
+  const list = measured.list;
   const heading = fit(rule(title ?? '', null, cols), cols);
   const lines = [heading];
   const regions = [];
@@ -233,22 +431,7 @@ export function renderPanel({
     lines.push(lineWithReason('—', 'no measured data', cols));
     return { lines, regions };
   }
-  const longest = list.reduce((most, row) => Math.max(most, visible(String(row.label ?? '')).length), 0);
-  const suffixes = list.map((row) => {
-    if (finite(row.value) == null) return `— ${row.missingReason ?? 'value unavailable'}`;
-    const valueText = row.valueText ?? sourcedValue(row.value, unit, row.tokenSource);
-    const shareText = finite(row.share) == null ? '' : ` ${formatShare(row.share)}`;
-    // Notes such as "<label> too small" repeat the row identity after the
-    // fixed label column and turn a three-column row into a sentence. The
-    // bar metadata already records that fact for hover/audit callers; keep
-    // the painted row to its value and share only.
-    return `${valueText}${shareText}`;
-  });
-  const suffixLongest = suffixes.reduce((most, value) => Math.max(most, visible(value).length), 0);
-  const requestedLabel = labelWidth == null
-    ? Math.min(Math.max(1, longest + 1), Math.max(1, Math.floor(cols * 0.36)))
-    : Math.max(1, Math.trunc(Number(labelWidth)) || 1);
-  const requestedBar = barWidth == null ? Math.max(1, Math.floor(cols * 0.2)) : Math.max(1, Math.trunc(Number(barWidth)) || 1);
+  const { fullLabels, shortLabels, suffixes, suffixLongest, requestedLabel, requestedBar } = measured;
   // There are always exactly three fields and two one-cell gaps. Keep a
   // useful suffix field (the value/share pair) by shrinking the label first,
   // then the bar, when a desktop grid cell is too narrow for the requested
@@ -264,14 +447,45 @@ export function renderPanel({
   let rowGaps = gaps;
   let barCols = Math.min(requestedBar, Math.max(minBar, cols - rowGaps - minLabel - suffixTarget));
   let labelCols = Math.min(requestedLabel, Math.max(minLabel, cols - rowGaps - barCols - suffixTarget));
-  if (labelCols + rowGaps + barCols + suffixTarget > cols
+  if (layout) {
+    rowGaps = Math.max(1, Math.trunc(Number(layout.gap)) || 1);
+    barCols = layout.barEnabled === false ? 0 : Math.max(0, Math.trunc(Number(layout.barWidth)) || 0);
+    labelCols = Math.max(1, Math.trunc(Number(layout.labelWidth)) || 1);
+    // A shared plan is measured against the actual cell widths. Keep this
+    // defensive clamp so an ad-hoc caller cannot make a line overrun.
+    const available = Math.max(1, cols - rowGaps - barCols - 1);
+    labelCols = Math.min(labelCols, available);
+  } else if (labelCols + rowGaps + barCols + suffixTarget > cols
     || suffixTarget < suffixLongest
     || cols - rowGaps - barCols - suffixTarget < minLabel) {
     barCols = 0;
     rowGaps = 1;
     labelCols = Math.max(1, cols - rowGaps - suffixTarget);
   }
-  const suffixCols = Math.max(1, cols - rowGaps - labelCols - barCols);
+  let suffixCols = Math.max(1, cols - rowGaps - labelCols - barCols);
+  let displayLabels = shortLabels.map((label) => cut(label, labelCols));
+  let usedMiddleCut = false;
+  let barsDroppedForCollision = false;
+  if (duplicateLabels(displayLabels)) {
+    // A clipped label is not an acceptable identity.  Give the names the bar
+    // column's space first; the value/share suffix remains reserved.
+    if (barCols > 0 && !layout) {
+      barCols = 0;
+      rowGaps = 1;
+      labelCols = Math.max(1, cols - rowGaps - suffixTarget);
+      suffixCols = Math.max(1, cols - rowGaps - labelCols);
+      barsDroppedForCollision = true;
+    }
+    displayLabels = shortLabels.map((label) => cut(label, labelCols));
+    if (duplicateLabels(displayLabels)) {
+      const collisions = collisionIndexes(displayLabels);
+      displayLabels = displayLabels.map((label, index) => collisions.has(index)
+        ? middleCut(fullLabels[index], labelCols)
+        : label);
+      usedMiddleCut = collisions.size > 0;
+    }
+    if (duplicateLabels(displayLabels)) displayLabels = uniqueLabels(displayLabels, fullLabels, labelCols);
+  }
   const padRight = (text, width) => {
     const source = String(text ?? '');
     const clipped = cut(source, width);
@@ -287,7 +501,7 @@ export function renderPanel({
   };
   list.forEach((row, rowIndex) => {
     const value = finite(row.value);
-    const label = padRight(String(row.label ?? row.id ?? ''), labelCols);
+    const label = padRight(displayLabels[rowIndex], labelCols);
     const barGap = barCols > 0 ? ' ' : '';
     const suffixGap = ' ';
     if (value == null) {
@@ -308,7 +522,7 @@ export function renderPanel({
     // background regions in the shell's hit-test).
     if (barCols > 0 && /[▓▒░█#.|]/.test(visible(bar.text))) {
       const share = finite(row.share) ?? (total > 0 ? value / total : null);
-      const payload = payloadFor({ ...row, total, share, label: row.label ?? row.id }, {
+      const payload = payloadFor({ ...row, total, share, label: fullLabels[rowIndex] }, {
         tab, metric, period, unit: row.unit ?? unit, basis, total,
       });
       const start = labelCols + 2;
@@ -317,7 +531,18 @@ export function renderPanel({
       if (clippedEnd >= start) regions.push({ kind: 'share', row: lines.length, columns: { start, end: clippedEnd }, payload });
     }
   });
-  return { lines, regions };
+  return {
+    lines,
+    regions,
+    meta: {
+      labelKind,
+      labels: displayLabels,
+      fullLabels,
+      barDropped: barCols === 0,
+      barsDroppedForCollision,
+      usedMiddleCut,
+    },
+  };
 }
 
 function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, colors) {
@@ -583,7 +808,11 @@ export function renderLegend({ items, width, activeSeries = null, colors = true 
   if (!list.length) return { lines: [fit('Legend — no measured series', cols)], regions: [] };
   const tokens = list.map((item) => {
     const id = item.id ?? item.label ?? '';
-    const label = String(item.label ?? id);
+    // Legends are the resolver for compact panel labels: always paint the
+    // untouched series identity, while still routing it through the shared
+    // shortening helper so panels and legends cannot grow separate rules.
+    const fullLabel = String(item.fullLabel ?? item.id ?? item.label ?? '');
+    const label = shortenLabel(fullLabel, { full: true });
     const marker = colors
       ? colourMarker(asciiGlyphsPreferred() ? '#' : '●', item.color ?? seriesColor(id), true)
       : '#';
@@ -645,6 +874,29 @@ function panelDescriptor(value, width) {
   return asDrawn(value, width, renderPanel);
 }
 
+function desktopPanelGrid(panelList, width, gap) {
+  const inner = Math.max(2, width - gap);
+  const cellWidths = [Math.ceil(inner / 2), Math.floor(inner / 2)];
+  const raw = panelList.slice(0, 4);
+  const layout = measurePanelGridLayout(raw, [cellWidths[0], cellWidths[1], cellWidths[0], cellWidths[1]]);
+  const drawn = raw.map((panel, index) => panelDescriptor({
+    ...panel,
+    layout,
+  }, cellWidths[index % 2]));
+  const compose = (top, bottom) => {
+    const offset = top.lines.length + 1;
+    return {
+      lines: [...top.lines, '', ...bottom.lines],
+      regions: [
+        ...(top.regions ?? []),
+        ...(bottom.regions ?? []).map((region) => ({ ...region, row: region.row + offset })),
+      ],
+      meta: { layout },
+    };
+  };
+  return [compose(drawn[0], drawn[2]), compose(drawn[1], drawn[3])];
+}
+
 /**
  * Compose the stable four-tab Stats surface.  On desktop the dated chart and
  * two-by-two panel grid share a row; on a phone the same cells are stacked in
@@ -693,7 +945,9 @@ export function renderStatsSurface({
     const gutter = 2;
     const leftWidth = Math.max(1, Math.floor((cols - gutter) / 2));
     const rightWidth = Math.max(1, cols - gutter - leftWidth);
-    const renderedPanels = panelList.map((panel) => panelDescriptor(panel, rightWidth));
+    const renderedPanels = panelList.length >= 4 && panelList.slice(0, 4).every((panel) => !Array.isArray(panel?.lines))
+      ? desktopPanelGrid(panelList, rightWidth, gutter)
+      : panelList.map((panel) => panelDescriptor(panel, rightWidth));
     const grid = columns(renderedPanels.map((rendered) => ({ rows: rendered.lines })), { width: rightWidth, gap: 2 });
     const outer = columns([
       { rows: chartDrawn.lines, width: leftWidth },
