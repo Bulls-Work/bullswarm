@@ -13,6 +13,22 @@ import { registerAssignment } from '../src/lib/assignments.js';
 const NOW = Date.parse('2026-09-09T11:09:44.982Z');
 const strip = (text) => text.replace(/\x1b\[[0-9;]*m/g, '');
 
+/** Run `fn` with the env vars set, restoring whatever was there before. */
+function withEnv(vars, fn) {
+  const saved = {};
+  for (const [key, value] of Object.entries(vars)) {
+    saved[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try { return fn(); } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 // The command-code meter read live at 2026-09-09T10:45:28Z (the fixture
 // tests/meters.test.js paces with): a monthly credit allocation that
 // rate-limits weekly, so the two windows disagree about surplus.
@@ -70,10 +86,42 @@ const RUNGS = [
 
 // --- colour, bars, pace ------------------------------------------------------
 
-test('the meter palette is the mod\'s truecolour set', () => {
-  assert.deepEqual(METER_COLORS, {
-    green: '#b6bd73', amber: '#e9c880', red: '#bf6c69', track: '#3a3a3a',
-  });
+test('the meter palette is the mod\'s truecolour set and the prototype\'s roles', () => {
+  // The four the Claude Mod's status line draws with, unchanged:
+  // mods/bullswarm/hooks/pool-rows.tsx holds its own copy of these.
+  assert.equal(METER_COLORS.green, '#b6bd73');
+  assert.equal(METER_COLORS.amber, '#e9c880');
+  assert.equal(METER_COLORS.red, '#bf6c69');
+  assert.equal(METER_COLORS.track, '#3a3a3a');
+  // The roles added from the approved prototype's own CSS
+  // (docs/design/dashboard-prototype.html: `:root` and `.t1`-`.t4`).
+  assert.equal(METER_COLORS.purple, '#a99cf0', 'the prototype\'s --purple, its `.p` class');
+  assert.equal(METER_COLORS.orange, '#d2856b', 'the prototype\'s --coral, its `.o` class');
+  assert.equal(METER_COLORS.cyan, '#8fc7cf', 'the prototype\'s --cyan, its `.c` class');
+  assert.equal(METER_COLORS.dim, '#7c7f8a', 'the prototype\'s --term-dim, its `.d` class');
+  assert.equal(METER_COLORS.others, '#55575f', 'the prototype\'s --others share band');
+  assert.equal(METER_COLORS.mark, '#ffffff', 'the prototype\'s .mark, the elapsed mark');
+  assert.deepEqual(METER_COLORS.heat, ['#4a3f38', '#7a5a48', '#b07a5b', '#d2856b'], '.t1 to .t4, darkest first');
+  // One palette, not two: every value is a hex the product can paint, and
+  // nothing is added that the prototype does not name.
+  assert.deepEqual(Object.keys(METER_COLORS).sort(), [
+    'amber', 'cyan', 'dim', 'green', 'heat', 'mark', 'orange', 'others', 'purple', 'red', 'track',
+  ]);
+  for (const [role, value] of Object.entries(METER_COLORS)) {
+    for (const hex of Array.isArray(value) ? value : [value]) {
+      assert.match(hex, /^#[0-9a-f]{6}$/, `${role} is a hex value`);
+    }
+  }
+  assert.equal(Object.isFrozen(METER_COLORS), true);
+  assert.equal(Object.isFrozen(METER_COLORS.heat), true);
+});
+
+test('the heat ramp brightens with the value, so a page reads it as a ramp', () => {
+  const tints = METER_COLORS.heat.map((hex) => [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16)));
+  for (let channel = 0; channel < 3; channel += 1) {
+    const values = tints.map((tint) => tint[channel]);
+    assert.deepEqual(values, [...values].sort((a, b) => a - b), `channel ${String(channel)} brightens`);
+  }
 });
 
 test('severityColor turns green at 50% used and red at 80%', () => {
@@ -99,7 +147,28 @@ test('meterBar is exactly width cells, with the mark where elapsed falls', () =>
   }
 });
 
-test('meterBar paints background cells in truecolour and a white mark', () => {
+test('meterBar paints a glyph texture the reader sees without colour', () => {
+  // The band used to be coloured blanks, which a terminal that drops colour
+  // renders as an empty line. The glyphs carry the reading on their own.
+  assert.equal(strip(meterBar(37, 28, 20)), '▇▇▇▇▇▏▇░░░░░░░░░░░░░');
+  assert.equal(strip(meterBar(93, 100, 20)), '▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░▕');
+  assert.equal(strip(meterBar(0, null, 6)), '░░░░░░', 'nothing used is an empty track, not a blank line');
+  assert.equal(strip(meterBar(null, 40, 6)), '······', 'no meter keeps its dotted track and no mark');
+  withEnv({ BULLSWARM_ASCII: '1' }, () => {
+    assert.equal(strip(meterBar(37, 28, 20)), '#####|#.............', 'an ascii terminal gets # . |');
+    assert.equal(strip(meterBar(100, 100, 6)), '#####|');
+    for (const glyph of ['▇', '░', '▏', '▕']) {
+      assert.equal(meterBar(37, 28, 20).includes(glyph), false, `${glyph} reached an ascii terminal`);
+    }
+  });
+  for (const width of [1, 4, 10, 24, 40, 64]) {
+    for (const [used, elapsed] of [[0, 0], [32.5, 27.2], [100, 99], [12, null], [null, 50]]) {
+      assert.equal(strip(meterBar(used, elapsed, width)).length, width, `${String(width)} cells`);
+    }
+  }
+});
+
+test('meterBar keeps the truecolour cells and the white mark', () => {
   const bar = meterBar(32, 27, 10);
   assert.equal(strip(bar).length, 10);
   assert.ok(bar.includes('\x1b[48;2;182;189;115m'), 'green fill for 32% used');
@@ -267,6 +336,58 @@ test('usageLines groups by provider when the second tab is active', () => {
   assert.ok(!lines.includes('high · integration · architecture · adversarial-acceptance'), 'no lane blurbs when grouped by provider');
 });
 
+// The Usage body exactly as 0.33.0 shipped it, captured from the tree at
+// commit 433b4bf before the render kit gained the prototype's palette roles
+// and the meter gained its texture. The Claude Mod pane and the Home and Run
+// pages read these lines, so the palette work must not move one cell of them.
+const USAGE_BODY_55 = Object.freeze([
+    "command-code · GOAT",
+    "5h  ##########.............|...................  25.2%",
+    "    resets 2h14m · slow +30pp",
+    "7d  ###############################........|...  73.1%",
+    "    resets 13h45m · slow +19pp",
+    "mo  ################################|#.........  79.4%",
+    "    resets 7d15h · on track −4pp",
+    "    55.57 / 70 credits",
+    "",
+    "codex · prolite",
+    "5h  #####.............|........................  12.0%",
+    "    resets 2h50m · slow +31pp",
+    "7d  ###########|#..............................  32.0%",
+    "    resets 3d6h · on track −5pp",
+    "",
+    "Rungs · model · reasoning · record, per lane and pool",
+    "[● by lane] [by provider]",
+    "",
+    "high · integration · architecture · adversarial-accepta",
+    "  command-code    claude-opus-4-1 · high",
+    "                  3 runs · 67% ok · p50 12m",
+    "  codex           gpt-5-codex · medium",
+    "                  1 run · 100% ok · p50 3m",
+    "",
+    "medium · implement · check (the ordinary writers)",
+    "  command-code    claude-sonnet-4-5",
+    "                  no runs yet",
+    "",
+    "low · mechanical · io-read · digest",
+    "  codex           gpt-5-mini",
+    "                  8 runs",
+]);
+
+test('usageLines still renders, line for line, what it rendered before the palette work', () => {
+  const lines = usageLines([commandCode(), codex()], RUNGS, { width: 55, nowMs: NOW, ansi: false });
+  assert.deepEqual(lines, [...USAGE_BODY_55]);
+  // And the styled rendering differs from the plain one only in its escapes
+  // and in the meter's own cells: same lines, same visible width, same words.
+  const styled = usageLines([commandCode(), codex()], RUNGS, { width: 55, nowMs: NOW });
+  assert.equal(styled.length, USAGE_BODY_55.length);
+  const meterCells = (text) => strip(text).replace(/[#.|\u2587\u2591\u258f\u2595]+/g, '\u2588');
+  styled.forEach((line, index) => {
+    assert.equal(strip(line).length, USAGE_BODY_55[index].length, `line ${String(index)} changed width`);
+    assert.equal(meterCells(line), meterCells(USAGE_BODY_55[index]), `line ${String(index)} changed text`);
+  });
+});
+
 test('usageLines reads as the page does with ansi, and says so without a meter', () => {
   const pool = { ...commandCode(), meterSnapshot: null };
   const plain = usageLines([pool], [], { width: 60, nowMs: NOW, ansi: false });
@@ -400,6 +521,9 @@ test('parseMouse reads press, release and wheel SGR sequences', () => {
   assert.deepEqual(parseMouse('\x1b[<64;3;7M'), { kind: 'wheel-up', x: 3, y: 7 });
   assert.deepEqual(parseMouse('\x1b[<65;3;7M'), { kind: 'wheel-down', x: 3, y: 7 });
   assert.deepEqual(parseMouse('\x1b[<0;80;24Mq'), { kind: 'press', x: 80, y: 24 });
+  // Motion with no button held (35) is a move; a drag (32, button 0 held) is not.
+  assert.deepEqual(parseMouse('\x1b[<35;12;9M'), { kind: 'move', x: 12, y: 9 });
+  assert.equal(parseMouse('\x1b[<32;12;9M'), null);
 });
 
 test('parseMouse ignores what is not a click', () => {

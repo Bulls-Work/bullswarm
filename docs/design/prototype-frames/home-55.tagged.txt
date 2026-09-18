@@ -1,0 +1,26 @@
+ {on|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}     {d|18:41 · 1–23/37}
+                                                       
+ {d|── }{b|today}{d| ─────────────────────────────────────────────}
+ {d|finished}  {k:trend:finished|{b|4}}{k:trend:finished|  }{k:trend:finished|{o|▂▅▃▇▆▄▅}}   {g|✓ 3} · {r|✗ 1}                      
+ {d|spent}  {k:trend:spent|{b|$6.40}}{k:trend:spent|  }{k:trend:spent|{o|▁▃▂▆▅▃▄}}   {d|≈ $41.00 API}                  
+ {d|licence}   claude {cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } 9%                      
+           codex  {cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } 5%                      
+                                                       
+ {d|── }{b|running}{d| ───────────────────────────────────────────}
+ {c|●} {k:run:mbpzj2|{b|1.mbpzj2}}  project-a · sample text …        {d|3/8 · 16m}
+   {k:step:mbpzj2:scan|{g|✓}}──{k:step:mbpzj2:inbox-page|{g|✓}}──{k:step:mbpzj2:widget-core|{g|✓}}──{k:step:mbpzj2:widget-lib|{c|▶}}──{k:step:mbpzj2:inbox-api|{c|▶}}──{k:step:mbpzj2:widget-docs|○}──{k:step:mbpzj2:integrate|○}──{k:step:mbpzj2:verify|○}                              
+   {k:step:mbpzj2:widget-lib|widget-lib@cmd }{k:step:mbpzj2:widget-lib|{g|▇▇▇▇▇▇▇▇▇}}{k:step:mbpzj2:widget-lib|{d|░}}{k:step:mbpzj2:widget-lib| 15m/17m}                   
+   {k:step:mbpzj2:inbox-api|inbox-api@codex }{k:step:mbpzj2:inbox-api|{g|▇▇▇▇}}{k:step:mbpzj2:inbox-api|{d|░░░░░░}}{k:step:mbpzj2:inbox-api| 4m/11m}                   
+   {p|2.7%} · $1.05 so far                                 
+ {c|●} {k:run:ywnyga|{b|2.ywnyga}}  project-a · sample text …        {d|0/2 · 11m}
+   {k:step:ywnyga:tidy|{c|▶}}──{k:step:ywnyga:accept|○}                                                
+   {k:step:ywnyga:tidy|tidy@claude }{k:step:ywnyga:tidy|{g|▇▇▇▇▇▇}}{k:step:ywnyga:tidy|{d|░░░░}}{k:step:ywnyga:tidy| 11m/17m}                      
+   {p|0.8%} · $0.55 so far                                 
+                                                       
+ {d|── }{b|budget · this week}{d| ────────────────────────────────}
+ {k:pool:claude-code|claude  } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } 37%  {a|on track}         
+   {d|resets 5d1h · $18.50 of $50}                         
+ {k:pool:codex|codex   } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| } 29%  {g|slow}             
+   {d|resets 5d1h · $14.50 of $50}                         
+ {k:pool:grok|grok    } {cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }{cell| }▏{cell| }{cell| }{cell| }{cell| }{cell| } 77%  {a|on track}         
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}           {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

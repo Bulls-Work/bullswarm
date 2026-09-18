@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History  Help     · 1–23/25
+ keys and clicks                                       
+ ── pages ─────────────────────────────────────────────
+  r b s y f   Runs · Budget · Stats · History · Fleet  
+  h  ?        this help                                
+  Esc  ←      back, then Home                          
+  1 … 9       open the numbered run in the nav         
+  Tab         next sub-tab on Stats, Budget and Fleet  
+  p           cycle the period: 7 days · 30 days · all…
+                                                       
+ ── moving ────────────────────────────────────────────
+  ↑ ↓  j k    scroll one line                          
+  PgUp PgDn   scroll a screen                          
+  Home End    top · bottom                             
+  wheel       scrolls the body under the sticky header 
+                                                       
+ ── clicks ────────────────────────────────────────────
+  tile        a today number opens its chart in Stats …
+  bar         a day bar opens its chart                
+  pool        a pool name opens Budget on that pool    
+  step        a step name opens the step page          
+  run         a run row or nav button opens the run    
+                                                       
+ ── other ─────────────────────────────────────────────
+  e           edit the fleet (on Fleet)                
+ [ ● 1.mbpzj2 ] [ 2.ywnyga ]         [Top] [End] [Help]

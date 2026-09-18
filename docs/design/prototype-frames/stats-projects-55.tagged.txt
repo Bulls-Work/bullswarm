@@ -1,0 +1,26 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {on|Stats}  {k:page:history|Histor}{k:page:history|{u|y}}                    
+ {k:stats:0|Overview}  {k:stats:1|Trends}  {k:stats:2|Pools}  {k:stats:3|Models}  {k:stats:4|{sub|Projects}}             
+                                                       
+ {k:period:0|All time} · {k:period:1|{o|Last 7 days}} · {k:period:2|Last 30 days}                 
+                                                       
+ {b|bullswarm}   {o|▂▅▃▇▆▄▅}                                   
+   11 runs · ✓ 91% · $19.40 · 38m median               
+ {b|project-a}  {o|▁▂▃▂▅▃▂}                                    
+   7 runs · ✓ 71% · $12.10 · 52m median                
+ {b|project-c}                  {o|▁▁▂▁▁▂▁}                    
+   3 runs · ✓ 100% · $4.80 · 21m median                
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}           {k:top|[Top]} {k:end|[End]} {k:page:help|[}{k:page:help|{u|H}}{k:page:help|elp]}

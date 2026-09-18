@@ -2,41 +2,216 @@ import { withV2Cancellation } from './v2-cancellation.js';
 // Interactive workflow dashboard, inspired by Claude Code's /workflows view.
 // It deliberately uses only ANSI sequences and Node's standard streams.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { readJsonSafe, readJsonForUpdate, writeJsonAtomic } from '../lib/fsjson.js';
 import { join } from 'node:path';
-import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, legacyRunLine, readKernelStderrTail } from './short-id.js';
+import { listRuns, resolveRunId, v2RunnerLiveness, isLegacyRunState, isLegacyRunDir, isOngoing, legacyRunLine, readKernelStderrTail } from './short-id.js';
 import { appendEvent, readEvents } from './events.js';
 import { isDeliveredWorkflowStatus } from './status.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { integrationStatus, installIntegration } from '../integrate.js';
-import { loadUsage, parseMouse, poolSummaryLines, usageLines } from './usage-view.js';
+import { loadUsage, parseMouse, METER_COLORS, meterBar, paceWord, untilText } from './usage-view.js';
+// The 0.33.0 pages: the render kit, the two aggregation models, and the four
+// view modules each territory owns. The shell composes them and owns no
+// arithmetic of its own beyond laying the lines out.
+import { absentLine, chartRowCount, columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, seriesColor, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
+import { biggestRuns, budgetModel } from './budget-model.js';
+import { budgetLines, budgetNotes } from './budget-view.js';
+import { fleetLines } from './fleet-view.js';
+import { statsLines } from './stats-view.js';
+import { historyLines, historyNote } from './history-view.js';
+import { dayKey, historyDays } from './history.js';
+import { readRollups, rollupIndexPath } from './rollup.js';
+import { loadState } from '../lib/state.js';
+import { readMeterHistoryDays } from '../meters/registry.js';
+// N1: a missing measurement never becomes a confident zero. Number(null) is
+// 0 and Number.isFinite(0) is true, so every reading below goes through this.
+import { finiteOrNull } from '../lib/num.js';
 // The Usage page's `[edit]` hands the terminal to the same control centre
 // `bullswarm setup` opens, so the rungs the reader just saw and the ones they
 // are about to change are the same program's.
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
 
 const ESC = '\x1b[';
+/** The operating-system-command introducer and its terminator, for OSC 52. */
+const OSC = '\x1b]';
+const BEL = '\x07';
+/** The SGR mouse reports parseMouse() consumes, stripped before a key read. */
+const MOUSE_SEQUENCE = /\x1b\[<\d+;\d+;\d+[Mm]/g;
+/**
+ * How long an OSC 52 payload may be before the copy takes the local
+ * clipboard instead. xterm's own limit is around 100 kB of sequence and
+ * several terminals truncate well below that, so a screen that does not
+ * comfortably fit goes through pbcopy or wl-copy, which say so.
+ */
+const OSC52_LIMIT = 74_000;
+/** How far back History will load, seven days at a time, as the reader scrolls. */
+const MAX_HISTORY_DAYS = 120;
+
+function localDayKey(ms) {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function dayStart(ms) {
+  const date = new Date(ms);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12).getTime();
+}
+
+/** The quota window a pool's pacing reads, out of one retained meter sample. */
+function pacedWindow(pool, sample) {
+  const preferred = pool?.pacingWindow === 'monthly' ? 'monthly'
+    : pool?.pacingWindow === 'five_hour' ? 'five_hour' : 'weekly';
+  return sample?.[preferred] ?? sample?.weekly ?? sample?.monthly ?? sample?.five_hour;
+}
+
+/**
+ * Providers restate the same window boundary with sub-second jitter on every
+ * read (`12:00:00.645530Z`, then `12:00:00.200253Z`), so two readings count as
+ * the same window unless the boundary moves by at least a minute. A real
+ * rollover moves it by hours or days.
+ */
+const RESET_TOLERANCE_MS = 60_000;
+
+/**
+ * One reading per local day for a pool, and whether its quota window rolled
+ * over on that day. A reset is a recorded `resets_at` moving to a new instant
+ * — never a falling utilization, which is also what a refund or a corrected
+ * reading looks like. The walk covers every retained sample in order, so a
+ * reset that happened between two daily readings still lands on its own day.
+ */
+function poolDayReadings(pool, days) {
+  const readings = new Map();
+  let lastResetAtMs = null;
+  for (const date of Object.keys(days).sort()) {
+    const samples = [...days[date]].sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+    const reading = { value: null, resetsAt: null, reset: false };
+    for (const sample of samples) {
+      const window = pacedWindow(pool, sample);
+      const resetsAt = typeof window?.resets_at === 'string' ? window.resets_at
+        : typeof window?.resetsAt === 'string' ? window.resetsAt : null;
+      const resetAtMs = resetsAt ? Date.parse(resetsAt) : NaN;
+      if (Number.isFinite(resetAtMs)) {
+        if (lastResetAtMs != null && Math.abs(resetAtMs - lastResetAtMs) >= RESET_TOLERANCE_MS) reading.reset = true;
+        lastResetAtMs = resetAtMs;
+      }
+      const value = finiteOrNull(window?.utilization);
+      if (value != null) {
+        reading.value = value;
+        reading.resetsAt = resetsAt;
+      }
+    }
+    readings.set(date, reading);
+  }
+  return readings;
+}
+
+/** Read the retained per-pool meter log into one real row per local day. */
+export function readLicencePerDay(bullswarmDir, pools, { period = '7d', now = Date.now(), rollups = [] } = {}) {
+  const enabled = (Array.isArray(pools) ? pools : []).filter((pool) => pool?.name && pool.enabled !== false);
+  const histories = enabled.map((pool) => {
+    const days = readMeterHistoryDays(pool.name, { dir: join(bullswarmDir, 'meters') });
+    return { pool, days, readings: poolDayReadings(pool, days) };
+  });
+  const recordedDays = histories.flatMap((entry) => Object.keys(entry.days));
+  if (!recordedDays.length) return { period, rows: [], reason: 'meter history is not loaded' };
+
+  const nowDay = dayStart(now);
+  let requestedStart;
+  if (period === '30d') requestedStart = nowDay - 29 * 86_400_000;
+  else if (period === 'all') {
+    const times = (Array.isArray(rollups) ? rollups : [])
+      .map((record) => Date.parse(record?.finishedAt ?? record?.startedAt ?? ''))
+      .filter(Number.isFinite);
+    requestedStart = times.length ? dayStart(Math.min(...times)) : dayStart(Date.parse(recordedDays.sort()[0]));
+  } else requestedStart = nowDay - 6 * 86_400_000;
+
+  const firstRecorded = recordedDays.sort()[0];
+  const rows = [];
+  for (let at = requestedStart; at <= nowDay; at = new Date(new Date(at).setDate(new Date(at).getDate() + 1)).getTime()) {
+    const date = localDayKey(at);
+    const segments = [];
+    for (const { pool, readings } of histories) {
+      const reading = readings.get(date);
+      if (!reading || reading.value == null) continue;
+      // Stats Pools marks the reset day with `▏`; it needs the fact, not a
+      // guess from a value that fell.
+      const segment = { name: pool.name, value: reading.value };
+      if (reading.resetsAt) segment.resetsAt = reading.resetsAt;
+      if (reading.reset) segment.reset = true;
+      segments.push(segment);
+    }
+    rows.push({ date, segments });
+  }
+  const reason = localDayKey(requestedStart) < firstRecorded
+    ? `Meter logs retain data from ${firstRecorded}; earlier days in ${period} are blank.`
+    : null;
+  return { period, rows, reason };
+}
+
+/**
+ * The local clipboard, for a terminal that will not take OSC 52: pbcopy on
+ * macOS, wl-copy under Wayland. Returns which tool carried it, or why none
+ * did — the message on screen names one or the other, never both.
+ */
+export function writeClipboard(text, { platform = process.platform, env = process.env, run = spawnSync } = {}) {
+  const tools = [];
+  if (platform === 'darwin') tools.push('pbcopy');
+  if (env.WAYLAND_DISPLAY) tools.push('wl-copy');
+  if (env.DISPLAY) tools.push('xclip');
+  for (const tool of tools) {
+    try {
+      const result = run(tool, tool === 'xclip' ? ['-selection', 'clipboard'] : [], { input: text });
+      if (!result?.error && (result?.status === 0 || result?.status == null)) return { ok: true, tool };
+    } catch { /* try the next one */ }
+  }
+  return { ok: false, tool: null, reason: tools.length ? `${tools.join(' and ')} failed` : 'no pbcopy, wl-copy or xclip on this machine' };
+}
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
 const GOAL_PREVIEW_LINES = 5;
 const SIDEBAR_WIDTH = 34;
 const V2_TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
+/** A run directory that wrote one of these has finished; the index has it. */
+const FINISHED_MARKERS = Object.freeze(['rollup.json', 'result.json', 'report.json']);
 const stateStatus = (state) => state?.lifecycle?.status;
 const stateStartedAt = (state) => state?.lifecycle?.startedAt;
 const stateFinishedAt = (state) => state?.lifecycle?.finishedAt;
 
 // Keep navigation wording and bindings in one place. Rendering and input use
 // the same vocabulary so a hint never describes a different action.
+const keyRow = (keys, label, bindings) => Object.freeze({ keys, label, bindings: Object.freeze(bindings) });
+
+// 0.33.0 rebinds three keys the 0.32 viewer used: `r` was refresh (the 1 s
+// timer already refreshes, so nothing is lost), `b` was move out (Esc and the
+// left arrow still are), and `Tab` was the next workflow (Shift+Tab still
+// cycles workflows, and Tab now walks a page's sub-tabs). The changelog
+// records the change; the Help page names every key below.
 export const DASHBOARD_KEYS = Object.freeze({
-  up: Object.freeze({ keys: '↑/k', label: 'move up', bindings: Object.freeze(['\x1b[A', 'k']) }),
-  down: Object.freeze({ keys: '↓/j', label: 'move down', bindings: Object.freeze(['\x1b[B', 'j']) }),
-  in: Object.freeze({ keys: 'Enter/→/l', label: 'open', bindings: Object.freeze(['\r', '\n', '\x1b[C', 'l']) }),
-  out: Object.freeze({ keys: 'Esc/←/b', label: 'move out', bindings: Object.freeze(['\x1b', '\x1b[D', 'b']) }),
-  nextWorkflow: Object.freeze({ keys: 'Tab', label: 'next workflow', bindings: Object.freeze(['\t']) }),
-  previousWorkflow: Object.freeze({ keys: 'Shift+Tab', label: 'previous workflow', bindings: Object.freeze(['\x1b[Z']) }),
-  detach: Object.freeze({ keys: 'q', label: 'detach', bindings: Object.freeze(['q', '\x03']) }),
+  home: keyRow('h', 'Home', ['h']),
+  runs: keyRow('r', 'Runs', ['r']),
+  budget: keyRow('b', 'Budget', ['b']),
+  stats: keyRow('s', 'Stats', ['s']),
+  history: keyRow('y', 'History', ['y']),
+  fleet: keyRow('f', 'Fleet', ['f']),
+  help: keyRow('?', 'Help', ['?']),
+  openRun: keyRow('1\u20139', 'open that run', []),
+  nextTab: keyRow('Tab', 'next sub-tab', ['\t']),
+  cycleWorkflow: keyRow('Shift+Tab', 'cycle workflows', ['\x1b[Z']),
+  period: keyRow('p', 'cycle the period', ['p']),
+  up: keyRow('\u2191/k', 'move up', ['\x1b[A', 'k']),
+  down: keyRow('\u2193/j', 'move down', ['\x1b[B', 'j']),
+  in: keyRow('Enter/\u2192/l', 'open', ['\r', '\n', '\x1b[C', 'l']),
+  out: keyRow('Esc/\u2190', 'move out', ['\x1b', '\x1b[D']),
+  pageUp: keyRow('PgUp', 'scroll up a screen', ['\x1b[5~']),
+  pageDown: keyRow('PgDn', 'scroll down a screen', ['\x1b[6~']),
+  top: keyRow('Home', 'top', ['\x1b[H', '\x1b[1~', '\x1bOH']),
+  end: keyRow('End', 'bottom', ['\x1b[F', '\x1b[4~', '\x1bOF']),
+  copy: keyRow('ctrl+s', 'copy the screen', ['\x13']),
+  detach: keyRow('q', 'quit', ['q', '\x03']),
 });
 
 function keyHint(name) {
@@ -55,8 +230,8 @@ function navigationFooter({
   if (filterEditing) return 'Filter: {query}█ · Enter apply · Esc clear';
   if (list) {
     return narrow
-      ? `${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh`
-      : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · r refresh · c stop`;
+      ? `${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · r refresh`
+      : `${keyHint('up')} · ${keyHint('in')} · / filter · a active/all · ${keyHint('detach')} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · r refresh · c stop`;
   }
   const extras = depth >= 4 ? ' · PgUp/PgDn scroll' : '';
   const phaseNavigation = narrow && depth <= 2 && mobileTimeline;
@@ -65,7 +240,7 @@ function navigationFooter({
     : '';
   const movement = phaseNavigation ? '↑ previous phase · ↓ next phase' : `${keyHint('up')} · ${keyHint('down')}`;
   const open = phaseNavigation ? `Enter ${timelineSelection === 0 ? 'planner' : 'agents'}` : keyHint('in');
-  return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('nextWorkflow')} · ${keyHint('previousWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
+  return `${movement}${phaseToggle} · ${open} · ${keyHint('out')} · ${keyHint('cycleWorkflow')} · o planner · v technical · c stop · ${keyHint('detach')}${extras}`;
 }
 
 function breadcrumbSegments(row, { depth = 0, phase = null, agent = null } = {}) {
@@ -152,57 +327,102 @@ export function requestCancel(bullswarmDir, token, { source = 'api', requesterPi
   return { ...resolved, state, alreadyFinished: false };
 }
 
+/**
+ * One listed run, enriched with everything the pages read: its events, its
+ * liveness, its step counts and the attempts in flight.
+ */
+function enrichRunRow(r) {
+  const state = r.state ?? {};
+  // A legacy row is five read-only fields and a marker; its detail pane is
+  // one line and it offers nothing to drive. A torn state.json lands here
+  // too, which keeps observation non-crashing until the writer settles.
+  if (r.legacy || isLegacyRunState(state)) {
+    return {
+      ...r,
+      legacy: true,
+      events: [],
+      status: state.status ?? 'unknown',
+      phase: 'legacy',
+      stepsOk: 0,
+      stepsTotal: 0,
+      activeAgents: [],
+      currentPhase: null,
+      currentStep: null,
+      usage: null,
+    };
+  }
+  const actions = state.actions ?? [];
+  const runningAttempts = (state.attempts ?? []).filter((attempt) => attempt.status === 'running');
+  const current = actions.find((action) => action.status === 'running') ?? actions.find((action) => ['ready', 'pending'].includes(action.status));
+  const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
+    ?? state.presentation?.stages?.findLast((item) => item.startedAt)
+    ?? null;
+  const liveness = v2RunnerLiveness(state, { runDir: r.runDir });
+  return {
+    ...r,
+    events: readEvents(r.runDir),
+    liveness,
+    kernelStderrTail: !liveness.alive ? readKernelStderrTail(r.runDir) : [],
+    status: state.cancellation?.requested ? 'stopping'
+      : liveness.alive ? state.lifecycle.status : 'interrupted',
+    phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
+    stepsOk: actions.filter((action) => action.status === 'succeeded').length,
+    stepsTotal: actions.length,
+    activeAgents: runningAttempts,
+    currentPhase: stage,
+    currentStep: current ?? null,
+    usage: state.usage ?? null,
+  };
+}
+
+const byNewestStart = (a, b) => {
+  if (a.ongoing !== b.ongoing) return a.ongoing ? -1 : 1;
+  return String(stateStartedAt(b.state) ?? b.report?.startedAt ?? '')
+    .localeCompare(String(stateStartedAt(a.state) ?? a.report?.startedAt ?? ''));
+};
+
 export function dashboardRows(bullswarmDir, { all = false } = {}) {
   return listRuns(bullswarmDir)
     .filter((r) => all || r.ongoing)
-    .sort((a, b) => {
-      if (a.ongoing !== b.ongoing) return a.ongoing ? -1 : 1;
-      return String(stateStartedAt(b.state) ?? b.report?.startedAt ?? '')
-        .localeCompare(String(stateStartedAt(a.state) ?? a.report?.startedAt ?? ''));
-    })
-    .map((r) => {
-      const state = r.state ?? {};
-      // A legacy row is five read-only fields and a marker; its detail pane is
-      // one line and it offers nothing to drive. A torn state.json lands here
-      // too, which keeps observation non-crashing until the writer settles.
-      if (r.legacy || isLegacyRunState(state)) {
-        return {
-          ...r,
-          legacy: true,
-          events: [],
-          status: state.status ?? 'unknown',
-          phase: 'legacy',
-          stepsOk: 0,
-          stepsTotal: 0,
-          activeAgents: [],
-          currentPhase: null,
-          currentStep: null,
-          usage: null,
-        };
-      }
-      const actions = state.actions ?? [];
-      const runningAttempts = (state.attempts ?? []).filter((attempt) => attempt.status === 'running');
-      const current = actions.find((action) => action.status === 'running') ?? actions.find((action) => ['ready', 'pending'].includes(action.status));
-      const stage = state.presentation?.stages?.find((item) => item.actionIds.includes(current?.id))
-        ?? state.presentation?.stages?.findLast((item) => item.startedAt)
-        ?? null;
-      const liveness = v2RunnerLiveness(state, { runDir: r.runDir });
-      return {
-        ...r,
-        events: readEvents(r.runDir),
-        liveness,
-        kernelStderrTail: !liveness.alive ? readKernelStderrTail(r.runDir) : [],
-        status: state.cancellation?.requested ? 'stopping'
-          : liveness.alive ? state.lifecycle.status : 'interrupted',
-        phase: stage?.label ?? (state.preflight?.scout?.status === 'running' ? 'Preflight: Scout' : state.planner?.status === 'running' ? 'Workflow Planner' : 'starting'),
-        stepsOk: actions.filter((action) => action.status === 'succeeded').length,
-        stepsTotal: actions.length,
-        activeAgents: runningAttempts,
-        currentPhase: stage,
-        currentStep: current ?? null,
-        usage: state.usage ?? null,
-      };
-    });
+    .sort(byNewestStart)
+    .map(enrichRunRow);
+}
+
+/**
+ * The runs in flight, without parsing every run directory.
+ *
+ * `listRuns` parses all 293 `state.json` files on this machine — 22 MB and
+ * about 100 ms against a 1 s refresh timer — which is why Home, Stats,
+ * History and Budget read `~/.bullswarm/history/runs.jsonl` instead. The nav
+ * and the running block still need live state, so this walks the same
+ * directories and parses only the ones that can still be running: a run that
+ * wrote `rollup.json`, `result.json` or `report.json` has finished, and its
+ * numbers live in the index.
+ */
+export function activeDashboardRows(bullswarmDir) {
+  const runsRoot = join(bullswarmDir, 'workflows');
+  if (!existsSync(runsRoot)) return [];
+  let entries;
+  try { entries = readdirSync(runsRoot, { withFileTypes: true }); } catch { return []; }
+  const rows = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('wf-')) continue;
+    const dir = join(runsRoot, entry.name);
+    if (FINISHED_MARKERS.some((marker) => existsSync(join(dir, marker)))) continue;
+    const statePath = join(dir, 'state.json');
+    if (!existsSync(statePath)) continue;
+    let raw = null;
+    try { raw = JSON.parse(readFileSync(statePath, 'utf8')); } catch { continue; }
+    // A legacy run is never ongoing, so it never reaches the running block.
+    if (isLegacyRunState(raw)) continue;
+    const state = withV2Cancellation(raw, dir);
+    if (!isOngoing(dir, state)) continue;
+    rows.push(enrichRunRow({
+      runId: entry.name, shortId: state?.shortId ?? null, runDir: dir, dir,
+      legacy: false, state, report: null, ongoing: true,
+    }));
+  }
+  return rows.sort(byNewestStart);
 }
 
 export function renderDashboard({
@@ -829,7 +1049,7 @@ function timelineSegmentDisplayName(name, model) {
   return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
 }
 
-function workflowTimelineLines(model, width, spinnerFrame = 0) {
+function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true } = {}) {
   const { state } = model;
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
@@ -854,8 +1074,12 @@ function workflowTimelineLines(model, width, spinnerFrame = 0) {
   if (goalLines.length === GOAL_PREVIEW_LINES && wrapLines(goalSource, goalWidth).length > GOAL_PREVIEW_LINES) {
     goalLines[GOAL_PREVIEW_LINES - 1] = truncate(`${goalLines[GOAL_PREVIEW_LINES - 1]} …`, goalWidth);
   }
+  // The Run page prints the goal above the timeline, where the reader sees it
+  // without scrolling; there it passes `goalPreview: false` so the same five
+  // wrapped rows are not replayed inside the first milestone. The mod pane's
+  // `--overview` frame keeps them.
   add(state.lifecycle.startedAt, `${glyphs().ongoing} Goal accepted`, '', [
-    ...goalLines,
+    ...(goalPreview ? goalLines : []),
     runDir ? `goal file · ${join(runDir, 'goal.json')}` : null,
     model.dependencyGroups ? 'phases may overlap as actions become ready' : 'preparing repository reconnaissance',
   ], 'Preflight');
@@ -1129,6 +1353,71 @@ function plannerUsageSummary(model) {
 
 function dimText(value, width) {
   return `\x1b[2m${truncate(value, width)}\x1b[0m`;
+}
+
+// ------------------------------------------------- the palette on the page
+//
+// The pages name a palette role — or the stable hex returned by dash-kit for a
+// pool/model series — and never invent a colour. Every value comes from
+// METER_COLORS in usage-view.js, the one palette the product has; this file
+// adds none. Colour is off wherever the meters are off, so an ascii terminal
+// and a plain-text capture read the same words with no escapes in them.
+
+const SGR_RESET = '\x1b[0m';
+const SGR_BOLD = '\x1b[1m';
+const SGR_NO_BOLD = '\x1b[22m';
+
+const rgbOf = (hex) => {
+  const value = Number.parseInt(String(hex).slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+};
+
+/** `text` in the palette's `role`, or untouched where colour is off. */
+function tint(text, role) {
+  const body = String(text ?? '');
+  if (!body || !meterAnsi()) return body;
+  const hex = typeof role === 'string' && role.startsWith('#') ? role : METER_COLORS[role];
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return body;
+  return `\x1b[38;2;${rgbOf(hex).join(';')}m${body}${SGR_RESET}`;
+}
+
+/** A key figure or a key name, bold where the terminal can be bold. */
+function strong(text) {
+  const body = String(text ?? '');
+  if (!body || !meterAnsi()) return body;
+  return `${SGR_BOLD}${body}${SGR_NO_BOLD}`;
+}
+
+/** The run marks, each in the colour the tagged prototype frame gives it. */
+const okMark = () => tint(glyphs().ok, 'green');
+const failMark = () => tint(glyphs().fail, 'red');
+const runningMark = () => tint(glyphs().started, 'cyan');
+const pendingMark = () => dimText(glyphs().pending, 2);
+
+/**
+ * A `columns()` band painted into the body at `indent`, each column clickable
+ * over its own rows. `cells` carry an optional `action`; a cell columns()
+ * dropped for want of room simply has no region.
+ */
+function pushColumns(body, cells, { width, gap = 2, indent = 1 } = {}) {
+  const lines = columns(cells, { width, gap });
+  const base = body.lines.length;
+  for (const line of lines) body.push(`${' '.repeat(indent)}${line}`);
+  for (const [index, column] of (lines.meta?.columns ?? []).entries()) {
+    const action = cells[index]?.action;
+    if (!action) continue;
+    // A cell may name the rows it reacts to — a tile is one click on its
+    // number, not three on a number, a label and a caption.
+    const only = cells[index]?.actionRows ?? null;
+    for (let row = 0; row < column.rows; row += 1) {
+      if (only && !only.includes(row)) continue;
+      const painted = visibleLength(body.lines[base + row] ?? '');
+      const x1 = column.x + indent;
+      const x2 = Math.min(painted, x1 + Math.max(1, column.width) - 1);
+      if (x2 >= x1) body.regions.push({ x1, x2, y: base + row + 1, action });
+    }
+  }
+  return lines;
 }
 
 function orchestratorDetailLines(model, width, spinnerFrame, { verbose = false } = {}) {
@@ -1433,28 +1722,51 @@ export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30
 }
 
 // ---------------------------------------------------------------------------
-// The paged dashboard: Home, Run, Step, Usage and Help.
+// The paged dashboard: Home, Runs, Run, Step, Budget, Stats, Fleet (History is the day table inside Runs)
+// and Help.
 //
-// Every paint draws one sticky header, a window over the body, an optional
-// message line and note, then the sticky bottom nav. Each page, tab, run row
-// and step row records the columns it was painted in, so an SGR mouse press
-// runs the same action its key runs and the wheel moves the same window.
+// Every paint draws the page tab row, one sticky header, a window over the
+// body, an optional message line and note, then the sticky bottom nav. Each
+// tab, tile, bar, run row, day row, step and nav button records the columns
+// it was painted in, so an SGR mouse press runs the same action its key runs
+// and the wheel moves the same window.
+//
+// The pages own no arithmetic. Money and licence figures come from
+// budget-model and stats-model, and every one of them is painted with `≈` and
+// its basis, or as a blank with the reason it cannot be measured.
 // ---------------------------------------------------------------------------
 
 const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 /** Every page the dashboard has, in the order the help page lists them. */
-const DASHBOARD_PAGES = Object.freeze(['home', 'run', 'step', 'usage', 'help']);
+const DASHBOARD_PAGES = Object.freeze(['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'fleet', 'help']);
+/** The tab row above the body; `key` is the key that opens the page. */
+const PAGE_TABS = Object.freeze([
+  Object.freeze({ id: 'home', label: 'Home', key: 'h' }),
+  Object.freeze({ id: 'runs', label: 'Runs', key: 'r' }),
+  Object.freeze({ id: 'budget', label: 'Budget', key: 'b' }),
+  Object.freeze({ id: 'stats', label: 'Stats', key: 's' }),
+  Object.freeze({ id: 'fleet', label: 'Fleet', key: 'f' }),
+]);
+/** Run and Step are read as Runs: the tab row marks the page they came from. */
+const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs', history: 'runs' });
+/** The period toggle, in the order `p` cycles it. */
+const PERIOD_ITEMS = Object.freeze([
+  Object.freeze({ id: '7d', label: 'Last 7 days' }),
+  Object.freeze({ id: '30d', label: 'Last 30 days' }),
+  Object.freeze({ id: 'all', label: 'All time' }),
+]);
+/** Stats' sub-tabs and Fleet's, in the order Tab cycles them. */
+const STATS_TABS = Object.freeze(['overview', 'trends', 'pools', 'models', 'projects']);
+const FLEET_TABS = Object.freeze(['lane', 'provider']);
 /** How many columns a painted line really occupies. */
 const visibleLength = (value) => String(value ?? '').replace(ANSI_SGR, '').length;
-/** The Usage page's read-only note, whole and wrapped above the nav. */
-const USAGE_NOTE = 'read-only here · [edit] opens bullswarm setup';
-/** The one-line commands that operate the product, as Home lists them. */
+/** The one-line commands that operate the product, as Runs lists them. */
 const DASHBOARD_COMMANDS = Object.freeze([
   'bullswarm run',
   'bullswarm workflow goal "<goal>"',
   'bullswarm workflow watch <id> --next',
+  'bullswarm workflow reindex',
   'bullswarm setup',
-  'bullswarm integrate install --yes',
   'bullswarm doctor',
 ]);
 
@@ -1463,12 +1775,59 @@ function meterAnsi() {
   return !asciiGlyphsPreferred();
 }
 
+/** The blank a figure with no measurable source is painted as. */
+function blank() {
+  return asciiGlyphsPreferred() ? '-' : '—';
+}
+
+/** `≈` with the basis beside it, or the ascii twin. */
+function about() {
+  return asciiGlyphsPreferred() ? '~' : '≈';
+}
+
+/**
+ * Money, always as the estimate it is. `estimateInvocationUsage` prices the
+ * task and output text at API rates with no cache split, so every `$` on this
+ * dashboard is an API-equivalent estimate and says so; an amount nobody
+ * recorded is null, and the caller paints a blank with the reason.
+ */
+function moneyText(value) {
+  const text = formatDashboardValue(value, 'money');
+  return text == null ? null : `${about()} ${text}`;
+}
+
+/** A percentage, to one decimal, or null when there is nothing to show. */
+function percentText(value, digits = 0) {
+  const amount = Number(value);
+  if (value == null || !Number.isFinite(amount)) return null;
+  return `${amount.toFixed(digits)}%`;
+}
+
+/** A share recorded as 0..1. */
+function shareText(value) {
+  const amount = Number(value);
+  if (value == null || !Number.isFinite(amount)) return null;
+  return `${Math.round(amount * 100)}%`;
+}
+
+/** `42m` / `2h05m` from minutes. */
+function minutesText(value) {
+  return formatDashboardValue(value, 'minutes');
+}
+
 /** `42m` / `2h05m` since an ISO time. */
 function ageText(iso, nowMs) {
   if (!iso) return '';
   const mins = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 60_000));
   if (!Number.isFinite(mins)) return '';
-  return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}m`;
+  return minutesText(mins) ?? '';
+}
+
+/** `19:22` in the reader's own zone, for an ETA or a milestone. */
+function clockAt(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const at = new Date(ms);
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
 /** A line builder that remembers where each clickable part was painted. */
@@ -1500,7 +1859,46 @@ function frameBuilder() {
       builder.lines.push(text);
       return builder;
     },
+    /** A dash-kit `{ text, regions }` row, its regions shifted by `indent`. */
+    kit({ text = '', regions = [] } = {}, indent = 0) {
+      builder.lines.push(`${' '.repeat(indent)}${text}`);
+      for (const region of regions) {
+        builder.regions.push({
+          x1: region.x + indent,
+          x2: region.x + indent + Math.max(1, region.width) - 1,
+          y: builder.lines.length,
+          action: region.action,
+        });
+      }
+      return builder;
+    },
   };
+  return builder;
+}
+
+/**
+ * A view module's lines and its regions, appended to a builder.
+ *
+ * budget-view, fleet-view, stats-view and history-view each return regions as
+ * `{ x, y, width, action }`, where `y` is the 1-based row of the view's own
+ * lines the region was painted on.  The shell only has to shift that row by
+ * where the view landed in the body, so a click always reaches the row it was
+ * drawn on instead of the shell searching the text for it.  A region without
+ * a usable row is dropped rather than made to fire the wrong action.
+ */
+function pushView(builder, view) {
+  const lines = Array.isArray(view) ? view : (view?.lines ?? []);
+  const regions = Array.isArray(view) ? [] : (view?.regions ?? []);
+  const base = builder.lines.length;
+  for (const line of lines) builder.lines.push(line);
+  for (const region of regions) {
+    if (!region?.action || !(region.width > 0)) continue;
+    const row = Number(region.y);
+    if (!Number.isInteger(row) || row < 1 || row > lines.length) continue;
+    builder.regions.push({
+      x1: region.x, x2: region.x + region.width - 1, y: base + row, action: region.action,
+    });
+  }
   return builder;
 }
 
@@ -1530,39 +1928,62 @@ function drawWindow(frame, body, window) {
 const underline = (text) => `\x1b[4m${text}\x1b[24m`;
 
 /**
- * The bottom nav: one button per ongoing run, then usage, help and quit.
- * Every button shows its key underlined inside its label: the letter where
- * the label has it (`[ usage ]` with the u underlined), a run's digit ahead
- * of its id (`[ 1.aaa111 ]`), so the keys read off the nav.
+ * The page tab row: the active tab inverted with its key letter underlined.
+ * Fleet is dropped while the terminal is narrow unless it is the page being
+ * read. Help remains available from the bottom nav and the `?` key, but is
+ * intentionally not a top-level tab.
+ */
+function pageTabs(page, width) {
+  const active = TAB_OF_PAGE[page] ?? (page === 'help' ? null : page);
+  const hidden = [];
+  if (width < 38) hidden.push('fleet');
+  return tabsRow(PAGE_TABS, { active, width, hidden });
+}
+
+/**
+ * The bottom nav: one button per ongoing run, then the page's tail.
+ *
+ * A run's digit sits inside its button (`[ 1.aaa111 ]`) and a label's key
+ * letter is underlined, so the keys read off the nav. Below 100 columns the
+ * tail is the phone layout's `[Top] [End] [?.Help]`; the run buttons keep the
+ * left and drop from the end when they do not fit.
  */
 function navParts(model, { page, width, selectedRunId }) {
+  const narrow = width < 100;
   const button = (item) => {
     const mark = item.mark ? `${glyphs().ongoing} ` : '';
-    // A digit is never a label's key, however the run id spells itself.
-    const at = /^[a-z]$/.test(item.key) ? item.label.indexOf(item.key) : -1;
+    // A digit is never a label's key, however the run id spells itself, and a
+    // capitalised label ([Help]) still underlines the lower-case key that
+    // presses it.
+    const at = /^[a-z]$/.test(item.key ?? '') ? item.label.toLowerCase().indexOf(item.key) : -1;
     const label = at >= 0
-      ? `${item.label.slice(0, at)}${underline(item.key)}${item.label.slice(at + 1)}`
-      : `${underline(item.key)}.${item.label}`;
-    return `[ ${mark}${label} ]`;
+      ? `${item.label.slice(0, at)}${underline(item.label[at])}${item.label.slice(at + 1)}`
+      : item.key ? `${underline(item.key)}.${item.label}` : item.label;
+    return item.tight ? `[${mark}${label}]` : `[ ${mark}${label} ]`;
   };
-  const back = page === 'step' ? [{ key: 'b', label: 'back', action: { kind: 'back' } }] : [];
+  const back = page === 'step' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
   // The run the reader is on is marked wherever a run is what they are
-  // reading; the Usage and Help pages mark themselves instead.
-  const onRunPage = page === 'home' || page === 'run' || page === 'step';
+  // reading; the other pages mark themselves in the tab row instead.
+  const onRunPage = page === 'home' || page === 'run' || page === 'step' || page === 'runs';
   const runs = model.runs.map((run, index) => ({
-    key: index < 9 ? String(index + 1) : ' ',
+    key: index < 9 ? String(index + 1) : null,
     label: run.shortId ?? '------',
     mark: onRunPage && run.runId === selectedRunId,
-    action: { kind: 'open-run', runId: run.runId },
+    action: { kind: 'run', runId: run.runId },
   }));
-  const tail = [
-    { key: 'u', label: 'usage', mark: page === 'usage', action: { kind: 'page', page: 'usage' } },
-    { key: 'h', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
-    { key: 'q', label: 'quit', action: { kind: 'quit' } },
-  ];
+  const tail = narrow
+    ? [
+      { key: null, label: 'Top', tight: true, action: { kind: 'top' } },
+      { key: null, label: 'End', tight: true, action: { kind: 'end' } },
+      { key: '?', label: 'Help', tight: true, mark: page === 'help', action: { kind: 'page', page: 'help' } },
+    ]
+    : [
+      { key: '?', label: 'help', mark: page === 'help', action: { kind: 'page', page: 'help' } },
+      { key: 'q', label: 'quit', action: { kind: 'quit' } },
+    ];
   // The way out is the last thing to go: the tail is kept whole and the run
   // buttons fill whatever the terminal has left for them — a terminal too
-  // narrow for the whole tail still gets its quit button.
+  // narrow for the whole tail still gets its last button.
   const lineLength = (items) => 1 + items.reduce((sum, item) => sum + visibleLength(button(item)) + 1, 0);
   const shown = [...runs];
   while (shown.length && lineLength([...back, ...shown, ...tail]) > width) shown.pop();
@@ -1573,32 +1994,7 @@ function navParts(model, { page, width, selectedRunId }) {
     parts.push({ text: button(item), action: item.action });
     parts.push({ text: ' ' });
   }
-  const hidden = ` ${glyphs().ongoing} ${runs.length} runs`;
-  if (shown.length < runs.length && lineLength([...back, ...shown, ...tail]) + visibleLength(hidden) <= width) {
-    parts.push({ text: hidden });
-  }
   return parts;
-}
-
-/**
- * The compact pool rows: the same block on Home and as the last body rows of
- * Run. `Pools ▸` opens the Usage page, where every window is drawn full width.
- */
-function poolBlock(model, { width }, target) {
-  if (!model.pools.length) return 0;
-  target.push(dimText(` ${'─'.repeat(Math.max(1, Math.min(width, 120) - 1))}`, width));
-  const label = ' Pools ▸';
-  const hint = ' · used/elapsed · pace · u for every window and the model per tier';
-  target.parts([
-    { text: label, action: { kind: 'page', page: 'usage' } },
-    { text: dimText(hint, Math.max(0, width - visibleLength(label))) },
-  ]);
-  for (const line of poolSummaryLines(model.pools, model.assignments, {
-    width: Math.max(20, width - 1), ansi: meterAnsi(),
-  })) {
-    target.push(` ${line}`);
-  }
-  return target.lines.length;
 }
 
 /** `skill ✓ · awareness ✓`, plus the mod link and hooks flag for Claude. */
@@ -1649,7 +2045,7 @@ function actionNamedIn(text, actions) {
 }
 
 /** One clickable row per step the painted lines name. */
-function markStepRows(builder, lines, model) {
+function markStepRows(builder, lines, model, runId = null) {
   const actions = model.state.actions ?? [];
   if (!actions.length) return;
   const from = builder.lines.length - lines.length;
@@ -1658,39 +2054,754 @@ function markStepRows(builder, lines, model) {
     if (action) {
       builder.regions.push({
         x1: 1, x2: Math.max(1, visibleLength(line)), y: from + index + 1,
-        action: { kind: 'open-step', actionId: action.id },
+        action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
       });
     }
   });
 }
 
-/** Home: the ongoing runs, the pools, the agent integration, the commands. */
-function homePage(model, opts, body) {
-  const { width, narrow } = opts;
-  const rows = opts.rows ?? [];
-  const allRows = opts.allRows ?? rows;
-  const active = allRows.filter((row) => row.ongoing).length;
-  const waiting = allRows.filter((row) => isWaitingWorkflow(row.state)).length;
-  const recent = Math.max(0, allRows.length - active);
-  body.push(dimText(` Runs · ${opts.filter === 'all' ? 'all' : 'active'}${opts.query ? ` · filter “${opts.query}”` : ''} · ${active} active · ${waiting} waiting · ${recent} recent`, width));
-  const selected = clamp(opts.selected ?? 0, 0, Math.max(0, rows.length - 1));
-  if (!rows.length) {
-    body.row(' No workflows in this view.');
-    body.row(dimText(opts.filter === 'all'
-      ? ' Start one with: bullswarm workflow goal "…"'
-      : ' Press a to browse recent runs.', width));
+// ------------------------------------------------------------------ a run
+
+/**
+ * The phases of a run's plan, each an array of its actions.
+ *
+ * These are the same dependency stages the Run page's own panel lists, read
+ * through `workflowPanelModel`, so the strip, the phase count and the panel
+ * below them can never disagree. A state too torn to project falls back to
+ * the graph the actions themselves declare.
+ */
+function planLevels(row) {
+  try {
+    const phases = workflowPanelModel(row).phases
+      .map((phase) => (phase.actions ?? []).filter((action) => action?.id));
+    if (phases.some((phase) => phase.length)) return phases;
+  } catch { /* fall through to the declared graph */ }
+  const actions = row?.state?.actions ?? [];
+  const byId = new Map(actions.map((action) => [action.id, action]));
+  const depth = new Map();
+  const depthOf = (action, seen = new Set()) => {
+    if (depth.has(action.id)) return depth.get(action.id);
+    if (seen.has(action.id)) return 0;
+    seen.add(action.id);
+    const parents = (action.dependsOn ?? []).map((id) => byId.get(id)).filter(Boolean);
+    const value = parents.length ? 1 + Math.max(...parents.map((parent) => depthOf(parent, seen))) : 0;
+    depth.set(action.id, value);
+    return value;
+  };
+  const levels = [];
+  for (const action of actions) (levels[depthOf(action)] ??= []).push(action);
+  return levels.map((level) => level ?? []);
+}
+
+const DONE_STATUS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'skipped']);
+
+/** `phase 2 of 4 · 5/8 steps`, plus the ETA when every remainder is measured. */
+function planProgress(row, { assignments = [], nowMs = Date.now() } = {}) {
+  const state = row?.state ?? {};
+  const actions = state.actions ?? [];
+  const levels = planLevels(row);
+  const done = actions.filter((action) => action.status === 'succeeded').length;
+  const running = levels.findIndex((level) => level.some((action) => action.status === 'running'));
+  const pending = levels.findIndex((level) => level.some((action) => !DONE_STATUS.has(action.status)));
+  const index = running >= 0 ? running : pending >= 0 ? pending : levels.length - 1;
+  const phase = levels.length ? index + 1 : 0;
+
+  // The ETA only exists when every step still to run recorded an expected
+  // duration. Today only a dispatched step does (its live assignment carries
+  // `expectedMinutes`), so a run with waiting steps says so instead of
+  // inventing the minutes nobody measured.
+  const remaining = actions.filter((action) => !DONE_STATUS.has(action.status));
+  let minutes = 0;
+  let measured = 0;
+  const unmeasured = [];
+  for (const action of remaining) {
+    const assignment = assignments.find((entry) => entry.runId === row?.runId && entry.actionId === action.id);
+    const expected = finiteOrNull(assignment?.expectedMinutes);
+    if (expected == null) { unmeasured.push(action.id); continue; }
+    const startedMs = Date.parse(assignment?.startedAt ?? '');
+    const elapsed = Number.isFinite(startedMs) ? (nowMs - startedMs) / 60_000 : 0;
+    minutes += Math.max(0, expected - elapsed);
+    measured += 1;
   }
-  if (rows.length) dashboardRunLines(rows, selected, narrow, width).forEach((group, index) => {
-    const runId = rows[index]?.runId ?? null;
-    group.lines.forEach((line, lineIndex) => {
-      if (!line) { body.push(''); return; }
-      body.row(line, lineIndex === 0 && runId ? { kind: 'open-run', runId } : null);
+  const eta = remaining.length && measured === remaining.length
+    ? clockAt(nowMs + minutes * 60_000)
+    : null;
+  return {
+    phase,
+    phases: levels.length,
+    levels,
+    done,
+    total: actions.length,
+    remaining: remaining.length,
+    measuredRemaining: measured,
+    unmeasured,
+    eta,
+  };
+}
+
+/** One glyph per step, in dependency order, each of them clickable. */
+function planStripParts(row, { runId = null } = {}) {
+  const levels = planLevels(row);
+  const mark = glyphs();
+  const parts = [];
+  levels.forEach((level, levelIndex) => {
+    if (levelIndex) parts.push({ text: '──' });
+    level.forEach((action, index) => {
+      if (index) parts.push({ text: ' ' });
+      const glyph = action.status === 'succeeded' ? mark.ok
+        : action.status === 'running' ? mark.started
+          : ['failed', 'blocked', 'cancelled'].includes(action.status) ? mark.fail
+            : mark.pending;
+      parts.push({
+        text: glyph,
+        action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+      });
     });
   });
+  return parts;
+}
 
-  poolBlock(model, opts, body);
+/**
+ * What one run drew and spent, measured from its own attempts.
+ *
+ * Minutes are the wall clock each attempt recorded. A pool's licence share is
+ * `ratePerMinute × those minutes`, the only licence arithmetic the plan
+ * allows, and it is null — never zero — where the pool has no measured rate.
+ * Money is the sum of the API-equivalent estimates the attempts recorded.
+ */
+function runEconomics(row, pools = [], nowMs = Date.now()) {
+  const attempts = row?.state?.attempts ?? [];
+  const byPool = new Map();
+  let apiEquivalentUsd = null;
+  let priced = 0;
+  for (const attempt of attempts) {
+    const name = attempt?.pool ?? null;
+    const startedMs = Date.parse(attempt?.startedAt ?? '');
+    const finishedMs = Date.parse(attempt?.finishedAt ?? '');
+    const wall = finiteOrNull(attempt?.wallSec);
+    const minutes = wall != null ? wall / 60
+      : Number.isFinite(startedMs)
+        ? Math.max(0, (Number.isFinite(finishedMs) ? finishedMs : nowMs) - startedMs) / 60_000
+        : null;
+    if (name && minutes != null) byPool.set(name, (byPool.get(name) ?? 0) + minutes);
+    const cost = finiteOrNull(attempt?.usage?.cost?.estimatedUsd);
+    if (cost != null) { apiEquivalentUsd = (apiEquivalentUsd ?? 0) + cost; priced += 1; }
+  }
+  const rows = [...byPool.entries()].map(([name, minutes]) => {
+    const pool = (Array.isArray(pools) ? pools : []).find((entry) => entry?.name === name) ?? null;
+    const rate = finiteOrNull(pool?.spend?.pacing?.ratePerMinute);
+    return {
+      name,
+      minutes,
+      usedPct: finiteOrNull(pool?.usedPct),
+      window: pool?.spend?.pacing?.window ?? pool?.pacingWindow ?? null,
+      sharePct: rate == null ? null : rate * minutes,
+      rateSource: pool?.spend?.pacing?.source ?? null,
+    };
+  }).sort((a, b) => b.minutes - a.minutes);
+  return { pools: rows, apiEquivalentUsd, pricedAttempts: priced, attempts: attempts.length };
+}
 
+/** `shell-home ▇▇▇▇░░░ 12m/16m expected`, for a step with a live assignment. */
+function stepProgressText(action, assignment, { width, nowMs }) {
+  const expected = finiteOrNull(assignment?.expectedMinutes);
+  const startedMs = Date.parse(assignment?.startedAt ?? action?.startedAt ?? '');
+  if (expected == null || expected <= 0 || !Number.isFinite(startedMs)) {
+    return `${action.id} · running · no expected duration recorded`;
+  }
+  const elapsed = Math.max(0, (nowMs - startedMs) / 60_000);
+  const bar = progressBar(elapsed / expected, Math.max(4, Math.min(12, Math.floor(width / 8))));
+  return `${action.id} ${bar} ${minutesText(elapsed)}/${minutesText(expected)} expected`;
+}
+
+// ------------------------------------------------------------------- Home
+
+/** One today tile: a number, its 7-day sparkline, and the line beneath it. */
+function tileText(tile, width) {
+  const value = tile.value ?? blank();
+  const spark = tile.spark ? `  ${tile.spark}` : '';
+  return cut(`${value}${spark}`, width);
+}
+
+/**
+ * `widget-lib@cmd ▇▇▇▇▇▇░░░░ 15m/17m`, the per-step bar the prototype draws
+ * beside the plan strip.
+ *
+ */
+function stepBarText(action, assignment, { width = 24, nowMs = Date.now(), pool = null } = {}) {
+  const expected = finiteOrNull(assignment?.expectedMinutes);
+  const startedMs = Date.parse(assignment?.startedAt ?? action?.startedAt ?? '');
+  const elapsed = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 60_000) : null;
+  const short = pool == null ? null : String(pool).split(':').pop();
+  const name = short ? `${action.id}@${short}` : String(action.id);
+  const clock = elapsed == null ? blank() : minutesText(elapsed);
+  const measured = expected != null && expected > 0 && elapsed != null;
+  const timing = `${clock}/${measured ? minutesText(expected) : blank()}`;
+  const bars = Math.max(4, Math.min(10, width - visibleLength(name) - visibleLength(timing) - 2));
+  const bar = measured
+    ? tint(progressBar(elapsed / expected, bars), 'green')
+    : tint((asciiGlyphsPreferred() ? '.' : '░').repeat(bars), 'dim');
+  return {
+    measured,
+    text: compactRow([
+      { text: name, grow: true, min: 1 },
+      bar,
+      timing,
+    ], { width }),
+  };
+}
+
+/** The assignment a run's step was dispatched under, if one was recorded. */
+function assignmentOf(model, runId, actionId) {
+  return (model.assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === actionId) ?? null;
+}
+
+/** The pool a step's newest attempt ran on, for the `step@pool` label. */
+function stepPool(row, actionId) {
+  const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === actionId);
+  return attempt?.pool ?? null;
+}
+
+/**
+ * The `── budget · this week ──` block: one meter row per pool and one dim
+ * reset/pace row beneath it.
+ *
+ * The money column is the one place this block could invent a figure, and it
+ * does not: `monthlyPriceUsd` is null on every pool here, so the column is a
+ * blank and the reason is printed once under the block rather than six times
+ * inside it.
+ */
+function paceOnly(text) {
+  const word = String(text ?? '').replace(/\s*[+\u2212-]\d+pp$/, '').trim();
+  return word || blank();
+}
+
+/** How many metered pools the `budget · this week` block draws before it says
+ * how many it left out. The block is a summary, not the Budget page, but a
+ * silent cap reads as “those are all my pools”, so the ones it drops are
+ * counted in words underneath. */
+const BUDGET_WEEK_POOLS = 4;
+
+function budgetWeekLines(body, model, { width, narrow, nowMs }) {
+  const metered = (model.budget?.rows ?? [])
+    .filter((row) => row.usedPct != null)
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0));
+  const rows = metered.slice(0, BUDGET_WEEK_POOLS);
+  const leftOut = metered.length - rows.length;
   body.push('');
+  body.push(rule('budget · this week', null, width));
+  if (!rows.length) {
+    body.push(dimText(' no pool reported a licence meter · bullswarm doctor checks the meters', width));
+    return;
+  }
+  const nameWidth = Math.min(16, rows.reduce((most, row) => Math.max(most, String(row.name).length), 0));
+  const unpriced = [];
+  for (const row of rows) {
+    const name = cut(String(row.name), nameWidth).padEnd(nameWidth);
+    const used = percentText(row.usedPct) ?? blank();
+    const pace = paceWord(row.usedPct, row.elapsedPct);
+    const money = row.subscription?.windowUsd == null
+      ? blank()
+      : formatDashboardValue(row.subscription.windowUsd, 'money');
+    if (row.subscription?.windowUsd == null) unpriced.push(row.name);
+    const fits = row.fits == null
+      ? null
+      : `${row.fits} medium run${row.fits === 1 ? '' : 's'} fit${row.fits === 1 ? 's' : ''}`;
+    const tail = narrow
+      ? visibleLength(`${name} ${used} `) + 12
+      : visibleLength(`${name} `) + 46;
+    // The meter is capped: past 64 cells a longer bar says nothing more, so
+    // the extra width at 200 columns goes to the row's words instead.
+    const bar = meterBar(row.usedPct, row.elapsedPct, Math.max(4, Math.min(64, width - tail - 2)), { ansi: meterAnsi() });
+    const severity = row.usedPct >= 80 ? 'red' : row.usedPct >= 50 ? 'amber' : 'green';
+    body.row(
+      narrow
+        ? compactRow([
+          { text: ` ${name}`, width: nameWidth + 1 },
+          bar,
+          { text: strong(used), width: 4, align: 'right' },
+          { text: tint(paceOnly(pace.text), severity), grow: true, min: 3 },
+        ], { width })
+        : compactRow([
+          { text: ` ${name}`, width: nameWidth + 1 },
+          bar,
+          { text: `${strong(used)} used`, width: 10, align: 'right', gap: 2 },
+          { text: money, width: 8, align: 'right', gap: 2 },
+          { text: tint(fits ?? blank(), severity), grow: true, min: 6, gap: 2 },
+        ], { width }),
+      { kind: 'page', page: 'budget', pool: row.name },
+    );
+    const reset = narrow
+      ? `resets ${row.resetsAt ? untilText(row.resetsAt, nowMs) : blank()}`
+      : `resets ${row.resetsText ?? blank()}`;
+    const elapsed = percentText(row.elapsedPct);
+    body.push(dimText(
+      `   ${[reset, ...(narrow ? [row.subscription?.windowUsd == null ? null : money] : [elapsed ? `${elapsed} elapsed` : null, pace.text || null])].filter(Boolean).join(' · ')}`,
+      width,
+    ));
+  }
+  if (leftOut > 0) {
+    body.push(dimText(
+      ` +${leftOut} more metered pool${leftOut === 1 ? '' : 's'} · b opens Budget`,
+      width,
+    ));
+  }
+  if (unpriced.length) {
+    // The phone has no room for the reason and the command on one row, so it
+    // takes two rather than losing the command to a truncation.
+    if (narrow) {
+      body.push(dimText(` ${blank()} money: no declared subscription price`, width));
+      body.push(dimText('   bullswarm strategy set-subscription', width));
+    } else {
+      body.push(dimText(
+        ` ${blank()} money: no declared subscription price for ${unpriced.join(', ')} · bullswarm strategy set-subscription <pool> --monthly-usd`,
+        width,
+      ));
+    }
+  }
+  // B1. The figures that are there are money at a DECLARED rate, not the
+  // API-equivalent estimate every other `$` on this page is; say which.
+  if (unpriced.length < rows.length) {
+    body.push(dimText(' money at the declared subscription price, pro-rated over the window', width));
+  }
+}
+
+/**
+ * The four-column breakdown band: spent per day, by pool, by model, by
+ * project. One row band at 120 and 200 columns, one column at 55.
+ *
+ * Each bar is a fraction of the percentage printed beside it — the same
+ * number, drawn — rather than of the biggest row's minutes, which is what
+ * made the old band's bars and its figures disagree.
+ */
+function breakdownCells(model, opts, { cellWidth }) {
+  const { period } = opts;
+  const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
+  const spend = model.stats?.spendPerDay ?? null;
+  const rows = 4;
+  // The percent sits in a fixed four-cell field (`100%` at widest), right
+  // aligned, so every bar in a list ends on the same column and `2%` lines
+  // up under `19%` instead of stealing a cell from its bar.
+  const barOf = (share, role, label, width) => {
+    const value = Number(share);
+    const raw = shareText(share) ?? blank();
+    const text = raw.padStart(4);
+    const bars = Math.max(3, width - visibleLength(label) - visibleLength(text) - 2);
+    const bar = Number.isFinite(value) ? tint(progressBar(value, bars), role) : ' '.repeat(bars);
+    return `${label} ${bar} ${text}`;
+  };
+  const listCell = (label, key, role, tab) => {
+    const list = (breakdown[key] ?? []).slice(0, rows);
+    const nameWidth = Math.min(
+      Math.max(6, Math.floor(cellWidth / 2)),
+      list.reduce((most, row) => Math.max(most, String(row.name ?? '?').length), 6),
+    );
+    return {
+      action: { kind: 'tab', tab },
+      rows: [
+        dimText(label, cellWidth),
+        ...(list.length
+          ? list.map((row) => barOf(row.minutesShare, seriesColor(row.name ?? '?') ?? role, cut(String(row.name ?? '?'), nameWidth).padEnd(nameWidth), cellWidth))
+          : [dimText('no finished run in this period', cellWidth)]),
+      ],
+    };
+  };
+  // Spent per day is the same series Stats charts, coloured the prototype's
+  // cyan; the axis row carries the weekday letters.
+  // S1/B5: with no recorded estimate in the period there is no series, and a
+  // `$0.00` axis would be a confident zero. The column says so instead.
+  const buckets = spend?.total == null ? [] : (spend?.buckets ?? []);
+  const chart = buckets.length
+    ? columnBars(
+      [{ name: 'spent', values: buckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
+      buckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
+      {
+        width: cellWidth,
+        rowCount: chartRowCount(opts.height ?? 36),
+        col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, buckets.length))),
+        barW: 3, unit: '$', mark: about(), totals: false, colors: meterAnsi(),
+      },
+    )
+    : [dimText(spend?.total == null && (spend?.buckets ?? []).length
+      ? 'no finished run recorded an estimate'
+      : 'no finished run in this period', cellWidth)];
+  return [
+    {
+      action: { kind: 'trend', metric: 'spend' },
+      rows: [dimText(`spent per ${spend?.bucketBy === 'week' ? 'week' : 'day'}`, cellWidth), ...chart],
+    },
+    listCell('by pool', 'pools', 'green', 'pools'),
+    listCell('by model', 'models', 'purple', 'models'),
+    listCell('by project', 'projects', 'orange', 'projects'),
+  ].map((cell) => ({ ...cell, period }));
+}
+
+const WEEKDAY_LETTERS = Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']);
+
+/**
+ * The three-column summary band and the sentence that closes it.
+ *
+ * Every figure is the period's own measurement. The prototype's `7.7×`
+ * multiple and its `$38.20` of subscription money have no source here — no
+ * pool declares a price — so the sentence says what the runs recorded and
+ * names it as the API-equivalent estimate it is.
+ */
+function summaryBand(body, model, opts) {
+  const { width, narrow } = opts;
+  const overview = model.stats?.overview ?? null;
+  const keys = overview?.keys ?? null;
+  if (!keys) return;
+  const projects = model.stats?.projects ?? null;
+  const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
+  const runs = keys.workflows ?? 0;
+  const spent = projects?.totals?.apiEquivalentUsd ?? null;
+  const money = moneyText(spent);
+  const share = runs ? shareText(verified / runs) : null;
+  const named = (row) => (row?.name ? String(row.name) : blank());
+  const figures = [
+    [
+      `Workflows: ${strong(tint(String(runs), 'orange'))} · verified ${tint(String(verified), 'orange')}${share ? ` (${share})` : ''}`,
+      `Busiest project: ${tint(named(keys.busiestProject), 'orange')}${keys.busiestProject ? ` (${keys.busiestProject.runs})` : ''}`,
+    ],
+    [
+      `Favourite pool: ${tint(named(keys.favouritePool), 'orange')}`,
+      `Favourite model: ${tint(named(keys.favouriteModel), 'orange')}`,
+    ],
+    [
+      `Spent: ${tint(money ?? blank(), 'orange')}${money ? ' API' : ''}`,
+      `Median run: ${tint(minutesText(keys.medianRunMinutes) ?? blank(), 'orange')}`,
+    ],
+  ];
+  body.push('');
+  if (narrow) {
+    for (const figure of figures.flat()) body.push(cut(` ${figure}`, width));
+  } else {
+    pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
+  }
+  body.push('');
+  const sentence = money
+    ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${money} of API-equivalent work`
+    : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
+  body.push(cut(` ${tint(sentence, 'purple')}`, width));
+}
+
+/**
+ * Home: today's four tiles, the runs in flight, this week's licence budget,
+ * the period's breakdown in four columns, the summary band and the recent
+ * list.
+ */
+function homePage(model, opts, body) {
+  const { width, narrow, nowMs } = opts;
+  const stats = model.stats;
+  const overview = stats?.overview ?? null;
+  const today = overview?.today ?? null;
+  const licence = today?.licence ?? null;
+  const sparks = stats?.sparklines ?? {};
+  const sparkWidth = 7;
+
+  body.push(rule(`today · ${today?.date ?? blank()}`, null, width));
+  const tiles = [
+    {
+      key: 'finished',
+      label: 'finished',
+      value: today ? strong(String(today.finished)) : blank(),
+      spark: tint(sparkline(sparks.runs ?? [], sparkWidth), 'orange'),
+      note: today
+        ? `${okMark()} ${today.verified} · ${failMark()} ${Math.max(0, today.finished - today.verified)} · ${model.runs.length} in flight`
+        : 'no index yet',
+      // The tagged frame paints this line's marks and leaves the rest plain;
+      // dimText() measures with String#length, so a line carrying escapes
+      // must not go through it.
+      plain: true,
+      action: { kind: 'trend', metric: 'runs' },
+    },
+    {
+      key: 'verified',
+      label: 'verified',
+      value: strong(shareText(today?.verifiedShare) ?? blank()),
+      spark: tint(sparkline(sparks.verified ?? [], sparkWidth), 'orange'),
+      note: today?.verifiedShare == null
+        ? 'no run finished today'
+        : `${today.verified} of ${today.finished} · today`,
+      action: { kind: 'trend', metric: 'verified' },
+    },
+    {
+      key: 'spend',
+      label: 'spent',
+      value: strong(moneyText(today?.apiEquivalentUsd) ?? blank()),
+      spark: tint(sparkline(sparks.spend ?? [], sparkWidth), 'orange'),
+      note: today?.apiEquivalentUsd == null
+        ? (narrow ? 'no estimate today' : 'no finished run recorded an estimate')
+        : `API-equivalent · ${today.pricedRuns} of ${today.finished} priced`,
+      action: { kind: 'trend', metric: 'spend' },
+    },
+  ];
+  // The licence tile is the prototype's fourth column: one meter row per
+  // metered pool rather than a number and a caption.
+  const licencePools = [...(licence?.pools ?? [])]
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0))
+    .slice(0, 2);
+  const licenceRow = (pool, cell) => {
+    const name = cut(String(pool.name), Math.max(4, Math.min(12, cell - 18)));
+    const used = percentText(pool.usedPct) ?? blank();
+    const bars = Math.max(4, Math.min(32, cell - visibleLength(name) - visibleLength(used) - 3));
+    return `${name} ${meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() })} ${used}`;
+  };
+
+  if (narrow) {
+    // One row per tile with its context inline, then one row per metered pool.
+    for (const tile of tiles.filter((entry) => entry.key !== 'verified')) {
+      body.row(compactRow([
+        { text: ` ${tile.label}`, width: 9 },
+        { text: `${tile.value}${tile.spark ? `  ${tile.spark}` : ''}`, width: 16 },
+        { text: tile.plain ? tile.note : dimText(tile.note, width), grow: true, min: 6 },
+      ], { width }), tile.action);
+    }
+    if (licencePools.length) {
+      licencePools.forEach((pool, index) => {
+        body.row(compactRow([
+          { text: index === 0 ? ' licence' : '', width: 9 },
+          licenceRow(pool, width - 11),
+        ], { width }), { kind: 'tab', tab: 'pools' });
+      });
+    } else {
+      body.row(compactRow([
+        { text: ' licence', width: 9 },
+        { text: dimText(String(licence?.basis ?? 'no pool reported a licence meter'), width), grow: true },
+      ], { width }), { kind: 'tab', tab: 'pools' });
+    }
+  } else {
+    const gap = 2;
+    const inner = Math.max(4, width - 1 - gap * 3);
+    const base = Math.floor(inner / 4);
+    const extra = inner - base * 4;
+    const cellWidths = [0, 1, 2, 3].map((index) => base + (index < extra ? 1 : 0));
+    const cells = tiles.map((tile, index) => ({
+      width: cellWidths[index],
+      action: tile.action,
+      actionRows: [1],
+      rows: [
+        dimText(tile.label, cellWidths[index]),
+        `   ${tileText(tile, cellWidths[index] - 3)}`,
+        tile.plain ? ` ${cut(tile.note, cellWidths[index] - 1)}` : dimText(` ${tile.note}`, cellWidths[index]),
+      ],
+    }));
+    cells.push({
+      width: cellWidths[3],
+      action: { kind: 'tab', tab: 'pools' },
+      actionRows: [1, 2],
+      rows: [
+        dimText('licence today', cellWidths[3]),
+        ...(licencePools.length
+          ? licencePools.map((pool) => licenceRow(pool, cellWidths[3]))
+          : [dimText(String(licence?.basis ?? 'no pool reported a licence meter'), cellWidths[3])]),
+      ],
+    });
+    pushColumns(body, cells, { width: width - 1, gap });
+  }
+  if (!narrow) body.push(dimText(' click a tile for its chart', width));
+  if (!narrow && today?.basis) {
+    body.push(dimText(
+      ` ${cut(narrow ? 'money: API-equivalent estimates of the runs that finished today' : `money: ${today.basis}`, width - 2)}`,
+      width,
+    ));
+  }
+
+  activeRunLines(model, opts, body);
+  return homeDetails(model, opts, body);
+}
+
+function activeRunLines(model, opts, body, title = 'running') {
+  const { width, narrow, nowMs } = opts;
+  body.push('');
+  body.push(rule(title, null, width));
+  if (!model.runs.length) {
+    body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
+  }
+  const unratedPools = new Set();
+  model.runs.forEach((run, index) => {
+    const progress = planProgress(run, { assignments: model.assignments, nowMs });
+    const elapsed = ageText(stateStartedAt(run.state), nowMs);
+    const right = [
+      progress.phases ? `phase ${progress.phase}/${progress.phases}` : null,
+      `${progress.done}/${progress.total}`,
+      elapsed || null,
+    ].filter(Boolean).join(' · ');
+    const label = ` ${tint(glyphs().ongoing, 'cyan')} ${index < 9 ? `${index + 1}.` : ''}${run.shortId ?? run.runId}`;
+    const title = `  ${cut(workflowRunLabel(run), Math.max(8, width - visibleLength(label) - visibleLength(right) - 4))}`;
+    const head = `${label}${strong('')}${title}`;
+    body.parts([
+      { text: head, action: { kind: 'run', runId: run.runId } },
+      { text: ' '.repeat(Math.max(1, width - visibleLength(head) - visibleLength(right) - 1)) },
+      { text: dimText(right, width) },
+    ]);
+
+    const economics = runEconomics(run, model.pools, nowMs);
+    for (const pool of economics.pools) if (pool.sharePct == null) unratedPools.add(pool.name);
+    const draw = economics.pools.reduce(
+      (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
+      null,
+    );
+    const money = moneyText(economics.apiEquivalentUsd);
+    const cost = `${tint(draw == null ? blank() : formatDashboardValue(draw, 'percent'), 'purple')} · ${tint(money ?? blank(), 'purple')}`;
+
+    const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
+    const bars = live.map((action) => {
+      const bar = stepBarText(action, assignmentOf(model, run.runId, action.id), {
+        width: narrow ? width - 4 : 30, nowMs, pool: stepPool(run, action.id),
+      });
+      return { action, ...bar };
+    });
+
+    if (narrow) {
+      // The phone keeps the prototype's shape: the strip, one row per live
+      // step, then the run's own draw and cost.
+      body.parts([{ text: '   ' }, ...planStripParts(run, { runId: run.runId })]);
+      for (const bar of bars) {
+        body.row(`   ${bar.text}`, { kind: 'step', runId: run.runId, actionId: bar.action.id });
+      }
+      body.push(cut(`   ${cost}`, width));
+    } else {
+      // Two rows per run: the head above, and the strip, the per-step bars
+      // and the cost on one band here.
+      const strip = planStripParts(run, { runId: run.runId });
+      const stripWidth = strip.reduce((sum, part) => sum + visibleLength(part.text), 0);
+      const parts = [{ text: '   ' }, ...strip];
+      let used = 3 + stripWidth;
+      const room = width - visibleLength(cost) - 2;
+      for (const bar of bars) {
+        const span = visibleLength(bar.text) + 2;
+        if (used + span > room) break;
+        parts.push({ text: '  ' });
+        parts.push({ text: bar.text, action: { kind: 'step', runId: run.runId, actionId: bar.action.id } });
+        used += span;
+      }
+      parts.push({ text: ' '.repeat(Math.max(1, width - used - visibleLength(cost) - 1)) });
+      parts.push({ text: cost });
+      body.parts(parts);
+    }
+  });
+  // The reasons, once for the whole section rather than on every row.
+  if (unratedPools.size) {
+    body.push(dimText(` ${blank()} no measured %/minute rate for ${[...unratedPools].join(', ')}, so no licence draw`, width));
+  }
+
+}
+
+function homeDetails(model, opts, body) {
+  const { width, narrow, nowMs } = opts;
+  budgetWeekLines(body, model, { width, narrow, nowMs });
+
+  // The period's breakdown, and the toggle that changes it.
+  const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
+  body.push('');
+  const toggle = periodToggle(PERIOD_ITEMS, { active: period.id, width: narrow ? width - 2 : Math.max(10, width - 24) });
+  if (narrow) {
+    body.push(rule(period.label.toLowerCase(), null, width));
+    body.kit({ text: ` ${toggle.text}`, regions: toggle.regions.map((region) => ({ ...region, x: region.x + 1 })) });
+  } else {
+    const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
+    body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
+  }
+  if (narrow) {
+    // One column on the phone: the same four sections, stacked.
+    for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
+      const base = body.lines.length;
+      const rows = cell.rows;
+      for (const line of rows) body.push(` ${cut(line, width - 1)}`);
+      if (cell.action) {
+        for (let row = base + 1; row <= body.lines.length; row += 1) {
+          body.regions.push({ x1: 1, x2: width, y: row, action: cell.action });
+        }
+      }
+    }
+  } else {
+    const gap = 2;
+    const inner = Math.max(4, width - 1 - gap * 3);
+    const cellWidth = Math.floor(inner / 4);
+    pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
+  }
+  if (!narrow) body.push(dimText(' spent per day is the recorded API-equivalent estimate · share is measured worker-minutes · click a column for its Stats tab', width));
+
+  summaryBand(body, model, opts);
+
+  // The recent list: the newest finished runs the index holds.
+  body.push('');
+  body.push(rule('recent', 'history ›', width));
+  const recent = [...(model.rollups ?? [])]
+    .sort((a, b) => String(b.finishedAt ?? b.startedAt ?? '').localeCompare(String(a.finishedAt ?? a.startedAt ?? '')))
+    .slice(0, narrow ? 3 : 5);
+  if (!recent.length) {
+    body.push(dimText(' no run has been rolled up yet · bullswarm workflow reindex backfills them', width));
+  }
+  for (const record of recent) {
+    const ok = record.verified === true ? okMark() : record.status === 'completed' ? pendingMark() : failMark();
+    const money = moneyText(recordCost(record));
+    body.row(compactRow([
+      { text: ` ${ok}`, width: 2 },
+      { text: strong(record.shortId ?? record.runId), width: 7 },
+      {
+        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34)),
+        grow: true,
+        min: 6,
+        gap: 2,
+      },
+      { text: `${minutesText(record.minutes?.wall) ?? blank()} · ${money ?? blank()}`, width: 16, align: 'right', gap: 2 },
+      { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
+    ], { width }), { kind: 'run', runId: record.runId });
+  }
+  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · click tiles for charts', width));
+  return ' bullswarm · home';
+}
+
+/** The API-equivalent estimate a rollup record carries, over its pools. */
+function recordCost(record) {
+  const direct = finiteOrNull(record?.apiEquivalentUsd ?? record?.costUsd);
+  if (direct != null) return direct;
+  let total = null;
+  for (const entry of Object.values(record?.pools ?? {})) {
+    const value = finiteOrNull(entry?.costUsd);
+    if (value != null) total = (total ?? 0) + value;
+  }
+  return total;
+}
+
+/** Runs: the list, the filter, the agent integration and the commands. */
+function runsPage(model, opts, body) {
+  const { width } = opts;
+  const active = [...model.runs];
+  for (const row of opts.allRows ?? []) {
+    if ((row.ongoing || isWaitingWorkflow(row.state)) && !active.some((run) => run.runId === row.runId)) active.push(row);
+  }
+  const query = String(opts.query ?? '').toLowerCase();
+  const matches = (run) => !query || `${run.runId} ${run.shortId} ${run.goal ?? workflowRunLabel(run)}`.toLowerCase().includes(query);
+  activeRunLines({ ...model, runs: active.filter(matches) }, opts, body, 'active');
+  body.push('');
+  body.anchor = { history: body.lines.length + 1, cursor: null };
+  const ids = new Set(active.map((run) => run.runId));
+  const days = (model.days ?? []).map((day) => ({
+    ...day,
+    rows: (day.rows ?? []).filter((run) => !ids.has(run.runId) && matches(run)),
+  }));
+  pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
+  if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
+  const runRegions = body.regions.filter((region) => region.action?.kind === 'run');
+  const desired = opts.listSelectedId ?? opts.selectedRunId ?? null;
+  const runRows = runRegions.sort((a, b) => a.y - b.y);
+  const wanted = runRows.findIndex((region) => region.action.runId === desired);
+  const cursor = runRows[wanted >= 0 ? wanted : 0];
+  if (cursor) {
+    body.lines[cursor.y - 1] = `\x1b[7m${body.lines[cursor.y - 1]}\x1b[0m`;
+    body.anchor.cursor = cursor.y;
+  }
+  body.runRows = runRows.map((region) => ({ runId: region.action.runId, y: region.y }));
+  return ` bullswarm · runs · ${opts.filter === 'all' ? 'all' : 'active'} · ${days.length} days`;
+}
+
+function integrationLines(model, opts, body) {
+  const { width } = opts;
+  body.push('');
+  body.push(rule('agents', null, width));
   const installed = model.integration?.ok === true;
   const button = installed ? `[installed ${glyphs().ok}]` : '[install]';
   const prefix = ' agent integration  ';
@@ -1713,117 +2824,741 @@ function homePage(model, opts, body) {
   }
 
   body.push('');
-  body.push(dimText(' run it', width));
+  body.push(rule('run it', null, width));
   for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
-  return ' bullswarm · home';
+  return ' bullswarm · runs';
 }
 
-/** Run: the timeline/Live/Next overview, with the compact pool rows last. */
-function runPage(model, opts, body) {
-  const { width, bodyHeight } = opts;
-  const pools = frameBuilder();
-  poolBlock(model, opts, pools);
-  const frame = runFrame(model.row, {
-    ...opts,
-    focus: opts.focus === 1 ? 1 : 0,
-    bodyHeight: Math.max(6, bodyHeight - pools.lines.length),
-  });
-  const { state, status, elapsed, terminalLabel } = frame;
-  for (const line of frame.body) body.push(line);
-  markStepRows(body, frame.body, frame.model);
-  drawWindow(body, pools, windowOf(pools, { height: pools.lines.length }));
-  const shortId = state.shortId ?? model.row?.shortId ?? model.row?.runId ?? '------';
-  const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
-  const total = (state.actions ?? []).length;
-  const age = elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : '';
-  return truncate(` ${shortId} ${status}${age} · ${done}/${total} actions${terminalLabel}`, width);
-}
+// ------------------------------------------------------------ Run and Step
 
-/** Step: the agent panel the viewer always drew, with `[back]` in the nav. */
-function stepPage(model, opts, body) {
-  const { width, spinnerFrame } = opts;
-  const frame = runFrame(model.row, { ...opts, focus: 2 });
-  const state = frame.model.state;
-  const agent = frame.model.selectedAgent;
-  const shortId = state.shortId ?? model.row?.shortId ?? '';
-  for (const line of frame.body) body.push(line);
-  markStepRows(body, frame.body, frame.model);
-  const label = agent
-    ? `${statusIcon(agent.status, spinnerFrame)} ${agent.action.id} · run ${shortId}`
-    : `${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`;
-  return truncate(` ${label}`, width);
-}
-
-/** Usage: every meter window per pool, then the rungs by lane or provider. */
-function usagePage(model, opts, body) {
-  const { width } = opts;
-  const nowMs = Number(opts.nowMs) || Date.now();
-  const lines = usageLines(model.pools, model.rungs, {
-    width,
-    rungsBy: opts.rungsBy === 'provider' ? 'provider' : 'lane',
-    nowMs,
-    ansi: meterAnsi(),
-  });
-  for (const line of lines) {
-    const plain = String(line).replace(ANSI_SGR, '');
-    const tabs = [];
-    for (const [needle, by] of [['by lane]', 'lane'], ['by provider]', 'provider']]) {
-      const at = plain.indexOf(needle);
-      const start = at < 0 ? -1 : plain.lastIndexOf('[', at);
-      if (start >= 0) tabs.push({ x1: start + 1, x2: at + needle.length, action: { kind: 'rungs', by } });
+/**
+ * The plan as the prototype draws it: the levels across the width with their
+ * branch topology, a per-step bar on whatever is running, and the pool and
+ * model each level ran on underneath.
+ *
+ * A plan with no real fan-out — every level exactly one step — keeps the
+ * linear `▶──○` strip the page has always drawn; the topology only appears
+ * where there is topology to draw.
+ */
+function planDagLines(row, {
+  width, runId = null, assignments = [], nowMs = Date.now(), pools = true, selectedId = null,
+} = {}) {
+  const levels = planLevels(row).filter((level) => level.length);
+  if (!levels.length) return [];
+  const fanOut = levels.some((level) => level.length > 1);
+  const mark = glyphs();
+  const glyphOf = (action) => (action.status === 'succeeded' ? okMark()
+    : action.status === 'running' ? runningMark()
+      : ['failed', 'blocked', 'cancelled'].includes(action.status) ? failMark()
+        : dimText(mark.pending, 2));
+  if (!fanOut) {
+    // The fallback: one glyph per step, joined, exactly as Home draws it —
+    // and beneath it the pool and model row, which a linear plan has nowhere
+    // else to say.
+    const parts = [];
+    levels.forEach((level, index) => {
+      if (index) parts.push({ text: '──' });
+      parts.push({
+        text: glyphOf(level[0]),
+        action: { kind: 'step', actionId: level[0].id, ...(runId ? { runId } : {}) },
+      });
+    });
+    const out = [{ parts: [{ text: ' ' }, ...parts] }];
+    if (!pools) return out;
+    for (const level of levels) {
+      for (const action of level) {
+        if (action.status !== 'running') continue;
+        const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
+        if (!attempt) continue;
+        const reasoning = reasoningText(attempt);
+        const text = `${[action.id, attempt.pool, attempt.model, reasoning || null].filter(Boolean).join(' · ')}  ${durationText(attempt.startedAt, attempt.finishedAt)}`;
+        out.push({
+          parts: [{
+            text: dimText(` ${runningMark()} ${cut(text, Math.max(10, width - 4))}`, width + 24),
+            action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+          }],
+        });
+      }
     }
-    body.push(line);
-    for (const tab of tabs) body.regions.push({ ...tab, y: body.lines.length });
-    if (tabs.length) body.anchor = { tabs: body.lines.length };
+    return out;
   }
-  if (!lines.length) body.push(dimText(' No enabled pool reports a meter yet; bullswarm setup enables them.', width));
-  const sampled = ageText(model.capturedAt, nowMs);
-  return ` Pools · ${sampled ? `sampled ${sampled} ago` : 'no meter snapshot yet'}`;
+
+  const cellOf = (action) => {
+    const assignment = (assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === action.id);
+    const bar = action.status === 'running'
+      ? stepBarText(action, assignment, { width: Math.max(18, Math.min(44, Math.floor(width / 3))), nowMs })
+      : null;
+    const name = selectedId && action.id === selectedId ? `\x1b[7m${action.id}\x1b[0m` : action.id;
+    return {
+      id: action.id,
+      text: `${glyphOf(action)} ${name}${bar ? ` ${bar.text.replace(`${action.id} `, '')}` : ''}`,
+      action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+    };
+  };
+  // A level twelve steps wide would spend twelve rows on one phase and leave
+  // the timeline nothing. Each level shows at most `depthCap` of its steps,
+  // whatever is running or failed first, and says how many it did not draw.
+  const depthCap = width < 100 ? 3 : 5;
+  const rank = (action) => (action.status === 'running' ? 0
+    : ['failed', 'blocked', 'cancelled'].includes(action.status) ? 1
+      : DONE_STATUS.has(action.status) ? 3 : 2);
+  const blocks = levels.map((level) => {
+    if (level.length <= depthCap) return level.map(cellOf);
+    const ordered = level
+      .map((action, index) => ({ action, index }))
+      .sort((a, b) => rank(a.action) - rank(b.action) || a.index - b.index)
+      .slice(0, depthCap - 1)
+      .sort((a, b) => a.index - b.index)
+      .map((entry) => entry.action);
+    return [...ordered.map(cellOf), { id: null, text: dimText(`+${level.length - ordered.length} more`, 20), action: null }];
+  });
+  // The first level has no joint slot to hold its `├─ `/`└─ ` branch, so its
+  // column is as wide as its widest branch; every later level's branch lives
+  // in the joint slot in front of it, under the `┬` that opened the fan.
+  const cellWidth = blocks.map((block, index) => block.reduce((most, cell, at) => Math.max(most, visibleLength(cell.text) + (index === 0 && at ? 3 : 0)), 0));
+  const poolText = levels.map((level) => {
+    const seen = [];
+    for (const action of level) {
+      const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
+      const detail = [attempt?.pool, attempt?.model, attempt?.routing?.effort].filter(Boolean).join(' · ');
+      const text = visibleLength(detail) <= cellWidth[levels.indexOf(level)] ? detail : attempt?.pool ?? '';
+      if (text && !seen.includes(text)) seen.push(text);
+    }
+    return seen.join(' / ');
+  });
+
+  // Levels are packed into bands that fit the width, so a 55-column phone
+  // continues the plan on the next row rather than losing its right-hand end.
+  const avail = Math.max(10, width - 2);
+  const bands = [];
+  let band = [];
+  let used = 0;
+  levels.forEach((_, index) => {
+    const need = cellWidth[index] + (band.length ? 5 : 0);
+    if (band.length && used + need > avail) { bands.push(band); band = []; used = 0; }
+    band.push(index);
+    used += need + (band.length === 1 ? 0 : 0);
+  });
+  if (band.length) bands.push(band);
+
+  const out = [];
+  const pad = (text, own) => `${text}${' '.repeat(Math.max(0, own - visibleLength(text)))}`;
+  const branchOf = (block, rowIndex) => (rowIndex === 0 || rowIndex >= block.length ? null
+    : rowIndex === block.length - 1 ? '└─ ' : '├─ ');
+  for (const [bandIndex, indexes] of bands.entries()) {
+    const depth = indexes.reduce((most, index) => Math.max(most, blocks[index].length), 1);
+    // A fan that a later level in the same band closes is ruled: every branch
+    // runs `─` across to the joint, the way the prototype draws
+    // `└─ ✓ inbox-page ──┘`, so the corner meets a line instead of hanging.
+    const ruled = (at) => blocks[indexes[at]].length > 1 && at < indexes.length - 1;
+    for (let rowIndex = 0; rowIndex < depth; rowIndex += 1) {
+      const parts = [{ text: bandIndex === 0 ? ' ' : '   ' }];
+      indexes.forEach((index, at) => {
+        const block = blocks[index];
+        if (at) {
+          // The five-cell joint slot: the fan before it closes on the left
+          // (`┬` on the top row, `┤` on each lower branch, `┘` on the last),
+          // and the fan it opens hangs its branches on the right, under the
+          // `┬` that opened it.
+          const prior = blocks[indexes[at - 1]];
+          const closing = ruled(at - 1);
+          const branch = branchOf(block, rowIndex);
+          const joint = rowIndex === 0
+            ? (closing ? '─┬── ' : block.length > 1 ? ' ─┬─ ' : ' ─── ')
+            : `${closing && rowIndex < prior.length ? (rowIndex === prior.length - 1 ? '─┘' : '─┤') : '  '}${branch ?? '   '}`;
+          parts.push({ text: joint.trim() ? dimText(joint, 5) : joint });
+        }
+        const cell = block[rowIndex];
+        const own = cellWidth[index] + (ruled(at) ? 1 : 0);
+        if (!cell) { parts.push({ text: ' '.repeat(own) }); return; }
+        const lead = at === 0 && block.length > 1
+          ? (rowIndex === 0 ? '   ' : dimText(branchOf(block, rowIndex), 3))
+          : '';
+        const label = `${lead}${cell.text}`;
+        const gap = Math.max(0, cellWidth[index] - visibleLength(label));
+        const text = ruled(at) ? `${label} ${dimText('─'.repeat(gap), gap)}` : pad(label, own);
+        parts.push(cell.action ? { text, action: cell.action } : { text });
+      });
+      out.push({ parts });
+    }
+    if (pools && poolText.some((text, index) => indexes.includes(index) && text)) {
+      const parts = [{ text: '   ' }];
+      indexes.forEach((index, at) => {
+        if (at) parts.push({ text: '     ' });
+        parts.push({ text: dimText(pad(cut(poolText[index], cellWidth[index]), cellWidth[index]), cellWidth[index] + 8) });
+      });
+      out.push({ parts });
+    }
+  }
+  return out;
 }
 
 /**
- * The Usage page's note: whole, wrapped, right above the bottom nav, with
- * `[edit]` the button that hands the terminal to `bullswarm setup`.
+ * The timeline, flat: the same rows the mod pane reads, windowed to the space
+ * the page has for them and with no box drawn around them.
+ *
+ * `renderWorkflowOverviewPanel` still draws the boxed frame for
+ * `bullswarm workflow tui <id> --overview`, untouched; this is the page's own
+ * reading of the same lines.
  */
-function usagePageNotes({ width }, notes) {
-  for (const line of wrapLines([USAGE_NOTE], width)) {
-    const at = line.indexOf('[edit]');
-    notes.parts(at < 0 ? [{ text: dimText(line, width) }] : [
-      { text: `\x1b[2m${line.slice(0, at)}` },
-      { text: '[edit]', action: { kind: 'edit' } },
-      { text: `${line.slice(at + '[edit]'.length)}\x1b[0m` },
-    ]);
+function flatTimelineLines(panel, { width, rows, scroll = 0, selectedSegment = null, spinnerFrame = 0 } = {}) {
+  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false });
+  const room = Math.max(1, Number(rows) || 1);
+  const selectedHeader = selectedSegment
+    ? timeline.lines.findIndex((line) => line?.header && line.segment === selectedSegment)
+    : -1;
+  const maxScroll = Math.max(0, timeline.lines.length - room);
+  const at = clamp(scroll, 0, maxScroll);
+  // The newest rows fill the window, which is what a reader watching a run
+  // wants; a selected segment only re-anchors it when that segment has
+  // already scrolled out of view, so choosing a phase never empties the page.
+  let end = Math.max(0, timeline.lines.length - at);
+  let start = Math.max(0, end - room);
+  const anchored = selectedHeader >= 0 && (selectedHeader < start || selectedHeader >= end);
+  if (anchored) {
+    start = selectedHeader;
+    end = Math.min(timeline.lines.length, selectedHeader + room);
   }
+  if (start > 0 && !anchored) {
+    start = Math.max(0, end - Math.max(0, room - 1));
+    while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
+  }
+  let visible = timeline.lines.slice(start, end);
+  if (start > 0 && !anchored) {
+    visible.unshift(dimText(`↑ ${start} earlier timeline rows`, width));
+    const continuation = visible.find((line) => line?.segment)?.segment ?? currentTimelineSegment(panel);
+    if (continuation) {
+      const prior = timeline.lines.find((line) => line?.header && line.segment === continuation);
+      const header = continuationHeader(
+        timelineSegmentDisplayName(continuation, panel),
+        prior?.elapsed ?? 'running',
+        width,
+        visible.find((line) => line?.segment === continuation)?.at,
+      );
+      header.segment = continuation;
+      visible.splice(1, 0, header);
+    }
+    visible = visible.filter((line) => timelineText(line) !== '');
+  }
+  if (end < timeline.lines.length && visible.length && !anchored) {
+    const marker = dimText(`↓ ${timeline.lines.length - end} newer timeline rows`, width);
+    if (visible.length >= room) visible[visible.length - 1] = marker;
+    else visible.push(marker);
+  }
+  visible = visible.length > room
+    ? [visible[0], visible[1], ...visible.slice(-(room - 2))]
+    : visible;
+  const out = visible.slice(0, room).map((line) => {
+    const text = timelineText(line);
+    if (line?.header) {
+      return line.segment === selectedSegment ? `\x1b[7m${text}\x1b[0m` : dimText(text, width);
+    }
+    return text;
+  });
+  // The milestone count the panel used to carry in its title; the mod pane and
+  // the tests both read it, and a live row is still not a milestone.
+  Object.defineProperty(out, 'milestones', { enumerable: false, value: timeline.milestoneCount });
+  return out;
 }
 
-/** Help: the pages, every key, and the commands that operate the product. */
+/** `✓ 3  ▶ 2  ○ 3`, the run's steps by the state they are in. */
+function stepTally(row) {
+  const actions = row?.state?.actions ?? [];
+  const done = actions.filter((action) => action.status === 'succeeded').length;
+  const running = actions.filter((action) => action.status === 'running').length;
+  const failed = actions.filter((action) => ['failed', 'blocked', 'cancelled'].includes(action.status)).length;
+  const waiting = Math.max(0, actions.length - done - running - failed);
+  return [
+    `${okMark()} ${done}`,
+    running ? `${runningMark()} ${running}` : null,
+    failed ? `${failMark()} ${failed}` : null,
+    `${dimText(glyphs().pending, 2)} ${waiting}`,
+  ].filter(Boolean).join('  ');
+}
+
+/** The `budget` cell of the Run page's triptych: one row per pool it drew on. */
+function runBudgetRows(economics, { width }) {
+  if (!economics.pools.length) return [absentLine('', 'no attempt has recorded a pool yet', { width })];
+  if (economics.pools.every((pool) => pool.sharePct == null)) {
+    return [absentLine('', 'free model · no licence meter', { width })];
+  }
+  return economics.pools.flatMap((pool) => {
+    if (pool.sharePct == null) return [absentLine(pool.name, 'free model · no licence meter', { width })];
+    const percent = pool.sharePct > 0 && pool.sharePct < 1 ? pool.sharePct.toFixed(1) : String(Math.round(pool.sharePct));
+    const window = pool.window === 'monthly' ? 'monthly' : pool.window === 'five_hour' ? 'five-hour' : 'weekly';
+    const share = `${about()} ${percent}% of the ${window} plan`;
+    const name = String(pool.name);
+    const bars = Math.min(20, width - visibleLength(name) - visibleLength(share) - 2);
+    if (bars < 4) return [cut(name, width), cut(`${tint(progressBar(pool.sharePct / 100, 4, { partialGlyph: '▏' }), 'purple')} ${share}`, width)];
+    return [`${name} ${tint(progressBar(pool.sharePct / 100, bars, { partialGlyph: '▏' }), 'purple')} ${share}`];
+  });
+}
+
+/** The `live` cell: what is running now and the last thing each one did. */
+function runLiveRows(panel, { width, nowMs, limit = 3 }) {
+  const running = (panel.state.attempts ?? []).filter((attempt) => attempt.status === 'running');
+  // A run whose kernel is gone says so, and says the two things a reader can
+  // do about it — the same words `renders` and `workflow runs show` use.
+  const dead = [];
+  if (!stateFinishedAt(panel.state)) {
+    const liveness = panel.row?.liveness ?? v2RunnerLiveness(panel.state, { runDir: panel.row?.runDir });
+    if (!liveness.alive) {
+      dead.push(dimText(cut(`${glyphs().fail} kernel not running · ${liveness.reason}`, width), width + 8));
+      dead.push(dimText(cut(`  resume it · bullswarm workflow resume ${panel.state.shortId ?? panel.state.runId}`, width), width + 8));
+    }
+  }
+  if (panel.row?.kernelStderrTail?.length) dead.push(dimText('  kernel log: available', width + 8));
+  if (!running.length) {
+    return [dimText(stateFinishedAt(panel.state)
+      ? `no live agents · workflow ${panel.state.lifecycle.status}`
+      : panel.state.lifecycle?.status === 'paused'
+        ? `paused · bullswarm workflow resume ${panel.state.shortId ?? panel.state.runId} continues it`
+        : 'waiting for the next dispatch', width), ...dead];
+  }
+  const rows = [...dead];
+  for (const attempt of running.slice(0, limit)) {
+    const elapsed = durationText(attempt.startedAt);
+    rows.push(cut(`${runningMark()} ${attempt.actionId} ${dimText(`· ${attempt.pool ?? 'unassigned'} · ${elapsed}`, width)}`, width));
+    const event = attempt.lastAgentEvent;
+    rows.push(dimText(cut(`  ${glyphs().detail} ${event
+      ? `${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
+      : 'waiting for the first semantic action event'}`, width), width + 8));
+  }
+  return rows;
+}
+
+/** The `so far` cell: the steps, the time, the spend and what is not measured. */
+function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
+  const money = moneyText(economics.apiEquivalentUsd);
+  const elapsed = durationText(stateStartedAt(panel.state), stateFinishedAt(panel.state));
+  const label = (name, value) => `${name.padEnd(9)}${value}`;
+  return [
+    label('steps', stepTally(row)),
+    label('time', `${elapsed}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`),
+    label('spent', tint(money ?? blank(), 'purple')),
+    money ? dimText(cut(`${economics.pricedAttempts} of ${economics.attempts} attempts priced`, width), width + 8) : '',
+  ];
+}
+
+/** Why the triptych's blanks are blank, once, across the page's own width. */
+function runBlankReasons(economics, progress) {
+  return [
+    economics.apiEquivalentUsd == null ? 'no attempt recorded an API-equivalent estimate' : null,
+    !progress.eta && progress.unmeasured?.length
+      ? `ETA ${blank()}: ${progress.unmeasured.join(', ')} ${progress.unmeasured.length === 1 ? 'has' : 'have'} no recorded duration yet`
+      : null,
+  ].filter(Boolean);
+}
+
+/**
+ * Run: the goal, the plan with its topology and its bars, the budget / live /
+ * so far triptych, and the timeline — all flat, with no panel borders.
+ *
+ * The boxed frame `bullswarm workflow tui <id> --overview` prints is
+ * `renderWorkflowOverviewPanel`, which this function no longer calls and did
+ * not change; the Claude mod's `parseOverview` still reads exactly what it
+ * read before. The `o` planner view and the `v` technical view keep their
+ * panels: the prototype has no frame for either, and they are diagnostic
+ * sub-views a reader opens deliberately.
+ */
+function runPage(model, opts, body) {
+  const { width, bodyHeight, nowMs, narrow, spinnerFrame } = opts;
+  const row = model.row;
+  const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
+  const state = panel.state;
+  const status = row?.status ?? stateStatus(state) ?? 'starting';
+  const shortId = state.shortId ?? row?.shortId ?? row?.runId ?? '------';
+  const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
+  const total = (state.actions ?? []).length;
+  const elapsed = durationText(stateStartedAt(state), stateFinishedAt(state));
+  const terminalLabel = stateFinishedAt(state)
+    ? ` · ${status === 'completed' ? 'done' : status}${isProgramWorkflow(state) && status === 'completed' ? hasPassingRequirementEvidence(state) ? ' · evidence passed' : ' · unverified' : ''}`
+    : '';
+  const header = truncate(` ${shortId} ${status}${elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : ''} · ${done}/${total} actions${terminalLabel}`, width);
+
+  // The planner and technical views keep the panels they always drew: the
+  // prototype has no frame for either and both are opened deliberately.
+  if (opts.orchestratorDetail || opts.workflowVerbose) {
+    const frame = runFrame(row, { ...opts, focus: opts.focus === 1 ? 1 : 0, bodyHeight });
+    for (const line of frame.body) body.push(line);
+    markStepRows(body, frame.body, frame.model);
+    return header;
+  }
+
+  // The goal, above the timeline rather than replayed inside it.
+  const goal = String(state.intent?.goal ?? state.workflow ?? '').trim();
+  const goalRows = wrapLines(goal.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), width - 2)
+    .slice(0, narrow ? 2 : 2);
+  for (const line of goalRows) body.push(cut(` ${line}`, width));
+
+  const progress = planProgress(row, { assignments: model.assignments, nowMs });
+  const right = [
+    progress.phases ? `phase ${progress.phase} of ${progress.phases}` : null,
+    `${progress.done}/${progress.total} steps`,
+    progress.eta ? `ETA ${progress.eta}` : progress.remaining ? `ETA ${blank()}` : null,
+  ].filter(Boolean).join(' · ');
+  body.push(rule('plan', right, width));
+  const selectedId = opts.focus === 1 ? panel.selectedAgent?.action?.id ?? null : null;
+  for (const line of planDagLines(row, {
+    width, runId: row?.runId ?? null, assignments: model.assignments, nowMs, pools: !narrow, selectedId,
+  })) body.parts(line.parts);
+
+  // The prototype's budget / live / so far triptych: one row band at the
+  // desktop widths, three stacked sections on the phone.
+  const economics = runEconomics(row, model.pools, nowMs);
+  body.push('');
+  if (narrow) {
+    // The phone spends the prototype's rows: the budget, one `so far` line
+    // under it, then what is live — and leaves the timeline the rest.
+    body.push(rule('licence this run used', null, width));
+    for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
+    const money = moneyText(economics.apiEquivalentUsd);
+    body.push(cut(` so far ${tint(money ?? blank(), 'purple')} · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
+    body.push('');
+    body.push(rule('live', null, width));
+    for (const line of runLiveRows(panel, { width: width - 2, nowMs, limit: 2 })) body.push(` ${cut(line, width - 1)}`);
+  } else {
+    const gap = 2;
+    const inner = Math.max(9, width - gap * 2);
+    const cellWidth = Math.floor(inner / 3);
+    // The rules sit on the page's own left margin; the rows under them are
+    // indented one column, the way every other section on the page is.
+    const inset = (rows) => rows.map((line) => ` ${cut(line, cellWidth - 1)}`);
+    pushColumns(body, [
+      { rule: 'licence this run used', rows: inset(runBudgetRows(economics, { width: cellWidth - 1 })), action: { kind: 'page', page: 'budget' } },
+      { rule: 'live', rows: inset(runLiveRows(panel, { width: cellWidth - 1, nowMs })) },
+      { rule: 'so far', rows: inset(runSoFarRows(row, panel, progress, economics, { width: cellWidth - 1, nowMs })) },
+    ], { width, gap, indent: 0 });
+  }
+  // Every blank in the three cells above, and the reason for it, once.
+  for (const reason of runBlankReasons(economics, progress)) {
+    body.push(dimText(` ${blank()} ${reason}`, width));
+  }
+
+  body.push('');
+  // What fills the rest of the body: the timeline, the phase list `t` shows
+  // instead of it, or the selected phase's steps once Enter has walked in.
+  const used = body.lines.length;
+  const rows = Math.max(3, Math.max(6, Number(bodyHeight) || 24) - used - 1);
+  if (opts.focus === 1) {
+    const phase = panel.selectedPhase;
+    body.push(rule(`${phase.label} · ${phase.completed}/${phase.total} complete`, null, width));
+    if (!panel.agents.length) {
+      const blocked = phase.blockedActions ?? [];
+      for (const entry of blocked) {
+        body.push(dimText(` ${glyphs().blocked} ${entry.id} · never dispatched · blocked by ${entry.blockedBy.length ? entry.blockedBy.join(', ') : 'a failed dependency'}`, width));
+      }
+      // No agent has been dispatched, so the phase says what it plans to run
+      // and the role the kernel gave each step — never `undefined`.
+      body.push(dimText(' no agent has started in this phase yet', width));
+      body.push(dimText(' planned steps in this phase:', width));
+      for (const entry of phase.actions) {
+        if (blocked.some((item) => item.id === entry.id)) continue;
+        body.row(
+          cut(` ${statusIcon(entry.status, spinnerFrame)} ${entry.id} · ${actionRoleLabel(entry)} · ${entry.status}`, width),
+          { kind: 'step', actionId: entry.id },
+        );
+      }
+      if (!phase.actions.length) body.push(dimText(' waiting for the planner to add work', width));
+    }
+    panel.agents.forEach((agent, index) => {
+      const reasoning = reasoningText(agent.attempt) || reasoningText(agent.active);
+      const age = durationText(agent.attempt?.startedAt ?? agent.active?.startedAt, agent.attempt?.finishedAt);
+      const tokens = tokenText(agent.attempt?.usage);
+      body.row(
+        selectLine(
+          `${statusIcon(agent.status, spinnerFrame)} ${agent.action.id} · ${agent.pool} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''} · #${agent.attempt?.attemptNumber ?? agent.active?.attempt ?? 1}${tokens ? ` · ${tokens}` : ''}${age !== 'time pending' ? ` · ${age}` : ''}`,
+          index === panel.agentIndex, true, width,
+        ),
+        { kind: 'step', actionId: agent.action.id },
+      );
+    });
+    // Whatever the step list leaves goes back to the timeline rather than to
+    // blank rows: the reader is still reading a run.
+    const left = rows - (body.lines.length - used) - 2;
+    if (left >= 4) {
+      body.push('');
+      const tail = flatTimelineLines(panel, {
+        width: width - 1, rows: left - 1, scroll: opts.detailScroll ?? 0, spinnerFrame,
+      });
+      body.push(rule('timeline', `${tail.milestones} milestone${tail.milestones === 1 ? '' : 's'}`, width));
+      const from = body.lines.length;
+      for (const line of tail) body.push(` ${cut(line, width - 1)}`);
+      markStepRows(body, body.lines.slice(from), panel, row?.runId ?? null);
+    }
+  } else if (opts.mobileTimeline === false) {
+    body.push(rule(`phases · ${panel.phases.length}`, null, width));
+    panel.phases.forEach((phase, index) => {
+      body.push(selectLine(
+        `${index + 1} ${statusIcon(phase.status, spinnerFrame)} ${phase.label}${phase.total ? ` ${phase.completed}/${phase.total}` : ''}`,
+        index === panel.phaseIndex, true, width,
+      ));
+    });
+  } else {
+    // The timeline follows the newest event by default. It only re-anchors on
+    // a phase the reader chose — `phaseIndex` is null while the page is
+    // following the active one — so choosing nothing never stops the follow.
+    const selectedSegment = opts.mobileTimeline !== false && opts.timelineSelection != null
+      ? (opts.timelineSelection === 0 ? 'Preflight' : panel.phases[opts.timelineSelection - 1]?.label ?? null)
+      : opts.phaseIndex != null ? panel.phases[panel.phaseIndex]?.label ?? null : null;
+    const lines = flatTimelineLines(panel, {
+      width: width - 1, rows: rows - 1, scroll: opts.detailScroll ?? 0, selectedSegment, spinnerFrame,
+    });
+    body.push(rule('timeline', `${lines.milestones} milestone${lines.milestones === 1 ? '' : 's'}`, width));
+    const from = body.lines.length;
+    for (const line of lines) body.push(` ${cut(line, width - 1)}`);
+    markStepRows(body, body.lines.slice(from), panel, row?.runId ?? null);
+  }
+  return header;
+}
+
+/**
+ * Step: a label/value table — Status, Pool, Purpose, Route, Time — then the
+ * budget, the first lines of the task, the output so far and the artifacts.
+ */
+function stepPage(model, opts, body) {
+  const { width, spinnerFrame, nowMs, narrow } = opts;
+  const panel = workflowPanelModel(model.row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
+  const state = panel.state;
+  const agent = panel.selectedAgent;
+  const shortId = state.shortId ?? model.row?.shortId ?? '';
+  if (!agent) {
+    body.push(dimText(' no step selected in this phase', width));
+    for (const line of agentDetailLines(panel, Math.max(20, width - 2), spinnerFrame)) body.push(` ${cut(line, width - 1)}`);
+    return truncate(` ${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`, width);
+  }
+  const { action, attempt, active } = agent;
+  const routing = attempt?.routing ?? active?.routing ?? null;
+  const reasoning = reasoningText(attempt) || reasoningText(active);
+  const labelWidth = narrow ? 10 : 10;
+  const field = (name, value) => body.push(cut(` ${String(name).padEnd(labelWidth)}${value}`, width));
+
+  const assignment = (model.assignments ?? []).find((entry) => entry.runId === model.row?.runId && entry.actionId === action.id);
+  const expected = finiteOrNull(assignment?.expectedMinutes);
+  const startedAt = attempt?.startedAt ?? active?.startedAt ?? action?.startedAt ?? null;
+  const startedMs = Date.parse(startedAt ?? '');
+  const ranFor = Number.isFinite(startedMs)
+    ? durationText(startedAt, attempt?.finishedAt)
+    : null;
+
+  field('Status', `${tint(agent.status, agent.status === 'running' ? 'cyan' : agent.status === 'succeeded' ? 'green' : 'dim')} · ${tint(agent.model, 'cyan')}${reasoning ? ` · ${reasoning}` : ''}`);
+  // V1 stores the tier on the attempt, V2 under routing; reading only the V1
+  // shape made every V2 attempt read `effort auto` beside its resolved level.
+  field('Pool', `${tint(agent.pool, 'cyan')} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? routing?.effort ?? active?.effort ?? 'auto'}${reasoning ? ` · reasoning ${reasoning}` : ''}`);
+  field('Purpose', dimText(String(action.purpose ?? actionRoleLabel(action)), width - labelWidth - 1));
+  if (routing?.reason) {
+    const text = `${routing.lane ? `${routing.lane} lane → ` : ''}${agent.pool}: ${routing.reason}`;
+    const wrapped = wrapLines([text], Math.max(10, width - labelWidth - 2));
+    field('Route', dimText(wrapped[0] ?? '', width));
+    for (const line of wrapped.slice(1, narrow ? 2 : 3)) {
+      body.push(dimText(cut(` ${' '.repeat(labelWidth)}${line}`, width), width + 8));
+    }
+  }
+  field('Time', dimText(`${startedAt ? `started ${clockText(startedAt)}` : 'not started'}${ranFor && ranFor !== 'time pending' ? ` · elapsed ${ranFor}` : ''}${expected == null ? ` · no expected duration recorded` : ` of ${minutesText(expected)} expected`}`, width));
+  if (attempt?.failureReason) field('Failure', cut(String(attempt.failureReason), width - labelWidth - 1));
+  if (active?.stall?.status === 'suspected_stalled') {
+    field('Stall', `${glyphs().warn} ${active.stall.silentForSec}s without evidence; never auto-killed`);
+  }
+
+  // The budget for this one attempt: a licence share only where the pool has
+  // a measured rate, and the estimate only where the attempt recorded one.
+  body.push('');
+  body.push(rule('budget', null, width));
+  const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
+  const money = moneyText(finiteOrNull(attempt?.usage?.cost?.estimatedUsd));
+  if (pool?.usedPct == null) {
+    // Requirement 8: no page draws an empty track for missing data. An
+    // unmetered pool is a line of words here, the same words the Run page
+    // uses, with whatever this attempt did record beside them.
+    const reason = `free model · no licence meter${money ? ` · ${money} API-equivalent estimate` : ' · this attempt recorded no estimate'}`;
+    body.row(
+      cut(` ${absentLine(String(agent.pool), reason, { width: width - 1 })}`, width + 8),
+      { kind: 'page', page: 'budget', pool: agent.pool },
+    );
+  } else {
+    // Whole percents, as the Run page writes them: a share under 1% keeps one
+    // decimal so a real sliver is not rounded away to `0%`.
+    const percent = pool.sharePct == null ? null
+      : pool.sharePct > 0 && pool.sharePct < 1 ? pool.sharePct.toFixed(1) : String(Math.round(pool.sharePct));
+    const window = pool.window === 'monthly' ? 'monthly' : pool.window === 'five_hour' ? 'five-hour' : 'weekly';
+    const share = percent == null ? blank() : `${about()} ${percent}% of its ${window} window`;
+    const name = cut(String(agent.pool), 14).padEnd(Math.min(14, String(agent.pool).length));
+    const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
+    const bar = meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
+    body.row(
+      cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money ?? blank(), 'purple')}${money ? ' API-equivalent estimate' : ''}`, width),
+      { kind: 'page', page: 'budget', pool: agent.pool },
+    );
+    // Each blank above says which measurement it is waiting for, on one row.
+    const why = [
+      pool.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
+      money == null ? 'this attempt recorded no estimate' : null,
+    ].filter(Boolean);
+    if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
+  }
+
+  const taskFile = attempt?.taskFile ?? active?.taskFile ?? null;
+  const prompt = wrapLines(taskPreview(taskFile, Infinity), width - 4);
+  const taskRows = narrow ? 4 : 2;
+  body.push('');
+  body.push(rule('task · first lines', null, width));
+  if (!prompt.length) body.push(dimText('   no task file was recorded for this attempt', width));
+  for (const line of prompt.slice(0, taskRows)) body.push(cut(`   ${line}`, width));
+  if (prompt.length > taskRows) body.push(dimText(`   … ${prompt.length - taskRows} more lines`, width));
+
+  const output = state.outputs?.[action.id];
+  const outFile = attempt?.outFile ?? active?.outFile ?? output?.outFile ?? null;
+  const outcome = outcomePreview(outFile, output);
+  const bytes = finiteOrNull(active?.outputBytesObserved ?? attempt?.outputBytesObserved);
+  const live = agent.status === 'running' ? 'live' : 'recorded';
+  body.push('');
+  body.push(rule('output', `${live} · ${bytes == null ? blank() : formatBytes(bytes)}`, width));
+  if (!outcome.length) body.push(dimText('   nothing has been written to the output file yet', width));
+  const outRows = narrow ? 6 : 10;
+  for (const line of wrapLines(outcome.slice(0, outRows), width - 4)) body.push(cut(`   ${line}`, width));
+
+  body.push('');
+  body.push(rule('artifacts', null, width));
+  body.push(dimText(cut(`   task:   ${taskFile ?? blank()}`, width), width + 8));
+  body.push(dimText(cut(`   output: ${outFile ?? blank()}`, width), width + 8));
+
+  return truncate(` ${statusIcon(agent.status, spinnerFrame)} ${action.id} · run ${shortId} · ${agent.status}`, width);
+}
+
+/** Budget: every pool's licence meter, its money and what still fits. */
+function budgetPage(model, opts, body) {
+  const { width } = opts;
+  if (!model.budget) {
+    body.push(dimText(' reading the pool meters…', width));
+    if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
+    return ` Budget · this week${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
+  }
+  pushView(body, budgetLines(model.budget, { width, ansi: meterAnsi() }));
+  if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
+  return ` Budget · ${model.budget.days ?? 7} days to ${model.budget.timeZone ?? 'local'}${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
+}
+
+/** Fleet: the rungs by lane or by provider, read-only. */
+function fleetPage(model, opts, body) {
+  const { width } = opts;
+  const by = FLEET_TABS.includes(opts.fleetBy) ? opts.fleetBy : 'lane';
+  const view = fleetLines(model.pools, model.rungs, { width, by, nowMs: opts.nowMs, ansi: meterAnsi() });
+  const before = body.lines.length;
+  pushView(body, view);
+  // fleet-view records its own sub-tab and `[ edit ]` regions, so the shell
+  // only has to remember which row they were painted on for the scroll.
+  const tabs = (view?.regions ?? []).find((region) => region?.action?.kind === 'tab');
+  if (tabs?.y) body.anchor = { tabs: before + Number(tabs.y) };
+  return ` Fleet · by ${by}`;
+}
+
+/** Stats: the five tabs, the four metrics and the three periods. */
+function statsPage(model, opts, body) {
+  const { width } = opts;
+  const tab = STATS_TABS.includes(opts.statsTab) ? opts.statsTab : 'overview';
+  const metric = TREND_METRICS.includes(opts.metric) ? opts.metric : 'runs';
+  if (!model.stats) {
+    body.push(dimText(' reading the rollup index…', width));
+    return ' Stats';
+  }
+  pushView(body, statsLines(model.stats, {
+    width, height: opts.height, tab, period: opts.period, metric, ansi: meterAnsi(),
+  }));
+  body.anchor = { tabs: 1 };
+  return ` Stats · ${tab}`;
+}
+
+/** History: every workflow by date, newest first, older days on scroll. */
+function historyPage(model, opts, body) {
+  const { width } = opts;
+  // `historyDays` files each record under the day it belongs to (history.js
+  // H5), so the page draws the rows the model carries rather than rejoining
+  // the index by day key here.
+  const days = model.days ?? [];
+  pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
+  if (!days.length) {
+    body.push(dimText(' bullswarm workflow reindex backfills the history index from the run directories', width));
+  }
+  return ` History · ${days.length} day${days.length === 1 ? '' : 's'}`;
+}
+
+/** History's note: how many days are loaded, right above the bottom nav. */
+function historyPageNotes(model, { width }, notes) {
+  for (const line of historyNote(model.days ?? [], { width })) notes.push(dimText(line, width));
+}
+
+/**
+ * Help: every key and every click, grouped by what it is for.
+ *
+ * Keys that do the same kind of thing share a row — `r b s y f → Runs ·
+ * Budget · Stats · History · Fleet` — so the page is about thirty rows rather
+ * than one row per binding, and every row still fits the 54 columns the phone
+ * frame paints. The key names are bold; the sentence beside them is not.
+ *
+ * Nothing here claims a key the shell does not run: the rows are built from
+ * DASHBOARD_KEYS, so a rebinding moves the page with it.
+ */
 function helpPage(model, opts, body) {
   const { width } = opts;
-  const rows = [
-    ['↑/k · ↓/j', 'move up · move down'],
-    ['Enter/→/l', 'open the selected run, step or tab'],
-    ['Esc/←/b', 'move out one page'],
-    ['Tab / Shift+Tab', 'next · previous run'],
-    ['1–9', 'open that run from the nav'],
-    ['u · ?', 'usage · help'],
-    ['q', 'quit; the workflow keeps running'],
-    ['home', '/ filter · a active/all · r refresh · i install the agent integration'],
-    ['run', 't phases/timeline · o planner · v technical details · c stop the workflow · PgUp/PgDn scroll'],
-    ['step', 'the agent panel; Esc/b goes back'],
-    ['usage', 'l by lane · p by provider · e edit (bullswarm setup)'],
-    ['mouse', 'click a button, tab, run row or step row; the wheel scrolls'],
-  ];
-  for (const [key, text] of rows) body.push(truncate(` ${String(key).padEnd(17)}${text}`, width));
+  const narrow = width < 60;
+  const keyWidth = narrow ? 12 : 16;
+  const row = (keys, text) => {
+    const label = ` ${strong(String(keys))}`;
+    const pad = ' '.repeat(Math.max(1, keyWidth - visibleLength(String(keys))));
+    body.push(cut(`${label}${pad}${text}`, width));
+  };
+  /** One row from several key names, the way the shell groups them. */
+  const grouped = (names, text) => row(names.map((name) => DASHBOARD_KEYS[name].keys).join(' '), text);
+
+  body.push(tint(truncate(narrow ? ' keys and clicks' : ' every key and click on this dashboard', width), 'dim'));
+  body.push(rule('pages', null, width));
+    grouped(['runs', 'budget', 'stats', 'fleet'], 'Runs · Budget · Stats · Fleet');
+  row(DASHBOARD_KEYS.home.keys, 'Home');
+  // History is the day table inside Runs now, so `y` is a jump, not a page.
+  row(DASHBOARD_KEYS.history.keys, narrow ? 'the first day of Runs' : 'Runs, at the first day of its history');
+  row(DASHBOARD_KEYS.help.keys, 'this help');
+  row(DASHBOARD_KEYS.out.keys, narrow ? 'back, then Home' : 'back from a step, otherwise Home');
+  row(DASHBOARD_KEYS.openRun.keys, 'open the numbered run in the nav');
+  row(DASHBOARD_KEYS.in.keys, 'open the run, its steps, then one step');
+  // Budget has no sub-tabs; Stats and Fleet do, and this says only that.
+  row(DASHBOARD_KEYS.nextTab.keys, 'next sub-tab on Stats and Fleet');
+  row(DASHBOARD_KEYS.cycleWorkflow.keys, 'cycle workflows');
+  row(DASHBOARD_KEYS.period.keys, narrow ? 'period: 7 days · 30 days · all' : 'cycle the period: 7 days · 30 days · all time');
+
   body.push('');
-  body.push(dimText(' the commands that operate the product', width));
-  for (const command of DASHBOARD_COMMANDS) body.push(dimText(`   ${command}`, width));
+  body.push(rule('moving', null, width));
+  grouped(['up', 'down'], 'scroll one line');
+  grouped(['pageUp', 'pageDown'], 'scroll a screen');
+  grouped(['top', 'end'], 'top · bottom');
+  row('wheel', 'scrolls the body under the sticky header');
+
+  body.push('');
+  body.push(rule('clicks', null, width));
+  row('tab · period', 'the tab row opens a page · the toggle sets the period');
+  row('tile', narrow ? 'a today number opens its chart' : "a today number opens its chart in Stats › Trends");
+  row('bar', 'a breakdown bar opens its Stats tab · a trend bar opens its day');
+  row('pool', 'a pool name or meter opens Budget on it');
+  row('step', 'a plan glyph or step row opens the step');
+  row('run', 'a run row or nav button opens the run');
+
+  body.push('');
+  body.push(rule('other', null, width));
+  row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
+  row('/ · a · i', 'filter · active/all · install (on Runs)');
+  row('o · v · t', 'planner · technical · phases (on Run)');
+  row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
+  row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
+  row('under 100', 'Fleet leaves the tab row until f opens it');
+  row('under 100', 'the nav tail is [Top] [End] [?.Help]');
+  row('rebound', 'r was refresh · b was back · Tab was workflows');
+  integrationLines(model, opts, body);
   return ' bullswarm · help';
 }
 
 /**
- * One frame of the dashboard: the sticky header, the body window, the message
- * line, the notes, and the sticky bottom nav — plus the hit regions the mouse
- * handler answers to.
+ * One frame of the dashboard: the page tab row, the sticky header, the body
+ * window, the message line, the notes, and the sticky bottom nav — plus the
+ * hit regions the mouse handler answers to.
  *
  * @param {object} model as `dashboardModel` builds it
  * @param {object} [options] width, height, page and the page's own state
@@ -1841,6 +3576,10 @@ export function renderDashboardPage(model, options = {}) {
     height,
     page,
     narrow: options.narrow ?? width < 100,
+    period: PERIODS.includes(options.period) ? options.period : '7d',
+    statsTab: STATS_TABS.includes(options.statsTab) ? options.statsTab : 'overview',
+    metric: TREND_METRICS.includes(options.metric) ? options.metric : 'runs',
+    fleetBy: FLEET_TABS.includes(options.fleetBy) ? options.fleetBy : 'lane',
     nowMs: Number(options.nowMs) || model.nowMs || Date.now(),
   };
   const message = options.filterEditing
@@ -1850,8 +3589,11 @@ export function renderDashboardPage(model, options = {}) {
       : options.message ?? null;
   const messageLines = message ? [dimText(` ${message}`, width)] : [];
   const notes = frameBuilder();
-  if (page === 'usage') usagePageNotes(opts, notes);
-  const bodyHeight = Math.max(1, height - 1 - messageLines.length - notes.lines.length - 1);
+  if (page === 'budget' && model.budget) {
+    for (const line of budgetNotes(model.budget, { width })) notes.push(dimText(truncate(line, width), width));
+  }
+  if (page === 'history' || page === 'runs') historyPageNotes(model, opts, notes);
+  const bodyHeight = Math.max(1, height - 2 - messageLines.length - notes.lines.length - 1);
 
   const body = frameBuilder();
   let header = '';
@@ -1866,30 +3608,59 @@ export function renderDashboardPage(model, options = {}) {
     body.push(dimText(' read-only · the executor for authored-graph runs was removed; nothing here can be driven', width));
     header = ` ${model.row.shortId ?? model.row.runId ?? '------'} legacy`;
   } else if (page === 'home') header = homePage(model, opts, body);
-  else if (page === 'usage') header = usagePage(model, opts, body);
+  else if (page === 'runs') header = runsPage(model, opts, body);
+  else if (page === 'budget') header = budgetPage(model, opts, body);
+  else if (page === 'stats') header = statsPage(model, opts, body);
+  else if (page === 'history') header = runsPage(model, opts, body);
+  else if (page === 'fleet') header = fleetPage(model, opts, body);
   else if (page === 'help') header = helpPage(model, opts, body);
   else if (page === 'step') header = stepPage(model, { ...opts, bodyHeight }, body);
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
   const frame = frameBuilder();
+  frame.kit(pageTabs(page, width));
+  if (page === 'runs' || page === 'history') {
+    const padding = Math.max(0, (body.anchor?.history ?? 1) - 1 + bodyHeight - body.lines.length);
+    for (let index = 0; index < padding; index += 1) body.push('');
+  }
   const window = windowOf(body, { height: bodyHeight, scroll: opts.bodyScroll });
   frame.push(truncate(`${header}${window.position}`, width));
   drawWindow(frame, body, window);
+  // The nav is sticky at the bottom: a body shorter than its window is padded
+  // out to it rather than leaving the nav floating up the screen.
+  for (let row = window.end - window.offset; row < bodyHeight; row += 1) frame.push('');
   for (const line of messageLines) frame.push(line);
   drawWindow(frame, notes, windowOf(notes, { height: notes.lines.length }));
   const nav = frameBuilder();
   nav.parts(navParts(model, { page, width, selectedRunId: opts.selectedRunId ?? model.row?.runId ?? null }));
   drawWindow(frame, nav, windowOf(nav, { height: 1 }));
 
-  const lines = frame.lines.slice(0, height);
+  const lines = frame.lines.slice(0, height).map((line) => (visibleLength(line) > width ? cut(line, width) : line));
   return {
     page,
     lines,
-    regions: frame.regions.filter((region) => region.y >= 1 && region.y <= lines.length),
-    // Where a page marked something worth scrolling to (the Usage page's rung
-    // tabs), as a row of its body, so a caller can bring it into the window.
+    // How tall the body was and how much of it the window showed, so a caller
+    // knows when the reader has reached the end of what is loaded.
+    body: { total: window.total, offset: window.offset, end: window.end },
+    regions: frame.regions.filter((region) => region.y >= 1 && region.y <= lines.length && region.x1 <= width),
+    // Where a page marked something worth scrolling to (a sub-tab row), as a
+    // row of its body, so a caller can bring it into the window.
     anchor: body.anchor ?? null,
+    runRows: body.runRows ?? [],
   };
+}
+
+/**
+ * The sparklines Home draws over the last seven days, one per tile.
+ * Each is the same trend Stats charts, so the tile and its chart agree.
+ */
+function tileSparklines(rollups, nowMs) {
+  const out = {};
+  for (const metric of ['runs', 'verified', 'spend']) {
+    const trend = trendModel(rollups, { metric, period: '7d', now: nowMs });
+    out[metric] = trend.buckets.map((bucket) => bucket.value);
+  }
+  return out;
 }
 
 /**
@@ -1899,18 +3670,59 @@ export function renderDashboardPage(model, options = {}) {
  */
 export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
+  rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
+  metric = 'runs', meterHistory = null,
 } = {}) {
-  return {
+  const pools = usage?.pools ?? [];
+  const records = rollups ?? [];
+  const model = {
     row: row ?? null,
     nowMs,
     runs: runs ?? (row && row.legacy !== true ? [row] : []),
-    pools: usage?.pools ?? [],
+    pools,
     assignments: usage?.assignments ?? [],
     rungs: usage?.rungs ?? [],
     capturedAt: usage?.capturedAt ?? null,
     integration,
     installResult,
+    rollups: records,
+    days: days ?? [],
+    prices,
+    stats: null,
+    budget: null,
   };
+  // The aggregations are the models' arithmetic, run once per paint over the
+  // rollup index — never over the run directories.
+  try {
+    const overview = overviewModel(records, pools, { period, now: nowMs });
+    model.stats = {
+      overview,
+      breakdown: overview.breakdown,
+      // The Trends tab charts the metric the reader chose, so the tile they
+      // clicked and the chart it opened are the same series.
+      trend: trendModel(records, { metric: TREND_METRICS.includes(metric) ? metric : 'runs', period, now: nowMs }),
+      // Home's breakdown band always charts spend per day, whatever metric
+      // the reader last opened in Trends; Trends keeps `trend` above.
+      spendPerDay: trendModel(records, { metric: 'spend', period, now: nowMs }),
+      pools: {
+        ...poolsModel(records, pools, { period, now: nowMs }),
+        licencePerDay: meterHistory?.rows ?? null,
+        meterHistoryReason: meterHistory?.reason ?? null,
+      },
+      models: modelsModel(records, { period, now: nowMs }),
+      projects: projectsModel(records, { period, now: nowMs }),
+      sparklines: tileSparklines(records, nowMs),
+    };
+  } catch { model.stats = null; }
+  try {
+    const budget = budgetModel(pools, { rollups: records, prices, period: budgetPeriod, now: nowMs });
+    budget.biggestRuns = Object.fromEntries(budget.rows.map((entry) => [
+      entry.name,
+      biggestRuns(records, { pool: entry.name, period: budgetPeriod, now: nowMs, limit: 3 }).byMinutes,
+    ]));
+    model.budget = budget;
+  } catch { model.budget = null; }
+  return model;
 }
 
 /**
@@ -1925,6 +3737,7 @@ export function renderWorkflowTui(row, options = {}) {
 export async function runDashboard(bullswarmDir, {
   input = process.stdin, output = process.stdout, refreshMs = 1000,
   spinnerMs = 400, token = null, openSetupTui = null, homeDir = process.env.HOME ?? '',
+  clipboard = writeClipboard,
 } = {}) {
   if ((!input.isTTY || !output.isTTY) && !token) throw new Error('workflow dashboard requires a TTY, or pass a run ID for a static text tree');
   if ((!input.isTTY || !output.isTTY) && token) {
@@ -1942,7 +3755,7 @@ export async function runDashboard(bullswarmDir, {
       width: Math.max(80, Number(output.columns) || 120),
       height: 80,
     });
-    const text = `${details}\n\n${timeline}`.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    const text = `${details}\n\n${timeline}`.replace(ANSI_SGR, '');
     output.write(`${text}\n`);
     return 0;
   }
@@ -1955,24 +3768,92 @@ export async function runDashboard(bullswarmDir, {
   let dashboardFilter = directV2 ? 'all' : 'active';
   let query = '';
   let filterEditing = false;
-  let allRows = dashboardRows(bullswarmDir, { all: true });
+  // The runs in flight, read every refresh without parsing 293 run
+  // directories. The whole catalogue is only read when the Runs page asks
+  // for it, because only that page lists finished runs one by one.
+  let activeRuns = activeDashboardRows(bullswarmDir);
+  let catalog = null;
+  let allRows = activeRuns;
   let rows = filterDashboardRows(allRows, dashboardFilter, query);
-  if (directV2) {
-    const directIndex = rows.findIndex((row) => row.runId === directRow.runId);
-    if (directIndex >= 0) selected = directIndex;
-  }
-  let selectedRunId = token ? directRow.runId : (rows[selected]?.runId ?? null);
   let lastPaintedFrame = null;
+  let lastPaintedLines = null;
+  // The clickable region under the mouse pointer: its words are painted in
+  // reverse video the way the Mod pane lights a row. Only the region's own
+  // cells, and within them only text — bars, meters and connector lines keep
+  // their colours.
+  let hover = null;
+  // Bars and meters inside a hovered region keep their colours; only the
+  // words light up. A span is a run of non-bar cells with its blanks trimmed.
+  const BAR_GLYPHS = /[█▇▆▅▄▃▂▁░▒▓▏▎▍▌▋▊▉─│┌┐└┘├┤┬┴┼╭╮╯╰○]/;
+  const textSpans = (plain, from, to) => {
+    const spans = [];
+    let start = null;
+    for (let at = from; at <= to; at += 1) {
+      const isText = at < to && !BAR_GLYPHS.test(plain[at]);
+      if (isText && start == null) start = at;
+      if (!isText && start != null) {
+        let a = start; let b = at;
+        while (a < b && plain[a] === ' ') a += 1;
+        while (b > a && plain[b - 1] === ' ') b -= 1;
+        if (b > a) spans.push([a, b]);
+        start = null;
+      }
+    }
+    return spans;
+  };
+  // Walk the painted line, counting visible cells, and switch reverse video
+  // on and off at the span edges; a reset inside a span (`\x1b[0m`) would
+  // drop the reverse, so it is re-armed right after.
+  const reverseTextSpans = (line, spans) => {
+    if (!spans.length) return line;
+    let out = '';
+    let cell = 0;
+    let inside = false;
+    const opens = new Map(spans.map(([a]) => [a, true]));
+    const closes = new Map(spans.map(([, b]) => [b, true]));
+    const sgr = /\x1b\[[0-9;?]*[A-Za-z]/y;
+    for (let at = 0; at < line.length;) {
+      sgr.lastIndex = at;
+      const match = sgr.exec(line);
+      if (match) {
+        out += match[0];
+        if (inside && /\x1b\[0?m$/.test(match[0])) out += `${ESC}7m`;
+        at += match[0].length;
+        continue;
+      }
+      if (closes.has(cell) && inside) { out += `${ESC}27m`; inside = false; }
+      if (opens.has(cell) && !inside) { out += `${ESC}7m`; inside = true; }
+      out += line[at];
+      cell += 1;
+      at += 1;
+    }
+    if (inside) out += `${ESC}27m`;
+    return out;
+  };
+  const stripAnsiText = (text) => String(text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  let lastFrameText = null;
   let lastFrameResult = null;
   let regions = [];
   let usage = null;
   let integration = null;
   let installResult = null;
   let bodyScroll = 0;
+  // Home, Stats, History and Budget all read the same index, re-read only
+  // when it has actually changed.
+  let rollups = [];
+  let rollupFingerprint = null;
+  let days = [];
+  let prices = null;
+  let meterHistory = null;
   const ui = {
     page: token ? 'run' : 'home',
     focus: 0,
-    rungsBy: 'lane',
+    period: '7d',
+    statsTab: 'overview',
+    metric: 'runs',
+    fleetBy: 'lane',
+    budgetPool: null,
+    historyDays: 7,
     phaseIndex: null,
     agentIndex: null,
     detailScroll: 0,
@@ -1987,15 +3868,61 @@ export async function runDashboard(bullswarmDir, {
     timelineSelection: null,
     spinnerFrame: 0,
   };
+  if (directV2) {
+    const directIndex = rows.findIndex((row) => row.runId === directRow.runId);
+    if (directIndex >= 0) selected = directIndex;
+  }
+  let selectedRunId = token ? directRow.runId : (rows[selected]?.runId ?? null);
+
+  /** The rollup index, re-read only when the file changed under us. */
+  const readIndex = () => {
+    let fingerprint = null;
+    try {
+      const stat = statSync(rollupIndexPath(bullswarmDir));
+      fingerprint = `${stat.size}:${stat.mtimeMs}:${ui.historyDays}`;
+    } catch { fingerprint = `absent:${ui.historyDays}`; }
+    if (fingerprint === rollupFingerprint) return;
+    rollupFingerprint = fingerprint;
+    try { rollups = readRollups(bullswarmDir); } catch { rollups = []; }
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); } catch { days = []; }
+  };
+  /** The declared subscription prices: the operator's, else the table's. */
+  const readPrices = () => {
+    try { prices = { subscriptions: loadState(bullswarmDir)?.strategy?.subscriptions ?? {} }; }
+    catch { prices = { subscriptions: {} }; }
+  };
   // The pools, the ledger and the rungs are read off disk (live meter reads
   // included), so the read lands after the frame it was asked for: the frame
   // paints at once and repaints when the data arrives. A later read wins.
+  //
+  // One read at a time. The refresh timer fires every second and loadUsage
+  // shells out to the provider CLIs, which on a busy machine takes longer
+  // than that: every tick used to issue a new ticket, so every result that
+  // arrived was already superseded and the meters never landed at all — the
+  // licence tile and the `budget · this week` block read "no pool reported a
+  // licence meter" forever. A read in flight now absorbs the tick.
   let usageTicket = 0;
-  const readUsage = () => {
+  let usageInFlight = false;
+  // Meter snapshots and account discovery cost hundreds of milliseconds
+  // (the Claude keychain read alone shells out to `security`), so usage is
+  // reloaded every ten seconds, not on every one-second tick.
+  const USAGE_EVERY_MS = 10_000;
+  let usageLoadedAt = 0;
+  const readUsage = ({ force = false } = {}) => {
+    if (usageInFlight) return Promise.resolve(undefined);
+    if (!force && usage && Date.now() - usageLoadedAt < USAGE_EVERY_MS) return Promise.resolve(undefined);
     const ticket = (usageTicket += 1);
-    return loadUsage(bullswarmDir).then((loaded) => {
+    usageInFlight = true;
+    return loadUsage(bullswarmDir).finally(() => { usageInFlight = false; }).then((loaded) => {
       if (ticket !== usageTicket) return undefined;
+      usageLoadedAt = Date.now();
+      // Budget's licence share is `ratePerMinute x measured minutes`, and
+      // loadUsage now measures that rate itself — once per meter snapshot,
+      // not once per one-second refresh.
       usage = loaded;
+      meterHistory = readLicencePerDay(bullswarmDir, loaded.pools, {
+        period: ui.period, now: Date.now(), rollups,
+      });
       return paint();
     }, (err) => {
       if (ticket !== usageTicket) return undefined;
@@ -2020,8 +3947,35 @@ export async function runDashboard(bullswarmDir, {
     const height = Math.max(1, Number(output.rows) || source.split('\n').length);
     const lines = source.split('\n').slice(0, height);
     while (lines.length < height) lines.push('');
+    lastFrameText = text;
+    if (hover && hover.y >= 1 && hover.y <= lines.length) {
+      const line = lines[hover.y - 1];
+      const plain = stripAnsiText(line);
+      const from = Math.max(0, hover.x1 - 1);
+      const to = Math.min(plain.length, hover.x2);
+      lines[hover.y - 1] = reverseTextSpans(line, textSpans(plain, from, to));
+    }
+    // Rewrite only the rows that changed since the last paint. A spinner
+    // tick or a clock digit is then a few dozen bytes, not the whole 120×40
+    // frame — the difference between smooth and laggy over a phone or a
+    // remote terminal. A first paint, a resize, or a return from the setup
+    // hand-off (lastPaintedFrame reset to null) writes the full frame.
+    if (lastPaintedFrame != null && Array.isArray(lastPaintedLines) && lastPaintedLines.length === lines.length) {
+      let patch = '';
+      let changed = 0;
+      for (let row = 0; row < lines.length; row += 1) {
+        if (lines[row] === lastPaintedLines[row]) continue;
+        changed += 1;
+        patch += `${ESC}${String(row + 1)};1H${lines[row]}${ESC}K`;
+      }
+      if (!changed) return;
+      lastPaintedLines = lines.slice();
+      lastPaintedFrame = patch;
+      output.write(patch);
+      return;
+    }
     const frame = `${ESC}H${lines.map((line) => `${line}${ESC}K`).join('\n')}`;
-    if (frame === lastPaintedFrame) return;
+    lastPaintedLines = lines.slice();
     lastPaintedFrame = frame;
     output.write(frame);
   };
@@ -2040,13 +3994,26 @@ export async function runDashboard(bullswarmDir, {
     if (row === fresh) lastGoodRow = fresh;
     return row;
   };
+  /** The whole catalogue, parsed once and only for the page that lists it. */
+  const ensureCatalog = () => {
+    if (catalog) return catalog;
+    try { catalog = dashboardRows(bullswarmDir, { all: true }); catalogAt = Date.now(); catalogSignature = `${activeSignature()}#${rollupFingerprint}`; }
+    catch (err) { message = `display error: ${err.message}`; catalog = activeRuns; }
+    allRows = catalog;
+    rows = filterDashboardRows(allRows, dashboardFilter, query);
+    const preserved = rows.findIndex((row) => row.runId === selectedRunId);
+    if (preserved >= 0) selected = preserved;
+    return catalog;
+  };
   const pageOptions = () => ({
     width: frameWidth(),
     height: frameHeight(),
     page: ui.page,
     rows, allRows, selected,
     filter: dashboardFilter, query, filterEditing,
-    selectedRunId, message, bodyScroll, rungsBy: ui.rungsBy,
+    selectedRunId, listSelectedId: selectedRunId, message, bodyScroll,
+    period: ui.period, statsTab: ui.statsTab, metric: ui.metric, fleetBy: ui.fleetBy,
+    budgetPool: ui.budgetPool,
     spinnerFrame: ui.spinnerFrame,
     focus: ui.focus,
     phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
@@ -2062,12 +4029,11 @@ export async function runDashboard(bullswarmDir, {
   });
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
-    // Home, Usage and Help are always paintable; Run and Step need a run and
-    // fall back to Home without one.
+    // Every page but Run and Step is paintable without a run; those two fall
+    // back to Home without one.
     if ((ui.page === 'run' || ui.page === 'step') && !selectedRunId) ui.page = 'home';
-    // Usage and Help read no run, so they paint without one (a fresh install).
-    const row = ui.page === 'home' || !selectedRunId ? null : currentRow();
-    if (row && !row.legacy && (ui.page === 'run' || ui.page === 'step')) {
+    const row = ui.page === 'run' || ui.page === 'step' ? currentRow() : null;
+    if (row && !row.legacy) {
       // The follow flags track whatever the page last resolved as current.
       const panel = workflowPanelModel(row, {
         phaseIndex: ui.followActivePhase ? null : ui.phaseIndex,
@@ -2076,9 +4042,15 @@ export async function runDashboard(bullswarmDir, {
       ui.phaseIndex = panel.phaseIndex;
       ui.agentIndex = panel.agentIndex;
     }
+    if (usage && meterHistory?.period !== ui.period) {
+      meterHistory = readLicencePerDay(bullswarmDir, usage.pools, {
+        period: ui.period, now: Date.now(), rollups,
+      });
+    }
     const model = dashboardModel(row, {
-      runs: allRows.filter((entry) => entry.ongoing),
-      usage, integration, installResult,
+      runs: activeRuns,
+      usage, integration, installResult, rollups, days, prices,
+      period: ui.period, metric: ui.metric, meterHistory,
     });
     const frame = renderDashboardPage(model, pageOptions());
     regions = frame.regions;
@@ -2094,7 +4066,8 @@ export async function runDashboard(bullswarmDir, {
       message = `display error: ${err.message}`;
       try {
         const frame = renderDashboardPage(dashboardModel(null, {
-          runs: allRows.filter((entry) => entry.ongoing), usage, integration,
+          runs: activeRuns, usage, integration, rollups, days, prices,
+          meterHistory,
         }), { ...pageOptions(), page: 'home', message });
         regions = frame.regions;
         writeFrame(frame.lines.join('\n'));
@@ -2104,10 +4077,30 @@ export async function runDashboard(bullswarmDir, {
       return lastFrameResult;
     }
   };
+  // The full catalogue reads every run directory (120–760 ms on a home with
+  // 300 runs), far too much for a one-second tick. Rebuild it only when an
+  // active run changed state, the history index changed, or 15 s passed;
+  // the active rows themselves are cheap and stay fresh every tick.
+  const CATALOG_TTL_MS = 15_000;
+  let catalogAt = 0;
+  let catalogSignature = null;
+  const activeSignature = () => activeRuns.map((row) => `${row.runId}:${row.state?.lifecycle?.status ?? ''}:${row.ongoing ? 1 : 0}`).join('|');
   const refresh = () => {
+    const previousRunId = selectedRunId;
     try {
-      const previousRunId = selectedRunId;
-      allRows = dashboardRows(bullswarmDir, { all: true });
+      activeRuns = activeDashboardRows(bullswarmDir);
+      const indexBefore = rollupFingerprint;
+      readIndex();
+      if (catalog) {
+        const signature = `${activeSignature()}#${rollupFingerprint}`;
+        const stale = Date.now() - catalogAt >= CATALOG_TTL_MS || signature !== catalogSignature || rollupFingerprint !== indexBefore;
+        if (stale) {
+          catalog = dashboardRows(bullswarmDir, { all: true });
+          catalogAt = Date.now();
+          catalogSignature = signature;
+        }
+        allRows = catalog;
+      } else allRows = activeRuns;
       rows = filterDashboardRows(allRows, dashboardFilter, query);
       const preserved = rows.findIndex((row) => row.runId === previousRunId);
       if (preserved >= 0) selected = preserved;
@@ -2115,11 +4108,21 @@ export async function runDashboard(bullswarmDir, {
       readIntegration();
       void readUsage();
     } catch (err) { message = `display error: ${err.message}`; }
-    selectedRunId = rows[selected]?.runId ?? selectedRunId;
+    // On the Runs page the cursor may sit on a finished row of the day table,
+    // which the active-only catalogue does not hold; a refresh must not drag
+    // it back onto the in-flight run, or Enter opens the wrong workflow.
+    const tableKeepsCursor = ui.page === 'runs'
+      && (lastFrameResult?.runRows ?? []).some((row) => row.runId === previousRunId);
+    selectedRunId = tableKeepsCursor ? previousRunId : (rows[selected]?.runId ?? selectedRunId);
     paint();
   };
   /** Opens one run's page, widening the filter when it hides that run. */
   const openRun = (runId) => {
+    // A finished run can be reached from Budget, Stats or History before the
+    // Runs page has ever loaded its catalogue.  Resolve the full index before
+    // looking up the selection, otherwise the next refresh falls back to the
+    // active-only rows and loses the run the reader just opened.
+    ensureCatalog();
     selectedRunId = runId;
     let index = rows.findIndex((row) => row.runId === runId);
     if (index < 0 && dashboardFilter === 'active') {
@@ -2139,13 +4142,13 @@ export async function runDashboard(bullswarmDir, {
     paint();
   };
   const switchWorkflow = (delta) => {
-    const catalog = allRows;
-    if (!catalog.length) return paint();
+    const catalogue = allRows.length ? allRows : activeRuns;
+    if (!catalogue.length) return paint();
     const previousFocus = ui.focus;
     const previousPhaseIndex = ui.phaseIndex;
-    const currentIndex = Math.max(0, catalog.findIndex((row) => row.runId === selectedRunId));
-    const nextIndex = (currentIndex + delta + catalog.length) % catalog.length;
-    const next = catalog[nextIndex];
+    const currentIndex = Math.max(0, catalogue.findIndex((row) => row.runId === selectedRunId));
+    const nextIndex = (currentIndex + delta + catalogue.length) % catalogue.length;
+    const next = catalogue[nextIndex];
     if (!next) return paint();
     selectedRunId = next.runId;
     let visibleIndex = rows.findIndex((row) => row.runId === next.runId);
@@ -2190,7 +4193,8 @@ export async function runDashboard(bullswarmDir, {
     paint();
   };
   /** Opens the Step page on one action, in the phase that holds it. */
-  const openStep = (actionId) => {
+  const openStep = (actionId, runId = null) => {
+    if (runId && runId !== selectedRunId) selectedRunId = runId;
     const row = detailRow(bullswarmDir, selectedRunId);
     if (!row.legacy) {
       const panel = workflowPanelModel(row);
@@ -2210,17 +4214,36 @@ export async function runDashboard(bullswarmDir, {
     bodyScroll = 0;
     paint();
   };
-  /** Esc/←/b walks out one page: step → run → home, usage/help → home. */
+  /** Opens a page, reading whatever that page needs the first time. */
+  const openPage = (page, { pool = null } = {}) => {
+    if (!DASHBOARD_PAGES.includes(page)) return paint();
+    const historyJump = page === 'history';
+    if (historyJump) page = 'runs';
+    if (page === 'runs') ensureCatalog();
+    if ((page === 'run' || page === 'step') && !selectedRunId) {
+      message = 'No workflow selected.';
+      ui.page = 'home';
+      return paint();
+    }
+    ui.page = page;
+    ui.budgetPool = page === 'budget' ? (pool ? String(pool) : null) : null;
+    ui.focus = page === 'step' ? 2 : 0;
+    bodyScroll = 0;
+    message = null;
+    const frame = paint();
+    if (historyJump) {
+      bodyScroll = Math.max(0, (frame?.anchor?.history ?? 1) - 1);
+      selectedRunId = frame?.runRows?.find((row) => row.y > bodyScroll)?.runId ?? selectedRunId;
+      return paint();
+    }
+    return frame;
+  };
+  /** Esc and the left arrow walk out: step to run, every other page to Home. */
   const moveOut = () => {
     if (ui.page === 'step') {
       ui.page = 'run';
       ui.focus = 1;
       ui.detailScroll = 0;
-      return paint();
-    }
-    if (ui.page === 'usage' || ui.page === 'help') {
-      ui.page = 'home';
-      bodyScroll = 0;
       return paint();
     }
     if (ui.orchestratorDetail) {
@@ -2247,6 +4270,20 @@ export async function runDashboard(bullswarmDir, {
     bodyScroll = 0;
     return paint();
   };
+  /**
+   * History loads seven more days each time the reader nears the bottom of
+   * what it already has, the way the prototype does. The frame reports how
+   * tall its body was, so "near the bottom" is measured, not guessed.
+   */
+  const loadMoreHistory = () => {
+    if (!['runs', 'history'].includes(ui.page) || ui.historyDays >= MAX_HISTORY_DAYS) return;
+    const body = lastFrameResult?.body;
+    if (body && body.end < body.total - 2) return;
+    ui.historyDays = Math.min(MAX_HISTORY_DAYS, ui.historyDays + 7);
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); } catch { /* keep what we have */ }
+    // The next index read must not skip the wider window we just asked for.
+    rollupFingerprint = null;
+  };
   // The wheel: up walks back through whatever is above the window, down walks
   // on. The timeline counts rows back from its newest event, a page body
   // counts the first visible row.
@@ -2256,6 +4293,7 @@ export async function runDashboard(bullswarmDir, {
       return paint();
     }
     bodyScroll = Math.max(0, bodyScroll - delta);
+    if (delta < 0) loadMoreHistory();
     return paint();
   };
   // The same install `bullswarm integrate install --yes` runs, in-process and
@@ -2272,13 +4310,43 @@ export async function runDashboard(bullswarmDir, {
   };
   const spin = () => {
     ui.spinnerFrame = (ui.spinnerFrame + 1) % glyphs().spinner.length;
-    if (ui.page !== 'home' || rows.some((row) => row.ongoing)) paint();
+    if (ui.page !== 'home' || activeRuns.length) paint();
   };
-  // Switching the rung grouping brings the table into view: on a machine with
+  /**
+   * ctrl+s: the painted screen as plain text, through OSC 52 so it reaches
+   * the clipboard of whatever machine the terminal is on. A payload past the
+   * sequence limit most terminals accept, or an output that refuses the
+   * write, falls back to pbcopy or wl-copy — and the message says which one
+   * actually carried it.
+   */
+  const copyScreen = () => {
+    const text = (lastFrameResult?.lines ?? [])
+      .map((line) => String(line).replace(ANSI_SGR, '').replace(/\s+$/, ''))
+      .join('\n');
+    const payload = Buffer.from(text, 'utf8').toString('base64');
+    if (payload.length <= OSC52_LIMIT) {
+      try {
+        output.write(`${OSC}52;c;${payload}${BEL}`);
+        lastPaintedFrame = null;
+        message = `screen copied (OSC 52) · ${text.split('\n').length} lines`;
+        return paint();
+      } catch { /* the terminal refused it; fall back to a local clipboard */ }
+    }
+    const result = clipboard(text);
+    lastPaintedFrame = null;
+    message = result?.ok
+      ? `screen copied (${result.tool})`
+      : `copy failed · ${result?.reason ?? 'no OSC 52, and no pbcopy or wl-copy on this machine'}`;
+    return paint();
+  };
+  // Switching Fleet's grouping brings the table into view: on a machine with
   // several pools the windows alone fill the page, and a tab that changed
   // something the reader cannot see reads as a tab that did nothing.
-  const showRungs = (by) => {
-    ui.rungsBy = by;
+  const showTab = (tab) => {
+    if (ui.page === 'fleet' && FLEET_TABS.includes(tab)) ui.fleetBy = tab;
+    else if (STATS_TABS.includes(tab)) { ui.page = 'stats'; ui.statsTab = tab; bodyScroll = 0; }
+    else if (FLEET_TABS.includes(tab)) { ui.page = 'fleet'; ui.fleetBy = tab; bodyScroll = 0; }
+    else return paint();
     const frame = paint();
     const tabs = frame?.anchor?.tabs;
     if (tabs != null && tabs > 1) {
@@ -2286,6 +4354,34 @@ export async function runDashboard(bullswarmDir, {
       paint();
     }
     return undefined;
+  };
+  /** Tab: the next sub-tab of whatever page has them. */
+  const nextTab = () => {
+    if (ui.page === 'stats') {
+      const at = STATS_TABS.indexOf(ui.statsTab);
+      ui.statsTab = STATS_TABS[(at + 1) % STATS_TABS.length];
+      bodyScroll = 0;
+      return paint();
+    }
+    if (ui.page === 'fleet') {
+      const at = FLEET_TABS.indexOf(ui.fleetBy);
+      return showTab(FLEET_TABS[(at + 1) % FLEET_TABS.length]);
+    }
+    message = 'Tab walks the sub-tabs on Stats and Fleet; this page has none.';
+    return paint();
+  };
+  /** p: the next period, on every page that is drawn over one. */
+  const nextPeriod = () => {
+    const at = PERIODS.indexOf(ui.period);
+    ui.period = PERIODS[(at + 1) % PERIODS.length];
+    message = `Period · ${PERIOD_ITEMS.find((item) => item.id === ui.period)?.label ?? ui.period}`;
+    return paint();
+  };
+  const scrollToEnd = () => {
+    bodyScroll = Math.max(0, ((lastFrameResult?.lines?.length ?? 24) + 1) * 40);
+    const frame = paint();
+    loadMoreHistory();
+    return frame;
   };
   // `[edit]`: hand the terminal to the same control centre `bullswarm setup`
   // opens, then take it back and re-read the rungs the setup may have changed.
@@ -2297,13 +4393,13 @@ export async function runDashboard(bullswarmDir, {
     output.removeListener?.('resize', onResize);
     input.setRawMode?.(false);
     input.pause?.();
-    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    output.write(`${ESC}?1006l${ESC}?1003l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
     try {
       await openSetup({ bullswarmDir, input, output });
     } catch (err) {
       message = `setup error: ${err.message}`;
     } finally {
-      output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+      output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1003h${ESC}?1006h`);
       input.setRawMode?.(true);
       input.resume?.();
       input.on('data', onData);
@@ -2312,28 +4408,120 @@ export async function runDashboard(bullswarmDir, {
       timer = setInterval(refresh, refreshMs);
       spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
       readUsage();
-      ui.page = 'usage';
+      ui.page = 'fleet';
       ui.focus = 0;
       bodyScroll = 0;
       paint();
     }
   };
-  const handleMouse = (mouse) => {
-    if (mouse.kind === 'wheel-up') return scrollActivePage(3);
-    if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
-    if (mouse.kind !== 'press') return undefined;
-    const action = regions.find((region) => mouse.y === region.y
-      && mouse.x >= region.x1 && mouse.x <= region.x2)?.action;
+  const bucketDayKey = (value) => {
+    const source = String(value ?? '');
+    return /^\d{4}-\d{2}-\d{2}$/.test(source) ? source : dayKey(value);
+  };
+  const historyDateLabel = (key) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key ?? ''));
+    if (!match) return null;
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+    if (!Number.isFinite(date.getTime())) return null;
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${weekdays[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]}`;
+  };
+  const openTrendBucket = (action) => {
+    const target = bucketDayKey(action.bucket);
+    const today = bucketDayKey(dayKey(Date.now()));
+    if (target && today) {
+      const parseKey = (key) => {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+        return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+      };
+      const targetMs = parseKey(target);
+      const todayMs = parseKey(today);
+      if (targetMs != null && todayMs != null && targetMs <= todayMs) {
+        const required = Math.floor((todayMs - targetMs) / 86_400_000) + 1;
+        ui.historyDays = Math.min(MAX_HISTORY_DAYS, Math.max(ui.historyDays, required));
+      }
+    }
+    ui.page = 'runs';
+    ensureCatalog();
+    ui.budgetPool = null;
+    ui.focus = 0;
+    bodyScroll = 0;
+    message = null;
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); }
+    catch { days = []; }
+    rollupFingerprint = null;
+    if (target) {
+      const rendered = historyLines(days, { width: frameWidth(), ansi: meterAnsi() });
+      const label = historyDateLabel(target);
+      const marker = label ? `── ${label} ` : null;
+      const at = marker
+        ? rendered.lines.findIndex((line) => String(line).replace(ANSI_SGR, '').startsWith(marker))
+        : -1;
+      if (at >= 0) {
+        const frame = paint();
+        bodyScroll = (frame?.anchor?.history ?? 1) - 1 + at;
+      } else message = `History bucket ${target} is outside loaded history.`;
+    }
+    return paint();
+  };
+  /** Every click runs the same action its key runs. */
+  const runAction = (action) => {
     if (!action) return undefined;
-    if (action.kind === 'page') { ui.page = action.page; ui.focus = 0; bodyScroll = 0; return paint(); }
-    if (action.kind === 'open-run') return openRun(action.runId);
-    if (action.kind === 'open-step') return openStep(action.actionId);
+    if (action.kind === 'page') return openPage(action.page, { pool: action.pool ?? null });
+    if (action.kind === 'run') return openRun(action.runId);
+    if (action.kind === 'step') return openStep(action.actionId, action.runId ?? null);
     if (action.kind === 'back') return moveOut();
     if (action.kind === 'install') return runInstall();
-    if (action.kind === 'rungs') return showRungs(action.by);
+    if (action.kind === 'tab') return showTab(action.tab);
+    if (action.kind === 'trend') {
+      if (PERIODS.includes(action.period)) ui.period = action.period;
+      if (action.bucket != null) return openTrendBucket(action);
+      ui.page = 'stats';
+      ui.statsTab = 'trends';
+      if (TREND_METRICS.includes(action.metric)) ui.metric = action.metric;
+      bodyScroll = 0;
+      return paint();
+    }
+    if (action.kind === 'period') {
+      if (PERIODS.includes(action.period)) ui.period = action.period;
+      return paint();
+    }
+    if (action.kind === 'metric') {
+      if (TREND_METRICS.includes(action.metric)) ui.metric = action.metric;
+      return paint();
+    }
+    if (action.kind === 'top') { bodyScroll = 0; ui.detailScroll = 0; return paint(); }
+    if (action.kind === 'end') return scrollToEnd();
     if (action.kind === 'edit') { void runEdit(); return undefined; }
     if (action.kind === 'quit') return finish();
     return undefined;
+  };
+  // Only list rows light up — a run in a table, a step or phase in a plan.
+  // Chart columns, tiles, meters, tabs and toggles are click targets too, but
+  // reverse-painting a chart row destroys its colours and tells the reader
+  // nothing a cursor would not.
+  const HOVER_KINDS = new Set(['run', 'step']);
+  const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
+    && region.action && HOVER_KINDS.has(region.action.kind));
+  const hoverMove = (mouse) => {
+    const region = regionAt(mouse.x, mouse.y) ?? null;
+    const next = region ? { y: region.y, x1: region.x1, x2: region.x2 } : null;
+    const same = (next == null && hover == null)
+      || (next && hover && next.y === hover.y && next.x1 === hover.x1 && next.x2 === hover.x2);
+    if (same) return undefined;
+    hover = next;
+    if (lastFrameText != null) writeFrame(lastFrameText);
+    return undefined;
+  };
+  const handleMouse = (mouse) => {
+    if (mouse.kind === 'wheel-up') return scrollActivePage(3);
+    if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
+    if (mouse.kind === 'move') return hoverMove(mouse);
+    if (mouse.kind !== 'press') return undefined;
+    const action = regions.find((region) => mouse.y === region.y
+      && mouse.x >= region.x1 && mouse.x <= region.x2)?.action;
+    return runAction(action);
   };
   // Every way out releases the mouse before it leaves the alternate screen,
   // so the terminal is never left reporting clicks to a dead dashboard.
@@ -2348,17 +4536,26 @@ export async function runDashboard(bullswarmDir, {
     input.pause?.();
     input.removeListener('data', onData);
     output.removeListener?.('resize', onResize);
-    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    output.write(`${ESC}?1006l${ESC}?1003l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
     resolveDashboard?.(0);
   };
   const moveVertical = (delta) => {
-    if (ui.page === 'home' || !selectedRunId) {
-      selected = clamp(selected + delta, 0, Math.max(0, rows.length - 1));
-      selectedRunId = rows[selected]?.runId ?? selectedRunId;
+    if (ui.page === 'runs') {
+      const listed = lastFrameResult?.runRows ?? [];
+      const at = listed.findIndex((row) => row.runId === selectedRunId);
+      const target = listed[clamp(at + delta, 0, Math.max(0, listed.length - 1))];
+      if (target) {
+        selectedRunId = target.runId;
+        const capacity = Math.max(1, (lastFrameResult?.body.end ?? 1) - (lastFrameResult?.body.offset ?? 0));
+        if (target.y <= bodyScroll) bodyScroll = target.y - 1;
+        else if (target.y > bodyScroll + capacity) bodyScroll = target.y - capacity;
+      } else bodyScroll = Math.max(0, bodyScroll + delta);
+      if (delta > 0) loadMoreHistory();
       return paint();
     }
-    if (ui.page === 'usage' || ui.page === 'help') {
+    if (ui.page !== 'run' && ui.page !== 'step') {
       bodyScroll = Math.max(0, bodyScroll + delta);
+      if (delta > 0) loadMoreHistory();
       return paint();
     }
     const row = detailRow(bullswarmDir, selectedRunId);
@@ -2433,8 +4630,10 @@ export async function runDashboard(bullswarmDir, {
   };
   /** Enter: open the selected run, then its agents, then the selected step. */
   const drillIn = () => {
-    if (ui.page === 'home') {
-      selectedRunId = rows[selected]?.runId ?? selectedRunId;
+    if (ui.page === 'runs' || ui.page === 'home') {
+      selectedRunId = ui.page === 'runs'
+        ? (lastFrameResult?.runRows?.find((row) => row.runId === selectedRunId) ?? lastFrameResult?.runRows?.[0])?.runId
+        : rows[selected]?.runId ?? activeRuns[0]?.runId ?? selectedRunId;
       if (!selectedRunId) {
         message = dashboardFilter === 'active'
           ? 'No active workflow selected · press a to browse recent runs.'
@@ -2443,7 +4642,7 @@ export async function runDashboard(bullswarmDir, {
       }
       return openRun(selectedRunId);
     }
-    if (ui.page === 'usage' || ui.page === 'help') return paint();
+    if (ui.page !== 'run' && ui.page !== 'step') return paint();
     if (ui.orchestratorDetail) { message = 'Planner detail is the deepest level.'; return paint(); }
     if (ui.workflowVerbose) { message = 'Technical details are the deepest level.'; return paint(); }
     if (ui.focus === 0) {
@@ -2478,7 +4677,7 @@ export async function runDashboard(bullswarmDir, {
     // key. The wheel moves whatever window the page is scrolling.
     const mouse = parseMouse(chunk);
     if (mouse) handleMouse(mouse);
-    const key = chunk.replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, '');
+    const key = chunk.replace(MOUSE_SEQUENCE, '');
     if (!key) return;
     if (filterEditing) {
       if (key === '\r' || key === '\n') {
@@ -2486,13 +4685,13 @@ export async function runDashboard(bullswarmDir, {
         message = query ? `Showing workflows matching “${query}”.` : null;
         return refresh();
       }
-      if (key === '\u001b' || key === '\u0003') {
+      if (keyPressed('out', key) || key === '') {
         filterEditing = false;
         query = '';
         message = null;
         return refresh();
       }
-      if (key === '\u007f' || key === '\b') {
+      if (key === '' || key === '\b') {
         query = query.slice(0, -1);
         return refresh();
       }
@@ -2502,9 +4701,11 @@ export async function runDashboard(bullswarmDir, {
       }
       return;
     }
+    // A pending stop still takes y; the Help page says so, and History's own
+    // y is out of reach only while the question is on the screen.
     if (ui.confirmCancel) {
       if (key === 'y' || key === 'Y') return requestSelectedCancel();
-      if (key === 'n' || key === 'N' || key === '\u001b' || key === '\u0003') {
+      if (key === 'n' || key === 'N' || key === '' || key === '') {
         ui.confirmCancel = false;
         message = 'Workflow left running.';
         return paint();
@@ -2512,15 +4713,21 @@ export async function runDashboard(bullswarmDir, {
       return;
     }
     if (keyPressed('detach', key)) return finish();
-    if (key === 'r') { message = null; return refresh(); }
-    if (key === '?' || key === 'h') { ui.page = 'help'; ui.focus = 0; bodyScroll = 0; return paint(); }
-    if (key === 'u') { ui.page = 'usage'; ui.focus = 0; bodyScroll = 0; return paint(); }
-    if (ui.page === 'usage') {
-      if (key === 'l') return showRungs('lane');
-      if (key === 'p') return showRungs('provider');
-      if (key === 'e') { void runEdit(); return; }
-    }
-    if (ui.page === 'home') {
+    if (keyPressed('copy', key)) return copyScreen();
+    if (keyPressed('home', key)) return openPage('home');
+    if (keyPressed('help', key)) return openPage('help');
+    if (keyPressed('runs', key)) return openPage('runs');
+    if (keyPressed('budget', key)) return openPage('budget');
+    if (keyPressed('stats', key)) return openPage('stats');
+    if (keyPressed('history', key)) return openPage('history');
+    if (keyPressed('fleet', key)) return openPage('fleet');
+    if (keyPressed('period', key)) return nextPeriod();
+    if (keyPressed('nextTab', key)) return nextTab();
+    if (keyPressed('cycleWorkflow', key)) return switchWorkflow(1);
+    if (keyPressed('top', key)) { bodyScroll = 0; ui.detailScroll = 0; return paint(); }
+    if (keyPressed('end', key)) return scrollToEnd();
+    if (ui.page === 'fleet' && key === 'e') { void runEdit(); return; }
+    if (ui.page === 'runs') {
       if (key === '/') {
         filterEditing = true;
         message = null;
@@ -2529,36 +4736,36 @@ export async function runDashboard(bullswarmDir, {
       if (key === 'a') {
         dashboardFilter = dashboardFilter === 'active' ? 'all' : 'active';
         message = dashboardFilter === 'active' ? 'Showing active workflows.' : 'Showing active and recent workflows.';
+        ensureCatalog();
         return refresh();
       }
-      if (key === 'i') return runInstall();
     }
+    if (ui.page === 'help' && key === 'i') return runInstall();
     if (/^[1-9]$/.test(key)) {
-      const run = allRows.filter((row) => row.ongoing)[Number(key) - 1];
+      const run = ui.page === 'runs' ? lastFrameResult?.runRows?.[Number(key) - 1] : activeRuns[Number(key) - 1];
       if (run) return openRun(run.runId);
+      message = `no run ${key} in flight`;
+      return paint();
     }
     if (keyPressed('out', key)) return moveOut();
-    if (key === '\u001b[D') return moveOut();
-    if (keyPressed('nextWorkflow', key)) return switchWorkflow(1);
-    if (keyPressed('previousWorkflow', key)) return switchWorkflow(-1);
     if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();
     if (keyPressed('up', key)) return moveVertical(-1);
     if (keyPressed('down', key)) return moveVertical(1);
-    const runPage = ui.page === 'run' || ui.page === 'step';
-    const timelineScroll = runPage && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
-    if (key === '\u001b[5~') {
+    const runPageOpen = ui.page === 'run' || ui.page === 'step';
+    const timelineScroll = runPageOpen && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
+    if (keyPressed('pageUp', key)) {
       if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll += 8; return paint(); }
-      if (runPage) ui.detailScroll = Math.max(0, ui.detailScroll - 8);
+      if (runPageOpen) ui.detailScroll = Math.max(0, ui.detailScroll - 8);
       else bodyScroll = Math.max(0, bodyScroll - 8);
       return paint();
     }
-    if (key === '\u001b[6~') {
+    if (keyPressed('pageDown', key)) {
       if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
-      if (runPage) ui.detailScroll += 8;
-      else bodyScroll += 8;
+      if (runPageOpen) ui.detailScroll += 8;
+      else { bodyScroll += 8; loadMoreHistory(); }
       return paint();
     }
-    if (key === 'o' && runPage) {
+    if (key === 'o' && runPageOpen) {
       const row = detailRow(bullswarmDir, selectedRunId);
       const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
       if (model.orchestrator.autonomous) {
@@ -2571,7 +4778,7 @@ export async function runDashboard(bullswarmDir, {
       } else message = 'This workflow has no autonomous orchestrator thread.';
       return paint();
     }
-    if (key === 't' && runPage && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
+    if (key === 't' && runPageOpen && output.columns < 100 && !ui.orchestratorDetail && !ui.workflowVerbose) {
       ui.mobileTimeline = !ui.mobileTimeline;
       ui.focus = 0;
       ui.controlSelected = false;
@@ -2579,14 +4786,14 @@ export async function runDashboard(bullswarmDir, {
       message = null;
       return paint();
     }
-    if (key === 'v' && runPage) {
+    if (key === 'v' && runPageOpen) {
       if (ui.orchestratorDetail) ui.orchestratorVerbose = !ui.orchestratorVerbose;
       else ui.workflowVerbose = !ui.workflowVerbose;
       ui.detailScroll = 0;
       message = null;
       return paint();
     }
-    if (key === 'c' && runPage) {
+    if (key === 'c' && runPageOpen) {
       ui.confirmCancel = true;
       message = null;
       return paint();
@@ -2600,13 +4807,16 @@ export async function runDashboard(bullswarmDir, {
       paint();
     }
   };
-  const onResize = () => paint();
+  const onResize = () => { lastPaintedFrame = null; paint(); };
   input.setRawMode?.(true);
   input.resume();
   // SGR mouse reporting travels with the alternate screen: on for the whole
   // session, off again in finish() and around the setup hand-off.
-  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1003h${ESC}?1006h`);
   readIntegration();
+  readIndex();
+  readPrices();
+  if (token) ensureCatalog();
   paint();
   let timer = setInterval(refresh, refreshMs);
   let spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
@@ -2651,4 +4861,3 @@ export function dashboardJson(bullswarmDir, { all = false, token = null, cancel 
   const runs = all ? listRuns(bullswarmDir) : dashboardRows(bullswarmDir);
   return { action: 'list', count: runs.length, runs };
 }
-

@@ -3,6 +3,60 @@
 // Users provide intent, not a workflow graph. Bullswarm supplies the bounded
 // orchestration contract and lets the selected planner expand the durable plan.
 
+import { join } from 'node:path';
+import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { projectOf } from '../lib/project.js';
+
+export const GOAL_PROJECT_SCHEMA_VERSION = 'bullswarm.workflow.project.v1';
+
+// Project identity is resolved once, at goal time, and kept beside the goal
+// document. Resolving it later — at finish, or during `workflow reindex` —
+// can answer differently or not at all: a branch worktree gets deleted, a
+// remote gets renamed, a checkout moves. The run is stamped with what was
+// true when it was launched.
+//
+// It is a sibling file rather than a field of goal.json because the V2 goal
+// document is a closed, hashed schema (`intentId` is a digest of `intent`,
+// and src/workflow/v2-state.js rejects any unknown key); adding a field there
+// is a schema change in a file this territory does not own. See the report.
+export function goalProjectPath(runDir) {
+  return join(runDir, 'project.json');
+}
+
+/**
+ * Record the project a run's working directory belongs to. Never throws: a
+ * launch must not fail because git is missing or the record could not be
+ * written.
+ *
+ * @returns {{schemaVersion: string, name: string|null, remote: string|null,
+ *            toplevel: string|null, cwd: string, recordedAt: string}|null}
+ */
+export function recordGoalProject(runDir, cwd, { now = () => new Date().toISOString() } = {}) {
+  try {
+    const identity = projectOf(cwd);
+    const document = {
+      schemaVersion: GOAL_PROJECT_SCHEMA_VERSION,
+      name: identity.name,
+      remote: identity.remote,
+      toplevel: identity.toplevel,
+      cwd: typeof cwd === 'string' ? cwd : null,
+      recordedAt: now(),
+    };
+    writeJsonAtomic(goalProjectPath(runDir), document);
+    return document;
+  } catch {
+    return null;
+  }
+}
+
+/** What a run recorded at goal time, or null when it recorded nothing. */
+export function readGoalProject(runDir) {
+  const document = readJsonSafe(goalProjectPath(runDir), null);
+  if (!document || typeof document !== 'object') return null;
+  if (document.schemaVersion !== GOAL_PROJECT_SCHEMA_VERSION) return null;
+  return document;
+}
+
 function compactRequirement(text) {
   // Requirements are an acceptance contract, not display copy. Truncating
   // them can remove the decisive clause while leaving an apparently valid

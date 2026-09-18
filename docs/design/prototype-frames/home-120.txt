@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                         Wed 16 Sep · 18:41 · 0m old · 1–37/38
+                                                                                                                        
+ ── today ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ finished            verified           spent                     licence today                                         
+    4  ▂▅▃▇▆▄▅       75%  ▄▆▅▇▇▆▇      $6.40  ▁▃▂▆▅▃▄          claude  ▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇ 9%                          
+ ✓ 3 · ✗ 1 · 2 run    3 of 4 · today     ≈ $41.00 API · 6.4×         codex   ▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇ 5%                    
+ click a tile for its chart                                                                                             
+                                                                                                                        
+ ── running ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ● 1.mbpzj2  project-a · sample text …                                                             phase 2/6 · 3/8 · 16m
+   ✓──✓──✓──▶──▶──○──○──○  widget-lib@cmd ▇▇▇▇▇▇▇▇▇░ 15m/17m   inbox-api@codex ▇▇▇▇░░░░░░ 4m/11m            2.7% · $1.05
+ ● 2.ywnyga  project-a · sample text …                                                             phase 1/2 · 0/2 · 11m
+   ▶──○                  tidy@claude ▇▇▇▇▇▇░░░░ 11m/17m                                                     0.8% · $0.55
+                                                                                                                        
+ ── budget · this week ─────────────────────────────────────────────────────────────────────────────────────────────────
+ claude-code   ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇   37% used   $18.50 of $50        5 medium runs fit   
+               Resets Sep 21 at 8pm (Asia/Hong_Kong) · 28% elapsed · on track                                           
+ codex         ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇   29% used   $14.50 of $50        5 medium runs fit   
+               Resets Sep 21 at 8pm (Asia/Hong_Kong) · 48% elapsed · slow                                               
+ grok          ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏▇▇▇▇▇▇▇▇▇▇▇▇   77% used   $57.75 of $75        1 medium run fits   
+               Resets Sep 21 at 8pm (Asia/Hong_Kong) · 74% elapsed · on track                                           
+ command-code  ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▏   93% used   65.1 of 70 credits   low lane only       
+               Resets Sep 17 at 11am (Asia/Hong_Kong) · 98% elapsed · on track                                          
+                                                                                                                        
+ ── last 7 days ─────────────────────────────────────────────────────────────── All time · Last 7 days · Last 30 days ──
+ spent per day                         by pool                  by model                by project     click a bar for …
+    $15┤     ▄▄▄                       claude   ████████ 41%    opus-5   ██████████ 52%  bullswarm ███████ 11           
+    $10┤ ▄▄▄ ███         ███     ▄▄▄   claude:w █████ 24%       luna     ████ 21%        project-a ████ 7               
+     $5┤ ███ ███ ███     ███ ███ ███   codex    ████ 18%        grok-4.6 ███ 15%         aks       ██ 3                 
+     $0┼ T   F   S   S   M   T   W     grok ██ 12% · cmd █ 5%   deepseek █ 8%            2 more…                        
+                                                                                                                        
+ Workflows: 23 · verified 19 (83%)     Favorite pool: claude-code      Spent: $38.20 (≈ $296.00 API · 7.7×)             
+ Busiest project: bullswarm (11)       Favorite model: Opus 5          Median run: 38m · 6 steps                        
+                                                                                                                        
+ Your 23 runs this week did $296.00 of API work for $38.20                                                              
+                                                                                                                        
+ ── recent ──────────────────────────────────────────────────────────────────────────────────────────────── history › ──
+ ✓ gcxzza  bullswarm · docs site rebuilt · 5/5 · 41m · $2.10 (≈ $16.00 API)                                   2h00m ago 
+ ✗ 2v57ri  project-a-platform · tidy · failed at accept after 2 attempts · 22m · $0.90 (≈ $6.00 API)            35m ago 
+ [ 1.mbpzj2 ] [ 2.ywnyga ]                         r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q

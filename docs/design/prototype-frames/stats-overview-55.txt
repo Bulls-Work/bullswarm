@@ -1,0 +1,26 @@
+ Home  Runs  Budget  Stats  History                    
+ Overview  Trends  Pools  Models  Projects             
+                                                       
+      Jul      Aug      Sep                            
+ Mon  · ·         ·         ·                          
+ Wed  ·     ·         ·         ·                      
+ Fri  · ·       ·         ·         ·                  
+ Less         More   workflows per day                 
+                                                       
+ All time · Last 7 days · Last 30 days                 
+                                                       
+ Workflows: 23 · verified 83%                          
+ Agent time: 187h · Spent: $38.20                      
+ Active days: 55 / 123 · streak 3                      
+ Favorite pool: claude-code (41%)                      
+ Favorite model: Opus 5 (52%)                          
+ Busiest project: bullswarm (11)                       
+                                                       
+ Your longest run would have taken a person about 3 wo…
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+                                                       
+ [ 1.mbpzj2 ] [ 2.ywnyga ]           [Top] [End] [Help]

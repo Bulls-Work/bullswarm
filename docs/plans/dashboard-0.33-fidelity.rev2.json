@@ -1,0 +1,338 @@
+{
+ "schemaVersion": "bullswarm.workflow.revision.v1",
+ "baseRevision": 1,
+ "summary": "First acceptance pass failed requirements 1, 2, 4, 5, 7, 9 and 11 with exact evidence: phone pages two rows per item, Step task text crowding out output/artifacts, no indeterminate per-step bar, $ axis without \u2248, Stats/Fleet capped below the 200-column frame, Models chart and Projects sparklines skipped although the rollup rows carry per-model minutes and per-project runs per day, docs claiming a phone layout the product lacks. Add stats-series and phone-and-step writers, integrate-2, and re-verify.",
+ "rerun": [],
+ "steeringIds": [],
+ "program": {
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+   {
+    "id": "shared-kit",
+    "kind": "implement",
+    "effort": "high",
+    "purpose": "The palette roles, the column layout helper and the compact phone row every page composes from",
+    "dependsOn": [],
+    "affects": [
+     "requirement-8",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/dash-kit.js",
+     "src/workflow/usage-view.js",
+     "tests/dash-kit.test.js",
+     "tests/workflow-usage-view.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) deliver the shared render kit the visual-fidelity pass composes from. Read docs/plans/dashboard-0.33-fidelity.md first \u2014 work item F1, territory shared-kit, section 3 and section 4 \u2014 then docs/design/dashboard-prototype.html (the approved prototype, whose CSS carries its colour tokens), docs/design/prototype-frames/README.md and the .tagged.txt frames for the roles actually in use, and the files you own: src/workflow/dash-kit.js, src/workflow/usage-view.js, tests/dash-kit.test.js, tests/workflow-usage-view.test.js. You own exactly those four files and no other.\n\nDeliver four things.\n\n1. The palette, extended \u2014 not a second palette. METER_COLORS in src/workflow/usage-view.js gains the prototype's purple, orange, cyan and grey/dim roles plus a four-shade heat ramp, with the values lifted from the prototype's own CSS and named by role. Do not invent a value, and do not paint a role in a place the prototype does not use it. Keep #b6bd73, #e9c880, #bf6c69 and the #3a3a3a track exactly as they are: mods/bullswarm/hooks/pool-rows.tsx holds its own copy of them for the Claude Mod pane, so name that path and the values it copies in your report for the integrator. Replace the two-step track-to-amber heat blend at dash-kit.js:571 with the four-shade ramp, and keep heatRow's empty-cell handling for a null value.\n\n2. columns(cells, { width, gap = 2 }) \u2014 N cells of { rule, rows } laid across the width, returning one text block of equal-height columns, no column and no line past width. Home's four-column breakdown, Run's budget/live/so-far triptych and Stats Overview's three-column figure grid are the same problem in three places, so this is the one helper they all call. Report its exact signature and the shape it returns.\n\n3. compactRow(fields, { width }) \u2014 one row from a label, a value and a trailing metric with an elastic middle field that shrinks first (cut() before anything is dropped) so a person, a pool, a duration and a cost fit on one phone row. History's two-rows-per-run, Home's two-rows-per-tile and Budget's seventeen-rows-per-pool are the same problem in three places.\n\n4. meterBar(usedPct, elapsedPct, width) paints a \u2587 texture with a \u258f elapsed mark over the track, the shape mods/bullswarm/hooks/pool-rows.tsx:30 already draws, instead of the full-width band of coloured blanks it paints today (which is invisible in a terminal without colour). Its exported name and signature stay as they are.\n\nKeep every existing export and name in both files: rule, tabsRow, periodToggle, shareBar, sparkline, progressBar, stackedBars, columnBars, heatRow, niceStep, cut, and usageLines, poolSummaryLines, meterBar, paceWord, severityColor, poolWindows, untilText, loadUsage, parseMouse. The Claude Mod pane and tests/workflow-usage-view.test.js read them, and usageLines must keep returning the lines it returns today. Every atom stays width-driven, honours asciiGlyphsPreferred() from src/lib/glyphs.js, and never paints past width for any width from 32 to 200 columns.\n\nTests: extend tests/dash-kit.test.js \u2014 every export at 32, 54, 55, 100 and 200 columns; the ASCII fallback for each; empty and null input with no NaN and no throw; columns() with one, two and four cells whose every line fits the width and whose regions sit inside their line; compactRow with a middle field far wider than the width. Extend tests/workflow-usage-view.test.js \u2014 METER_COLORS carries the new roles, and usageLines still renders what it renders today. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "dashboard-pages",
+    "kind": "implement",
+    "effort": "high",
+    "purpose": "Home, Run and Step re-laid-out and coloured, and the Help page grouped by purpose",
+    "dependsOn": [
+     "shared-kit"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-7",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/dashboard.js",
+     "tests/workflow-dashboard.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) re-lay-out Home, Run, Step and Help to the approved prototype. Read the dependency output listed with this task \u2014 the shared-kit writer's report, which names the exact palette roles and the exact signatures of columns() and compactRow() \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work items F2, F3 and F8b, and section 3) before writing code. You own exactly src/workflow/dashboard.js and tests/workflow-dashboard.test.js, and no other file.\n\nFrames to match, in docs/design/prototype-frames/: home-55.txt and home-120.txt, run-55.txt, run-120.txt, step-55.txt, step-120.txt, help-55.txt, help-120.txt, each with its .tagged.txt twin carrying the colour and click roles; docs/design/prototype-shots/ holds the prototype screenshots. The prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules.\n\nWhat moves.\n\nHome (homePage, around line 2108). The 7-day breakdown becomes four columns on one row band \u2014 spent per day, by pool, by model, by project \u2014 drawn with the kit's columns(), not one stacked full-width list; the cause of today's stacking is the single line `const barWidth = Math.max(4, width - label - 12);` (line 2253 as the file stands today), which lets a bar claim every remaining column. Bars are proportional to the percentage printed beside them, not to row.minutes/top while printing a different number. Add the prototype's `\u2500\u2500 budget \u00b7 this week \u2500\u2500` block: one meter row plus one dim reset/pace row per pool, the money column rendering a blank with the declare-a-price reason where no subscription price is declared. Running rows carry the plan strip, both per-step bars and the cost on two rows instead of four rows with no bars. Add the three-column summary band (workflows, verified, favourite pool, spent / busiest project, favourite model, median run) and the closing sentence. Colour the page as the tagged frame does: sparklines orange, \u2713 green and \u2717 red, run markers cyan, by-pool bars green, by-model purple, by-project orange, spent-per-day cyan, key figures orange, per-run share and cost purple, every secondary line dim. At 55 columns each tile is one row with its context inline (the prototype spends 4 rows where the product spends 10), and the long `money:` note is shortened rather than wrapped to nothing.\n\nRun and Step (runPage around 2361, stepPage around 2454). Replace the 31 rows that begin with a box-drawing character with none: flat rules, and the prototype's budget / live / so far triptych as three rules on one row band (three cells of about 36 columns, via the kit's columns()). The plan strip gains branch topology (\u2500\u252c\u2500 \u2026 \u2500\u2518) where the plan has real fan-out, per-step progress bars, and the pool/model row under the steps; keep the linear \u25b6\u2500\u2500\u25cb as the fallback where there is no fan-out. Step becomes a label/value table \u2014 Status, Pool, Purpose, Route, Time \u2014 then `\u2500\u2500 budget \u2500\u2500`, `\u2500\u2500 task \u00b7 first lines \u2500\u2500`, `\u2500\u2500 output \u2500\u2500` with a live sparkline in the rule, and `\u2500\u2500 artifacts \u2500\u2500`. Stop replaying the goal prompt inside the timeline panel, and say `no expected duration recorded` once rather than twice. ETA and spend keep their blanks and their reasons: these runs record no expected duration and no per-attempt estimate. Colour: running cyan, \u2713 green, \u25b6 cyan, \u25cb dim, per-step bars green, live sparklines cyan, budget percentages purple, phase rules dim.\n\nHelp (helpPage around 2554). Group keys that share a purpose onto one row \u2014 `r b s y f  \u2192  Runs \u00b7 Budget \u00b7 Stats \u00b7 History \u00b7 Fleet`, `\u2191 \u2193  j k  \u2192  scroll one line` \u2014 bold the key names, and drop the ~55 rows to about 30. Remove the claim that Budget has sub-tabs: it does not.\n\nTwo things to preserve for the Claude Mod pane. `bullswarm workflow tui <id> --overview` must still parse under mods/bullswarm/hooks/overview.ts parseOverview, which reads `\u2500\u2500 ` section rules and `HH:MM ` milestones and tolerates unboxed lines \u2014 keep those two shapes in whatever frame that command prints, and say in your report exactly what you changed around them. The Runs list page (runsPage around 2301) has no prototype frame: keep its behaviour and structure, give it only the shared vocabulary (section rules, the palette, the marks), and say what you touched. src/workflow/dash-kit.js, src/workflow/usage-view.js and the other view modules are not yours: consume their exports and report anything missing.\n\nSee the product the way the frames were captured. Build a fixture home: `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`. Then for each width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid <key>` (Home on launch, 1 then Enter for Run, Tab for Step, h for Help \u2014 confirm each against DASHBOARD_KEYS), read text with `tmux capture-pane -p -t fid`, and render colour to PNG with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Read each PNG beside its prototype frame before you call the page done. Never write to the real ~/.bullswarm.\n\nTests: tests/workflow-dashboard.test.js keeps its current coverage green and adds \u2014 no painted line past the width and no blank page at 120x40, 55x26 and 200x50; the four-column breakdown band lays out at 120 and 200 columns and degrades to one column at 55; the budget block prints no bare number where no price is declared; Help names every key the shell runs. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "stats-pages",
+    "kind": "implement",
+    "purpose": "Stats Overview and Trends, then Pools, Models and Projects, in the prototype's composition and colour",
+    "dependsOn": [
+     "shared-kit"
+    ],
+    "affects": [
+     "requirement-4",
+     "requirement-5",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/stats-view.js",
+     "tests/workflow-stats-view.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) re-compose the Stats page to the approved prototype. Read the dependency output listed with this task \u2014 the shared-kit writer's report, which names the exact palette roles and the exact signatures of columns() and compactRow() \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work items F4 and F5, and section 3) before writing code. You own exactly src/workflow/stats-view.js and tests/workflow-stats-view.test.js, and no other file. Both Stats page families live behind the one statsLines() signature, so both are yours; that is why this action carries two numbered requirements.\n\nFrames to match, in docs/design/prototype-frames/: stats-overview-55.txt, stats-overview-120.txt, stats-trends-55.txt, stats-trends-120.txt, stats-pools-55.txt, stats-pools-120.txt, stats-models-55.txt, stats-models-120.txt, stats-projects-55.txt, stats-projects-120.txt, each with its .tagged.txt twin carrying the colour roles; docs/design/prototype-shots/ holds the prototype screenshots. The prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules.\n\nOverview. The heatmap is sized to the history that exists \u2014 V2 history spans 15 distinct days, so the prototype's months-wide grid would render three-quarters empty \u2014 with month labels and the prototype's four-shade ramp in place of today's 5 cells per weekday row and two-step olive blend. The nine single-column figure rows become three columns of four, and the four figures the product lacks come back where the data is real: most active day, current streak, longest streak, longest run (with its short id). Keep the `\u2248`/basis label on the spend figure. Adopt the prototype's words: Total agent time becomes Agent time, and the pool/model labels take the prototype's UK spelling (Favourite pool, Favourite model).\n\nTrends. The stacked columns are coloured per pool \u2014 with eight series drawn in one colour today, the chart is unreadable and its legend's marks are indistinguishable. Draw the running-total row the chart currently only names, cap the legend, and put the prototype's words on the metric chips (runs finished, verified share, spent) with a licence-used metric only where the meter history reaches. Every bar keeps its region so the existing click to drill still works.\n\nPools. Replace the seven identical full-width \u2588 rows, one per day, with a real licence-per-day line chart: a y axis with real ticks, severity colour per segment, and the prototype's \u258f reset marker. Three pools legitimately show `meter unavailable` \u2014 keep that blank and its dotted track. Keep the live meters beside the chart and restore the pace word (`37% \u00b7 on track`) rather than `48% used/37% elapsed`.\n\nModels. Add the spend-per-day line chart the page has none of, and give each model row a coloured \u25cf that keys it to its line in the chart above; restore the ok-rate beside the attempt count. The `apiEquivalentUsd is null for every model` note stays, once, at the page foot.\n\nProjects. A sparkline beside each project name and one context row per project (`11 runs \u00b7 \u2713 91% \u00b7 \u2248 $5.10 API \u00b7 38m median`) instead of three; the \u2248/basis label shrinks but never disappears.\n\nWidths: every atom is width-driven and nothing paints past the width at 32 to 200 columns; at 55 columns choose shorter labels rather than clipping, and never drop the \u2248 or the basis to make something fit.\n\nSee the product the way the frames were captured. Build a fixture home: `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`. Then for each width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid <key>` (s for Stats, Tab for each sub-tab \u2014 confirm against DASHBOARD_KEYS), read text with `tmux capture-pane -p -t fid`, and render colour to PNG with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Read each PNG beside its prototype frame before you call a tab done. Never write to the real ~/.bullswarm.\n\nTests: tests/workflow-stats-view.test.js pins every tab and period at 54, 55, 80, 100 and 200 columns with no line past the width and no blank page; a period with no data renders its stated empty state rather than an invented axis; a day holding only legacy runs prints no money for them; a legend with more series than the width allows is capped rather than truncated mid-glyph; and the \u2248 appears wherever the prototype's `$` appears. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "medium",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "budget-page",
+    "kind": "implement",
+    "purpose": "Budget re-composed to the prototype, and the phone page freed from footnotes",
+    "dependsOn": [
+     "shared-kit"
+    ],
+    "affects": [
+     "requirement-3",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/budget-view.js",
+     "tests/workflow-budget-view.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) re-compose the Budget page to the approved prototype. Read the dependency output listed with this task \u2014 the shared-kit writer's report, which names the exact palette roles and the textured meterBar it now paints \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work item F6, and section 3) before writing code. You own exactly src/workflow/budget-view.js and tests/workflow-budget-view.test.js, and no other file. src/workflow/usage-view.js belongs to the shared-kit writer: consume its meterBar and severityColor, and report anything you need changed there.\n\nFrames to match, in docs/design/prototype-frames/: budget-55.txt and budget-120.txt, with their .tagged.txt twins for the colour roles; docs/design/prototype-shots/ holds the prototype screenshots. The prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules.\n\nWhat moves. The percentage returns to the meter row \u2014 `% used` appears zero times on the page today and survives only inside a share label \u2014 and the meter is the kit's textured \u2587 bar with its \u258f elapsed mark rather than a full-width band of coloured blanks. `Licence meter` loses its own row. Each pool block comes down to the prototype's seven rows: plan and window, the meter, the reset and pace line, the money line, the composition bar with its legend, and the biggest workflows on one row rather than one per row.\n\nThe six page footnotes and the per-pool subscription reason \u2014 identical for all six pools \u2014 become one page footer, which is the whole fix for the phone: one 26-row screen shows 1 pool and 10 rows of footnotes pinned to the bottom today, against the prototype's 3 complete pools. Nothing is deleted from the page that carries information; it is said once instead of six times.\n\nMoney keeps the product's rules exactly: a declared price prints at the subscription rate, an undeclared one prints a blank with the reason and the command that declares it, the API-equivalent line always carries \u2248 and the words API-equivalent estimate, and no multiple of a subscription cost is ever printed. The period control stays the product's p cycle: the meter history keeps about 10 days, so there is no This month or All time tab. The composition bar's \u2593 workflows segment takes the prototype's purple.\n\nWidths: the meter band is capped at 64 columns with the percentage beside it, so at 200 columns the extra width goes to the biggest-workflows row instead of to bar length; nothing paints past the width from 32 to 200 columns, and at 55 columns the pool block keeps the prototype's one-row form rather than wrapping.\n\nSee the product the way the frames were captured. Build a fixture home: `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`. Then for each width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid b` (confirm against DASHBOARD_KEYS), read text with `tmux capture-pane -p -t fid`, and render colour to PNG with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Read each PNG beside its prototype frame, and count the pools visible on one 55x26 screen against the prototype's three. Never write to the real ~/.bullswarm.\n\nTests: tests/workflow-budget-view.test.js pins no painted line past the width at 32, 54, 55, 80, 100 and 200 columns; the percentage appears on the meter row; a pool with no declared price prints no bare number and no multiple; the share bar keeps workflows and rest with no `you` term; and the page footer states the undeclared-price reason once for six pools. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "medium",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "history-page",
+    "kind": "implement",
+    "purpose": "History in fixed columns with the result mark back and one row per run on the phone",
+    "dependsOn": [
+     "shared-kit"
+    ],
+    "affects": [
+     "requirement-6",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/history-view.js",
+     "tests/workflow-history-view.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) re-compose the History page to the approved prototype. Read the dependency output listed with this task \u2014 the shared-kit writer's report, which names the exact palette roles and the exact signature of compactRow() \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work item F7, and section 3) before writing code. You own exactly src/workflow/history-view.js and tests/workflow-history-view.test.js, and no other file.\n\nFrames to match, in docs/design/prototype-frames/: history-55.txt and history-120.txt, with their .tagged.txt twins for the colour and click roles; docs/design/prototype-shots/ holds the prototype screenshots. The prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules.\n\nWhat moves. The rows take fixed columns \u2014 mark, id, project, summary, then duration, cost and time right-aligned \u2014 instead of today's flow layout, where project and goal run together and the ellipsis lands in a different column on every row. The \u2713/\u2717 result mark returns to the row start, and marks and day totals take their colour from the shared palette (\u2713 green, \u2717 red, running cyan, the day's total in the prototype's orange, secondary text dim). The repeated `API-equivalent estimate` \u2014 16 characters on every one of 85 rows, and again on the day rule \u2014 becomes the prototype's `(\u2248 $X API)`, keeping the \u2248 and never appearing where the run recorded no estimate.\n\nAt 55 columns the page is one row per run, not two: the product's own pager proves 2 rows per run today (1-22/170 for 85 runs) and 3 for a running run, against the prototype's 1-23/54 with 13 runs on one screen. Use the kit's compactRow() so the elastic field shrinks rather than wrapping, and keep the honest states \u2014 `unknown project`, `\u25a0 interrupted \u00b7 no result recorded` \u2014 in their one-row form rather than removing them. The day rule keeps the prototype's shape and its coloured total. The existing regions and actions (a click on a row opens that run) stay exactly as they are, so the shell needs no change.\n\nWidths: nothing paints past the width from 32 to 200 columns, and the fixed-column layout holds at 120 and 200 columns without a column collapsing.\n\nSee the product the way the frames were captured. Build a fixture home: `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`. Then for each width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid y` (confirm against DASHBOARD_KEYS), read text with `tmux capture-pane -p -t fid`, and render colour to PNG with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Read each PNG beside its prototype frame, and count the runs visible on one 55x26 screen against the prototype's thirteen. Never write to the real ~/.bullswarm.\n\nTests: tests/workflow-history-view.test.js pins no line past the width at 32, 54, 55, 80, 100 and 200 columns; one row per run at 55 columns for a finished, a running and a legacy run; a run with no recorded estimate prints no money; and the fixed columns hold their x positions across rows at 120 columns. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "medium",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "fleet-page",
+    "kind": "implement",
+    "purpose": "Fleet's one-line sub-tab row and cyan model names, from the kit it currently ignores",
+    "dependsOn": [
+     "shared-kit"
+    ],
+    "affects": [
+     "requirement-7",
+     "requirement-9",
+     "requirement-10"
+    ],
+    "ownedFiles": [
+     "src/workflow/fleet-view.js",
+     "tests/workflow-fleet-view.test.js"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) bring the Fleet page the last of the way to the approved prototype. Read the dependency output listed with this task \u2014 the shared-kit writer's report, which names the exact palette roles and the exact signatures of the layout helpers \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work item F8 and section 3, which records that Fleet is the page closest to the prototype and needs the least work) before writing code. You own exactly src/workflow/fleet-view.js and tests/workflow-fleet-view.test.js, and no other file.\n\nFrames to match, in docs/design/prototype-frames/: fleet-55.txt and fleet-120.txt, with their .tagged.txt twins for the colour and click roles; docs/design/prototype-shots/ holds the prototype screenshots. The prototype's numbers are illustrative; the product keeps its real figures.\n\nWhat moves. The page has no colour at all and imports nothing from src/workflow/dash-kit.js \u2014 it is the only view that does not. Lane headings, pool rows, the model/effort cell and the `N runs \u00b7 N% ok \u00b7 p50` line already match, so this is a colour and structure pass, not a re-layout: every model name takes the prototype's cyan, which is the one accent that makes the lane tables scannable. The sub-tab row becomes one line with the `[ edit ]` hint beside it \u2014 `by lane  by provider   [ edit ] read-only here \u00b7 edit opens bullswarm setup` \u2014 rather than two rows of bracketed tabs, and the `[ edit ]` region keeps the action the shell already maps, so no action kind changes. At 55 columns the lane heading is shortened rather than wrapped to a second row.\n\nWidths: nothing paints past the width from 32 to 200 columns, at either sub-tab, with every region inside its line.\n\nSee the product the way the frames were captured. Build a fixture home: `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`. Then for each width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid f` and Tab for the by-provider view (confirm against DASHBOARD_KEYS), read text with `tmux capture-pane -p -t fid`, and render colour to PNG with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Read each PNG beside its prototype frame. Never write to the real ~/.bullswarm.\n\nTests: tests/workflow-fleet-view.test.js pins no line past the width at 32, 54, 55, 80, 100 and 200 columns for both sub-tabs; every model name carries the palette's cyan; the sub-tab row occupies one line at 120 columns; and the edit region's action is unchanged. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "medium",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "docs-changelog",
+    "kind": "implement",
+    "purpose": "The composition documented and the fidelity entry written from what shipped",
+    "dependsOn": [
+     "shared-kit",
+     "dashboard-pages",
+     "stats-pages",
+     "budget-page",
+     "history-page",
+     "fleet-page"
+    ],
+    "affects": [
+     "requirement-11"
+    ],
+    "ownedFiles": [
+     "docs/guide/observing.md",
+     "README.md",
+     "CHANGELOG.md"
+    ],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (bullswarm 0.33.0, branch dashboard-0.33) document the visual-fidelity pass from the code as it actually shipped. Read every dependency output listed with this task \u2014 each writer reports what it shipped and what requests it left for the integrator \u2014 plus docs/plans/dashboard-0.33-fidelity.md (work items F1 to F8, and section 5 'Keep the blank, never invent'). You own exactly docs/guide/observing.md, README.md and CHANGELOG.md, and no other file; do not edit src/help.js, docs/reference/cli.md or any source file.\n\nWrite, in each file's existing voice and structure, without reformatting unrelated sections:\n\n1. docs/guide/observing.md \u2014 wherever it describes the dashboard's pages, state the composition the pages now use: the four-column 7-day breakdown and the budget block on Home, Run's plan strip with its per-step bars and its budget / live / so far row, the Budget pool block's seven rows and its one footer, the coloured stacked columns on Stats Trends, History's fixed columns, and the one-row-per-item phone form at 55 columns.\n\n2. README.md \u2014 where the dashboard is introduced, say in a sentence or two what the pass changed for a reader: the same real numbers, composed and coloured as the approved prototype, with the \u2248 and the basis still on every estimated figure.\n\n3. CHANGELOG.md \u2014 an entry in the established voice, above the previous release: a bullet per change, backticked page names and keys, the measured number where one exists (for example the palette's roles against the four it had, or History's two rows per run against one) and only numbers you can see in the code or in the writers' reports. Say plainly what deliberately did not move to the prototype \u2014 an undeclared subscription price, an expected duration, a per-run licence draw, a months-wide heatmap \u2014 and that the product renders a blank with its reason there. Do not bump package.json: `bullswarm release` owns the version, the commit and the tag.\n\nDo not document anything you cannot see in the code: if a page or an atom is missing, report it for the integrator instead of writing it up. Run `npm test` and quote the summary line (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17). Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "medium",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "digest-fidelity-inputs",
+    "kind": "digest",
+    "purpose": "One brief for the integrator from the seven territories",
+    "dependsOn": [
+     "shared-kit",
+     "dashboard-pages",
+     "stats-pages",
+     "budget-page",
+     "history-page",
+     "fleet-page",
+     "docs-changelog"
+    ],
+    "affects": [],
+    "ownedFiles": [],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard focus the brief on what the integrator must reconcile: every file each territory touched, the exact palette roles and helper signatures the kit shipped, every shared-file or cross-territory request a writer raised, and every place a writer reported a blank it kept instead of a prototype number.",
+    "lane": "analyze",
+    "effort": "low",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "integrate",
+    "kind": "integration",
+    "purpose": "Reconcile the seven territories, apply their requests, and run the repository gates",
+    "dependsOn": [
+     "digest-fidelity-inputs"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-3",
+     "requirement-4",
+     "requirement-5",
+     "requirement-6",
+     "requirement-7",
+     "requirement-8",
+     "requirement-9",
+     "requirement-10",
+     "requirement-11"
+    ],
+    "ownedFiles": [],
+    "evidenceFor": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard integrate the visual-fidelity pass. Read the dependency output first \u2014 the digest of the seven territories, including every writer's report and outstanding request \u2014 and docs/plans/dashboard-0.33-fidelity.md. You are now the sole writer with no territory limit: apply the shared-file and cross-territory requests the writers raised, reconcile src/workflow/dashboard.js against the exports the kit and the view modules actually provide, and check that every palette role and helper signature a writer reported is real rather than assumed.\n\nThen run the repository gates and quote the exact output of each:\n- `npm test` (baseline 1112 pass, 0 fail, measured on this tree 2026-09-17) with its summary line;\n- `node bin/bullswarm.js doctor --json` still parsing;\n- `bullswarm workflow tui <id> --overview` against a real finished run still parsing under mods/bullswarm/hooks/overview.ts parseOverview, and `workflow runs --json`, `pools --json` and `workflow action show <id> --json` each still emitting their shape;\n- the real dashboard in tmux at 120x40, 55x26 and 200x50 against a fixture home, once, confirming every page paints, no line exceeds the frame width, and every page shows colour;\n- `bullswarm workflow plan validate \"$(cat /home/dev/Repo/bullswork/bullswarm-dashboard/docs/plans/dashboard-0.33-fidelity.goal.txt)\" --cwd=/home/dev/Repo/bullswork/bullswarm-dashboard --program=/home/dev/Repo/bullswork/bullswarm-dashboard/docs/plans/dashboard-0.33-fidelity.program.json --json` still exiting 0, so the plan stays self-consistent.\n\nKeep the two copies of the meter palette in step \u2014 src/workflow/usage-view.js and mods/bullswarm/hooks/pool-rows.tsx \u2014 or say in your report exactly how they differ and why that is safe. Fix what fails in the files you now own; where a fix belongs to a module whose writer is gone, make it and say so. Do not commit, and do not edit the three docs/plans/dashboard-0.33-fidelity.* files.\n\nReport precisely: what you changed and why, what you could not reconcile, the acceptance-relevant behaviour you observed with the commands and the lines that showed it, and what the acceptance action should try to break. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's.",
+    "lane": "build",
+    "effort": "high",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "verify",
+    "kind": "adversarial-acceptance",
+    "purpose": "Independently judge every requirement against the rendered product, page by page, at three widths",
+    "dependsOn": [
+     "shared-kit",
+     "dashboard-pages",
+     "stats-pages",
+     "budget-page",
+     "history-page",
+     "fleet-page",
+     "docs-changelog",
+     "integrate",
+     "stats-series",
+     "phone-and-step",
+     "integrate-2"
+    ],
+    "affects": [],
+    "ownedFiles": [],
+    "evidenceFor": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-3",
+     "requirement-4",
+     "requirement-5",
+     "requirement-6",
+     "requirement-7",
+     "requirement-8",
+     "requirement-9",
+     "requirement-10",
+     "requirement-11"
+    ],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard independently judge the visual-fidelity pass against the goal text in docs/plans/dashboard-0.33-fidelity.goal.txt and the frames in docs/design/prototype-frames/ (each .txt beside its .tagged.txt colour twin, with the prototype screenshots in docs/design/prototype-shots/). Read the dependency outputs \u2014 the writers' reports and the integration report \u2014 then inspect the repository and the running product as they actually stand. You judge composition, density and colour, not the presence of features: the product already had the pages, the tabs, the data and the keys, and that is exactly why this pass exists.\n\nRender the product to PNG. Build a fixture home and never write to the real ~/.bullswarm:\n`rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`\nThen for every page (Home, Run, Step, Budget, Stats Overview, Stats Trends, Stats Pools, Stats Models, Stats Projects, History, Fleet, Help) and every width WxH in 55x26, 120x40 and 200x50: `tmux new-session -d -s fid -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, navigate with `tmux send-keys -t fid <key>`, capture the text with `tmux capture-pane -p -t fid` and the colour with `python3 /home/dev/Repo/bullswork/bullswarm-dashboard/scripts/tui-shot.py fid out.png W H` (needs Pillow). Place each PNG and each text capture beside the page's prototype frame and the prototype screenshot of it, and report, page by page and width by width, where the composition, the row density or the colour still differs \u2014 with the frame line and the product line quoted side by side as evidence, and the row counts you measured rather than impressions. Where no prototype frame exists (the Runs list, and any page at 200 columns), say so and judge only that the extra width is not wasted and that the page adopts the shared vocabulary.\n\nWhat to try to break: a 32-column terminal and a 200-column one; a home whose meters are stale, whose pools mostly have no declared subscription price, and whose runs recorded no expected duration and no per-attempt estimate; a day holding only legacy runs with no state.json; a pool whose meter is unavailable; a period with no data; a legend with more series than the width holds; and the same page rendered twice to confirm nothing drifts between refreshes. Run `npm test` yourself and check its summary line against requirement 10 rather than trusting a writer's quote, then check the tests the writers claim to have added actually exist and assert what they say. Check the money rule hard: no page may print a bare number where the source is a blank plus a reason, and every \u2248 figure must state its basis on the same screen. Check the documented claims (requirement 11) against the running product rather than against the writers' reports: the composition described in docs/guide/observing.md and README.md, and every claim of the CHANGELOG entry.\n\nFor each of the eleven numbered requirements, report what you observed with the exact command and the exact lines it produced, and where a requirement is only partly met, name the part and how you would tell. Do not edit anything and do not commit. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's. SECOND PASS: your first pass's evidence is at /home/dev/.bullswarm/workflows/wf-mu4vhjvu-8dd5d4/candidate-verify.json and its captures at /tmp/fid-verify/product/ \u2014 re-check every failed item there against the product as it now stands (write new captures to a new directory and quote before/after line numbers), then re-judge all eleven requirements; where a requirement passed before, confirm nothing regressed rather than re-describing it.",
+    "lane": "analyze",
+    "effort": "high",
+    "inputs": [],
+    "produces": []
+   },
+   {
+    "id": "stats-series",
+    "kind": "implement",
+    "purpose": "Models chart and Projects sparklines from the real rollup series; Stats pages fill 200 columns; one phone row per model and project",
+    "dependsOn": [
+     "integrate"
+    ],
+    "affects": [
+     "requirement-4",
+     "requirement-5",
+     "requirement-9"
+    ],
+    "ownedFiles": [
+     "src/workflow/stats-model.js",
+     "src/workflow/stats-view.js",
+     "tests/workflow-stats-model.test.js",
+     "tests/workflow-stats-view.test.js"
+    ],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (branch dashboard-0.33), second fidelity round. The first acceptance pass failed 7 of 11 requirements with exact evidence in /home/dev/.bullswarm/workflows/wf-mu4vhjvu-8dd5d4/candidate-verify.json (read it first: each failed requirement lists the product capture line numbers versus the prototype frame line numbers). Its captures \u2014 text and PNG for every page at 32/55/120/200 \u2014 are in /tmp/fid-verify/product/ for before/after comparison; the prototype frames are docs/design/prototype-frames/<page>-<width>.txt with .tagged.txt colour twins. Render with: fixture home `/tmp/bsw-fid-home` (create with `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`), then `tmux new-session -d -s <name> -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, `tmux send-keys`, `tmux capture-pane -p` and `python3 scripts/tui-shot.py <name> out.png W H`; look at the PNG. The shared kit is src/workflow/dash-kit.js: `columns(cells,{width,gap})`, `compactRow(fields,{width,gap})`, `meterBar`, `heatRamp`; palette roles live in METER_COLORS in src/workflow/usage-view.js (purple, orange, cyan, dim, others, mark, heat[]). Close requirement-5 and the Stats half of requirement-4 and requirement-9. (1) The series exist: every non-legacy rollup row in <home>/history/runs.jsonl (read by src/workflow/history.js / rollup.js into the `rollups` that stats-model.js receives) carries `finishedAt`, `project`, `models: {<model>: {attempts, minutes}}` and `pools: {<pool>: {attempts, minutes, costUsd, tokens}}`; 179 of 296 rows on this machine have `models`. Add to stats-model.js: `modelsModel` gains a per-model DAILY series over the period (worker-minutes per day, plus attempts), and `projectsModel` gains a per-project daily series (runs per day, minutes per day); legacy rows without the maps are counted where they can be and skipped where they cannot, and the basis line says how many rows carried the series. (2) stats-view.js Models: draw the multi-line chart the prototype has (docs/design/prototype-frames/stats-models-120.txt lines 4-12) from the minutes series, one colour per model from the palette roles, and give each model row a coloured \u25cf that keys it to its line; the axis is worker-minutes, labelled so, never $ \u2014 there is no per-model cost in the data, and the page says so in one basis line. Projects: a sparkline beside every project name built from its runs-per-day series (prototype stats-projects-120.txt lines 6/8/10), one row per project at every width. Remove the two 'No per-\u2026 daily series is loaded' notes. (3) 200 columns: the composition must use the frame \u2014 replace `Math.min(cols, MAX_COMPOSITION_WIDTH)` (stats-view.js:37, :722, :1350) so the overview grid, trends chart, pools chart/rows, models chart and projects list lay out to `cols` up to 200 with the same gap; the heatmap and charts get more columns of history or wider bars, not padding. (4) 55 columns: models and projects render ONE row per item via compactRow (name \u00b7 figures on the same row, truncated with \u2026), matching stats-models-55.txt and stats-projects-55.txt; the legend cap stays. Tests: the two new series (fixture rows with models/pools maps and a legacy row), the Models chart keyed rows, a sparkline per project, one row per item at 55, max painted width 200 at 200 columns for every Stats page with no overflow. Run `node --test tests/workflow-stats-model.test.js tests/workflow-stats-view.test.js` and `npm test`, quote the summary lines, and render Stats Models and Projects at 55/120/200 to PNG and describe what you see against the frames. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's. Do not commit; do not edit the three docs/plans/dashboard-0.33-fidelity.* files."
+   },
+   {
+    "id": "phone-and-step",
+    "kind": "implement",
+    "purpose": "Phone density on Home and Fleet, Step first-lines summary, indeterminate per-step bar, \u2248 on estimate axes, Fleet at 200",
+    "dependsOn": [
+     "integrate"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-7",
+     "requirement-9"
+    ],
+    "ownedFiles": [
+     "src/workflow/dashboard.js",
+     "src/workflow/fleet-view.js",
+     "tests/workflow-dashboard.test.js",
+     "tests/workflow-fleet-view.test.js"
+    ],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (branch dashboard-0.33), second fidelity round. The first acceptance pass failed 7 of 11 requirements with exact evidence in /home/dev/.bullswarm/workflows/wf-mu4vhjvu-8dd5d4/candidate-verify.json (read it first: each failed requirement lists the product capture line numbers versus the prototype frame line numbers). Its captures \u2014 text and PNG for every page at 32/55/120/200 \u2014 are in /tmp/fid-verify/product/ for before/after comparison; the prototype frames are docs/design/prototype-frames/<page>-<width>.txt with .tagged.txt colour twins. Render with: fixture home `/tmp/bsw-fid-home` (create with `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`), then `tmux new-session -d -s <name> -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, `tmux send-keys`, `tmux capture-pane -p` and `python3 scripts/tui-shot.py <name> out.png W H`; look at the PNG. The shared kit is src/workflow/dash-kit.js: `columns(cells,{width,gap})`, `compactRow(fields,{width,gap})`, `meterBar`, `heatRamp`; palette roles live in METER_COLORS in src/workflow/usage-view.js (purple, orange, cyan, dim, others, mark, heat[]). Close requirement-1, the Step and per-step-bar parts of requirement-2, requirement-7 and the Home/Fleet parts of requirement-9. Measured gaps from the first pass: home-55 body is 63 rows against the prototype's 37 (docs/design/prototype-frames/home-55.txt); tiles take six rows for finished/verified/spent/licence plus a click hint and a money basis line; one running item takes six rows including a 'recorded no expected duration, so they carry no bar' note; budget rows print 'resets Fri 18 Sept, 14:29 <local zone> \u00b7 85% elapsed \u00b7 on\u2026' where the frame prints 'resets 5d1h \u00b7 $18.50 of $50'; the spend-per-day axis prints `$3.00` without \u2248 although the source is estimates; Step at 55 shows the task text through row 25 so `\u2500\u2500 output \u2500\u2500` (frame: row 19) and artifacts never appear, and at 120 the task wraps to 17 lines (frame: output at 15, artifacts at 24); the Run page draws no bar for a step whose rung has no recorded duration (`\u25b6 verify \u00b7 codex \u00b7 5m41s`); fleet-55 uses two rows per pool; fleet-200 is the 76-column layout with 124 unused columns. Deliver in src/workflow/dashboard.js: (a) Home at 55: tiles one row each exactly as home-55.txt (`finished  9  \u2582\u2585\u2583\u2587\u2586\u2584\u2585   \u2713 7 \u00b7 \u2717 2`, `spent  \u2248 $1.23  \u2581\u2583\u2582\u2586\u2585\u2583\u2584`, licence one row per pool), the click hint and money basis merged into ONE dim footer line for the page, budget rows two lines each (`<pool> <meter> <pct>  <pace>` then `resets <relative> \u00b7 <price or the declare-a-price reason once for the whole block, not per pool>`), running items at most four rows (\u25cf line, DAG, bars, so-far) \u2014 fit the fixture's body within about 40 rows and assert it; (b) per-step bars: when a running step's rung has no recorded duration draw an indeterminate bar of `\u2591` at the same width with `<elapsed>/\u2013` and drop the note row, on Home and on the Run page's DAG and live panel alike; (c) `\u2248` before every $ figure derived from estimates, including the spend-per-day axis labels (`\u2248$3`), keep the basis sentence; (d) Step: `task \u00b7 first lines` shows at most 4 lines then `\u2026 N more lines`, so output and artifacts land where step-55.txt (row 19) and step-120.txt (rows 15/24) put them; the full task remains reachable as today. In src/workflow/fleet-view.js: (e) 55 columns: one compactRow per pool (pool \u00b7 model \u00b7 runs \u00b7 ok \u00b7 p50 truncated), matching fleet-55.txt; (f) 200 columns: by-lane and by-provider laid out side by side with `columns()` to the frame width, no cap below 200. Tests for each of (a)-(f) in the two test files, including body-row counts at 55\u00d726 against a fixture, and no line past the width from 32 to 200. Run `npm test`, quote the summary, render Home/Run/Step/Fleet at 55/120/200 to PNG and describe them against the frames. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's. Do not commit; do not edit the three docs/plans/dashboard-0.33-fidelity.* files."
+   },
+   {
+    "id": "integrate-2",
+    "kind": "integration",
+    "purpose": "Join the second round, make the docs true, full suite and all 36 renders",
+    "dependsOn": [
+     "stats-series",
+     "phone-and-step"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-4",
+     "requirement-5",
+     "requirement-7",
+     "requirement-9",
+     "requirement-11"
+    ],
+    "ownedFiles": [],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-dashboard (branch dashboard-0.33), second fidelity round. The first acceptance pass failed 7 of 11 requirements with exact evidence in /home/dev/.bullswarm/workflows/wf-mu4vhjvu-8dd5d4/candidate-verify.json (read it first: each failed requirement lists the product capture line numbers versus the prototype frame line numbers). Its captures \u2014 text and PNG for every page at 32/55/120/200 \u2014 are in /tmp/fid-verify/product/ for before/after comparison; the prototype frames are docs/design/prototype-frames/<page>-<width>.txt with .tagged.txt colour twins. Render with: fixture home `/tmp/bsw-fid-home` (create with `rm -rf /tmp/bsw-fid-home && mkdir -p /tmp/bsw-fid-home && cp -Rp ~/.bullswarm/workflows ~/.bullswarm/state.json ~/.bullswarm/meters ~/.bullswarm/providers.json /tmp/bsw-fid-home/ && BULLSWARM_HOME=/tmp/bsw-fid-home node /home/dev/Repo/bullswork/bullswarm-dashboard/bin/bullswarm.js workflow reindex`), then `tmux new-session -d -s <name> -x W -y H \"cd /home/dev/Repo/bullswork/bullswarm-dashboard && BULLSWARM_HOME=/tmp/bsw-fid-home node bin/bullswarm.js\"`, `tmux send-keys`, `tmux capture-pane -p` and `python3 scripts/tui-shot.py <name> out.png W H`; look at the PNG. The shared kit is src/workflow/dash-kit.js: `columns(cells,{width,gap})`, `compactRow(fields,{width,gap})`, `meterBar`, `heatRamp`; palette roles live in METER_COLORS in src/workflow/usage-view.js (purple, orange, cyan, dim, others, mark, heat[]). Read both second-round writers' outputs and the first integration report. You are the sole writer with no territory limit: reconcile dashboard.js against any stats-view/fleet-view export change, keep the two meter palettes byte-identical (src/workflow/usage-view.js METER_COLORS and mods/bullswarm/hooks/pool-rows.tsx), and make docs/guide/observing.md and README.md say exactly what the pages now do \u2014 the first pass failed requirement-11 because observing.md claimed 'At 55 columns, the phone layouts keep one row per item' while Projects, Models, Fleet and Home did not; after this round either the claim is true on every page or the sentence names the exceptions. Amend the CHANGELOG entry accordingly; do not bump package.json. Then: `npm test` twice with both summary lines; `node bin/bullswarm.js doctor --json` parsing; `bullswarm workflow tui <a finished run> --overview` still parsing under mods/bullswarm/hooks/overview.ts parseOverview; render every page at 32, 55\u00d726, 120\u00d740 and 200\u00d750 against the fixture home to text and PNG under /tmp/fidelity-integration-renders-2/ and print one summary line per capture `<page>-<width> nonblank=<n> max=<max painted width> overflow=<n>`; at 200 no Stats or Fleet page may have max below 180 unless the page states why; at 55 every page's body row count and the frame's, side by side. Report what changed, what you could not reconcile, and what the acceptance action should try to break. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: the prototype's numbers are illustrative; the product keeps its real figures and its \u2248/basis rules; only the composition, density, colour and wording move to the prototype's. Do not commit; do not edit the three docs/plans/dashboard-0.33-fidelity.* files."
+   }
+  ]
+ }
+}

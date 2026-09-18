@@ -1,6 +1,221 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.33.0 — the dashboard release
+
+- dashboard: the phone `Home` no longer hides data behind its width. The
+  `budget · this week` block draws every pool the desktop draws — four today —
+  or ends with `+N more` when the rows genuinely do not fit, and its names are
+  wide enough that `claude-code:acme` and `claude-code` read as two pools
+  rather than one truncated one. The by-pool, by-model and by-project lists
+  keep at least their top three rows (`+N more` for the rest) and always paint
+  the whole percentage, never `24…`. The summary figures sit one per line, so
+  `Busiest project` and `Favourite model` are whole at 55 columns, and the
+  spent tile's empty state fits the phone row.
+- dashboard, **keys corrected**: `h` opens **Home** and `?` opens **Help**.
+  In 0.32.0 both opened Help, and an earlier 0.33.0 entry wrongly listed them
+  as unchanged. `r` `b` `s` `y` `f` keep the pages they opened. The key table,
+  the nav tail (`[Top] [End] [?.Help]`), the Help page, the README and the
+  observing guide all say the same thing, and tests pin both bindings.
+- dashboard: a finished run the history index has not covered yet is named by
+  the project its `goal.json` working directory belongs to — the same
+  derivation `bullswarm workflow reindex` uses — instead of reading
+  `unknown project`. `unknown project` now means only what it says: no working
+  directory was recorded for that run.
+- dashboard: the stacked column charts on `Home` (spent per day) and `Stats`
+  `Trends` are drawn to eighth-block precision. The top cell of a bar is one of
+  `▁▂▃▄▅▆▇█`, so a `≈$2.93` bar sits below its own `≈$3.00` tick instead of
+  overshooting it; the axis top and the row count are chosen together so every
+  tick label lands on a row with even spacing; and every non-zero pool slice
+  gets at least one eighth-block, smallest on top, so `codex` and
+  `command-code` appear on any day they spent anything.
+- dashboard: `Stats` `Pools` drops the shared unlabelled “licence used per day,
+  by pool” line chart. Each pool now carries its own seven-day sparkline on its
+  own row — one glyph per day of end-of-day usage, `▏` on a day the quota
+  window rolled over — under one caption saying that a drop after `▏` is the
+  window resetting. A reset is read from the recorded `resets_at` moving, never
+  guessed from a falling reading. The row tails (`≈ $3.06 API`, `✓ 100%`) are
+  measured before the meter is sized, so nothing truncates at 170 or 200
+  columns.
+- dashboard: `Budget` reads in plain words. Each pool is a header
+  (`name · weekly plan · resets <day time> (in Nd Nh)`) over four labelled
+  rows: `used` (the meter, a whole percent, and `N% of the window gone → on
+  track`), `by bullswarm` (this tool's share of the whole plan, with the
+  measured minutes and `other tools N%`), `room` (`about N more medium runs
+  before the reset`) and `so far` (≈ money and the two biggest workflows).
+  Figures are whole numbers. The subscription line appears only where a price
+  is declared — the `Subscription rate: —` rows are gone — and
+  `workflows 131.24% · rest 0% · workflows exceeds the reported meter` is
+  replaced by one footnote in words when the measured share exceeds the meter.
+  The page-foot notes are one short block.
+- dashboard: **Runs and History are one page.** `Runs` opens on an `active`
+  block — every running or waiting run with its plan strip and per-step bar,
+  drawn exactly as `Home`'s running section draws it — and History's
+  day-grouped table below it: a day header with its count and ≈ total, then one
+  row per run with status glyph, short id, project, goal, duration, ≈ cost and
+  time, under the selection cursor, so `Enter` and the digits open a run and
+  older days load as the reader scrolls. The `agents` and `run it` blocks moved
+  to `Help`. The `History` tab is gone from the tab row — the tabs are Home,
+  Runs, Budget, Stats, Fleet — and **`y` jumps to the first day header** of
+  Runs. The one-second refresh keeps the table cursor where the reader put it
+  (it used to snap back to the in-flight run, so `Enter` opened the wrong
+  workflow).
+- dashboard: the second owner-review round, from phone screenshots of the
+  0.33.0 preview. `Stats` `Models` draws stacked columns per day and model
+  instead of a three-row line chart that flattened every model under four
+  hours onto the zero line (Opus ran 29, 9, 897, 75, 278 and 686 minutes on
+  six consecutive days and showed on one). Axis labels mark the bottom of
+  their row, so a bar of 15 rises half a row above `14` instead of reading as
+  16. Phone columns are equal width and the charts use the rows the screen
+  has. A column never lays two colours side by side in one row: slices too
+  small for their own eighth merge into one grey `other` slice, counted in the
+  legend. Each pool and model keeps one colour on every page and period. Under
+  a column, totals keep one blank cell apart and a long duration falls back to
+  whole hours. `Budget`: a pool whose meter never moved during its measured
+  runs says `share unknown · meter did not move during 32 measured runs`
+  instead of `≈ 0%`; credits join the `used` row (`0 of 70 credits`); a pool
+  with nothing left says `no room left before the reset`. The Runs day table
+  never cuts a duration (`3h21m`, not `3h2…`). The tab row stays five tabs on
+  the Help page. Charts draw from fourteen hues and never give two series in
+  one chart the same colour (the 30-day Trends had three purples and the
+  Models chart seven models in two colours); slices stack smallest at the
+  bottom, biggest on top; the legend wraps to name every series instead of
+  hiding the rest behind `+N more`. The mouse now lights the clickable row
+  under the pointer in reverse video, the way the Mod pane does (a whole row
+  when it is the row's only target, just the button when several share a
+  row); the TUI asks the terminal for motion reports and releases them on the
+  way out. Only list rows light up (a run in the table, a step in a plan);
+  chart columns, tiles, meters and tabs do not, and inside a lit row only the
+  words reverse — a step's bar and the plan strip's `──○──` connectors keep
+  their colours. Home's breakdown percents sit right-aligned in one column, so `2%`
+  lines up under `19%`.
+- dashboard, **no longer laggy**: a CPU profile of the idle TUI showed it busy
+  61% of the time. Every one-second tick re-discovered Claude accounts through
+  the macOS keychain (`security`, 100–300 ms, blocking), re-ran the pool-rename
+  migration check over the whole state.json, and on Runs re-read all 300 run
+  directories. Usage now reloads every 10 s, the keychain read is cached for a
+  minute, the migration check is remembered per file fingerprint, the run
+  catalogue rebuilds only when an active run changes or 15 s pass, and the
+  unknown-project fallback asks `git` once per working directory. Idle busy
+  share after: 14%. The painter now rewrites only the rows that changed
+  since the last frame (a spinner tick is a few dozen bytes instead of the
+  whole 120×40 screen), which is what a phone or a remote terminal feels.
+- dashboard: no page draws an empty track where it has no data. The `Run`
+  page's budget block is titled `licence this run used`, shows whole percents
+  (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty
+  bar), writes `free model · no licence meter` for an unmetered pool instead of
+  a dotted track and a `—`, and collapses to a single sentence when no pool is
+  metered. The plan strip's pool row prints the pool name alone when the cell
+  cannot hold pool and model. A paused run's live block says
+  `paused · bullswarm workflow resume <id> continues it` instead of `waiting for
+  the next dispatch`, and the ETA footnote is
+  `ETA —: <step> has no recorded duration yet` rather than
+  `N of N remaining steps recorded no expected duration`. The same rule removed
+  the dotted `meter unavailable` tracks from `Stats` `Pools`.
+
+- dashboard: the visual-fidelity pass now composes `Home` with a four-column
+  7-day breakdown and a budget block, `Run` with a plan strip, per-step bars
+  and a `budget` / `live` / `so far` band, `Budget` with seven rows per pool
+  plus one consolidated footer, coloured stacked columns on `Stats` `Trends`,
+  and fixed columns on `History`, reducing its phone form from two rows per run
+  to one at 55 columns.
+- dashboard: the shared palette keeps its four existing meter colours and adds
+  seven named roles, including the four-shade heat ramp; `Help` groups the `r`,
+  `b`, `s`, `y`, and `f` keys into 35 body rows at 55 columns (from about 51)
+  and drops the nonexistent `Budget` sub-tabs.
+- dashboard: the `Run` plan strip closes a fan the way the prototype does —
+  each lower branch hangs under the `┬` that opened it, is ruled across to the
+  joint, and the last one ends in `┘` under the closing `┬`; it used to draw a
+  `┴` with nothing beneath it when the lower branch was the longer name. The
+  `Stats` `Models` footnote says `no per-model money` in words instead of
+  naming the `apiEquivalentUsd` field.
+- dashboard: the phone layouts now put one item on one row where the page is a
+  list — `Stats` `Models`, `Stats` `Projects` (with its sparkline beside the
+  name), `Stats` `Pools`, `Fleet` and `History`, plus `Home`'s today tiles and
+  per-step bars. `Budget`'s seven-row pool block, `Home`'s `budget · this week`
+  pool and the `Runs` list keep their extra lines on purpose.
+- dashboard: `Stats` `Models` draws a worker-minutes-per-day chart whose series
+  are coloured to match the model list beneath it, and `Stats` `Projects` draws
+  a sparkline beside every project name. At a 200-column frame a project keeps
+  name, sparkline and figures on one row, with the sparkline capped at four
+  cells per measured day so seven days read as a shape rather than a
+  frame-wide run of repeated glyphs.
+- dashboard: `Stats` rows built from the shared `compactRow` now lay their
+  fields out on the frame minus their one-cell indent, so the last field no
+  longer lost its final character to the frame's own truncation (`p50 5…`
+  where `p50 54m` fits).
+- dashboard: every page now composes to a 200-column frame instead of stopping
+  at the 120-column composition — measured on the real binary, the widest
+  painted row is 200 cells on every page except `Fleet`, which reaches 188.
+- dashboard: `Run` draws a bar for the running step inside the plan strip, using
+  an empty indeterminate bar when the step recorded no expected duration, and
+  `Step` keeps its task summary short enough that the `output` and `artifacts`
+  sections both start inside a 26-row phone frame rather than below it.
+- data: the pass keeps real figures and the `≈`/basis rule. An undeclared
+  subscription price, an expected duration, and a per-run licence draw
+  deliberately remain blank with their reasons. The months-wide heatmap does
+  not move over: `Stats` uses only history that exists and, when there are no
+  measured days, renders a blank with `No workflow history yet — the heatmap
+  has no measured days.` rather than inventing the prototype's number.
+- docs: `README.md` and the observing guide now describe the shipped
+  composition and the same data-honesty rule, and name the three places whose
+  phone form deliberately keeps more than one row per item rather than claiming
+  a universal one-row layout.
+
+- routing: measured pacing rates now charge timed in-flight work at the actual
+  `rate × remaining minutes` with no 3-point floor, so an expiring-soon pool
+  with a known burn rate is not demoted by a tie-breaker meant for unmeasured
+  pools. `config.inflightPenaltyPct` remains the per-agent fallback for pools
+  without a measured rate (and for in-flight records with unknown duration).
+- workflow: every attempt record now carries `routeWhy` (the router's reason)
+  and `routeCandidates` (each pool's effective surplus, urgency state and
+  pacing forecast at pick time); `workflow action show --json` and
+  `runs result --json` print them, and older state files still load.
+- dashboard: the full-screen surface now has eight pages — Home, Runs, Run,
+  Step, Budget, Stats, Fleet, and Help (History is the day table inside Runs,
+  see above). Home answers what happened today and what is active; Runs is the
+  active block over the day-grouped table; the integration actions sit on Help; Run
+  and Step explain a workflow and one action; Budget shows quota, measured
+  worker-time share, labelled money, fit, and biggest workflows; Stats covers
+  Overview, Trends, Pools, Models, and Projects; History is the dated timeline;
+  Fleet shows lane/provider rungs; Help names the controls. Home, Stats, and
+  History read the rollup index instead of parsing every run directory on each
+  refresh.
+- workflow: every finished V2 run now records a per-run `rollup.json` and
+  appends an idempotent line to `~/.bullswarm/history/runs.jsonl`. On the real
+  corpus used for the release, `294` run directories yielded `181` indexed
+  finished V2 records; `105` legacy and `8` unfinished directories were left
+  out. History spans `15` recorded days, and `94` of the `188` V2 results are
+  verified.
+- dashboard, **keys rebound** — three keys changed meaning, one is gone, and
+  seven are new. Rebound: `r` opened nothing and refreshed the view in 0.32.0
+  and now opens **Runs** (the 1 s timer refreshes, so no key needs to);
+  `b` was **move out** and now opens **Budget** (`Esc` and `←` are move out);
+  `Tab` was **next workflow** and now cycles the current page's **sub-tabs**
+  (`Shift+Tab` cycles workflows, as it did). Removed: the Usage page is
+  replaced by **Budget** (`b`) and **Fleet** (`f`), so **`u` is gone**, and
+  Usage's `l`/`p` lane/provider grouping keys are now **`Tab`** on Fleet.
+  New: `s` Stats, `y` History, `f` Fleet, `p` cycles the period, `Home` top,
+  `End` bottom, and `ctrl+s` copies the screen. Moved, not rebound: `i`, `/`
+  and `a` are **Runs-page** keys now that Home is the prototype's Home.
+  Unchanged: `1`–`9`, `Enter`/`→`/`l`, the arrows, `PgUp`, `PgDn` and `q`.
+  (Corrected: an earlier draft of this entry said `h`/`?` were unchanged. They
+  are not — `h` opened Help in 0.32.0 and now opens **Home**, and `?` alone
+  opens **Help**. `y` no longer opens a History page; it opens **Runs** at the
+  first day header of its history table. See the two entries below.)
+- accounting: money and licence figures are either measured or carry `≈` with
+  their basis. API-equivalent estimates use the recorded per-attempt estimate;
+  a licence draw uses the measured pool rate multiplied by measured worker-
+  minutes and stays blank when no rate is available; an undeclared subscription
+  price stays null. On the release corpus, `113` of `188` V2 runs carried a
+  cost figure and the other `75` did not, so no zero was manufactured for them.
+- workflow: `bullswarm workflow reindex [--json] [--force]` backfills finished
+  runs from their durable directories, skips legacy and unfinished runs,
+  repairs missing index entries, and can rebuild existing rollups with
+  `--force`. The JSON form reports `ok`, `indexPath`, `scanned`, `written`,
+  `skipped`, `legacy`, `unfinished`, `present`, `failed`, and `failures[]`.
+- docs: the observing guide, README, CLI reference, command help, and Claude
+  Mod README now describe the eight pages, the full key map, the measured/
+  labelled money rule, and the Mod's smaller Run/Step/Usage-Pools surface.
 
 ## 0.32.1 — free models first, with graceful failover
 

@@ -1,0 +1,40 @@
+ {k:page:home|Home}  {k:page:run|{u|R}}{k:page:run|uns}  {k:page:budget|{u|B}}{k:page:budget|udget}  {k:page:stats|{u|S}}{k:page:stats|tats}  {k:page:history|Histor}{k:page:history|{u|y}}  {k:page:fleet|{u|F}}{k:page:fleet|leet}  {on|Help}                                                                        
+ {d|every key and click on this dashboard}                                                                                  
+ {d|── }{b|pages}{d| ──────────────────────────────────────────────────────────────────────────────────────────────────────────────}
+  {b|r b s y f       }Runs · Budget · Stats · History · Fleet                                                               
+  {b|h  ?            }this help                                                                                             
+  {b|Esc  ←          }back from a step, otherwise Home                                                                      
+  {b|1 … 9           }open the numbered run in the nav                                                                      
+  {b|Tab             }next sub-tab on Stats, Budget and Fleet                                                               
+  {b|p               }cycle the period: 7 days · 30 days · all time                                                         
+                                                                                                                        
+ {d|── }{b|moving}{d| ─────────────────────────────────────────────────────────────────────────────────────────────────────────────}
+  {b|↑ ↓  j k        }scroll one line                                                                                       
+  {b|PgUp PgDn       }scroll a screen                                                                                       
+  {b|Home End        }top · bottom                                                                                          
+  {b|wheel           }scrolls the body under the sticky header                                                              
+                                                                                                                        
+ {d|── }{b|clicks}{d| ─────────────────────────────────────────────────────────────────────────────────────────────────────────────}
+  {b|tile            }a today number opens its chart in Stats › Trends                                                      
+  {b|bar             }a day bar in the 7-day breakdown opens its chart                                                      
+  {b|pool            }a pool name opens Budget on that pool                                                                 
+  {b|step            }a step name opens the step page                                                                       
+  {b|run             }a run row or nav button opens the run                                                                 
+                                                                                                                        
+ {d|── }{b|other}{d| ──────────────────────────────────────────────────────────────────────────────────────────────────────────────}
+  {b|e               }edit the fleet (on Fleet)                                                                             
+  {b|ctrl+s          }copy the screen as plain text                                                                         
+  {b|q               }quit to the shell; workflows keep running                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ {k:run:mbpzj2|[ }{k:run:mbpzj2|{c|●}}{k:run:mbpzj2| }{k:run:mbpzj2|{u|1}}{k:run:mbpzj2|.mbpzj2 ]} {k:run:ywnyga|[ }{k:run:ywnyga|{u|2}}{k:run:ywnyga|.ywnyga ]}                       {d|r b s y f tabs · esc home · p cycles dates · ctrl+s copies · }{k:page:help|{u|h}}{k:page:help|elp}{d| · q}

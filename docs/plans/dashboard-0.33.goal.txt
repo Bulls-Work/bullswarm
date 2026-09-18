@@ -1,0 +1,16 @@
+The 0.33.0 dashboard release in /home/dev/Repo/bullswork/bullswarm-dashboard: implement the approved prototype scope (docs/design/dashboard-prototype.html) with real data only. Out of scope: routing, steering, and the dispatch mechanism.
+
+1. Record a per-run rollup when a run finishes, append it to a durable history index under ~/.bullswarm, record each run's project identity at goal time, and add `bullswarm workflow reindex` to backfill the runs that already exist, so day, period, pool, model and project totals never rescan every run directory.
+2. Home shows today's tiles (finished, verified share, estimated spend, licence used), the 7-day breakdown by pool, model and project, the active runs always visible, and the recent list.
+3. Budget shows every pool as a licence meter with its elapsed mark, the workflows/rest share bar, the biggest workflows, and money at the subscription rate and at the equivalent API rate, each labelled with its basis.
+4. Stats has Overview, Trends with bar charts per metric over 7 days, 30 days and all time, plus Pools, Models and Projects, with clickable tiles and bars.
+5. History is a per-date timeline of every workflow, newest first, loading older days as the reader scrolls.
+6. Fleet shows the pools by lane and by provider, read-only, with edit opening setup.
+7. Runs, Run and Step show the plan DAG, phase counts, ETA, per-step progress against expected, and pool share and spend figures.
+8. Every key in `r b s y f h ? 1-9 Tab p Esc arrows PgUp PgDn Home End ctrl+s q` reaches its page or action, every tile, bar, run and step is clickable with the same action as its key, and Help names every one of them.
+9. Every page renders in the phone layout at 55 columns with no painted line past the frame width.
+10. The Claude Mod pane keeps working: `bullswarm workflow tui <id> --overview` and the six JSON commands keep their shapes, and usageLines stays exported.
+11. Every money and licence figure on screen is measured or carries an `≈` and its stated basis; where no source exists the dashboard renders a blank and says why, never a number.
+12. Tests under tests/ cover the new modules and every page at 120x40 and 55x26, and `npm test` passes.
+13. docs/guide/observing.md, docs/reference/cli.md, README.md, src/help.js and mods/bullswarm/README.md describe the new pages, keys and commands.
+14. CHANGELOG.md carries the 0.33.0 entry, including the key rebinding.

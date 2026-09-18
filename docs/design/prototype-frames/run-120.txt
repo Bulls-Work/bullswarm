@@ -1,0 +1,40 @@
+ Home  Runs  Budget  Stats  History  Fleet                                            mbpzj2 · running · 16m · project-a
+ sample text …                                                                                                          
+ sample text …                                                                                                          
+ ── plan ─────────────────────────────────────────────────────────────────────── phase 2 of 6 · 3/8 steps · ETA 19:03 ──
+  ✓ scan ─┬─ ✓ widget-core ─┬─ ▶ widget-lib ▇▇▇▇▇▇▇░ 15m/17m ─┬─ ○ widget-docs ─┬─ ○ integrate ─ ○ verify               
+          └─ ✓ inbox-page ──┘  ▶ inbox-api ▇▇▇░░░░░ 4m/11m ─┘                 │                                         
+    cmd · low    codex          cmd · deepseek · max            codex · luna    claude · opus · xhigh   claude · opus   
+                                                                                                                        
+ ── budget ───────────────────────────  ── live ────────────────────────────  ── so far ───────────────────             
+ cmd      ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  1.2%      widget-lib  ▇▅▃▁▂▃▅▇▅▃▂  15m/17m          steps   ✓ 3  ▶ 2  ○ 3             
+ codex    ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  1.5%        sample text …                                 time    16m · ETA 19:03     
+ claude   ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇  0.0%      inbox-api   ▆▇▅▃▁▂▃▅▇▅▃  4m/11m           spent   $1.05 ≈ $7.88 API         
+ ▓ this run · ▒ others · ░ free               sample text …                           forecast $5.51 · 14.2% 7d         
+                                                                                                                        
+ ── timeline ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ── Preflight ──────────────────────────────────────────────────────────────────────────────────────────────── 0s ──    
+ 18:25  ● Goal accepted                                                                                                 
+ ── Phase 1 · scan · inbox-page ─────────────────────────────────────────────────────────────────────────────── 4m10s ──
+ 18:26  ├─ started                                                                                                      
+ 18:28  │ ├─✓ scan 2m01s                                                                                                
+ 18:30  │ └─✓ inbox-page 4m10s                                                                                          
+ 18:30  └─✓ completed 2/2                                                                                               
+ ── Phase 2 · widget-core · inbox-api ──────────────────────────────────────────────────────────────────────── 13m00s ──
+ 18:28  ├─ started                                                                                                      
+ 18:33  │ ├─✓ widget-core 5m02s                                                                                         
+ 18:41  │ └─▶ inbox-api 4m · codex · sample text …                                                                      
+ ── Phase 3 · widget-lib ───────────────────────────────────────────────────────────────────────────────────── 15m00s ──
+ 18:26  ├─ started                                                                                                      
+ 18:41  │ └─▶ widget-lib 15m · command-code · sample text …                                                             
+ ── Phase 4 · widget-docs ── waiting                                                                                    
+ ── Phase 5 · integrate ── waiting                                                                                      
+ ── Phase 6 · verify ── waiting                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ [ ● 1.mbpzj2 ] [ 2.ywnyga ]                       r b s y f tabs · esc home · p cycles dates · ctrl+s copies · help · q
