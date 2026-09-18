@@ -1,0 +1,40 @@
+Budget verdict | urgency first | text-only prototype
+Every pool gets one verdict line and one meter bar; Enter opens windows
++----------------------------------------------------------------------------------------------------------------------+
+grok: urgent - 97% used; reset in 1h25m
+  [#############################################################-] used 97% | reset 1h25m
+claude-code: hot - 63% used; ahead of pace (53% elapsed)
+  [########################################----------------------] used 63% | 53% elapsed | surplus -10
+claude-code:wati: watch - 76% used; reset in 12h55m
+  [##############################################----------------] used 76% | 92.3% elapsed | surplus 16.3
+codex: fine - 59% used; 3 workflows in flight
+  [####################################--------------------------] used 59% | 73.1% elapsed | surplus 14.1
+command-code: fine - 0.4% used; 3.6% elapsed
+  [--------------------------------------------------------------] used 0.4% | monthly | surplus 3.2
+claude-code:petsona: disabled - no meter
+  [                                                              ] disabled
+echo: disabled - free echo-local
+  [                                                              ] disabled
+opencode: disabled - no meter
+  [                                                              ] disabled
++----------------------------------------------------------------------------------------------------------------------+
+READOUT
+Urgency words: urgent = expiring soon; hot = ahead of pace; watch = pressure; fine = room.
+Disabled pools stay visible so absence is a verdict, not a missing row.
+Enter / grok: 5h, 7d, monthly used, elapsed, reset, pace, and in-flight detail.
+Enter / claude-code: 7d used, elapsed, reset and pace; no invented reset time.
+Enter / command-code: monthly used, elapsed, reset and pace.
+Enter / disabled: disabled reason; no licence meter is shown.
+
+SOURCE SNAPSHOT
+$ node bin/bullswarm.js pools
+claude-code 63% used / 53% elapsed / surplus -10; wati 76% / 92.3% / +16.3
+codex 59% / 73.1% / +14.1 / 3 in flight; grok 97% / 99.2% / +2.2 / 1 in flight
+command-code 0.4% / 3.6% / +3.2; disabled: petsona, echo, opencode
+$ node bin/bullswarm.js workflow usage --json -> help, exit 2 (no usage figures)
+Sample age: not printed; the pool lines only mark readings [cache].
+
+Design: words lead; bars support; disabled is explicit; no colour codes.
+Frame: 120 columns x 40 rows.
+No invented reset dates appear in this file.
++----------------------------------------------------------------------------------------------------------------------+

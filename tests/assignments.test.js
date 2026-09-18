@@ -56,11 +56,15 @@ test('register -> list -> release round-trips one assignment', () => {
       pool: 'echo', model: 'echo-local', lane: 'build', effort: 'medium',
       source: 'workflow-v2', runId: 'wf-abc123-4d5e6f', actionId: 'impl-1', attempt: 1,
       expectedMinutes: 3.1, expectedSource: 'caller',
+      project: 'bullswarm', taskFile: '/tmp/task.md', outFile: '/tmp/out.md',
     });
 
     assert.equal(record.kernelPid, process.pid);
     assert.equal(record.workerPid, null, 'no worker exists at registration time');
     assert.equal(record.expectedMinutes, 3.1);
+    assert.equal(record.project, 'bullswarm');
+    assert.equal(record.taskFile, '/tmp/task.md');
+    assert.equal(record.outFile, '/tmp/out.md');
     assert.match(record.startedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.deepEqual(readdirSync(assignmentsDir(home)), [`${record.id}.json`],
       'exactly one file, and no temp file left behind');

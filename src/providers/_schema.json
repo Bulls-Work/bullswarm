@@ -67,6 +67,26 @@
         "summaryMode": "replace|concat"
       }
     ],
+    "usage": [
+      {
+        "$comment": "Optional provider-reported token/cost totals. mode=last for a cumulative final event, sum for per-request events, max for monotonic counters.",
+        "match": {
+          "path": "provider.event.type",
+          "equals": "result"
+        },
+        "mode": "last|sum|max",
+        "fields": {
+          "standardRead": "provider input-token path",
+          "cacheRead": "provider cached-input path",
+          "cacheWrite5m": "provider 5-minute cache-write path",
+          "cacheWrite1h": "provider 1-hour cache-write path",
+          "output": "provider output-token path",
+          "costUsd": "provider final cost path",
+          "sessionId": "provider session-id path",
+          "model": "provider model-id path"
+        }
+      }
+    ],
     "output": [
       {
         "match": {
@@ -130,6 +150,9 @@
       "pricing": {
         "inputUsdPerMillion": null,
         "cacheReadUsdPerMillion": null,
+        "cacheWriteUsdPerMillion": null,
+        "cacheWrite5mUsdPerMillion": null,
+        "cacheWrite1hUsdPerMillion": null,
         "outputUsdPerMillion": null
       },
       "pricingSource": "optional dated primary source",

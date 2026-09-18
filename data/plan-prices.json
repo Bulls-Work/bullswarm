@@ -1,10 +1,156 @@
 {
   "schemaVersion": "bullswarm.plan-prices.v1",
   "source": {
-    "name": "No published plan-price source bundled",
+    "name": "Vendor pricing pages loaded for Bullswarm 0.33.1",
     "url": null
   },
-  "updatedAt": "2026-09-16",
+  "updatedAt": "2026-09-18",
   "prices": {},
-  "notes": "No pool has a published, citable monthly price in this repository as of 2026-09-16. Prices remain null until an operator records one with bullswarm strategy set-subscription <pool> --monthly-usd <n> --included-usd <n>, or a published source with a URL is added here. No number is inferred from API rates or quota readings."
+  "plans": {
+    "claude-code:free": {
+      "monthlyPriceUsd": 0,
+      "source": "https://claude.com/pricing",
+      "quotedLine": "$0",
+      "checkedAt": "2026-09-18",
+      "plan": "free",
+      "provider": "claude-code"
+    },
+    "claude-code:pro": {
+      "monthlyPriceUsd": 20,
+      "source": "https://claude.com/pricing",
+      "quotedLine": "Per month with annual subscription discount ($200 billed up front). $20 if billed monthly.",
+      "checkedAt": "2026-09-18",
+      "plan": "pro",
+      "provider": "claude-code"
+    },
+    "claude-code:max 5x": {
+      "monthlyPriceUsd": 100,
+      "source": "https://support.claude.com/en/articles/11049741-what-is-the-max-plan",
+      "quotedLine": "Max 5x: $100 per month",
+      "checkedAt": "2026-09-18",
+      "plan": "max 5x",
+      "provider": "claude-code"
+    },
+    "claude-code:max 20x": {
+      "monthlyPriceUsd": 200,
+      "source": "https://support.claude.com/en/articles/11049741-what-is-the-max-plan",
+      "quotedLine": "Max 20x: $200 per month",
+      "checkedAt": "2026-09-18",
+      "plan": "max 20x",
+      "provider": "claude-code"
+    },
+    "claude-code:max": {
+      "monthlyPriceUsd": null,
+      "source": "https://support.claude.com/en/articles/11049741-what-is-the-max-plan",
+      "quotedLine": "The Max plan is available in two tiers to match your usage needs:",
+      "checkedAt": "2026-09-18",
+      "plan": "max",
+      "provider": "claude-code"
+    },
+    "command-code:go": {
+      "monthlyPriceUsd": 1,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Go  | $1  | $10  | $3  | $6",
+      "checkedAt": "2026-09-18",
+      "plan": "go",
+      "provider": "command-code"
+    },
+    "command-code:goat": {
+      "monthlyPriceUsd": 10,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "GOAT  | $10  | $70  | $14  | $35",
+      "checkedAt": "2026-09-18",
+      "plan": "goat",
+      "provider": "command-code"
+    },
+    "command-code:pro": {
+      "monthlyPriceUsd": 20,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Pro  | $20  | $80  | $16  | $40",
+      "checkedAt": "2026-09-18",
+      "plan": "pro",
+      "provider": "command-code"
+    },
+    "command-code:provider": {
+      "monthlyPriceUsd": 15,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Provider  | $15  | Pay as you go  | Provider API access",
+      "checkedAt": "2026-09-18",
+      "plan": "provider",
+      "provider": "command-code"
+    },
+    "command-code:max 10x": {
+      "monthlyPriceUsd": 100,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Max 10×  | $100  | $150  | $45  | $90",
+      "checkedAt": "2026-09-18",
+      "plan": "max 10x",
+      "provider": "command-code"
+    },
+    "command-code:max 20x": {
+      "monthlyPriceUsd": 200,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Max 20×  | $200  | $300  | $90  | $180",
+      "checkedAt": "2026-09-18",
+      "plan": "max 20x",
+      "provider": "command-code"
+    },
+    "command-code:max": {
+      "monthlyPriceUsd": null,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Max 10×  | $100  | $150  | $45  | $90",
+      "checkedAt": "2026-09-18",
+      "plan": "max",
+      "provider": "command-code"
+    },
+    "command-code:team pro": {
+      "monthlyPriceUsd": 40,
+      "source": "https://commandcode.ai/docs/resources/pricing-limits",
+      "quotedLine": "Team Pro  | $40  | $40  | $12  | $24",
+      "checkedAt": "2026-09-18",
+      "plan": "team pro",
+      "provider": "command-code"
+    },
+    "opencode:go": {
+      "monthlyPriceUsd": 10,
+      "source": "https://opencode.ai/v2/docs",
+      "quotedLine": "You can also try OpenCode Go a $10/month subscription plan that grants you access to the best open source models.",
+      "checkedAt": "2026-09-18",
+      "plan": "go",
+      "provider": "opencode"
+    },
+    "codex:plus": {
+      "monthlyPriceUsd": 20,
+      "source": "https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus",
+      "quotedLine": "Price: $20/month (billed monthly).",
+      "checkedAt": "2026-09-18",
+      "plan": "plus",
+      "provider": "codex"
+    },
+    "codex:pro": {
+      "monthlyPriceUsd": null,
+      "source": "https://help.openai.com/en/articles/9793128-what-is-chatgpt-pro",
+      "quotedLine": "Pro $100 unlocks 5x higher usage than Plus, while Pro $200 unlocks 20x usage than Plus.",
+      "checkedAt": "2026-09-18",
+      "plan": "pro",
+      "provider": "codex"
+    },
+    "codex:pro 100": {
+      "monthlyPriceUsd": 100,
+      "source": "https://help.openai.com/en/articles/9793128-what-is-chatgpt-pro",
+      "quotedLine": "Pro $100 unlocks 5x higher usage than Plus, while Pro $200 unlocks 20x usage than Plus.",
+      "checkedAt": "2026-09-18",
+      "plan": "pro 100",
+      "provider": "codex"
+    },
+    "codex:pro 200": {
+      "monthlyPriceUsd": 200,
+      "source": "https://help.openai.com/en/articles/9793128-what-is-chatgpt-pro",
+      "quotedLine": "Pro $100 unlocks 5x higher usage than Plus, while Pro $200 unlocks 20x usage than Plus.",
+      "checkedAt": "2026-09-18",
+      "plan": "pro 200",
+      "provider": "codex"
+    }
+  },
+  "notes": "The legacy prices map is intentionally empty. A plan entry is only usable when this task loaded a vendor page that states a current monthly USD figure; ambiguous plans remain null (for example, generic Claude Max and Command Code Max have multiple tiers, and generic Codex Pro has separate $100 and $200 tiers). Missing provider plans, business seat pricing, and unreported opencode/command-code plans remain unknown rather than inferred."
 }

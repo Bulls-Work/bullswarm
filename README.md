@@ -190,9 +190,11 @@ instead.
   mechanical chores — not assigned to a fixed pool ahead of time.
 - Among the pools that can do the work, the one furthest behind its own quota
   pace (the most unspent surplus) wins, so quota doesn't expire unused.
-- A pool that's about to hit its rolling 5-hour usage ceiling is passed over in
-  favor of one with headroom, based on where the clock actually is in that
-  window, not a flat percentage.
+- A pool close to its rolling 5-hour usage ceiling gives way to one with
+  headroom only while another pool is actually behind its own pace — it is an
+  ordering penalty, not a cutoff. A step may run a pool all the way to 100% of
+  that window, because if the provider stops the worker at the wall the retry
+  is briefed on what it had already written.
 - A pool whose weekly or monthly subscription window is about to reset gets
   priority for its remaining surplus, so quota doesn't run out the clock
   unspent.

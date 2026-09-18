@@ -28,7 +28,7 @@ function decode(name, rows) {
   decoder.push(payload.slice(0, 37), 'stdout', '2026-08-28T01:00:00.000Z');
   decoder.push(payload.slice(37), 'stdout', '2026-08-28T01:00:01.000Z');
   decoder.finish();
-  return { actions, progress, output: decoder.output() };
+  return { actions, progress, output: decoder.output(), usage: decoder.usage() };
 }
 
 const VENDOR_LINES = {
@@ -41,7 +41,18 @@ const VENDOR_LINES = {
     { type: 'assistant', message: { model: 'claude-sonnet-5', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'pwd' } }] } },
     { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] } },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'DONE' }] } },
-    { type: 'result', result: 'DONE' },
+    {
+      type: 'result',
+      result: 'DONE',
+      session_id: 'claude-session-1',
+      total_cost_usd: 0.61388,
+      usage: {
+        input_tokens: 2,
+        cache_read_input_tokens: 3,
+        cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 5 },
+        output_tokens: 6,
+      },
+    },
   ],
   grok: [
     { type: 'text', data: 'I will run it. ' },
@@ -74,6 +85,19 @@ test('connector adapters normalize semantic tool and response actions', () => {
     if (name === 'claude-code') assert.ok(decoded.progress.some((event) => event.model === 'claude-sonnet-5'));
     if (name === 'command-code') assert.ok(decoded.progress.some((event) => event.model === 'gpt-5.6-sol'));
   }
+});
+
+test('Claude result usage is decoded once with provider cost and session id', () => {
+  const decoded = decode('claude-code', VENDOR_LINES['claude-code']);
+  assert.deepEqual(decoded.usage, {
+    sessionId: 'claude-session-1',
+    costUsd: 0.61388,
+    standardRead: 2,
+    cacheRead: 3,
+    cacheWrite5m: 4,
+    cacheWrite1h: 5,
+    output: 6,
+  });
 });
 
 test('event stream CLI flags are connector-owned and appended to direct argv', () => {

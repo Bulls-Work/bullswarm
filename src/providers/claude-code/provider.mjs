@@ -42,10 +42,19 @@ export function isUsable(creds, now = Date.now(), skewMs = EXPIRY_SKEW_MS) {
 }
 
 export function readOAuthCredentials() {
+  const fileCreds = readFromCredentialsFile();
   if (platform() === 'darwin') {
-    return readFromMacKeychain(DEFAULT_KEYCHAIN_SERVICE) ?? readFromCredentialsFile();
+    const keychainCreds = readFromMacKeychain(DEFAULT_KEYCHAIN_SERVICE);
+    return keychainCreds
+      ? {
+        ...fileCreds,
+        ...keychainCreds,
+        subscriptionType: fileCreds?.subscriptionType ?? keychainCreds.subscriptionType ?? null,
+        rateLimitTier: fileCreds?.rateLimitTier ?? keychainCreds.rateLimitTier ?? null,
+      }
+      : fileCreds;
   }
-  return readFromCredentialsFile();
+  return fileCreds;
 }
 
 // `security find-generic-password` takes 100–300 ms and blocks the caller;
@@ -97,10 +106,40 @@ export function extractCredentials(blob) {
     const accessToken = typeof oauth?.accessToken === 'string' ? oauth.accessToken : null;
     const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : null;
     if (!accessToken || expiresAt === null) return null;
-    return { accessToken, expiresAt };
+    return {
+      accessToken,
+      expiresAt,
+      subscriptionType: typeof oauth?.subscriptionType === 'string' && oauth.subscriptionType.trim()
+        ? oauth.subscriptionType.trim()
+        : null,
+      rateLimitTier: typeof oauth?.rateLimitTier === 'string' && oauth.rateLimitTier.trim()
+        ? oauth.rateLimitTier.trim()
+        : null,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * A human plan label from Claude Code's local OAuth metadata. The raw
+ * subscriptionType and rateLimitTier are retained on the snapshot as well;
+ * this label is only a convenience for a reader and price-table lookup.
+ */
+export function claudePlanName({ subscriptionType = null, rateLimitTier = null } = {}) {
+  const subscription = typeof subscriptionType === 'string' ? subscriptionType.trim().toLowerCase() : '';
+  const tier = typeof rateLimitTier === 'string' ? rateLimitTier.trim().toLowerCase() : '';
+  const combined = `${subscription} ${tier}`;
+  // Team and enterprise seats can carry a Max-shaped usage tier; that tier is
+  // a limit multiplier, not the seat's individual billing plan.
+  if (subscription.includes('team') || subscription.includes('enterprise')) return subscriptionType.trim();
+  const max = combined.match(/max[^0-9]*(5|10|20)\s*x?/i);
+  if (max) return `max ${max[1]}x`;
+  if (subscription.includes('pro') || tier.includes('pro')) return 'pro';
+  if (subscription.includes('free') || tier.includes('free')) return 'free';
+  if (subscription) return subscriptionType.trim();
+  if (tier) return rateLimitTier.trim();
+  return null;
 }
 
 // --- home discovery and pool naming ------------------------------------------------
@@ -192,7 +231,19 @@ export function readAccountCredentials(configDir, opts = {}) {
     : null;
 
   const candidates = [];
-  if (keychainCreds) candidates.push({ creds: keychainCreds, source: 'keychain' });
+  // macOS keychain entries historically contain only the token and expiry.
+  // Merge the file's non-secret plan metadata into that token so detection is
+  // still sourced from `.credentials.json`, without ever shelling out to read
+  // the plan itself.
+  const mergedKeychain = keychainCreds && fileCreds
+    ? {
+      ...fileCreds,
+      ...keychainCreds,
+      subscriptionType: fileCreds.subscriptionType ?? keychainCreds.subscriptionType ?? null,
+      rateLimitTier: fileCreds.rateLimitTier ?? keychainCreds.rateLimitTier ?? null,
+    }
+    : keychainCreds;
+  if (mergedKeychain) candidates.push({ creds: mergedKeychain, source: 'keychain' });
   if (fileCreds) candidates.push({ creds: fileCreds, source: 'file' });
   if (extraFile) candidates.push({ creds: extraFile, source: 'file' });
   for (const c of candidates) {
@@ -332,10 +383,17 @@ function normalizeWindow(raw) {
   };
 }
 
-export function parseClaudeUsage(body, pool = 'claude-code') {
+export function parseClaudeUsage(body, pool = 'claude-code', credentials = null) {
   if (!body || typeof body !== 'object') {
     throw new ClaudeMeterError('Claude usage response missing body', 'parse');
   }
+  const subscriptionType = typeof credentials?.subscriptionType === 'string' && credentials.subscriptionType.trim()
+    ? credentials.subscriptionType.trim()
+    : null;
+  const rateLimitTier = typeof credentials?.rateLimitTier === 'string' && credentials.rateLimitTier.trim()
+    ? credentials.rateLimitTier.trim()
+    : null;
+  const planName = claudePlanName({ subscriptionType, rateLimitTier });
   return {
     captured_at: new Date().toISOString(),
     pool,
@@ -344,7 +402,13 @@ export function parseClaudeUsage(body, pool = 'claude-code') {
     monthly: null,
     seven_day_opus: normalizeWindow(body.seven_day_opus),
     seven_day_sonnet: normalizeWindow(body.seven_day_sonnet),
-    plan_type: null,
+    // Keep `plan_type` consistent with other provider snapshots while also
+    // exposing the two exact fields Claude Code persists locally. Prefer the
+    // canonical tier label when both fields make one available.
+    plan_type: planName ?? subscriptionType ?? rateLimitTier,
+    plan_name: planName,
+    subscription_type: subscriptionType,
+    rate_limit_tier: rateLimitTier,
   };
 }
 
@@ -383,7 +447,7 @@ export async function fetchClaudeUsageWithCredentials(creds, pool = 'claude-code
   } catch (err) {
     throw new ClaudeMeterError(`Failed to parse usage response: ${err.message}`, 'parse');
   }
-  return parseClaudeUsage(body, pool);
+  return parseClaudeUsage(body, pool, creds);
 }
 
 export async function fetchClaudeUsage() {

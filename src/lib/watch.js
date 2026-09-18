@@ -218,6 +218,8 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let forceKillTimer = null;
     let detectedModel = null;
     let providerFailureType = null;
+    let providerFailureAt = null;
+    let providerFailureText = null;
     // Assistant prose only. Tool results are quoted file/command output and
     // routinely contain limit wording that says nothing about OUR quota.
     let responseText = '';
@@ -231,6 +233,9 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
           && !event.summary.endsWith('\u2026')) {
           responseText = `${responseText}${event.summary}\n`.slice(-8000);
         }
+        if ((connector.eventStream?.failureTypes ?? []).includes(event?.providerType)) {
+          providerFailureText ??= typeof event?.summary === 'string' ? event.summary : null;
+        }
         attemptStream?.event(event, fullSummary);
         opts.onAgentEvent?.(event, fullSummary);
       },
@@ -238,6 +243,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         if (event.model) detectedModel = event.model;
         if ((connector.eventStream?.failureTypes ?? []).includes(event.providerType)) {
           providerFailureType = event.providerType;
+          providerFailureAt ??= event.at ?? null;
         }
         opts.onAgentProgress?.(event);
       },
@@ -333,14 +339,23 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       stderr: captureError
         ? `${stderrCapture.text()}\n[bullswarm] worker stream capture failed: ${captureError}`
         : stderrCapture.text(),
+      // Keep the diagnostic tail available to callers that need to classify a
+      // transport failure. The full bounded capture is intentionally retained
+      // for existing consumers, while this small field crosses verdict
+      // boundaries without requiring callers to know the capture internals.
+      stderrTail: stderrCapture.tail(4000),
       captureTruncated: { stdout: stdoutCapture.dropped, stderr: stderrCapture.dropped },
     });
     const finishStream = () => {
       eventDecoder?.finish();
-      return attemptStream?.close() ?? null;
+      return {
+        streamStats: attemptStream?.close() ?? null,
+        reportedUsage: eventDecoder?.usage() ?? null,
+      };
     };
     child.on('error', (err) => {
-      const streamStats = finishStream();
+      const finishedStream = finishStream();
+      const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
@@ -357,15 +372,19 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         cancelled,
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
+        reportedUsage: finishedStream.reportedUsage,
         detectedModel,
         providerFailureType,
+        providerFailureAt,
+        providerFailureText,
         spawnError: true,
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
     child.on('close', (code, signal) => {
       if (opts.processGroup && (cancelled || timedOut || stalled || fatalSignature || opts.shouldCancel?.())) stopChild('SIGKILL');
-      const streamStats = finishStream();
+      const finishedStream = finishStream();
+      const streamStats = finishedStream.streamStats;
       if (timer) clearTimeout(timer);
       if (silenceTimer) clearTimeout(silenceTimer);
       if (fatalKillTimer) clearTimeout(fatalKillTimer);
@@ -375,8 +394,11 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
       resolvePromise({
         exitCode: code, signal, ...capturedStreams(), timedOut, stalled, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
+        reportedUsage: finishedStream.reportedUsage,
         detectedModel,
         providerFailureType,
+        providerFailureAt,
+        providerFailureText,
         ...(streamStats?.streamFile ? { streamFile: streamStats.streamFile, streamStats } : {}),
       });
     });
@@ -465,7 +487,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   const output = extractOutput(connector, obs);
   writeFileSync(paths.outFile, output);
-  const selectedModel = opts.model ?? obs.detectedModel ?? connector.model ?? (() => {
+  const selectedModel = opts.model ?? obs.detectedModel ?? obs.reportedUsage?.model ?? connector.model ?? (() => {
     const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
     return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
   })();
@@ -475,6 +497,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     connector,
     model: selectedModel,
     subscription: connector.subscription ?? null,
+    reportedUsage: obs.reportedUsage,
   });
 
   // Gate order matters:
@@ -514,6 +537,35 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   let verdict;
   let structured = null;
+  let recoveredStructured = null;
+  const canInspectRecoveredOutput = Boolean(
+    obs.providerFailureType
+      && obs.exitCode === 0
+      && typeof output === 'string'
+      && output.trim().length > 0
+      && !upstreamAuth
+      && !quotaFailure,
+  );
+  if (canInspectRecoveredOutput && typeof opts.outputValidator === 'function') {
+    try {
+      const checked = opts.outputValidator(output);
+      if (!checked || typeof checked.ok !== 'boolean') throw new TypeError('outputValidator must return {ok, errors?, value?}');
+      recoveredStructured = {
+        ok: checked.ok,
+        errors: Array.isArray(checked.errors) ? checked.errors.map(String) : [],
+        ...(checked.value !== undefined ? { value: checked.value } : {}),
+      };
+    } catch {
+      recoveredStructured = null;
+    }
+  }
+  const recoveredOutputUsable = canInspectRecoveredOutput
+    && (typeof opts.outputValidator === 'function'
+      ? recoveredStructured?.ok === true
+      : judgeContent(output, {
+          expectWork: true,
+          acceptVerifyJson: opts.acceptVerifyJson === true,
+        }).verdict === 'pass');
   if (obs.cancelled) {
     verdict = { ok: false, why: 'workflow cancellation requested', cancelled: true };
   } else if (obs.stalled) {
@@ -534,7 +586,14 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       why: `upstream auth failure: "${String(upstreamAuth.signature).slice(0, 110)}" (provider stream error)`,
     };
   } else if (obs.providerFailureType) {
-    verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
+    if (recoveredOutputUsable) {
+      structured = recoveredStructured;
+      verdict = typeof opts.outputValidator === 'function'
+        ? { ok: true, why: 'structured output validated' }
+        : { ok: true, why: 'verified' };
+    } else {
+      verdict = { ok: false, why: `provider stream reported ${obs.providerFailureType}`, failureKind: 'provider' };
+    }
   } else if (quotaFailure) {
     verdict = {
       ok: false,
@@ -601,8 +660,20 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       acceptVerifyJson: opts.acceptVerifyJson === true,
     }).verdict === 'pass';
 
+  const notes = verdict.ok && recoveredOutputUsable
+    ? [{
+        at: obs.providerFailureAt ?? new Date().toISOString(),
+        kind: 'recovered-stream-error',
+        text: String(
+          `provider stream reported ${obs.providerFailureType}`
+          + (obs.providerFailureText ? `: ${obs.providerFailureText}` : ''),
+        ).slice(0, 500),
+      }]
+    : [];
+
   return {
     ...verdict,
+    ...(notes.length ? { notes } : {}),
     ok: verdict.ok,
     keepOnClaude: false,
     pick: { pool: connector.name, model: selectedModel, command: connector.spawn.cmd },
@@ -616,6 +687,8 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       stalled: obs.stalled ?? false,
       cancelled: obs.cancelled,
       providerFailureType: obs.providerFailureType,
+      providerFailureAt: obs.providerFailureAt,
+      providerFailureText: obs.providerFailureText,
       wallSec,
       outBytes: output.length,
       ...(obs.streamFile ? { streamFile: obs.streamFile } : {}),
@@ -624,6 +697,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       // even when nothing was appended, so a record can say WHY it was silent.
       reasoning: reasoningRecord(opts.reasoning ?? null),
     },
+    ...(obs.stderrTail ? { stderrTail: obs.stderrTail } : {}),
     outFile: paths.outFile,
     taskFile: paths.taskFile,
   };

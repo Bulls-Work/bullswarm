@@ -942,3 +942,24 @@ test('columnBars stacks the smallest slice at the bottom and the biggest on top'
     assert.ok(top.includes('a99cf0') || top.includes('169;156;240'), 'big slice is on top');
   }
 });
+
+test('columnBars exposes slice geometry that tiles each rendered column', () => {
+  const chart = columnBars([
+    { name: 'luna', values: [1, 3] },
+    { name: 'sol', values: [1, 1] },
+  ], ['day one', 'day two'], { width: 55, rowCount: 8, colors: false });
+  assert.equal(chart.meta.slices.length, 4);
+  for (const [index, column] of chart.meta.columns.entries()) {
+    const slices = column.slices;
+    assert.equal(slices, column.segments);
+    assert.ok(slices.every((slice) => slice.columnIndex === index));
+    assert.ok(slices.every((slice) => slice.seriesName === slice.name && slice.value > 0));
+    assert.ok(slices.every((slice) => slice.columnStart <= slice.columnEnd));
+    const ordered = [...slices].sort((a, b) => a.rowStart - b.rowStart);
+    assert.equal(ordered[0].rowStart, chart.meta.chartRows - column.height + 1);
+    assert.equal(ordered.at(-1).rowEnd, chart.meta.chartRows);
+    for (let at = 1; at < ordered.length; at += 1) {
+      assert.equal(ordered[at - 1].rowEnd + 1, ordered[at].rowStart);
+    }
+  }
+});

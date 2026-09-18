@@ -10,9 +10,55 @@ import type {
 
 type Raw = Record<string, unknown>
 
+export type BullswarmAssignmentRecord = BullswarmAssignment & {
+  id?: string
+  startedAt?: string
+  project?: string
+  projectName?: string
+  cwd?: string
+  taskFile?: string
+  task?: string
+  description?: string
+}
+
 const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+
+const optionalStrings = (
+  raw: Raw,
+  fallback: BullswarmAssignmentRecord | null,
+  keys: readonly ('id' | 'startedAt' | 'project' | 'projectName' | 'cwd' | 'taskFile' | 'task' | 'description')[],
+): Partial<BullswarmAssignmentRecord> => {
+  const fields: Partial<BullswarmAssignmentRecord> = {}
+  for (const key of keys) {
+    const value = str(raw[key]) ?? str(fallback?.[key])
+    if (value !== null) fields[key] = value
+  }
+  return fields
+}
+
+/** Reads one raw ledger record, preserving optional fields newer records may carry. */
+export function parseAssignmentRecord(
+  value: unknown,
+  fallback: BullswarmAssignmentRecord | null = null,
+): BullswarmAssignmentRecord | null {
+  if (!value || typeof value !== 'object') return fallback
+  const raw = value as Raw
+  const pool = str(raw.pool) ?? fallback?.pool ?? null
+  if (!pool) return fallback
+  return {
+    pool,
+    model: str(raw.model) ?? fallback?.model ?? null,
+    lane: str(raw.lane) ?? fallback?.lane ?? '',
+    source: str(raw.source) ?? fallback?.source ?? '',
+    runId: str(raw.runId) ?? fallback?.runId ?? null,
+    actionId: str(raw.actionId) ?? fallback?.actionId ?? null,
+    elapsedMinutes: num(raw.elapsedMinutes) ?? fallback?.elapsedMinutes ?? null,
+    expectedMinutes: num(raw.expectedMinutes) ?? fallback?.expectedMinutes ?? null,
+    ...optionalStrings(raw, fallback, ['id', 'startedAt', 'project', 'projectName', 'cwd', 'taskFile', 'task', 'description']),
+  }
+}
 
 /** Reads `bullswarm workflow runs --json` (ongoing runs) into the run model. */
 export function parseRuns(stdout: string): BullswarmRun[] {
@@ -32,21 +78,12 @@ export function parseRuns(stdout: string): BullswarmRun[] {
 }
 
 /** Reads `bullswarm assignments --json` (the in-flight ledger). */
-export function parseAssignments(stdout: string): BullswarmAssignment[] {
+export function parseAssignments(stdout: string): BullswarmAssignmentRecord[] {
   const doc = JSON.parse(stdout) as unknown
   const raw = Array.isArray(doc) ? (doc as Raw[]) : []
   return raw
-    .filter(a => typeof a.pool === 'string')
-    .map(a => ({
-      pool: a.pool as string,
-      model: str(a.model),
-      lane: str(a.lane) ?? '',
-      source: str(a.source) ?? '',
-      runId: str(a.runId),
-      actionId: str(a.actionId),
-      elapsedMinutes: num(a.elapsedMinutes),
-      expectedMinutes: num(a.expectedMinutes),
-    }))
+    .map(a => parseAssignmentRecord(a))
+    .filter((a): a is BullswarmAssignmentRecord => a !== null)
 }
 
 /** `3m/9m`, `3m`, or ''. */

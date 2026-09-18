@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { ACTION_PROGRAM_SCHEMA_VERSION, PROGRAM_ADVISORY_CODES, validateActionProgram } from './action-validator.js';
 import { createLedger, deserializeLedger, serializeLedger } from './ledger.js';
 import { isLiveProgram, isProgramWorkflow, removedActionIds } from './execution-policy.js';
@@ -46,9 +48,26 @@ const ATTEMPT_FIELDS = new Set([
   // `handoff: { from, bytes }` pointing at the attempt it was briefed on.
   // `lastResponse` is the text of the last `response` event in that stream,
   // which is what the watch handoff line quotes.
+  // `notes` records non-fatal transport observations; `outputSamples` is the
+  // bounded fallback when a persisted stream has no byte measurements.
   'outputBytes', 'streamFile', 'diffFile', 'changedFileCount', 'lastResponse', 'handoff',
+  'notes', 'outputSamples',
+  // The provider conversation this attempt ran in, when the connector supports
+  // resuming one (src/workflow/v2-dispatch.js `sessionFor`): which pool and
+  // model the session belongs to, the provider's own session id, how many
+  // sessions this chain has opened (`generation`), and when it was opened and
+  // last used. Absent on attempts whose connector has no conversation support
+  // and on every attempt recorded before measured usage capture existed.
+  'session',
+]);
+const ATTEMPT_SESSION_FIELDS = new Set([
+  'pool', 'model', 'sessionId', 'generation', 'startedAt', 'lastUsedAt',
 ]);
 const ATTEMPT_HANDOFF_FIELDS = new Set(['from', 'bytes']);
+const ATTEMPT_NOTE_FIELDS = new Set(['at', 'kind', 'text']);
+// Output samples are `[atMs, bytes]` pairs. The cap keeps live state small
+// enough for readers to redraw a run without loading the stream transcript.
+export const ATTEMPT_OUTPUT_SAMPLE_CAP = 240;
 // `state.attempts[].bytes` — the kernel's byte ledger for one dispatch, written
 // at dispatch and completed when the attempt ends (src/workflow/v2-runtime.js
 // `attemptBytes`). `taskFile` is the task file the attempt was handed,
@@ -165,6 +184,71 @@ function nullableString(value, name) {
 function timestamp(value, name) {
   nullableString(value, name);
   if (value !== null && Number.isNaN(Date.parse(value))) fail(`${name} must be an ISO-compatible timestamp`);
+}
+
+function outputTimeMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
+function outputBytesValue(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function capOutputSeries(series) {
+  if (!Array.isArray(series)) return [];
+  return series
+    .filter((sample) => Array.isArray(sample) && sample.length === 2
+      && outputTimeMs(sample[0]) != null && outputBytesValue(sample[1]) != null)
+    .map(([at, bytes]) => [outputTimeMs(at), outputBytesValue(bytes)])
+    .slice(-ATTEMPT_OUTPUT_SAMPLE_CAP);
+}
+
+function streamOutputSeries(streamFile) {
+  if (typeof streamFile !== 'string' || !streamFile || !existsSync(streamFile)) return [];
+  let body;
+  try { body = readFileSync(streamFile, 'utf8'); } catch { return []; }
+  const series = [];
+  for (const line of body.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event?.truncated === true) continue;
+    const at = outputTimeMs(event?.atMs ?? event?.at ?? event?.timestamp ?? event?.time);
+    const bytes = outputBytesValue(
+      event?.outputBytes
+        ?? event?.outputBytesObserved
+        ?? event?.totalBytes
+        ?? event?.bytes
+        ?? event?.size
+        ?? event?.sizeBytes
+        ?? event?.outputSize
+        ?? event?.summaryBytes,
+    );
+    if (at != null && bytes != null) series.push([at, bytes]);
+  }
+  return capOutputSeries(series);
+}
+
+/**
+ * Return an attempt's output-over-time series as `[atMs, bytes]` pairs.
+ *
+ * A persisted stream wins when its event records carry both a timestamp and a
+ * byte/size field. Older streams do not, so their durable `outputSamples`
+ * fallback is used instead. The result is bounded to the same 240-point cap
+ * used by the runtime sampler.
+ */
+export function attemptOutputSeries(attempt, runDir = null) {
+  const streamFile = typeof attempt?.streamFile === 'string' ? attempt.streamFile : null;
+  const resolvedStream = streamFile
+    ? (isAbsolute(streamFile) || typeof runDir !== 'string' || !runDir ? streamFile : join(runDir, streamFile))
+    : null;
+  const fromStream = streamOutputSeries(resolvedStream);
+  return fromStream.length ? fromStream : capOutputSeries(attempt?.outputSamples);
 }
 
 function requirementsFor(value) {
@@ -634,6 +718,46 @@ function validateAttemptBytes(bytes, at) {
   if (bytes.output !== null && bytes.output !== undefined) nonNegativeInteger(bytes.output, `${at}.output`);
 }
 
+// The attempt's provider conversation. `sessionId` is the provider's own id and
+// is the one field that must be there — the rest are recorded when the kernel
+// knows them, and an attempt that never opened a session carries `null`.
+function validateAttemptSession(session, at) {
+  object(session, at);
+  noUnknown(session, ATTEMPT_SESSION_FIELDS, at);
+  requiredString(session.sessionId, `${at}.sessionId`);
+  for (const field of ['pool', 'model']) {
+    if (session[field] !== undefined) nullableString(session[field], `${at}.${field}`);
+  }
+  for (const field of ['startedAt', 'lastUsedAt']) {
+    if (session[field] !== undefined) timestamp(session[field], `${at}.${field}`);
+  }
+  if (session.generation !== undefined && session.generation !== null) {
+    positiveInteger(session.generation, `${at}.generation`);
+  }
+}
+
+function validateAttemptNotes(notes, at) {
+  if (!Array.isArray(notes)) fail(`${at} must be an array`);
+  for (const [index, note] of notes.entries()) {
+    object(note, `${at}[${index}]`);
+    noUnknown(note, ATTEMPT_NOTE_FIELDS, `${at}[${index}]`);
+    timestamp(note.at, `${at}[${index}].at`);
+    requiredString(note.kind, `${at}[${index}].kind`);
+    requiredString(note.text, `${at}[${index}].text`);
+  }
+}
+
+function validateOutputSamples(samples, at) {
+  if (!Array.isArray(samples)) fail(`${at} must be an array`);
+  if (samples.length > ATTEMPT_OUTPUT_SAMPLE_CAP) fail(`${at} must contain at most ${ATTEMPT_OUTPUT_SAMPLE_CAP} samples`);
+  for (const [index, sample] of samples.entries()) {
+    if (!Array.isArray(sample) || sample.length !== 2) fail(`${at}[${index}] must be [atMs, bytes]`);
+    const [atMs, bytes] = sample;
+    if (!Number.isFinite(atMs) || atMs < 0) fail(`${at}[${index}][0] must be a non-negative finite number`);
+    if (!Number.isFinite(bytes) || bytes < 0) fail(`${at}[${index}][1] must be a non-negative finite number`);
+  }
+}
+
 function validateAttempts(attempts, program) {
   if (!Array.isArray(attempts)) fail('state.attempts must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
@@ -662,6 +786,9 @@ function validateAttempts(attempts, program) {
       if (attempt.handoff.from !== undefined) nullableString(attempt.handoff.from, `state.attempts[${index}].handoff.from`);
       if (attempt.handoff.bytes !== undefined) nonNegativeInteger(attempt.handoff.bytes, `state.attempts[${index}].handoff.bytes`);
     }
+    if (attempt.session !== undefined && attempt.session !== null) validateAttemptSession(attempt.session, `state.attempts[${index}].session`);
+    if (attempt.notes !== undefined) validateAttemptNotes(attempt.notes, `state.attempts[${index}].notes`);
+    if (attempt.outputSamples !== undefined) validateOutputSamples(attempt.outputSamples, `state.attempts[${index}].outputSamples`);
     if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);

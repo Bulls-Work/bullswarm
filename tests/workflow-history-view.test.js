@@ -29,8 +29,8 @@ test('History dates and workflows are newest first, with a run hit region', () =
   const text = view.lines.join('\n');
   assert.ok(text.indexOf('Tue 15 Sep') < text.indexOf('Sun 13 Sep'));
   assert.ok(text.indexOf('new222') < text.indexOf('old111'));
-  assert.match(text, /\(≈ \$0\.35 API\)/);
-  assert.match(text, /12m\s+·\s+\(≈ \$0\.25 API\)/);
+  assert.match(text, /\(~ \$0\.35 estimated API\)/);
+  assert.match(text, /12m\s+·\s*\(~ \$0\.25 estimated API\)/);
   assert.match(text, /✓ new222/);
   const runs = view.regions.filter((region) => region.action.kind === 'run');
   assert.equal(runs.length, 3);
@@ -77,7 +77,7 @@ test('History keeps finished, running and legacy runs to one primary row at 55 c
   assert.equal(rows.length, 3);
   assert.equal(view.regions.filter((region) => region.action.kind === 'run').length, 3);
   assert.match(rows.find((line) => line.includes('fin001')), /✓/);
-  assert.match(rows.find((line) => line.includes('fin001')), /\(≈ \$0\.25 API\)/);
+  assert.match(rows.find((line) => line.includes('fin001')), /~ \$0\.25 estimated/);
   assert.match(rows.find((line) => line.includes('run002')), /●/);
   assert.match(rows.find((line) => line.includes('leg003')), /legacy · read-only/);
 });
@@ -90,7 +90,7 @@ test('History never paints money for a run or day with no recorded estimate', ()
     }], { width, ansi: false });
     const text = view.lines.join('\n');
     assert.equal(text.includes('$'), false, `${width}: no money without an estimate`);
-    assert.match(text, /no recorded API-equivalent cost/);
+    assert.match(text, /cost unknown/);
   }
 });
 
@@ -120,7 +120,7 @@ test('History never truncates visible duration text on phone widths', () => {
     }], { width, ansi: false });
     const rows = view.lines.filter((line) => line.includes('dur00'));
     assert.equal(rows.length, 2);
-    assert.ok(rows.every((line) => !line.includes('…')));
+    assert.ok(rows.every((line) => !line.includes('3h2…') && !line.includes('12h3…')));
     assert.ok(rows.some((line) => line.includes('3h21m')));
     assert.ok(rows.some((line) => line.includes('12h34m')));
   }
@@ -139,6 +139,49 @@ test('History emits the shared palette roles for marks, estimates and day totals
   assert.match(text, /38;2;182;189;115m✓/);
   assert.match(text, /38;2;191;108;105m✗/);
   assert.match(text, /38;2;143;199;207m●/);
-  assert.equal((text.match(/38;2;210;133;107m\(≈ \$0\.20 API\)/g) ?? []).length, 1);
-  assert.match(text, /38;2;124;127;138m.*\(≈ \$0\.20 API\)/);
+  assert.match(text, /38;2;210;133;107m\(cost unknown\)/);
+  assert.match(text, /38;2;124;127;138m\(~ \$0\.20 estimated API\)/);
+});
+
+test('History renders finished single tasks beside workflows with fixed duration and time', () => {
+  const task = {
+    kind: 'task', id: 'task-001', lane: 'build', pool: 'echo', model: 'echo-local',
+    project: 'bullswarm', startedAt: '2026-09-18T11:40:00Z', endedAt: '2026-09-18T11:42:05Z',
+    durationMs: 125000, ok: true, reason: null, taskFile: '/tmp/task.md',
+  };
+  for (const width of [55, 120]) {
+    const view = historyLines([{ date: '2026-09-18', runs: 0, finished: 0, rows: [task] }], { width, ansi: false });
+    const text = view.lines.join('\n');
+    const row = view.lines.find((line) => line.includes('task-001'));
+    assert.ok(row, `${width}: task row missing`);
+    assert.match(text, /0 runs · 1 task/);
+    assert.match(row, /build/);
+    assert.match(row, /echo/);
+    assert.match(row, /ok/);
+    assert.match(row, /2m/);
+    assert.match(row, /\d{2}:42/);
+    assert.equal(view.regions.filter((region) => region.action.kind === 'task').length, 1);
+    assert.ok(view.lines.every((line) => visible(line).length <= width), `${width}: task row overran frame`);
+  }
+});
+test('History labels provider, transcript, estimated and unknown daily spend bases', () => {
+  const cases = [
+    ['provider-reported', /\(\$ 1\.23 API\)/],
+    ['transcript-summed', /\(≈ \$1\.23 summed API\)/],
+    ['estimated:utf8-bytes\/4', /\(~ \$1\.23 estimated API\)/],
+    ['unknown', /\(cost unknown\)/],
+  ];
+  for (const [tokenSource, expected] of cases) {
+    const view = historyLines([{
+      date: '2026-09-18',
+      tokenSource,
+      spendUsd: 1.23,
+      runs: [{
+        runId: 'wf-basis-123', shortId: 'basis1', project: 'bullswarm',
+        goal: 'basis', status: 'completed', minutes: { wall: 2 },
+        apiEquivalentUsd: 1.23, tokenSource, finishedAt: '2026-09-18T09:00:00Z',
+      }],
+    }], { width: 120, ansi: false });
+    assert.match(view.lines.join('\n'), expected, tokenSource);
+  }
 });

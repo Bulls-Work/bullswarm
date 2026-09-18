@@ -151,7 +151,9 @@ function round(value, places = 2) {
  * @param {string} bullswarmDir  BULLSWARM_HOME (the ledger lives beneath it)
  * @param {object} fields        pool (required) plus model/lane/effort/source/
  *                               runId/actionId/attempt/expectedMinutes/
- *                               expectedSource/workerPid/startedAt/id
+ *                               expectedSource/workerPid/startedAt/id and the
+ *                               optional single-task identity fields
+ *                               project/taskFile/outFile
  * @returns {object} the stored record
  */
 export function registerAssignment(bullswarmDir, fields = {}) {
@@ -181,6 +183,13 @@ export function registerAssignment(bullswarmDir, fields = {}) {
     startedAt: typeof fields.startedAt === 'string' && fields.startedAt
       ? fields.startedAt
       : new Date().toISOString(),
+    // Single-task rows need the same durable identity while they are in flight
+    // as they have after the decision is filed. Workflow assignments leave
+    // these null, preserving their existing shape semantically while allowing
+    // old ledger files to remain readable.
+    project: fields.project ?? null,
+    taskFile: fields.taskFile ?? null,
+    outFile: fields.outFile ?? null,
     expectedMinutes,
     expectedSource: fields.expectedSource ?? (expectedMinutes == null ? 'none' : 'caller'),
   };
@@ -219,6 +228,9 @@ export function updateAssignment(bullswarmDir, id, patch = {}) {
   if ('actionId' in patch) next.actionId = patch.actionId ?? null;
   if ('expectedMinutes' in patch) next.expectedMinutes = nullableNumber(patch.expectedMinutes);
   if ('expectedSource' in patch) next.expectedSource = patch.expectedSource ?? null;
+  if ('project' in patch) next.project = patch.project ?? null;
+  if ('taskFile' in patch) next.taskFile = patch.taskFile ?? null;
+  if ('outFile' in patch) next.outFile = patch.outFile ?? null;
   return writeRecord(dir, next);
 }
 

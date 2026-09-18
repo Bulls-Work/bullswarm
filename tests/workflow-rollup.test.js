@@ -95,8 +95,14 @@ test('R1: the record carries every field the dashboard reads, measured from stat
   // and budget.seconds 1260.2 is 21.0 minutes of agent time.
   assert.equal(record.minutes.wall, 21.02);
   assert.equal(record.minutes.agent, 21);
-  assert.deepEqual(record.pools['claude-code:wati'], { attempts: 1, minutes: 14.62, costUsd: 0.244205, tokens: 10841 });
-  assert.deepEqual(record.pools.codex, { attempts: 1, minutes: 6.39, costUsd: 0.05, tokens: 4000 });
+  assert.deepEqual(record.pools['claude-code:wati'], {
+    attempts: 1, minutes: 14.62, costUsd: 0.244205, tokens: 10841,
+    cacheRead: null, cacheWrite: null, tokenSource: 'unknown',
+  });
+  assert.deepEqual(record.pools.codex, {
+    attempts: 1, minutes: 6.39, costUsd: 0.05, tokens: 4000,
+    cacheRead: null, cacheWrite: null, tokenSource: 'unknown',
+  });
   assert.deepEqual(record.models['claude-opus-5'], { attempts: 1, minutes: 14.62 });
   assert.deepEqual(record.models['gpt-5.6-luna'], { attempts: 1, minutes: 6.39 });
 });
@@ -178,8 +184,37 @@ test('R2: an attempt with no pool or model is counted under "unknown", not dropp
   const record = rollupRecord(stateFixture({
     attempts: [{ id: 'a1', pool: null, model: null, wallSec: 120, usage: null }],
   }), null);
-  assert.deepEqual(record.pools.unknown, { attempts: 1, minutes: 2, costUsd: null, tokens: null });
+  assert.deepEqual(record.pools.unknown, {
+    attempts: 1, minutes: 2, costUsd: null, tokens: null,
+    cacheRead: null, cacheWrite: null, tokenSource: 'unknown',
+  });
   assert.deepEqual(record.models.unknown, { attempts: 1, minutes: 2 });
+});
+
+test('rollup keeps cache totals and the worst token basis for each pool', () => {
+  const record = rollupRecord(stateFixture({
+    attempts: [
+      {
+        id: 'a1', pool: 'claude-code', model: 'claude-opus-5', wallSec: 60,
+        usage: {
+          tokenSource: 'provider-reported',
+          tokens: { totalKnown: 30, cacheRead: 20, cacheWrite5m: 4, cacheWrite1h: 6 },
+          cost: { estimatedUsd: 1 },
+        },
+      },
+      {
+        id: 'a2', pool: 'claude-code', model: 'claude-opus-5', wallSec: 60,
+        usage: {
+          tokenSource: 'transcript-summed',
+          tokens: { totalKnown: 10, cacheRead: 3, cacheWrite: 2 },
+          cost: { estimatedUsd: 0.5 },
+        },
+      },
+    ],
+  }), null);
+  assert.equal(record.pools['claude-code'].cacheRead, 23);
+  assert.equal(record.pools['claude-code'].cacheWrite, 12);
+  assert.equal(record.pools['claude-code'].tokenSource, 'transcript-summed');
 });
 
 // --- writeRunRollup / readRollup ---------------------------------------

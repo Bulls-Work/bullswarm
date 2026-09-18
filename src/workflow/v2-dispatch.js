@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { handoffBlock } from './v2-runtime.js';
 import { pickPool, isBenched, isFree, isQuarantined } from '../lib/route.js';
@@ -16,6 +16,7 @@ import {
   withLedger,
 } from '../lib/assignments.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from '../lib/forecast.js';
+import { probeFreeModel, shouldProbeFreeModel } from '../lib/probe.js';
 import { MIN_DURATION_SAMPLES, MIN_EXPECTED_MINUTES } from '../lib/spend.js';
 import { DEFAULT_EFFORT_BY_LANE } from './action-validator.js';
 
@@ -390,6 +391,59 @@ function lastResponseEvents(streamFile, limit = 3) {
   }
 }
 
+function durableArtifactPath(runDir, path) {
+  if (!path) return null;
+  return isAbsolute(path) || !runDir ? path : join(runDir, path);
+}
+
+function durableHandoffFacts(attempt, runDir) {
+  if (!attempt || typeof attempt !== 'object') return null;
+  const streamFile = durableArtifactPath(runDir, attempt.streamFile);
+  const diffFile = durableArtifactPath(runDir, attempt.diffFile);
+  const outputFile = durableArtifactPath(runDir, attempt.outputFile ?? attempt.partialOutput);
+  const diffStatText = diffFile && existsSync(diffFile)
+    ? (() => { try { return readFileSync(diffFile, 'utf8').trimEnd(); } catch { return ''; } })()
+    : '';
+  const outputBytes = attempt.outputBytes ?? (outputFile ? fileBytes(outputFile) : null);
+  const lastEvents = lastResponseEvents(streamFile);
+  if (!lastEvents.length && typeof attempt.lastResponse === 'string' && attempt.lastResponse) {
+    lastEvents.push({ at: attempt.finishedAt ?? null, kind: 'response', summary: attempt.lastResponse });
+  }
+  return {
+    pool: attempt.pool,
+    model: attempt.model,
+    startedAt: attempt.startedAt,
+    finishedAt: attempt.finishedAt,
+    failureKind: attempt.failureKind,
+    why: attempt.why,
+    diffStatText,
+    diffFile,
+    changedFiles: Array.isArray(attempt.changedFiles) ? attempt.changedFiles : [],
+    outputFile,
+    partialOutput: durableArtifactPath(runDir, attempt.partialOutput),
+    outputBytes,
+    streamFile,
+    hasEventStream: Boolean(streamFile && streamFile.endsWith('.jsonl')),
+    lastEvents,
+  };
+}
+
+function durableHandoff(attempt, runDir, formatHandoff) {
+  const facts = durableHandoffFacts(attempt, runDir);
+  if (!facts) return null;
+  const block = formatHandoff(facts);
+  if (typeof block !== 'string' || !block) return null;
+  return {
+    block,
+    from: attempt.id ?? `${attempt.actionId ?? 'attempt'}-${attempt.ordinal ?? 1}`,
+    bytes: Buffer.byteLength(block, 'utf8'),
+  };
+}
+
+export function durableAttemptHandoff(attempt, runDir, formatHandoff = handoffBlock) {
+  return durableHandoff(attempt, runDir, formatHandoff);
+}
+
 export { handoffBlock };
 
 /**
@@ -502,6 +556,9 @@ export async function dispatchV2Action({
   onAgentProgress = null,
   evidence = null,
   dependencies = {},
+  resumeAttempt = null,
+  resumeHandoff = null,
+  runDir = null,
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
@@ -531,6 +588,7 @@ export async function dispatchV2Action({
     ? silenceTimeoutSec
     : workerSilenceTimeoutSec(parentEnv);
   const effort = action.effort ?? DEFAULT_EFFORT_BY_LANE[action.lane] ?? 'medium';
+  const failedProbes = new Set();
   const liveQuarantines = dependencies.liveQuarantines ?? (() => {
     try { return loadCoreState(bullswarmDir).pools ?? {}; }
     catch { return {}; }
@@ -541,7 +599,7 @@ export async function dispatchV2Action({
       preferredModel, strictPool, now: now(),
       liveQuarantine: (name) => live[name]?.quarantine ?? null,
       liveBench: (name) => live[name]?.bench ?? null,
-    });
+    }).filter((pool) => !failedProbes.has(pool.name));
   };
   const safeCoreState = () => {
     try { return loadCoreState(bullswarmDir); } catch { return null; }
@@ -579,7 +637,13 @@ export async function dispatchV2Action({
   let lastPool = null;
   // The prior attempt's durable facts, carried into the next attempt's task as
   // a `## Prior attempt on this step` handoff block. Null on the first attempt.
-  let priorHandoff = null;
+  const resumedHandoff = resumeHandoff ?? (resumeAttempt ? durableHandoff(resumeAttempt, runDir, formatHandoff) : null);
+  const resumedSuffix = resumedHandoff ? `\n\n${resumedHandoff.block}` : '';
+  const baseTaskText = resumedSuffix && taskText.endsWith(resumedSuffix)
+    ? taskText.slice(0, -resumedSuffix.length)
+    : taskText;
+  let priorHandoff = resumedHandoff ? { from: resumedHandoff.from, bytes: resumedHandoff.bytes } : null;
+  if (resumedHandoff && !nextTask.includes(resumedHandoff.block)) nextTask = `${nextTask}\n\n${resumedHandoff.block}`;
 
   while (remaining.length || (last && retriesUsed < maxMechanicalRetries)) {
     if (shouldCancel?.()) return { ok: false, status: 'cancelled', failureKind: 'cancelled', attempts, verdict: last };
@@ -627,7 +691,7 @@ export async function dispatchV2Action({
     const routingPools = [
       ...routePools.filter((candidate) => !liveBenchedNames.has(candidate.name)),
       ...routeBenchCandidates,
-    ];
+    ].filter((candidate) => !failedProbes.has(candidate.name));
     // The ledger is re-read HERE, before every pick and every retry, not on
     // the refresher's 15s throttle: up to four kernel actions start within
     // milliseconds of each other, and each has to see the assignments the
@@ -638,6 +702,9 @@ export async function dispatchV2Action({
       callerEligible: false,
       callerSession: false,
       preferredPool: effectivePreferredPool,
+      // `routingPools` is already filtered to the pin; the router needs the
+      // name so routeWhy says the pick was pinned, not compared.
+      strictPool,
       effortTier: effort,
       now: pickAt,
       candidateMinutes: expected.expectedMinutes,
@@ -649,6 +716,37 @@ export async function dispatchV2Action({
     lastPool = pool;
     const connector = pool.connector ?? pool;
     const model = selectedModel(pool, effort, preferredModel);
+    const probe = dependencies.probeFreeModel ?? probeFreeModel;
+    // A caller-supplied watchOnce is the dispatcher's worker-test seam. It is
+    // not the provider CLI that a liveness probe must exercise, so leave
+    // probes disabled for those legacy harnesses unless they explicitly
+    // inject a probe function of their own.
+    const probeEnabled = !dependencies.watchOnce || typeof dependencies.probeFreeModel === 'function';
+    if (probeEnabled && shouldProbeFreeModel(pool, model)) {
+      const liveness = await probe({
+        pool,
+        model,
+        home: bullswarmDir,
+        timeoutMs: 30_000,
+        now: pickAt,
+      });
+      if (!liveness.ok) {
+        const reason = `probe: ${liveness.reason}`;
+        failedProbes.add(pool.name);
+        tried.add(pool.name);
+        for (let index = remaining.length - 1; index >= 0; index -= 1) {
+          if (remaining[index].name === pool.name) remaining.splice(index, 1);
+        }
+        updateCoreState(bullswarmDir, (fresh) => {
+          recordPoolStrike(fresh, pool.name, reason, pickAt);
+        });
+        fallbackWhy = fallbackWhy
+          ? `${fallbackWhy} · ${reason} on ${pool.name}`
+          : `${reason} on ${pool.name}`;
+        last = { ok: false, why: reason, failureKind: 'provider', meta: { exitCode: null } };
+        continue;
+      }
+    }
     const ordinal = attempts.length + 1;
     const files = withAttemptArtifacts(attemptPaths(paths, ordinal), action.id, ordinal);
     const beforeAttempt = hashTerritory(
@@ -803,6 +901,7 @@ export async function dispatchV2Action({
       ...(streamFile ? { streamFile } : {}),
       ...(snapshot.ok ? { diffFile: files.diffFile, changedFileCount: snapshot.changedFiles.length } : {}),
       lastResponse: lastEvents.at(-1)?.summary ?? null,
+      ...(Array.isArray(verdict.notes) && verdict.notes.length ? { notes: clone(verdict.notes) } : {}),
       ...(kind === 'stalled'
         ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
         : {}),
@@ -854,7 +953,7 @@ export async function dispatchV2Action({
     if (index >= 0) remaining.splice(index, 1);
     if (canCorrectSchema) {
       correctionUsed = true;
-      nextTask = correctionTask(verdict, { originalTask: taskText, attempt: ordinal });
+      nextTask = correctionTask(verdict, { originalTask: baseTaskText, attempt: ordinal });
       // Schema correction continues the same physical conversation when the
       // connector supports it. Put the same pool first without widening the
       // total correction allowance.
@@ -881,7 +980,7 @@ export async function dispatchV2Action({
         lastEvents,
       };
       const block = formatHandoff(facts);
-      nextTask = `${taskText}\n\n${block}`;
+      nextTask = `${baseTaskText}\n\n${block}`;
       priorHandoff = {
         from: `${action.id}-${ordinal}`,
         bytes: Buffer.byteLength(block, 'utf8'),
@@ -910,7 +1009,7 @@ export async function dispatchV2Action({
   const lane = action.lane ?? 'chore';
   const capable = preparePools(allPools, action, effort, {
     preferredModel, strictPool, now: now(), ignoreQuarantine: true, ignoreBench: true,
-  });
+  }).filter((pool) => !failedProbes.has(pool.name));
   const live = liveQuarantines();
   let comesBack = null;
   for (const pool of capable) {

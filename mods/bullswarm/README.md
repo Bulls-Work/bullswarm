@@ -13,6 +13,15 @@ not show the dashboard's **Home**, **Runs**, **Budget**, **Stats**, **History**,
 buttons, `usage`, and `close`. Navigation matches the dashboard's mouse rules:
 click any button, tab, run, or step, and use the wheel to scroll.
 
+The pane's `usage` button is available even when no workflow is running, so it
+always opens the read-only pools and rungs page. When the workflow list is
+empty but a live `bullswarm run` assignment is present, the empty pane opens
+with `Single task in flight` and shows that task's lane, pool and model, the
+tail of its task-file path (falling back to its project or working directory)
+and its elapsed time; the same in-flight refresh cadence keeps that elapsed
+value current. Workflow assignments remain part of the run views, while the empty
+pane only promotes the standalone `source: "run"` record.
+
 What it adds beyond the packaged skill and the MCP server:
 
 | Hook | What happens |

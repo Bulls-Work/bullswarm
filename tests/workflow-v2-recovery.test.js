@@ -234,6 +234,7 @@ const result = await runV2AutonomousWorkflow({ bullswarmDir: ${JSON.stringify(f.
   dependencies: { dispatchV2Action: async (options) => {
     // The kernel adds the prior attempt count to this ordinal itself.
     const files = options.paths(1);
+    writeFileSync(files.taskFile, options.taskText);
     const record = { ordinal: 1, pool: 'fixture', model: 'fixture', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
     options.onAttempt('started', record);
     if (!resume) {
@@ -261,4 +262,10 @@ console.log(result.result.status);
   assert.equal(interrupted.outputBytes, Buffer.byteLength('## Partial\n\nhalf done'));
   assert.match(interrupted.streamFile, /stream-write-attempt-1\.jsonl$/);
   assert.equal(interrupted.diffFile, undefined, 'no diff snapshot was written, so none is claimed');
+  const retried = state.attempts.find((attempt) => attempt.ordinal === 2);
+  assert.ok(retried, 'resume dispatch records a replacement attempt');
+  const resumedTask = readFileSync(retried.taskFile, 'utf8');
+  assert.match(resumedTask, /## Prior attempt on this step/);
+  assert.match(resumedTask, /stream-write-attempt-1\.jsonl/);
+  assert.match(resumedTask, /half done/);
 });

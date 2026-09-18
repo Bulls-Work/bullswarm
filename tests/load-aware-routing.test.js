@@ -181,7 +181,7 @@ test('a burst spreads: two agents already on one pool move the next pick to the 
   }
 });
 
-test('a measured spend rate skips a pool as near-limit before its reading gets there', () => {
+test('a measured spend rate softly penalizes a near-limit pool before its reading gets there', () => {
   const home = fixtureHome();
   try {
     const now = Date.now();
@@ -227,7 +227,8 @@ test('a measured spend rate skips a pool as near-limit before its reading gets t
       `this assignment must carry alpha past the near-limit line, got ${alpha.forecastFiveHourPct}`,
     );
     assert.equal(alpha.nearFiveHourLimit, true);
-    assert.equal(alpha.forecastGated, false, '78% is near-limit, not burst-blocked');
+    assert.equal(alpha.forecastGated, false, '78% remains eligible');
+    assert.equal(alpha.nearFiveHourPenalty, true, 'beta is also behind pace, so alpha gets the soft penalty');
 
     // beta has no history, so no rate: its forecast is its reading, and it
     // keeps its 5h headroom.
@@ -235,20 +236,80 @@ test('a measured spend rate skips a pool as near-limit before its reading gets t
     assert.equal(beta.nearFiveHourLimit, false);
 
     assert.equal(verdict.pick.pool, 'beta');
-    assert.match(verdict.why, /skipped near 5h limit \(projected\): alpha \d+(\.\d+)?%/);
+    assert.doesNotMatch(verdict.why, /skipped near 5h limit/);
 
     // R10 end-to-end: the elapsed share of the 5h window travels from the
     // snapshot's resets_at through buildPools into the candidate row and the
-    // skip label. The fixture places both pools half way through the window,
+    // last-mile ordering. The fixture places both pools half way through the window,
     // so alpha's ~78% forecast is genuinely ahead of its own clock and stays
-    // tiered down; only a pool whose forecast sits BELOW its elapsed share is
-    // exempt.
+    // soft-penalized; only a pool whose forecast sits BELOW its elapsed share
+    // is exempt from the last-mile penalty.
     assert.ok(
       alpha.fiveHourElapsedPct >= 50 && alpha.fiveHourElapsedPct < 55,
       `half of alpha's 5h window should have elapsed, got ${alpha.fiveHourElapsedPct}`,
     );
     assert.ok(alpha.forecastFiveHourPct > alpha.fiveHourElapsedPct, 'ahead of its clock');
-    assert.match(verdict.why, /skipped near 5h limit \(projected\): alpha \d+(\.\d+)?% \(5\d\.\d% elapsed\)/);
+    assert.equal(alpha.nearFiveHourLimit, true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('the load-aware path excludes only a 5h wall or a future quota retry', () => {
+  const home = fixtureHome();
+  try {
+    const now = Date.now();
+    writeSnapshot(home, 'alpha', { fiveHourPct: 100, weeklyPct: 20, now });
+    writeSnapshot(home, 'beta', { fiveHourPct: 30, weeklyPct: 20, now });
+    let verdict = dryRun(home);
+    assert.equal(verdict.pick.pool, 'beta');
+    assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), false);
+
+    // A recorded quota retry is a wall even before the next meter poll reaches
+    // 100%; auth/quarantine behavior remains owned by the existing filters.
+    const statePath = join(home, 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    state.pools.alpha.quarantine = {
+      until: now + 15 * MINUTE,
+      reason: 'usage limit',
+      kind: 'quota',
+    };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+    writeSnapshot(home, 'alpha', { fiveHourPct: 50, weeklyPct: 20, now });
+    verdict = dryRun(home);
+    assert.equal(verdict.pick.pool, 'beta');
+    assert.equal((verdict.candidates ?? []).some((candidate) => candidate.pool === 'alpha'), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a forecast beyond 100% stays in the candidate list and is ranked last', () => {
+  const home = fixtureHome();
+  try {
+    const now = Date.now();
+    writeSnapshot(home, 'alpha', { fiveHourPct: 90, weeklyPct: 20, now });
+    writeSnapshot(home, 'beta', { fiveHourPct: 20, weeklyPct: 20, now });
+    const resetsAt = new Date(now + 2.5 * 60 * MINUTE).toISOString();
+    writeMeterHistory(home, 'alpha', [30, 20, 0].map((agoMin, index) => ({
+      captured_at: new Date(now - agoMin * MINUTE).toISOString(),
+      five_hour: { utilization: [70, 80, 90][index], resets_at: resetsAt },
+    })));
+    writeState(home, [30, 20].map((agoMin) => ({
+      ts: new Date(now - (agoMin - 10) * MINUTE).toISOString(),
+      lane: 'build', picked: 'alpha', keepOnClaude: false, ok: true,
+      why: 'fixture attempt', wallSec: 600,
+    })));
+    registerTwoOn(home, 'alpha', { startedAt: now - 2 * MINUTE, expectedMinutes: 10 });
+
+    const verdict = dryRun(home);
+    const alpha = candidateFor(verdict, 'alpha');
+    assert.ok(alpha.forecastFiveHourPct > 100, `forecast should cross the wall: ${alpha.forecastFiveHourPct}`);
+    assert.equal(alpha.forecastGated, false);
+    assert.equal(alpha.forecastOverLimit, true);
+    assert.equal(verdict.pick.pool, 'beta');
+    assert.equal(verdict.candidates.at(-1).pool, 'alpha');
+    assert.match(verdict.why, /forecast over 100% \(still eligible; ranked last\): alpha \d+(\.\d+)?%/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

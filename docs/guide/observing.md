@@ -107,6 +107,111 @@ dashboard and leaves the run going; only `c` stops it, and that asks the kernel
 for a cooperative stop at its next safe checkpoint.
 :::
 
+## Single `bullswarm run` tasks on the Runs page
+
+A single task dispatched with `bullswarm run` is not a workflow, but it spends
+the same quota, so the dashboard counts it the same way.
+
+A task **in flight** is read from the live assignment ledger,
+`$BULLSWARM_HOME/assignments/*.json` with `source: "run"`, and appears in the
+`Runs` page's `active` block next to any running workflow. A **finished** task
+is read from `state.json`'s `decisionLog`, where every `bullswarm run` dispatch
+now records its `lane`, `taskFile` and `outFile` alongside the pool, model and
+verdict it always recorded. Finished tasks appear as rows in the `Runs` history
+day table:
+
+```text
+── Fri 18 Sep ─────────────────────────────────── 6 runs · 3 tasks · (cost unknown) ──
+ ⚙  build · task · codex · gpt-5.6-luna                          ok  1h00m  11:05
+ ⚙  build · task · opencode · openrouter/stealth/union-alpha  provider stream reporte…     0m  09:45
+```
+
+The `⚙` glyph is green for `ok`, red for a failure and cyan while the outcome is
+unknown; the row then carries the lane, the task identity, `pool · model`, `ok`
+or the short failure reason, the measured duration, and the time it ended. Each
+day header counts them separately — `6 runs · 3 tasks` — and `Home`'s today
+band counts tasks alongside workflow runs rather than ignoring them. Press
+`Enter` on a task row for its detail: lane, pool, project, result, duration, and
+the paths of its task and output files.
+
+A task recorded before these fields existed has no id, task file or start time.
+It still appears, showing `—` for what it does not have, and it is listed and
+counted **once** even though the day page and the task ledger both offer it.
+
+The Claude mod's pane shows a task in flight too, instead of the old
+`No ongoing workflow run`.
+
+## The output sparkline
+
+Each attempt records how many bytes its output file held over time, so the
+`Run` and `Step` pages can draw the shape of a worker's progress instead of
+only its current size:
+
+```text
+ ● integrate · claude-code:wati · 19m · output ▁▁▂▃▃▄▆█ 14 KB
+```
+
+It is drawn on a **running** attempt: in the `Run` page's plan strip and live
+agent list, and in the `Step` page header. The series is read from the attempt's
+persisted event stream when the connector has one, and otherwise from
+`outputSamples` on the durable attempt record — a bounded list of
+`[atMs, bytes]` pairs, capped at 240 per attempt so a reader can redraw a run
+without loading the transcript. An attempt with no samples draws no sparkline
+rather than a flat line.
+
+## Budget: every window a pool reports
+
+`Budget` no longer shows one window per pool. It shows every window the
+provider actually reported — the rolling 5-hour window, the 7-day window, and
+the monthly window where a pool has one — each with its local reset time and
+its pace:
+
+```text
+command-code · monthly plan · resets Sat 17 Oct 11:06 (in 28d 16h)
+windows 5-hour (5h) · 1% used · resets 20:56 GMT+8 · behind by 44 pts
+        7-day (7d) · 1% used · resets 12:26 GMT+8 · behind by 16 pts
+        monthly (mo) · 1% used · resets 11:06 GMT+8 · behind by 4 pts
+```
+
+Pace is `behind by <n> pts` / `ahead by <n> pts` / `on track`, comparing that
+window's used share with the share of it already elapsed. A window nobody
+reported is absent, not zero — `codex` above it shows only `7-day (7d)`, and
+the cards fold onto one row when the width allows. The page header says how old
+the numbers are:
+
+```text
+ Budget · 7 days to Asia/Hong_Kong · sampled 5m ago
+```
+
+The age is `just now` under a minute, then `5m ago`, `2h ago`, `3d ago`. A
+reading with no capture time shows no age at all rather than implying
+freshness — a stale meter can no longer be misread as a live one.
+
+## Budget: detected plan prices
+
+Money per pool needs a monthly subscription price. You can still declare one
+with `bullswarm strategy set-subscription <pool> --monthly-usd <amount>`, but
+each provider now also reports the plan name it can detect for itself: Claude's
+`subscriptionType` / `rateLimitTier` from `~/.claude/.credentials.json`, Codex's
+`plan_type`, Command Code's plan, and opencode's plan.
+
+`data/plan-prices.json` maps a plan name to a monthly USD figure **only** where
+a vendor page was actually read; each entry quotes the page URL and the exact
+line the number came from. A plan with no citable price stays `null` and Budget
+says the price is unavailable rather than inventing one.
+
+A detected price is spent exactly like a declared one, and the plan line says
+which it is, so your own figure is never confused with an inferred one:
+
+```text
+plan · $100/mo detected max 5x
+plan · $20/mo declared
+```
+
+The provider half of the lookup is the **provider**, not the pool: a discovered
+per-account pool such as `claude-code:wati` resolves against `claude-code`'s
+plan table, so one login per account still gets its price.
+
 ## The history index and `workflow reindex`
 
 Home, Runs, Budget, and Stats read a per-run rollup, written to

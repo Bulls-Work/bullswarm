@@ -12,7 +12,7 @@ import {
 } from './lib/reasoning.js';
 import {
   loadState, quarantinePool, quarantineUpstreamSiblings, sweepBenches, sweepQuarantines,
-  updateState, assertDepthAllowed, childDepthEnv, upstreamGroupOf,
+  updateState, assertDepthAllowed, childDepthEnv, upstreamGroupOf, recordPoolStrike,
 } from './lib/state.js';
 import { buildPools, buildPoolsLive } from './lib/config.js';
 import { getAllMeterReadings } from './meters/registry.js';
@@ -31,11 +31,13 @@ import { helpForArgs, usageLine } from './help.js';
 import { flagNames, unknownFlagExit } from './lib/cli-flags.js';
 import { disabledModelsForPool, resolveDispatchModel, selectedModelsForTier } from './lib/strategy.js';
 import { createRunHeartbeat } from './lib/run-heartbeat.js';
+import { projectName } from './lib/project.js';
 import {
   describeAssignment, expectedMinutesFromSpendModel, listAssignments,
   registerAssignment, releaseAssignment, updateAssignment, withLedger,
 } from './lib/assignments.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from './lib/forecast.js';
+import { probeFreeModel, shouldProbeFreeModel } from './lib/probe.js';
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -363,7 +365,7 @@ async function cmdRun(opts) {
   // candidate list. Filtering first left the CLI reporting the capability
   // wording for a tier allow-list that named no model on any pool.
 
-  const route = pickPool(lane, candidatePools, {
+  const routeOptions = () => ({
     callerEligible: opts['no-caller'] !== true,
     callerName: state.config.callerName ?? 'claude-code',
     now,
@@ -372,6 +374,37 @@ async function cmdRun(opts) {
     candidateMinutes: expected.expectedMinutes,
     inflightPenaltyPct: inflightPenaltyFrom(state),
   });
+  const failedProbes = [];
+  const failedProbePools = new Set();
+  let route = pickPool(lane, candidatePools, routeOptions());
+  // A probe is a dispatch preflight, not part of a dry-run preview. On a real
+  // run, only a concrete free model selected by strategy is probed. A failed
+  // probe records a strike and is removed from this pick, so routing can fall
+  // through to another free rung or to a metered pool without inventing a
+  // replacement model.
+  while (!dryRun && route.pick) {
+    const poolView = route.pick.connector ?? { name: route.pick.pool };
+    const connector = poolView.connector ?? poolView;
+    const selectedModel = poolView.modelPolicy?.model
+      ?? (assignment?.pool === connector.name ? assignment.model : null);
+    if (!shouldProbeFreeModel(poolView, selectedModel)) break;
+    const probe = await probeFreeModel({
+      pool: poolView,
+      model: selectedModel,
+      home: getBullswarmDir(),
+      now,
+    });
+    if (probe.ok) break;
+    const reason = `probe: ${probe.reason}`;
+    failedProbes.push(`${reason} on ${connector.name}`);
+    failedProbePools.add(connector.name);
+    updateState(getBullswarmDir(), (fresh) => {
+      recordPoolStrike(fresh, connector.name, reason, now);
+    });
+    const remainingPools = candidatePools.filter((candidate) => !failedProbePools.has(candidate.name));
+    route = pickPool(lane, remainingPools, routeOptions());
+  }
+  if (failedProbes.length) route.why = `${failedProbes.join(' · ')} · ${route.why}`;
   if (gated.length && route.pick) {
     route.why += ` (burst-gated: ${gated.map((g) => g.name).join(', ')})`;
   }
@@ -390,13 +423,14 @@ async function cmdRun(opts) {
     }
     emit({
       ok: true, keepOnClaude: true, ...(dryRun ? { dryRun: true } : {}),
-      why: route.why, pick: { pool: null, command: null },
+      why: route.why, routeWhy: route.why, routeCandidates: route.candidates,
+      pick: { pool: null, command: null },
       forecast: forecastRecord(route, null), candidates: route.candidates,
     }, opts);
     return 0;
   }
   if (!route.pick) {
-    emit({ ok: false, keepOnClaude: false, why: route.why }, opts);
+    emit({ ok: false, keepOnClaude: false, why: route.why, routeWhy: route.why, routeCandidates: route.candidates }, opts);
     return 1;
   }
 
@@ -439,6 +473,8 @@ async function cmdRun(opts) {
       dryRun: true,
       keepOnClaude: false,
       why: route.why,
+      routeWhy: route.why,
+      routeCandidates: route.candidates,
       forecast: forecastRecord(route, connector.name),
       candidates: route.candidates,
       pick: {
@@ -459,6 +495,8 @@ async function cmdRun(opts) {
 
   const heartbeat = createRunHeartbeat({ intervalSec: heartbeatSec });
   heartbeat.start();
+  const startedAt = new Date().toISOString();
+  const project = projectName(targetDir);
   // Registered the moment the pool is picked, before the worker exists, so no
   // other process sees this pool as idle while the CLI is still spawning. The
   // expectation is the one routing already booked this assignment for (F3).
@@ -468,6 +506,10 @@ async function cmdRun(opts) {
     lane: lane ?? null,
     effort: effortTier ?? null,
     source: 'run',
+    project,
+    taskFile: paths.taskFile,
+    outFile: paths.outFile,
+    startedAt,
     ...expected,
   }));
   let verdict;
@@ -493,6 +535,13 @@ async function cmdRun(opts) {
     heartbeat.stop();
     if (ledgerEntry) withLedger(() => releaseAssignment(getBullswarmDir(), ledgerEntry.id));
   }
+  const endedAt = new Date().toISOString();
+  const startedMs = Date.parse(startedAt);
+  const endedMs = Date.parse(endedAt);
+  const durationMs = Number.isFinite(startedMs) && Number.isFinite(endedMs) && endedMs >= startedMs
+    ? endedMs - startedMs : null;
+  verdict.routeWhy = route.why;
+  verdict.routeCandidates = route.candidates;
 
   // Everything this run changed about shared state, applied at once to a FRESH
   // load under the lock (S5). `state` above is the routing snapshot and is now
@@ -526,16 +575,28 @@ async function cmdRun(opts) {
       if (siblings.length) verdict.quarantinedSiblings = siblings;
     }
     logDecision(fresh, {
+      kind: 'run',
+      source: 'run',
+      id: ledgerEntry?.id ?? null,
       lane,
+      pool: connector.name,
       picked: connector.name,
       keepOnClaude: false,
       ok: verdict.ok,
       why: verdict.why,
+      routeWhy: route.why,
+      routeCandidates: route.candidates,
+      reason: verdict.ok ? null : shortReason(verdict.why),
       wallSec: verdict.meta?.wallSec,
-      model: verdict.pick?.model ?? null,
+      model: selectedModel ?? connector.model ?? null,
       reasoning,
       usage: verdict.meta?.usage ?? null,
+      taskFile: paths.taskFile,
       outFile: paths.outFile,
+      project,
+      startedAt,
+      endedAt,
+      durationMs,
       // The forecast this pick was made on — the numbers pickPool compared, so a
       // later reader can replay the decision instead of re-deriving it. The full
       // candidate list stays out of the log: 500 entries of it would bloat the
@@ -557,6 +618,16 @@ function logDecision(state, d) {
   }
 }
 
+function shortReason(value, limit = 160) {
+  if (value == null) return null;
+  const line = String(value).split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim();
+  if (!line) return null;
+  if (line.length <= limit) return line;
+  const head = line.slice(0, limit - 1);
+  const space = head.lastIndexOf(' ');
+  return `${(space > limit / 2 ? head.slice(0, space) : head).replace(/[\s,;:—-]+$/, '')}…`;
+}
+
 function emit(verdict, opts) {
   if (opts.json) console.log(JSON.stringify(verdict, null, 2));
   else {
@@ -567,6 +638,9 @@ function emit(verdict, opts) {
       verdict.why ?? '',
     ].filter(Boolean).join(' ');
     console.log(line);
+    if (verdict.routeWhy && verdict.routeWhy !== verdict.why) {
+      console.log(`route: ${verdict.routeWhy}`);
+    }
     if (Array.isArray(verdict.pick?.command) && verdict.dryRun) {
       console.log(`command: ${verdict.pick.command.join(' ')}`);
     }

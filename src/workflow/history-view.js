@@ -18,6 +18,7 @@
 //               does.  Its `elapsedMinutes` is measured, never estimated.
 
 import { glyphs } from '../lib/glyphs.js';
+import { formatUsageBasis } from '../lib/usage-basis.js';
 import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 
@@ -62,6 +63,11 @@ function textOf(value, fallback) {
   if (value == null || (typeof value === 'number' && !Number.isFinite(value))) return fallback;
   const text = String(value).trim();
   return !text || /^(?:nan|undefined|null)$/i.test(text) ? fallback : text;
+}
+
+/** Single `bullswarm run` entries share the table but not workflow totals. */
+function isTask(run) {
+  return run?.kind === 'task' || run?.task === true;
 }
 
 function clean(text, ansi) {
@@ -138,13 +144,40 @@ function clock(value) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-function apiEstimate(value) {
-  const money = formatDashboardValue(value, 'money');
-  return money == null ? null : `(≈ ${money} API)`;
+const TOKEN_SOURCE_RANK = Object.freeze({
+  unknown: 0,
+  'estimated:utf8-bytes/4': 1,
+  'transcript-summed': 2,
+  'provider-reported': 3,
+});
+
+function tokenSourceOf(value, cost = null) {
+  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
+  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
 }
 
-function recordCost(run) {
-  if (!run || typeof run !== 'object') return null;
+function worstTokenSource(current, candidate) {
+  const next = tokenSourceOf(candidate);
+  if (current == null) return next;
+  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function costInfo(value, tokenSource) {
+  const basis = tokenSourceOf(tokenSource, value);
+  return {
+    value: finite(value),
+    tokenSource: basis,
+    text: formatUsageBasis({ tokenSource: basis, costUsd: value }),
+  };
+}
+
+function apiEstimate(value, tokenSource, { compact = false } = {}) {
+  const info = costInfo(value, tokenSource);
+  return info.text === 'cost unknown' ? '(cost unknown)' : compact ? info.text : `(${info.text} API)`;
+}
+
+function recordCostInfo(run) {
+  if (!run || typeof run !== 'object') return costInfo(null, 'unknown');
   const direct = [
     run.apiEquivalentUsd,
     run.apiEquivalent?.usd,
@@ -157,16 +190,18 @@ function recordCost(run) {
   ];
   for (const value of direct) {
     const number = finite(value);
-    if (number != null) return number;
+    if (number != null) return costInfo(number, run.tokenSource);
   }
   const pools = run.pools;
-  if (!pools || typeof pools !== 'object' || Array.isArray(pools)) return null;
+  if (!pools || typeof pools !== 'object' || Array.isArray(pools)) return costInfo(null, run.tokenSource);
   let total = null;
+  let tokenSource = Object.hasOwn(TOKEN_SOURCE_RANK, run.tokenSource) ? run.tokenSource : null;
   for (const entry of Object.values(pools)) {
     const value = finite(entry?.apiEquivalentUsd ?? entry?.costUsd ?? entry?.estimatedUsd);
     if (value != null) total = (total ?? 0) + value;
+    tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry?.tokenSource, value));
   }
-  return total;
+  return costInfo(total, tokenSource);
 }
 
 function durationMinutes(run) {
@@ -183,7 +218,9 @@ function durationMinutes(run) {
     if (number != null) return number;
   }
   const seconds = finite(run.wallSec ?? run.durationSec ?? run.attempt?.wallSec);
-  return seconds == null ? null : seconds / 60;
+  if (seconds != null) return seconds / 60;
+  const durationMs = finite(run.durationMs);
+  return durationMs == null ? null : durationMs / 60_000;
 }
 
 function minutesText(minutes) {
@@ -312,19 +349,42 @@ function daySpend(day, runs) {
   const stated = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
   if (stated != null) return stated;
   let total = null;
-  for (const run of runs) {
-    const cost = isLegacy(run) ? null : recordCost(run);
-    if (cost != null) total = (total ?? 0) + cost;
+  for (const run of runs.filter((entry) => !isTask(entry))) {
+    const cost = isLegacy(run) ? costInfo(null, 'unknown') : recordCostInfo(run);
+    if (cost.value != null) total = (total ?? 0) + cost.value;
   }
   return total;
 }
 
+function daySpendInfo(day, runs) {
+  const stated = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
+  let tokenSource = tokenSourceOf(day?.tokenSource, stated);
+  if (stated != null) {
+    for (const run of runs.filter((entry) => !isTask(entry) && !isLegacy(entry))) {
+      tokenSource = worstTokenSource(tokenSource, recordCostInfo(run).tokenSource);
+    }
+    return costInfo(stated, tokenSource);
+  }
+  let total = null;
+  for (const run of runs.filter((entry) => !isTask(entry) && !isLegacy(entry))) {
+    const info = recordCostInfo(run);
+    tokenSource = worstTokenSource(tokenSource, info.tokenSource);
+    if (info.value != null) total = (total ?? 0) + info.value;
+  }
+  return costInfo(total, tokenSource);
+}
+
 function dayCount(day, runs) {
-  if (runs.length) return runs.length;
+  const workflows = runs.filter((run) => !isTask(run));
+  if (workflows.length) return workflows.length;
   const finished = finite(day?.finished);
   if (finished != null) return Math.max(0, Math.round(finished));
   const count = finite(day?.runs);
   return count == null ? 0 : Math.max(0, Math.round(count));
+}
+
+function taskCount(runs) {
+  return runs.filter((run) => isTask(run)).length;
 }
 
 function dayRows(day) {
@@ -413,8 +473,8 @@ function runRow(run, width, ansi, { durationWidth = null } = {}) {
   // Legacy directories have no V2 measurement contract. Ignore any stale
   // cost-shaped field a caller may have attached instead of pricing a
   // read-only row by accident.
-  const cost = isLegacy(run) ? null : recordCost(run);
-  const estimate = apiEstimate(cost);
+  const cost = isLegacy(run) ? costInfo(null, 'unknown') : recordCostInfo(run);
+  const estimate = isLegacy(run) ? null : apiEstimate(cost.value, cost.tokenSource, { compact: phone });
   const mark = resultMark(run);
   const duration = displayedDuration(run);
   const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
@@ -433,19 +493,18 @@ function runRow(run, width, ansi, { durationWidth = null } = {}) {
     : runTime(run);
   const at = clock(atValue) ?? '—';
   const timeText = tint(at, 'dim', ansi);
-  // Keep the approximation marker and API basis at every width. It is the
-  // product's only honest money label; a narrow row gives cells back from
-  // the elastic summary rather than reducing it to an unlabeled `$` figure.
+  // Keep the approximation marker and basis at every width. A phone row
+  // drops the trailing API word but retains the full estimated label.
   const estimateText = estimate ? tint(estimate, 'dim', ansi) : '';
-  const estimateWidth = 14;
+  const estimateWidth = Math.max(1, visible(estimate || '(cost unknown)').length);
   const compactUnfinished = phone && cols < 70 && unfinishedRun(run);
   const rightFields = compactUnfinished
     ? []
     : [
       { text: duration, width: durationCells, align: 'right', gap: 1 },
-      ...((desktop || cost != null) ? [
-        { text: cost == null ? '' : '·', width: 1, gap: 1 },
-        { text: estimateText, width: estimateWidth, align: 'right', gap: 0 },
+      ...((!isLegacy(run) && !unfinishedRun(run)) ? [
+        { text: estimate ? '·' : '', width: 1, gap: 1 },
+        { text: estimateText || '(cost unknown)', width: estimateWidth, align: 'right', gap: 0 },
       ] : []),
       { text: timeText, width: 5, align: 'right', gap: 2 },
     ];
@@ -473,6 +532,51 @@ function renderRun(run, lines, regions, width, ansi, options = {}) {
   addRegion(regions, lines, 4, rendered.idWidth, action);
 }
 
+function taskId(task) {
+  const value = textOf(task?.id ?? task?.taskFile, 'task');
+  // UUID-backed assignments are not useful as a whole on a table row. Keep
+  // the short human-authored ids intact, and use the stable tail for UUIDs.
+  return value.length > 14 ? value.slice(-8) : value;
+}
+
+function taskPoolModel(task) {
+  return [task?.pool, task?.model].filter((value) => value != null && String(value).trim()).join(' · ') || 'pool/model unavailable';
+}
+
+function taskResult(task) {
+  if (task?.ok === true) return 'ok';
+  if (task?.ok === false) return textOf(task.reason, 'failed').replace(/\s+/g, ' ');
+  return 'result unavailable';
+}
+
+function taskRow(task, lines, regions, width, ansi, { durationWidth = null } = {}) {
+  const cols = widthOf(width);
+  const duration = durationText(task);
+  const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
+  const at = clock(task?.endedAt ?? task?.finishedAt ?? task?.startedAt) ?? '—';
+  const identity = [task?.lane ?? 'lane unavailable', taskId(task), taskPoolModel(task)]
+    .filter(Boolean).join(' · ');
+  const result = taskResult(task);
+  // Keep the outcome visible while the identity gives back cells on narrow
+  // terminals. Reasons are intentionally short in the ledger; a longer
+  // legacy reason is still bounded so the duration and clock remain fixed.
+  const resultWidth = Math.max(2, Math.min(24, visible(result).length));
+  const mark = glyphs().inflight;
+  const line = compactRow([
+    { text: ' ', width: 1 },
+    { text: tint(mark, task?.ok === false ? 'red' : task?.ok === true ? 'green' : 'cyan', ansi), width: 1, gap: 0 },
+    { text: identity, grow: true, min: 1, gap: 2 },
+    { text: result, width: resultWidth, gap: 2 },
+    { text: duration, width: durationCells, align: 'right', gap: 2 },
+    { text: tint(at, 'dim', ansi), width: 5, align: 'right', gap: 2 },
+    { text: ' ', width: 1, gap: 0 },
+  ], { width: cols, gap: 1 });
+  lines.push(fit(line, cols, ansi));
+  addRegion(regions, lines, 4, Math.max(1, visible(line).length - 3), {
+    kind: 'task', taskId: task?.id ?? task?.taskFile ?? null,
+  });
+}
+
 /**
  * Render date groups, newest date first and each day's workflows newest first.
  * Regions use 1-based x coordinates relative to the line that owns them; the
@@ -495,18 +599,20 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
   for (const day of list) {
     const runs = dayRows(day);
     const count = dayCount(day, runs);
+    const tasks = taskCount(runs);
+    const workflowRows = runs.filter((run) => !isTask(run));
     const onlyLegacy = Boolean(day.legacyOnly || day.onlyLegacy || day.legacy)
-      || (runs.length > 0 && runs.every((run) => isLegacy(run)));
+      || (workflowRows.length > 0 && workflowRows.every((run) => isLegacy(run)));
     // A legacy-only day has no V2 usage record.  Even if a stale summary
     // happens to carry a spend field, showing it would make an unmeasured
     // legacy run look priced.
-    const spend = onlyLegacy ? null : daySpend(day, runs);
-    const summary = `${count} run${count === 1 ? '' : 's'}`;
-    const money = apiEstimate(spend);
+    const summary = `${count} run${count === 1 ? '' : 's'}${tasks ? ` · ${tasks} task${tasks === 1 ? '' : 's'}` : ''}`;
     // A day whose runs have not delivered has no estimate because there is no
     // result yet — a different reason from "nothing recorded", and the one the
     // reader needs.
-    const inFlight = runs.length > 0 && runs.every((run) => unfinishedRun(run));
+    const inFlight = workflowRows.length > 0 && workflowRows.every((run) => unfinishedRun(run));
+    const spend = onlyLegacy ? costInfo(null, 'unknown') : daySpendInfo(day, runs);
+    const money = onlyLegacy || inFlight ? null : apiEstimate(spend.value, spend.tokenSource);
     const basis = money ?? (inFlight ? 'no result recorded yet' : 'estimate unavailable (no recorded API-equivalent cost)');
     const title = bold(dateLabel(day.date), ansi);
     const right = `${summary} · ${money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi)}`;
@@ -526,13 +632,16 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
           ? '  Workflow rows are not loaded for this day yet.'
           : '  No workflows recorded.', cols, ansi, '');
     } else {
-      const durationWidth = runs.reduce((longest, run) => Math.max(longest, visible(displayedDuration(run)).length), 5);
+      const durationWidth = runs.reduce((longest, run) => Math.max(longest, visible(isTask(run) ? durationText(run) : displayedDuration(run)).length), 5);
       let normal = 0;
       for (const run of runs) {
-        renderRun(run, lines, regions, cols, ansi, { durationWidth });
-        if (!isLegacy(run)) normal += 1;
+        if (isTask(run)) taskRow(run, lines, regions, cols, ansi, { durationWidth });
+        else {
+          renderRun(run, lines, regions, cols, ansi, { durationWidth });
+          if (!isLegacy(run)) normal += 1;
+        }
       }
-      if (!normal && runs.length) pushWrapped(lines, 'Legacy workflows are read-only: no cost and no pool minutes were recorded.', cols, ansi);
+      if (!normal && workflowRows.length) pushWrapped(lines, 'Legacy workflows are read-only: no cost and no pool minutes were recorded.', cols, ansi);
     }
     lines.push('');
   }

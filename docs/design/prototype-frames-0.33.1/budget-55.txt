@@ -1,0 +1,26 @@
++-----------------------------------------------------+
+Budget verdict | urgency first
+Enter on a row opens its window detail
+-----------------------------------------------------
+grok: urgent - 97% used; reset in 1h25m
+  [###################-] used 97%; reset 1h25m
+claude-code: hot - 63% used; 53% of week elapsed
+  [#############-------] used 63%; ahead by 10 pts
+claude-code:wati: watch - 76% used; reset in 12h55m
+  [###############-----] used 76%; reset 12h55m
+codex: fine - 59% used; 3 in flight
+  [############--------] used 59%; 73.1% elapsed
+command-code: fine - 0.4% used; 3.6% elapsed
+  [--------------------] used 0.4%; monthly window
+claude-code:petsona: disabled - no meter
+  [                    ] disabled
+echo: disabled - free echo-local
+  [                    ] disabled
+opencode: disabled - no meter
+  [                    ] disabled
+-----------------------------------------------------
+Legend: # used, - remaining, [blank] disabled
+Sample age: not printed; pools output only says [cache]
+workflow usage --json: help only (exit 2), no figures
+Enter: 5h / 7d / monthly used, elapsed, reset, pace
++-----------------------------------------------------+

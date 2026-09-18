@@ -1,0 +1,34 @@
+┌─────────────────────────────────────────────────────┐
+│ HOME / TODAY · Fri 18 Sep 2026                      │
+├─────────────────────────────────────────────────────┤
+│ FINISHED TODAY · 3 workflows · 1 verified           │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ✓ 2yrcxi · project: bullseye                    │ │
+│ │ for: The person manages own comments; widget    │ │
+│ │ Enter → open workflow · 104.9m · unverified     │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ✓ fuyyca · project: bullswarm                   │ │
+│ │ for: The 0.33.0 owner-review pass; eight gaps   │ │
+│ │ Enter → open workflow · 208.2m · unverified     │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ✓ ipccf2 · project: bullseye                    │ │
+│ │ for: Seven queued widget and inbox follow-ups   │ │
+│ │ Enter → open workflow · 542.7m · verified       │ │
+│ └─────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────┤
+│ LICENCE SPEND TODAY                                 │
+│ pool             used  API≈    wf%  run%  wf min    │
+│ claude-code      63%     —      —     —      —      │
+│ claude-code:wati 76%  ≈$0.16   2.9     —   84.0     │
+│ codex            59%  ≈$0.03   2.1     —  161.8     │
+│ grok             98%  ≈$0.01   4.3     —   26.0     │
+│ command-code    0.4%     —      —     —      —      │
+│ opencode          —      —      —     —  634.6     │
+│ claude-code:petsona — disabled                      │
+│ echo               — disabled                       │
+│ single-run min: codex 60.0 · opencode 17.6         │
+│ run licence share: — · API≈ is not an invoice       │
+│ Enter on a pool → its windows, reset and pace       │
+└─────────────────────────────────────────────────────┘

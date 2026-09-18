@@ -28,7 +28,7 @@ import {
 import {
   consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, v2RetryPlan,
 } from './v2-outcome.js';
-import { attemptArtifactsOnDisk, dispatchV2Action } from './v2-dispatch.js';
+import { attemptArtifactsOnDisk, dispatchV2Action, durableAttemptHandoff } from './v2-dispatch.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -439,7 +439,7 @@ function nextShortId(bullswarmDir) {
   return generateShortId({ existing: listRuns(bullswarmDir).map((run) => run.shortId).filter(Boolean) });
 }
 
-function normalizeAttempt(record, { id, actionId, ordinal }) {
+export function normalizeAttempt(record, { id, actionId, ordinal }) {
   return {
     id, actionId, ordinal,
     status: record.status,
@@ -452,6 +452,7 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     failureKind: record.failureKind ?? null,
     why: record.why ?? null,
     usage: clone(record.usage ?? null),
+    ...(record.session !== undefined ? { session: clone(record.session) } : {}),
     wallSec: record.wallSec ?? null,
     routing: clone(record.routing ?? null),
     routeWhy: record.routeWhy ?? null,
@@ -471,6 +472,8 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     // the recorded object in place instead of erasing it.
     ...(record.bytes !== undefined ? { bytes: clone(record.bytes) } : {}),
     ...(record.lastAgentEvent !== undefined ? { lastAgentEvent: clone(record.lastAgentEvent) } : {}),
+    ...(record.notes !== undefined ? { notes: clone(record.notes) } : {}),
+    ...(record.outputSamples !== undefined ? { outputSamples: clone(record.outputSamples) } : {}),
     ...(record.outputBytes !== undefined ? { outputBytes: record.outputBytes } : {}),
     ...(record.streamFile !== undefined ? { streamFile: record.streamFile } : {}),
     ...(record.diffFile !== undefined ? { diffFile: record.diffFile } : {}),
@@ -1384,7 +1387,6 @@ async function runV2Kernel({
     const taskText = evidence
       ? buildEvidenceTask(state, action, contractPath, candidatePath)
       : digest ? buildDigestTask(state, action, targetDir) : buildWorkTask(state, action, targetDir);
-    const dispatchedBytes = attemptBytes(state, action, taskText, { evidence, digest });
     const observedRequirementBytes = embeddedRequirementBytes(state, action, { evidence, digest });
     const writerPools = evidence
       ? [...new Set(state.attempts
@@ -1394,9 +1396,21 @@ async function runV2Kernel({
         .map((attempt) => attempt.pool)
         .filter(Boolean))]
       : [];
+    const durablePriorAttempt = resuming
+      ? state.attempts.findLast((attempt) => attempt.actionId === action.id
+        && attempt.ordinal > (runtime.supersededAttempts ?? 0)
+        && ['interrupted', 'failed'].includes(attempt.status))
+      : null;
+    const durablePriorHandoff = durablePriorAttempt
+      ? durableAttemptHandoff(durablePriorAttempt, runDir, handoffBlock)
+      : null;
+    const dispatchedTaskText = durablePriorHandoff
+      ? `${taskText}\n\n${durablePriorHandoff.block}`
+      : taskText;
+    const dispatchedBytes = attemptBytes(state, action, dispatchedTaskText, { evidence, digest });
     try { result = receipt ? { ok: true, status: 'succeeded', verdict: receipt.verdict, attempts: [] } : await dispatch({
       action,
-      taskText,
+      taskText: dispatchedTaskText,
       targetDir,
       paths: (ordinal) => ({ taskFile: join(runDir, `task-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.md`), outFile: join(runDir, `out-${action.id}-attempt-${baseAttemptOrdinal + ordinal}.${evidence ? 'json' : 'md'}`) }),
       pools, refreshPools, bullswarmDir, runId: id, parentEnv,
@@ -1418,6 +1432,8 @@ async function runV2Kernel({
       outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
       correctionTask: evidence ? correctionTask : null,
       handoffBlock,
+      resumeHandoff: durablePriorHandoff,
+      runDir,
       onAttempt: (stage, record, verdict) => {
         if (stage === 'started') {
           const ordinal = baseAttemptOrdinal + record.ordinal;
@@ -1475,6 +1491,8 @@ async function runV2Kernel({
             ...(attempt?.diffFile ?? record.diffFile ? { diffFile: attempt?.diffFile ?? record.diffFile } : {}),
             ...(attempt?.changedFileCount != null ? { changedFileCount: attempt.changedFileCount } : (record.changedFileCount != null ? { changedFileCount: record.changedFileCount } : {})),
             ...(record.lastResponse != null ? { lastResponse: record.lastResponse } : {}),
+            ...(attempt?.notes ? { notes: clone(attempt.notes) } : (record.notes ? { notes: clone(record.notes) } : {})),
+            ...(attempt?.outputSamples ? { outputSamples: clone(attempt.outputSamples) } : (record.outputSamples ? { outputSamples: clone(record.outputSamples) } : {})),
             ...(record.stalled ? {
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,
@@ -1498,6 +1516,20 @@ async function runV2Kernel({
         if (!attempt) return;
         attempt.lastActivityAt = at;
         attempt.outputBytesObserved = Number(attempt.outputBytesObserved ?? 0) + Number(bytes ?? 0);
+        const atMs = Date.parse(at);
+        if (Number.isFinite(atMs) && Number.isFinite(attempt.outputBytesObserved)) {
+          attempt.outputSamples ??= [];
+          const last = attempt.outputSamples.at(-1);
+          if (last && atMs - last[0] < 5000) {
+            // Keep the newest byte count in the current five-second bucket so
+            // a live dashboard reflects progress without adding points faster
+            // than the durable sampling contract permits.
+            last[1] = attempt.outputBytesObserved;
+          } else {
+            if (attempt.outputSamples.length >= 240) attempt.outputSamples.shift();
+            attempt.outputSamples.push([atMs, attempt.outputBytesObserved]);
+          }
+        }
         persistWorkerProgress();
       },
       onAgentProgress: ({ at, providerType, model }) => {

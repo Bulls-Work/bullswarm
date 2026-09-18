@@ -37,6 +37,25 @@ function harness(verdicts, coreOverrides = {}) {
   };
 }
 
+// The free-model liveness probe (src/lib/probe.js) runs before a dispatch to a
+// rung that names a free model, and by default it spawns the pool's OWN CLI.
+// The staller fixture below never answers anything, so a real probe would burn
+// its full 30-second budget and then bench the pool for `probe: timeout` —
+// the stall/fallback/handoff behaviour these fixtures exist to test would
+// never be reached. Injecting the probe seam declares the free rung live and
+// records what was probed, so the probe's own tests (tests/probe.test.js) stay
+// the place its liveness logic is checked.
+function probeSeam(result = { ok: true, reason: null }) {
+  const calls = [];
+  return {
+    calls,
+    probeFreeModel: async ({ pool, model }) => {
+      calls.push(`${pool.name}:${model}`);
+      return { ...result, at: new Date().toISOString() };
+    },
+  };
+}
+
 const paths = { taskFile: '/tmp/task.md', outFile: '/tmp/out.md' };
 const good = { ok: true, why: 'structured output validated', meta: { exitCode: 0, wallSec: 1, usage: { totalTokens: 10 } } };
 
@@ -848,6 +867,7 @@ test('a free stall keeps partial output, falls back, releases the ledger, and be
     taskFile: join(home, `${prefix}-task-${ordinal}.md`),
     outFile: join(home, `${prefix}-out-${ordinal}.md`),
   });
+  const seam = probeSeam();
   const runOnce = (prefix) => dispatchV2Action({
     action: { id: `stall-fallback-${prefix}`, lane: 'build', effort: 'low' },
     taskText: 'perform the bounded fixture dispatch',
@@ -857,6 +877,7 @@ test('a free stall keeps partial output, falls back, releases the ledger, and be
     bullswarmDir: home,
     silenceTimeoutSec: 2,
     maxMechanicalRetries: 1,
+    dependencies: { probeFreeModel: seam.probeFreeModel },
   });
   try {
     const first = await runOnce('first');
@@ -887,6 +908,9 @@ test('a free stall keeps partial output, falls back, releases the ledger, and be
     assert.equal(third.ok, true);
     assert.deepEqual(third.attempts.map((attempt) => attempt.pool), ['answerer']);
     assert.match(third.attempts[0].routeWhy, /benched \(stall, back at /);
+    // Only the free rung was probed, and only on the two dispatches that
+    // actually reached it: the benched third dispatch never probes.
+    assert.deepEqual(seam.calls, ['staller:zen/union-free', 'staller:zen/union-free']);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -1108,6 +1132,7 @@ test('a free stall falls back with a frozen diff snapshot of the prior attempt',
     pools: { staller: { enabled: true }, answerer: { enabled: true } },
     incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
   });
+  const seam = probeSeam();
   try {
     const result = await dispatchV2Action({
       action: { id: 'do-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
@@ -1124,6 +1149,7 @@ test('a free stall falls back with a frozen diff snapshot of the prior attempt',
       bullswarmDir: home,
       silenceTimeoutSec: 2,
       maxMechanicalRetries: 1,
+      dependencies: { probeFreeModel: seam.probeFreeModel },
       onAttempt: (stage, record) => {
         if (stage === 'finished' && record.ordinal === 1) {
           writeFileSync(join(repo, 'owned.txt'), `${readFileSync(join(repo, 'owned.txt'), 'utf8')}SIBLING EDIT AFTER ATTEMPT END\n`);
@@ -1151,6 +1177,7 @@ test('a free stall falls back with a frozen diff snapshot of the prior attempt',
     assert.equal(result.attempts[0].outputFile, join(home, 'out-do-work-attempt-1.md'));
     assert.equal(result.attempts[1].handoff.from, 'do-work-1');
     assert.ok(result.attempts[1].handoff.bytes > 0);
+    assert.deepEqual(seam.calls, ['staller:zen/union-free'], 'the paid fallback is never probed');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1257,6 +1284,7 @@ test('the persisted stream feeds the handoff block on a real fixture fallback', 
     pools: { staller: { enabled: true }, answerer: { enabled: true } },
     incumbents: {}, decisionLog: [], config: { depthLimit: 2 },
   });
+  const seam = probeSeam();
   try {
     const result = await dispatchV2Action({
       action: { id: 'do-work', lane: 'build', effort: 'low', ownedFiles: ['owned.txt'] },
@@ -1274,6 +1302,7 @@ test('the persisted stream feeds the handoff block on a real fixture fallback', 
       parentEnv: { ...process.env, BULLSWARM_FIXTURE_EVENTS: 'jsonl' },
       silenceTimeoutSec: 2,
       maxMechanicalRetries: 1,
+      dependencies: { probeFreeModel: seam.probeFreeModel },
     });
     assert.equal(result.ok, true);
     const streamFile = join(home, 'stream-do-work-attempt-1.jsonl');
@@ -1301,6 +1330,7 @@ test('the persisted stream feeds the handoff block on a real fixture fallback', 
     }
     // The stream is referenced by path, never inlined.
     assert.ok(!task2.includes('"providerType"'), 'the stream must not be inlined into the task');
+    assert.deepEqual(seam.calls, ['staller:zen/union-free'], 'the paid fallback is never probed');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

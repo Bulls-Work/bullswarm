@@ -694,7 +694,8 @@ export function stackedBars(rows, { width = 120, colors = true } = {}) {
  * every non-zero slice keeps at least one eighth (taken from the largest
  * slice), and a partial top cell carries the colour of its own slice. `meta`
  * exposes `axisTop`, `tickStep`, `rowsPerTick`, and per-column `eighths` and
- * `segments` (`{ sourceIndex, eighths, low, high }`) for hit regions.
+ * `segments`.  Each segment also has a flat `meta.slices` entry with its
+ * series name/value and one-based row/column ranges in the returned block.
  */
 export function columnBars(series, labels, {
   width = null, height = 6, rowCount: requestedRowCount = null, col = 8, barW = 6, unit = '$', mark = '', totals = true, cumulative = false,
@@ -894,6 +895,48 @@ export function columnBars(series, labels, {
     return cellWidth <= 1 ? painted : ` ${painted}${' '.repeat(Math.max(0, cellWidth - barWidth - 1))}`;
   };
 
+  // A slice occupies a vertical run of eighths inside one rendered column.
+  // Keep its hit geometry in the chart's own one-based line/column space so a
+  // view can register the exact cells that carry that slice, rather than
+  // guessing from the column label or the colour.  A slice that crosses a
+  // row boundary owns both rows; ranges therefore cover every painted row,
+  // with an intentional overlap where one terminal cell carries two
+  // sub-row colours.
+  const sliceGeometry = (columnIndex, entry) => {
+    const columnX = axisWidth + 2 + columnIndex * cellWidth;
+    const barX = columnX + (cellWidth > 1 ? 1 : 0);
+    const barEnd = barX + Math.max(1, barWidth) - 1;
+    const rowStart = Math.max(1, rowCount - Math.ceil(entry.high / 8) + 1);
+    const rowEnd = Math.min(rowCount, rowCount - Math.floor(entry.low / 8));
+    const columnRange = [barX, barEnd];
+    const rowRange = [rowStart, rowEnd];
+    return {
+      ...entry,
+      columnIndex,
+      column: columnIndex,
+      seriesIndex: entry.sourceIndex,
+      seriesName: entry.name,
+      series: entry.name,
+      rowStart,
+      rowEnd,
+      columnStart: barX,
+      columnEnd: barEnd,
+      // The array forms are convenient for callers that only need a range;
+      // the named aliases make the same metadata self-documenting in a
+      // debugger and keep it usable by older view code.
+      rowRange,
+      columnRange,
+      row: rowRange,
+      col: columnRange,
+      rows: { start: rowStart, end: rowEnd },
+      columns: { start: barX, end: barEnd },
+      x1: barX,
+      x2: barEnd,
+      y1: rowStart,
+      y2: rowEnd,
+    };
+  };
+
   const lines = [];
   for (let row = rowCount; row >= 1; row -= 1) {
     const tick = axisTop ? ticksByRow.get(row) ?? null : (row === 1 ? 0 : null);
@@ -925,17 +968,28 @@ export function columnBars(series, labels, {
     });
     lines.push(cumulativeLine);
   }
+  const columns = labelsView.map((label, index) => {
+    const column = {
+      label, x: axisWidth + 2 + index * cellWidth, width: cellWidth,
+      barWidth, height: heights[index], eighths: eighths[index], sourceIndex: offset + index,
+    };
+    column.segments = stacks[index].map((entry) => sliceGeometry(index, entry));
+    column.slices = column.segments;
+    return column;
+  });
+  const slices = columns.flatMap((column) => column.segments);
   Object.defineProperty(lines, 'meta', {
     enumerable: false,
     value: {
       axisWidth, cellWidth, barWidth, chartRows: rowCount, axisRow: rowCount + 1,
       axisTop, tickStep: axisInfo.step, rowsPerTick,
       valueRow: totals ? valueRow + 1 : null, cumulativeRow,
-      columns: labelsView.map((label, index) => ({
-        label, x: axisWidth + 2 + index * cellWidth, width: cellWidth,
-        barWidth, height: heights[index], eighths: eighths[index], sourceIndex: offset + index,
-        segments: stacks[index],
-      })),
+      columns,
+      // `slices` is the flat form a view can register directly.  The same
+      // objects remain under their owning column for callers that already
+      // consume `meta.columns`.
+      slices,
+      sliceGeometry: slices,
       legend: [...new Set(stacks.flatMap((column) => column
         .filter((entry) => entry.sourceIndex >= 0 || entry.name?.startsWith('other ('))
         .map((entry) => entry.name)

@@ -14,17 +14,18 @@
 //
 // Fixtures build their own home with mkdtempSync and drive the real rollup
 // index. Nothing touches the developer's ~/.bullswarm and nothing needs the
-// network. The bundled data/plan-prices.json declares no price for any pool
-// (verified 2026-09-16), so an undeclared pool really does resolve to null.
+// network. Price fallback tests use their own temporary plan table so the
+// bundled vendor data cannot mask an undeclared fixture.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { appendRollupIndex, readRollups, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
 import { poolBudget, budgetModel, biggestRuns } from '../src/workflow/budget-model.js';
+import { budgetLines } from '../src/workflow/budget-view.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const homes = [];
@@ -40,6 +41,8 @@ function localAt(year, month, day, hour = 12) {
   return new Date(year, month - 1, day, hour, 0, 0, 0).getTime();
 }
 const NOW = localAt(2026, 9, 16, 15);
+const MINUTE_MS = 60_000;
+const DAY_MS = 86_400_000;
 const DAY = (n, hour = 12) => localAt(2026, 9, 16 - n, hour);
 
 function record({
@@ -180,12 +183,94 @@ test('poolBudget: the row carries the meter, the money and the fit', () => {
   assertNoNaN(row);
 });
 
+test('poolBudget and budgetModel preserve the worst usage basis and measured count', () => {
+  const cases = [
+    ['provider-reported', 2],
+    ['transcript-summed', 2],
+    ['estimated:utf8-bytes/4', 0],
+    ['unknown', 0],
+  ];
+  for (const [tokenSource, measuredAttempts] of cases) {
+    const rollups = indexOf([record({
+      runId: 'wf-basis',
+      startedAt: DAY(0, 8),
+      finishedAt: DAY(0, 9),
+      pools: {
+        'claude-code': { attempts: 2, minutes: 10, costUsd: 0.4, tokenSource },
+      },
+      models: { 'claude-opus-5': { attempts: 2, minutes: 10 } },
+    })]);
+    const row = poolBudget(metered(), { rollups, now: NOW });
+    assert.equal(row.tokenSource, tokenSource);
+    assert.equal(row.measuredAttempts, measuredAttempts);
+    const model = budgetModel([metered()], { rollups, now: NOW });
+    assert.equal(model.totals.tokenSource, tokenSource);
+    assert.equal(model.totals.measuredAttempts, measuredAttempts);
+    assert.match(model.notes.join('\n'), new RegExp(`${measuredAttempts} of 2 attempts measured · the rest are byte estimates`));
+  }
+});
+
 test('poolBudget: paceWord is the word, at the same 15pp thresholds the pool rows use', () => {
   assert.equal(poolBudget(metered({ usedPct: 10, elapsedPct: 60 }), { now: NOW }).paceWord, 'slow');
   assert.equal(poolBudget(metered({ usedPct: 90, elapsedPct: 60 }), { now: NOW }).paceWord, 'hot');
   assert.equal(poolBudget(metered({ usedPct: 50, elapsedPct: 60 }), { now: NOW }).paceWord, 'on track');
   // No elapsed mark, no pace: a word is not invented from used% alone.
   assert.equal(poolBudget(metered({ elapsedPct: null }), { now: NOW }).paceWord, null);
+});
+
+test('poolBudget: every reported window carries its own used share, reset clock and directional pace', () => {
+  const pool = {
+    name: 'windowed', enabled: true, pacingWindow: 'monthly', usedPct: 60, elapsedPct: 50,
+    meterSnapshot: {
+      captured_at: new Date(NOW - 5 * MINUTE_MS).toISOString(),
+      five_hour: { utilization: 12, resets_at: new Date(NOW + 90 * MINUTE_MS).toISOString() },
+      seven_day: { utilization: 68, resets_at: new Date(NOW + 2 * DAY_MS).toISOString() },
+      monthly: { utilization: 60, resets_at: new Date(NOW + 20 * DAY_MS).toISOString() },
+    },
+  };
+  const row = poolBudget(pool, { now: NOW });
+  assert.deepEqual(row.windows.map((window) => window.key), ['5h', '7d', 'mo']);
+  assert.deepEqual(row.windows.map((window) => window.label), ['5-hour', '7-day', 'monthly']);
+  assert.equal(row.windows[0].usedPct, 12);
+  assert.equal(row.windows[2].elapsedPct, 50, 'the pool pacing window keeps the routing elapsed share');
+  assert.equal(row.windows[0].paceText, 'behind by 58 pts');
+  assert.match(row.windows[0].resetClock, /^\d{2}:\d{2}/);
+  assert.ok(row.windows.every((window) => window.timeZone === row.timeZone));
+});
+
+test('poolBudget: a provider reporting one window does not grow fabricated siblings', () => {
+  const row = poolBudget({
+    name: 'one-window', enabled: true, pacingWindow: 'weekly',
+    meterSnapshot: {
+      captured_at: new Date(NOW).toISOString(),
+      seven_day: { utilization: 33, resets_at: new Date(NOW).toISOString() },
+    },
+  }, { now: NOW });
+  assert.deepEqual(row.windows.map((window) => window.key), ['7d']);
+  assert.equal(row.windows[0].usedPct, 33);
+  assert.equal(row.windows[0].paceText, 'behind by 67 pts');
+});
+
+test('budgetModel: sample age comes from the meter snapshot and names stale data', () => {
+  const capturedAt = new Date(NOW - 15 * MINUTE_MS).toISOString();
+  const model = budgetModel([{
+    name: 'stale', enabled: true, pacingWindow: 'weekly',
+    meterSnapshot: {
+      captured_at: capturedAt,
+      seven_day: { utilization: 33, resets_at: new Date(NOW + DAY_MS).toISOString() },
+    },
+  }], { now: NOW });
+  assert.equal(model.sampledAt, capturedAt);
+  assert.equal(model.sampleAgeText, '15m ago');
+  assert.equal(model.rows[0].sampleAgeText, '15m ago');
+  const usageTimestamp = new Date(NOW - 5 * MINUTE_MS).toISOString();
+  assert.equal(budgetModel([{ name: 'usage-stamped', enabled: true }], {
+    sampledAt: usageTimestamp, now: NOW,
+  }).sampledAt, usageTimestamp);
+  assert.equal(budgetModel([{
+    name: 'fresh', enabled: true, meterSnapshot: { captured_at: new Date(NOW - 10_000).toISOString() },
+  }], { now: NOW }).sampleAgeText, 'just now');
+  assert.equal(budgetModel([], { now: NOW }).sampleAgeText, null);
 });
 
 // ------------------------------------------------------------ the reset text
@@ -349,6 +434,73 @@ test('poolBudget: an includedValueUsd with no monthly price is not a price', () 
     prices: { 'claude-code': { includedValueUsd: 1000 } },
   });
   assert.equal(row.subscription, null, 'included value alone must not become a subscription figure');
+});
+
+test('poolBudget: a detected provider plan is the fallback after a declared amount', () => {
+  const dir = home();
+  const file = join(dir, 'plan-prices.json');
+  writeFileSync(file, `${JSON.stringify({
+    schemaVersion: 'bullswarm.plan-prices.v1',
+    plans: {
+      'claude-code:pro': {
+        monthlyPriceUsd: 42,
+        source: 'https://example.test/claude-pricing',
+        quotedLine: 'Pro — $42 / month',
+        checkedAt: '2026-09-18',
+        plan: 'pro',
+      },
+    },
+  })}\n`);
+  const pool = metered({
+    subscription: {},
+    meterSnapshot: { plan_type: 'pro' },
+  });
+  const detected = poolBudget(pool, {
+    rollups: indexOf(corpus()), now: NOW, prices: { file },
+  });
+  assert.equal(detected.subscription.monthlyPriceUsd, 42);
+  assert.equal(detected.subscription.origin, 'detected');
+  assert.equal(detected.subscription.detectedPlan, 'pro');
+  assert.equal(detected.detectedPlan, 'pro');
+  assert.equal(detected.subscription.quotedLine, 'Pro — $42 / month');
+
+  const declared = poolBudget({ ...pool, subscription: { monthlyPriceUsd: 99 } }, {
+    rollups: indexOf(corpus()), now: NOW, prices: { file },
+  });
+  assert.equal(declared.subscription.monthlyPriceUsd, 99);
+  assert.equal(declared.subscription.origin, 'declared');
+  assert.equal(declared.subscription.detectedPlan, null);
+});
+
+test('poolBudget: an unpriced detected team plan stays unknown in Budget', () => {
+  const dir = home();
+  const file = join(dir, 'plan-prices.json');
+  writeFileSync(file, `${JSON.stringify({
+    schemaVersion: 'bullswarm.plan-prices.v1',
+    plans: {
+      'claude-code:max 5x': {
+        monthlyPriceUsd: 100,
+        source: 'https://example.test/claude-pricing',
+        quotedLine: 'Max 5x: $100 per month',
+        checkedAt: '2026-09-18',
+        plan: 'max 5x',
+      },
+    },
+  })}\n`);
+  const row = poolBudget(metered({
+    subscription: {},
+    meterSnapshot: {
+      plan_name: 'team', plan_type: 'team', subscription_type: 'team',
+      rate_limit_tier: 'default_claude_max_5x',
+    },
+  }), {
+    rollups: indexOf(corpus()), now: NOW, prices: { file },
+  });
+  assert.equal(row.detectedPlan, 'team');
+  assert.equal(row.subscription, null);
+  const rendered = budgetLines({ rows: [row] }, { width: 120, ansi: false }).lines.join('\n');
+  assert.match(rendered, /plan team · price unknown/);
+  assert.doesNotMatch(rendered, /\$100\/mo/);
 });
 
 test('poolBudget: apiEquivalentUsd is null when no run recorded an estimate (B5)', () => {

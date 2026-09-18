@@ -28,6 +28,9 @@ import { dayKey, historyDays } from './history.js';
 import { readRollups, rollupIndexPath } from './rollup.js';
 import { loadState } from '../lib/state.js';
 import { readMeterHistoryDays } from '../meters/registry.js';
+import { listTasks } from '../lib/tasks.js';
+import { attemptOutputSeries } from './v2-state.js';
+import { formatUsageBasis } from '../lib/usage-basis.js';
 // N1: a missing measurement never becomes a confident zero. Number(null) is
 // 0 and Number.isFinite(0) is true, so every reading below goes through this.
 import { finiteOrNull } from '../lib/num.js';
@@ -265,9 +268,10 @@ function compactUsage(usage) {
   const tokens = usage.tokens ?? {};
   const tokenText = `tokens read=${tokens.standardRead ?? '?'} cache-read=${tokens.cacheRead ?? '?'} cache-write=${tokens.cacheWrite ?? '?'} output=${tokens.output ?? '?'}`;
   const cost = usage.cost?.estimatedUsd != null
-    ? `cost≈$${usage.cost.estimatedUsd}`
+    ? `cost ${usageBasisText(usage.cost.estimatedUsd, usage.tokenSource)}`
     : usage.cost?.knownSubtotalUsd != null
-      ? `cost≥$${usage.cost.knownSubtotalUsd} (partial)` : 'cost=?';
+      ? `cost ≥${usageBasisText(usage.cost.knownSubtotalUsd, usage.tokenSource)} (partial)`
+      : 'cost unknown';
   const quota = usage.normalizedQuota?.estimatedPercent == null
     ? usage.normalizedQuota?.knownSubtotalPercent != null
       ? `quota≥${usage.normalizedQuota.knownSubtotalPercent}% (partial)` : 'quota=?'
@@ -536,13 +540,16 @@ function dashboardRunLines(rows, selected, narrow, width) {
     const status = concerns ? `${concerns} concern${concerns === 1 ? '' : 's'}` : humanWorkflowStatus(durableStatus, row.ongoing);
     const name = workflowRunLabel(row);
     const phase = legacy ? 'legacy' : humanPhaseName(row.phase ?? 'starting');
+    const economics = legacy ? null : runEconomics(row, [], Date.now());
+    const spend = economics ? moneyText(economics.apiEquivalentUsd, economics.tokenSource) : null;
+    const spendLabel = spend ?? (legacy ? null : 'cost unknown');
     if (narrow) {
       const inner = Math.max(1, width - 4);
       return {
         selected: selectedRow,
         lines: [
           selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, inner),
-          selectLine(`  ${progress} · ${elapsed}`, selectedRow, false, inner),
+          selectLine(`  ${progress} · ${elapsed}${spendLabel ? ` · ${spendLabel}` : ''}`, selectedRow, false, inner),
           selectLine(`  ${phase} · ${status}`, selectedRow, false, inner),
           '',
         ],
@@ -552,7 +559,7 @@ function dashboardRunLines(rows, selected, narrow, width) {
       selected: selectedRow,
       lines: [
         selectLine(`${icon} ${row.shortId ?? '------'} · ${name}`, selectedRow, true, 44),
-        selectLine(`  ${progress} · ${elapsed} · ${status}`, selectedRow, false, 44),
+        selectLine(`  ${progress} · ${elapsed} · ${status}${spendLabel ? ` · ${spendLabel}` : ''}`, selectedRow, false, 44),
         '',
       ],
     };
@@ -1335,6 +1342,363 @@ function formatBytes(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The durable byte timeline for one attempt, plus its measured total. */
+function outputSparkline(attempt, runDir, width = 8) {
+  let series = [];
+  try { series = attemptOutputSeries(attempt, runDir); } catch { series = []; }
+  if (!series.length) return '';
+  const values = series.map((sample) => sample?.[1]).filter((value) => Number.isFinite(value));
+  if (!values.length) return '';
+  const total = values.at(-1);
+  const spark = sparkline(values, width);
+  return spark ? `${spark} ${formatBytes(total)}` : '';
+}
+
+function taskIdText(task) {
+  const raw = String(task?.id ?? task?.taskFile ?? 'task');
+  return raw.length > 14 ? raw.slice(-8) : raw;
+}
+
+function taskPoolModelText(task) {
+  return [task?.pool, task?.model].filter((value) => value != null && String(value).trim()).join(' · ')
+    || 'pool/model unavailable';
+}
+
+function taskElapsedText(task, nowMs) {
+  return ageText(task?.startedAt, nowMs) || 'time pending';
+}
+
+function taskToday(task, nowMs, { finished = false } = {}) {
+  const at = finished ? (task?.endedAt ?? task?.finishedAt) : (task?.startedAt ?? task?.endedAt ?? task?.finishedAt);
+  return dayKey(at) === dayKey(nowMs);
+}
+
+/** A measured worker duration with the precision the Home today band uses. */
+// One identity for a finished task row, used everywhere a task can arrive from
+// two sources at once (the day's rows AND `tasks.finished`). A task recorded
+// before the single-task ledger has neither `id` nor `taskFile`, so keying on
+// those alone silently deduplicated nothing and every legacy task was listed
+// and counted twice. The fallback is the tuple the decision log always has.
+function taskIdentity(task) {
+  const id = task?.id ?? task?.taskFile;
+  if (id != null && id !== '') return `id:${id}`;
+  const at = task?.endedAt ?? task?.finishedAt ?? task?.ts ?? task?.startedAt ?? '';
+  const pool = task?.pool ?? task?.picked ?? '';
+  return `at:${at}|${pool}|${task?.lane ?? ''}|${task?.durationMs ?? ''}`;
+}
+
+function todayMinutesText(value) {
+  const minutes = finiteOrNull(value);
+  return minutes == null ? null : `${minutes.toFixed(1)}m`;
+}
+
+function todayMinutesNumberText(value) {
+  const minutes = finiteOrNull(value);
+  return minutes == null ? null : minutes.toFixed(1);
+}
+
+/** A task's measured duration, without turning a missing field into zero. */
+function measuredTaskMinutes(task) {
+  const duration = finiteOrNull(task?.durationMs);
+  if (duration != null && duration >= 0) return duration / 60_000;
+  const wallSec = finiteOrNull(task?.wallSec);
+  if (wallSec != null && wallSec >= 0) return wallSec / 60;
+  const started = Date.parse(task?.startedAt ?? '');
+  const ended = Date.parse(task?.endedAt ?? task?.finishedAt ?? '');
+  if (Number.isFinite(started) && Number.isFinite(ended) && ended >= started) return (ended - started) / 60_000;
+  return null;
+}
+
+function todayDateLabel(value, { year = false } = {}) {
+  const key = /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? '')) ? String(value) : dayKey(value);
+  if (!key) return 'today';
+  const [yyyy, mm, dd] = key.split('-').map(Number);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${dd} ${months[mm - 1] ?? ''}${year ? ` ${yyyy}` : ''}`.trim();
+}
+
+function todayGoalLine(record, width) {
+  const goal = String(record?.goal ?? '').split(/\r?\n/)[0].trim();
+  return dimText(`  ${goal || 'goal unavailable'}`, width);
+}
+
+function todayWorkflowLine(record, width) {
+  const glyph = record?.status === 'failed' ? glyphs().fail : glyphs().ok;
+  const id = String(record?.shortId ?? record?.runId ?? '------');
+  const project = cut(String(record?.project ?? 'unknown'), 10).padEnd(10);
+  const minutes = todayMinutesText(record?.minutes?.wall) ?? blank();
+  const verdict = record?.verified === true ? 'verified' : 'unverified';
+  const line = `${glyph} ${id.padEnd(6)}  ${project}  ${minutes.padStart(6)}  ${verdict}`;
+  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
+}
+
+function todayTaskLine(task, width) {
+  const id = taskIdText(task);
+  const project = cut(String(task?.project ?? 'unknown'), 10).padEnd(10);
+  const minutes = todayMinutesText(measuredTaskMinutes(task)) ?? blank();
+  const result = task?.ok === false ? 'failed' : 'finished';
+  const line = `${glyphs().inflight} ${id.padEnd(6)}  ${project}  ${minutes.padStart(6)}  ${result}`;
+  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
+}
+
+function todayRows(model, nowMs) {
+  const date = dayKey(nowMs);
+  const day = (model.days ?? []).find((entry) => String(entry?.date) === date) ?? null;
+  const workflows = [];
+  const workflowIds = new Set();
+  const addWorkflow = (record) => {
+    if (!record || record.kind === 'task' || record.task === true) return;
+    if (record.unfinished === true || !record.finishedAt || dayKey(record.finishedAt) !== date) return;
+    const id = record.runId ?? record.shortId;
+    if (id != null && workflowIds.has(id)) return;
+    if (id != null) workflowIds.add(id);
+    workflows.push(record);
+  };
+  for (const record of day?.rows ?? []) addWorkflow(record);
+  // A caller may render a model without asking History for a day page first;
+  // the rollup index is the same durable source and fills that pure-rendering
+  // case without scanning workflow directories.
+  for (const record of model.rollups ?? []) addWorkflow(record);
+
+  const tasks = [];
+  const taskIds = new Set();
+  const addTask = (task) => {
+    if (!task || !taskToday(task, nowMs, { finished: true })) return;
+    const id = taskIdentity(task);
+    if (taskIds.has(id)) return;
+    taskIds.add(id);
+    tasks.push(task);
+  };
+  for (const row of day?.rows ?? []) {
+    if (row?.kind === 'task' || row?.task === true) addTask(row);
+  }
+  for (const task of model.tasks?.finished ?? []) addTask(task);
+  return { date, workflows, tasks };
+}
+
+function poolRatePerMinute(pool, budgetRow = null) {
+  return finiteOrNull(pool?.spend?.pacing?.ratePerMinute
+    ?? pool?.ratePerMinute
+    ?? budgetRow?.share?.ratePerMinute);
+}
+
+function todayLicenceRows(model, today, nowMs) {
+  const byName = new Map();
+  const ensure = (name) => {
+    if (!name) return null;
+    if (!byName.has(name)) byName.set(name, {
+      name, workflowMinutes: null, runMinutes: null, apiUsd: null, tokenSource: null,
+      worked: false, ratePerMinute: null, usedPct: null,
+    });
+    return byName.get(name);
+  };
+  const addMinutes = (row, key, value) => {
+    const number = finiteOrNull(value);
+    if (number == null || number < 0) return;
+    row[key] = (row[key] ?? 0) + number;
+  };
+  for (const record of today.workflows) {
+    for (const [name, entry] of Object.entries(record?.pools ?? {})) {
+      const row = ensure(name);
+      if (!row) continue;
+      row.worked = true;
+      addMinutes(row, 'workflowMinutes', entry?.minutes);
+      const cost = finiteOrNull(entry?.costUsd);
+      if (cost != null) row.apiUsd = (row.apiUsd ?? 0) + cost;
+      row.tokenSource = worstTokenSource(row.tokenSource, tokenSourceOf(entry?.tokenSource, cost));
+    }
+  }
+  for (const task of today.tasks) {
+    const row = ensure(task?.pool);
+    if (!row) continue;
+    row.worked = true;
+    addMinutes(row, 'runMinutes', measuredTaskMinutes(task));
+  }
+
+  const budgetRows = new Map((model.budget?.rows ?? []).map((row) => [row.name, row]));
+  const pools = Array.isArray(model.pools) ? model.pools : [];
+  for (const pool of pools) {
+    const row = byName.get(pool?.name);
+    if (!row) continue;
+    row.ratePerMinute = poolRatePerMinute(pool, budgetRows.get(pool.name));
+    row.usedPct = finiteOrNull(pool?.usedPct);
+  }
+  for (const row of byName.values()) {
+    row.ratePerMinute ??= poolRatePerMinute(null, budgetRows.get(row.name));
+  }
+
+  // Keep the provider/config order stable (the frame is a report, not a
+  // ranking), then append a pool that was recorded by a rollup but is absent
+  // from the current live meter list.
+  const order = new Map(pools.map((pool, index) => [pool?.name, index]));
+  return [...byName.values()]
+    .filter((row) => row.worked)
+    .sort((a, b) => (order.get(a.name) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.name) ?? Number.MAX_SAFE_INTEGER)
+      || String(a.name).localeCompare(String(b.name)))
+    .map((row) => ({
+      ...row,
+      workflowPct: row.ratePerMinute != null && row.workflowMinutes != null
+        ? row.ratePerMinute * row.workflowMinutes : null,
+    }));
+}
+
+function todayPoolName(name, width) {
+  const full = String(name ?? '');
+  const suffix = full.includes(':') ? full.slice(full.lastIndexOf(':') + 1) : full;
+  if (full.length <= width) return full;
+  if (suffix.length <= width) return suffix;
+  return cut(full, width);
+}
+
+function todayTableRow(row, width, { header = false } = {}) {
+  const desktop = width >= 60;
+  const nameWidth = desktop ? 14 : 13;
+  const specs = desktop
+    ? { wf: 6, wfPct: 4, run: 7, api: 17, gaps: [4, 3, 3, 0] }
+    : { wf: 6, wfPct: 4, run: 6, api: 12, gaps: [3, 3, 3, 0] };
+  const labels = ['wf min', 'wf % (est.)', 'run min', 'API≈'];
+  const values = header ? labels : [
+    todayMinutesNumberText(row?.workflowMinutes) ?? blank(),
+    row?.workflowPct == null ? blank() : `${row.workflowPct.toFixed(1)}%`,
+    todayMinutesNumberText(row?.runMinutes) ?? blank(),
+    row?.apiUsd == null && !row?.tokenSource ? blank() : compactUsageBasisText(row?.apiUsd, row?.tokenSource, specs.api),
+  ];
+  const widths = [specs.wf, specs.wfPct, specs.run, specs.api];
+  let line = header ? 'pool'.padEnd(nameWidth) : todayPoolName(row?.name, nameWidth).padEnd(nameWidth);
+  if (header) {
+    const headerWidths = desktop ? [6, 10, 7, 18] : [6, 10, 6, 13];
+    values.forEach((value, index) => {
+      line += String(value ?? '').padEnd(headerWidths[index]);
+      line += ' '.repeat(index === values.length - 1 ? 0 : 1);
+    });
+  } else values.forEach((value, index) => {
+    line += String(value ?? '').padStart(widths[index]);
+    line += ' '.repeat(specs.gaps[index]);
+  });
+  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
+}
+
+function todayBareRule(width) {
+  return '─'.repeat(Math.max(0, width));
+}
+
+function todayPadded(value, width) {
+  const text = String(value ?? '');
+  return `${cut(text, width)}${' '.repeat(Math.max(0, width - visibleLength(cut(text, width))))}`;
+}
+
+function todayLicenceFootnotes(nowMs, width, desktop = false) {
+  const date = dayKey(nowMs) ?? 'today';
+  return desktop
+    ? [
+      'wf % = pool window points drawn by workflows today',
+      '— = not measured · API≈ basis: provider-reported · transcript-summed · estimated',
+      'cost unknown means no usage measurement exists',
+      'live window used% is on Budget, not in this table',
+    ].map((line) => todayPadded(line, width))
+    : [
+      'wf % = pool window points drawn by workflows today',
+      '— = not measured · API≈: provider-reported · transcript-summed · estimated',
+      `cost unknown · audit ${date}`,
+      'live window used% lives on Budget, not here',
+    ].map((line) => todayPadded(line, width));
+}
+
+/** The approved Home today band: finished work on the left, licence draw right. */
+function homeTodayBand(model, opts, body) {
+  const { width, narrow, nowMs } = opts;
+  const today = todayRows(model, nowMs);
+  const workflowCount = today.workflows.length;
+  const taskCount = today.tasks.length;
+  const verified = today.workflows.filter((record) => record.verified === true).length;
+  const workflowNoun = `${workflowCount} workflow${workflowCount === 1 ? '' : 's'}`;
+  const taskNoun = `${taskCount} task${taskCount === 1 ? '' : 's'}`;
+  const countText = `${workflowNoun} finished${taskCount ? ` · ${taskNoun} finished` : ''} · ${verified} verified`;
+  // The phone has one line for the whole band. Once tasks are present, drop
+  // the repeated word "finished" so the three required counts remain
+  // visible instead of truncating the verification count.
+  const narrowCountText = taskCount
+    ? `${workflowNoun} · ${taskNoun} · ${verified} verified`
+    : countText;
+  const desktopCountText = `${workflowNoun}${taskCount ? ` · ${taskNoun}` : ''} · ${verified} verified`;
+  const date = todayDateLabel(today.date, { year: !narrow });
+  const licenceRows = todayLicenceRows(model, today, nowMs);
+  const runIds = today.workflows.map((record) => record.runId ?? record.shortId).filter(Boolean);
+  const taskIds = today.tasks.map((task) => task.id ?? task.taskFile).filter(Boolean);
+
+  if (narrow) {
+    body.push(todayPadded(`today · ${date} · ${narrowCountText}`, width));
+    body.push(todayBareRule(width));
+    if (!today.workflows.length && !today.tasks.length) body.push(todayPadded('no finished workflows or tasks today', width));
+    for (const record of today.workflows) body.row(todayWorkflowLine(record, width), { kind: 'run', runId: record.runId ?? record.shortId });
+    for (const task of today.tasks) body.row(todayTaskLine(task, width), { kind: 'task', taskId: task.id ?? task.taskFile });
+    body.push(todayPadded('Enter on a run → its goal, steps and spend', width));
+    body.push(todayBareRule(width));
+    body.push(todayPadded('licence spent today · measured worker minutes', width));
+    body.push(todayTableRow(null, width, { header: true }));
+    if (!licenceRows.length) body.push(todayPadded('no measured pool work today', width));
+    for (const row of licenceRows) {
+      body.row(todayTableRow(row, width), { kind: 'page', page: 'budget', pool: row.name });
+    }
+    for (const line of todayLicenceFootnotes(nowMs, width, false)) body.push(line);
+  } else {
+    const leftWidth = 57;
+    const rightWidth = Math.max(1, width - leftWidth - 2);
+    body.push(todayPadded(`today · ${date}`, width));
+    const left = [
+      todayPadded(`finished today · ${desktopCountText}`, leftWidth),
+      `${'─'.repeat(Math.max(0, leftWidth - 1))} `,
+    ];
+    if (!today.workflows.length && !today.tasks.length) left.push(todayPadded('no finished workflows or tasks today', leftWidth));
+    for (const record of today.workflows) {
+      left.push(todayWorkflowLine(record, leftWidth));
+      left.push(todayGoalLine(record, leftWidth));
+    }
+    for (const task of today.tasks) left.push(todayTaskLine(task, leftWidth));
+    left.push(todayPadded('Enter on a run → its steps and spend', leftWidth));
+    const right = [
+      todayPadded('licence spent today · measured worker minutes', rightWidth),
+      todayBareRule(rightWidth),
+      todayTableRow(null, rightWidth, { header: true }),
+      ...licenceRows.map((row) => todayTableRow(row, rightWidth)),
+      ...todayLicenceFootnotes(nowMs, rightWidth, true),
+    ];
+    const rows = Math.max(left.length, right.length);
+    for (let index = 0; index < rows; index += 1) {
+      const l = todayPadded(left[index] ?? '', leftWidth);
+      const r = todayPadded(right[index] ?? '', rightWidth);
+      const action = index >= 2 && index < 2 + today.workflows.length * 2
+        && index % 2 === 0
+        ? { kind: 'run', runId: today.workflows[(index - 2) / 2]?.runId ?? today.workflows[(index - 2) / 2]?.shortId }
+        : index >= 2 + today.workflows.length * 2 && index < 2 + today.workflows.length * 2 + today.tasks.length
+          ? { kind: 'task', taskId: today.tasks[index - (2 + today.workflows.length * 2)]?.id ?? today.tasks[index - (2 + today.workflows.length * 2)]?.taskFile }
+          : null;
+      const rightStart = 2;
+      const poolIndex = index - rightStart;
+      const rightAction = poolIndex >= 1 && poolIndex <= licenceRows.length
+        ? { kind: 'page', page: 'budget', pool: licenceRows[poolIndex - 1]?.name }
+        : null;
+      body.parts([{ text: l, action }, { text: '│ ' }, { text: r, action: rightAction }]);
+    }
+  }
+  // Capture only this band's rows before the running/recent sections append
+  // their own click targets below it.
+  body.runRows = body.regions
+    .filter((region) => region.action?.kind === 'run')
+    .map((region) => ({ runId: region.action.runId, y: region.y }));
+  body.taskRows = body.regions
+    .filter((region) => region.action?.kind === 'task')
+    .map((region) => ({ taskId: region.action.taskId, y: region.y }));
+  const desiredTask = opts.selectedTaskId;
+  const desiredRun = opts.selectedRunId;
+  const selectedTask = desiredTask && taskIds.includes(desiredTask) ? desiredTask : null;
+  const selectedRun = desiredRun && runIds.includes(desiredRun) ? desiredRun : runIds[0] ?? null;
+  body.cursorAction = selectedTask
+    ? { kind: 'task', taskId: selectedTask }
+    : selectedRun ? { kind: 'run', runId: selectedRun } : null;
+  return { workflowCount, taskCount, verified };
+}
+
 function humanStatus(value) {
   return String(value ?? 'waiting').replaceAll('_', ' ').replace(/^./, (char) => char.toUpperCase());
 }
@@ -1738,7 +2102,7 @@ export function overviewSnapshot(bullswarmDir, token, { width = 100, height = 30
 
 const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 /** Every page the dashboard has, in the order the help page lists them. */
-const DASHBOARD_PAGES = Object.freeze(['home', 'runs', 'run', 'step', 'budget', 'stats', 'history', 'fleet', 'help']);
+const DASHBOARD_PAGES = Object.freeze(['home', 'runs', 'run', 'step', 'task', 'budget', 'stats', 'history', 'fleet', 'help']);
 /** The tab row above the body; `key` is the key that opens the page. */
 const PAGE_TABS = Object.freeze([
   Object.freeze({ id: 'home', label: 'Home', key: 'h' }),
@@ -1748,7 +2112,7 @@ const PAGE_TABS = Object.freeze([
   Object.freeze({ id: 'fleet', label: 'Fleet', key: 'f' }),
 ]);
 /** Run and Step are read as Runs: the tab row marks the page they came from. */
-const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs', history: 'runs' });
+const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs', task: 'runs', history: 'runs' });
 /** The period toggle, in the order `p` cycles it. */
 const PERIOD_ITEMS = Object.freeze([
   Object.freeze({ id: '7d', label: 'Last 7 days' }),
@@ -1785,15 +2149,47 @@ function about() {
   return asciiGlyphsPreferred() ? '~' : '≈';
 }
 
+const TOKEN_SOURCE_RANK = Object.freeze({
+  unknown: 0,
+  'estimated:utf8-bytes/4': 1,
+  'transcript-summed': 2,
+  'provider-reported': 3,
+});
+
+function tokenSourceOf(value, cost = null) {
+  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
+  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
+}
+
+function worstTokenSource(current, candidate) {
+  const next = tokenSourceOf(candidate);
+  if (current == null) return next;
+  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function usageBasisText(value, tokenSource) {
+  return formatUsageBasis({ tokenSource: tokenSourceOf(tokenSource, value), costUsd: value });
+}
+
+function compactUsageBasisText(value, tokenSource, width = 20) {
+  const text = usageBasisText(value, tokenSource);
+  if (text === 'cost unknown' || visibleLength(text) <= width) return text;
+  return text
+    .replace(' estimated', ' est')
+    .replace(' summed', ' sum')
+    .replace('$ ', '$')
+    .slice(0, width);
+}
+
 /**
  * Money, always as the estimate it is. `estimateInvocationUsage` prices the
  * task and output text at API rates with no cache split, so every `$` on this
  * dashboard is an API-equivalent estimate and says so; an amount nobody
  * recorded is null, and the caller paints a blank with the reason.
  */
-function moneyText(value) {
-  const text = formatDashboardValue(value, 'money');
-  return text == null ? null : `${about()} ${text}`;
+function moneyText(value, tokenSource) {
+  const text = usageBasisText(value, tokenSource);
+  return text === 'cost unknown' ? text : text;
 }
 
 /** A percentage, to one decimal, or null when there is nothing to show. */
@@ -1961,7 +2357,7 @@ function navParts(model, { page, width, selectedRunId }) {
       : item.key ? `${underline(item.key)}.${item.label}` : item.label;
     return item.tight ? `[${mark}${label}]` : `[ ${mark}${label} ]`;
   };
-  const back = page === 'step' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
+  const back = page === 'step' || page === 'task' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
   // The run the reader is on is marked wherever a run is what they are
   // reading; the other pages mark themselves in the tab row instead.
   const onRunPage = page === 'home' || page === 'run' || page === 'step' || page === 'runs';
@@ -2099,7 +2495,9 @@ const DONE_STATUS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'ski
 function planProgress(row, { assignments = [], nowMs = Date.now() } = {}) {
   const state = row?.state ?? {};
   const actions = state.actions ?? [];
-  const levels = planLevels(row);
+  // The phase count in the Run header must be the same presentation-stage
+  // list the plan strip and timeline use, not a separately re-derived graph.
+  const levels = planStages(row).stages.map((stage) => stage.actions ?? []);
   const done = actions.filter((action) => action.status === 'succeeded').length;
   const running = levels.findIndex((level) => level.some((action) => action.status === 'running'));
   const pending = levels.findIndex((level) => level.some((action) => !DONE_STATUS.has(action.status)));
@@ -2174,6 +2572,8 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
   const byPool = new Map();
   let apiEquivalentUsd = null;
   let priced = 0;
+  let measuredAttempts = 0;
+  let tokenSource = null;
   for (const attempt of attempts) {
     const name = attempt?.pool ?? null;
     const startedMs = Date.parse(attempt?.startedAt ?? '');
@@ -2185,7 +2585,10 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
         : null;
     if (name && minutes != null) byPool.set(name, (byPool.get(name) ?? 0) + minutes);
     const cost = finiteOrNull(attempt?.usage?.cost?.estimatedUsd);
+    const source = tokenSourceOf(attempt?.usage?.tokenSource, cost);
+    tokenSource = worstTokenSource(tokenSource, source);
     if (cost != null) { apiEquivalentUsd = (apiEquivalentUsd ?? 0) + cost; priced += 1; }
+    if (cost != null && (source === 'provider-reported' || source === 'transcript-summed')) measuredAttempts += 1;
   }
   const rows = [...byPool.entries()].map(([name, minutes]) => {
     const pool = (Array.isArray(pools) ? pools : []).find((entry) => entry?.name === name) ?? null;
@@ -2199,7 +2602,14 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
       rateSource: pool?.spend?.pacing?.source ?? null,
     };
   }).sort((a, b) => b.minutes - a.minutes);
-  return { pools: rows, apiEquivalentUsd, pricedAttempts: priced, attempts: attempts.length };
+  return {
+    pools: rows,
+    apiEquivalentUsd,
+    tokenSource: tokenSource ?? 'unknown',
+    pricedAttempts: priced,
+    measuredAttempts,
+    attempts: attempts.length,
+  };
 }
 
 /** `shell-home ▇▇▇▇░░░ 12m/16m expected`, for a step with a live assignment. */
@@ -2223,6 +2633,117 @@ function tileText(tile, width) {
   return cut(`${value}${spark}`, width);
 }
 
+function todayPoolMinute(value, nowMs) {
+  const started = Date.parse(value?.startedAt ?? '');
+  const finished = Date.parse(value?.finishedAt ?? value?.endedAt ?? '');
+  const wall = finiteOrNull(value?.wallSec);
+  if (wall != null && wall >= 0) return wall / 60;
+  const duration = finiteOrNull(value?.durationMs);
+  if (duration != null && duration >= 0) return duration / 60_000;
+  if (!Number.isFinite(started) || dayKey(value?.startedAt) !== dayKey(nowMs)) return 0;
+  return Math.max(0, (Number.isFinite(finished) ? finished : nowMs) - started) / 60_000;
+}
+
+function todayLivePoolMinute(value, nowMs) {
+  const started = Date.parse(value?.startedAt ?? '');
+  if (!Number.isFinite(started)) return 0;
+  const dayStart = new Date(nowMs);
+  dayStart.setHours(0, 0, 0, 0);
+  return Math.max(0, nowMs - Math.max(started, dayStart.getTime())) / 60_000;
+}
+
+/** Metered pools that did work today, followed by the remaining meters. */
+function homeLicencePools(model, nowMs) {
+  const metered = (model.stats?.overview?.today?.licence?.pools ?? [])
+    .filter((pool) => pool?.name && pool.usedPct != null)
+    .map((pool) => ({ ...pool, _todayMinutes: 0, _workedToday: false }));
+  if (!metered.length) return { pools: [], omitted: 0 };
+  const byName = new Map(metered.map((pool) => [pool.name, pool]));
+  const add = (name, minutes, worked = true) => {
+    const pool = byName.get(name);
+    if (!pool) return;
+    pool._workedToday ||= worked;
+    const amount = finiteOrNull(minutes);
+    if (amount != null && amount >= 0) pool._todayMinutes += amount;
+  };
+
+  // The spent tile attributes finished workflow rollups to their finish day.
+  for (const record of model.rollups ?? []) {
+    if (dayKey(record?.finishedAt) !== dayKey(nowMs)) continue;
+    for (const [name, entry] of Object.entries(record?.pools ?? {})) {
+      const attempts = finiteOrNull(entry?.attempts) ?? 0;
+      const minutes = finiteOrNull(entry?.minutes);
+      add(name, minutes, attempts > 0 || (minutes != null && minutes > 0));
+    }
+  }
+  // Standalone `bullswarm run` tasks are not workflow rollups, but are still
+  // today's worker minutes and must keep their metered pool visible.
+  for (const task of model.tasks?.finished ?? []) {
+    if (!taskToday(task, nowMs, { finished: true })) continue;
+    add(task.pool, todayPoolMinute(task, nowMs));
+  }
+  for (const task of model.tasks?.inflight ?? []) {
+    if (!taskToday(task, nowMs)) continue;
+    add(task.pool, todayPoolMinute(task, nowMs));
+  }
+
+  const assignmentKeys = new Set();
+  for (const assignment of model.assignments ?? []) {
+    if (!assignment?.pool || !assignment.startedAt) continue;
+    assignmentKeys.add(`${assignment.runId ?? ''}:${assignment.actionId ?? assignment.id ?? ''}`);
+    add(assignment.pool, todayLivePoolMinute(assignment, nowMs));
+  }
+  // A live workflow assignment can briefly be absent while its state record is
+  // already running. Include that durable attempt without double-counting an
+  // assignment we just saw.
+  for (const run of model.runs ?? []) {
+    for (const attempt of run?.state?.attempts ?? []) {
+      if (!attempt?.pool || attempt.status !== 'running' || !attempt.startedAt) continue;
+      const key = `${run.runId ?? ''}:${attempt.actionId ?? attempt.id ?? ''}`;
+      if (assignmentKeys.has(key)) continue;
+      add(attempt.pool, todayLivePoolMinute(attempt, nowMs));
+    }
+  }
+
+  const worked = metered.filter((pool) => pool._workedToday)
+    .sort((a, b) => b._todayMinutes - a._todayMinutes || a.name.localeCompare(b.name));
+  const idle = metered.filter((pool) => !pool._workedToday)
+    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0) || a.name.localeCompare(b.name));
+  return { pools: [...worked, ...idle], omitted: 0 };
+}
+
+function licencePoolName(value, cellWidth) {
+  const full = String(value ?? '');
+  const suffix = full.includes(':') ? full.slice(full.lastIndexOf(':') + 1) : full;
+  // A pool identity is kept whole when the cell has ordinary room. If it
+  // cannot fit, switch at the provider boundary; never paint an ellipsis into
+  // a pool name that looks like a different provider.
+  if (cellWidth >= 12 && full.length <= Math.max(12, cellWidth - 8)) return full;
+  const suffixRoom = Math.max(1, cellWidth - 8);
+  return suffix.length <= suffixRoom ? suffix : '';
+}
+
+/**
+ * Keep the Home tile honest when a short viewport cannot paint every meter.
+ * Worked pools are always retained; only the idle tail may collapse into the
+ * explicit `+N pools` row.
+ */
+function homeLicenceDisplay(order, { narrow = false, bodyHeight = null, height = 36 } = {}) {
+  const pools = order?.pools ?? [];
+  const worked = pools.filter((pool) => pool._workedToday);
+  // Home reserves room for its summary, in-flight block and recent history.
+  // A normal frame therefore grows naturally; only genuinely short frames
+  // exercise the summary row.
+  const available = Number(bodyHeight) || Math.max(1, Number(height) - 2);
+  const reserve = narrow ? 8 : 9;
+  const rowBudget = Math.max(1, available - reserve);
+  if (pools.length <= rowBudget || !pools.length) return { pools, omitted: 0 };
+  const idle = pools.filter((pool) => !pool._workedToday);
+  const idleSlots = Math.max(0, rowBudget - worked.length - 1);
+  const shown = [...worked, ...idle.slice(0, idleSlots)];
+  return { pools: shown, omitted: Math.max(0, pools.length - shown.length) };
+}
+
 /**
  * `widget-lib@cmd ▇▇▇▇▇▇░░░░ 15m/17m`, the per-step bar the prototype draws
  * beside the plan strip.
@@ -2233,10 +2754,16 @@ function stepBarText(action, assignment, { width = 24, nowMs = Date.now(), pool 
   const startedMs = Date.parse(assignment?.startedAt ?? action?.startedAt ?? '');
   const elapsed = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 60_000) : null;
   const short = pool == null ? null : String(pool).split(':').pop();
-  const name = short ? `${action.id}@${short}` : String(action.id);
+  const actionName = String(action.id);
   const clock = elapsed == null ? blank() : minutesText(elapsed);
   const measured = expected != null && expected > 0 && elapsed != null;
   const timing = `${clock}/${measured ? minutesText(expected) : blank()}`;
+  // Pool names are identity labels. Keep the full `action@pool` only when it
+  // can fit beside the timing and minimum bar; otherwise drop the pool as a
+  // whole instead of letting compactRow paint an `openc…` fragment.
+  const fullName = short ? `${actionName}@${short}` : actionName;
+  const name = short && visibleLength(fullName) + visibleLength(timing) + 2 + 4 <= width
+    ? fullName : actionName;
   const bars = Math.max(4, Math.min(10, width - visibleLength(name) - visibleLength(timing) - 2));
   const bar = measured
     ? tint(progressBar(elapsed / expected, bars), 'green')
@@ -2379,6 +2906,11 @@ function breakdownCells(model, opts, { cellWidth }) {
   const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
   const spend = model.stats?.spendPerDay ?? null;
   const rows = 4;
+  const spendTokenSource = (spend?.buckets ?? []).reduce((source, bucket) => (
+    bucket?.value == null
+      ? source
+      : worstTokenSource(source, tokenSourceOf(bucket?.tokenSource, bucket?.value))
+  ), null) ?? tokenSourceOf(spend?.tokenSource, spend?.total);
   // The percent sits in a fixed four-cell field (`100%` at widest), right
   // aligned, so every bar in a list ends on the same column and `2%` lines
   // up under `19%` instead of stealing a cell from its bar.
@@ -2411,18 +2943,28 @@ function breakdownCells(model, opts, { cellWidth }) {
   // S1/B5: with no recorded estimate in the period there is no series, and a
   // `$0.00` axis would be a confident zero. The column says so instead.
   const buckets = spend?.total == null ? [] : (spend?.buckets ?? []);
-  const chart = buckets.length
+  // A numeric value explicitly marked unknown is not a measured chart point.
+  // Drop it rather than painting a bare dollar axis; compatibility fixtures
+  // with a numeric source omitted still resolve to the byte estimate above.
+  const chartBuckets = buckets.filter((bucket) => (
+    bucket?.value != null
+    && tokenSourceOf(bucket?.tokenSource, bucket?.value) !== 'unknown'
+  ));
+  const chart = chartBuckets.length
     ? columnBars(
-      [{ name: 'spent', values: buckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
-      buckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
+      [{ name: 'spent', values: chartBuckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
+      chartBuckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
       {
         width: cellWidth,
         rowCount: chartRowCount(opts.height ?? 36),
-        col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, buckets.length))),
-        barW: 3, unit: '$', mark: about(), totals: false, colors: meterAnsi(),
+        col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, chartBuckets.length))),
+        barW: 3, unit: '$', mark: spendTokenSource === 'provider-reported' ? ''
+          : spendTokenSource === 'transcript-summed' ? '≈'
+            : spendTokenSource === 'estimated:utf8-bytes/4' ? '~' : '·',
+        totals: false, colors: meterAnsi(),
       },
     )
-    : [dimText(spend?.total == null && (spend?.buckets ?? []).length
+    : [dimText((spend?.buckets ?? []).length
       ? 'no finished run recorded an estimate'
       : 'no finished run in this period', cellWidth)];
   return [
@@ -2455,7 +2997,7 @@ function summaryBand(body, model, opts) {
   const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
   const runs = keys.workflows ?? 0;
   const spent = projects?.totals?.apiEquivalentUsd ?? null;
-  const money = moneyText(spent);
+  const money = moneyText(spent, keys.tokenSource);
   const share = runs ? shareText(verified / runs) : null;
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
@@ -2468,7 +3010,7 @@ function summaryBand(body, model, opts) {
       `Favourite model: ${tint(named(keys.favouriteModel), 'orange')}`,
     ],
     [
-      `Spent: ${tint(money ?? blank(), 'orange')}${money ? ' API' : ''}`,
+      `Spent: ${tint(money, 'orange')}`,
       `Median run: ${tint(minutesText(keys.medianRunMinutes) ?? blank(), 'orange')}`,
     ],
   ];
@@ -2479,143 +3021,30 @@ function summaryBand(body, model, opts) {
     pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
   }
   body.push('');
-  const sentence = money
+  const sentence = money && money !== 'cost unknown'
     ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${money} of API-equivalent work`
     : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
   body.push(cut(` ${tint(sentence, 'purple')}`, width));
 }
 
 /**
- * Home: today's four tiles, the runs in flight, this week's licence budget,
- * the period's breakdown in four columns, the summary band and the recent
- * list.
+ * Home: the approved today band, the runs in flight, this week's licence
+ * budget, the period's breakdown in four columns, the summary band and the
+ * recent list.
  */
 function homePage(model, opts, body) {
   const { width, narrow, nowMs } = opts;
-  const stats = model.stats;
-  const overview = stats?.overview ?? null;
-  const today = overview?.today ?? null;
-  const licence = today?.licence ?? null;
-  const sparks = stats?.sparklines ?? {};
-  const sparkWidth = 7;
-
-  body.push(rule(`today · ${today?.date ?? blank()}`, null, width));
-  const tiles = [
-    {
-      key: 'finished',
-      label: 'finished',
-      value: today ? strong(String(today.finished)) : blank(),
-      spark: tint(sparkline(sparks.runs ?? [], sparkWidth), 'orange'),
-      note: today
-        ? `${okMark()} ${today.verified} · ${failMark()} ${Math.max(0, today.finished - today.verified)} · ${model.runs.length} in flight`
-        : 'no index yet',
-      // The tagged frame paints this line's marks and leaves the rest plain;
-      // dimText() measures with String#length, so a line carrying escapes
-      // must not go through it.
-      plain: true,
-      action: { kind: 'trend', metric: 'runs' },
-    },
-    {
-      key: 'verified',
-      label: 'verified',
-      value: strong(shareText(today?.verifiedShare) ?? blank()),
-      spark: tint(sparkline(sparks.verified ?? [], sparkWidth), 'orange'),
-      note: today?.verifiedShare == null
-        ? 'no run finished today'
-        : `${today.verified} of ${today.finished} · today`,
-      action: { kind: 'trend', metric: 'verified' },
-    },
-    {
-      key: 'spend',
-      label: 'spent',
-      value: strong(moneyText(today?.apiEquivalentUsd) ?? blank()),
-      spark: tint(sparkline(sparks.spend ?? [], sparkWidth), 'orange'),
-      note: today?.apiEquivalentUsd == null
-        ? (narrow ? 'no estimate today' : 'no finished run recorded an estimate')
-        : `API-equivalent · ${today.pricedRuns} of ${today.finished} priced`,
-      action: { kind: 'trend', metric: 'spend' },
-    },
-  ];
-  // The licence tile is the prototype's fourth column: one meter row per
-  // metered pool rather than a number and a caption.
-  const licencePools = [...(licence?.pools ?? [])]
-    .sort((a, b) => (b.usedPct ?? 0) - (a.usedPct ?? 0))
-    .slice(0, 2);
-  const licenceRow = (pool, cell) => {
-    const name = cut(String(pool.name), Math.max(4, Math.min(12, cell - 18)));
-    const used = percentText(pool.usedPct) ?? blank();
-    const bars = Math.max(4, Math.min(32, cell - visibleLength(name) - visibleLength(used) - 3));
-    return `${name} ${meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() })} ${used}`;
-  };
-
-  if (narrow) {
-    // One row per tile with its context inline, then one row per metered pool.
-    for (const tile of tiles.filter((entry) => entry.key !== 'verified')) {
-      body.row(compactRow([
-        { text: ` ${tile.label}`, width: 9 },
-        { text: `${tile.value}${tile.spark ? `  ${tile.spark}` : ''}`, width: 16 },
-        { text: tile.plain ? tile.note : dimText(tile.note, width), grow: true, min: 6 },
-      ], { width }), tile.action);
-    }
-    if (licencePools.length) {
-      licencePools.forEach((pool, index) => {
-        body.row(compactRow([
-          { text: index === 0 ? ' licence' : '', width: 9 },
-          licenceRow(pool, width - 11),
-        ], { width }), { kind: 'tab', tab: 'pools' });
-      });
-    } else {
-      body.row(compactRow([
-        { text: ' licence', width: 9 },
-        { text: dimText(String(licence?.basis ?? 'no pool reported a licence meter'), width), grow: true },
-      ], { width }), { kind: 'tab', tab: 'pools' });
-    }
-  } else {
-    const gap = 2;
-    const inner = Math.max(4, width - 1 - gap * 3);
-    const base = Math.floor(inner / 4);
-    const extra = inner - base * 4;
-    const cellWidths = [0, 1, 2, 3].map((index) => base + (index < extra ? 1 : 0));
-    const cells = tiles.map((tile, index) => ({
-      width: cellWidths[index],
-      action: tile.action,
-      actionRows: [1],
-      rows: [
-        dimText(tile.label, cellWidths[index]),
-        `   ${tileText(tile, cellWidths[index] - 3)}`,
-        tile.plain ? ` ${cut(tile.note, cellWidths[index] - 1)}` : dimText(` ${tile.note}`, cellWidths[index]),
-      ],
-    }));
-    cells.push({
-      width: cellWidths[3],
-      action: { kind: 'tab', tab: 'pools' },
-      actionRows: [1, 2],
-      rows: [
-        dimText('licence today', cellWidths[3]),
-        ...(licencePools.length
-          ? licencePools.map((pool) => licenceRow(pool, cellWidths[3]))
-          : [dimText(String(licence?.basis ?? 'no pool reported a licence meter'), cellWidths[3])]),
-      ],
-    });
-    pushColumns(body, cells, { width: width - 1, gap });
-  }
-  if (!narrow) body.push(dimText(' click a tile for its chart', width));
-  if (!narrow && today?.basis) {
-    body.push(dimText(
-      ` ${cut(narrow ? 'money: API-equivalent estimates of the runs that finished today' : `money: ${today.basis}`, width - 2)}`,
-      width,
-    ));
-  }
-
+  homeTodayBand(model, opts, body);
   activeRunLines(model, opts, body);
   return homeDetails(model, opts, body);
 }
 
 function activeRunLines(model, opts, body, title = 'running') {
   const { width, narrow, nowMs } = opts;
+  const tasks = Array.isArray(model.tasks?.inflight) ? model.tasks.inflight : [];
   body.push('');
   body.push(rule(title, null, width));
-  if (!model.runs.length) {
+  if (!model.runs.length && !tasks.length) {
     body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
   }
   const unratedPools = new Set();
@@ -2642,7 +3071,7 @@ function activeRunLines(model, opts, body, title = 'running') {
       (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
       null,
     );
-    const money = moneyText(economics.apiEquivalentUsd);
+    const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
     const cost = `${tint(draw == null ? blank() : formatDashboardValue(draw, 'percent'), 'purple')} · ${tint(money ?? blank(), 'purple')}`;
 
     const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
@@ -2681,6 +3110,18 @@ function activeRunLines(model, opts, body, title = 'running') {
       body.parts(parts);
     }
   });
+  for (const task of tasks) {
+    const label = `${glyphs().inflight} ${task?.lane ?? 'lane unavailable'} · ${taskPoolModelText(task)}`;
+    const project = task?.project ? ` · ${task.project}` : '';
+    const elapsed = taskElapsedText(task, nowMs);
+    const line = compactRow([
+      { text: ` ${label}`, grow: true, min: 8 },
+      { text: `${taskIdText(task)}${project}`, grow: true, min: 4, gap: 2 },
+      { text: elapsed, width: Math.max(5, visibleLength(elapsed)), align: 'right', gap: 2 },
+      { text: ' ', width: 1, gap: 0 },
+    ], { width });
+    body.row(line, { kind: 'task', taskId: task?.id ?? task?.taskFile ?? null });
+  }
   // The reasons, once for the whole section rather than on every row.
   if (unratedPools.size) {
     body.push(dimText(` ${blank()} no measured %/minute rate for ${[...unratedPools].join(', ')}, so no licence draw`, width));
@@ -2721,7 +3162,7 @@ function homeDetails(model, opts, body) {
     const cellWidth = Math.floor(inner / 4);
     pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
   }
-  if (!narrow) body.push(dimText(' spent per day is the recorded API-equivalent estimate · share is measured worker-minutes · click a column for its Stats tab', width));
+  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis · share is measured worker-minutes · click a column for its Stats tab', width));
 
   summaryBand(body, model, opts);
 
@@ -2736,7 +3177,8 @@ function homeDetails(model, opts, body) {
   }
   for (const record of recent) {
     const ok = record.verified === true ? okMark() : record.status === 'completed' ? pendingMark() : failMark();
-    const money = moneyText(recordCost(record));
+    const cost = recordCostInfo(record);
+    const money = moneyText(cost.value, cost.tokenSource);
     body.row(compactRow([
       { text: ` ${ok}`, width: 2 },
       { text: strong(record.shortId ?? record.runId), width: 7 },
@@ -2754,6 +3196,29 @@ function homeDetails(model, opts, body) {
   return ' bullswarm · home';
 }
 
+/** Merge task ledger rows into a caller-supplied workflow day page. */
+function daysWithTasks(days, tasks) {
+  const source = Array.isArray(days) ? days : [];
+  const out = source.map((day) => ({ ...day, rows: [...(day.rows ?? [])] }));
+  const byDate = new Map(out.map((day) => [String(day.date), day]));
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const date = dayKey(task?.endedAt ?? task?.finishedAt ?? task?.startedAt);
+    if (!date) continue;
+    const day = byDate.get(date) ?? {
+      date, runs: 0, finished: 0, verified: 0, verifiedShare: null, spendUsd: null,
+      legacyRows: 0, unfinishedRows: 0, rows: [],
+    };
+    if (!byDate.has(date)) { byDate.set(date, day); out.push(day); }
+    const id = taskIdentity(task);
+    const alreadyListed = day.rows.some((row) => (row?.kind === 'task' || row?.task === true)
+      && taskIdentity(row) === id);
+    if (!alreadyListed) {
+      day.rows.push({ ...task, kind: 'task', source: 'run' });
+    }
+  }
+  return out.sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+}
+
 /** The API-equivalent estimate a rollup record carries, over its pools. */
 function recordCost(record) {
   const direct = finiteOrNull(record?.apiEquivalentUsd ?? record?.costUsd);
@@ -2766,6 +3231,16 @@ function recordCost(record) {
   return total;
 }
 
+function recordCostInfo(record) {
+  const value = recordCost(record);
+  let tokenSource = Object.hasOwn(TOKEN_SOURCE_RANK, record?.tokenSource) ? record.tokenSource : null;
+  for (const entry of Object.values(record?.pools ?? {})) {
+    const cost = finiteOrNull(entry?.costUsd);
+    tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry?.tokenSource, cost));
+  }
+  return { value, tokenSource: tokenSource ?? tokenSourceOf(null, value) };
+}
+
 /** Runs: the list, the filter, the agent integration and the commands. */
 function runsPage(model, opts, body) {
   const { width } = opts;
@@ -2774,27 +3249,38 @@ function runsPage(model, opts, body) {
     if ((row.ongoing || isWaitingWorkflow(row.state)) && !active.some((run) => run.runId === row.runId)) active.push(row);
   }
   const query = String(opts.query ?? '').toLowerCase();
-  const matches = (run) => !query || `${run.runId} ${run.shortId} ${run.goal ?? workflowRunLabel(run)}`.toLowerCase().includes(query);
-  activeRunLines({ ...model, runs: active.filter(matches) }, opts, body, 'active');
+  const matches = (run) => !query || `${run.runId ?? ''} ${run.shortId ?? ''} ${run.goal ?? workflowRunLabel(run)} ${run.id ?? ''} ${run.taskFile ?? ''} ${run.lane ?? ''} ${run.pool ?? ''} ${run.model ?? ''} ${run.project ?? ''}`.toLowerCase().includes(query);
+  activeRunLines({
+    ...model,
+    runs: active.filter(matches),
+    tasks: { ...(model.tasks ?? {}), inflight: (model.tasks?.inflight ?? []).filter(matches) },
+  }, opts, body, 'active');
   body.push('');
   body.anchor = { history: body.lines.length + 1, cursor: null };
   const ids = new Set(active.map((run) => run.runId));
-  const days = (model.days ?? []).map((day) => ({
+  const days = daysWithTasks(model.days, (model.tasks?.finished ?? []).filter(matches)).map((day) => ({
     ...day,
     rows: (day.rows ?? []).filter((run) => !ids.has(run.runId) && matches(run)),
   }));
   pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
   if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
   const runRegions = body.regions.filter((region) => region.action?.kind === 'run');
+  const taskRegions = body.regions.filter((region) => region.action?.kind === 'task');
   const desired = opts.listSelectedId ?? opts.selectedRunId ?? null;
   const runRows = runRegions.sort((a, b) => a.y - b.y);
-  const wanted = runRows.findIndex((region) => region.action.runId === desired);
-  const cursor = runRows[wanted >= 0 ? wanted : 0];
+  const allRows = [...runRegions, ...taskRegions].sort((a, b) => a.y - b.y);
+  const desiredTask = opts.selectedTaskId ?? null;
+  const wanted = desiredTask
+    ? allRows.findIndex((region) => region.action.kind === 'task' && region.action.taskId === desiredTask)
+    : allRows.findIndex((region) => region.action.kind === 'run' && region.action.runId === desired);
+  const cursor = allRows[wanted >= 0 ? wanted : 0];
   if (cursor) {
     body.lines[cursor.y - 1] = `\x1b[7m${body.lines[cursor.y - 1]}\x1b[0m`;
     body.anchor.cursor = cursor.y;
   }
   body.runRows = runRows.map((region) => ({ runId: region.action.runId, y: region.y }));
+  body.taskRows = taskRegions.map((region) => ({ taskId: region.action.taskId, y: region.y }));
+  body.cursorAction = cursor?.action ?? null;
   return ` bullswarm · runs · ${opts.filter === 'all' ? 'all' : 'active'} · ${days.length} days`;
 }
 
@@ -2832,6 +3318,55 @@ function integrationLines(model, opts, body) {
 // ------------------------------------------------------------ Run and Step
 
 /**
+ * Plan-strip metadata is all-or-nothing for pool and model names. A short
+ * cell drops the pool first, then the model; it never paints `openc…` (or any
+ * other partial pool name) as if that were an identity.
+ */
+function planAttemptMeta(attempt, width) {
+  const cols = Math.max(0, Number(width) || 0);
+  const pool = attempt?.pool ? String(attempt.pool) : null;
+  const model = attempt?.model ? String(attempt.model) : null;
+  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
+  const effort = effortValue ? String(effortValue) : null;
+  const candidates = [
+    [pool, model, effort],
+    [model, effort],
+    [effort],
+    [],
+  ];
+  for (const candidate of candidates) {
+    const text = candidate.filter(Boolean).join(' · ');
+    if (!text || text.length <= cols) return text;
+  }
+  return '';
+}
+
+function planAttemptDetail(attempt, width) {
+  const cols = Math.max(0, Number(width) || 0);
+  const reasoning = reasoningText(attempt);
+  const pool = attempt?.pool ? String(attempt.pool) : null;
+  const model = attempt?.model ? String(attempt.model) : null;
+  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
+  const effort = effortValue ? String(effortValue) : null;
+  // Keep the pool/model identity atomic. If the full detail does not fit,
+  // remove the pool, then the model; only a remaining effort/reasoning label
+  // may be cut as a last resort. This prevents a short plan cell from ever
+  // painting a misleading `openc…` pool name.
+  const candidates = [
+    [pool, model, effort, reasoning],
+    [model, effort, reasoning],
+    [effort, reasoning],
+    [reasoning],
+    [],
+  ];
+  for (const candidate of candidates) {
+    const text = candidate.filter(Boolean).join(' · ');
+    if (!text || text.length <= cols) return text;
+  }
+  return cols > 0 && reasoning ? cut(reasoning, cols) : '';
+}
+
+/**
  * The plan as the prototype draws it: the levels across the width with their
  * branch topology, a per-step bar on whatever is running, and the pool and
  * model each level ran on underneath.
@@ -2840,155 +3375,222 @@ function integrationLines(model, opts, body) {
  * linear `▶──○` strip the page has always drawn; the topology only appears
  * where there is topology to draw.
  */
-function planDagLines(row, {
-  width, runId = null, assignments = [], nowMs = Date.now(), pools = true, selectedId = null,
-} = {}) {
+/** The presentation stages the Run page and its timeline agree on. */
+function planStages(row) {
+  try {
+    const panel = workflowPanelModel(row);
+    const definitions = new Map((panel.state.program?.actions ?? []).map((action) => [action.id, action]));
+    const states = new Map((panel.state.actions ?? []).map((action) => [action.id, action]));
+    const stages = (panel.stages ?? []).map((stage) => ({
+      ...stage,
+      actions: (stage.actionIds ?? [])
+        .map((id) => ({ ...definitions.get(id), ...states.get(id) }))
+        .filter((action) => action?.id),
+    })).filter((stage) => stage.actions.length);
+    if (stages.length) return { stages, dependencyGroups: panel.dependencyGroups };
+  } catch { /* a torn state falls through to the action graph below */ }
   const levels = planLevels(row).filter((level) => level.length);
-  if (!levels.length) return [];
-  const fanOut = levels.some((level) => level.length > 1);
-  const mark = glyphs();
-  const glyphOf = (action) => (action.status === 'succeeded' ? okMark()
-    : action.status === 'running' ? runningMark()
-      : ['failed', 'blocked', 'cancelled'].includes(action.status) ? failMark()
-        : dimText(mark.pending, 2));
-  if (!fanOut) {
-    // The fallback: one glyph per step, joined, exactly as Home draws it —
-    // and beneath it the pool and model row, which a linear plan has nowhere
-    // else to say.
-    const parts = [];
-    levels.forEach((level, index) => {
-      if (index) parts.push({ text: '──' });
-      parts.push({
-        text: glyphOf(level[0]),
-        action: { kind: 'step', actionId: level[0].id, ...(runId ? { runId } : {}) },
-      });
-    });
-    const out = [{ parts: [{ text: ' ' }, ...parts] }];
-    if (!pools) return out;
-    for (const level of levels) {
-      for (const action of level) {
-        if (action.status !== 'running') continue;
-        const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
-        if (!attempt) continue;
-        const reasoning = reasoningText(attempt);
-        const text = `${[action.id, attempt.pool, attempt.model, reasoning || null].filter(Boolean).join(' · ')}  ${durationText(attempt.startedAt, attempt.finishedAt)}`;
-        out.push({
-          parts: [{
-            text: dimText(` ${runningMark()} ${cut(text, Math.max(10, width - 4))}`, width + 24),
-            action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
-          }],
-        });
-      }
+  return {
+    dependencyGroups: true,
+    stages: levels.map((actions, index) => ({
+      id: `level-${index + 1}`, label: `Phase ${index + 1} · ${actions.length > 1 ? 'Parallel work' : actions[0].id}`,
+      actionIds: actions.map((action) => action.id), actions,
+      startedAt: actions.map((action) => action.startedAt).filter(Boolean).sort()[0] ?? null,
+      completedAt: actions.map((action) => action.finishedAt).filter(Boolean).sort().at(-1) ?? null,
+    })),
+  };
+}
+
+function planStageLabel(stage, index) {
+  const label = String(stage?.label ?? '').trim();
+  return /^((?:Follow-up \d+: )?Phase \d+)(?: ·|$)/.test(label)
+    ? label
+    : `Phase ${index + 1} · ${label || 'starting'}`;
+}
+
+function planStageHeader(stage, index) {
+  const actions = stage.actions ?? [];
+  const progress = presentationStageStatus(stage, actions);
+  const running = actions.some((action) => action.status === 'running');
+  const failed = actions.some((action) => ['failed', 'blocked', 'cancelled'].includes(action.status));
+  const status = running ? glyphs().started
+    : failed ? glyphs().fail
+      : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
+  return `${planStageLabel(stage, index)} · ${progress.completed}/${progress.total} ${status}`;
+}
+
+function planStageActions(stage, limit = null) {
+  const actions = stage.actions ?? [];
+  if (limit == null || actions.length <= limit) return { actions, omitted: 0 };
+  const keep = Math.max(1, Number(limit) || 1);
+  const rank = (action) => action.status === 'running' ? 0
+    : ['failed', 'blocked', 'cancelled'].includes(action.status) ? 1
+      : action.status === 'succeeded' ? 3 : 2;
+  const running = actions.filter((action) => action.status === 'running');
+  const picked = [...running];
+  for (const action of actions
+    .filter((entry) => !picked.includes(entry))
+    .sort((a, b) => rank(a) - rank(b))) {
+    if (picked.length >= keep) break;
+    picked.push(action);
+  }
+  // Keep the phase's authored order after prioritising running/failed work,
+  // so the summary never makes a column look re-ordered.
+  const shown = actions.filter((action) => picked.includes(action));
+  return { actions: shown, omitted: Math.max(0, actions.length - shown.length) };
+}
+
+function planMoreParts(count, width) {
+  return [{ text: dimText(`+${count} more`, Math.max(1, width)) }];
+}
+
+function phaseActionGlyph(action) {
+  if (action.status === 'succeeded') return okMark();
+  if (action.status === 'running') return runningMark();
+  if (['failed', 'blocked', 'cancelled'].includes(action.status)) return failMark();
+  return pendingMark();
+}
+
+function fittedParts(parts, width) {
+  const limit = Math.max(0, Number(width) || 0);
+  const out = [];
+  let used = 0;
+  for (const part of parts) {
+    if (used >= limit) break;
+    const text = String(part?.text ?? '');
+    const room = limit - used;
+    if (visibleLength(text) <= room) {
+      out.push({ ...part, text });
+      used += visibleLength(text);
+      continue;
     }
+    if (room > 0) out.push({ ...part, text: cut(text, room) });
+    used = limit;
+    break;
+  }
+  if (used < limit) out.push({ text: ' '.repeat(limit - used) });
+  return out;
+}
+
+/** One phase action row; metadata and the running bar are never subtitle rows. */
+function planPhaseActionParts(action, { width, row, runId, assignments, nowMs, selectedId }) {
+  const actionName = String(action.id);
+  const name = selectedId === action.id ? `\x1b[7m${actionName}\x1b[0m` : actionName;
+  const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id) ?? null;
+  const assignment = (assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === action.id) ?? null;
+  const prefix = `${phaseActionGlyph(action)} `;
+  const base = [{ text: prefix }, {
+    text: name,
+    action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
+  }];
+  const fixed = visibleLength(prefix) + visibleLength(name);
+  const expected = finiteOrNull(assignment?.expectedMinutes ?? attempt?.expectedMinutes);
+  const startedMs = Date.parse(attempt?.startedAt ?? action?.startedAt ?? '');
+  const elapsed = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 60_000) : null;
+  const elapsedText = elapsed == null ? null : minutesText(elapsed);
+  const p50Text = expected == null ? blank() : minutesText(expected);
+  const timing = action.status === 'running' ? `${elapsedText ?? blank()}/${p50Text}` : '';
+  const spark = action.status === 'running' ? outputSparkline(attempt, row?.runDir, 8) : '';
+  const minBar = action.status === 'running' ? 4 : 0;
+  const timingWidth = timing ? visibleLength(timing) + 1 : 0;
+  const sparkWidth = spark ? visibleLength(spark) + 1 : 0;
+  const reasoning = attempt ? reasoningText(attempt) : '';
+  const detailAttempt = attempt && reasoning ? { ...attempt, effort: null, routing: { ...(attempt.routing ?? {}), effort: null } } : attempt;
+  // Prefer the complete pool/model identity when the cell can make room for
+  // it. A narrow phase cell may still fall back to model/reasoning, but a
+  // desktop cell should not spend all its space on a long progress bar first.
+  const fullDetail = detailAttempt ? planAttemptDetail(detailAttempt, Number.MAX_SAFE_INTEGER) : '';
+  const fullDetailWidth = visibleLength(fullDetail);
+  let barWidth = action.status === 'running' && width - fixed - timingWidth - sparkWidth - 1 >= minBar
+    ? Math.max(minBar, Math.min(10, width - fixed - timingWidth - sparkWidth - 1)) : 0;
+  if (action.status === 'running' && fullDetail && width - fixed - timingWidth - sparkWidth - fullDetailWidth - 1 >= 1) {
+    barWidth = Math.min(10, Math.max(1, width - fixed - timingWidth - sparkWidth - fullDetailWidth - 1));
+  }
+  // Seven phases at 120 columns leave deliberately small cells. Keep a
+  // running step's bar and elapsed/p50 on its row by using a one-cell bar and
+  // compact separators before ever dropping the running measurement.
+  const compactBar = action.status === 'running' && !barWidth && width - fixed - visibleLength(timing) >= 1;
+  if (compactBar) barWidth = 1;
+  const detailRoom = Math.max(0, width - fixed - (barWidth ? barWidth + timingWidth + sparkWidth : 1));
+  const detail = detailAttempt ? planAttemptDetail(detailAttempt, detailRoom) : '';
+  if (detail) base.push({ text: ` · ${dimText(detail, detailRoom + 24)}` });
+  if (barWidth) {
+    const measured = expected != null && expected > 0 && elapsed != null;
+    const ratio = measured ? elapsed / expected : 0;
+    const bar = measured
+      ? tint(progressBar(ratio, barWidth), 'green')
+      : tint((asciiGlyphsPreferred() ? '.' : '░').repeat(barWidth), 'dim');
+    base.push({ text: compactBar ? `${bar}${timing}` : ` ${bar} ${timing}${spark ? ` · ${spark}` : ''}` });
+  }
+  return fittedParts(base, width);
+}
+
+/**
+ * The Run plan: presentation phases are columns on desktop, and the same
+ * phase headers precede a stacked list below 120 columns. There are no
+ * connectors between steps; desktop has one connector per neighbouring phase,
+ * on the header row only.
+ */
+function planDagLines(row, {
+  width, runId = null, assignments = [], nowMs = Date.now(), pools = true, selectedId = null, maxRows = null,
+} = {}) {
+  const { stages } = planStages(row);
+  if (!stages.length) return [];
+  const headers = stages.map((stage, index) => planStageHeader(stage, index));
+  const actionLimit = Number.isFinite(Number(maxRows)) && Number(maxRows) >= 1
+    ? Math.max(1, Math.trunc(Number(maxRows)) - 1) : null;
+  const displayed = stages.map((stage) => planStageActions(stage, actionLimit));
+  const rowsFor = (stage, index, cellWidth) => [
+    headers[index],
+    ...displayed[index].actions.map((action) => planPhaseActionParts(action, {
+      width: cellWidth, row, runId, assignments, nowMs, selectedId,
+    })),
+    ...(displayed[index].omitted ? [planMoreParts(displayed[index].omitted, cellWidth)] : []),
+  ];
+  if (width < 120) {
+    const out = [];
+    stages.forEach((stage, index) => {
+      out.push({ parts: [{ text: rule(headers[index], null, width) }] });
+      for (const action of displayed[index].actions) {
+        out.push({ parts: planPhaseActionParts(action, {
+          width: Math.max(1, width - 1), row, runId, assignments, nowMs, selectedId,
+        }).map((part, at) => at === 0 ? { ...part, text: ` ${part.text}` } : part) });
+      }
+      if (displayed[index].omitted) out.push({ parts: [{ text: ` ${dimText(`+${displayed[index].omitted} more`, width - 1)}` }] });
+    });
     return out;
   }
 
-  const cellOf = (action) => {
-    const assignment = (assignments ?? []).find((entry) => entry.runId === runId && entry.actionId === action.id);
-    const bar = action.status === 'running'
-      ? stepBarText(action, assignment, { width: Math.max(18, Math.min(44, Math.floor(width / 3))), nowMs })
-      : null;
-    const name = selectedId && action.id === selectedId ? `\x1b[7m${action.id}\x1b[0m` : action.id;
-    return {
-      id: action.id,
-      text: `${glyphOf(action)} ${name}${bar ? ` ${bar.text.replace(`${action.id} `, '')}` : ''}`,
-      action: { kind: 'step', actionId: action.id, ...(runId ? { runId } : {}) },
-    };
-  };
-  // A level twelve steps wide would spend twelve rows on one phase and leave
-  // the timeline nothing. Each level shows at most `depthCap` of its steps,
-  // whatever is running or failed first, and says how many it did not draw.
-  const depthCap = width < 100 ? 3 : 5;
-  const rank = (action) => (action.status === 'running' ? 0
-    : ['failed', 'blocked', 'cancelled'].includes(action.status) ? 1
-      : DONE_STATUS.has(action.status) ? 3 : 2);
-  const blocks = levels.map((level) => {
-    if (level.length <= depthCap) return level.map(cellOf);
-    const ordered = level
-      .map((action, index) => ({ action, index }))
-      .sort((a, b) => rank(a.action) - rank(b.action) || a.index - b.index)
-      .slice(0, depthCap - 1)
-      .sort((a, b) => a.index - b.index)
-      .map((entry) => entry.action);
-    return [...ordered.map(cellOf), { id: null, text: dimText(`+${level.length - ordered.length} more`, 20), action: null }];
-  });
-  // The first level has no joint slot to hold its `├─ `/`└─ ` branch, so its
-  // column is as wide as its widest branch; every later level's branch lives
-  // in the joint slot in front of it, under the `┬` that opened the fan.
-  const cellWidth = blocks.map((block, index) => block.reduce((most, cell, at) => Math.max(most, visibleLength(cell.text) + (index === 0 && at ? 3 : 0)), 0));
-  const poolText = levels.map((level) => {
-    const seen = [];
-    for (const action of level) {
-      const attempt = (row?.state?.attempts ?? []).findLast((entry) => entry.actionId === action.id);
-      const detail = [attempt?.pool, attempt?.model, attempt?.routing?.effort].filter(Boolean).join(' · ');
-      const text = visibleLength(detail) <= cellWidth[levels.indexOf(level)] ? detail : attempt?.pool ?? '';
-      if (text && !seen.includes(text)) seen.push(text);
-    }
-    return seen.join(' / ');
-  });
-
-  // Levels are packed into bands that fit the width, so a 55-column phone
-  // continues the plan on the next row rather than losing its right-hand end.
-  const avail = Math.max(10, width - 2);
-  const bands = [];
-  let band = [];
-  let used = 0;
-  levels.forEach((_, index) => {
-    const need = cellWidth[index] + (band.length ? 5 : 0);
-    if (band.length && used + need > avail) { bands.push(band); band = []; used = 0; }
-    band.push(index);
-    used += need + (band.length === 1 ? 0 : 0);
-  });
-  if (band.length) bands.push(band);
-
+  // `columns` is used only for its width calculation. Its fit policy retains
+  // one cell per phase at desktop widths, while the parts below keep only the
+  // step name clickable and the pool/model dim.
+  // The body gives every plan row one leading margin, so reserve it before
+  // asking the kit to divide the desktop band.
+  const sizing = columns(stages.map((stage, index) => ({ rows: rowsFor(stage, index, 1) })), { width: Math.max(1, width - 1), gap: 2 });
+  const columnsMeta = sizing.meta?.columns ?? [];
+  if (columnsMeta.length !== stages.length) {
+    // A pathological plan with more phases than cells still gets every phase
+    // in the readable stacked form rather than silently dropping a column.
+    return planDagLines(row, { width: 119, runId, assignments, nowMs, pools, selectedId, maxRows });
+  }
+  const height = displayed.reduce((most, stage) => Math.max(most, 1 + stage.actions.length + (stage.omitted ? 1 : 0)), 1);
   const out = [];
-  const pad = (text, own) => `${text}${' '.repeat(Math.max(0, own - visibleLength(text)))}`;
-  const branchOf = (block, rowIndex) => (rowIndex === 0 || rowIndex >= block.length ? null
-    : rowIndex === block.length - 1 ? '└─ ' : '├─ ');
-  for (const [bandIndex, indexes] of bands.entries()) {
-    const depth = indexes.reduce((most, index) => Math.max(most, blocks[index].length), 1);
-    // A fan that a later level in the same band closes is ruled: every branch
-    // runs `─` across to the joint, the way the prototype draws
-    // `└─ ✓ inbox-page ──┘`, so the corner meets a line instead of hanging.
-    const ruled = (at) => blocks[indexes[at]].length > 1 && at < indexes.length - 1;
-    for (let rowIndex = 0; rowIndex < depth; rowIndex += 1) {
-      const parts = [{ text: bandIndex === 0 ? ' ' : '   ' }];
-      indexes.forEach((index, at) => {
-        const block = blocks[index];
-        if (at) {
-          // The five-cell joint slot: the fan before it closes on the left
-          // (`┬` on the top row, `┤` on each lower branch, `┘` on the last),
-          // and the fan it opens hangs its branches on the right, under the
-          // `┬` that opened it.
-          const prior = blocks[indexes[at - 1]];
-          const closing = ruled(at - 1);
-          const branch = branchOf(block, rowIndex);
-          const joint = rowIndex === 0
-            ? (closing ? '─┬── ' : block.length > 1 ? ' ─┬─ ' : ' ─── ')
-            : `${closing && rowIndex < prior.length ? (rowIndex === prior.length - 1 ? '─┘' : '─┤') : '  '}${branch ?? '   '}`;
-          parts.push({ text: joint.trim() ? dimText(joint, 5) : joint });
-        }
-        const cell = block[rowIndex];
-        const own = cellWidth[index] + (ruled(at) ? 1 : 0);
-        if (!cell) { parts.push({ text: ' '.repeat(own) }); return; }
-        const lead = at === 0 && block.length > 1
-          ? (rowIndex === 0 ? '   ' : dimText(branchOf(block, rowIndex), 3))
-          : '';
-        const label = `${lead}${cell.text}`;
-        const gap = Math.max(0, cellWidth[index] - visibleLength(label));
-        const text = ruled(at) ? `${label} ${dimText('─'.repeat(gap), gap)}` : pad(label, own);
-        parts.push(cell.action ? { text, action: cell.action } : { text });
-      });
-      out.push({ parts });
-    }
-    if (pools && poolText.some((text, index) => indexes.includes(index) && text)) {
-      const parts = [{ text: '   ' }];
-      indexes.forEach((index, at) => {
-        if (at) parts.push({ text: '     ' });
-        parts.push({ text: dimText(pad(cut(poolText[index], cellWidth[index]), cellWidth[index]), cellWidth[index] + 8) });
-      });
-      out.push({ parts });
-    }
+  for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
+    const parts = [];
+    columnsMeta.forEach((column, index) => {
+      if (index) parts.push({ text: rowIndex === 0 ? '──' : '  ' });
+      const cellParts = rowIndex === 0
+        ? [{ text: headers[index] }]
+        : (displayed[index].actions[rowIndex - 1]
+          ? planPhaseActionParts(displayed[index].actions[rowIndex - 1], {
+            width: column.width, row, runId, assignments, nowMs, selectedId,
+          })
+          : displayed[index].omitted && rowIndex === displayed[index].actions.length + 1
+            ? planMoreParts(displayed[index].omitted, column.width)
+          : [{ text: '' }]);
+      parts.push(...fittedParts(cellParts, column.width));
+    });
+    out.push({ parts: [{ text: ' ' }, ...parts] });
   }
   return out;
 }
@@ -3118,7 +3720,19 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
   const rows = [...dead];
   for (const attempt of running.slice(0, limit)) {
     const elapsed = durationText(attempt.startedAt);
-    rows.push(cut(`${runningMark()} ${attempt.actionId} ${dimText(`· ${attempt.pool ?? 'unassigned'} · ${elapsed}`, width)}`, width));
+    const spark = outputSparkline(attempt, panel.row?.runDir, 8);
+    const total = spark ? ` · output ${spark}` : '';
+    const action = `${runningMark()} ${attempt.actionId}`;
+    const pool = attempt.pool == null ? 'unassigned' : String(attempt.pool);
+    const suffix = `· ${elapsed}${total}`;
+    const full = `${action} · ${pool} ${suffix}`;
+    // A pool is an identity, not prose. Keep it whole when the live cell has
+    // room; otherwise omit it before the final line cut so a narrow Run page
+    // cannot paint a misleading `openc…` name.
+    const line = visibleLength(full) <= width
+      ? full
+      : `${action} ${suffix}`;
+    rows.push(cut(dimText(line, width + 24), width));
     const event = attempt.lastAgentEvent;
     rows.push(dimText(cut(`  ${glyphs().detail} ${event
       ? `${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
@@ -3129,21 +3743,21 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
 
 /** The `so far` cell: the steps, the time, the spend and what is not measured. */
 function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
-  const money = moneyText(economics.apiEquivalentUsd);
+  const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
   const elapsed = durationText(stateStartedAt(panel.state), stateFinishedAt(panel.state));
   const label = (name, value) => `${name.padEnd(9)}${value}`;
   return [
     label('steps', stepTally(row)),
     label('time', `${elapsed}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`),
-    label('spent', tint(money ?? blank(), 'purple')),
-    money ? dimText(cut(`${economics.pricedAttempts} of ${economics.attempts} attempts priced`, width), width + 8) : '',
+    label('spent', tint(money, 'purple')),
+    dimText(cut(`${economics.measuredAttempts} of ${economics.attempts} attempts measured`, width), width + 8),
   ];
 }
 
 /** Why the triptych's blanks are blank, once, across the page's own width. */
 function runBlankReasons(economics, progress) {
   return [
-    economics.apiEquivalentUsd == null ? 'no attempt recorded an API-equivalent estimate' : null,
+    economics.apiEquivalentUsd == null ? 'cost unknown: no usage measurement exists' : null,
     !progress.eta && progress.unmeasured?.length
       ? `ETA ${blank()}: ${progress.unmeasured.join(', ')} ${progress.unmeasured.length === 1 ? 'has' : 'have'} no recorded duration yet`
       : null,
@@ -3199,8 +3813,13 @@ function runPage(model, opts, body) {
   ].filter(Boolean).join(' · ');
   body.push(rule('plan', right, width));
   const selectedId = opts.focus === 1 ? panel.selectedAgent?.action?.id ?? null : null;
+  // Keep a small reserve for the licence/live band, its explanations, and a
+  // few timeline rows. The plan itself reports any action rows that could not
+  // fit, while all phase headers remain visible in their authored order.
+  const planRowBudget = Math.max(1, (Number(bodyHeight) || 24) - body.lines.length - 12);
   for (const line of planDagLines(row, {
     width, runId: row?.runId ?? null, assignments: model.assignments, nowMs, pools: !narrow, selectedId,
+    maxRows: planRowBudget,
   })) body.parts(line.parts);
 
   // The prototype's budget / live / so far triptych: one row band at the
@@ -3212,8 +3831,8 @@ function runPage(model, opts, body) {
     // under it, then what is live — and leaves the timeline the rest.
     body.push(rule('licence this run used', null, width));
     for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
-    const money = moneyText(economics.apiEquivalentUsd);
-    body.push(cut(` so far ${tint(money ?? blank(), 'purple')} · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
+    const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
+    body.push(cut(` so far ${tint(money, 'purple')} · ${economics.measuredAttempts} of ${economics.attempts} attempts measured · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
     body.push('');
     body.push(rule('live', null, width));
     for (const line of runLiveRows(panel, { width: width - 2, nowMs, limit: 2 })) body.push(` ${cut(line, width - 1)}`);
@@ -3365,12 +3984,13 @@ function stepPage(model, opts, body) {
   body.push('');
   body.push(rule('budget', null, width));
   const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
-  const money = moneyText(finiteOrNull(attempt?.usage?.cost?.estimatedUsd));
+  const attemptCost = finiteOrNull(attempt?.usage?.cost?.estimatedUsd);
+  const money = moneyText(attemptCost, attempt?.usage?.tokenSource);
   if (pool?.usedPct == null) {
     // Requirement 8: no page draws an empty track for missing data. An
     // unmetered pool is a line of words here, the same words the Run page
     // uses, with whatever this attempt did record beside them.
-    const reason = `free model · no licence meter${money ? ` · ${money} API-equivalent estimate` : ' · this attempt recorded no estimate'}`;
+    const reason = `free model · no licence meter · ${money}`;
     body.row(
       cut(` ${absentLine(String(agent.pool), reason, { width: width - 1 })}`, width + 8),
       { kind: 'page', page: 'budget', pool: agent.pool },
@@ -3386,13 +4006,13 @@ function stepPage(model, opts, body) {
     const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
     const bar = meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
     body.row(
-      cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money ?? blank(), 'purple')}${money ? ' API-equivalent estimate' : ''}`, width),
+      cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money, 'purple')}`, width),
       { kind: 'page', page: 'budget', pool: agent.pool },
     );
     // Each blank above says which measurement it is waiting for, on one row.
     const why = [
       pool.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
-      money == null ? 'this attempt recorded no estimate' : null,
+      attemptCost == null ? 'cost unknown' : null,
     ].filter(Boolean);
     if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
   }
@@ -3422,12 +4042,44 @@ function stepPage(model, opts, body) {
   body.push(dimText(cut(`   task:   ${taskFile ?? blank()}`, width), width + 8));
   body.push(dimText(cut(`   output: ${outFile ?? blank()}`, width), width + 8));
 
-  return truncate(` ${statusIcon(agent.status, spinnerFrame)} ${action.id} · run ${shortId} · ${agent.status}`, width);
+  const headerSpark = agent.status === 'running'
+    ? outputSparkline(attempt ?? active, model.row?.runDir, 10)
+    : '';
+  return truncate(` ${statusIcon(agent.status, spinnerFrame)} ${action.id} · run ${shortId} · ${agent.status}${headerSpark ? ` · output ${headerSpark}` : ''}`, width);
+}
+
+/** A compact detail view for one standalone `bullswarm run` task. */
+function taskPage(model, opts, body) {
+  const { width } = opts;
+  const task = model.task;
+  if (!task) {
+    body.push(dimText(' no task selected', width));
+    return ' task';
+  }
+  const result = task.ok === true ? 'ok' : task.ok === false
+    ? String(task.reason ?? 'failed').replace(/\s+/g, ' ')
+    : 'result unavailable';
+  const reason = task.reason == null ? (task.ok === true ? 'none recorded' : 'not recorded')
+    : String(task.reason).replace(/\s+/g, ' ');
+  const duration = task.durationMs == null ? 'duration unavailable' : formatDashboardValue(task.durationMs / 60_000, 'minutes') ?? 'duration unavailable';
+  body.push(rule('task', null, width));
+  body.push(cut(` lane    ${task.lane ?? blank()}`, width));
+  body.push(cut(` pool    ${taskPoolModelText(task)}`, width));
+  body.push(cut(` project ${task.project ?? blank()}`, width));
+  body.push(cut(` result  ${result}`, width));
+  body.push(cut(` time    ${duration} · ${task.endedAt ?? task.startedAt ?? blank()}`, width));
+  body.push('');
+  body.push(rule('artifacts', null, width));
+  body.push(dimText(cut(` task:   ${task.taskFile ?? blank()}`, width), width));
+  body.push(dimText(cut(` output: ${task.outFile ?? task.outputFile ?? blank()}`, width), width));
+  body.push(dimText(cut(` reason:  ${reason}`, width), width));
+  return ` task · ${taskIdText(task)} · ${result}`;
 }
 
 /** Budget: every pool's licence meter, its money and what still fits. */
 function budgetPage(model, opts, body) {
   const { width } = opts;
+  const sampled = model.budget?.sampleAgeText ? ` · sampled ${model.budget.sampleAgeText}` : '';
   if (!model.budget) {
     body.push(dimText(' reading the pool meters…', width));
     if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
@@ -3435,7 +4087,7 @@ function budgetPage(model, opts, body) {
   }
   pushView(body, budgetLines(model.budget, { width, ansi: meterAnsi() }));
   if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
-  return ` Budget · ${model.budget.days ?? 7} days to ${model.budget.timeZone ?? 'local'}${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
+  return ` Budget · ${model.budget.days ?? 7} days to ${model.budget.timeZone ?? 'local'}${sampled}${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
 }
 
 /** Fleet: the rungs by lane or by provider, read-only. */
@@ -3462,7 +4114,7 @@ function statsPage(model, opts, body) {
     return ' Stats';
   }
   pushView(body, statsLines(model.stats, {
-    width, height: opts.height, tab, period: opts.period, metric, ansi: meterAnsi(),
+    width, height: opts.height, tab, period: opts.period, metric, ansi: meterAnsi(), slice: opts.slice ?? null,
   }));
   body.anchor = { tabs: 1 };
   return ` Stats · ${tab}`;
@@ -3484,7 +4136,8 @@ function historyPage(model, opts, body) {
 
 /** History's note: how many days are loaded, right above the bottom nav. */
 function historyPageNotes(model, { width }, notes) {
-  for (const line of historyNote(model.days ?? [], { width })) notes.push(dimText(line, width));
+  const days = daysWithTasks(model.days, model.tasks?.finished);
+  for (const line of historyNote(days, { width })) notes.push(dimText(line, width));
 }
 
 /**
@@ -3607,7 +4260,7 @@ export function renderDashboardPage(model, options = {}) {
     body.push('');
     body.push(dimText(' read-only · the executor for authored-graph runs was removed; nothing here can be driven', width));
     header = ` ${model.row.shortId ?? model.row.runId ?? '------'} legacy`;
-  } else if (page === 'home') header = homePage(model, opts, body);
+  } else if (page === 'home') header = homePage(model, { ...opts, bodyHeight }, body);
   else if (page === 'runs') header = runsPage(model, opts, body);
   else if (page === 'budget') header = budgetPage(model, opts, body);
   else if (page === 'stats') header = statsPage(model, opts, body);
@@ -3615,6 +4268,7 @@ export function renderDashboardPage(model, options = {}) {
   else if (page === 'fleet') header = fleetPage(model, opts, body);
   else if (page === 'help') header = helpPage(model, opts, body);
   else if (page === 'step') header = stepPage(model, { ...opts, bodyHeight }, body);
+  else if (page === 'task') header = taskPage(model, { ...opts, bodyHeight }, body);
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
   const frame = frameBuilder();
@@ -3647,6 +4301,8 @@ export function renderDashboardPage(model, options = {}) {
     // row of its body, so a caller can bring it into the window.
     anchor: body.anchor ?? null,
     runRows: body.runRows ?? [],
+    taskRows: body.taskRows ?? [],
+    cursorAction: body.cursorAction ?? null,
   };
 }
 
@@ -3671,12 +4327,13 @@ function tileSparklines(rollups, nowMs) {
 export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
   rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
-  metric = 'runs', meterHistory = null,
+  metric = 'runs', meterHistory = null, tasks = null, task = null,
 } = {}) {
   const pools = usage?.pools ?? [];
   const records = rollups ?? [];
   const model = {
     row: row ?? null,
+    task: task ?? null,
     nowMs,
     runs: runs ?? (row && row.legacy !== true ? [row] : []),
     pools,
@@ -3690,6 +4347,10 @@ export function dashboardModel(row, {
     prices,
     stats: null,
     budget: null,
+    tasks: {
+      inflight: Array.isArray(tasks?.inflight) ? tasks.inflight : [],
+      finished: Array.isArray(tasks?.finished) ? tasks.finished : [],
+    },
   };
   // The aggregations are the models' arithmetic, run once per paint over the
   // rollup index — never over the run directories.
@@ -3715,7 +4376,10 @@ export function dashboardModel(row, {
     };
   } catch { model.stats = null; }
   try {
-    const budget = budgetModel(pools, { rollups: records, prices, period: budgetPeriod, now: nowMs });
+    const budget = budgetModel(pools, {
+      rollups: records, prices, period: budgetPeriod, now: nowMs,
+      sampledAt: usage?.capturedAt ?? null,
+    });
     budget.biggestRuns = Object.fromEntries(budget.rows.map((entry) => [
       entry.name,
       biggestRuns(records, { pool: entry.name, period: budgetPeriod, now: nowMs, limit: 3 }).byMinutes,
@@ -3782,6 +4446,16 @@ export async function runDashboard(bullswarmDir, {
   // cells, and within them only text — bars, meters and connector lines keep
   // their colours.
   let hover = null;
+  // Stats slice labels are a separate affordance: the bars retain their
+  // glyphs and colours, while a moving pointer names the exact series/day.
+  // A click promotes the transient slice to a pin that survives motion until
+  // Escape or another click.
+  let sliceHover = null;
+  let slicePinned = null;
+  const clearSliceState = () => {
+    sliceHover = null;
+    slicePinned = null;
+  };
   // Bars and meters inside a hovered region keep their colours; only the
   // words light up. A span is a run of non-bar cells with its blanks trimmed.
   const BAR_GLYPHS = /[█▇▆▅▄▃▂▁░▒▓▏▎▍▌▋▊▉─│┌┐└┘├┤┬┴┼╭╮╯╰○]/;
@@ -3845,6 +4519,28 @@ export async function runDashboard(bullswarmDir, {
   let days = [];
   let prices = null;
   let meterHistory = null;
+  let tasks = { inflight: [], finished: [] };
+  let taskFingerprint = null;
+  const readTaskLedger = () => {
+    let next;
+    try { next = listTasks({ home: bullswarmDir, now: Date.now() }); }
+    catch { next = { inflight: [], finished: [] }; }
+    const signature = [
+      ...(next.inflight ?? []).map((entry) => [
+        'i', entry.id, entry.startedAt, entry.lane, entry.pool, entry.model,
+        entry.project, entry.taskFile,
+      ].join(':')),
+      ...(next.finished ?? []).map((entry) => [
+        'f', entry.id, entry.endedAt, entry.ok, entry.durationMs, entry.lane,
+        entry.pool, entry.model, entry.project, entry.taskFile, entry.reason,
+      ].join(':')),
+    ].join('|');
+    if (signature !== taskFingerprint) {
+      taskFingerprint = signature;
+      tasks = next;
+      rollupFingerprint = null;
+    }
+  };
   const ui = {
     page: token ? 'run' : 'home',
     focus: 0,
@@ -3873,6 +4569,7 @@ export async function runDashboard(bullswarmDir, {
     if (directIndex >= 0) selected = directIndex;
   }
   let selectedRunId = token ? directRow.runId : (rows[selected]?.runId ?? null);
+  let selectedTaskId = null;
 
   /** The rollup index, re-read only when the file changed under us. */
   const readIndex = () => {
@@ -3884,7 +4581,7 @@ export async function runDashboard(bullswarmDir, {
     if (fingerprint === rollupFingerprint) return;
     rollupFingerprint = fingerprint;
     try { rollups = readRollups(bullswarmDir); } catch { rollups = []; }
-    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); } catch { days = []; }
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays, tasks: tasks.finished }); } catch { days = []; }
   };
   /** The declared subscription prices: the operator's, else the table's. */
   const readPrices = () => {
@@ -4011,8 +4708,9 @@ export async function runDashboard(bullswarmDir, {
     page: ui.page,
     rows, allRows, selected,
     filter: dashboardFilter, query, filterEditing,
-    selectedRunId, listSelectedId: selectedRunId, message, bodyScroll,
+    selectedRunId, selectedTaskId, listSelectedId: selectedRunId, message, bodyScroll,
     period: ui.period, statsTab: ui.statsTab, metric: ui.metric, fleetBy: ui.fleetBy,
+    slice: slicePinned ?? sliceHover,
     budgetPool: ui.budgetPool,
     spinnerFrame: ui.spinnerFrame,
     focus: ui.focus,
@@ -4033,6 +4731,9 @@ export async function runDashboard(bullswarmDir, {
     // back to Home without one.
     if ((ui.page === 'run' || ui.page === 'step') && !selectedRunId) ui.page = 'home';
     const row = ui.page === 'run' || ui.page === 'step' ? currentRow() : null;
+    const task = ui.page === 'task'
+      ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])].find((entry) => (entry.id ?? entry.taskFile) === selectedTaskId) ?? null
+      : null;
     if (row && !row.legacy) {
       // The follow flags track whatever the page last resolved as current.
       const panel = workflowPanelModel(row, {
@@ -4049,6 +4750,8 @@ export async function runDashboard(bullswarmDir, {
     }
     const model = dashboardModel(row, {
       runs: activeRuns,
+      tasks,
+      task,
       usage, integration, installResult, rollups, days, prices,
       period: ui.period, metric: ui.metric, meterHistory,
     });
@@ -4066,7 +4769,7 @@ export async function runDashboard(bullswarmDir, {
       message = `display error: ${err.message}`;
       try {
         const frame = renderDashboardPage(dashboardModel(null, {
-          runs: activeRuns, usage, integration, rollups, days, prices,
+          runs: activeRuns, tasks, usage, integration, rollups, days, prices,
           meterHistory,
         }), { ...pageOptions(), page: 'home', message });
         regions = frame.regions;
@@ -4087,8 +4790,10 @@ export async function runDashboard(bullswarmDir, {
   const activeSignature = () => activeRuns.map((row) => `${row.runId}:${row.state?.lifecycle?.status ?? ''}:${row.ongoing ? 1 : 0}`).join('|');
   const refresh = () => {
     const previousRunId = selectedRunId;
+    const previousTaskId = selectedTaskId;
     try {
       activeRuns = activeDashboardRows(bullswarmDir);
+      readTaskLedger();
       const indexBefore = rollupFingerprint;
       readIndex();
       if (catalog) {
@@ -4113,6 +4818,12 @@ export async function runDashboard(bullswarmDir, {
     // it back onto the in-flight run, or Enter opens the wrong workflow.
     const tableKeepsCursor = ui.page === 'runs'
       && (lastFrameResult?.runRows ?? []).some((row) => row.runId === previousRunId);
+    const taskStillExists = [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
+      .some((row) => (row.id ?? row.taskFile) === previousTaskId);
+    const taskKeepsCursor = ui.page === 'runs'
+      && (lastFrameResult?.taskRows ?? []).some((row) => row.taskId === previousTaskId)
+      && taskStillExists;
+    if (ui.page === 'runs' && !taskKeepsCursor && !tableKeepsCursor) selectedTaskId = null;
     selectedRunId = tableKeepsCursor ? previousRunId : (rows[selected]?.runId ?? selectedRunId);
     paint();
   };
@@ -4214,9 +4925,25 @@ export async function runDashboard(bullswarmDir, {
     bodyScroll = 0;
     paint();
   };
+  /** Opens the compact detail page for one standalone task. */
+  const openTask = (taskId) => {
+    const found = [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
+      .find((entry) => (entry.id ?? entry.taskFile) === taskId);
+    if (!found) {
+      message = 'That task is no longer in the ledger.';
+      return paint();
+    }
+    selectedTaskId = taskId;
+    ui.page = 'task';
+    ui.focus = 0;
+    bodyScroll = 0;
+    message = null;
+    return paint();
+  };
   /** Opens a page, reading whatever that page needs the first time. */
   const openPage = (page, { pool = null } = {}) => {
     if (!DASHBOARD_PAGES.includes(page)) return paint();
+    if (page !== 'stats') clearSliceState();
     const historyJump = page === 'history';
     if (historyJump) page = 'runs';
     if (page === 'runs') ensureCatalog();
@@ -4240,6 +4967,13 @@ export async function runDashboard(bullswarmDir, {
   };
   /** Esc and the left arrow walk out: step to run, every other page to Home. */
   const moveOut = () => {
+    if (ui.page === 'task') {
+      ui.page = 'runs';
+      ui.focus = 0;
+      bodyScroll = 0;
+      ensureCatalog();
+      return paint();
+    }
     if (ui.page === 'step') {
       ui.page = 'run';
       ui.focus = 1;
@@ -4280,7 +5014,7 @@ export async function runDashboard(bullswarmDir, {
     const body = lastFrameResult?.body;
     if (body && body.end < body.total - 2) return;
     ui.historyDays = Math.min(MAX_HISTORY_DAYS, ui.historyDays + 7);
-    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); } catch { /* keep what we have */ }
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays, tasks: tasks.finished }); } catch { /* keep what we have */ }
     // The next index read must not skip the wider window we just asked for.
     rollupFingerprint = null;
   };
@@ -4344,7 +5078,7 @@ export async function runDashboard(bullswarmDir, {
   // something the reader cannot see reads as a tab that did nothing.
   const showTab = (tab) => {
     if (ui.page === 'fleet' && FLEET_TABS.includes(tab)) ui.fleetBy = tab;
-    else if (STATS_TABS.includes(tab)) { ui.page = 'stats'; ui.statsTab = tab; bodyScroll = 0; }
+    else if (STATS_TABS.includes(tab)) { clearSliceState(); ui.page = 'stats'; ui.statsTab = tab; bodyScroll = 0; }
     else if (FLEET_TABS.includes(tab)) { ui.page = 'fleet'; ui.fleetBy = tab; bodyScroll = 0; }
     else return paint();
     const frame = paint();
@@ -4358,6 +5092,7 @@ export async function runDashboard(bullswarmDir, {
   /** Tab: the next sub-tab of whatever page has them. */
   const nextTab = () => {
     if (ui.page === 'stats') {
+      clearSliceState();
       const at = STATS_TABS.indexOf(ui.statsTab);
       ui.statsTab = STATS_TABS[(at + 1) % STATS_TABS.length];
       bodyScroll = 0;
@@ -4372,6 +5107,7 @@ export async function runDashboard(bullswarmDir, {
   };
   /** p: the next period, on every page that is drawn over one. */
   const nextPeriod = () => {
+    clearSliceState();
     const at = PERIODS.indexOf(ui.period);
     ui.period = PERIODS[(at + 1) % PERIODS.length];
     message = `Period · ${PERIOD_ITEMS.find((item) => item.id === ui.period)?.label ?? ui.period}`;
@@ -4448,7 +5184,7 @@ export async function runDashboard(bullswarmDir, {
     ui.focus = 0;
     bodyScroll = 0;
     message = null;
-    try { days = historyDays(bullswarmDir, { days: ui.historyDays }); }
+    try { days = historyDays(bullswarmDir, { days: ui.historyDays, tasks: tasks.finished }); }
     catch { days = []; }
     rollupFingerprint = null;
     if (target) {
@@ -4468,13 +5204,23 @@ export async function runDashboard(bullswarmDir, {
   /** Every click runs the same action its key runs. */
   const runAction = (action) => {
     if (!action) return undefined;
+    if (action.kind === 'slice') {
+      // A slice is a presentation target, not a navigation target. Keep its
+      // durable chart values in the action so a repaint cannot recalculate a
+      // different percentage from a changed rollup while it is pinned.
+      slicePinned = action;
+      sliceHover = action;
+      return paint();
+    }
     if (action.kind === 'page') return openPage(action.page, { pool: action.pool ?? null });
     if (action.kind === 'run') return openRun(action.runId);
+    if (action.kind === 'task') return openTask(action.taskId);
     if (action.kind === 'step') return openStep(action.actionId, action.runId ?? null);
     if (action.kind === 'back') return moveOut();
     if (action.kind === 'install') return runInstall();
     if (action.kind === 'tab') return showTab(action.tab);
     if (action.kind === 'trend') {
+      clearSliceState();
       if (PERIODS.includes(action.period)) ui.period = action.period;
       if (action.bucket != null) return openTrendBucket(action);
       ui.page = 'stats';
@@ -4484,10 +5230,12 @@ export async function runDashboard(bullswarmDir, {
       return paint();
     }
     if (action.kind === 'period') {
+      clearSliceState();
       if (PERIODS.includes(action.period)) ui.period = action.period;
       return paint();
     }
     if (action.kind === 'metric') {
+      clearSliceState();
       if (TREND_METRICS.includes(action.metric)) ui.metric = action.metric;
       return paint();
     }
@@ -4501,16 +5249,30 @@ export async function runDashboard(bullswarmDir, {
   // Chart columns, tiles, meters, tabs and toggles are click targets too, but
   // reverse-painting a chart row destroys its colours and tells the reader
   // nothing a cursor would not.
-  const HOVER_KINDS = new Set(['run', 'step']);
+  const HOVER_KINDS = new Set(['run', 'step', 'task']);
   const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
     && region.action && HOVER_KINDS.has(region.action.kind));
+  const sliceRegionAt = (x, y) => regions.find((region) => y === region.y
+    && x >= region.x1 && x <= region.x2 && region.action?.kind === 'slice');
+  const sliceKey = (action) => action?.kind === 'slice'
+    ? [action.tab, action.metric, action.period, action.bucket, action.series].join('|')
+    : '';
+  const sameSlice = (left, right) => sliceKey(left) === sliceKey(right);
   const hoverMove = (mouse) => {
+    const sliceRegion = sliceRegionAt(mouse.x, mouse.y) ?? null;
+    const nextSlice = sliceRegion?.action ?? null;
+    let sliceChanged = false;
+    if (!slicePinned && !sameSlice(nextSlice, sliceHover)) {
+      sliceHover = nextSlice;
+      sliceChanged = true;
+    }
     const region = regionAt(mouse.x, mouse.y) ?? null;
     const next = region ? { y: region.y, x1: region.x1, x2: region.x2 } : null;
     const same = (next == null && hover == null)
       || (next && hover && next.y === hover.y && next.x1 === hover.x1 && next.x2 === hover.x2);
+    if (!same) hover = next;
+    if (sliceChanged) return paint();
     if (same) return undefined;
-    hover = next;
     if (lastFrameText != null) writeFrame(lastFrameText);
     return undefined;
   };
@@ -4519,8 +5281,15 @@ export async function runDashboard(bullswarmDir, {
     if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
     if (mouse.kind === 'move') return hoverMove(mouse);
     if (mouse.kind !== 'press') return undefined;
-    const action = regions.find((region) => mouse.y === region.y
-      && mouse.x >= region.x1 && mouse.x <= region.x2)?.action;
+    const region = regions.find((entry) => mouse.y === entry.y
+      && mouse.x >= entry.x1 && mouse.x <= entry.x2);
+    const action = region?.action;
+    if (action?.kind === 'slice') return runAction(action);
+    if (slicePinned || sliceHover) {
+      slicePinned = null;
+      sliceHover = null;
+      if (!action) return paint();
+    }
     return runAction(action);
   };
   // Every way out releases the mouse before it leaves the alternate screen,
@@ -4540,12 +5309,46 @@ export async function runDashboard(bullswarmDir, {
     resolveDashboard?.(0);
   };
   const moveVertical = (delta) => {
+    if (ui.page === 'home') {
+      const listed = [
+        ...(lastFrameResult?.runRows ?? []).map((row) => ({ ...row, kind: 'run' })),
+        ...(lastFrameResult?.taskRows ?? []).map((row) => ({ ...row, kind: 'task' })),
+      ].sort((a, b) => a.y - b.y);
+      if (listed.length) {
+        const at = listed.findIndex((entry) => entry.kind === 'task'
+          ? entry.taskId === selectedTaskId
+          : !selectedTaskId && entry.runId === selectedRunId);
+        const wanted = at < 0 ? (delta > 0 ? 0 : listed.length - 1) : at + delta;
+        // Once the cursor reaches the end of the Home list, keep the old
+        // page-scroll affordance working as well. This matters for the rest
+        // of Home below the today band (running, budget and trends), while a
+        // cursor still moves through every today row first.
+        if (wanted < 0 || wanted >= listed.length) {
+          bodyScroll = Math.max(0, bodyScroll + delta);
+          return paint();
+        }
+        const target = listed[wanted];
+        if (target) {
+          if (target.kind === 'task') selectedTaskId = target.taskId;
+          else { selectedTaskId = null; selectedRunId = target.runId; }
+          return paint();
+        }
+      }
+      bodyScroll = Math.max(0, bodyScroll + delta);
+      return paint();
+    }
     if (ui.page === 'runs') {
-      const listed = lastFrameResult?.runRows ?? [];
-      const at = listed.findIndex((row) => row.runId === selectedRunId);
-      const target = listed[clamp(at + delta, 0, Math.max(0, listed.length - 1))];
+      const listed = [
+        ...(lastFrameResult?.runRows ?? []).map((row) => ({ ...row, kind: 'run' })),
+        ...(lastFrameResult?.taskRows ?? []).map((row) => ({ ...row, kind: 'task' })),
+      ].sort((a, b) => a.y - b.y);
+      const at = listed.findIndex((entry) => entry.kind === 'task'
+        ? entry.taskId === selectedTaskId
+        : !selectedTaskId && entry.runId === selectedRunId);
+      const target = listed[clamp(at < 0 ? (delta > 0 ? 0 : listed.length - 1) : at + delta, 0, Math.max(0, listed.length - 1))];
       if (target) {
-        selectedRunId = target.runId;
+        if (target.kind === 'task') selectedTaskId = target.taskId;
+        else { selectedTaskId = null; selectedRunId = target.runId; }
         const capacity = Math.max(1, (lastFrameResult?.body.end ?? 1) - (lastFrameResult?.body.offset ?? 0));
         if (target.y <= bodyScroll) bodyScroll = target.y - 1;
         else if (target.y > bodyScroll + capacity) bodyScroll = target.y - capacity;
@@ -4631,6 +5434,15 @@ export async function runDashboard(bullswarmDir, {
   /** Enter: open the selected run, then its agents, then the selected step. */
   const drillIn = () => {
     if (ui.page === 'runs' || ui.page === 'home') {
+      if (ui.page === 'runs') {
+        const task = lastFrameResult?.taskRows?.find((entry) => entry.taskId === selectedTaskId)
+          ?? (lastFrameResult?.cursorAction?.kind === 'task' ? lastFrameResult.cursorAction : null);
+        if (task) return openTask(task.taskId);
+      } else {
+        const action = lastFrameResult?.cursorAction;
+        if (action?.kind === 'task') return openTask(action.taskId);
+        if (action?.kind === 'run') return openRun(action.runId);
+      }
       selectedRunId = ui.page === 'runs'
         ? (lastFrameResult?.runRows?.find((row) => row.runId === selectedRunId) ?? lastFrameResult?.runRows?.[0])?.runId
         : rows[selected]?.runId ?? activeRuns[0]?.runId ?? selectedRunId;
@@ -4642,6 +5454,7 @@ export async function runDashboard(bullswarmDir, {
       }
       return openRun(selectedRunId);
     }
+    if (ui.page === 'task') return paint();
     if (ui.page !== 'run' && ui.page !== 'step') return paint();
     if (ui.orchestratorDetail) { message = 'Planner detail is the deepest level.'; return paint(); }
     if (ui.workflowVerbose) { message = 'Technical details are the deepest level.'; return paint(); }
@@ -4747,7 +5560,14 @@ export async function runDashboard(bullswarmDir, {
       message = `no run ${key} in flight`;
       return paint();
     }
-    if (keyPressed('out', key)) return moveOut();
+    if (keyPressed('out', key)) {
+      if (slicePinned || sliceHover) {
+        slicePinned = null;
+        sliceHover = null;
+        return paint();
+      }
+      return moveOut();
+    }
     if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();
     if (keyPressed('up', key)) return moveVertical(-1);
     if (keyPressed('down', key)) return moveVertical(1);
@@ -4814,6 +5634,7 @@ export async function runDashboard(bullswarmDir, {
   // session, off again in finish() and around the setup hand-off.
   output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1003h${ESC}?1006h`);
   readIntegration();
+  readTaskLedger();
   readIndex();
   readPrices();
   if (token) ensureCatalog();

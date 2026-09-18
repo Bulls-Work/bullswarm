@@ -584,3 +584,26 @@ test('H7: a day whose runs are all still in flight says why it has no estimate',
     assert.equal(historyNote([today], { width: 120 })[0], '1 day loaded · older days load as you scroll');
   } finally { h.cleanup(); }
 });
+
+test('H7: finished single tasks share a day row without changing workflow counts', () => {
+  const h = home();
+  try {
+    const task = {
+      id: 'task-history-1', kind: 'task', source: 'run', lane: 'analyze', pool: 'codex', model: 'luna',
+      project: 'bullswarm', taskFile: '/tmp/task-history.md',
+      startedAt: localNoon(2026, 9, 16, 14), endedAt: localNoon(2026, 9, 16, 14, 3),
+      durationMs: 180_000, ok: true,
+    };
+    const [day] = historyDays(h.dir, { days: 1, now: NOW, tasks: [task] });
+    assert.equal(day.runs, 0);
+    assert.equal(day.finished, 0);
+    assert.equal(day.verified, 0);
+    assert.equal(day.spendUsd, null);
+    assert.deepEqual(day.rows, [task]);
+    const view = historyLines([day], { width: 120, ansi: false });
+    assert.match(view.lines.join('\n'), /0 runs · 1 task/);
+    assert.match(view.lines.join('\n'), /task-history-1/);
+    assert.ok(view.regions.some((region) => region.action.kind === 'task'
+      && region.action.taskId === 'task-history-1'));
+  } finally { h.cleanup(); }
+});

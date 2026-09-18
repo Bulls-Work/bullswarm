@@ -596,7 +596,7 @@ export const BENCH_COOLDOWN_MS = 10 * 60_000;
 /** Consecutive qualifying failures before a pool is actually taken out. */
 export const BENCH_AFTER_STRIKES = 2;
 /** Failure kinds that count as a strike, as classified by the dispatcher. */
-export const BENCH_REASONS = new Set(['stall', 'provider', 'empty']);
+export const BENCH_REASONS = new Set(['stall', 'provider', 'empty', 'probe']);
 
 /**
  * Record one qualifying failure against a pool.

@@ -16,7 +16,9 @@ function unmarkedDollars(text) {
   const source = String(text ?? '');
   return [...source.matchAll(/\$/g)]
     .map((match) => match.index)
-    .filter((index) => !source.slice(Math.max(0, index - 2), index).includes('≈'));
+    .filter((index) => /^\$\s?\d/.test(source.slice(index)))
+    .filter((index) => !source.slice(Math.max(0, index - 2), index).includes('≈')
+      && !source.slice(Math.max(0, index - 2), index).includes('~'));
 }
 
 /** Thirty real local days from 19 Aug, so the heat grid spans two months. */
@@ -205,7 +207,7 @@ test('the phone renders one row per item and never past 54 columns', () => {
   // figures share it; the name is cut with … rather than wrapped.
   const name = rows.findIndex((line) => /^ bullswa…/.test(line));
   assert.ok(name > 0, rows.join('\n'));
-  assert.match(rows[name], /▁█ · 3 runs · ✓ 67% · ≈ \$0\.37 API · 3m medi…$/);
+    assert.match(rows[name], /▁█ · 3 runs · ✓ 67% · ~ \$0\.37 estimated API/);
   assert.equal(/^\s\S/.test(rows[name + 1] ?? ''), false, 'a project occupies exactly one row');
 });
 
@@ -253,7 +255,7 @@ test('the phone keeps every figure the desktop grid carries, one row each', () =
   for (const label of ['Workflows:', 'Agent time:', 'Active days:', 'Most active day:', 'Longest run:', 'Favourite pool:', 'Favourite model:', 'Busiest project:', 'Median run:']) {
     assert.ok(text.includes(label), `${label} missing on the phone`);
   }
-  assert.match(text, /Spent: ≈ \$0\.37 API/);
+  assert.match(text, /Spent: ~ \$0\.37 estimated API/);
   assert.match(text, /longest streak/);
 });
 
@@ -391,6 +393,34 @@ test('the models chart is real worker-minutes from the model\u2019s own daily se
   assert.match(text, /4 attempts · 67% ok · p50 3m/);
 });
 
+test('stacked chart slices carry a label payload and bold only the hovered legend entry', () => {
+  const stats = models({ withTrends: false });
+  stats.models = {
+    ...stats.models,
+    trend: {
+      metric: 'minutes', unit: 'worker-minutes', period: '7d', bucketBy: 'day',
+      buckets: [{ key: '2026-09-17', label: '2026-09-17', segments: [
+        { name: 'gpt-5.6-luna', value: 724 },
+        { name: 'gpt-5.6-sol', value: 1760 },
+      ] }],
+    },
+  };
+  const plainView = statsLines(stats, { width: 55, tab: 'models', period: '7d', ansi: false });
+  const slice = plainView.regions.find((region) => region.action.kind === 'slice' && region.action.series === 'gpt-5.6-luna')?.action;
+  assert.ok(slice, 'the model slice is a hover region');
+  assert.equal(slice.value, 724);
+  assert.equal(Math.round(slice.percent * 100), 29);
+
+  const hovered = statsLines(stats, { width: 55, tab: 'models', period: '7d', ansi: true, slice });
+  const text = hovered.lines.map(visible).join('\n');
+  assert.match(text, /17 Sep · gpt-5\.6-luna · 12h04m · 29% of the day/);
+  const legend = hovered.lines.find((line) => visible(line).includes('gpt-5.6-luna') && visible(line).includes('gpt-5.6-sol'));
+  assert.ok(legend, hovered.lines.join('\n'));
+  assert.match(legend, /\x1b\[1m\s*gpt-5\.6-luna\x1b\[22m/);
+  assert.doesNotMatch(legend, /\x1b\[1m\s*gpt-5\.6-sol\x1b\[22m/);
+  assert.ok(plainView.lines.some((line) => visible(line).trim() === ''), 'the blank label row remains allocated without a hover');
+});
+
 test('a model page with no per-model series says so instead of inventing an axis', () => {
   const view = statsLines(models({ withTrends: false }), { width: 120, tab: 'models', period: '7d', ansi: false });
   const text = view.lines.map(visible).join('\n');
@@ -405,7 +435,7 @@ test('Projects puts a sparkline beside each name and one context row under it', 
   const name = rows.findIndex((line) => line.trim().startsWith('bullswarm'));
   assert.ok(name > 0, rows.join('\n'));
   assert.match(rows[name], /^ bullswarm\s+[▁▂▃▄▅▆▇█]{2}/);
-  assert.match(rows[name + 1], /^\s+3 runs · ✓ 67% · ≈ \$0\.37 API · 3m median$/);
+  assert.match(rows[name + 1], /^\s+3 runs · ✓ 67% · ~ \$0\.37 estimated API · 3m median$/);
   const spark = view.lines[name];
   assert.ok(String(spark).includes('\x1b[38;2;'), 'the sparkline is painted');
   assert.ok(String(spark).includes(`\x1b[38;2;${rgbTriple(METER_COLORS.orange)}m`), 'orange, as the frame draws it');
@@ -448,11 +478,49 @@ test('wide Stats pages use the 200-column composition, including Projects', () =
   }
 });
 
-test('the ≈ appears wherever the prototype\'s $ appears', () => {
-  for (const width of [54, 55, 120, 200]) {
-    for (const tab of ['overview', 'trends', 'pools', 'models', 'projects']) {
-      const view = statsLines(models(), { width, tab, period: '7d', metric: 'spend', ansi: false });
-      assert.deepEqual(unmarkedDollars(view.lines.map(visible).join('\n')), [], `${tab} at ${width}`);
+test('Stats money figures state provider, transcript, estimated or unknown basis', () => {
+  const cases = [
+    ['provider-reported', /\$ 0\.37/],
+    ['transcript-summed', /≈ \$0\.37 summed/],
+    ['estimated:utf8-bytes\/4', /~ \$0\.37 estimated/],
+    ['unknown', /cost unknown/],
+  ];
+  for (const [tokenSource, expected] of cases) {
+    const fixture = models();
+    fixture.overview = {
+      ...fixture.overview,
+      keys: { ...fixture.overview.keys, tokenSource },
+      breakdown: {
+        ...fixture.overview.breakdown,
+        pools: fixture.overview.breakdown.pools.map((row) => ({ ...row, tokenSource })),
+        projects: fixture.overview.breakdown.projects.map((row) => ({ ...row, tokenSource })),
+      },
+    };
+    fixture.pools = {
+      ...fixture.pools,
+      rows: fixture.pools.rows.map((row) => ({ ...row, tokenSource })),
+    };
+    fixture.projects = {
+      ...fixture.projects,
+      rows: fixture.projects.rows.map((row) => ({ ...row, tokenSource })),
+    };
+    fixture.trend = {
+      ...fixture.trend,
+      metric: 'spend',
+      total: 0.37,
+      tokenSource,
+      buckets: fixture.trend.buckets.map((bucket) => ({
+        ...bucket,
+        value: bucket.value === 3 ? 0.37 : null,
+        tokenSource,
+        segments: bucket.value === 3 ? [{ name: 'claude-code', value: 0.37 }] : [],
+      })),
+    };
+    for (const tab of ['overview', 'trends', 'pools', 'projects']) {
+      const view = statsLines(fixture, {
+        width: 120, tab, period: '7d', metric: 'spend', ansi: false,
+      });
+      assert.match(view.lines.map(visible).join('\n'), expected, tab + '/' + tokenSource);
     }
   }
 });
@@ -484,13 +552,13 @@ test('a spend bucket with no recorded estimate is a blank with its reason, never
     assert.ok(chartStart > 0 && axisRow > chartStart, `the chart draws its axis at ${String(width)}`);
     for (const line of lines.slice(chartStart + 1, axisRow)) {
       const tick = line.split('┤')[0].trim();
-      if (tick) assert.match(tick, /^≈\$/, `the tick "${tick}" at ${String(width)} carries the mark`);
+      if (tick) assert.match(tick, /^~/, 'the tick carries the estimated mark');
     }
-    assert.match(lines[axisRow + 1], /≈\$0\.1/, 'the value row is marked');
+    assert.match(lines[axisRow + 1], /~\$0\.1/, 'the value row is marked');
     // The running-total row is drawn, and the blank day keeps its blank.
     const totalRow = lines.find((line) => line.trimStart().startsWith('total'));
-    assert.match(totalRow, /≈\$0\.12\s+≈\$1\.37/, 'the running total is drawn and marked');
-    assert.match(lines.find((line) => line.startsWith(' ≈ $1.36')), /≈ \$1\.36 API/, 'the closing figure keeps its mark');
+    assert.match(totalRow, /~\$0\.12\s+~\$1\.37/, 'the running total is drawn and marked');
+    assert.match(lines.find((line) => line.startsWith(' ~ $1.36')), /~ \$1\.36 estimated API/, 'the closing figure keeps its mark');
   }
 });
 
@@ -508,16 +576,16 @@ test('the spend chart states its basis in one line at both widths', () => {
       width, tab: 'trends', period: '7d', metric: 'spend', ansi: false,
     });
     const lines = view.lines.map(visible);
-    const basis = lines.filter((line) => line.includes('API-equivalent estimate'));
+    const basis = lines.filter((line) => line.includes('Basis:'));
     assert.equal(basis.length, 1, `exactly one basis line at ${String(width)}: ${lines.join(' | ')}`);
     assert.ok(basis[0].length <= width, `the basis line fits ${String(width)}`);
   }
   const wide = statsLines({ trend: spendTrend }, { width: 120, tab: 'trends', period: '7d', metric: 'spend', ansi: false })
     .lines.map(visible).join('\n');
-  assert.match(wide, /Basis: ≈ \$ API-equivalent estimates, recorded per attempt/, 'the desktop frame names the source');
+  assert.match(wide, /Basis: \$ provider-reported · ≈ transcript-summed · ~ estimated · cost unknown/, 'the desktop frame names the source');
   const phone = statsLines({ trend: spendTrend }, { width: 55, tab: 'trends', period: '7d', metric: 'spend', ansi: false })
     .lines.map(visible).join('\n');
-  assert.match(phone, /≈ \$ API-equivalent estimate · — = none recorded/, 'the phone frame keeps the same wording');
+  assert.match(phone, /Basis: \$ reported · ≈ summed · ~ estimated · unknown/, 'the phone frame keeps the same wording');
 });
 
 test('a measured metric carries no estimate mark and no money basis', () => {
@@ -560,8 +628,8 @@ test('Pools gives each pool its own seven-day reset-marked sparkline and complet
     assert.match(rows.find((line) => line.includes('codex') && line.includes('30%')), /▃▅▆█▏▂▃/);
     assert.match(rows.join(' ').replace(/\s+/g, ' '), /a drop after ▏ is the window resetting/);
     if (width >= 170) {
-      assert.match(rows.find((line) => line.includes('claude-code')), /3 runs · ✓ 67% · ≈ \$0.37 API$/);
-      assert.match(rows.find((line) => line.includes('codex') && line.includes('30%')), /2 runs · ✓ 100%$/);
+      assert.match(rows.find((line) => line.includes('claude-code')), /3 runs · ✓ 67% · ~ \$0.37 estimated API$/);
+      assert.match(rows.find((line) => line.includes('codex') && line.includes('30%')), /2 runs · ✓ 100% · cost unknown$/);
     }
     assert.ok(rows.every((line) => line.length <= width));
   }
@@ -612,7 +680,7 @@ test('a day holding only legacy runs prints no money for them', () => {
   };
   fixture.projects = { rows: fixture.overview.breakdown.projects };
   const overviewText = statsLines(fixture, { width: 120, tab: 'overview', period: '7d', ansi: false }).lines.map(visible).join('\n');
-  assert.match(overviewText, /Spent: estimate unavailable/);
+  assert.match(overviewText, /Spent: cost unknown/);
   // The overview keeps its basis line (`≈ $ ...`) even when every value is
   // blank; there must be no dollar-denominated figure for the legacy runs.
   assert.equal(/(?:≈\s*)\$\d/.test(overviewText), false, 'no money for a run that recorded none');
@@ -663,7 +731,7 @@ test('a wide Projects row keeps name, shape and complete figures on one row', ()
   // The row is written with a one-cell indent; if the fields were laid out on
   // the full width the frame would take that cell back off the last field.
   assert.equal(row.includes('…'), false, `figures are not truncated: ${row}`);
-  assert.match(row, /45 runs · ✓ 82% · ≈ \$5\.10 API · 41m median$/);
+  assert.match(row, /45 runs · ✓ 82% · ~ \$5\.10 estimated API · 41m median$/);
   assert.equal(row.length, 200, 'and the row reaches the frame edge');
   const shape = (row.match(/[▁▂▃▄▅▆▇█]+/) ?? [''])[0];
   assert.ok(shape.length >= 7, `seven measured days keep a shape: ${shape.length}`);

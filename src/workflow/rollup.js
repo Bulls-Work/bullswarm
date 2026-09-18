@@ -63,6 +63,23 @@ function isoOf(ms) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+const TOKEN_SOURCE_RANK = {
+  unknown: 0,
+  'estimated:utf8-bytes/4': 1,
+  'transcript-summed': 2,
+  'provider-reported': 3,
+};
+
+function tokenSourceOf(value) {
+  return Object.hasOwn(TOKEN_SOURCE_RANK, value) ? value : 'unknown';
+}
+
+function worstTokenSource(current, candidate) {
+  const next = tokenSourceOf(candidate);
+  if (current == null) return next;
+  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
 // A time bound may be an ISO string, a Date, epoch milliseconds, or a
 // relative duration ('7d', '24h') measured back from `now` — the same
 // vocabulary `workflow runs --since` already accepts.
@@ -91,13 +108,27 @@ function attemptTotals(attempts) {
     const minutes = wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
     const costUsd = finiteNumber(attempt.usage?.cost?.estimatedUsd);
     const tokens = finiteNumber(attempt.usage?.tokens?.totalKnown);
+    const cacheRead = finiteNumber(attempt.usage?.tokens?.cacheRead);
+    const explicitCacheWrite = finiteNumber(attempt.usage?.tokens?.cacheWrite);
+    const cacheWrite5m = finiteNumber(attempt.usage?.tokens?.cacheWrite5m);
+    const cacheWrite1h = finiteNumber(attempt.usage?.tokens?.cacheWrite1h);
+    const cacheWrite = explicitCacheWrite ?? (cacheWrite5m != null || cacheWrite1h != null
+      ? (cacheWrite5m ?? 0) + (cacheWrite1h ?? 0)
+      : null);
+    const tokenSource = tokenSourceOf(attempt.usage?.tokenSource);
 
-    const pool = pools[poolKey] ??= { attempts: 0, minutes: null, costUsd: null, tokens: null };
+    const pool = pools[poolKey] ??= {
+      attempts: 0, minutes: null, costUsd: null, tokens: null,
+      cacheRead: null, cacheWrite: null, tokenSource: null,
+    };
     pool.attempts += 1;
+    pool.tokenSource = worstTokenSource(pool.tokenSource, tokenSource);
     if (minutes != null) pool.minutes = (pool.minutes ?? 0) + minutes;
     // R2: only an attempt that recorded an estimate moves the money.
     if (costUsd != null) pool.costUsd = (pool.costUsd ?? 0) + costUsd;
     if (tokens != null) pool.tokens = (pool.tokens ?? 0) + tokens;
+    if (cacheRead != null) pool.cacheRead = (pool.cacheRead ?? 0) + cacheRead;
+    if (cacheWrite != null) pool.cacheWrite = (pool.cacheWrite ?? 0) + cacheWrite;
 
     const model = models[modelKey] ??= { attempts: 0, minutes: null };
     model.attempts += 1;
@@ -107,6 +138,9 @@ function attemptTotals(attempts) {
     pool.minutes = round(pool.minutes, 2);
     pool.costUsd = round(pool.costUsd, 6);
     pool.tokens = pool.tokens == null ? null : Math.round(pool.tokens);
+    pool.cacheRead = pool.cacheRead == null ? null : Math.round(pool.cacheRead);
+    pool.cacheWrite = pool.cacheWrite == null ? null : Math.round(pool.cacheWrite);
+    pool.tokenSource ??= 'unknown';
   }
   for (const model of Object.values(models)) model.minutes = round(model.minutes, 2);
   return { pools, models };

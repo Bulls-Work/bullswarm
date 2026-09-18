@@ -7,12 +7,16 @@ import { join, resolve } from 'node:path';
 import {
   accountIdentity,
   accountSlugForConfigDir,
+  claudePlanName,
   connectors,
   discoverClaudeAccounts,
   discoverClaudeConfigDirs,
+  extractCredentials,
   keychainServiceForConfigDir,
+  parseClaudeUsage,
   poolNameForSlug,
   profileCommand,
+  readAccountCredentials,
   readUsage,
 } from '../src/providers/claude-code/provider.mjs';
 import { readUsage as readCodexUsage } from '../src/providers/codex/provider.mjs';
@@ -67,6 +71,66 @@ test('slug and pool names come from the directory, never a hardcoded profile lis
     profileCommand('/Users/me/.claude-work'),
     'CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude',
   );
+});
+
+test('Claude credentials and usage snapshots retain subscription metadata without shelling out', () => {
+  const home = makeHome();
+  try {
+    const future = Date.now() + 3_600_000;
+    const body = JSON.stringify({ claudeAiOauth: {
+      accessToken: 'sk-max', expiresAt: future,
+      subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x',
+    } });
+    const creds = extractCredentials(body);
+    assert.deepEqual(creds, {
+      accessToken: 'sk-max',
+      expiresAt: future,
+      subscriptionType: 'max',
+      rateLimitTier: 'default_claude_max_20x',
+    });
+    assert.equal(claudePlanName(creds), 'max 20x');
+    assert.equal(claudePlanName({ subscriptionType: 'team', rateLimitTier: 'default_claude_max_5x' }), 'team');
+    const configDir = join(home, '.claude');
+    touchClaudeHome(configDir, { '.credentials.json': body });
+    const fromFile = readAccountCredentials(configDir, {
+      homeDir: home, platform: 'linux', nowMs: Date.now(),
+    });
+    assert.equal(fromFile.source, 'file');
+    assert.equal(fromFile.creds.rateLimitTier, 'default_claude_max_20x');
+    const snapshot = parseClaudeUsage({
+      five_hour: { utilization: 12, resets_at: '2026-09-18T13:00:00Z' },
+    }, 'claude-code', fromFile.creds);
+    assert.equal(snapshot.plan_type, 'max 20x');
+    assert.equal(snapshot.plan_name, 'max 20x');
+    assert.equal(snapshot.subscription_type, 'max');
+    assert.equal(snapshot.rate_limit_tier, 'default_claude_max_20x');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Claude plan metadata survives a token-only macOS keychain result', () => {
+  const home = makeHome();
+  try {
+    const future = Date.now() + 3_600_000;
+    const configDir = join(home, '.claude');
+    touchClaudeHome(configDir, {
+      '.credentials.json': JSON.stringify({ claudeAiOauth: {
+        accessToken: 'sk-file', expiresAt: future,
+        subscriptionType: 'pro', rateLimitTier: 'default_claude_ai',
+      } }),
+    });
+    const result = readAccountCredentials(configDir, {
+      homeDir: home, platform: 'darwin', nowMs: Date.now(),
+      readKeychain: () => ({ accessToken: 'sk-keychain', expiresAt: future }),
+    });
+    assert.equal(result.source, 'keychain');
+    assert.equal(result.creds.accessToken, 'sk-keychain');
+    assert.equal(result.creds.subscriptionType, 'pro');
+    assert.equal(result.creds.rateLimitTier, 'default_claude_ai');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('discoverClaudeConfigDirs finds ~/.claude-<slug> and skips unrelated .claude-* dirs', () => {

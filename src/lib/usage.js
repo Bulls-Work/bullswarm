@@ -17,17 +17,26 @@ export function estimateTextTokens(text) {
 }
 
 function lastCounter(text, names) {
-  let total = 0;
+  let last = null;
+  let lastIndex = -1;
   let found = false;
   for (const name of names) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`(?:^|[,{\\s])["']?${escaped}["']?\\s*[:=]\\s*(\\d+)`, 'gi');
     for (const match of String(text ?? '').matchAll(re)) {
-      total += Number(match[1]);
+      // Provider streams repeat cumulative counters on every event and some
+      // result objects contain the same counter under several nested aliases.
+      // The final occurrence is the only trustworthy total; adding matches
+      // triple-counts a single provider result (and sums cumulative events).
+      const index = match.index ?? -1;
+      if (index >= lastIndex) {
+        last = Number(match[1]);
+        lastIndex = index;
+      }
       found = true;
     }
   }
-  return found ? finiteNonNegative(total) : null;
+  return found ? finiteNonNegative(last) : null;
 }
 
 export function parseReportedUsage(text) {
@@ -63,6 +72,41 @@ export function modelProfile(connector, model) {
   return null;
 }
 
+function firstReportedValue(reported, keys) {
+  for (const key of keys) {
+    const value = finiteNonNegative(reported?.[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+/** Normalize a connector-decoded usage object into the common field names. */
+export function normalizeReportedUsage(reported) {
+  if (!reported || typeof reported !== 'object') return null;
+  const cacheWrite5m = firstReportedValue(reported, ['cacheWrite5m', 'cacheWrite5mTokens']);
+  const cacheWrite1h = firstReportedValue(reported, ['cacheWrite1h', 'cacheWrite1hTokens']);
+  const explicitCacheWrite = firstReportedValue(reported, ['cacheWrite', 'cacheWriteTokens']);
+  const values = {
+    standardRead: firstReportedValue(reported, ['standardRead', 'standardReadTokens']),
+    cacheRead: firstReportedValue(reported, ['cacheRead', 'cacheReadTokens']),
+    cacheWrite5m,
+    cacheWrite1h,
+    cacheWrite: explicitCacheWrite ?? (cacheWrite5m != null || cacheWrite1h != null
+      ? (cacheWrite5m ?? 0) + (cacheWrite1h ?? 0)
+      : null),
+    output: firstReportedValue(reported, ['output', 'outputTokens']),
+    costUsd: firstReportedValue(reported, ['costUsd', 'totalCostUsd', 'total_cost_usd']),
+    sessionId: typeof reported.sessionId === 'string' && reported.sessionId ? reported.sessionId : null,
+    model: typeof reported.model === 'string' && reported.model ? reported.model : null,
+  };
+  const present = Object.values(values).some((value) => value != null);
+  if (!present) return null;
+  const source = ['provider-reported', 'transcript-summed'].includes(reported.tokenSource)
+    ? reported.tokenSource
+    : null;
+  return source ? { ...values, tokenSource: source } : values;
+}
+
 /**
  * One definition of "this model costs nothing", for routing (R12), for the
  * model recommendation score, and for the pool view. The connector's own
@@ -93,30 +137,70 @@ function roundPct(value) {
 
 export function estimateInvocationUsage({
   taskText = '', outputText = '', connector = {}, model = null, subscription = null,
+  reportedUsage = null,
 } = {}) {
-  const reported = parseReportedUsage(outputText);
+  const structured = normalizeReportedUsage(reportedUsage);
+  const reported = structured ?? normalizeReportedUsage(parseReportedUsage(outputText));
+  const structuredReported = structured != null;
+  const hasTextForEstimate = (typeof taskText === 'string' && taskText.length > 0)
+    || (typeof outputText === 'string' && outputText.length > 0);
   const tokens = {
-    standardRead: reported?.standardReadTokens ?? estimateTextTokens(taskText),
-    cacheRead: reported?.cacheReadTokens ?? null,
-    cacheWrite: reported?.cacheWriteTokens ?? null,
-    output: reported?.outputTokens ?? estimateTextTokens(outputText),
+    standardRead: reported?.standardRead ?? (structuredReported ? null : estimateTextTokens(taskText)),
+    cacheRead: reported?.cacheRead ?? null,
+    cacheWrite5m: reported?.cacheWrite5m ?? null,
+    cacheWrite1h: reported?.cacheWrite1h ?? null,
+    cacheWrite: reported?.cacheWrite ?? null,
+    output: reported?.output ?? (structuredReported ? null : estimateTextTokens(outputText)),
   };
-  tokens.totalKnown = Object.values(tokens).reduce(
+  if (tokens.cacheWrite == null && (tokens.cacheWrite5m != null || tokens.cacheWrite1h != null)) {
+    tokens.cacheWrite = (tokens.cacheWrite5m ?? 0) + (tokens.cacheWrite1h ?? 0);
+  }
+  const totalFields = [tokens.standardRead, tokens.cacheRead, tokens.output];
+  if (tokens.cacheWrite5m != null || tokens.cacheWrite1h != null) {
+    totalFields.push(tokens.cacheWrite5m, tokens.cacheWrite1h);
+  } else {
+    totalFields.push(tokens.cacheWrite);
+  }
+  tokens.totalKnown = totalFields.reduce(
     (sum, value) => sum + (Number.isFinite(value) ? value : 0), 0,
   );
 
   const selectedModel = model ?? connector.model ?? null;
   const profile = modelProfile(connector, selectedModel);
   const pricing = profile?.pricing ?? null;
+  const cacheWrite5mRate = pricing?.cacheWrite5mUsdPerMillion ?? pricing?.cacheWriteUsdPerMillion;
+  const cacheWrite1hRate = pricing?.cacheWrite1hUsdPerMillion ?? pricing?.cacheWriteUsdPerMillion;
+  const cacheWrite5mUsd = tokenCost(tokens.cacheWrite5m, cacheWrite5mRate);
+  const cacheWrite1hUsd = tokenCost(tokens.cacheWrite1h, cacheWrite1hRate);
+  const cacheWriteParts = [cacheWrite5mUsd, cacheWrite1hUsd].filter((value) => value != null);
+  const cacheWriteUsd = cacheWriteParts.length
+    ? cacheWriteParts.reduce((sum, value) => sum + value, 0)
+    : tokenCost(tokens.cacheWrite, pricing?.cacheWriteUsdPerMillion);
   const costs = pricing ? {
     standardReadUsd: tokenCost(tokens.standardRead, pricing.inputUsdPerMillion),
     cacheReadUsd: tokenCost(tokens.cacheRead, pricing.cacheReadUsdPerMillion),
-    cacheWriteUsd: tokenCost(tokens.cacheWrite, pricing.cacheWriteUsdPerMillion),
+    cacheWrite5mUsd,
+    cacheWrite1hUsd,
+    cacheWriteUsd,
     outputUsd: tokenCost(tokens.output, pricing.outputUsdPerMillion),
   } : null;
-  const knownCosts = costs ? Object.values(costs).filter((value) => value != null) : [];
-  const estimatedCostUsd = knownCosts.length ? roundMoney(knownCosts.reduce((a, b) => a + b, 0)) : null;
+  const knownCosts = costs
+    ? [costs.standardReadUsd, costs.cacheReadUsd, costs.cacheWriteUsd, costs.outputUsd]
+      .filter((value) => value != null)
+    : [];
+  const locallyPricedUsd = knownCosts.length ? roundMoney(knownCosts.reduce((a, b) => a + b, 0)) : null;
+  const providerBilledUsd = structured?.costUsd ?? null;
+  const estimatedCostUsd = providerBilledUsd ?? locallyPricedUsd;
   if (costs) for (const key of Object.keys(costs)) costs[key] = roundMoney(costs[key]);
+
+  const pricedFields = [];
+  if (costs?.standardReadUsd != null) pricedFields.push('standardRead');
+  if (costs?.cacheReadUsd != null) pricedFields.push('cacheRead');
+  if (costs?.cacheWriteUsd != null) pricedFields.push('cacheWrite');
+  if (costs?.outputUsd != null) pricedFields.push('output');
+  const costSource = providerBilledUsd != null
+    ? 'provider-billed'
+    : locallyPricedUsd != null ? 'local-rate-card' : null;
 
   const includedValueUsd = finiteNonNegative(subscription?.includedValueUsd);
   const quotaPercent = estimatedCostUsd != null && includedValueUsd > 0
@@ -126,7 +210,11 @@ export function estimateInvocationUsage({
   return {
     model: selectedModel,
     tokens,
-    tokenSource: reported ? 'provider-reported' : 'estimated:utf8-bytes/4',
+    tokenSource: structured?.tokenSource
+      ?? (reported ? 'provider-reported' : hasTextForEstimate ? 'estimated:utf8-bytes/4' : 'unknown'),
+    sessionId: structured?.sessionId ?? null,
+    costSource,
+    pricedFields,
     pricing: pricing ? {
       ...pricing,
       source: profile?.pricingSource ?? null,
@@ -135,7 +223,11 @@ export function estimateInvocationUsage({
     cost: {
       estimatedUsd: estimatedCostUsd,
       breakdown: costs,
-      basis: pricing ? 'api-equivalent rate; subscription debit may differ' : 'unknown: no model rate metadata',
+      basis: costSource === 'provider-billed'
+        ? 'provider-billed total_cost_usd'
+        : costSource === 'local-rate-card'
+          ? 'local rate card; subscription debit may differ'
+          : 'unknown: no model rate metadata',
     },
     normalizedQuota: {
       estimatedPercent: quotaPercent,

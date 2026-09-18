@@ -212,7 +212,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
     assert.match(screen, /── Phase 2 · Evidence/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
-    assert.match(screen, /check-result · relay:b · gpt-5\.6-luna/);
+    assert.match(plain(screen), /check-result · relay:b · gpt-5\.6-luna/);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
     // The Run page draws no panel border at any width: flat rules only. The
     // timeline's own ├─/│ tree glyphs are content, not a frame, so the test
@@ -400,6 +400,68 @@ test('moving the mouse over a clickable row lights it in reverse video and leavi
   } finally { cleanup(); }
 });
 
+test('Stats slice hover labels move, pin and clear without changing a 55-column frame', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-18T00:00:00.000Z') });
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-slices-'));
+  try {
+    mkdirSync(join(home, 'history'), { recursive: true });
+    const rollup = (runId, model, minutes) => ({
+      schemaVersion: 'bullswarm.workflow.rollup.v1', runId, shortId: runId, goal: runId,
+      startedAt: '2026-09-17T01:00:00.000Z', finishedAt: '2026-09-17T02:00:00.000Z',
+      status: 'completed', verified: true, requirements: { passed: 1, total: 1 },
+      minutes: { wall: minutes, agent: minutes },
+      pools: { relay: { attempts: 1, minutes, costUsd: null, tokens: null } },
+      models: { [model]: { attempts: 1, minutes } }, legacy: false,
+    });
+    writeFileSync(join(home, 'history', 'runs.jsonl'), [
+      rollup('slice-luna', 'gpt-5.6-luna', 724),
+      rollup('slice-sol', 'gpt-5.6-sol', 1760),
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+
+    const session = shellSession(home, { columns: 55, rows: 30 });
+    session.press('s'); // Home -> Stats overview
+    session.press('\t'); // Trends
+    session.press('\t'); // Pools
+    session.press('\t'); // Models, the stacked model-minutes chart
+    const frame = lastFrame(session.output);
+    const rows = paintedRows(frame).map(plain);
+    const axisRow = rows.findIndex((line) => /[+┼].*17 Sep/.test(line));
+    assert.ok(axisRow > 0, 'the 17 Sep chart column is painted');
+    const barGlyph = /[█▇▆▅▄▃▂▁]/;
+    const bar = rows.map((line, index) => ({ line, index }))
+      .filter(({ line, index }) => index < axisRow && barGlyph.test(line)).at(-1);
+    assert.ok(bar, 'the chart has a painted slice row');
+    const x = bar.line.search(barGlyph) + 1;
+    const y = bar.index + 1;
+    const label = '17 Sep · gpt-5.6-luna · 12h04m · 29% of the day';
+
+    session.press(`\x1b[<35;${x};${y}M`);
+    const hovered = lastFrame(session.output);
+    assert.match(plain(hovered), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const legend = hovered.split('\n').find((line) => {
+      const text = plain(line);
+      return text.includes('gpt-5.6-sol') && text.includes('gpt-5.6-luna');
+    });
+    assert.ok(legend, 'the chart legend is visible');
+    assert.match(legend, /\x1b\[1mgpt-5\.6-luna\x1b\[22m/);
+    assert.doesNotMatch(legend, /\x1b\[1mgpt-5\.6-sol\x1b\[22m/);
+
+    session.press('\x1b[<35;1;2M');
+    assert.doesNotMatch(plain(lastFrame(session.output)), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    session.press(`\x1b[<35;${x};${y}M`);
+    session.press(`\x1b[<0;${x};${y}M`); // click pins the slice
+    session.press('\x1b[<35;1;2M'); // motion does not clear a pin
+    assert.match(plain(lastFrame(session.output)), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    session.press(ESC_KEY);
+    assert.doesNotMatch(plain(lastFrame(session.output)), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    for (const line of paintedRows(lastFrame(session.output)).map(plain)) {
+      assert.ok(line.length <= 55, `frame row exceeds 55 columns: ${line}`);
+    }
+    assert.equal(await session.quit(), 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 test('recent-list V2 selection opens that run on the Run page', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
@@ -562,7 +624,7 @@ test('dashboard rows expose the running action and its live attempt', () => {
     assert.equal(row.phase, 'Implementation');
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
     const tui = renderWorkflowTui(row, { width: 120, height: 40 });
-    assert.match(tui, /audit-files · opencode2 · relay\/gpt-5\.6-luna/);
+    assert.match(plain(tui), /audit-files · opencode2 · relay\/gpt-5\.6-luna/);
     assert.match(tui, /npm test/);
   } finally { cleanup(); }
 });
@@ -622,7 +684,7 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     // temp fixture home names the row, not `unknown project`.
     // The widest visible duration in this day is six cells, so the elastic
     // goal gives back one cell to keep `5m` and `12h34m` whole.
-    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit documentation f…/);
+    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit…/);
     assert.match(plain(session.output.text), /── timeline ─/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
@@ -1142,7 +1204,7 @@ test('at 55 columns Fleet leaves the tab row and the nav tail is [Top] [End] [He
   } finally { cleanup(); }
 });
 
-test('the nav records a hit region for every button, run row, tile, bar and step row', () => {
+test('the nav records a hit region for every button, today row, chart bar and step row', () => {
   const { home, cleanup } = shellFixture();
   try {
     const rows = dashboardRows(home, { all: true });
@@ -1168,20 +1230,18 @@ test('the nav records a hit region for every button, run row, tile, bar and step
     assert.ok(new Set(steps.map((region) => region.action.actionId)).has('scan'));
     assert.ok(new Set(steps.map((region) => region.action.actionId)).has('build-alpha'));
 
-    // Home: every tile, every breakdown bar, every run and every recent row.
+    // Home: the today band owns workflow/task rows; the remaining breakdown
+    // bars, recent rows and live steps keep their own hit regions.
     const homeFrame = renderDashboardPage(model, {
       page: 'home', width: 100, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     });
     const kinds = (frame, kind) => frame.regions.filter((region) => region.action.kind === kind);
-    // One region per today tile, plus the breakdown's own spent-per-day column.
+    // The removed today tiles no longer create trend regions; the retained
+    // spent-per-day column still opens the spend chart.
     assert.deepEqual(
       [...new Set(kinds(homeFrame, 'trend').map((region) => region.action.metric))],
-      ['runs', 'verified', 'spend'],
+      ['spend'],
     );
-    for (const metric of ['runs', 'verified']) {
-      assert.equal(kinds(homeFrame, 'trend').filter((region) => region.action.metric === metric).length, 1,
-        `the ${metric} tile records exactly one hit region`);
-    }
     assert.ok(kinds(homeFrame, 'tab').length >= 1, 'the licence tile and the bars open a Stats tab');
     assert.deepEqual(kinds(homeFrame, 'period').map((region) => region.action.period), ['7d', '30d', 'all']);
     const runRows = kinds(homeFrame, 'run').filter((region) => region.y !== homeFrame.lines.length);
@@ -1676,7 +1736,7 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     const row = dashboardRows(home)[0];
     const live = renderWorkflowTui(row, { width: 120, height: 30 });
     // The live row shows the level the running worker is actually thinking at.
-    assert.match(live, /check-result · relay:b · gpt-5\.6-luna · high/);
+    assert.match(plain(live), /check-result · relay:b · gpt-5\.6-luna · high/);
     // Phase 1 holds the finished attempt; its own override reads next to the model.
     const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(plain(phaseOne), /implement-result · relay · gpt-5\.6-luna · max · #1/);
@@ -1725,7 +1785,7 @@ test('attempts without a reasoning record render exactly as before', () => {
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const live = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(live, /implement-result · relay · gpt-5\.6-luna\s+\d/);
+    assert.match(plain(live), /implement-result · relay · gpt-5\.6-luna/);
     assert.doesNotMatch(live, /gpt-5\.6-luna · /);
     const pane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(pane, /implement-result · relay · gpt-5\.6-luna · #1/);
@@ -2068,7 +2128,7 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
     assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implementation']);
     assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
 
-    const short = renderWorkflowTui(row, { width: 100, height: 34 });
+    const short = renderWorkflowTui(row, { width: 100, height: 40 });
     const pane = timelinePaneRows(short);
     const marker = pane.findIndex((line) => line.includes('earlier timeline rows'));
     assert.ok(marker >= 0, `expected a scrolled viewport:\n${pane.join('\n')}`);
@@ -2086,7 +2146,7 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
   const run = longPhaseV2Run();
   try {
     const row = run.row();
-    const following = renderWorkflowTui(row, { width: 100, height: 34 });
+    const following = renderWorkflowTui(row, { width: 100, height: 40 });
     const pane = timelinePaneRows(following);
     // Auto-follow ends on the newest event — the running worker — and never
     // claims there is anything newer below the viewport.
@@ -2095,7 +2155,7 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
     assert.match(frameHeader(following), /^ lng234 /);
 
     // Scrolling back holds older rows in place and says how much is newer.
-    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 34, detailScroll: 4 }));
+    const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 40, detailScroll: 4 }));
     assert.match(scrolled.at(-1), /↓ 4 newer timeline rows/);
     assert.deepEqual(scrolled.filter((line) => line.includes('work-tail')), []);
     assert.match(scrolled[0], /↑ \d+ earlier timeline rows/);
@@ -2131,7 +2191,7 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     }
 
     // And the narrow viewport re-emits the continuation header when it scrolls.
-    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 34 });
+    const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 40 });
     const narrowPane = timelinePaneRows(scrolled);
     const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
     assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
@@ -2188,10 +2248,40 @@ test('the Budget page draws every pool meter, its money and what still fits', ()
   assert.match(text, /64 of 70 credits/);
   // Money is the recorded estimate, labelled, and the undeclared plan price is
   // a blank with the reason — never a number.
-  assert.match(text, /≈ \$0\.42 of API-equivalent work/);
+  assert.match(text, /cost unknown of API-equivalent work/);
+  assert.match(text, /zzz999 ~ \$0\.42 estimated/);
   assert.match(text, /Declare a price: bullswarm strategy set-subscription/);
   // The notes sit above the nav, and the nav is still whole.
   assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
+});
+
+test('Home labels provider, transcript, estimated and unknown usage bases', () => {
+  const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
+  const cases = [
+    ['provider-reported', /\$ 1\.23/],
+    ['transcript-summed', /≈ \$1\.23 summed/],
+    ['estimated:utf8-bytes\/4', /~ \$1\.23 estimated/],
+    ['unknown', /cost unknown/],
+  ];
+  for (const [tokenSource, expected] of cases) {
+    const record = {
+      schemaVersion: 'bullswarm.workflow.rollup.v1',
+      runId: `wf-basis-${tokenSource}`, shortId: 'basis1', project: 'bullswarm', goal: 'basis labels',
+      startedAt: '2026-09-18T10:00:00.000Z', finishedAt: '2026-09-18T11:00:00.000Z',
+      status: 'completed', verified: true, minutes: { wall: 1, agent: 1 },
+      pools: { relay: { attempts: 1, minutes: 1, costUsd: 1.23, tokenSource } },
+      models: { model: { attempts: 1, minutes: 1 } }, legacy: false,
+    };
+    const model = dashboardModel(record, {
+      nowMs,
+      rollups: [record],
+      days: [{ date: '2026-09-18', rows: [record] }],
+      usage: { pools: [{ name: 'relay', usedPct: 10, elapsedPct: 20 }] },
+    });
+    const text = plain(renderDashboardPage(model, { page: 'home', width: 120, height: 60, nowMs }).lines.join('\n'));
+    assert.match(text, expected, tokenSource);
+    if (tokenSource === 'unknown') assert.doesNotMatch(text, /\$ ?1\.23/, tokenSource);
+  }
 });
 
 test('Home keeps all three period choices on their own clickable row at 55 columns', () => {
@@ -2675,11 +2765,11 @@ test('every clickable atom runs the same action its key runs', async () => {
     session.press('2');
     assert.equal(header(), byClick);
 
-    // A Home tile opens the chart of the metric it shows: the spend tile
-    // carries today's recorded estimate, and clicking it charts spend.
+    // A Home today pool row opens Budget for that pool; the old spend tile is
+    // gone, so the row's page action is the comparable keyboard destination.
     session.press(ESC_KEY);
-    clickOn(session, '≈ $0.42');
-    assert.match(header(), /^ Stats · trends/);
+    clickOn(session, '$0.42');
+    assert.match(header(), /^ Budget · /);
 
     // The period toggle is the same move p makes.
     session.press(ESC_KEY);
@@ -2701,7 +2791,16 @@ test('with no declared price and no measured licence rate, no bare number is pai
     pools: Object.fromEntries(Object.entries(record.pools)
       .map(([name, entry]) => [name, { ...entry, costUsd: null }])),
   }));
-  const model = dashboardModel(null, { usage, rollups, days: dayFixture(), prices: { subscriptions: {} } });
+  const days = dayFixture().map((day) => ({
+    ...day,
+    spendUsd: null,
+    rows: day.rows.map((record) => ({
+      ...record,
+      pools: Object.fromEntries(Object.entries(record.pools)
+        .map(([name, entry]) => [name, { ...entry, costUsd: null }])),
+    })),
+  }));
+  const model = dashboardModel(null, { usage, rollups, days, prices: { subscriptions: {} } });
 
   for (const page of ['home', 'budget', 'stats', 'history']) {
     for (const width of [120, 54]) {
@@ -2717,16 +2816,17 @@ test('with no declared price and no measured licence rate, no bare number is pai
     }
   }
 
-  // Home says why each blank tile is blank rather than printing a zero. The
-  // phone layout gives each tile its own row, so the whole reason is there.
+  // Home says why the blank today figures are blank rather than printing a
+  // zero. The phone layout gives the band its own rows, so the reason is
+  // visible without a tile.
   const home = plain(renderDashboardPage(model, { page: 'home', width: 54, height: 40 }).lines.join('\n'));
-  assert.match(home, /no finished run recorded an estimate/);
+  assert.match(home, /relay\s+.*—/);
   // Budget says what is missing and how to declare it. The reworked pool rows
   // (requirement 8) put the blank-with-reason inline: no measured rate, and
   // the declare-price command in the notes.
   const budget = plain(renderDashboardPage(model, { page: 'budget', width: 120, height: 40 }).lines.join('\n'));
   assert.match(budget, /no measured usage rate yet/);
-  assert.match(budget, /API estimate unrecorded/);
+  assert.match(budget, /cost unknown of API-equivalent work/);
   assert.match(budget, /Declare a price: bullswarm strategy set-subscription/);
 });
 
@@ -2741,7 +2841,7 @@ test('a run with no recorded estimate and no measured rate paints blanks, not ze
     const text = plain(renderDashboardPage(model, {
       page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     }).lines.join('\n'));
-    assert.match(text, /no attempt recorded an API-equivalent estimate/);
+    assert.match(text, /cost unknown: no usage measurement exists/);
     // Requirement 8: an unmetered pool is one line of words, never a track.
     assert.match(text, /free model · no licence meter/);
     assert.match(text, /— ETA —: build-alpha, build-alpha-evidence have no recorded duration yet/);
@@ -2833,7 +2933,7 @@ test('an explicitly recorded "estimatedUsd: null" stays blank and is never count
       }).lines.join('\n'));
       assert.doesNotMatch(text, /\$0\.00/, `${page} manufactured a zero from a null estimate`);
       assert.doesNotMatch(text, /attempts priced/, `${page} counted a null estimate as priced`);
-      assert.match(text, /no attempt recorded an API-equivalent estimate|recorded no estimate/);
+      assert.match(text, /cost unknown/);
       // A null ratePerMinute is a blank share, never 0.00%.
       assert.doesNotMatch(text, /≈ 0\.00% of its/, `${page} claimed a zero licence share`);
     }
@@ -3007,7 +3107,7 @@ test('phone Home keeps four named pools, separate breakdown rows and whole perce
       const text = plain(renderDashboardPage(f.model, { page: 'home', width, height: 150 }).lines.join('\n'));
       const budget = text.split('budget · this week')[1].split('last 7 days')[0];
       for (const name of names) assert.ok(budget.includes(name), budget);
-      assert.match(text, /no estimate today/);
+      assert.match(text, /licence spent today · measured worker minutes/);
       const lines = text.split('\n');
       for (const heading of ['by pool', 'by model', 'by project']) {
         const at = lines.findIndex((line) => line.trim() === heading);
@@ -3107,7 +3207,7 @@ test("Home's 7-day breakdown is four columns on one band at 120 and 200, and one
   } finally { f.cleanup(); }
 });
 
-test('Home phone tiles and every live step keep their bars on one row', () => {
+test('Home today band and every live step keep their rows readable on a phone', () => {
   const f = fidelityModel();
   try {
     const running = f.model.runs[0];
@@ -3119,20 +3219,25 @@ test('Home phone tiles and every live step keep their bars on one row', () => {
       page: 'home', width: 54, height: 120, rows: f.rows, allRows: f.rows,
     });
     const lines = paintedRows(frame.lines.join('\n')).map(plain);
-    const today = lines.slice(lines.findIndex((line) => /── today/.test(line)) + 1,
+    const today = lines.slice(lines.findIndex((line) => /^today ·/.test(line)),
       lines.findIndex((line) => /── running/.test(line))).filter((line) => line.trim());
-    assert.equal(today.filter((line) => /^ finished\s/.test(line)).length, 1);
-    assert.equal(today.filter((line) => /^ spent\s/.test(line)).length, 1);
-    assert.ok(today.length <= 4, today.join('\n'));
+    assert.ok(today.some((line) => /finished today|workflow finished/.test(line)), today.join('\n'));
+    assert.ok(today.some((line) => /licence spent today/.test(line)), today.join('\n'));
+    assert.ok(today.some((line) => /wf min/.test(line)), today.join('\n'));
     for (const id of ['first-live-action', 'second-live-action']) {
       const row = lines.find((line) => line.includes(id));
       assert.ok(row, `missing ${id}`);
       assert.match(row, /░{4,}.*\/—/, `missing indeterminate bar: ${row}`);
     }
+    let inTodayLicenceTable = false;
     for (const line of lines) {
+      if (/licence spent today/.test(line)) inTodayLicenceTable = true;
+      if (/wf % =/.test(line)) inTodayLicenceTable = false;
       assert.ok([...line].length <= 54, line);
+      // Every inline API-equivalent figure carries its usage-basis marker.
+      if (inTodayLicenceTable) continue;
       for (const match of line.matchAll(/\$/g)) {
-        assert.match(line.slice(Math.max(0, match.index - 2), match.index), /≈/, line);
+        assert.match(line.slice(Math.max(0, match.index - 2), match.index), /[≈~]/, line);
       }
     }
   } finally { f.cleanup(); }
@@ -3253,12 +3358,10 @@ test('`workflow tui --overview` keeps the two shapes the Claude mod pane parses'
   } finally { cleanup(); }
 });
 
-// A fan the next level closes: the prototype (docs/design/prototype-frames/
-// run-120.txt) rules each branch across to the joint and closes the last one
-// with `┘`, so the plan never draws a `┴` with nothing beneath it — observed
-// on run gqq2ra, 2026-09-17, where `stream-persist ─┴─ integrate` sat over a
-// longer `└─ handoff-preamble` that connected to nothing.
-test('the plan DAG closes a fan with ruled branches and a corner, never a hanging ┴', () => {
+// Desktop plans now use presentation-stage columns. A fan remains grouped by
+// its dependency phases, but connectors only join neighbouring phase headers;
+// no step-to-step branch drawing survives in the plan strip.
+test('the plan columns keep fan steps grouped without step connectors', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-fan-'));
   try {
     const startedAt = '2026-09-17T06:46:00.000Z';
@@ -3309,12 +3412,302 @@ test('the plan DAG closes a fan with ruled branches and a corner, never a hangin
     const bottom = text.find((line) => line.includes('handoff-preamble'));
     assert.ok(top && bottom, 'both branches of the fan are drawn');
     assert.doesNotMatch(text.join('\n'), /┴/, 'no ┴ hangs over a branch that never connects');
-    // The fan opens and closes with ┬ on the top row.
-    assert.match(top, /design-map ─┬─ . stream-persist ─+┬── . integrate/);
-    // The longer lower branch hangs under the ┬ that opened the fan, is ruled
-    // across to the joint, and closes with ┘ exactly under the closing ┬.
-    assert.match(bottom, /└─ . handoff-preamble ─+┘/);
-    assert.equal(bottom.indexOf('└'), top.indexOf('┬'), 'the branch hangs under the joint that opened it');
-    assert.equal(bottom.indexOf('┘'), top.lastIndexOf('┬'), 'the corner sits under the joint it closes');
+    const licenceAt = text.findIndex((line) => line.includes('── licence this run used'));
+    const plan = text.slice(0, licenceAt).join('\n');
+    assert.match(plan, /Phase 1/);
+    assert.match(plan, /Phase 2/);
+    assert.match(plan, /Phase 3/);
+    assert.match(plan, /design-map/);
+    assert.match(plan, /stream-persist/);
+    assert.match(plan, /handoff-preamble/);
+    assert.match(plan, /integrate/);
+    assert.doesNotMatch(plan, /┬|└|├|┘|┴/);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('the Run plan groups presentation phases into desktop columns and a narrow stack', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-plan-phases-'));
+  try {
+    const startedAt = '2026-09-18T08:00:00.000Z';
+    const document = createV2GoalDocument({
+      goal: 'seven presentation phases', cwd: home,
+      requirements: [{ id: 'requirement-1', text: 'The phases render.' }],
+      settings: { scout: false, executionMode: 'program' },
+    });
+    let state = createV2State(document, { runId: 'wf-phases', shortId: 'phase7' });
+    const action = (id, dependsOn = []) => ({
+      id, purpose: `${id} work`, dependsOn, affects: ['requirement-1'], ownedFiles: [`${id}.md`],
+      prompt: `${id}.`, lane: 'build', effort: 'medium', evidenceFor: [], inputs: dependsOn, produces: [id],
+    });
+    const actions = [
+      action('p1'), action('p2', ['p1']), action('p3-done', ['p2']), action('p3-run', ['p2']),
+      action('p4', ['p3-done', 'p3-run']), action('p5', ['p4']), action('p6', ['p5']), action('p7', ['p6']),
+    ];
+    state = applyV2PlannerResponse(state, {
+      schemaVersion: 'bullswarm.workflow.planner-response.v2', kind: 'program', summary: 'Seven phases.',
+      program: { schemaVersion: 'bullswarm.workflow.program.v2', actions },
+    });
+    state.lifecycle = { status: 'running', startedAt, finishedAt: null, resultFile: null };
+    for (const [index, runtime] of state.actions.entries()) {
+      const running = runtime.id === 'p3-run';
+      Object.assign(runtime, { status: running ? 'running' : index < 2 || runtime.id === 'p3-done' ? 'succeeded' : 'pending', startedAt, attempts: running || index < 3 ? 1 : 0 });
+    }
+    state.attempts = [
+      { id: 'p3-done-1', actionId: 'p3-done', ordinal: 1, status: 'succeeded', pool: 'codex', model: 'gpt-5.6-luna', startedAt, finishedAt: iso(30), wallSec: 30 },
+      { id: 'p3-run-1', actionId: 'p3-run', ordinal: 1, status: 'running', pool: 'codex', model: 'gpt-5.6-luna', startedAt, finishedAt: null, outputBytesObserved: 128 },
+    ];
+    state.runner = { pid: process.pid, lastHeartbeatAt: new Date().toISOString() };
+    const dir = join(home, 'workflows', 'wf-phases');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
+    const row = dashboardRows(home)[0];
+    const nowMs = Date.parse(startedAt) + 9 * 60_000;
+    const desktop = plain(renderWorkflowTui(row, {
+      width: 120, height: 100, nowMs,
+      usage: { assignments: [{ runId: 'wf-phases', actionId: 'p3-run', expectedMinutes: 12, startedAt }] },
+    }));
+    const plan = desktop.split('── licence this run used')[0];
+    assert.match(plan, /Phase 1/);
+    assert.match(plan, /Phase 3/);
+    assert.match(plan, /Phase 7/);
+    const runningRows = plan.split('\n').filter((line) => line.includes('p3-run'));
+    assert.equal(runningRows.length, 1, 'the running step has no subtitle row');
+    assert.match(runningRows[0], /p3-run/);
+    assert.match(runningRows[0], /9m\/12m/);
+    // A desktop connector is only present on the header row; step rows carry
+    // no branch joints between neighbouring phases.
+    const header = plan.split('\n').find((line) => line.includes('Phase 1'));
+    assert.ok(header.includes('──'), header);
+    assert.doesNotMatch(runningRows[0], /┬|└|├|┘/);
+
+    const narrow = plain(renderWorkflowTui(row, {
+      width: 55, height: 100, nowMs,
+      usage: { assignments: [{ runId: 'wf-phases', actionId: 'p3-run', expectedMinutes: 12, startedAt }] },
+    }));
+    assert.match(narrow, /── Phase 1/);
+    assert.match(narrow, /── Phase 3/);
+    assert.match(narrow, /── Phase 7/);
+    const narrowPlan = narrow.split('── licence this run used')[0];
+    const narrowRunning = narrowPlan.split('\n').filter((line) => line.includes('p3-run'));
+    assert.equal(narrowRunning.length, 1);
+    assert.match(narrowRunning[0], /9m\/12m/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('Home today lists only pools that worked today', () => {
+  const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
+  const rollups = [{
+    schemaVersion: 'bullswarm.workflow.rollup.v1', runId: 'wf-today', shortId: 'today1',
+    startedAt: new Date(nowMs - 4 * 60_000).toISOString(), finishedAt: new Date(nowMs - 1 * 60_000).toISOString(),
+    status: 'completed', verified: true, requirements: { passed: 1, total: 1 },
+    minutes: { wall: 3, agent: 4 },
+    pools: { 'worked-low': { attempts: 1, minutes: 4, costUsd: null, tokens: null } },
+    models: { luna: { attempts: 1, minutes: 4 } }, legacy: false,
+  }];
+  const usage = { pools: [
+    { name: 'idle-high', enabled: true, usedPct: 90, elapsedPct: 50 },
+    { name: 'worked-low', enabled: true, usedPct: 10, elapsedPct: 50 },
+    { name: 'idle-mid', enabled: true, usedPct: 50, elapsedPct: 50 },
+  ], assignments: [], rungs: [] };
+  const model = dashboardModel(null, { usage, rollups, nowMs });
+  const text = plain(renderDashboardPage(model, { page: 'home', width: 120, height: 70, nowMs }).lines.join('\n'));
+  const block = text.split('licence spent today')[1].split('running')[0];
+  assert.match(block, /worked-low/);
+  assert.doesNotMatch(block, /idle-high|idle-mid/);
+});
+
+test('Home today matches the approved 55/120 band with workflows, a task and four pools', () => {
+  const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
+  const workflows = [
+    {
+      runId: 'wf-today-1', shortId: 'today1', project: 'bullseye', goal: 'First today goal',
+      startedAt: '2026-09-18T00:00:00.000Z', finishedAt: '2026-09-18T01:00:00.000Z',
+      status: 'completed', verified: false, minutes: { wall: 104.9 },
+      pools: { wati: { attempts: 1, minutes: 84, costUsd: 0.16 } },
+    },
+    {
+      runId: 'wf-today-2', shortId: 'today2', project: 'bullswarm', goal: 'Second today goal',
+      startedAt: '2026-09-18T01:00:00.000Z', finishedAt: '2026-09-18T02:00:00.000Z',
+      status: 'completed', verified: false, minutes: { wall: 208.2 },
+      pools: { codex: { attempts: 1, minutes: 161.8, costUsd: 0.03 }, grok: { attempts: 1, minutes: 26, costUsd: 0.01 } },
+    },
+    {
+      runId: 'wf-today-3', shortId: 'today3', project: 'bullseye', goal: 'Third today goal',
+      startedAt: '2026-09-18T02:00:00.000Z', finishedAt: '2026-09-18T03:00:00.000Z',
+      status: 'completed', verified: true, minutes: { wall: 542.7 },
+      pools: { opencode: { attempts: 1, minutes: 634.6, costUsd: null } },
+    },
+  ];
+  const task = {
+    id: 'task1', project: 'bullswarm', pool: 'codex', model: 'gpt-5.6-luna',
+    startedAt: '2026-09-18T04:00:00.000Z', endedAt: '2026-09-18T05:00:00.000Z',
+    durationMs: 60 * 60 * 1000, ok: true,
+  };
+  const usage = {
+    pools: [
+      { name: 'wati', spend: { pacing: { ratePerMinute: 0.0345 } } },
+      { name: 'codex', spend: { pacing: { ratePerMinute: 0.013 } } },
+      { name: 'grok', spend: { pacing: { ratePerMinute: 0.165 } } },
+      { name: 'opencode' },
+    ],
+  };
+  const model = dashboardModel(null, {
+    nowMs, rollups: workflows, usage, tasks: { finished: [task], inflight: [] },
+    days: [{ date: '2026-09-18', rows: [...workflows, { ...task, kind: 'task' }] }],
+  });
+
+  for (const width of [55, 120]) {
+    const frame = renderDashboardPage(model, { page: 'home', width, height: 40, nowMs });
+    const lines = frame.lines.map(plain);
+    const start = lines.findIndex((line) => line.startsWith('today ·'));
+    const end = lines.findIndex((line, index) => index > start && line.startsWith('── running'));
+    assert.ok(start >= 0 && end > start, `${width}: today band missing`);
+    const band = lines.slice(start, end).filter((line) => line.trim());
+    for (const line of band) assert.equal(line.length, width, `${width}: unpadded band line: ${line}`);
+
+    assert.match(band.join('\n'), /3 workflows(?: finished)?/);
+    assert.match(band.join('\n'), /1 task(?: finished)?/);
+    assert.match(band.join('\n'), /1 verified/);
+    assert.equal(band.filter((line) => /^✓ today[1-3]\s/.test(line)).length, 3);
+    assert.equal(band.filter((line) => /⚙ task1/.test(line)).length, 1);
+    assert.match(band.join('\n'), /wf % \(est\.\)/);
+    assert.match(band.join('\n'), /API≈/);
+    for (const pool of ['wati', 'codex', 'grok', 'opencode']) assert.match(band.join('\n'), new RegExp(`\\b${pool}\\b`));
+    assert.match(band.join('\n'), /opencode\s+634\.6\s+—\s+—\s+cost unknown/);
+    assert.match(band.join('\n'), /wf % = pool window points drawn by workflows today/);
+    assert.match(band.join('\n'), /— = not measured/);
+    assert.match(band.join('\n'), /API≈(?: basis:|:)/);
+    assert.match(band.join('\n'), /live window used% .*Budget/);
+
+    const rightPart = (line) => line.includes('│') ? line.slice(line.indexOf('│') + 2) : line;
+    const wati = band.map(rightPart).find((line) => line.includes('wati'));
+    const codex = band.map(rightPart).find((line) => line.includes('codex'));
+    assert.ok(wati && codex);
+    assert.equal(wati.indexOf('.'), codex.indexOf('.'), `${width}: workflow minutes are not right-aligned`);
+    assert.equal(wati.indexOf('$'), codex.indexOf('$'), `${width}: API estimates are not right-aligned`);
+    if (width === 120) {
+      assert.match(band.join('\n'), /First today goal/);
+      assert.match(band.join('\n'), /Second today goal/);
+      assert.match(band.join('\n'), /Third today goal/);
+    }
+  }
+});
+
+test('Runs and Home show single-task ledger rows, and Enter opens task detail', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-tasks-'));
+  try {
+    mkdirSync(join(home, 'assignments'), { recursive: true });
+    writeFileSync(join(home, 'state.json'), JSON.stringify({ decisionLog: [{
+      kind: 'run', source: 'run', id: 'finished-task', lane: 'analyze', pool: 'echo', model: 'echo-local',
+      project: 'bullswarm', taskFile: '/tmp/task-finished.md', outFile: '/tmp/out-finished.md',
+      ok: false, reason: 'short failure', startedAt: '2026-09-18T11:40:00Z', endedAt: '2026-09-18T11:42:05Z', durationMs: 125000,
+    }] }));
+    writeFileSync(join(home, 'assignments', 'live-task.json'), JSON.stringify({
+      id: 'live-task', source: 'run', lane: 'build', pool: 'echo', model: 'echo-local', project: 'bullswarm',
+      taskFile: '/tmp/task-live.md', outFile: '/tmp/out-live.md', startedAt: '2026-09-18T11:50:00Z',
+      kernelPid: process.pid, workerPid: null,
+    }));
+    const session = shellSession(home, { columns: 80, rows: 30 });
+    const homeText = plain(lastFrame(session.output));
+    assert.match(homeText, /0 workflows · 1 task · 0 verified/);
+    assert.match(homeText, /live-task/);
+    const runs = session.press('r');
+    assert.match(plain(runs), /finished-task/);
+    assert.match(plain(runs), /short failure/);
+    assert.ok(runs.includes('⚙'), 'task glyph is distinct from workflow glyph');
+    const task = session.press('\r');
+    assert.match(frameHeader(task), /task · (?:live-task|finished-task)/);
+    assert.match(plain(task), /task:\s+\/tmp\/task-/);
+    assert.match(plain(task), /reason:/);
+    const back = session.press(ESC_KEY);
+    assert.match(frameHeader(back), /^ bullswarm · runs ·/);
+    assert.equal(await session.quit(), 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('Enter on a Home today workflow row opens that run', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const now = Date.now();
+    writeV2Run(home, {
+      runId: 'wf-home-today', shortId: 'today1', goal: 'Today run goal', status: 'completed',
+      startedAt: new Date(now - 120_000).toISOString(), finishedAt: new Date(now - 60_000).toISOString(),
+    });
+    const session = shellSession(home, { columns: 55, rows: 30 });
+    const before = plain(lastFrame(session.output));
+    assert.match(before, /today1/);
+    // The fixture also has an older finished workflow today; move the Home
+    // cursor onto the second today row before drilling in.
+    session.press('\x1b[B');
+    session.press('\x1b[B');
+    const run = session.press('\r');
+    assert.match(frameHeader(run), /today1/);
+    assert.match(frameHeader(run), /completed/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Run and Step draw durable output sparklines and never cut a pool identity', () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    const statePath = join(dir, 'state.json');
+    const state = JSON.parse(readFileSync(statePath, 'utf8'));
+    const attempt = state.attempts.find((entry) => entry.status === 'running');
+    attempt.pool = 'opencode-very-long-pool-name';
+    attempt.outputSamples = [[Date.parse(attempt.startedAt), 0], [Date.parse(attempt.startedAt) + 1000, 1024], [Date.parse(attempt.startedAt) + 2000, 2048]];
+    writeFileSync(statePath, JSON.stringify(state));
+    const row = dashboardRows(home, { all: true }).find((entry) => entry.runId === 'wf-alpha');
+    const model = dashboardModel(row, { runs: [row], usage: usageFixture() });
+    const activePhase = workflowPanelModel(row).phases.findIndex((phase) =>
+      phase.actions.some((action) => action.status === 'running'));
+    const activeAgent = workflowPanelModel(row, { phaseIndex: activePhase }).agents
+      .findIndex((agent) => agent.status === 'running');
+    for (const width of [55, 120]) {
+      const run = plain(renderDashboardPage(model, { page: 'run', width, height: 50, selectedRunId: 'wf-alpha' }).lines.join('\n'));
+      assert.match(run, /▁▅█ 2 KB/);
+      assert.doesNotMatch(run, /openc…/, `${width}: pool was cut in the plan/live rows`);
+      const step = plain(renderDashboardPage(model, {
+        page: 'step', width, height: 50, selectedRunId: 'wf-alpha', phaseIndex: activePhase, agentIndex: activeAgent,
+      }).lines.join('\n'));
+      assert.match(step, /output .*2 KB/);
+    }
+  } finally { cleanup(); }
+});
+
+test('a task with no recorded id is listed and counted once, not once per source', async () => {
+  // Observed on the owner's real home (2026-09-18): every finished task
+  // appeared twice on the Runs day table and twice in Home's today band, and
+  // the day header read `6 tasks` for three of them. Tasks arrive from two
+  // places at once — historyDays already pushes them into `days[].rows`, and
+  // the dashboard merges `tasks.finished` again — and a `bullswarm run`
+  // recorded before the single-task ledger has neither `id` nor `taskFile`,
+  // so the id-only dedupe matched nothing.
+  const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
+  const legacy = {
+    lane: 'build', pool: 'codex', model: 'gpt-5.6-luna', project: null,
+    startedAt: null, taskFile: null, outFile: null,
+    endedAt: '2026-09-18T03:05:07.960Z', ok: true, reason: null, durationMs: 60 * 60 * 1000,
+  };
+  const model = dashboardModel(null, {
+    nowMs,
+    rollups: [],
+    usage: { pools: [{ name: 'codex' }] },
+    tasks: { finished: [legacy], inflight: [] },
+    // The same row the history index already placed on the day.
+    days: [{ date: '2026-09-18', runs: 0, finished: 0, verified: 0, rows: [{ ...legacy, kind: 'task' }] }],
+  });
+
+  const runs = renderDashboardPage(model, { page: 'runs', width: 120, height: 40, nowMs });
+  const runLines = runs.lines.map(plain);
+  const taskRows = runLines.filter((line) => /build · task · codex/.test(line));
+  assert.equal(taskRows.length, 1, `task listed ${taskRows.length} times:\n${runLines.join('\n')}`);
+  const header = runLines.find((line) => /Fri 18 Sep/.test(line));
+  assert.ok(header, 'the day header is missing');
+  assert.match(header, /\b1 task\b/);
+
+  const home = renderDashboardPage(model, { page: 'home', width: 120, height: 40, nowMs });
+  const homeLines = home.lines.map(plain);
+  assert.equal(homeLines.filter((line) => /⚙ task\b/.test(line)).length, 1);
+  assert.match(homeLines.join('\n'), /\b1 task\b/);
 });

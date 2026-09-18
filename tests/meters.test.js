@@ -164,18 +164,22 @@ test('pace: elapsed derives from resets_at minus window length (M2)', () => {
 });
 
 test('pace snapshot: weekly paces, 5h only gates (M3)', () => {
-  const snap = {
-    five_hour: { utilization: 95, resets_at: new Date(NOW + 3600_000).toISOString() },
+  const snap = (utilization) => ({
+    five_hour: { utilization, resets_at: new Date(NOW + 3600_000).toISOString() },
     seven_day: { utilization: 18, resets_at: new Date(NOW + 3 * 24 * 3600_000).toISOString() },
-  };
-  const r = paceSnapshot(snap, NOW);
-  assert.equal(r.pacing.usedPct, 18); // weekly drives pacing
-  assert.equal(r.burstGate, true);    // 5h >= 90 blocks dispatch
+  });
+  const r = paceSnapshot(snap(95), NOW);
+  assert.equal(r.pacing.usedPct, 18);  // weekly drives pacing
+  assert.equal(r.burstGate, false);    // 95% of the 5h window is still last-mile work
+  assert.equal(r.nearFiveHourLimit, true);
+  // Only the wall itself blocks dispatch: a step may run a pool to 100%
+  // because attempt handoff briefs the retry on what it had already written.
+  assert.equal(paceSnapshot(snap(100), NOW).burstGate, true);
 });
 
-test('pace snapshot: 5h near-limit threshold is 75, burst gate stays 90', () => {
+test('pace snapshot: 5h near-limit threshold is 75, burst gate is the 100% wall', () => {
   assert.equal(FIVE_HOUR_NEAR_LIMIT_PCT, 75);
-  assert.equal(BURST_BLOCK_PCT, 90);
+  assert.equal(BURST_BLOCK_PCT, 100);
   const resetsAt = new Date(NOW + 3600_000).toISOString();
   const at = (utilization) => paceSnapshot({
     five_hour: { utilization, resets_at: resetsAt },
@@ -199,8 +203,15 @@ test('pace snapshot: 5h near-limit threshold is 75, burst gate stays 90', () => 
   assert.equal(highButDispatchable.nearFiveHourLimit, true);
   assert.equal(highButDispatchable.burstGate, false);
 
-  const gated = at(90);
-  assert.equal(gated.fiveHourUsedPct, 90);
+  // 90 used to be the gate. It is now only a near-limit ordering penalty: the
+  // step runs, and attempt handoff covers it if the wall arrives mid-attempt.
+  const formerGate = at(90);
+  assert.equal(formerGate.fiveHourUsedPct, 90);
+  assert.equal(formerGate.nearFiveHourLimit, true);
+  assert.equal(formerGate.burstGate, false);
+
+  const gated = at(100);
+  assert.equal(gated.fiveHourUsedPct, 100);
   assert.equal(gated.nearFiveHourLimit, true);
   assert.equal(gated.burstGate, true);
 });
