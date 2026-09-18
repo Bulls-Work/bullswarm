@@ -83,8 +83,19 @@
   under the pointer in reverse video, the way the Mod pane does (a whole row
   when it is the row's only target, just the button when several share a
   row); the TUI asks the terminal for motion reports and releases them on the
-  way out. Home's breakdown percents sit right-aligned in one column, so `2%`
+  way out. Only list rows light up (a run in the table, a step in a plan);
+  chart columns, tiles, meters and tabs do not, so a hover never repaints a
+  chart. Home's breakdown percents sit right-aligned in one column, so `2%`
   lines up under `19%`.
+- dashboard, **no longer laggy**: a CPU profile of the idle TUI showed it busy
+  61% of the time. Every one-second tick re-discovered Claude accounts through
+  the macOS keychain (`security`, 100–300 ms, blocking), re-ran the pool-rename
+  migration check over the whole state.json, and on Runs re-read all 300 run
+  directories. Usage now reloads every 10 s, the keychain read is cached for a
+  minute, the migration check is remembered per file fingerprint, the run
+  catalogue rebuilds only when an active run changes or 15 s pass, and the
+  unknown-project fallback asks `git` once per working directory. Idle busy
+  share after: 14%.
 - dashboard: no page draws an empty track where it has no data. The `Run`
   page's budget block is titled `licence this run used`, shows whole percents
   (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty
