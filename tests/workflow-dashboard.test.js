@@ -358,12 +358,15 @@ test('moving the mouse over a clickable row lights it in reverse video and leavi
     const moved = session.press(`\x1b[<35;6;${String(y)}M`);
     assert.ok(moved.length > 0, 'a hover repaints');
     const hovered = lastFrame(session.output).split('\n')[rowIndex];
-    assert.match(hovered, /^\x1b\[7m/, `the hovered row is painted in reverse: ${JSON.stringify(hovered.slice(0, 40))}`);
+    assert.match(hovered, /\x1b\[7m/, `the hovered row is painted in reverse: ${JSON.stringify(hovered.slice(0, 40))}`);
     assert.ok(plain(hovered).includes('v2n456'), 'the row keeps its text');
+    // Only the words light: the reverse opens right before the first text
+    // cell, and the row's own colours survive (the ✓ glyph keeps its green).
+    assert.equal(plain(hovered), plain(rows[rowIndex]), 'the text is unchanged');
     // Move onto the header line, which has no clickable region: the light goes.
     session.press('\x1b[<35;6;2M');
     const cleared = lastFrame(session.output).split('\n')[rowIndex];
-    assert.doesNotMatch(cleared, /^\x1b\[7m/, 'leaving the row clears the highlight');
+    assert.doesNotMatch(cleared, /\x1b\[7m/, 'leaving the row clears the highlight');
     // A chart column or a meter is clickable but is not a row: no light.
     session.press('h');
     const homeRows = lastFrame(session.output).split('\n');
@@ -373,6 +376,17 @@ test('moving the mouse over a clickable row lights it in reverse video and leavi
       const barX = plain(homeRows[chartRow]).search(/[▇█]/) + 1;
       session.press(`\x1b[<35;${String(barX)};${String(chartRow + 1)}M`);
       assert.equal(session.output.text.length, beforeChart, 'hovering a chart column paints nothing');
+    }
+    // A running step's row on Home carries a bar: the words light, the bar does not.
+    const homeAgain = lastFrame(session.output).split('\n');
+    const stepRow = homeAgain.findIndex((line) => /[▇█░]/.test(plain(line)) && /@/.test(plain(line)));
+    if (stepRow >= 0) {
+      const textX = plain(homeAgain[stepRow]).search(/[A-Za-z]/) + 1;
+      session.press(`\x1b[<35;${String(textX)};${String(stepRow + 1)}M`);
+      const lit = lastFrame(session.output).split('\n')[stepRow];
+      const reversed = [...lit.matchAll(/\x1b\[7m([^\x1b]*)/g)].map((m) => m[1]).join('');
+      assert.doesNotMatch(reversed, /[▇█░]/, `bar glyphs are never reversed: ${JSON.stringify(reversed)}`);
+      assert.match(reversed, /@/, 'the step text is reversed');
     }
     session.press('r');
     // Standing still sends nothing new.
@@ -655,7 +669,13 @@ test('interactive TUI repaints spinner frames in place without clearing the scre
     input.emit('data', Buffer.from('q'));
     assert.equal(await running, 0);
     assert.equal((output.text.match(/\x1b\[2J/g) ?? []).length, 1, 'alternate screen is cleared only once');
-    assert.ok((output.text.match(/\x1b\[H/g) ?? []).length >= 3, 'spinner frames repaint from cursor home');
+    // The first frame is written whole from cursor-home; every spinner tick
+    // after it rewrites only the rows that changed, each addressed by row.
+    // The alternate-screen clear and the first frame both start from cursor home; nothing after them does.
+    assert.ok((output.text.match(/\x1b\[H/g) ?? []).length <= 2, 'only the opening writes start from cursor home');
+    const rowWrites = output.text.match(/\x1b\[\d+;1H/g) ?? [];
+    assert.ok(rowWrites.length >= 2, 'spinner ticks repaint by row');
+    assert.ok(rowWrites.length < output.rows, 'a spinner tick does not rewrite the whole frame');
     assert.ok((output.text.match(/\x1b\[K/g) ?? []).length >= output.rows, 'each row clears only its stale tail');
   } finally { cleanup(); }
 });
@@ -900,9 +920,24 @@ function dayFixture(now = Date.now()) {
 }
 
 /** The last frame written to a fake output, with its leading paint escape. */
+// The painter writes a full frame from cursor-home (`\x1b[H`) and then, for
+// every later change, only the rows that differ (`\x1b[<row>;1H<line>\x1b[K`).
+// The screen a reader sees is the last full frame with those patches applied.
 function lastFrame(output) {
   const frames = output.text.split('\x1b[H');
-  return frames[frames.length - 1];
+  const last = frames[frames.length - 1];
+  const patchAt = last.search(/\x1b\[\d+;1H/);
+  if (patchAt < 0) return last;
+  const rows = last.slice(0, patchAt).split('\n').map((row) => row.replace(/\x1b\[K$/, ''));
+  // `split` on the row address leaves [lead, row, content, row, content, …].
+  const parts = last.slice(patchAt).split(/\x1b\[(\d+);1H/);
+  for (let at = 1; at + 1 < parts.length; at += 2) {
+    const row = Number(parts[at]) - 1;
+    const content = parts[at + 1].replace(/\x1b\[K[\s\S]*$/, '');
+    while (rows.length <= row) rows.push('');
+    rows[row] = content;
+  }
+  return rows.map((row) => `${row}\x1b[K`).join('\n');
 }
 
 /** Clicks the first painted occurrence of `needle`, the way a mouse would. */
@@ -1279,10 +1314,15 @@ function shellSession(home, {
   const running = runDashboard(home, {
     input, output, refreshMs, token, homeDir, openSetupTui,
   });
+  // A key press answers with the screen the reader now sees. The painter
+  // writes only the rows that changed, so the raw slice after a press is a
+  // patch, not a screen; a press that painted nothing answers ''.
   const press = (key) => {
     const before = output.text.length;
     input.emit('data', Buffer.from(key));
-    return output.text.slice(before);
+    const written = output.text.slice(before);
+    if (!/\x1b\[H|\x1b\[\d+;1H/.test(written)) return written;
+    return lastFrame(output);
   };
   return { input, output, running, press, quit: () => { press('q'); return running; } };
 }

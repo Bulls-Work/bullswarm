@@ -3776,10 +3776,60 @@ export async function runDashboard(bullswarmDir, {
   let allRows = activeRuns;
   let rows = filterDashboardRows(allRows, dashboardFilter, query);
   let lastPaintedFrame = null;
-  // The clickable region under the mouse pointer, painted in reverse video
-  // the way the Mod pane lights a row: a whole row when it is the only
-  // region on that row, just the region's cells when several buttons share it.
+  let lastPaintedLines = null;
+  // The clickable region under the mouse pointer: its words are painted in
+  // reverse video the way the Mod pane lights a row. Only the region's own
+  // cells, and within them only text — bars, meters and connector lines keep
+  // their colours.
   let hover = null;
+  // Bars and meters inside a hovered region keep their colours; only the
+  // words light up. A span is a run of non-bar cells with its blanks trimmed.
+  const BAR_GLYPHS = /[█▇▆▅▄▃▂▁░▒▓▏▎▍▌▋▊▉─│┌┐└┘├┤┬┴┼╭╮╯╰○]/;
+  const textSpans = (plain, from, to) => {
+    const spans = [];
+    let start = null;
+    for (let at = from; at <= to; at += 1) {
+      const isText = at < to && !BAR_GLYPHS.test(plain[at]);
+      if (isText && start == null) start = at;
+      if (!isText && start != null) {
+        let a = start; let b = at;
+        while (a < b && plain[a] === ' ') a += 1;
+        while (b > a && plain[b - 1] === ' ') b -= 1;
+        if (b > a) spans.push([a, b]);
+        start = null;
+      }
+    }
+    return spans;
+  };
+  // Walk the painted line, counting visible cells, and switch reverse video
+  // on and off at the span edges; a reset inside a span (`\x1b[0m`) would
+  // drop the reverse, so it is re-armed right after.
+  const reverseTextSpans = (line, spans) => {
+    if (!spans.length) return line;
+    let out = '';
+    let cell = 0;
+    let inside = false;
+    const opens = new Map(spans.map(([a]) => [a, true]));
+    const closes = new Map(spans.map(([, b]) => [b, true]));
+    const sgr = /\x1b\[[0-9;?]*[A-Za-z]/y;
+    for (let at = 0; at < line.length;) {
+      sgr.lastIndex = at;
+      const match = sgr.exec(line);
+      if (match) {
+        out += match[0];
+        if (inside && /\x1b\[0?m$/.test(match[0])) out += `${ESC}7m`;
+        at += match[0].length;
+        continue;
+      }
+      if (closes.has(cell) && inside) { out += `${ESC}27m`; inside = false; }
+      if (opens.has(cell) && !inside) { out += `${ESC}7m`; inside = true; }
+      out += line[at];
+      cell += 1;
+      at += 1;
+    }
+    if (inside) out += `${ESC}27m`;
+    return out;
+  };
   const stripAnsiText = (text) => String(text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
   let lastFrameText = null;
   let lastFrameResult = null;
@@ -3899,17 +3949,33 @@ export async function runDashboard(bullswarmDir, {
     while (lines.length < height) lines.push('');
     lastFrameText = text;
     if (hover && hover.y >= 1 && hover.y <= lines.length) {
-      const plain = stripAnsiText(lines[hover.y - 1]);
-      if (hover.whole) {
-        lines[hover.y - 1] = `${ESC}7m${plain.padEnd(frameWidth())}${ESC}0m`;
-      } else {
-        const from = Math.max(0, hover.x1 - 1);
-        const to = Math.min(plain.length, hover.x2);
-        lines[hover.y - 1] = `${plain.slice(0, from)}${ESC}7m${plain.slice(from, to)}${ESC}0m${plain.slice(to)}`;
+      const line = lines[hover.y - 1];
+      const plain = stripAnsiText(line);
+      const from = Math.max(0, hover.x1 - 1);
+      const to = Math.min(plain.length, hover.x2);
+      lines[hover.y - 1] = reverseTextSpans(line, textSpans(plain, from, to));
+    }
+    // Rewrite only the rows that changed since the last paint. A spinner
+    // tick or a clock digit is then a few dozen bytes, not the whole 120×40
+    // frame — the difference between smooth and laggy over a phone or a
+    // remote terminal. A first paint, a resize, or a return from the setup
+    // hand-off (lastPaintedFrame reset to null) writes the full frame.
+    if (lastPaintedFrame != null && Array.isArray(lastPaintedLines) && lastPaintedLines.length === lines.length) {
+      let patch = '';
+      let changed = 0;
+      for (let row = 0; row < lines.length; row += 1) {
+        if (lines[row] === lastPaintedLines[row]) continue;
+        changed += 1;
+        patch += `${ESC}${String(row + 1)};1H${lines[row]}${ESC}K`;
       }
+      if (!changed) return;
+      lastPaintedLines = lines.slice();
+      lastPaintedFrame = patch;
+      output.write(patch);
+      return;
     }
     const frame = `${ESC}H${lines.map((line) => `${line}${ESC}K`).join('\n')}`;
-    if (frame === lastPaintedFrame) return;
+    lastPaintedLines = lines.slice();
     lastPaintedFrame = frame;
     output.write(frame);
   };
@@ -4440,12 +4506,9 @@ export async function runDashboard(bullswarmDir, {
     && region.action && HOVER_KINDS.has(region.action.kind));
   const hoverMove = (mouse) => {
     const region = regionAt(mouse.x, mouse.y) ?? null;
-    // The nav's run buttons are `run` regions too, but they share their row
-    // with other buttons: those light only their own cells.
-    const whole = region ? regions.filter((other) => other.y === region.y && other.action).length === 1 : false;
-    const next = region ? { y: region.y, x1: region.x1, x2: region.x2, whole } : null;
+    const next = region ? { y: region.y, x1: region.x1, x2: region.x2 } : null;
     const same = (next == null && hover == null)
-      || (next && hover && next.y === hover.y && next.x1 === hover.x1 && next.x2 === hover.x2 && next.whole === hover.whole);
+      || (next && hover && next.y === hover.y && next.x1 === hover.x1 && next.x2 === hover.x2);
     if (same) return undefined;
     hover = next;
     if (lastFrameText != null) writeFrame(lastFrameText);
@@ -4744,7 +4807,7 @@ export async function runDashboard(bullswarmDir, {
       paint();
     }
   };
-  const onResize = () => paint();
+  const onResize = () => { lastPaintedFrame = null; paint(); };
   input.setRawMode?.(true);
   input.resume();
   // SGR mouse reporting travels with the alternate screen: on for the whole

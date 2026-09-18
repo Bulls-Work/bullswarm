@@ -84,8 +84,9 @@
   when it is the row's only target, just the button when several share a
   row); the TUI asks the terminal for motion reports and releases them on the
   way out. Only list rows light up (a run in the table, a step in a plan);
-  chart columns, tiles, meters and tabs do not, so a hover never repaints a
-  chart. Home's breakdown percents sit right-aligned in one column, so `2%`
+  chart columns, tiles, meters and tabs do not, and inside a lit row only the
+  words reverse — a step's bar and the plan strip's `──○──` connectors keep
+  their colours. Home's breakdown percents sit right-aligned in one column, so `2%`
   lines up under `19%`.
 - dashboard, **no longer laggy**: a CPU profile of the idle TUI showed it busy
   61% of the time. Every one-second tick re-discovered Claude accounts through
@@ -95,7 +96,9 @@
   minute, the migration check is remembered per file fingerprint, the run
   catalogue rebuilds only when an active run changes or 15 s pass, and the
   unknown-project fallback asks `git` once per working directory. Idle busy
-  share after: 14%.
+  share after: 14%. The painter now rewrites only the rows that changed
+  since the last frame (a spinner tick is a few dozen bytes instead of the
+  whole 120×40 screen), which is what a phone or a remote terminal feels.
 - dashboard: no page draws an empty track where it has no data. The `Run`
   page's budget block is titled `licence this run used`, shows whole percents
   (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty
