@@ -5,36 +5,21 @@ import { budgetLines, budgetNotes } from '../src/workflow/budget-view.js';
 const strip = (value) => String(value).replace(/\x1b\[[0-9;]*m/g, '');
 const visible = (value) => strip(value).length;
 
+function windowRow({ key, usedPct, elapsedPct, resetsInMinutes = null, resetsAt = null } = {}) {
+  return { key, usedPct, elapsedPct, resetsInMinutes, resetsAt };
+}
+
 function budgetRow(overrides = {}) {
   return {
     name: 'claude-code',
-    planType: 'max20',
-    window: 'weekly',
-    usedPct: 40,
-    elapsedPct: 28.9,
-    paceWord: 'on track',
-    resetsText: 'Sat, 19 Sep, 20:00 GMT+8',
-    timeZone: 'Asia/Hong_Kong',
-    credits: { used: 66.41, limit: 70, unit: 'credits' },
-    share: {
-      workflows: 8,
-      rest: 32,
-      ratePerMinute: 0.1,
-      workflowMinutes: 80,
-      basis: '≈ 0.1%/min × measured worker-minutes (rate source: meter-history)',
-    },
-    fits: 20,
-    drawPerRunPct: 3,
-    medianRunMinutes: 30,
-    subscription: null,
-    apiEquivalentUsd: 0.3,
-    apiEquivalentBasis: 'recorded per-attempt API-equivalent estimates',
-    biggestRuns: {
-      byMinutes: [
-        { runId: 'wf-qv6242', shortId: 'qv6242', workerMinutes: 40, apiEquivalentUsd: 0.3 },
-        { runId: 'wf-gcxzza', shortId: 'gcxzza', workerMinutes: 22, apiEquivalentUsd: null },
-      ],
-    },
+    detectedPlan: null,
+    subscription: { monthlyPriceUsd: 200, origin: 'detected', detectedPlan: 'max 20x' },
+    credits: null,
+    windows: [
+      windowRow({ key: '5h', usedPct: 25, elapsedPct: 30, resetsInMinutes: 90 }),
+      windowRow({ key: '7d', usedPct: 73, elapsedPct: 54, resetsInMinutes: 2 * 1440 + 18 * 60 }),
+      windowRow({ key: 'mo', usedPct: 79, elapsedPct: 83, resetsInMinutes: 11 * 1440 }),
+    ],
     ...overrides,
   };
 }
@@ -43,212 +28,95 @@ function budget(overrides = {}) {
   return { rows: [budgetRow(overrides)], notes: [] };
 }
 
-test('Budget folds measured credits into the used row and preserves run links', () => {
-  const result = budgetLines(budget(), { width: 170, ansi: false });
-  assert.equal(result.lines.length, 5);
-  assert.match(result.lines[0], /claude-code · weekly plan · resets Sat 19 Sep 20:00/);
-  assert.match(result.lines[1], /^used\s+.*40% · 29% of the window gone → on track/);
-  assert.match(result.lines[2], /^by bullswarm\s+.*≈ 8% \(80 min of work\) · other tools 32%/);
-  assert.match(result.lines[3], /^room\s+about 20 more medium runs before the reset/);
-  assert.match(result.lines[4], /biggest: qv6242 ~ \$0.30 estimated, gcxzza cost unknown/);
-  assert.match(result.lines[1], /40% · 29% of the window gone → on track · 66 of 70 credits/);
-  assert.equal(result.regions.length, 2);
-  assert.ok(result.regions.every((region) => region.y === 5));
+test('Budget is a clean per-window list with a bold pool heading and dim reset lines', () => {
+  const result = budgetLines(budget(), { width: 120, ansi: false });
+  assert.equal(result.lines[0], 'claude-code');
+  assert.match(result.lines[1], /^5h\s+.*25\.0%$/);
+  assert.match(result.lines[2], /^  resets 1h30m · on track \+5pp$/);
+  assert.match(result.lines[3], /^7d\s+.*73\.0%$/);
+  assert.match(result.lines[4], /^  resets 2d18h · fast −19pp$/);
+  assert.match(result.lines[5], /^mo\s+.*79\.0%$/);
+  assert.match(result.lines[6], /^  resets 11d · on track \+4pp$/);
+  assert.equal(result.lines[7], 'plan · $200/mo detected max 20x');
+  assert.equal(result.lines.join('\n').match(/by bullswarm|other tools|room|so far|biggest|Basis:|attempts measured/g), null);
+  assert.ok(result.lines.every((line) => visible(line) <= 120));
 });
 
-test('Budget labels provider, transcript, estimated and unknown usage bases', () => {
-  const cases = [
-    ['provider-reported', /\$ 1\.23/],
-    ['transcript-summed', /≈ \$1\.23 summed/],
-    ['estimated:utf8-bytes\/4', /~ \$1\.23 estimated/],
-    ['unknown', /cost unknown/],
-  ];
-  for (const [tokenSource, expected] of cases) {
-    const result = budgetLines(budget({
-      tokenSource,
-      apiEquivalentUsd: 1.23,
-      biggestRuns: { byMinutes: [{ runId: 'wf-basis', shortId: 'basis1', apiEquivalentUsd: 1.23, tokenSource }] },
-    }), { width: 120, ansi: false });
-    const text = result.lines.join('\n');
-    assert.match(text, expected, tokenSource);
-    assert.ok(result.lines.every((line) => visible(line) <= 120), tokenSource);
+test('Window bars use pace colours and keep the percentage at the right edge at both review widths', () => {
+  for (const width of [55, 120]) {
+    const result = budgetLines(budget(), { width, ansi: false });
+    const rows = result.lines.filter((line) => /^(?:5h|7d|mo)\s/.test(line));
+    assert.equal(rows.length, 3);
+    for (const row of rows) {
+      assert.equal(visible(row), width);
+      assert.match(row, /[#.|]/, 'the plain-text bar uses # fill, . track and | elapsed mark');
+      assert.match(row.slice(-6), /\d+\.0%$/);
+    }
+    assert.equal(rows[0].slice(-5), '25.0%');
+    assert.equal(rows[1].slice(-5), '73.0%');
+    assert.equal(rows[2].slice(-5), '79.0%');
   }
+  // Painted, the bar is background-coloured cells rather than glyphs, so the
+  // fill reads as one solid block at any font (the owner's 0.33.0 review), and
+  // the elapsed mark stays a white ▏ on top of whichever cell it lands in.
+  const ansi = budgetLines(budget(), { width: 120, ansi: true });
+  assert.match(ansi.lines[3], /\x1b\[48;2;191;108;105m/, 'fast bars fill with the red meter colour');
+  assert.match(ansi.lines[1], /\x1b\[48;2;182;189;115m/, 'on-track bars fill with the green meter colour');
+  assert.match(ansi.lines[1], /\x1b\[48;2;58;58;58m/, 'the unused track is a background-coloured cell');
+  assert.match(ansi.lines[1], /\x1b\[38;2;255;255;255m[▏▕]/, 'the elapsed mark is a white ▏');
 });
 
-test('Budget renders three reported windows, and narrow output gives each one a line', () => {
+test('Budget renders a pool with one window and never fabricates siblings', () => {
   const result = budgetLines(budget({
-    windows: [
-      { key: '5h', label: '5-hour', usedPct: 25, resetClock: '13:24 GMT+8', paceText: 'behind by 30 pts' },
-      { key: '7d', label: '7-day', usedPct: 73, resetClock: '08:54 GMT+8', paceText: 'behind by 19 pts' },
-      { key: 'mo', label: 'monthly', usedPct: 79, resetClock: '11:06 GMT+8', paceText: 'ahead by 4 pts' },
-    ],
+    windows: [windowRow({ key: '7d', usedPct: 33, elapsedPct: 100, resetsInMinutes: 54 })],
+  }), { width: 120, ansi: false });
+  const text = result.lines.join('\n');
+  assert.match(text, /7d\s+.*33\.0%/);
+  assert.match(text, /resets 54m · slow \+67pp/);
+  assert.ok(!result.lines.some((line) => /^(?:5h|mo)\s/.test(line)));
+});
+
+test('A window with no reset time omits an invented pace when elapsed time is also unavailable', () => {
+  const result = budgetLines(budget({
+    windows: [windowRow({ key: '7d', usedPct: 33, elapsedPct: null })],
   }), { width: 55, ansi: false });
-  const windowLines = result.lines.filter((line) => /(?:^windows |^        )(?:5h|7d|mo) ·/.test(line));
-  assert.equal(windowLines.length, 3);
-  assert.match(windowLines[0], /5h · 25% used · reset 13:24 · behind by 30 pts/);
-  assert.match(windowLines[1], /7d · 73% used · reset 08:54 · behind by 19 pts/);
-  assert.match(windowLines[2], /mo · 79% used · reset 11:06 · ahead by 4 pts/);
-  assert.ok(windowLines.every((line) => visible(line) <= 55));
+  assert.equal(result.lines[2], '  reset time unavailable');
+  assert.doesNotMatch(result.lines[2], /pace|on track|slow|fast/);
 });
 
-test('Budget renders a provider with one window without inventing the other windows', () => {
-  const result = budgetLines(budget({
-    windows: [{ key: '7d', label: '7-day', usedPct: 33, resetClock: '15:00 GMT+8', paceText: 'behind by 67 pts' }],
-  }), { width: 120, ansi: false });
-  const text = result.lines.join('\n');
-  assert.match(text, /7-day \(7d\) · 33% used · resets 15:00 GMT\+8 · behind by 67 pts/);
-  assert.doesNotMatch(text, /5-hour|monthly/);
+test('Credits stay attached to the monthly row, while plan and disabled lines remain dim page metadata', () => {
+  const result = budgetLines({
+    rows: [budgetRow({
+      subscription: null,
+      detectedPlan: 'team',
+      credits: { used: 1, limit: 70, unit: 'credits' },
+      windows: [windowRow({ key: 'mo', usedPct: 1, elapsedPct: 5, resetsInMinutes: 28 * 1440 + 10 * 60 })],
+    })],
+    disabledPools: ['echo'],
+  }, { width: 120, ansi: false });
+  // The percent column is shared by every pool on the page, so the credits
+  // ride on the monthly window's reset line instead of widening that column.
+  assert.match(result.lines[1], /^mo\s+.*\s+1\.0%$/);
+  assert.match(result.lines[2], /resets 28d10h · .* · 1 of 70 credits$/);
+  assert.equal(result.lines[3], 'plan team · price unknown');
+  assert.equal(result.lines[4], 'disabled: echo');
 });
 
-test('An undeclared subscription stays blank, while API money remains an explicitly marked estimate', () => {
-  const result = budgetLines(budget({ credits: null, apiEquivalentUsd: 0.3 }), { width: 120, ansi: false });
-  const money = result.lines[4];
-  assert.doesNotMatch(result.lines.join('\n'), /Subscription rate|\/mo/);
-  assert.match(money, /~ \$0\.30 estimated of API-equivalent work/);
-  assert.doesNotMatch(money, /\$0\.60|\$0\.90|\$1\.20/);
-});
-
-test('A declared price prints only at the subscription rate and is never multiplied', () => {
-  const result = budgetLines(budget({
-    subscription: { monthlyPriceUsd: 200, basis: 'declared monthly subscription price' },
-  }), { width: 120, ansi: false });
-  const text = result.lines.join('\n');
-  assert.match(text, /plan · \$200\/mo declared/);
-  assert.doesNotMatch(text, /\$400\.00|\$600\.00/);
-});
-
-test('A detected plan prints its origin and plan name', () => {
-  const result = budgetLines(budget({
-    planType: 'pro',
-    detectedPlan: 'pro',
-    subscription: { monthlyPriceUsd: 42, origin: 'detected', detectedPlan: 'pro' },
-  }), { width: 120, ansi: false });
-  assert.match(result.lines.join('\n'), /plan · \$42\/mo detected pro/);
-});
-
-test('A missing share stays blank and the legend never invents a you term', () => {
-  const result = budgetLines(budget({
-    share: { workflows: null, rest: null, ratePerMinute: null, basis: 'no measured %/minute rate' },
-    apiEquivalentUsd: null,
-    fits: null,
-    fitsBasis: 'not computable: no measured %/minute rate',
-  }), { width: 120, ansi: false });
-  const text = result.lines.join('\n');
-  assert.doesNotMatch(text, /[▓░]/);
-  assert.match(text, /by bullswarm\s+no measured usage rate yet/);
-  assert.doesNotMatch(text, /you/);
-  assert.match(text, /cost unknown of API-equivalent work/);
-});
-
-test('A zero measured rate names the unknown share and room instead of drawing a bar', () => {
-  const result = budgetLines(budget({
-    share: { workflows: null, rest: null, workflowMinutes: 922, ratePerMinute: 0, rateSamples: 32, rateNote: 'meter did not move during 32 measured runs' },
-    rateNote: 'meter did not move during 32 measured runs',
-    fits: null,
-    credits: null,
-  }), { width: 120, ansi: false });
-  assert.match(result.lines.find((line) => line.startsWith('by bullswarm')), /share unknown · meter did not move during 32 measured runs/);
-  assert.match(result.lines.find((line) => line.startsWith('room')), /unknown · meter did not move during 32 measured runs/);
-  assert.doesNotMatch(result.lines.find((line) => line.startsWith('by bullswarm')), /▇|░|#/);
-});
-
-test('Every pool atom and hit region stays inside widths from 32 through 200 columns', () => {
-  for (const width of [32, 54, 55, 80, 100, 200]) {
-    const result = budgetLines(budget(), { width, ansi: true });
-    assert.ok(result.lines.every((line) => visible(line) <= width), `line overflow at ${width}`);
-    assert.ok(result.regions.every((region) => region.x >= 1
-      && region.x + region.width - 1 <= width
-      && region.y >= 1
-      && region.y <= result.lines.length), `region overflow at ${width}`);
-    assert.equal(result.lines.length, 5);
-  }
-});
-
-test('The page footer says the undeclared-price reason once for six pools', () => {
-  const rows = Array.from({ length: 6 }, (_, index) => budgetRow({
-    name: ['claude-code', 'codex', 'grok', 'command-code', 'gemini', 'relay'][index],
-    share: { workflows: 1, rest: 2, ratePerMinute: 0.1 },
-  }));
-  const notes = budgetNotes({ rows, notes: [] }, { width: 120 });
+test('Footer keeps the price declaration hint and names Home and Stats as the spend location', () => {
+  const rows = ['claude-code', 'codex', 'grok', 'command-code', 'gemini', 'relay']
+    .map((name) => budgetRow({ name, subscription: null }));
+  const notes = budgetNotes({ rows }, { width: 120 });
   const text = notes.join('\n');
   assert.equal((text.match(/Declare a price:/g) ?? []).length, 1);
-  // The command appears once, and the note says which pools it is about.
-  assert.equal((text.match(/bullswarm strategy set-subscription/g) ?? []).length, 1);
-  // The note wraps at the page width, so compare it unwrapped.
-  const unwrapped = text.replace(/\n/g, ' ');
-  assert.match(unwrapped, /no price for claude-code, codex, grok, command-code, gemini, relay/);
-  assert.match(text, /≈ means estimated work, not an invoice/);
   assert.match(text, /bullswarm strategy set-subscription <pool> --monthly-usd <amount>/);
+  assert.match(text.replace(/\n/g, ' '), /no price for claude-code, codex, grok, command-code, gemini, relay/);
+  assert.match(text, /spend by run is on Home and Stats/);
+  assert.doesNotMatch(text, /Basis:|attempts measured|invoice|estimated work/);
 });
 
-test('Budget caps an excessive measured share at the meter and explains it once', () => {
-  const row = budgetRow({ credits: null, usedPct: 40, share: { workflows: 131.24, rest: 0, workflowMinutes: 799.95, ratePerMinute: 0.1, exceedsMeter: true } });
-  const rendered = budgetLines({ rows: [row] }, { width: 200, ansi: false });
-  const bar = rendered.lines[2].trim().split(/\s+/)[2];
-  assert.equal([...bar].filter((glyph) => glyph === '▇').length, 16);
-  assert.match(rendered.lines[2], /≈ 131% \(800 min of work\) · other tools 0%$/);
-  const notes = budgetNotes({ rows: [row, row] }, { width: 200 }).join('\n');
-  assert.equal((notes.match(/the meter lags/g) ?? []).length, 1);
-});
-
-test('Budget never draws missing meters and retains complete rounded figures at review widths', () => {
-  for (const width of [55, 60, 170, 200]) {
-    const result = budgetLines(budget({ credits: null, usedPct: null, fits: null }), { width, ansi: false });
-    assert.match(result.lines[1], /meter unavailable/);
-    assert.match(result.lines[2], /no licence meter/);
-    assert.doesNotMatch(result.lines.slice(1, 4).join('\n'), /[░▇▓]|\.{2,}/);
-  }
-  for (const width of [170, 200]) {
-    const result = budgetLines(budget({ credits: null, elapsedPct: 46.4, resetsInMinutes: 3960, share: { workflows: 1.02, rest: 58.98, workflowMinutes: 41.77 }, biggestRuns: [
-      { shortId: 'dahnys', runId: 'wf-dahnys', apiEquivalentUsd: 0.43 },
-      { shortId: 'w6p38i', runId: 'wf-w6p38i', apiEquivalentUsd: 0.46 },
-    ] }), { width, ansi: false });
-    assert.match(result.lines[0], /\(in 2d 18h\)$/);
-    assert.match(result.lines[2], /≈ 1% \(42 min of work\) · other tools 59%$/);
-    assert.match(result.lines[4], /biggest: dahnys ~ \$0.43 estimated, w6p38i ~ \$0.46 estimated$/);
-    assert.equal(result.regions.length, 2);
-    for (const region of result.regions) assert.equal(result.lines[region.y - 1].slice(region.x - 1, region.x - 1 + region.width), region.action.runId.slice(3));
-  }
-});
-
-test('Disabled pools remain one footer row rather than becoming pool blocks', () => {
-  const result = budgetLines({ ...budget(), disabledPools: ['codex', 'echo'] }, { width: 120, ansi: true });
-  const text = result.lines.join('\n');
-  assert.match(text, /disabled: codex, echo/);
-  assert.equal(result.lines.length, 6);
-});
-
-test('an absent Budget row keeps the label column, and one run reads as one run', () => {
-  // A pool with no meter: every row is words, and each word starts in the same
-  // column as `used` on a pool that does have one, so the block reads as rows.
-  const metered = budgetLines(budget(), { width: 170, ansi: false }).lines;
-  // Every metered row puts its value in the same column; the absent rows must too.
-  const labelColumn = metered.find((line) => line.startsWith('room')).indexOf('about');
-  assert.equal(labelColumn, 13);
-  const absent = budgetLines(budget({
-    usedPct: null, elapsedPct: null, share: null, fits: null, credits: null,
-    apiEquivalentUsd: null, biggestRuns: { byMinutes: [] },
-  }), { width: 170, ansi: false }).lines;
-  const used = absent.find((line) => line.startsWith('used'));
-  const bullswarm = absent.find((line) => line.startsWith('by bullswarm'));
-  const room = absent.find((line) => line.startsWith('room'));
-  assert.equal(used, `used         meter unavailable`);
-  assert.equal(bullswarm, `by bullswarm no licence meter`);
-  assert.equal(room, `room         no licence meter`);
-  for (const [line, reason] of [[used, 'meter unavailable'], [bullswarm, 'no licence meter'], [room, 'no licence meter']]) {
-    assert.equal(line.indexOf(reason), labelColumn, line);
-  }
-
-  // `about 1 more medium run`, not `1 more medium runs`.
-  const one = budgetLines(budget({ fits: 1 }), { width: 170, ansi: false }).lines;
-  assert.match(one.find((line) => line.startsWith('room')), /about 1 more medium run before the reset$/);
-  const many = budgetLines(budget({ fits: 4 }), { width: 170, ansi: false }).lines;
-  assert.match(many.find((line) => line.startsWith('room')), /about 4 more medium runs before the reset$/);
-  const none = budgetLines(budget({ fits: 0 }), { width: 170, ansi: false }).lines;
-  assert.match(none.find((line) => line.startsWith('room')), /no room left before the reset$/);
-
-  // A run with no recorded cost gets one space before its reason, not two.
-  const soFar = metered.find((line) => line.startsWith('so far'));
-  assert.match(soFar, /gcxzza cost unknown/);
-  assert.doesNotMatch(soFar, /gcxzza {2,}cost unknown/);
+test('The view never overflows narrow or wide frames and retains pool spacing', () => {
+  const result = budgetLines({ rows: [budgetRow({ name: 'first' }), budgetRow({ name: 'second' })] }, { width: 55, ansi: true });
+  assert.ok(result.lines.every((line) => visible(line) <= 55));
+  assert.ok(result.lines.includes(''));
+  assert.deepEqual(result.regions, []);
 });

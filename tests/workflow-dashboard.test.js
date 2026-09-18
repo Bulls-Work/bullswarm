@@ -2233,24 +2233,26 @@ test('a narrow terminal wraps the agent detail pane to its full width, not the s
 // below is a frame the terminal would paint verbatim.
 // ---------------------------------------------------------------------------
 
-test('the Budget page draws every pool meter, its money and what still fits', () => {
+test('the Budget page draws every window of every pool and no untrustworthy figure', () => {
   const usage = usageFixture();
   const model = dashboardModel(null, { usage, rollups: rollupFixture(), prices: { subscriptions: {} } });
   const frame = renderDashboardPage(model, { page: 'budget', width: 100, height: 40 });
   const text = plain(frame.lines.join('\n'));
 
   assert.match(frameHeader(text), /^ Budget · \d+ days to /);
-  assert.match(text, /relay · weekly plan/);
-  // The reworked pool rows (requirement 8): the used meter, the blank shares
-  // with their reasons, the room row, and the money line with its basis.
-  assert.match(text, /no measured usage rate yet/);
-  assert.match(text, /27% of the window gone/);
-  assert.match(text, /64 of 70 credits/);
-  // Money is the recorded estimate, labelled, and the undeclared plan price is
-  // a blank with the reason — never a number.
-  assert.match(text, /cost unknown of API-equivalent work/);
-  assert.match(text, /zzz999 ~ \$0\.42 estimated/);
+  // The page the owner asked for on 2026-09-19: a heading per pool, one row
+  // per window with its reset and pace, and nothing derived from a fitted
+  // rate. The audit of 2026-09-18 found every one of those figures wrong.
+  assert.match(text, /^relay$/m, 'the pool heading is the pool name alone');
+  // Painted cells strip to spaces, so the plain row is label, bar area, percent.
+  assert.match(text, /^7d\s+.*\s+\d+\.\d%$/m, 'a window row is label, bar and percent');
+  assert.match(text, /resets .* · (?:on track|slow|fast) [+\u2212-]?\d+pp/);
+  assert.match(text, /64 of 70 credits/, 'a credit meter survives even with no monthly window');
   assert.match(text, /Declare a price: bullswarm strategy set-subscription/);
+  assert.match(text, /spend by run is on Home and Stats/);
+  for (const retired of [/by bullswarm/, /other tools/, /more medium runs/, /of API-equivalent work/, /biggest:/]) {
+    assert.doesNotMatch(text, retired, `Budget still draws ${retired}`);
+  }
   // The notes sit above the nav, and the nav is still whole.
   assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
 });
@@ -2382,10 +2384,14 @@ test('meters are background-coloured cells on Budget, and no plain bar survives'
   const usage = usageFixture();
   const model = dashboardModel(null, { usage, rollups: rollupFixture() });
   const budget = renderDashboardPage(model, { page: 'budget', width: 100, height: 40 }).lines.join('\n');
-  // #b6bd73 below 50% used, #e9c880 from 50%, #bf6c69 from 80%, track #3a3a3a.
-  assert.ok(budget.includes('\x1b[48;2;182;189;115m'), 'the green fill is a background-coloured cell');
+  // Since 0.33.1 the fill colour says pace, not severity: #b6bd73 on track,
+  // #e9c880 slow, #bf6c69 burning ahead of the clock; the track stays #3a3a3a.
+  assert.ok(
+    budget.includes('\x1b[48;2;233;200;128m') || budget.includes('\x1b[48;2;191;108;105m'),
+    'this fixture paces slow and fast, so its fills are the amber and red cells',
+  );
   assert.ok(budget.includes('\x1b[48;2;58;58;58m'), 'the track is a background-coloured cell');
-  assert.match(budget, /\x1b\[38;2;255;255;255m▏/, 'the elapsed mark is a white ▏');
+  assert.match(budget, /\x1b\[38;2;255;255;255m[▏▕]/, 'the elapsed mark is a white ▏');
 });
 
 test('the Runs integration line offers [install] until every agent is installed, then reads [installed ✓]', () => {
@@ -2493,7 +2499,10 @@ test('a Trends column opens History at its first bucket day', async () => {
   } finally { cleanup(); }
 });
 
-test('a finished run opened from Budget remains selected across two refreshes', async () => {
+// Budget stopped listing runs on 2026-09-19: its money lines were the audit's
+// untrustworthy figures, and a run is opened from Runs instead. What this test
+// still guards is that a refresh does not clobber the opened selection.
+test('a finished run opened from Runs remains selected across two refreshes', async () => {
   const { home, cleanup } = shellFixture();
   try {
     // A legacy connector JSON is enough to give Budget one real pool without
@@ -2506,9 +2515,9 @@ test('a finished run opened from Budget remains selected across two refreshes', 
       startedAt: new Date(Date.now() - 60_000).toISOString(), finishedAt,
     });
     const session = shellSession(home, { columns: 120, rows: 36, refreshMs: 10 });
-    session.press('b');
+    session.press('r');
     await settle();
-    assert.ok(plain(lastFrame(session.output)).includes('zzz999'), 'Budget did not paint the finished workflow');
+    assert.ok(plain(lastFrame(session.output)).includes('zzz999'), 'Runs did not paint the finished workflow');
     clickOn(session, 'zzz999');
     assert.match(frameHeader(lastFrame(session.output)), /zzz999 completed/);
     await new Promise((resolve) => setTimeout(resolve, 35));
@@ -2821,13 +2830,14 @@ test('with no declared price and no measured licence rate, no bare number is pai
   // visible without a tile.
   const home = plain(renderDashboardPage(model, { page: 'home', width: 54, height: 40 }).lines.join('\n'));
   assert.match(home, /relay\s+.*—/);
-  // Budget says what is missing and how to declare it. The reworked pool rows
-  // (requirement 8) put the blank-with-reason inline: no measured rate, and
-  // the declare-price command in the notes.
+  // Budget carries no money line at all since 2026-09-19: its share, room and
+  // spend figures came from a fitted rate the audit disproved. What remains is
+  // meters, resets, pace, and how to declare a price.
   const budget = plain(renderDashboardPage(model, { page: 'budget', width: 120, height: 40 }).lines.join('\n'));
-  assert.match(budget, /no measured usage rate yet/);
-  assert.match(budget, /cost unknown of API-equivalent work/);
+  assert.doesNotMatch(budget, /\$\d/, 'Budget painted a bare number');
+  assert.doesNotMatch(budget, /of API-equivalent work/);
   assert.match(budget, /Declare a price: bullswarm strategy set-subscription/);
+  assert.match(budget, /spend by run is on Home and Stats/);
 });
 
 test('a run with no recorded estimate and no measured rate paints blanks, not zeroes', () => {
@@ -3597,14 +3607,18 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
   const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-tasks-'));
   try {
     mkdirSync(join(home, 'assignments'), { recursive: true });
+    // Relative to now, not a pinned date: "today" is what the band filters on,
+    // so a hard-coded day made this test pass only on the day it was written.
+    const taskEnded = new Date(Date.now() - 5 * 60_000);
+    const taskStarted = new Date(taskEnded.getTime() - 125_000);
     writeFileSync(join(home, 'state.json'), JSON.stringify({ decisionLog: [{
       kind: 'run', source: 'run', id: 'finished-task', lane: 'analyze', pool: 'echo', model: 'echo-local',
       project: 'bullswarm', taskFile: '/tmp/task-finished.md', outFile: '/tmp/out-finished.md',
-      ok: false, reason: 'short failure', startedAt: '2026-09-18T11:40:00Z', endedAt: '2026-09-18T11:42:05Z', durationMs: 125000,
+      ok: false, reason: 'short failure', startedAt: taskStarted.toISOString(), endedAt: taskEnded.toISOString(), durationMs: 125000,
     }] }));
     writeFileSync(join(home, 'assignments', 'live-task.json'), JSON.stringify({
       id: 'live-task', source: 'run', lane: 'build', pool: 'echo', model: 'echo-local', project: 'bullswarm',
-      taskFile: '/tmp/task-live.md', outFile: '/tmp/out-live.md', startedAt: '2026-09-18T11:50:00Z',
+      taskFile: '/tmp/task-live.md', outFile: '/tmp/out-live.md', startedAt: new Date(Date.now() - 60_000).toISOString(),
       kernelPid: process.pid, workerPid: null,
     }));
     const session = shellSession(home, { columns: 80, rows: 30 });

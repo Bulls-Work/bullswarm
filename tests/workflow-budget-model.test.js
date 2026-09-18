@@ -233,7 +233,7 @@ test('poolBudget: every reported window carries its own used share, reset clock 
   assert.deepEqual(row.windows.map((window) => window.label), ['5-hour', '7-day', 'monthly']);
   assert.equal(row.windows[0].usedPct, 12);
   assert.equal(row.windows[2].elapsedPct, 50, 'the pool pacing window keeps the routing elapsed share');
-  assert.equal(row.windows[0].paceText, 'behind by 58 pts');
+  assert.equal(row.windows[0].paceText, 'slow +58pp');
   assert.match(row.windows[0].resetClock, /^\d{2}:\d{2}/);
   assert.ok(row.windows.every((window) => window.timeZone === row.timeZone));
 });
@@ -248,7 +248,23 @@ test('poolBudget: a provider reporting one window does not grow fabricated sibli
   }, { now: NOW });
   assert.deepEqual(row.windows.map((window) => window.key), ['7d']);
   assert.equal(row.windows[0].usedPct, 33);
-  assert.equal(row.windows[0].paceText, 'behind by 67 pts');
+  assert.equal(row.windows[0].paceText, 'slow +67pp');
+});
+
+test('poolBudget: populated Claude model windows render by family, while null ones stay absent', () => {
+  const row = poolBudget({
+    name: 'claude-code', enabled: true, pacingWindow: 'weekly', elapsedPct: 48,
+    meterSnapshot: {
+      seven_day: { utilization: 40, resets_at: new Date(NOW + 2 * DAY_MS).toISOString() },
+      seven_day_opus: { utilization: 76, resets_at: new Date(NOW + 2 * DAY_MS).toISOString() },
+      seven_day_sonnet: null,
+    },
+  }, { now: NOW });
+  assert.deepEqual(row.windows.map((window) => window.key), ['7d', 'opus']);
+  assert.equal(row.windows[1].label, 'opus');
+  assert.equal(row.windows[1].usedPct, 76);
+  assert.equal(row.windows[1].paceText, 'on track −5pp');
+  assert.doesNotMatch(JSON.stringify(row.windows), /sonnet/);
 });
 
 test('budgetModel: sample age comes from the meter snapshot and names stale data', () => {
