@@ -1,5 +1,6 @@
 import { absentLine, cut, formatDashboardValue, progressBar } from './dash-kit.js';
 import { METER_COLORS, meterBar } from './usage-view.js';
+import { formatUsageBasis } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const COMMAND = 'bullswarm strategy set-subscription <pool> --monthly-usd <amount>';
@@ -19,6 +20,13 @@ function finite(value) {
 
 function money(value) {
   return formatDashboardValue(value, 'money');
+}
+
+function usageMoney(value, tokenSource) {
+  const basis = ['provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown'].includes(tokenSource)
+    ? tokenSource
+    : value == null ? 'unknown' : 'estimated:utf8-bytes/4';
+  return formatUsageBasis({ tokenSource: basis, costUsd: value });
 }
 
 function paint(text, hex, ansi) {
@@ -82,6 +90,66 @@ function wrap(text, width) {
   return lines;
 }
 
+function windowPace(window) {
+  if (window?.paceText) return String(window.paceText);
+  const used = finite(window?.usedPct);
+  const elapsed = finite(window?.elapsedPct);
+  if (used == null || elapsed == null) return 'pace unavailable';
+  const points = Math.round(used - elapsed);
+  if (points > 0) return `ahead by ${points} pts`;
+  if (points < 0) return `behind by ${Math.abs(points)} pts`;
+  return 'on track';
+}
+
+function localClock(window) {
+  if (!window?.resetsAt || !Number.isFinite(Date.parse(window.resetsAt))) return null;
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: window.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short',
+    }).format(new Date(window.resetsAt));
+  } catch { return null; }
+}
+
+function windowReset(window, narrow) {
+  const clock = window?.resetClock || localClock(window);
+  if (clock) return `resets ${clock}`;
+  if (window?.resetsText) return `resets ${window.resetsText}`;
+  const minutes = finite(window?.resetsInMinutes);
+  if (minutes != null) {
+    if (minutes <= 0) return 'reset due';
+    return `resets in ${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
+  }
+  return narrow ? 'reset time unavailable' : 'reset time unavailable';
+}
+
+function windowCard(window, { narrow, ansi }) {
+  const used = finite(window?.usedPct);
+  const usedText = used == null ? 'used unavailable' : `${Math.round(used)}% used`;
+  const pace = windowPace(window);
+  const label = narrow ? (window?.key || window?.label || 'window') : (window?.label || window?.key || 'window');
+  const key = !narrow && window?.key && window?.key !== label ? ` (${window.key})` : '';
+  const clock = window?.resetClock || localClock(window);
+  const reset = narrow && clock
+    ? `reset ${String(clock).split(/\s+/)[0]}`
+    : windowReset(window, narrow);
+  const text = `${label}${key} · ${usedText} · ${reset} · ${pace}`;
+  return ansi ? paint(text, METER_COLORS.cyan, ansi) : text;
+}
+
+function windowLines(row, width, ansi) {
+  const windows = Array.isArray(row?.windows) ? row.windows : [];
+  if (!windows.length) return [];
+  const narrow = width < 80;
+  const cards = windows.map((window) => windowCard(window, { narrow, ansi }));
+  // A wide terminal can keep the compact cards on one line when the actual
+  // text fits. At review/phone widths each window is deliberately its own
+  // line so no provider window disappears behind a clipped neighbour.
+  const joined = `windows  ${cards.join('  ')}`;
+  if (!narrow && visible(joined).length <= width) return [joined];
+  return cards.map((card, index) => `${index === 0 ? 'windows ' : '        '}${card}`);
+}
+
 export function budgetLines(budget, { width = 120, ansi = true } = {}) {
   const cols = columns(width);
   const narrow = cols < 80;
@@ -95,6 +163,7 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
     const plan = row.window ? `${row.window} plan` : 'plan window unavailable';
     const header = `${row.name ?? 'pool'} · ${plan} · ${resetLabel(row, narrow)}`;
     lines.push(cut(ansi ? `\x1b[1m${header}\x1b[0m` : header, cols));
+    for (const line of windowLines(row, cols, ansi)) lines.push(cut(line, cols));
     const used = finite(row.usedPct);
     const credits = finite(row.credits?.used) != null && finite(row.credits?.limit) != null
       ? `${Math.round(row.credits.used)} of ${Math.round(row.credits.limit)} ${row.credits.unit || 'credits'}`
@@ -135,15 +204,14 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
         lines.push(labelled('room', narrow ? `about ${fits} medium ${runWord} before reset` : `about ${fits} more medium ${runWord} before the reset`));
       }
     }
-    const api = money(row.apiEquivalentUsd);
+    const api = usageMoney(row.apiEquivalentUsd, row.tokenSource);
     const biggest = biggestSource(budget, row).slice(0, 2);
     const items = biggest.map((run) => {
       const id = String(run.shortId ?? run.runId ?? 'run');
-      const value = money(run.apiEquivalentUsd);
-      const figure = value == null ? '(cost unrecorded)' : `≈${narrow ? '' : ' '}${value}`;
-      return { run, id, text: `${id}${narrow && value != null ? '' : ' '}${figure}` };
+      const value = usageMoney(run.apiEquivalentUsd, run.tokenSource);
+      return { run, id, text: `${id}${narrow && value != null ? '' : ' '}${value}` };
     });
-    const primary = api == null ? 'API estimate unrecorded' : narrow ? `≈${api} API` : `≈ ${api} of API-equivalent work`;
+    const primary = narrow ? api : `${api} of API-equivalent work`;
     const detail = items.length ? `${narrow ? ' · ' : ' · biggest: '}${items.map((item) => item.text).join(', ')}` : '';
     const plain = cut(labelled('so far', `${primary}${detail}`), cols);
     lines.push(paint(plain, METER_COLORS.purple, ansi));
@@ -155,8 +223,16 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
         from = at + item.id.length;
       }
     }
-    const price = finite(row.subscription?.monthlyPriceUsd);
-    if (price != null) lines.push(`plan · $${Number.isInteger(price) ? price : price.toFixed(2)}/mo declared`);
+    const subscription = row.subscription ?? null;
+    const price = finite(subscription?.monthlyPriceUsd);
+    if (price != null) {
+      const origin = subscription?.origin === 'detected'
+        ? `detected ${subscription.detectedPlan ?? row.detectedPlan ?? row.planType ?? 'plan'}`
+        : 'declared';
+      lines.push(`plan · $${Number.isInteger(price) ? price : price.toFixed(2)}/mo ${origin}`);
+    } else if (row.detectedPlan) {
+      lines.push(`plan ${row.detectedPlan} · price unknown`);
+    }
   }
   if (budget?.disabledPools?.length) lines.push(`disabled: ${budget.disabledPools.join(', ')}`);
   return { lines: lines.map((line) => cut(line, cols)), regions };
@@ -165,8 +241,31 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
 export function budgetNotes(budget, { width = 120 } = {}) {
   const cols = columns(width);
   const rows = rowsOf(budget);
-  const notes = ['≈ means estimated work, not an invoice; licence share uses measured work time.'];
+  const rowTotals = rows.reduce((totals, row) => ({
+    measured: totals.measured + (Number(row?.measuredAttempts) || 0),
+    attempts: totals.attempts + (Number(row?.attempts) || 0),
+  }), { measured: 0, attempts: 0 });
+  const measured = Number.isFinite(Number(budget?.totals?.measuredAttempts))
+    ? Number(budget.totals.measuredAttempts) : rowTotals.measured;
+  const attempts = Number.isFinite(Number(budget?.totals?.attempts))
+    ? Number(budget.totals.attempts) : rowTotals.attempts;
+  const notes = [
+    'Basis: $ provider-reported · ≈ transcript-summed · ~ estimated · cost unknown.',
+    measured != null && attempts != null
+      ? `${measured} of ${attempts} attempts measured · the rest are byte estimates`
+      : null,
+    '≈ means estimated work, not an invoice; licence share uses measured work time.',
+  ].filter(Boolean);
   if (rows.some((row) => row.share?.exceedsMeter)) notes.push("bullswarm's own measurement is above what the meter reports; the meter lags");
-  if (rows.some((row) => finite(row.subscription?.monthlyPriceUsd) == null)) notes.push(`Declare a price: ${COMMAND}`);
+  // Name the pools that still have no price of either kind, and print the
+  // command once: the note used to repeat the same command twice in one
+  // sentence and never said which pools it was about.
+  const unpriced = rows
+    .filter((row) => finite(row.subscription?.monthlyPriceUsd) == null)
+    .map((row) => row.name)
+    .filter(Boolean);
+  if (unpriced.length) {
+    notes.push(`Declare a price: ${COMMAND} · no price for ${unpriced.join(', ')}`);
+  }
   return notes.flatMap((note) => wrap(note, cols));
 }

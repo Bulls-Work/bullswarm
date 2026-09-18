@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import {
   METER_COLORS, severityColor, meterBar, paceWord, poolWindows, untilText,
-  poolSummaryLines, usageLines, loadUsage, parseMouse,
+  poolSummaryLines, loadUsage, parseMouse,
 } from '../src/workflow/usage-view.js';
 import { registerAssignment } from '../src/lib/assignments.js';
 
@@ -76,13 +76,6 @@ const codex = (over = {}) => ({
   meterSnapshot: CODEX_SNAPSHOT,
   ...over,
 });
-
-const RUNGS = [
-  { pool: 'command-code', tier: 'high', model: 'anthropic/claude-opus-4-1', reasoning: 'high', dispatches: 3, okShare: 0.667, medianMinutes: 12.4 },
-  { pool: 'command-code', tier: 'medium', model: 'anthropic/claude-sonnet-4-5', reasoning: null, dispatches: 0, okShare: null, medianMinutes: null },
-  { pool: 'codex', tier: 'high', model: 'openai/gpt-5-codex', reasoning: 'medium', dispatches: 1, okShare: 1, medianMinutes: 3 },
-  { pool: 'codex', tier: 'low', model: 'openai/gpt-5-mini', reasoning: null, dispatches: 8, okShare: null, medianMinutes: null },
-];
 
 // --- colour, bars, pace ------------------------------------------------------
 
@@ -294,114 +287,6 @@ test('poolSummaryLines clips a row to the width it is given', () => {
   assert.equal(line.length, 30);
 });
 
-// --- the Usage body ----------------------------------------------------------
-
-test('usageLines renders every window, its pace, the credits and the rungs by lane', () => {
-  const lines = usageLines([commandCode(), codex()], RUNGS, { width: 80, nowMs: NOW, ansi: false });
-
-  assert.equal(lines[0], 'command-code · GOAT');
-  const fiveHour = lines.find((line) => line.startsWith('5h '));
-  assert.equal(fiveHour.length, 4 + 68 + 7, 'key label + full-width bar + the used percentage');
-  assert.ok(fiveHour.endsWith('  25.2%'));
-  assert.ok(lines.includes('    resets 2h14m · slow +30pp'));
-  assert.ok(lines.includes('    resets 13h45m · slow +19pp'));
-  assert.ok(lines.includes('    resets 7d15h · on track −4pp'));
-  assert.ok(lines.includes('    55.57 / 70 credits'));
-  assert.ok(lines.includes('codex · prolite'));
-  assert.ok(lines.includes(`7d  ${meterBar(32, 27, 68, { ansi: false })}  32.0%`));
-  assert.equal(lines.filter((line) => line.startsWith('mo ')).length, 1, 'only the monthly-paced pool reports one');
-
-  assert.ok(lines.includes('Rungs · model · reasoning · record, per lane and pool'));
-  assert.ok(lines.includes('[● by lane] [by provider]'));
-  assert.ok(lines.includes('high · integration · architecture · adversarial-acceptance'));
-  assert.ok(lines.includes('medium · implement · check (the ordinary writers)'));
-  assert.ok(lines.includes('low · mechanical · io-read · digest'));
-  assert.ok(lines.includes('  command-code    claude-opus-4-1 · high'));
-  assert.ok(lines.includes('  command-code    claude-sonnet-4-5'));
-  assert.ok(lines.includes('  codex           gpt-5-codex · medium'));
-  assert.ok(lines.includes('                  3 runs · 67% ok · p50 12m'));
-  assert.ok(lines.includes('                  1 run · 100% ok · p50 3m'));
-  assert.ok(lines.includes('                  no runs yet'));
-});
-
-test('usageLines groups by provider when the second tab is active', () => {
-  const lines = usageLines([commandCode(), codex()], RUNGS, { width: 80, rungsBy: 'provider', nowMs: NOW, ansi: false });
-  assert.ok(lines.includes('[by lane] [● by provider]'));
-  assert.ok(lines.includes('command-code · monthly window · 79% used of 75% elapsed · incumbent for high'));
-  assert.ok(lines.includes('codex · weekly window · 32% used of 27% elapsed'));
-  assert.ok(lines.includes('  high            claude-opus-4-1 · high'));
-  assert.ok(lines.includes('  high            gpt-5-codex · medium'));
-  assert.ok(lines.includes('  medium          claude-sonnet-4-5'));
-  assert.ok(lines.includes('  low             gpt-5-mini'));
-  assert.ok(!lines.includes('high · integration · architecture · adversarial-acceptance'), 'no lane blurbs when grouped by provider');
-});
-
-// The Usage body exactly as 0.33.0 shipped it, captured from the tree at
-// commit 433b4bf before the render kit gained the prototype's palette roles
-// and the meter gained its texture. The Claude Mod pane and the Home and Run
-// pages read these lines, so the palette work must not move one cell of them.
-const USAGE_BODY_55 = Object.freeze([
-    "command-code · GOAT",
-    "5h  ##########.............|...................  25.2%",
-    "    resets 2h14m · slow +30pp",
-    "7d  ###############################........|...  73.1%",
-    "    resets 13h45m · slow +19pp",
-    "mo  ################################|#.........  79.4%",
-    "    resets 7d15h · on track −4pp",
-    "    55.57 / 70 credits",
-    "",
-    "codex · prolite",
-    "5h  #####.............|........................  12.0%",
-    "    resets 2h50m · slow +31pp",
-    "7d  ###########|#..............................  32.0%",
-    "    resets 3d6h · on track −5pp",
-    "",
-    "Rungs · model · reasoning · record, per lane and pool",
-    "[● by lane] [by provider]",
-    "",
-    "high · integration · architecture · adversarial-accepta",
-    "  command-code    claude-opus-4-1 · high",
-    "                  3 runs · 67% ok · p50 12m",
-    "  codex           gpt-5-codex · medium",
-    "                  1 run · 100% ok · p50 3m",
-    "",
-    "medium · implement · check (the ordinary writers)",
-    "  command-code    claude-sonnet-4-5",
-    "                  no runs yet",
-    "",
-    "low · mechanical · io-read · digest",
-    "  codex           gpt-5-mini",
-    "                  8 runs",
-]);
-
-test('usageLines still renders, line for line, what it rendered before the palette work', () => {
-  const lines = usageLines([commandCode(), codex()], RUNGS, { width: 55, nowMs: NOW, ansi: false });
-  assert.deepEqual(lines, [...USAGE_BODY_55]);
-  // And the styled rendering differs from the plain one only in its escapes
-  // and in the meter's own cells: same lines, same visible width, same words.
-  const styled = usageLines([commandCode(), codex()], RUNGS, { width: 55, nowMs: NOW });
-  assert.equal(styled.length, USAGE_BODY_55.length);
-  const meterCells = (text) => strip(text).replace(/[#.|\u2587\u2591\u258f\u2595]+/g, '\u2588');
-  styled.forEach((line, index) => {
-    assert.equal(strip(line).length, USAGE_BODY_55[index].length, `line ${String(index)} changed width`);
-    assert.equal(meterCells(line), meterCells(USAGE_BODY_55[index]), `line ${String(index)} changed text`);
-  });
-});
-
-test('usageLines reads as the page does with ansi, and says so without a meter', () => {
-  const pool = { ...commandCode(), meterSnapshot: null };
-  const plain = usageLines([pool], [], { width: 60, nowMs: NOW, ansi: false });
-  assert.ok(plain.includes('command-code'));
-  assert.ok(plain.includes('  no meter reported'));
-  assert.ok(plain.includes('  reading rungs…'));
-
-  const styled = usageLines([commandCode()], RUNGS, { width: 80, nowMs: NOW });
-  assert.ok(styled[0].includes('\x1b[1mcommand-code\x1b[0m'), 'bold pool name');
-  assert.ok(styled.some((l) => l.includes('\x1b[48;2;182;189;115m')), 'a truecolour daily bar');
-  assert.ok(styled.some((l) => l.includes('\x1b[36m')), 'cyan model');
-  for (const line of styled) assert.ok(strip(line).length <= 80);
-});
-
 // --- the loader --------------------------------------------------------------
 
 /** A fixture home: two local connectors, strategy state, a fresh meter cache. */
@@ -479,15 +364,13 @@ test('loadUsage builds the pools, the ledger and the flattened rungs', async () 
 
     assert.equal(usage.capturedAt, SNAPSHOT.captured_at);
 
-    // The body the Usage page draws from the same load: alpha's windows and
-    // rung, beta's honest "no meter reported", no rung without a model.
-    const lines = usageLines(usage.pools, usage.rungs, { width: 80, nowMs: NOW, ansi: false });
-    assert.ok(lines.some((line) => line.startsWith('alpha')));
-    assert.ok(lines.includes('    55.57 / 70 credits'));
-    assert.ok(lines.includes('beta'));
-    assert.ok(lines.includes('  no meter reported'));
-    assert.ok(lines.includes('  alpha           opus-large'));
-    assert.ok(!lines.some((line) => line.includes('beta            ')), 'a model-less rung is not drawn');
+    // The load still exposes the raw windows and sample timestamp; Budget is
+    // the sole page renderer for that data now.
+    assert.deepEqual(poolWindows(alpha, NOW).map((window) => window.key), ['5h', '7d', 'mo']);
+    assert.deepEqual(poolWindows(alpha, NOW).credits, { used: 55.57, limit: 70, unit: 'credits' });
+    const betaWindows = poolWindows(usage.pools.find((p) => p.name === 'beta'), NOW);
+    assert.equal(betaWindows.length, 0);
+    assert.equal(betaWindows.credits, null);
   } finally {
     if (previous === undefined) delete process.env.BULLSWARM_HOME;
     else process.env.BULLSWARM_HOME = previous;

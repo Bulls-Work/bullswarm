@@ -6,7 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { writeJsonAtomic } from '../src/lib/fsjson.js';
 import { createV2GoalDocument, createV2State, deserializeV2DurableState } from '../src/workflow/v2-state.js';
-import { runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { normalizeAttempt, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
 import { readGoalProject } from '../src/workflow/goal.js';
 import { readRollup, readRollupIndex, readRollups, rollupIndexPath } from '../src/workflow/rollup.js';
 
@@ -54,6 +54,16 @@ function fakeDispatch(handler, { reasoning = undefined } = {}) {
   dispatch.calls = () => calls;
   return dispatch;
 }
+
+test('normalizeAttempt retains the provider session record for durable callers', () => {
+  const normalized = normalizeAttempt({
+    status: 'succeeded', pool: 'claude-code', model: 'claude-opus-5',
+    startedAt: '2026-09-18T01:00:00.000Z',
+    session: { pool: 'claude-code', model: 'claude-opus-5', sessionId: 'session-roundtrip', generation: 1 },
+  }, { id: 'attempt-1', actionId: 'build-report', ordinal: 1 });
+  assert.equal(normalized.session.sessionId, 'session-roundtrip');
+  assert.equal(normalized.session.generation, 1);
+});
 
 test('runs a complete V2 program and kernel—not planner—writes verified result', async () => {
   const f = setup();

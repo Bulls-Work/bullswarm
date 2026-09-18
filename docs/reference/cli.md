@@ -195,6 +195,37 @@ May quarantine a pool after an authentication failure. The JSON shape is in [Res
 bullswarm run --lane build --add-dir . --reasoning max --dry-run --json "Refactor the loader"
 ```
 
+### What a run records
+
+A real dispatch (not `--dry-run`) writes two durable records, which is what makes
+a single task visible on the dashboard alongside workflow runs:
+
+- While it runs, an **assignment** in `~/.bullswarm/assignments/` with
+  `source: "run"`, plus `project`, `taskFile`, `outFile` and `startedAt`. This
+  is the row the `Runs` page shows in its `active` block and the Claude mod
+  shows on its pane.
+- When it finishes, a **decision-log entry** in `state.json` with
+  `kind: "run"`. Alongside the pool, model, verdict and route it always
+  recorded, the entry now carries `lane`, `taskFile` and `outFile`, plus `id`,
+  `project`, `startedAt`, `endedAt` and `durationMs`. Those are the fields the
+  `Runs` history day table and its task detail read; an entry written before
+  them shows `—` for what it does not have rather than a guess.
+
+### Free-model liveness probe
+
+Before a real dispatch to a pool whose rung for this effort tier **names** a
+free model, `run` sends the one-word prompt `PONG` through that pool's own CLI
+and waits at most 30 seconds. The answer is cached per pool and model for 15
+minutes in `$BULLSWARM_HOME/cache/free-model-probes.json`.
+
+A pool that fails the probe records a strike with the reason
+`probe: 404`, `probe: provider error` or `probe: timeout`, is dropped from this
+pick, and routing falls through to the next eligible pool — the reason appears
+in the run's `routeWhy`. A rung left on the connector's CLI default is never
+probed, a paid model is never probed, no model catalogue is scanned, and a
+replacement model is never chosen. `--dry-run` never probes: a preview does not
+call a provider.
+
 ## health
 
 Re-judge every saved delegate output against the real verify gate and report where a logged FAIL verdict re-judges as a pass (the "gate ate real work" signal), plus any pool quarantine clustering.
@@ -216,6 +247,22 @@ Show every configured pool: cost rank, lanes, live meter usage/elapsed percentag
 
 The 5-hour column reads `5h=<reading>%` alone when nothing is in flight and `5h=<reading>%-><projected>%` when in-flight work is expected to push the window further; routing decides on the right-hand number. A trailing `(<n>% elapsed)` is how much of that 5-hour window has already run. A pool whose weekly window resets within 24 hours, or whose monthly window resets within 3 days, ends its line with `resets in <Nd Nh|Nh Nm|Nm> EXPIRING-SOON urgency=<n>`.
 
+The status word at the end of the line says why a pool is not taking work, and
+names the reason a soft bench was applied:
+
+```text
+opencode  cost=1 lanes=analyze/build/chore unmetered surplus=- inflight=0 free=low:zen/union-free  BENCHED until 11:42:08 (probe, 2 strikes)
+grok      cost=2 lanes=analyze/build/chore weekly used 5% elapsed 2.2% [live] surplus=-2.8 inflight=0 ready strikes=1(probe)
+```
+
+A bench reason is one of `stall`, `provider`, `empty output` or `probe` — the
+last being the pre-dispatch free-model liveness check reporting `404`, a
+provider error or a timeout. The first strike prints as `ready strikes=1(<reason>)`:
+the pool is still taking work, and the count is shown so a pool one strike from
+the bench does not read as perfectly healthy. The second strike benches it for a
+10-minute cooldown, after which it returns automatically; a success clears the
+count.
+
 ```bash
 # Bypass the meter cache and re-read live usage for every pool.
 bullswarm pools --force
@@ -225,6 +272,20 @@ bullswarm pools --force
 |---|---|---|
 | `--force` | bypass the meter cache and re-read live usage for every pool | off (cached meter readings reused within their TTL) |
 | `--json` | machine-readable pool array, each entry carrying `inflight`, `spend` rates, `pacingWindow`, `paceResetsAt`, `resetSource` (`provider` \| `declared` \| `null`), and projected percentages | human-readable aligned table |
+
+`--json` is also where the per-window numbers behind the `Budget` page live.
+Each entry's `meterSnapshot` is the provider's own reply: `captured_at` (how
+fresh the reading is), and one block per window it reported — `five_hour`,
+`seven_day`, `monthly`, each with `utilization` and `resets_at` — plus the plan
+fields Budget detects a price from (`plan_type`, `subscription_type`,
+`rate_limit_tier`). A window the provider did not report is `null`, never zero.
+
+```json
+{ "captured_at": "2026-09-18T10:08:18.767Z", "pool": "claude-code:acme",
+  "five_hour": { "utilization": 61, "resets_at": "2026-09-18T11:00:00.643684+00:00" },
+  "seven_day": { "utilization": 84, "resets_at": "2026-09-18T18:00:00.643713+00:00" },
+  "monthly": null, "plan_type": "team", "rate_limit_tier": "default_claude_max_5x" }
+```
 
 Always writes `state.json` after sweeping expired quarantines, even in `--json` mode. Reading the in-flight ledger prunes entries left behind by crashed processes (dead pids, or older than 12 hours).
 

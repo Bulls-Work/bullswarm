@@ -418,11 +418,15 @@ bullswarm workflow runs show <id> --json   # routing reason + candidates
   (nothing to charge). An incumbent carrying more in-flight agents than a
   challenger loses its incumbency margin and cost guard, so `why` can name a
   pricier pool when the incumbent is the one that is loaded.
-- `forecastGated: true` means the pool was excluded because its forecast
-  reached 90%; `forecast.gated` on the result lists those names and
-  `forecast.candidateMinutes` is the duration the pick was made against. If
-  every capable pool is gated, the reason starts `every capable pool is
-  forecast-gated…` and the least-loaded one is used anyway.
+- `forecastGated` is always `false` now, and `forecast.gated` is always empty:
+  a forecast past the wall no longer excludes a pool. `forecastOverLimit: true`
+  means the pool's forecast runs past 100% of its 5-hour window, so it is
+  ranked last but stays eligible — the reason says `forecast over 100% (still
+  eligible; ranked last): …`. `nearFiveHourPenalty: true` means the pool is at
+  or above 75% of that window and another eligible pool is behind pace, which
+  is a soft ordering penalty only; when it wins anyway the reason says `last
+  mile: <pool> 88.1% of 5h, handoff covers the wall`.
+  `forecast.candidateMinutes` is still the duration the pick was made against.
 - A `null` projection or `ratePerMinute` is a pool nobody has measured yet —
   it is deliberately never gated or deprioritized for it, so unmeasured pools
   can look "lucky" until the model has readings for them. A rate also stays

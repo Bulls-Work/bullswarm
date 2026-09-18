@@ -298,8 +298,15 @@ export function rungRecord(decisionLog, pool, tier) {
   const rows = (Array.isArray(decisionLog) ? decisionLog : [])
     .filter((entry) => decisionPool(entry) === pool && decisionEffort(entry) === tier);
   if (!rows.length) return null;
+  // A stall is a transport failure, not a real duration sample. The dispatcher
+  // already drops these before it reads p50 for the free-pool silence clock;
+  // excluding them here is what `bullswarm strategy` and `workflow usage`
+  // display. `stalled: true` covers attempt-shaped rows that never got
+  // failureKind. okShare is a separate filter — a stall is still a verdict.
+  const stalled = (row) => row.stalled === true || row.failureKind === 'stalled';
   const minutes = [];
   for (const row of rows) {
+    if (stalled(row)) continue;
     const window = attemptWindow(row);
     if (window) minutes.push(window.minutes);
   }

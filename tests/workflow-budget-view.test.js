@@ -50,17 +50,61 @@ test('Budget folds measured credits into the used row and preserves run links', 
   assert.match(result.lines[1], /^used\s+.*40% · 29% of the window gone → on track/);
   assert.match(result.lines[2], /^by bullswarm\s+.*≈ 8% \(80 min of work\) · other tools 32%/);
   assert.match(result.lines[3], /^room\s+about 20 more medium runs before the reset/);
-  assert.match(result.lines[4], /biggest: qv6242 ≈ \$0.30, gcxzza/);
+  assert.match(result.lines[4], /biggest: qv6242 ~ \$0.30 estimated, gcxzza cost unknown/);
   assert.match(result.lines[1], /40% · 29% of the window gone → on track · 66 of 70 credits/);
   assert.equal(result.regions.length, 2);
   assert.ok(result.regions.every((region) => region.y === 5));
+});
+
+test('Budget labels provider, transcript, estimated and unknown usage bases', () => {
+  const cases = [
+    ['provider-reported', /\$ 1\.23/],
+    ['transcript-summed', /≈ \$1\.23 summed/],
+    ['estimated:utf8-bytes\/4', /~ \$1\.23 estimated/],
+    ['unknown', /cost unknown/],
+  ];
+  for (const [tokenSource, expected] of cases) {
+    const result = budgetLines(budget({
+      tokenSource,
+      apiEquivalentUsd: 1.23,
+      biggestRuns: { byMinutes: [{ runId: 'wf-basis', shortId: 'basis1', apiEquivalentUsd: 1.23, tokenSource }] },
+    }), { width: 120, ansi: false });
+    const text = result.lines.join('\n');
+    assert.match(text, expected, tokenSource);
+    assert.ok(result.lines.every((line) => visible(line) <= 120), tokenSource);
+  }
+});
+
+test('Budget renders three reported windows, and narrow output gives each one a line', () => {
+  const result = budgetLines(budget({
+    windows: [
+      { key: '5h', label: '5-hour', usedPct: 25, resetClock: '13:24 GMT+8', paceText: 'behind by 30 pts' },
+      { key: '7d', label: '7-day', usedPct: 73, resetClock: '08:54 GMT+8', paceText: 'behind by 19 pts' },
+      { key: 'mo', label: 'monthly', usedPct: 79, resetClock: '11:06 GMT+8', paceText: 'ahead by 4 pts' },
+    ],
+  }), { width: 55, ansi: false });
+  const windowLines = result.lines.filter((line) => /(?:^windows |^        )(?:5h|7d|mo) ·/.test(line));
+  assert.equal(windowLines.length, 3);
+  assert.match(windowLines[0], /5h · 25% used · reset 13:24 · behind by 30 pts/);
+  assert.match(windowLines[1], /7d · 73% used · reset 08:54 · behind by 19 pts/);
+  assert.match(windowLines[2], /mo · 79% used · reset 11:06 · ahead by 4 pts/);
+  assert.ok(windowLines.every((line) => visible(line) <= 55));
+});
+
+test('Budget renders a provider with one window without inventing the other windows', () => {
+  const result = budgetLines(budget({
+    windows: [{ key: '7d', label: '7-day', usedPct: 33, resetClock: '15:00 GMT+8', paceText: 'behind by 67 pts' }],
+  }), { width: 120, ansi: false });
+  const text = result.lines.join('\n');
+  assert.match(text, /7-day \(7d\) · 33% used · resets 15:00 GMT\+8 · behind by 67 pts/);
+  assert.doesNotMatch(text, /5-hour|monthly/);
 });
 
 test('An undeclared subscription stays blank, while API money remains an explicitly marked estimate', () => {
   const result = budgetLines(budget({ credits: null, apiEquivalentUsd: 0.3 }), { width: 120, ansi: false });
   const money = result.lines[4];
   assert.doesNotMatch(result.lines.join('\n'), /Subscription rate|\/mo/);
-  assert.match(money, /≈ \$0\.30 of API-equivalent work/);
+  assert.match(money, /~ \$0\.30 estimated of API-equivalent work/);
   assert.doesNotMatch(money, /\$0\.60|\$0\.90|\$1\.20/);
 });
 
@@ -71,6 +115,15 @@ test('A declared price prints only at the subscription rate and is never multipl
   const text = result.lines.join('\n');
   assert.match(text, /plan · \$200\/mo declared/);
   assert.doesNotMatch(text, /\$400\.00|\$600\.00/);
+});
+
+test('A detected plan prints its origin and plan name', () => {
+  const result = budgetLines(budget({
+    planType: 'pro',
+    detectedPlan: 'pro',
+    subscription: { monthlyPriceUsd: 42, origin: 'detected', detectedPlan: 'pro' },
+  }), { width: 120, ansi: false });
+  assert.match(result.lines.join('\n'), /plan · \$42\/mo detected pro/);
 });
 
 test('A missing share stays blank and the legend never invents a you term', () => {
@@ -84,7 +137,7 @@ test('A missing share stays blank and the legend never invents a you term', () =
   assert.doesNotMatch(text, /[▓░]/);
   assert.match(text, /by bullswarm\s+no measured usage rate yet/);
   assert.doesNotMatch(text, /you/);
-  assert.match(text, /API estimate unrecorded/);
+  assert.match(text, /cost unknown of API-equivalent work/);
 });
 
 test('A zero measured rate names the unknown share and room instead of drawing a bar', () => {
@@ -119,6 +172,11 @@ test('The page footer says the undeclared-price reason once for six pools', () =
   const notes = budgetNotes({ rows, notes: [] }, { width: 120 });
   const text = notes.join('\n');
   assert.equal((text.match(/Declare a price:/g) ?? []).length, 1);
+  // The command appears once, and the note says which pools it is about.
+  assert.equal((text.match(/bullswarm strategy set-subscription/g) ?? []).length, 1);
+  // The note wraps at the page width, so compare it unwrapped.
+  const unwrapped = text.replace(/\n/g, ' ');
+  assert.match(unwrapped, /no price for claude-code, codex, grok, command-code, gemini, relay/);
   assert.match(text, /≈ means estimated work, not an invoice/);
   assert.match(text, /bullswarm strategy set-subscription <pool> --monthly-usd <amount>/);
 });
@@ -147,7 +205,7 @@ test('Budget never draws missing meters and retains complete rounded figures at 
     ] }), { width, ansi: false });
     assert.match(result.lines[0], /\(in 2d 18h\)$/);
     assert.match(result.lines[2], /≈ 1% \(42 min of work\) · other tools 59%$/);
-    assert.match(result.lines[4], /biggest: dahnys ≈ \$0.43, w6p38i ≈ \$0.46$/);
+    assert.match(result.lines[4], /biggest: dahnys ~ \$0.43 estimated, w6p38i ~ \$0.46 estimated$/);
     assert.equal(result.regions.length, 2);
     for (const region of result.regions) assert.equal(result.lines[region.y - 1].slice(region.x - 1, region.x - 1 + region.width), region.action.runId.slice(3));
   }
@@ -191,6 +249,6 @@ test('an absent Budget row keeps the label column, and one run reads as one run'
 
   // A run with no recorded cost gets one space before its reason, not two.
   const soFar = metered.find((line) => line.startsWith('so far'));
-  assert.match(soFar, /gcxzza \(cost unrecorded\)/);
-  assert.doesNotMatch(soFar, /gcxzza {2,}\(cost unrecorded\)/);
+  assert.match(soFar, /gcxzza cost unknown/);
+  assert.doesNotMatch(soFar, /gcxzza {2,}cost unknown/);
 });

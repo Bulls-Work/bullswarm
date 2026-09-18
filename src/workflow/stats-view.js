@@ -25,6 +25,7 @@ import {
 } from './dash-kit.js';
 import { METER_COLORS, paceWord, severityColor } from './usage-view.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
+import { formatUsageBasis } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const RESET = '\x1b[0m';
@@ -286,18 +287,27 @@ function percent(value) {
   return number == null ? null : `${Math.round(number * 100)}%`;
 }
 
-function apiEstimate(value) {
-  const money = formatDashboardValue(value, 'money');
-  return money == null ? null : `≈ ${money} API-equivalent estimate`;
+function basisOf(value, tokenSource) {
+  if (['provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown'].includes(tokenSource)) {
+    return tokenSource;
+  }
+  return finite(value) == null ? 'unknown' : 'estimated:utf8-bytes/4';
 }
 
-function spendText(value) {
-  return apiEstimate(value) ?? 'estimate unavailable (no recorded API-equivalent cost)';
+function apiEstimate(value, tokenSource) {
+  const basis = basisOf(value, tokenSource);
+  const money = formatUsageBasis({ tokenSource: basis, costUsd: value });
+  return money === 'cost unknown' ? money : `${money} API-equivalent`;
 }
 
-function spendShort(value) {
-  const money = formatDashboardValue(value, 'money');
-  return money == null ? null : `≈ ${money} API`;
+function spendText(value, tokenSource) {
+  return apiEstimate(value, tokenSource);
+}
+
+function spendShort(value, tokenSource) {
+  const basis = basisOf(value, tokenSource);
+  const money = formatUsageBasis({ tokenSource: basis, costUsd: value });
+  return money === 'cost unknown' ? money : `${money} API`;
 }
 
 function minutesText(value) {
@@ -431,8 +441,8 @@ function metricLabel(metric) {
   return metric === LICENCE_METRIC ? 'licence used' : metric;
 }
 
-function metricValueText(metric, value) {
-  if (metric === 'spend') return spendText(value);
+function metricValueText(metric, value, tokenSource) {
+  if (metric === 'spend') return spendText(value, tokenSource);
   const number = finite(value);
   if (number == null) return `${metricLabel(metric)} unavailable`;
   if (metric === 'minutes') return `${minutesText(number)} measured`;
@@ -442,12 +452,10 @@ function metricValueText(metric, value) {
 
 /** The metrics whose figures are money, so their chart marks them as estimates. */
 const MONEY_METRICS = Object.freeze(['spend']);
-/** What any figure that is not a measurement carries in front of it. */
-const ESTIMATE_MARK = '≈';
-const MONEY_BASIS = 'Basis: ≈ $ API-equivalent estimates, recorded per attempt and summed over the period · — = none recorded';
-const MONEY_BASIS_SHORT = '≈ $ API-equivalent estimate · — = none recorded';
-const OVERVIEW_BASIS = 'Basis: ≈ $ API-equivalent estimates, recorded per attempt and summed over the period.';
-const OVERVIEW_BASIS_SHORT = '≈ $ API-equivalent estimate, recorded per attempt.';
+const MONEY_BASIS = 'Basis: $ provider-reported · ≈ transcript-summed · ~ estimated · cost unknown';
+const MONEY_BASIS_SHORT = 'Basis: $ reported · ≈ summed · ~ estimated · unknown';
+const OVERVIEW_BASIS = 'Basis: $ provider-reported · ≈ transcript-summed · ~ estimated · cost unknown.';
+const OVERVIEW_BASIS_SHORT = '$ reported · ≈ summed · ~ estimated · unknown';
 
 /**
  * The one line under a money chart that says what its figures are and what its
@@ -460,6 +468,13 @@ function moneyBasisLine(width, { overview = false } = {}) {
   const full = ` ${overview ? OVERVIEW_BASIS : MONEY_BASIS}`;
   if (visible(full).length <= widthOf(width)) return full;
   return ` ${overview ? OVERVIEW_BASIS_SHORT : MONEY_BASIS_SHORT}`;
+}
+
+function moneyMark(tokenSource) {
+  if (tokenSource === 'provider-reported') return '';
+  if (tokenSource === 'transcript-summed') return '≈';
+  if (tokenSource === 'estimated:utf8-bytes/4') return '~';
+  return '·';
 }
 
 function lineWithParts(parts, width, ansi = true) {
@@ -667,8 +682,8 @@ function figureLines(model, width, ansi) {
   const agentTime = finite(keys.totalAgentMinutes) == null
     ? 'Agent time: unavailable'
     : `Agent time: ${orange(minutesText(keys.totalAgentMinutes))}`;
-  const spentShortText = spendShort(spend);
-  const spentText = spentShortText == null ? 'Spent: estimate unavailable' : `Spent: ${orange(spentShortText)}`;
+  const spentShortText = spendShort(spend, keys.tokenSource);
+  const spentText = spentShortText == null ? 'Spent: cost unknown' : `Spent: ${orange(spentShortText)}`;
   const activeDays = active == null ? 'Active days: unavailable' : `Active days: ${orange(`${Math.round(active)}`)}`;
   const longestRun = finite(keys.longestRunMinutes) == null
     ? 'Longest run: unavailable'
@@ -894,13 +909,15 @@ function stepChart(series, labels, {
  * width needs — a legend never ends mid-name, never hides a name behind
  * `+N more`, and never paints past the width.
  */
-function legendRows(names, { width = 120, ansi = true, colorOf = null } = {}) {
+function legendRows(names, { width = 120, ansi = true, colorOf = null, activeName = null } = {}) {
   const cols = widthOf(width);
   const items = (Array.isArray(names) ? names : []).filter(Boolean);
   if (!items.length || cols <= 0) return [];
   const mark = asciiGlyphsPreferred() ? '#' : '█';
   const separator = dimmed(' · ', ansi);
-  const part = (entry) => `${painted(mark, colorOf ? colorOf(entry) : null, ansi)} ${entry.name}`;
+  const part = (entry) => `${painted(mark, colorOf ? colorOf(entry) : null, ansi)} ${entry.name === activeName
+    ? bolded(entry.name, ansi)
+    : entry.name}`;
   const rows = [];
   let current = [];
   for (const entry of items) {
@@ -914,7 +931,95 @@ function legendRows(names, { width = 120, ansi = true, colorOf = null } = {}) {
   return rows.map((row) => fit(` ${row.map(part).join(separator)}`, cols, ansi));
 }
 
-function trendLines(stats, lines, regions, width, period, metric, ansi, licence, poolModel = null, rowCount = null) {
+/** The value wording a slice label shares with the chart's own value row. */
+function sliceValueText(action) {
+  const value = finite(action?.value);
+  if (value == null) return 'value unavailable';
+  if (action?.metric === 'minutes' || action?.unit === 'worker-minutes') return minutesText(value);
+  if (action?.metric === 'spend') return spendText(value, action?.tokenSource) ?? 'cost unknown';
+  if (action?.metric === LICENCE_METRIC || action?.unit === 'percent') return `${Math.round(value)}%`;
+  if (action?.metric === 'verified') return `${Math.round(value)} verified`;
+  const count = Math.round(value);
+  return `${count} run${count === 1 ? '' : 's'}`;
+}
+
+/** Keep the label compact while retaining the concrete bucket date. */
+function sliceDayText(action) {
+  const label = textOf(action?.dayLabel ?? action?.bucketLabel, '');
+  if (label && !/^\d{4}-\d{2}-\d{2}$/.test(label)) return label;
+  return shortDay(action?.bucket ?? label) || 'unknown day';
+}
+
+function sliceLabelText(action) {
+  if (!action) return '';
+  // The view's existing `percent()` helper takes a 0..1 share.  Accept a
+  // percentage-point value too for callers that construct a pinned action
+  // themselves, while actions emitted below keep the canonical fraction.
+  const share = action.percent == null ? 'share unavailable'
+    : action.percent <= 1 ? percent(action.percent)
+      : formatDashboardValue(action.percent, 'percent');
+  return `${sliceDayText(action)} · ${textOf(action.series ?? action.name, 'unknown')} · ${sliceValueText(action)} · ${share} of the day`;
+}
+
+/** One action for a rendered chart slice, retaining the chart's aggregation. */
+function sliceAction({ tab, metric, period, unit, bucket, columnIndex, sourceColumnIndex = columnIndex, slice, total }) {
+  const value = finite(slice?.value);
+  const sum = finite(total);
+  return {
+    kind: 'slice',
+    tab,
+    metric,
+    period,
+    unit,
+    columnIndex,
+    sourceColumnIndex,
+    bucket: bucket?.key ?? bucket?.date ?? String(columnIndex),
+    bucketLabel: textOf(bucket?.label, ''),
+    dayLabel: textOf(bucket?.label, ''),
+    series: textOf(slice?.name, 'unknown'),
+    name: textOf(slice?.name, 'unknown'),
+    value,
+    tokenSource: basisOf(bucket?.value ?? value, bucket?.tokenSource),
+    total: sum,
+    percent: value != null && sum != null && sum > 0 ? value / sum : null,
+    percentValue: value != null && sum != null && sum > 0 ? (value / sum) * 100 : null,
+  };
+}
+
+/** Register only the rows the slice actually paints; labels and totals keep
+ * their ordinary bucket actions below the chart. */
+function chartSliceRegions(meta, buckets, { tab, metric, period, unit } = {}) {
+  const regions = [];
+  const slices = Array.isArray(meta?.slices)
+    ? meta.slices
+    : (meta?.columns ?? []).flatMap((column) => column.segments ?? []);
+  for (const slice of slices) {
+    if (!slice?.name || !(slice.rowStart <= slice.rowEnd)) continue;
+    const column = meta?.columns?.[slice.columnIndex] ?? null;
+    // `slice.sourceIndex` is the series index (the same field the existing
+    // colour/legend metadata uses), while the owning column carries the
+    // bucket index.  Do not let a second series accidentally label itself as
+    // the next day when the chart has more than one stack.
+    const bucketIndex = column?.sourceIndex ?? slice.columnIndex;
+    const bucket = buckets?.[bucketIndex] ?? null;
+    const total = meta?.sums?.[slice.columnIndex];
+    const action = sliceAction({
+      tab, metric, period, unit, bucket, columnIndex: slice.columnIndex,
+      sourceColumnIndex: bucketIndex, slice, total,
+    });
+    for (let row = slice.rowStart; row <= slice.rowEnd; row += 1) {
+      regions.push({ row, x: slice.columnStart, width: slice.columnEnd - slice.columnStart + 1, action });
+    }
+  }
+  return regions;
+}
+
+function chartLabelLine(activeSlice, tab, width, ansi) {
+  const visibleSlice = activeSlice?.tab === tab ? activeSlice : null;
+  return fit(visibleSlice ? ` ${sliceLabelText(visibleSlice)}` : '', width, ansi);
+}
+
+function trendLines(stats, lines, regions, width, period, metric, ansi, licence, poolModel = null, rowCount = null, activeSlice = null) {
   const cols = widthOf(width);
   lines.push('');
   addMetricRow(lines, regions, metric, cols, ansi, { licence });
@@ -929,9 +1034,11 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
   }
   const model = trendModel(stats, metric, period);
   const buckets = Array.isArray(model?.buckets) ? model.buckets : [];
+  const money = MONEY_METRICS.includes(metric);
   const measured = buckets.some((bucket) => {
     const value = finite(bucket?.value);
     if (value == null) return false;
+    if (money && basisOf(value, bucket?.tokenSource) === 'unknown') return false;
     // Count metrics legitimately carry zero-valued buckets. A run count of
     // zero with no `runs` evidence is an empty period, not a chart whose axis
     // should be invented at zero.
@@ -941,18 +1048,38 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
     return true;
   });
   const total = finite(model?.total);
-  if (!model || !buckets.length || (!measured && (total == null || total === 0))) {
+  if (!model || !buckets.length || (!measured && (total == null || total === 0
+    || (money && basisOf(total, model?.tokenSource) === 'unknown')))) {
     pushLine(lines, regions, rule(`${metricLabel(metric)} · ${periodWords(period)}`, null, cols), cols, ansi);
     pushWrapped(lines, regions, `Empty chart: no data — ${emptyReason(model, metric, period)}.`, cols, ansi, ' ');
+    if (money) pushLine(lines, regions, moneyBasisLine(cols), cols, ansi);
     return;
   }
 
   const displayBuckets = trendDisplayBuckets(buckets, period, cols);
+  // Explicitly unknown numeric costs are not chart measurements. Keep their
+  // bucket labels for navigation, but remove the value so no bare-dollar axis
+  // suggests a price we cannot support.
+  const chartBuckets = money
+    ? displayBuckets.map((bucket) => (
+      basisOf(bucket?.value, bucket?.tokenSource) === 'unknown'
+        ? { ...bucket, value: null, segments: [] }
+        : bucket
+    ))
+    : displayBuckets;
+  const basisRank = { unknown: 0, 'estimated:utf8-bytes/4': 1, 'transcript-summed': 2, 'provider-reported': 3 };
+  const chartTokenSource = money
+    ? chartBuckets.reduce((source, bucket) => {
+      if (bucket?.value == null) return source;
+      const basis = basisOf(bucket.value, bucket.tokenSource);
+      if (source == null) return basis;
+      return basisRank[basis] < basisRank[source] ? basis : source;
+    }, null) ?? 'unknown'
+    : null;
   const narrow = cols < 90;
-  const money = MONEY_METRICS.includes(metric);
-  const base = narrow ? 6 : Math.max(12, Math.floor((cols - 8) / displayBuckets.length));
+  const base = narrow ? 6 : Math.max(12, Math.floor((cols - 8) / chartBuckets.length));
   const names = [];
-  for (const bucket of displayBuckets) {
+  for (const bucket of chartBuckets) {
     for (const segment of Array.isArray(bucket?.segments) ? bucket.segments : []) {
       if (!names.includes(segment.name)) names.push(segment.name);
     }
@@ -962,13 +1089,13 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
   const series = names.length
     ? names.map((name) => ({
       color: colorByName.get(name),
-      values: displayBuckets.map((bucket) => (bucket.value == null
+      values: chartBuckets.map((bucket) => (bucket.value == null
         ? null
         : finite(bucket.segments?.find?.((segment) => segment.name === name)?.value) ?? 0)),
     }))
-    : [{ values: displayBuckets.map((bucket) => bucket.value) }];
-  const cellWidth = cellWidthFor(cols, displayBuckets.length, { axisRoom: 6 + (money ? 1 : 0), base });
-  const labels = chartTickLabels(displayBuckets, cellWidth, { narrow: narrow || base < 12 });
+    : [{ values: chartBuckets.map((bucket) => bucket.value) }];
+  const cellWidth = cellWidthFor(cols, chartBuckets.length, { axisRoom: 6 + (money ? 1 : 0), base });
+  const labels = chartTickLabels(chartBuckets, cellWidth, { narrow: narrow || base < 12 });
   const chartLines = columnBars(series, labels, {
     width: cols,
     rowCount: rowCount ?? chartRowCount(narrow ? 26 : 36),
@@ -977,7 +1104,7 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
     unit: money ? '$' : '',
     // A licence estimate is money too; a measured count is not, and carries
     // no mark at all.
-    mark: money ? ESTIMATE_MARK : '',
+    mark: money ? moneyMark(chartTokenSource) : '',
     totals: true,
     // The running-total row the chart used to only name.
     cumulative: true,
@@ -985,13 +1112,19 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
   });
   pushLine(lines, regions, rule(`${metricLabel(metric)} · ${periodWords(period)} · ${model?.bucketBy === 'week' ? 'per week' : 'per day'}${model?.truncated ? ' · history starts later' : ''}`, null, cols), cols, ansi);
   const meta = chartLines.meta ?? { chartRows: 0, axisRow: null, valueRow: null, columns: [] };
+  const sliceRegions = chartSliceRegions(meta, chartBuckets, {
+    tab: 'trends', metric, period, unit: model?.unit ?? metric,
+  });
   chartLines.forEach((line, lineIndex) => {
     const lineRegions = [];
+    for (const slice of sliceRegions) {
+      if (slice.row === lineIndex + 1) lineRegions.push({ x: slice.x, width: slice.width, action: slice.action });
+    }
     for (const [index, column] of meta.columns.entries()) {
       // columnBars may keep only the newest columns at phone width. Preserve
       // the source bucket for its drill action instead of relabelling the
       // newest chart cell as the oldest bucket.
-      const bucket = displayBuckets[column.sourceIndex ?? index];
+      const bucket = chartBuckets[column.sourceIndex ?? index];
       const action = { kind: 'trend', metric, period, bucket: bucket?.key ?? String(index) };
       // A region on every painted cell makes the visible column clickable;
       // the value row below also carries one for an empty/unmeasured bucket.
@@ -1004,15 +1137,21 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
     }
     pushLine(lines, regions, line, cols, ansi, lineRegions);
   });
+  // The row is always present, including when it is blank, so moving the
+  // pointer never shifts the legend or anything beneath the chart.
+  pushLine(lines, regions, chartLabelLine(activeSlice, 'trends', cols, ansi), cols, ansi);
   if (money) pushLine(lines, regions, moneyBasisLine(cols), cols, ansi);
   const legendNames = chartLines.meta?.legend?.length ? chartLines.meta.legend : names;
-  for (const line of legendRows(legendNames.map((name) => ({ name })), { width: cols, ansi, colorOf: (entry) => colorByName.get(entry.name) ?? seriesColor(entry.name) })) {
+  for (const line of legendRows(legendNames.map((name) => ({ name })), {
+    width: cols, ansi, activeName: activeSlice?.tab === 'trends' ? activeSlice.series : null,
+    colorOf: (entry) => colorByName.get(entry.name) ?? seriesColor(entry.name),
+  })) {
     pushLine(lines, regions, line, cols, ansi);
   }
   if (model?.segmentBasis) pushLine(lines, regions, ` ${dimmed(`Split basis: ${model.segmentBasis}`, ansi)}`, cols, ansi);
   const closing = metric === 'spend'
-    ? (spendShort(total) ?? 'estimate unavailable')
-    : (total == null ? `${metricLabel(metric)} unavailable` : metricValueText(metric, total));
+    ? (spendShort(total, model?.tokenSource) ?? 'cost unknown')
+    : (total == null ? `${metricLabel(metric)} unavailable` : metricValueText(metric, total, model?.tokenSource));
   pushLine(lines, regions, ` ${painted(closing, METER_COLORS.orange, ansi)} ${dimmed(`over ${periodWords(period)}`, ansi)}`, cols, ansi);
 }
 
@@ -1150,7 +1289,7 @@ function poolFacts(row) {
   const runs = finite(row?.runs);
   if (runs == null) return null;
   const ok = percent(row?.okShare);
-  const money = spendShort(row?.apiEquivalentUsd);
+  const money = spendShort(row?.apiEquivalentUsd, row?.tokenSource);
   const parts = [`${Math.round(runs)} runs`];
   if (ok) parts.push(`✓ ${ok}`);
   if (money) parts.push(money);
@@ -1352,7 +1491,7 @@ function seriesFromTrend(trend, names, cols, { axisRoom = 7, narrow = false } = 
   };
 }
 
-function modelLines(model, lines, regions, cols, period, ansi, rowCount = null) {
+function modelLines(model, lines, regions, cols, period, ansi, rowCount = null, activeSlice = null) {
   lines.push('');
   const rows = asRows(model);
   const names = rows.map((row) => textOf(row.name, 'unknown'));
@@ -1386,10 +1525,25 @@ function modelLines(model, lines, regions, cols, period, ansi, rowCount = null) 
       unit: chartUnit,
       totals: true,
       colors: ansi,
-    }) : [];
+  }) : [];
   if (chart.length) {
-    for (const line of chart) pushLine(lines, regions, line, cols, ansi);
-    for (const line of legendRows(drawn.series.map((entry) => ({ name: entry.name })), { width: cols, ansi, colorOf: (entry) => colorsBy.get(entry.name) })) {
+    const meta = chart.meta ?? { chartRows: 0, columns: [], sums: [] };
+    const sliceRegions = chartSliceRegions(meta, trend?.buckets ?? [], {
+      tab: 'models', metric: trend?.metric ?? 'minutes', period, unit: trend?.unit ?? 'worker-minutes',
+    });
+    for (const [lineIndex, line] of chart.entries()) {
+      const lineRegions = [];
+      for (const slice of sliceRegions) {
+        if (slice.row === lineIndex + 1) lineRegions.push({ x: slice.x, width: slice.width, action: slice.action });
+      }
+      pushLine(lines, regions, line, cols, ansi, lineRegions);
+    }
+    // Keep one label row under the chart even when no model is hovered.
+    pushLine(lines, regions, chartLabelLine(activeSlice, 'models', cols, ansi), cols, ansi);
+    for (const line of legendRows(drawn.series.map((entry) => ({ name: entry.name })), {
+      width: cols, ansi, activeName: activeSlice?.tab === 'models' ? activeSlice.series : null,
+      colorOf: (entry) => colorsBy.get(entry.name),
+    })) {
       pushLine(lines, regions, line, cols, ansi);
     }
   } else {
@@ -1476,7 +1630,7 @@ function projectLines(model, lines, regions, cols, period, ansi) {
     if (shape) hasSeries = true;
     const runs = finite(row.runs);
     const ok = percent(row.okShare);
-    const money = spendShort(row.apiEquivalentUsd);
+    const money = spendShort(row.apiEquivalentUsd, row.tokenSource);
     const median = finite(row.medianWallMinutes);
     const parts = [];
     if (runs != null) parts.push(`${Math.round(runs)} runs`);
@@ -1545,7 +1699,9 @@ function projectLines(model, lines, regions, cols, period, ansi) {
 
 // ------------------------------------------------------------------ the page
 
-function statsLines(stats, { width = 120, height = 36, tab = 'overview', period = '7d', metric = 'runs', ansi = true } = {}) {
+function statsLines(stats, {
+  width = 120, height = 36, tab = 'overview', period = '7d', metric = 'runs', ansi = true, slice = null,
+} = {}) {
   const cols = widthOf(width);
   const contentCols = cols;
   const activeTab = normalizeTab(tab);
@@ -1579,12 +1735,12 @@ function statsLines(stats, { width = 120, height = 36, tab = 'overview', period 
     .some((row) => historySegments(row).some((segment) => finite(segment.value) != null));
   const activeMetric = normalizeMetric(metric, licence);
   if (activeTab === 'overview') overviewLines(overview, lines, regions, contentCols, activePeriod, ansi);
-  else if (activeTab === 'trends') trendLines(stats, lines, regions, contentCols, activePeriod, activeMetric, ansi, licence, pools, chartRowCount(height));
+  else if (activeTab === 'trends') trendLines(stats, lines, regions, contentCols, activePeriod, activeMetric, ansi, licence, pools, chartRowCount(height), slice);
   else if (activeTab === 'pools') {
     poolLines(pools, lines, regions, contentCols, activePeriod, ansi);
   } else if (activeTab === 'models') {
     const base = tableModel(stats, 'models', overview);
-    modelLines({ ...base, trend: base.trend ?? stats?.modelTrend ?? null }, lines, regions, contentCols, activePeriod, ansi, chartRowCount(height));
+    modelLines({ ...base, trend: base.trend ?? stats?.modelTrend ?? null }, lines, regions, contentCols, activePeriod, ansi, chartRowCount(height), slice);
   } else {
     const base = tableModel(stats, 'projects', overview);
     projectLines({ ...base, trend: base.trend ?? stats?.projectTrend ?? null }, lines, regions, contentCols, activePeriod, ansi);

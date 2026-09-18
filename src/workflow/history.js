@@ -1,7 +1,8 @@
 // The History page's day rollup.
 //
 // One row per calendar day, newest first, carrying every workflow: the records
-// in the rollup index, plus the runs the index cannot hold yet. `listRuns` is
+// in the rollup index, plus the runs the index cannot hold yet. Finished
+// single-task records may share those day rows as typed task entries. `listRuns` is
 // never called here — it parses every state.json (measured 293 files, 22 MB,
 // ~100 ms on this machine, 2026-09-16) to build a whole run list History does
 // not need. The run directories are opened only where the index is silent (H6),
@@ -102,6 +103,15 @@ function emptyDay(date) {
   return {
     date, runs: 0, finished: 0, verified: 0, verifiedShare: null, spendUsd: null,
     legacyRows: 0, unfinishedRows: 0, rows: [],
+  };
+}
+
+/** A finished `bullswarm run` row is kept distinct from workflow history. */
+function taskHistoryRow(task) {
+  return {
+    ...task,
+    kind: 'task',
+    source: 'run',
   };
 }
 
@@ -228,7 +238,7 @@ function uncoveredRuns(bullswarmDir, indexedIds, now) {
  * Day rows for the History page, newest first.
  *
  * @param {string} bullswarmDir
- * @param {{before?: string|null, days?: number, now?: number}} [options]
+ * @param {{before?: string|null, days?: number, now?: number, tasks?: Array<object>}} [options]
  *        `before` is a 'YYYY-MM-DD' key (or any instant dayKey() accepts);
  *        the first row returned is strictly before it, which is how the page
  *        loads seven more days each time the reader nears the bottom.
@@ -237,7 +247,9 @@ function uncoveredRuns(bullswarmDir, indexedIds, now) {
  *                  spendUsd: number|null, legacyRows: number,
  *                  unfinishedRows: number, rows: Array<object>}>}
  */
-export function historyDays(bullswarmDir, { before = null, days = 7, now = Date.now() } = {}) {
+export function historyDays(bullswarmDir, {
+  before = null, days = 7, now = Date.now(), tasks = [],
+} = {}) {
   const wanted = Number.isInteger(days) && days > 0 ? days : 7;
   const records = readRollups(bullswarmDir);
   const byDay = new Map();
@@ -270,6 +282,17 @@ export function historyDays(bullswarmDir, { before = null, days = 7, now = Date.
       // wants to see; it is filed where it started.
       dayOf(startedDay).rows.push(record);
     }
+  }
+  // Single tasks have no workflow rollup and must not affect workflow counts,
+  // spend, or verification. They do share the day table, ordered by their
+  // own endedAt timestamp alongside finished workflows.
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const endedDay = dayKey(task?.endedAt ?? task?.finishedAt);
+    const startedDay = dayKey(task?.startedAt);
+    const date = endedDay ?? startedDay;
+    if (!date) continue;
+    dayOf(date).rows.push(taskHistoryRow(task));
+    if (!oldest || date < oldest) oldest = date;
   }
   if (!oldest) return [];
 

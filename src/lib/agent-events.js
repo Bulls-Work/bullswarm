@@ -43,6 +43,37 @@ function outputText(value, max = 1_000_000) {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+const NUMERIC_USAGE_FIELDS = new Set([
+  'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'costUsd',
+]);
+
+function usageScalar(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  if (NUMERIC_USAGE_FIELDS.has(field)) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  return null;
+}
+
+function mergeUsageField(target, field, value, mode) {
+  const normalized = usageScalar(value, field);
+  if (normalized === null) return;
+  if (NUMERIC_USAGE_FIELDS.has(field) && mode === 'sum') {
+    target[field] = (Number.isFinite(target[field]) ? target[field] : 0) + normalized;
+  } else if (NUMERIC_USAGE_FIELDS.has(field) && mode === 'max') {
+    target[field] = Math.max(Number.isFinite(target[field]) ? target[field] : 0, normalized);
+  } else {
+    // `last` is the cumulative-total rule. Non-numeric fields also use the
+    // latest value for sum/max rules because a session id/model is identity,
+    // not a quantity to add or compare.
+    target[field] = normalized;
+  }
+}
+
 function contextsFor(root, path) {
   if (!path) return [root];
   const expanded = getPath(root, path);
@@ -64,6 +95,12 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
   if (!eventStream || eventStream.format !== 'jsonl') return null;
   const buffers = { stdout: '', stderr: '' };
   const outputMatches = (eventStream.output ?? []).map(() => []);
+  const usageRules = Array.isArray(eventStream.usage)
+    ? eventStream.usage
+    : eventStream.usage ? [eventStream.usage] : [];
+  const usageMatches = usageRules.map(() => ({}));
+  const usageSeen = usageRules.map(() => false);
+  const usageFields = new Set(usageRules.flatMap((rule) => Object.keys(rule?.fields ?? {})));
   let sequence = 0;
   const consecutive = new Map();
   let lastRuleIndex = null;
@@ -97,6 +134,23 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
         if (!matches(context, outputRule.itemMatch)) continue;
         const value = outputText(getPath(context, outputRule.path), outputRule.maxLength ?? 1_000_000);
         if (value != null) outputMatches[index].push(value);
+      }
+    }
+
+    // Usage is deliberately a separate declarative rule family from output
+    // and semantic actions. A provider can report cumulative totals on one
+    // final event (`last`), per-request counters on many events (`sum`), or
+    // a monotonic counter where the safest fallback is the largest value
+    // (`max`) without core knowing the provider's event vocabulary.
+    for (const [index, usageRule] of usageRules.entries()) {
+      if (!matches(root, usageRule.rootMatch)) continue;
+      const mode = ['last', 'sum', 'max'].includes(usageRule.mode) ? usageRule.mode : 'last';
+      for (const context of contextsFor(root, usageRule.forEach)) {
+        if (!matches(context, usageRule.match)) continue;
+        usageSeen[index] = true;
+        for (const [field, path] of Object.entries(usageRule.fields ?? {})) {
+          mergeUsageField(usageMatches[index], field, getPath(context, path), mode);
+        }
       }
     }
 
@@ -176,6 +230,19 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
         return rule.mode === 'concat' ? values.join(rule.separator ?? '') : values.at(-1);
       }
       return '';
+    },
+    usage() {
+      if (!usageSeen.some(Boolean)) return null;
+      const result = {};
+      for (const field of usageFields) {
+        for (let index = usageMatches.length - 1; index >= 0; index -= 1) {
+          if (usageSeen[index] && usageMatches[index][field] !== undefined) {
+            result[field] = usageMatches[index][field];
+            break;
+          }
+        }
+      }
+      return result;
     },
   };
 }

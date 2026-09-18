@@ -125,6 +125,26 @@ test('connector-declared event-stream errors outrank a missing structured candid
   }
 });
 
+test('watcher exposes the bounded stderr tail on a failed verdict', async () => {
+  const ctx = makeCtx();
+  try {
+    const failing = {
+      name: 'fixture-stderr',
+      spawn: {
+        cmd: [process.execPath, '-e', "process.stderr.write('API error: 404 model not found\\n'); process.exit(1)"],
+      },
+    };
+    const verdict = await watchOnce(failing, 'Probe the selected model.', ctx.dir, ctx.paths, {
+      outputValidator: () => ({ ok: true }),
+    });
+    assert.equal(verdict.ok, false);
+    assert.equal(verdict.meta.exitCode, 1);
+    assert.match(verdict.stderrTail, /API error: 404 model not found/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('event-stream tool output mentioning auth signatures does not kill a healthy agent', async () => {
   const ctx = makeCtx();
   try {
@@ -533,6 +553,59 @@ function streamJsonConnector(script, extra = {}) {
 const rowsScript = (rows, tail = '') =>
   `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row));${tail}`;
 
+test('watch records structured Claude usage before text parsing', async () => {
+  const ctx = makeCtx();
+  try {
+    const report = '## Completed\n\nImplemented and verified the requested change.';
+    const connector = streamJsonConnector(rowsScript([
+      { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
+      {
+        type: 'result', result: report, session_id: 'session-claude-1', total_cost_usd: 0.61388,
+        usage: {
+          input_tokens: 2,
+          cache_read_input_tokens: 3,
+          cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 5 },
+          output_tokens: 6,
+        },
+      },
+    ]));
+    connector.model = 'claude-opus-5';
+    connector.modelProfiles = [{
+      match: '^claude-opus-5$',
+      pricing: {
+        inputUsdPerMillion: 5,
+        cacheReadUsdPerMillion: 0.5,
+        cacheWrite5mUsdPerMillion: 6.25,
+        cacheWrite1hUsdPerMillion: 10,
+        outputUsdPerMillion: 25,
+      },
+    }];
+    connector.eventStream.usage = [{
+      match: { path: 'type', equals: 'result' },
+      mode: 'last',
+      fields: {
+        sessionId: 'session_id',
+        costUsd: 'total_cost_usd',
+        standardRead: 'usage.input_tokens',
+        cacheRead: 'usage.cache_read_input_tokens',
+        cacheWrite5m: 'usage.cache_creation.ephemeral_5m_input_tokens',
+        cacheWrite1h: 'usage.cache_creation.ephemeral_1h_input_tokens',
+        output: 'usage.output_tokens',
+      },
+    }];
+
+    const verdict = await watchOnce(connector, 'Implement and verify the change.', ctx.dir, ctx.paths);
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(verdict.meta.usage.tokenSource, 'provider-reported');
+    assert.equal(verdict.meta.usage.costSource, 'provider-billed');
+    assert.equal(verdict.meta.usage.sessionId, 'session-claude-1');
+    assert.equal(verdict.meta.usage.cost.estimatedUsd, 0.61388);
+    assert.equal(verdict.meta.usage.tokens.totalKnown, 20);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('a stream-json usage limit kills a hanging CLI and quarantines until the parsed reset', async () => {
   const ctx = makeCtx();
   try {
@@ -822,6 +895,40 @@ test('a provider error event with unrelated wording stays a provider failure wit
     assert.equal(verdict.failureKind, 'provider');
     assert.equal(verdict.quarantineHint, undefined);
     assert.equal(verdict.why, 'provider stream reported error');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('a generic provider stream error is recovered when a usable answer follows and the worker exits 0', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'response', id: 'r1', text: 'Completed the requested implementation, updated the affected files, and verified the relevant tests with no remaining failures.' },
+      { type: 'error', error: { message: 'stream disconnected after the answer was flushed' } },
+    ];
+    const streamed = {
+      name: 'fixture-events',
+      spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+      authSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        failureTypes: ['error'],
+        rules: [
+          { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+        ],
+        output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+      },
+    };
+    const verdict = await watchOnce(streamed, 'Implement and verify the requested change.', ctx.dir, ctx.paths);
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(verdict.failureKind, undefined);
+    assert.equal(verdict.notes?.length, 1);
+    assert.equal(verdict.notes[0].kind, 'recovered-stream-error');
+    assert.match(verdict.notes[0].text, /provider stream reported error/);
+    assert.ok(Number.isFinite(Date.parse(verdict.notes[0].at)));
+    assert.equal(verdict.meta.providerFailureType, 'error');
   } finally {
     ctx.cleanup();
   }

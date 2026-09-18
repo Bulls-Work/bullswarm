@@ -146,6 +146,50 @@ test('run still routes when the tier allow-list names a model the pool can run',
   } finally { f.cleanup(); }
 });
 
+test('run records a task ledger entry with project and lifecycle fields', () => {
+  const f = home({ config: { testFixturesMigrated: true } });
+  try {
+    const result = bullswarm(f.dir, [
+      'run', '--lane', 'build', '--json', '--no-caller', '--add-dir', REPO, '--prompt', 'ledger shape',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
+    const entry = state.decisionLog.at(-1);
+    assert.equal(entry.kind, 'run');
+    assert.equal(entry.source, 'run');
+    assert.equal(entry.lane, 'build');
+    assert.equal(entry.pool, 'echo');
+    assert.equal(entry.model, 'echo-local');
+    assert.equal(entry.project, 'bullswarm');
+    assert.equal(entry.ok, true);
+    assert.equal(entry.reason, null);
+    assert.match(entry.taskFile, /\/runs\/task-/);
+    assert.match(entry.outFile, /\/runs\/out-/);
+    assert.match(entry.startedAt, /^2026-|^20\d\d-/);
+    assert.match(entry.endedAt, /^2026-|^20\d\d-/);
+    assert.ok(entry.endedAt >= entry.startedAt);
+    assert.equal(typeof entry.durationMs, 'number');
+    assert.match(entry.id, /^[0-9a-f-]{20,}$/);
+  } finally { f.cleanup(); }
+});
+
+test('run records a short failure reason in the task ledger', () => {
+  const f = home({ config: { testFixturesMigrated: true } });
+  try {
+    const result = bullswarm(f.dir, [
+      'run', '--lane', 'build', '--json', '--no-caller', '--prompt', 'FAIL:auth',
+    ]);
+    assert.equal(result.status, 1);
+    const state = JSON.parse(readFileSync(join(f.dir, 'state.json'), 'utf8'));
+    const entry = state.decisionLog.at(-1);
+    assert.equal(entry.kind, 'run');
+    assert.equal(entry.ok, false);
+    assert.equal(typeof entry.reason, 'string');
+    assert.ok(entry.reason.length <= 160);
+    assert.match(entry.reason, /auth/i);
+  } finally { f.cleanup(); }
+});
+
 // --- free models and the soft bench in `bullswarm pools` --------------------
 // Requirement 5: the observation command has to say when a pool is free and
 // when it is benched, or an operator cannot tell a free-first pick or a paused

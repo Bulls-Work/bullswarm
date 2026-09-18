@@ -550,3 +550,23 @@ test('rungRecord leaves stopped dispatches out of a pool ok share', () => {
   assert.equal(record.okShare, 0.5);
   assert.equal(rungRecord(log.slice(2), 'pool-a', 'low').okShare, null, 'only stops means no verdict yet');
 });
+
+test('rungRecord leaves stalled attempts out of medianMinutes', () => {
+  const at = (hour) => new Date(Date.parse(`2026-09-08T0${hour}:00:00Z`)).toISOString();
+  const log = [
+    { ts: at(1), picked: 'pool-a', effort: 'low', ok: true, wallSec: 240 },
+    { ts: at(2), picked: 'pool-a', effort: 'low', ok: true, wallSec: 360 },
+    // Silence timeout: 60 wall minutes that would pull p50 from 5 to 6.
+    { ts: at(3), picked: 'pool-a', effort: 'low', ok: false, failureKind: 'stalled', wallSec: 3600 },
+    // Attempt-shaped row: stalled flag, no failureKind.
+    { ts: at(4), picked: 'pool-a', effort: 'low', ok: false, stalled: true, wallSec: 7200 },
+  ];
+  const record = rungRecord(log, 'pool-a', 'low');
+  assert.equal(record.dispatches, 4, 'a stall still counts as a dispatch');
+  assert.equal(record.medianMinutes, 5, 'stall wall time does not move the median');
+  assert.equal(record.okShare, 0.5, 'a stall remains a verdict for ok share');
+  const stallOnly = rungRecord(log.slice(2), 'pool-a', 'low');
+  assert.equal(stallOnly.dispatches, 2);
+  assert.equal(stallOnly.medianMinutes, null, 'only stalls means no measured duration');
+  assert.equal(stallOnly.okShare, 0);
+});

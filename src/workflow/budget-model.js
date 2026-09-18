@@ -6,8 +6,9 @@
 // Doctrine:
 //   B1. There are exactly two kinds of money here and both say what they are.
 //       `apiEquivalentUsd` is the API-equivalent estimate the runs actually
-//       recorded. `subscription` is money at a DECLARED subscription rate and
-//       is null unless priceFor() returned one. There is no third kind, and
+//       recorded. `subscription` is money at a declared subscription rate or a
+//       sourced provider-plan rate and is null unless priceFor() or
+//       planPriceFor() returned one. There is no third kind, and
 //       neither is ever derived from the other.
 //   B2. A per-run licence draw may only be `ratePerMinute × worker-minutes`,
 //       carrying the rate's own source and sample count, and is null when the
@@ -21,9 +22,10 @@
 //   B5. Every figure with no source is null, never 0, and the model says
 //       which ones are null.
 
-import { priceFor, subscriptionCostUsd } from '../lib/prices.js';
+import { planPriceFor, priceFor, subscriptionCostUsd } from '../lib/prices.js';
 import { formatDashboardValue } from './dash-kit.js';
 import { periodRange } from './stats-model.js';
+import { poolWindows } from './usage-view.js';
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -31,6 +33,36 @@ const DAY_MS = 86_400_000;
 // The lengths of the windows a pool can be paced by (src/meters/framework.js
 // normalizePacingWindow resolves to exactly these two, or null).
 const WINDOW_MS = { weekly: 7 * DAY_MS, monthly: 30 * DAY_MS };
+const WINDOW_LABELS = Object.freeze({ '5h': '5-hour', '7d': '7-day', mo: 'monthly' });
+
+// The rollup keeps one worst-of basis per pool.  Keep the same ordering in
+// every aggregate on this page: an estimate or an unknown attempt makes the
+// whole money figure unable to claim provider measurement.
+const TOKEN_SOURCE_RANK = Object.freeze({
+  unknown: 0,
+  'estimated:utf8-bytes/4': 1,
+  'transcript-summed': 2,
+  'provider-reported': 3,
+});
+
+function tokenSourceOf(value, cost = null) {
+  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
+  // Pre-basis rollups only carried costUsd.  Those dollars were the old
+  // bytes/4 fallback, so preserve their honest legacy meaning rather than
+  // treating the field as provider measurement.
+  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
+}
+
+function worstTokenSource(current, candidate) {
+  const next = tokenSourceOf(candidate);
+  if (current == null) return next;
+  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function measuredAttempts(source, attempts) {
+  if (!['provider-reported', 'transcript-summed'].includes(source)) return 0;
+  return Math.max(0, Math.trunc(Number(attempts) || 0));
+}
 
 // The same ±15pp thresholds src/workflow/usage-view.js paceWord() uses, so
 // the Budget page and the pool rows never disagree about whether a pool is
@@ -59,6 +91,30 @@ function parseIso(value) {
   if (typeof value !== 'string' || !value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+function capturedAtOf(pools, sampledAt = null) {
+  const explicit = parseIso(sampledAt);
+  if (explicit != null) return typeof sampledAt === 'string' ? sampledAt : new Date(explicit).toISOString();
+  const times = (Array.isArray(pools) ? pools : [])
+    .map((pool) => pool?.meterSnapshot?.captured_at)
+    .filter((value) => parseIso(value) != null)
+    .map((value) => ({ value, ms: parseIso(value) }))
+    .sort((a, b) => a.ms - b.ms);
+  return times[0]?.value ?? null;
+}
+
+function sampleAgeText(sampledAt, now) {
+  const captured = parseIso(sampledAt);
+  if (captured == null) return null;
+  const ageMs = Math.max(0, now - captured);
+  if (ageMs < MINUTE_MS) return 'just now';
+  const minutes = Math.round(ageMs / MINUTE_MS);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 function add(total, value) {
@@ -191,6 +247,18 @@ function paceWordOf(usedPct, elapsedPct) {
   return 'on track';
 }
 
+// The Budget page speaks in the direction a reader can act on: usage is
+// ahead when the used share has passed the elapsed share, and behind when it
+// has not. Keep the exact point difference; unlike the compact pool rows,
+// this is a per-window audit and should not hide a 12-point gap in a bucket.
+function paceTextOf(usedPct, elapsedPct) {
+  if (usedPct == null || elapsedPct == null) return null;
+  const points = Math.round(usedPct - elapsedPct);
+  if (points > 0) return `ahead by ${points} pts`;
+  if (points < 0) return `behind by ${Math.abs(points)} pts`;
+  return 'on track';
+}
+
 function creditsOf(pool) {
   const declared = pool?.credits;
   const quota = declared && typeof declared === 'object' ? declared : pool?.meterSnapshot?.monthly_quota ?? null;
@@ -237,29 +305,75 @@ function rateBlock(pool) {
 // -------------------------------------------------------------------- price
 
 /**
- * Resolve one pool's declared subscription economics.
+ * Resolve one pool's subscription economics. A real declared monthly amount
+ * wins; when it is absent, a published price for the plan the provider
+ * detected wins. The result is annotated so the view never presents a
+ * detected figure as an operator declaration.
  *
  * `prices` is tolerant on purpose, because three callers hold three different
  * things: nothing (resolve from the pool's own merged subscription and the
  * bundled table), a `state.strategy.subscriptions` map, a priceFor options
- * bag, or a function. It never invents a price: every path ends at priceFor,
- * which returns null without a declared `monthlyPriceUsd`.
+ * bag, or a function. It never invents a price: every path ends at priceFor
+ * or planPriceFor, both of which return null without a sourced amount.
  */
 function resolvePrice(pool, prices) {
   const name = poolName(pool);
   if (!name) return null;
-  if (typeof prices === 'function') return prices(pool) ?? null;
   const own = pool?.subscription && typeof pool.subscription === 'object'
     ? { [name]: pool.subscription }
     : {};
+
+  const markDeclared = (price) => price ? { ...price, origin: 'declared' } : null;
+  const markDetected = (price, detectedPlan) => price
+    ? { ...price, origin: 'detected', detectedPlan: detectedPlan ?? price.plan ?? null }
+    : null;
+
+  if (typeof prices === 'function') {
+    const direct = prices(pool) ?? null;
+    if (direct?.monthlyPriceUsd != null) return markDeclared(direct);
+  }
+
   if (prices && typeof prices === 'object') {
     if (prices.subscriptions || prices.file) {
-      return priceFor(name, { subscriptions: prices.subscriptions ?? own, file: prices.file ?? null });
+      const declared = priceFor(name, {
+        subscriptions: { ...own, ...(prices.subscriptions ?? {}) },
+        file: prices.file ?? null,
+      });
+      if (declared) return markDeclared(declared);
+      const detected = planPriceFor(pool, detectedPlansOf(pool), { file: prices.file ?? null });
+      if (detected) return markDetected(detected, detected.plan);
+    } else {
+      const declared = priceFor(name, { subscriptions: prices });
+      if (declared) return markDeclared(declared);
     }
-    const fromMap = priceFor(name, { subscriptions: prices });
-    if (fromMap) return fromMap;
   }
-  return priceFor(name, { subscriptions: own });
+  const declared = priceFor(name, { subscriptions: own });
+  if (declared) return markDeclared(declared);
+  const detected = planPriceFor(pool, detectedPlansOf(pool));
+  return detected ? markDetected(detected, detected.plan) : null;
+}
+
+function textOf(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function detectedPlansOf(pool) {
+  const snapshot = pool?.meterSnapshot ?? pool?.snapshot ?? {};
+  const detected = [
+    pool?.detectedPlan,
+    pool?.planName,
+    pool?.plan_name,
+    snapshot.plan_name,
+    snapshot.planName,
+    pool?.plan_type,
+    pool?.planType,
+    snapshot.plan_type,
+    snapshot.planType,
+  ].map(textOf).find(Boolean);
+  // subscription_type and rate_limit_tier describe usage multipliers or
+  // seats, not a billable plan. Once the provider reports a plan name that
+  // has no sourced price, do not fall through to either field.
+  return detected ? [detected] : [];
 }
 
 // --------------------------------------------------------------- one pool
@@ -282,21 +396,65 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   const usedPct = finite(pool?.usedPct);
   const elapsedPct = finite(pool?.elapsedPct);
   const rate = rateBlock(pool);
+  const sampledAt = capturedAtOf([pool]);
+  const windows = poolWindows(pool, at).map((window) => {
+    const resetMs = parseIso(window.resetsAt);
+    const resetMinutes = resetMs == null ? null : Math.round((resetMs - at) / MINUTE_MS);
+    let resetClock = null;
+    if (resetMs != null) {
+      try {
+        resetClock = new Intl.DateTimeFormat('en-GB', {
+          timeZone: localTimeZone(), hour: '2-digit', minute: '2-digit', hour12: false,
+          timeZoneName: 'short',
+        }).format(new Date(resetMs));
+      } catch { resetClock = null; }
+    }
+    return {
+      key: window.key,
+      label: WINDOW_LABELS[window.key] ?? window.key,
+      usedPct: finite(window.usedPct),
+      elapsedPct: finite(window.elapsedPct),
+      pacePoints: window.usedPct == null || window.elapsedPct == null
+        ? null : round(window.usedPct - window.elapsedPct, 2),
+      paceText: paceTextOf(window.usedPct, window.elapsedPct),
+      // Keep the old compact vocabulary available to callers that want the
+      // same severity bucket as the pool row.
+      paceWord: paceWordOf(window.usedPct, window.elapsedPct),
+      resetsAt: window.resetsAt,
+      resetsText: resetsTextOf(window.resetsAt),
+      resetClock,
+      resetsInMinutes: resetMinutes,
+      timeZone: localTimeZone(),
+      sampledAt,
+    };
+  });
 
   // Money and the share bar are measured over different windows, and each
   // says which: money over the page's period (so it lines up with the
   // pro-rated subscription figure), the share over the meter's own window.
   let apiEquivalentUsd = null;
+  let tokenSource = null;
   let periodMinutes = null;
   let runsOnPool = 0;
+  let attempts = 0;
+  let measured = 0;
   const perRunMinutes = [];
   for (const record of records) {
     const minutes = workerMinutesOf(record, name);
     const cost = apiEquivalentOf(record, name);
+    const entry = poolEntry(record, name);
+    const source = tokenSourceOf(entry?.tokenSource, cost);
     if (record?.pools && Object.hasOwn(record.pools, name)) runsOnPool += 1;
+    if (entry) {
+      const count = Math.max(0, Math.trunc(Number(entry.attempts) || 0));
+      attempts += count;
+      measured += measuredAttempts(source, count);
+      tokenSource = worstTokenSource(tokenSource, source);
+    }
     if (minutes != null) { periodMinutes = add(periodMinutes, minutes); perRunMinutes.push(minutes); }
     apiEquivalentUsd = add(apiEquivalentUsd, cost);
   }
+  tokenSource ??= 'unknown';
 
   const meterRange = licenceWindowRange(pool, at);
   const shareRange = meterRange ?? { ...range, window: pacingWindowOf(pool), source: `the page's ${range.period} period (the pool reports no reset time)`, stale: false };
@@ -330,6 +488,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     : null;
 
   const price = resolvePrice(pool, prices);
+  const detectedPlan = detectedPlansOf(pool)[0] ?? null;
   const windowDays = range.days ?? null;
   const subscription = price
     ? {
@@ -338,6 +497,10 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
       source: price.source ?? null,
       updatedAt: price.updatedAt ?? null,
       basis: price.basis ?? 'declared monthly subscription price',
+      origin: price.origin ?? 'declared',
+      detectedPlan: price.detectedPlan ?? (price.origin === 'detected' ? detectedPlan : null),
+      quotedLine: price.quotedLine ?? null,
+      checkedAt: price.checkedAt ?? null,
       windowDays,
       // B1. Money at the declared subscription rate, pro-rated over the
       // window on the 30-day-month convention prices.js documents.
@@ -347,7 +510,11 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
 
   const row = {
     name,
-    planType: pool?.subscription?.plan ?? pool?.meterSnapshot?.plan_type ?? null,
+    planType: pool?.subscription?.plan
+      ?? pool?.meterSnapshot?.plan_name
+      ?? pool?.meterSnapshot?.plan_type
+      ?? null,
+    detectedPlan,
     window: pacingWindowOf(pool) ?? (typeof pool?.pacingWindow === 'string' ? pool.pacingWindow : null),
     usedPct,
     elapsedPct,
@@ -386,7 +553,17 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     rateNote,
     subscription,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
-    apiEquivalentBasis: 'recorded per-attempt API-equivalent estimates, summed over the period',
+    tokenSource,
+    apiEquivalentBasis: tokenSource === 'provider-reported'
+      ? 'provider-reported totals, summed over the period'
+      : tokenSource === 'transcript-summed'
+        ? 'session transcript totals, summed over the period'
+        : tokenSource === 'estimated:utf8-bytes/4'
+          ? 'UTF-8 byte estimates, summed over the period'
+          : 'no usage measurement recorded for the period',
+    attempts,
+    measuredAttempts: measured,
+    estimatedAttempts: tokenSource === 'estimated:utf8-bytes/4' ? Math.max(0, attempts - measured) : 0,
     fits,
     fitsBasis: fits == null
       ? (rateNote
@@ -405,6 +582,9 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     from: range.from,
     to: range.to,
     meterSource: pool?.meterSource ?? 'none',
+    sampledAt,
+    sampleAgeText: sampleAgeText(sampledAt, at),
+    windows,
     enabled: pool?.enabled !== false,
   };
   row.nulls = nullPaths({
@@ -413,6 +593,16 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     resetsAt: row.resetsAt,
     resetsText: row.resetsText,
     credits: row.credits,
+    sampledAt: row.sampledAt,
+    sampleAgeText: row.sampleAgeText,
+    windows: row.windows.map((window) => ({
+      usedPct: window.usedPct,
+      elapsedPct: window.elapsedPct,
+      paceText: window.paceText,
+      resetsAt: window.resetsAt,
+      resetsText: window.resetsText,
+      resetClock: window.resetClock,
+    })),
     share: { workflows: row.share.workflows, rest: row.share.rest, ratePerMinute: row.share.ratePerMinute },
     subscription: row.subscription,
     apiEquivalentUsd: row.apiEquivalentUsd,
@@ -425,9 +615,11 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
  * Every pool as a licence meter, plus the totals the page footer carries.
  *
  * @param {Array<object>} pools  the live pool list from buildPools
- * @param {{rollups?: Array<object>, prices?: *, period?: string, now?: number}} [options]
+ * @param {{rollups?: Array<object>, prices?: *, period?: string, now?: number, sampledAt?: string}} [options]
  */
-export function budgetModel(pools, { rollups = [], prices = null, period = 'week', now = Date.now() } = {}) {
+export function budgetModel(pools, {
+  rollups = [], prices = null, period = 'week', now = Date.now(), sampledAt: suppliedSampledAt = null,
+} = {}) {
   const at = finite(now) ?? Date.now();
   const range = periodRange(period, at);
   const allPools = (Array.isArray(pools) ? pools : []).filter((pool) => poolName(pool));
@@ -435,24 +627,36 @@ export function budgetModel(pools, { rollups = [], prices = null, period = 'week
   const list = allPools.filter((pool) => pool?.enabled !== false);
   const records = toRecords(rollups);
   const rows = list.map((pool) => poolBudget(pool, { rollups: records, prices, period, now: at }));
+  // The usage loader's capturedAt is the oldest sample across the complete
+  // pool read, including a disabled pool. Keep the Budget header honest to
+  // that same sample rather than silently picking a fresher enabled pool.
+  const sampledAt = capturedAtOf(allPools, suppliedSampledAt);
 
   const totals = {
     pools: rows.length,
     metered: rows.filter((row) => row.usedPct != null).length,
     apiEquivalentUsd: null,
+    tokenSource: null,
     subscriptionUsd: null,
     workflowMinutes: null,
     runs: 0,
+    attempts: 0,
+    measuredAttempts: 0,
+    estimatedAttempts: 0,
     priced: [],
     unpriced: [],
   };
   for (const row of rows) {
     totals.apiEquivalentUsd = add(totals.apiEquivalentUsd, row.apiEquivalentUsd);
+    totals.tokenSource = worstTokenSource(totals.tokenSource, row.tokenSource);
     totals.workflowMinutes = add(totals.workflowMinutes, row.share.workflowMinutes);
     totals.runs += row.runs;
-    // B1. The subscription total sums the pools that DECLARED a price and
-    // names the ones that did not, so a partial total is never read as a
-    // whole one.
+    totals.attempts += row.attempts;
+    totals.measuredAttempts += row.measuredAttempts;
+    totals.estimatedAttempts += row.estimatedAttempts;
+    // B1. The subscription total sums pools with a resolved monthly price and
+    // names the ones that did not, so a partial total is never read as a whole
+    // one.
     if (row.subscription?.windowUsd != null) {
       totals.subscriptionUsd = add(totals.subscriptionUsd, row.subscription.windowUsd);
       totals.priced.push(row.name);
@@ -461,15 +665,17 @@ export function budgetModel(pools, { rollups = [], prices = null, period = 'week
     }
   }
   totals.apiEquivalentUsd = round(totals.apiEquivalentUsd, 6);
+  totals.tokenSource ??= 'unknown';
   totals.subscriptionUsd = round(totals.subscriptionUsd, 6);
   totals.workflowMinutes = round(totals.workflowMinutes, 2);
 
   const notes = [
-    'apiEquivalentUsd is the estimate the runs recorded, not an invoice',
-    'subscription money is the declared monthly price pro-rated over the window on a 30-day month',
+    'apiEquivalentUsd carries the worst usage basis across the attempts, not an invoice',
+    'subscription money is the declared price or detected plan price pro-rated over the window on a 30-day month',
+    `${totals.measuredAttempts} of ${totals.attempts} attempts measured · the rest are byte estimates`,
   ];
   if (totals.unpriced.length) {
-    notes.push(`no declared subscription price: ${totals.unpriced.join(', ')} — set one with \`bullswarm strategy set-subscription <pool> --monthly-usd\``);
+    notes.push(`no declared subscription price: price unknown: set it with bullswarm strategy set-subscription <pool> --monthly-usd <amount> (pools: ${totals.unpriced.join(', ')})`);
   }
   const unrated = rows.filter((row) => row.share.ratePerMinute == null).map((row) => row.name);
   if (unrated.length) {
@@ -483,14 +689,19 @@ export function budgetModel(pools, { rollups = [], prices = null, period = 'week
     to: range.to,
     days: range.days,
     timeZone: localTimeZone(),
+    sampledAt,
+    sampleAgeText: sampleAgeText(sampledAt, at),
     rows,
     totals,
     notes,
     disabledPools,
   };
   model.nulls = nullPaths({
+    sampledAt: model.sampledAt,
+    sampleAgeText: model.sampleAgeText,
     totals: {
       apiEquivalentUsd: totals.apiEquivalentUsd,
+      tokenSource: totals.tokenSource,
       subscriptionUsd: totals.subscriptionUsd,
       workflowMinutes: totals.workflowMinutes,
     },
@@ -519,6 +730,14 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
   const entries = [];
   for (const record of selectRecords(toRecords(rollups), range)) {
     if (name != null && !(record?.pools && Object.hasOwn(record.pools, name))) continue;
+    const selectedEntries = name != null
+      ? [poolEntry(record, name)]
+      : Object.values(record?.pools ?? {});
+    let tokenSource = null;
+    for (const entry of selectedEntries) {
+      if (!entry) continue;
+      tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry.tokenSource, entry.costUsd));
+    }
     entries.push({
       runId: record.runId ?? null,
       shortId: record.shortId ?? null,
@@ -530,6 +749,14 @@ export function biggestRuns(rollups, { pool = null, period = 'week', now = Date.
       workerMinutes: round(workerMinutesOf(record, name), 2),
       wallMinutes: finite(record?.minutes?.wall),
       apiEquivalentUsd: round(apiEquivalentOf(record, name), 6),
+      tokenSource: tokenSource ?? 'unknown',
+      apiEquivalentBasis: tokenSource === 'provider-reported'
+        ? 'provider-reported'
+        : tokenSource === 'transcript-summed'
+          ? 'transcript-summed'
+          : tokenSource === 'estimated:utf8-bytes/4'
+            ? 'estimated:utf8-bytes/4'
+            : 'unknown',
     });
   }
 

@@ -12,9 +12,9 @@
 //       a time once it passes; that pacing is labeled `declared-reset`
 //       wherever it shows (declaredResetPacing below).
 //   M3. Weekly/monthly windows pace routing; 5h windows are gates only
-//       (they never pace): >= BURST_BLOCK_PCT blocks dispatch outright and
-//       >= FIVE_HOUR_NEAR_LIMIT_PCT deprioritizes the pool while any pool
-//       with 5h headroom is eligible. WHICH of weekly/monthly paces one pool
+//       (they never pace): a 100% reading blocks dispatch outright and
+//       >= FIVE_HOUR_NEAR_LIMIT_PCT is a soft last-mile ordering penalty while
+//       another eligible pool is behind pace. WHICH of weekly/monthly paces one pool
 //       is the pool's own subscription window (`quotaWindow`), not a global
 //       preference: command-code buys a monthly credit allocation and only
 //       rate-limits weekly, so pacing it by its weekly window sends work to a
@@ -94,7 +94,8 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
  *     default order weekly ?? monthly ?? none. Never 5h.
  *   - burst gate = 5h utilization >= BURST_BLOCK_PCT blocks dispatch
  *   - near limit  = 5h utilization >= FIVE_HOUR_NEAR_LIMIT_PCT: still
- *     dispatchable, but routing prefers any pool with 5h headroom
+ *     dispatchable; routing applies a soft last-mile ordering penalty when
+ *     another eligible pool is behind pace
  *
  * `pacingWindow` on the result names the window the numbers actually came
  * from ('weekly' | 'monthly' | null) — which is the requested one only when
@@ -104,7 +105,8 @@ export function pacingWindowFor({ connector = null, subscription = null } = {}) 
  * @param {number} [nowMs]
  * @param {{pacingWindow?: string|null}} [opts]
  */
-export const BURST_BLOCK_PCT = 90;
+/** A recorded 5h reading is exhausted at the wall, not before it. */
+export const BURST_BLOCK_PCT = 100;
 /** 5h utilization at/above which routing treats a pool as near its limit. */
 export const FIVE_HOUR_NEAR_LIMIT_PCT = 75;
 

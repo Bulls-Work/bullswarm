@@ -98,6 +98,29 @@ const toneColor = (tone: OverviewLine['tone']): string | undefined =>
 
 const shortModel = (m: string | null): string => (m ? m.split('/').pop() ?? m : '')
 
+type AssignmentRecord = BullswarmAssignment & {
+  startedAt?: string
+  project?: string
+  projectName?: string
+  cwd?: string
+  taskFile?: string
+  task?: string
+  description?: string
+}
+
+const pathTail = (value: string): string => value.split(/[\\/]/).filter(Boolean).pop() ?? value
+
+/** Best available project/task label from a live assignment record. */
+const assignmentWork = (a: BullswarmAssignment): string => {
+  const record = a as AssignmentRecord
+  const value = [record.taskFile, record.projectName, record.project, record.cwd, record.description, record.task]
+    .find(candidate => typeof candidate === 'string' && candidate.trim())
+  return value ? pathTail(value) : 'task unavailable'
+}
+
+const standaloneTask = (assignments: readonly BullswarmAssignment[]): BullswarmAssignment | null =>
+  assignments.find(a => a.source === 'run') ?? null
+
 /** Greedy word wrap to `width` cells, one string per row; long words are cut. */
 export function wrapText(text: string, width: number): string[] {
   const w = Math.max(8, width)
@@ -203,19 +226,6 @@ export function paneView(
     </Box>
   ) : null
 
-  if (!run) {
-    return {
-      tree: (
-        <Box flexDirection="column">
-          <Text dimColor>No ongoing workflow run. `bullswarm workflow goal` launches one.</Text>
-          {poolsSection}
-          {switcher}
-        </Box>
-      ),
-      scroll: null,
-    }
-  }
-
   // Both modes share one frame: fixed header rows, a window over `rows`
   // the mod scrolls itself, fixed footer rows. One element per row keeps
   // the window's arithmetic exact, so long text is wrapped here.
@@ -289,6 +299,36 @@ export function paneView(
     const pageRows = poolsPageRows({ Box, Text, Button }, model, width, nameOf, actions)
     const footer: RenderElement[] = compact ? [switcher] : [...noteRows, switcher]
     return frame(header, compact ? [...noteRows, ...pageRows] : pageRows, footer)
+  }
+
+  if (!run) {
+    const task = standaloneTask(model.assignments)
+    const elapsed = task
+      ? timingOf(task) || ageOf((task as AssignmentRecord).startedAt ?? null, model.nowMs) || 'unknown'
+      : ''
+    const taskRows = task ? (
+      <Box key="standalone-task" flexDirection="column">
+        <Text bold color="cyan">Single task in flight</Text>
+        <Text wrap="truncate-end">
+          {task.lane || 'unknown lane'} · {nameOf(task.pool)}{task.model ? ` · ${shortModel(task.model)}` : ''}
+        </Text>
+        <Text dimColor wrap="truncate-end">
+          {assignmentWork(task)} · elapsed {elapsed}
+        </Text>
+      </Box>
+    ) : (
+      <Text key="empty" dimColor>No ongoing workflow run. `bullswarm workflow goal` launches one.</Text>
+    )
+    return {
+      tree: (
+        <Box flexDirection="column">
+          {taskRows}
+          {poolsSection}
+          {switcher}
+        </Box>
+      ),
+      scroll: null,
+    }
   }
 
   if (model.action) {

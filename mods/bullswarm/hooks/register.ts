@@ -23,7 +23,15 @@ import { argvOf, decide, type AgentArgs } from './route'
 import { aliasesOf, displayNames, withDisplayNames } from './names'
 import { parseOverview, type OverviewLine } from './overview'
 import { type PaneScroll, paneView } from './pane'
-import { parseAssignments, parseDetail, parseRuns, parseStep, runLine } from './runs'
+import {
+  parseAssignmentRecord,
+  parseAssignments,
+  parseDetail,
+  parseRuns,
+  parseStep,
+  runLine,
+  type BullswarmAssignmentRecord,
+} from './runs'
 import { strip } from './strip'
 import { parseVerdict, verdictContext } from './verdict'
 
@@ -62,6 +70,42 @@ type Routed = {
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
+
+type RuntimeGlobal = typeof globalThis & {
+  process?: { env?: Record<string, string | undefined> }
+}
+
+/** The same home override the Bullswarm CLI uses for its ledger. */
+function assignmentPath(id: string): string | null {
+  if (!id || /[\\/]/.test(id)) return null
+  const env = (globalThis as RuntimeGlobal).process?.env ?? {}
+  const home = env.BULLSWARM_HOME?.trim() || (env.HOME ? `${env.HOME}/.bullswarm` : '')
+  return home ? `${home.replace(/\/+$/, '')}/assignments/${id}.json` : null
+}
+
+/**
+ * The CLI view contains the timing projection used by the strip. For a
+ * standalone `bullswarm run`, read its ledger file too so the empty pane can
+ * show optional project/task metadata without assuming an old record schema.
+ */
+async function readRunAssignmentFiles(h: Host, values: readonly BullswarmAssignmentRecord[]): Promise<BullswarmAssignmentRecord[]> {
+  const candidates = values.filter(a => a.source === 'run' && !!a.id)
+  if (!candidates.length) return [...values]
+  const direct = await Promise.all(
+    candidates.map(async a => {
+      const path = assignmentPath(a.id!)
+      if (!path) return a
+      try {
+        const raw = JSON.parse(await h.read(path)) as unknown
+        return parseAssignmentRecord(raw, a) ?? a
+      } catch {
+        return a
+      }
+    }),
+  )
+  const byId = new Map(direct.flatMap(a => (a.id ? [[a.id, a] as const] : [])))
+  return values.map(a => (a.id ? byId.get(a.id) ?? a : a))
+}
 
 /**
  * Registers the mod: `$.bullswarm` in the engine.create fold, `/bullswarm`
@@ -146,7 +190,7 @@ export function register(on: On, options: PluginOptions = {}) {
       )
     }
     if (r.status === 'fulfilled') runs = r.value
-    if (a.status === 'fulfilled') assignments = a.value
+    if (a.status === 'fulfilled') assignments = await readRunAssignmentFiles(h, a.value)
     const failed = [p, r, a].find((x): x is PromiseRejectedResult => x.status === 'rejected')
     lastError = failed ? messageOf(failed.reason) : null
     nowMs = await h.now()

@@ -539,3 +539,28 @@ test('a malformed index does not crash a page that repaints every second', () =>
     assertNoNaN(projectsModel(junk, { now: NOW }));
   }
 });
+test('Stats models carry usage basis and measured attempt counts through every aggregate', () => {
+  for (const [tokenSource, measuredAttempts] of [
+    ['provider-reported', 2],
+    ['transcript-summed', 2],
+    ['estimated:utf8-bytes/4', 0],
+    ['unknown', 0],
+  ]) {
+    const rollups = indexOf([record({
+      runId: 'wf-basis',
+      startedAt: DAY(0, 8),
+      finishedAt: DAY(0, 9),
+      pools: { 'claude-code': { attempts: 2, minutes: 10, costUsd: 0.4, tokenSource } },
+      models: { 'claude-opus-5': { attempts: 2, minutes: 10 } },
+    })]);
+    const overview = overviewModel(rollups, POOLS, { now: NOW });
+    assert.equal(overview.today.tokenSource, tokenSource);
+    assert.equal(overview.today.measuredAttempts, measuredAttempts);
+    const pool = overview.breakdown.pools.find((row) => row.name === 'claude-code');
+    assert.equal(pool.tokenSource, tokenSource);
+    assert.equal(pool.measuredAttempts, measuredAttempts);
+    const trend = trendModel(rollups, { metric: 'spend', period: '7d', now: NOW });
+    assert.equal(trend.tokenSource, tokenSource);
+    assert.equal(trend.buckets.at(-1).tokenSource, tokenSource);
+  }
+});

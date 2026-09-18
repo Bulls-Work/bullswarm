@@ -51,6 +51,29 @@ const PERIOD_ALIASES = {
 };
 const PERIOD_DAYS = { day: 1, '7d': 7, '30d': 30, all: null };
 
+const TOKEN_SOURCE_RANK = Object.freeze({
+  unknown: 0,
+  'estimated:utf8-bytes/4': 1,
+  'transcript-summed': 2,
+  'provider-reported': 3,
+});
+
+function tokenSourceOf(value, cost = null) {
+  if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
+  return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
+}
+
+function worstTokenSource(current, candidate) {
+  const next = tokenSourceOf(candidate);
+  if (current == null) return next;
+  return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function measuredAttemptCount(source, attempts) {
+  if (!['provider-reported', 'transcript-summed'].includes(source)) return 0;
+  return Math.max(0, Math.trunc(Number(attempts) || 0));
+}
+
 // ---------------------------------------------------------------- primitives
 
 // S1. Number(null) is 0, Number('') is 0, Number(false) is 0. A recorded null
@@ -229,6 +252,14 @@ function recordCostUsd(record) {
   return total;
 }
 
+function recordTokenSource(record) {
+  let source = null;
+  for (const [, entry] of mapEntries(record?.pools)) {
+    source = worstTokenSource(source, tokenSourceOf(entry?.tokenSource, entry?.costUsd));
+  }
+  return source ?? 'unknown';
+}
+
 /** Worker-minutes: the attempt wall time the run spent inside its pools. */
 function recordWorkerMinutes(record) {
   let total = null;
@@ -284,7 +315,10 @@ function newRow(name) {
     attempts: 0,
     minutes: null,
     apiEquivalentUsd: null,
+    tokenSource: null,
     tokens: null,
+    measuredAttempts: 0,
+    estimatedAttempts: 0,
     workflowsCompleted: 0,
     verified: 0,
     wallMinutes: [],
@@ -322,7 +356,15 @@ function buildRows(records, kind) {
       for (const [, entry] of mapEntries(record.pools)) row.attempts += finite(entry?.attempts) ?? 0;
       row.minutes = add(row.minutes, recordWorkerMinutes(record));
       row.apiEquivalentUsd = add(row.apiEquivalentUsd, recordCostUsd(record));
-      for (const [, entry] of mapEntries(record.pools)) row.tokens = add(row.tokens, finite(entry?.tokens));
+      for (const [, entry] of mapEntries(record.pools)) {
+        const cost = finite(entry?.costUsd);
+        const source = tokenSourceOf(entry?.tokenSource, cost);
+        const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
+        row.tokenSource = worstTokenSource(row.tokenSource, source);
+        row.measuredAttempts += measuredAttemptCount(source, count);
+        if (source === 'estimated:utf8-bytes/4') row.estimatedAttempts += count;
+        row.tokens = add(row.tokens, finite(entry?.tokens));
+      }
       continue;
     }
     for (const [name, entry] of mapEntries(record[kind === 'pool' ? 'pools' : 'models'])) {
@@ -333,6 +375,11 @@ function buildRows(records, kind) {
       // S2. The models map has no costUsd at all, so this stays null for
       // every model — which is the honest answer, not a zero.
       row.apiEquivalentUsd = add(row.apiEquivalentUsd, finite(entry?.costUsd));
+      const source = tokenSourceOf(entry?.tokenSource, entry?.costUsd);
+      const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
+      row.tokenSource = worstTokenSource(row.tokenSource, source);
+      row.measuredAttempts += measuredAttemptCount(source, count);
+      if (source === 'estimated:utf8-bytes/4') row.estimatedAttempts += count;
       row.tokens = add(row.tokens, finite(entry?.tokens));
     }
   }
@@ -349,6 +396,9 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
     minutes: round(row.minutes, 2),
     medianWallMinutes: round(median(row.wallMinutes), 2),
     apiEquivalentUsd: round(row.apiEquivalentUsd, 6),
+    tokenSource: row.tokenSource ?? 'unknown',
+    measuredAttempts: row.measuredAttempts,
+    estimatedAttempts: row.estimatedAttempts,
     tokens: row.tokens == null ? null : Math.round(row.tokens),
     workflowsCompleted: row.workflowsCompleted,
     okShare: row.runs ? share(row.workflowsCompleted, row.runs) : null,
@@ -364,17 +414,22 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
 
 function rowTotals(rows) {
   const totals = {
-    rows: rows.length, runs: 0, attempts: 0, minutes: null, apiEquivalentUsd: null, workflowsCompleted: 0,
+    rows: rows.length, runs: 0, attempts: 0, minutes: null, apiEquivalentUsd: null,
+    tokenSource: null, measuredAttempts: 0, estimatedAttempts: 0, workflowsCompleted: 0,
   };
   for (const row of rows) {
     totals.runs += row.runs;
     totals.attempts += row.attempts;
     totals.minutes = add(totals.minutes, row.minutes);
     totals.apiEquivalentUsd = add(totals.apiEquivalentUsd, row.apiEquivalentUsd);
+    totals.tokenSource = worstTokenSource(totals.tokenSource, row.tokenSource);
+    totals.measuredAttempts += Number(row.measuredAttempts) || 0;
+    totals.estimatedAttempts += Number(row.estimatedAttempts) || 0;
     totals.workflowsCompleted += row.workflowsCompleted;
   }
   totals.minutes = round(totals.minutes, 2);
   totals.apiEquivalentUsd = round(totals.apiEquivalentUsd, 6);
+  totals.tokenSource ??= 'unknown';
   return totals;
 }
 
@@ -551,6 +606,7 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
         weekday: bucketBy === 'day' ? weekdayIndex(at) : null,
         runs: 0,
         value: isCount ? 0 : null,
+        tokenSource: null,
         segments: new Map(),
       });
     }
@@ -570,6 +626,7 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
     bucket.runs += 1;
     const value = metricValue(record, chosenMetric);
     if (value != null) bucket.value = (bucket.value ?? 0) + value;
+    if (chosenMetric === 'spend') bucket.tokenSource = worstTokenSource(bucket.tokenSource, recordTokenSource(record));
     for (const segment of metricSegments(record, chosenMetric, split)) {
       bucket.segments.set(segment.name, (bucket.segments.get(segment.name) ?? 0) + segment.value);
     }
@@ -593,6 +650,7 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
       weekday: bucket.weekday,
       runs: bucket.runs,
       value,
+      tokenSource: bucket.tokenSource ?? (isCount ? null : 'unknown'),
       segments: [...bucket.segments.entries()]
         .map(([name, amount]) => ({ name, value: round(amount, chosenMetric === 'spend' ? 6 : 2) }))
         .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name)),
@@ -613,6 +671,9 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
     total: total == null ? null : round(total, chosenMetric === 'spend' ? 6 : 2),
     cumulative,
     max,
+    tokenSource: chosenMetric === 'spend'
+      ? out.reduce((source, bucket) => worstTokenSource(source, bucket.tokenSource), null) ?? 'unknown'
+      : null,
     unit: chosenMetric === 'spend' ? 'apiEquivalentUsd'
       : chosenMetric === 'minutes' ? 'worker-minutes' : 'runs',
   };
@@ -785,9 +846,19 @@ function todayTiles(records, now) {
   const finishedToday = records.filter((record) => dayKeyOf(record.finishedAt) === today);
   let apiEquivalentUsd = null;
   let priced = 0;
+  let tokenSource = null;
+  let measuredAttempts = 0;
+  let attempts = 0;
   for (const record of finishedToday) {
     const cost = recordCostUsd(record);
+    const source = recordTokenSource(record);
     if (cost != null) { apiEquivalentUsd = add(apiEquivalentUsd, cost); priced += 1; }
+    tokenSource = worstTokenSource(tokenSource, source);
+    for (const [, entry] of mapEntries(record.pools)) {
+      const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
+      attempts += count;
+      measuredAttempts += measuredAttemptCount(tokenSourceOf(entry?.tokenSource, entry?.costUsd), count);
+    }
   }
   const verified = finishedToday.filter((record) => record.verified === true).length;
   return {
@@ -798,8 +869,11 @@ function todayTiles(records, now) {
     // S1. A share of nothing is not 0%.
     verifiedShare: finishedToday.length ? share(verified, finishedToday.length) : null,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
+    tokenSource: tokenSource ?? 'unknown',
     // How much of today's tile is actually sourced, for the view's label.
     pricedRuns: priced,
+    attempts,
+    measuredAttempts,
     basis: 'recorded per-attempt API-equivalent estimates, summed over the runs that finished today',
   };
 }
@@ -904,6 +978,12 @@ function keyValues(records) {
   let agent = null;
   for (const record of records) agent = add(agent, finite(record?.minutes?.agent));
   const days = new Set(records.map((record) => dayKeyOf(record.finishedAt) ?? dayKeyOf(record.startedAt)).filter(Boolean));
+  let apiEquivalentUsd = null;
+  let tokenSource = null;
+  for (const record of records) {
+    apiEquivalentUsd = add(apiEquivalentUsd, recordCostUsd(record));
+    tokenSource = worstTokenSource(tokenSource, recordTokenSource(record));
+  }
 
   const top = (rows, field) => {
     const row = rows.find((entry) => (entry[field] ?? 0) > 0);
@@ -920,6 +1000,8 @@ function keyValues(records) {
     longestRunMinutes: wall.length ? round(Math.max(...wall), 2) : null,
     totalAgentMinutes: round(agent, 2),
     totalWorkerMinutes: round(records.reduce((sum, record) => add(sum, recordWorkerMinutes(record)), null), 2),
+    apiEquivalentUsd: round(apiEquivalentUsd, 6),
+    tokenSource: tokenSource ?? 'unknown',
   };
 }
 
@@ -940,12 +1022,13 @@ export function overviewModel(rollups, pools, { period = '7d', now = Date.now() 
   const range = periodRange(period, at);
   const all = toRecords(rollups);
   const inPeriod = selectRecords(all, range);
+  const today = { ...todayTiles(all, at), licence: licenceTile(pools) };
 
   const model = {
     period: range.period,
     from: range.from,
     to: range.to,
-    today: { ...todayTiles(all, at), licence: licenceTile(pools) },
+    today,
     breakdown: {
       pools: finishRows(buildRows(inPeriod, 'pool'), { rankBy: 'attempts' }),
       models: finishRows(buildRows(inPeriod, 'model'), { rankBy: 'attempts' }),
@@ -953,7 +1036,10 @@ export function overviewModel(rollups, pools, { period = '7d', now = Date.now() 
     },
     heat: heatCells(all, at),
     keys: keyValues(inPeriod),
-    notes: ['model cost is not recorded per model; the breakdown by model carries attempts and minutes only'],
+    notes: [
+      'model cost is not recorded per model; the breakdown by model carries attempts and minutes only',
+      `${today.measuredAttempts} of ${today.attempts} attempts measured · the rest are byte estimates`,
+    ],
   };
   // S5. Every null in the tiles, the heat header and the key-value block,
   // by path, so the view blanks them deliberately.

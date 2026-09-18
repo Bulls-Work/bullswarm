@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   V2_GOAL_SCHEMA_VERSION, V2_STATE_SCHEMA_VERSION,
   createV2GoalDocument, createV2DurableState, createV2State,
   serializeV2GoalDocument, deserializeV2GoalDocument,
   serializeV2DurableState, deserializeV2DurableState,
-  assertV2Resume, validateV2DurableState,
+  assertV2Resume, validateV2DurableState, attemptOutputSeries,
 } from '../src/workflow/v2-state.js';
 
 const input = () => ({ goal: 'Implement the result envelope', cwd: '/tmp/repo', requirements: [{ id: 'result-versioned', text: 'Result is versioned' }, { id: 'tests-pass', text: 'Tests pass', mandatory: false }], settings: { concurrency: 2 }, plannerRouting: { pool: 'planner' }, workerRouting: { preferredPool: 'worker' } });
@@ -185,6 +188,8 @@ test('round trips attempt handoff fields and rejects unknown ones', () => {
     streamFile: '/tmp/stream-do-work-attempt-1.jsonl',
     diffFile: '/tmp/diff-do-work-attempt-1.txt', changedFileCount: 1,
     lastResponse: 'Read the task file and enumerated 3 candidate files.',
+    notes: [{ at: '2026-09-17T02:30:28.000Z', kind: 'recovered-stream-error', text: 'provider stream reported error' }],
+    outputSamples: [[1726540220000, 64], [1726540228000, 88]],
     stalled: true, partialOutput: '/tmp/out-do-work-attempt-1.md', silentSec: 8,
   }, {
     id: 'do-work-2', actionId: 'do-work', ordinal: 2, status: 'succeeded',
@@ -198,6 +203,8 @@ test('round trips attempt handoff fields and rejects unknown ones', () => {
   assert.equal(loaded.attempts[0].diffFile, '/tmp/diff-do-work-attempt-1.txt');
   assert.equal(loaded.attempts[0].changedFileCount, 1);
   assert.equal(loaded.attempts[0].lastResponse, 'Read the task file and enumerated 3 candidate files.');
+  assert.equal(loaded.attempts[0].notes[0].kind, 'recovered-stream-error');
+  assert.deepEqual(loaded.attempts[0].outputSamples, [[1726540220000, 64], [1726540228000, 88]]);
   assert.deepEqual(loaded.attempts[1].handoff, { from: 'do-work-1', bytes: 512 });
   assert.throws(
     () => deserializeV2DurableState(JSON.stringify({
@@ -208,5 +215,78 @@ test('round trips attempt handoff fields and rejects unknown ones', () => {
       ],
     })),
     /handoff.extra is not allowed/,
+  );
+});
+
+test('attempt output series prefers timestamped stream sizes and falls back to durable samples', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-output-series-'));
+  try {
+    const streamFile = join(dir, 'stream.jsonl');
+    writeFileSync(streamFile, [
+      { at: '2026-09-18T00:00:00.000Z', bytes: 12 },
+      { at: '2026-09-18T00:00:05.000Z', bytes: 48 },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+    assert.deepEqual(attemptOutputSeries({ streamFile, outputSamples: [[1, 2]] }, dir), [
+      [Date.parse('2026-09-18T00:00:00.000Z'), 12],
+      [Date.parse('2026-09-18T00:00:05.000Z'), 48],
+    ]);
+    rmSync(streamFile);
+    assert.deepEqual(attemptOutputSeries({ streamFile, outputSamples: [[1, 2], [5, 8]] }, dir), [[1, 2], [5, 8]]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('round trips the attempt provider session and rejects a malformed one', () => {
+  const goal = createV2GoalDocument(input());
+  const state = createV2DurableState(goal, { runId: 'wf-session', shortId: 'ses234' });
+  state.program = {
+    schemaVersion: 'bullswarm.workflow.program.v2', revision: 1,
+    actions: [{
+      id: 'do-work', purpose: 'Do the thing', dependsOn: [], affects: ['result-versioned'], ownedFiles: ['owned.txt'],
+      prompt: 'Do the thing.', lane: 'build', effort: 'low', evidenceFor: [], inputs: [], produces: [],
+    }],
+  };
+  state.actions = [{ id: 'do-work', status: 'succeeded', attempts: 2, programRevision: 1 }];
+  state.presentation = { stages: [{ id: 'r1-build', label: 'Build', revision: 1, actionIds: ['do-work'], startedAt: null, completedAt: null }] };
+  state.attempts = [{
+    id: 'do-work-1', actionId: 'do-work', ordinal: 1, status: 'succeeded',
+    pool: 'claude-code', model: 'claude-opus-5',
+    startedAt: '2026-09-18T02:30:20.000Z', finishedAt: '2026-09-18T02:34:05.000Z',
+    session: {
+      pool: 'claude-code', model: 'claude-opus-5',
+      sessionId: '0f6a4f2e-9c3b-4d1a-9f21-5c8e7b6a4d33', generation: 1,
+      startedAt: '2026-09-18T02:30:20.000Z', lastUsedAt: '2026-09-18T02:34:05.000Z',
+    },
+  }, {
+    id: 'do-work-2', actionId: 'do-work', ordinal: 2, status: 'succeeded',
+    pool: 'codex', model: 'gpt-5.4-codex',
+    startedAt: '2026-09-18T02:34:06.000Z', finishedAt: '2026-09-18T02:36:00.000Z',
+    session: null,
+  }];
+  const loaded = deserializeV2DurableState(serializeV2DurableState(state));
+  assert.deepEqual(loaded.attempts[0].session, state.attempts[0].session);
+  assert.equal(loaded.attempts[1].session, null);
+  // An attempt recorded before measured usage capture carries no session at all.
+  const legacy = { ...state, attempts: state.attempts.map(({ session, ...rest }) => rest) };
+  assert.equal(validateV2DurableState(legacy), true);
+  assert.throws(
+    () => deserializeV2DurableState(JSON.stringify({
+      ...state,
+      attempts: [{ ...state.attempts[0], session: { ...state.attempts[0].session, extra: true } }, state.attempts[1]],
+    })),
+    /session.extra is not allowed/,
+  );
+  assert.throws(
+    () => deserializeV2DurableState(JSON.stringify({
+      ...state,
+      attempts: [{ ...state.attempts[0], session: { ...state.attempts[0].session, sessionId: 42 } }, state.attempts[1]],
+    })),
+    /session.sessionId must be a non-empty string/,
+  );
+  assert.throws(
+    () => deserializeV2DurableState(JSON.stringify({
+      ...state,
+      attempts: [{ ...state.attempts[0], session: { ...state.attempts[0].session, generation: 0 } }, state.attempts[1]],
+    })),
+    /session.generation must be a positive integer/,
   );
 });

@@ -78,6 +78,106 @@
   prints all of them, and `workflow watch` prints one line at the handoff
   naming the file count and what the previous worker said last.
 
+- routing: a rung that names a free model is checked for life before any work
+  is sent to it. Bullswarm sends the one-word prompt `PONG` through that pool's
+  own CLI, waits at most 30 seconds, and caches the answer per pool and model
+  for 15 minutes in `cache/free-model-probes.json`. A pool that answers is
+  dispatched to as before. A pool that does not is benched with the reason
+  (`404`, `provider error` or `timeout`), and the work falls through to the
+  metered pools — the reason reads `probe: timeout on <pool>` in `routeWhy`,
+  on `bullswarm pools` and on the Fleet page. The probe is deliberately
+  narrow: it never runs for a rung left on the CLI default, never for a paid
+  model, never asks a provider what other models it has, and never substitutes
+  a model of its own choosing.
+- attempts: a worker that hits a provider stream error, recovers, and finishes
+  its task is no longer failed for the error. When the output it wrote is
+  usable the attempt succeeds, and the error is kept on the attempt as a note
+  (`kind: "recovered-stream-error"`) so the transport problem is still visible
+  without costing a retry.
+- run: single `bullswarm run` tasks are visible everywhere workflow steps are.
+  Each dispatch's decision-log entry now records the task file, the output file
+  and the lane; a task in flight is read from `~/.bullswarm/assignments/*.json`
+  (source `run`). The Runs page lists in-flight tasks in its active block and
+  finished tasks as rows in the day table — glyph, lane, pool · model, ok or
+  reason, duration, time — Home's today band counts them alongside workflow
+  runs, and the Mod pane shows the task in flight instead of "No ongoing
+  workflow run". A task recorded before these fields existed still appears,
+  showing `—` for what it does not have, and is listed and counted once: the
+  day page and the task ledger both offer it, and the de-duplication used to
+  key on an `id` those rows do not have, so every one of them was drawn twice
+  and every day header double-counted them.
+- budget: a provider's plan no longer has to be typed in. Each provider reports
+  the plan name it can detect for itself (Claude's `subscriptionType` /
+  `rateLimitTier` from `~/.claude/.credentials.json`, Codex's `plan_type`,
+  Command Code's plan, opencode's plan), and `data/plan-prices.json` maps a
+  plan name to a monthly USD figure only where a vendor page was actually read,
+  quoting its URL and the exact line the number came from. A plan with no
+  citable price stays `null` rather than guessed. Budget spends a detected
+  price exactly as it spends a declared one and labels which it is —
+  `detected` or `declared` — so an operator's own figure is never confused with
+  one bullswarm inferred. The plan table is keyed by provider, not by pool, so a
+  discovered per-account pool such as `claude-code:acme` resolves against
+  `claude-code`'s plans; it used to ask for `claude-code:acme`'s own plans and
+  find nothing, which left exactly the pools with one login per account
+  without a price.
+- Mod: the pane's `usage` button works with no run in flight — it renders the
+  pools page instead of doing nothing — and a `run` assignment in flight is
+  shown on the otherwise-empty pane.
+- budget: every meter window a pool actually reports is shown, not just the
+  first one: the 5-hour, 7-day and monthly windows each with their local reset
+  time and their pace. The header says how old the numbers are (`sampled 5m
+  ago`) so a stale reading cannot be mistaken for a live one.
+- run page: attempts record how many output bytes they had written over time,
+  so the Run and Step pages draw a live output sparkline from the durable
+  record (bounded at 240 samples per attempt). The plan strip prints a pool
+  name whole or leaves it out — never `openc…`. A retry after a kernel restart
+  still receives its `## Prior attempt on this step` handoff block, rebuilt
+  from the durable attempt record rather than from the lost in-memory one. And
+  `medianMinutes` — the p50 on `strategy rungs` and the Usage page — no longer
+  counts stalled attempts, so a silence timeout cannot inflate a pool's
+  typical duration. Dispatch count and ok share are unchanged.
+- run page: the plan section groups its steps by presentation phase instead of
+  listing them flat, and Home's licence tile lists every metered pool that did
+  work today rather than only the busiest one.
+- stats: hovering a bar in a stacked chart labels the slice under the cursor —
+  which series, which day, and its value — and Enter pins that slice's detail
+  so it can be read without holding the cursor still.
+- routing: the last-mile 5-hour guard is relaxed. A step may now run a pool all
+  the way to 100% of its 5-hour window, because attempt handoff briefs the
+  retry on what the stopped worker had already written, so hitting the wall
+  mid-attempt costs a handoff rather than the work. Between 75% and the wall a
+  pool is only softly penalised in the ordering while another eligible pool is
+  behind pace, and a forecast that runs past the wall sorts last but stays
+  eligible. `BURST_BLOCK_PCT` moves from 90 to 100; the reason says
+  `last mile: <pool> 94.0% of 5h, handoff covers the wall`.
+- home: the today band is rebuilt. Finished work of today is on the left — one
+  card-style line per workflow run and per single task, with what it was for
+  and its project — and today's measured licence spend per pool is on the
+  right, with the share each pool's workflows, single runs and minutes
+  depleted. Every figure that is an estimate rather than a measurement says so.
+- usage: attempts now record the provider's own numbers instead of inferring
+  them. An attempt keeps the token totals, the cost and the session id the
+  provider reported, Claude prompt-cache writes are priced rather than treated
+  as free, and `tokenSource` widened to name where each figure came from
+  (`provider-reported`, `transcript-summed`, `estimated:utf8-bytes/4`,
+  `unknown`). The attempt's provider conversation is durable as
+  `attempt.session` — pool, model, session id, generation, and when it was
+  opened and last used.
+- usage: every money figure in the dashboard says what kind of figure it is —
+  measured from the provider, summed from a transcript, estimated from bytes,
+  or unknown — so a byte estimate can no longer be read as a bill. The views
+  also report how many of the attempts behind a total were measured.
+- usage: figures recorded before this release stay byte estimates. The 0.33.2
+  reprice back-fill will recompute them from the providers' own totals, and
+  when it does the spend history will jump by roughly one to two orders of
+  magnitude. That jump is the old estimate being corrected, not new spending.
+
+The Budget verdict redesign is not in this release: it remains prototype frames
+under `docs/design/prototype-frames-0.33.1/` (`budget-55.txt`,
+`budget-120.txt`, `home-today-55.txt`, `home-today-120.txt` and their READMEs),
+drawn from the real pool figures of 2026-09-18.
+
+
 ## 0.33.0 — the dashboard release
 
 - dashboard: the phone `Home` no longer hides data behind its width. The

@@ -1,0 +1,20 @@
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ HOME / TODAY · Fri 18 Sep 2026 · finished cards left · licence draw right                                            │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ FINISHED TODAY · 3 workflows · 1 verified       │ LICENCE SPEND TODAY · live meter + measured draw                  │
+│ ─────────────────────────────────────────────── │ pool             used  API≈  wf% run% wf-min                   │
+│ ╭─ ✓ 2yrcxi · project: project-a ────────────╮ │ claude-code      63%    —     —   —     —                       │
+│ │ sample text …                                │ │ claude-code:acme 76% ≈$0.16 2.9  —   84.0                   │
+│ ╰─ Enter → workflow · 104.9m · unverified ───╯ │ codex            59% ≈$0.03 2.1  —  161.8                   │
+│                                                │ grok             98% ≈$0.01 4.3  —   26.0                   │
+│ ╭─ ✓ fuyyca · project: bullswarm ────────────╮ │ command-code    0.4%    —     —   —     —                   │
+│ │ The 0.33.0 owner-review pass; eight gaps    │ │ opencode          —     —     —   —  634.6                   │
+│ ╰─ Enter → workflow · 208.2m · unverified ───╯ │ claude-code:initech — disabled                              │
+│                                                │ echo               — disabled                              │
+│                                                │ single-run min: codex 60.0 · opencode 17.6                  │
+│                                                │ run licence share: — (no normalized quota)                    │
+│ ╭─ ✓ ipccf2 · project: project-a ────────────╮ │ Enter → pool windows, reset time and pace                     │
+│ │ sample text …                               │ │ API≈ is recorded API-equivalent, not an invoice.              │
+│ ╰─ Enter → workflow · 542.7m · verified ─────╯ │ — means no measured value; unmetered pools stay visible.     │
+│ cards use each goal's first line; README quotes the full text. │                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -12,22 +12,20 @@
 //       over an incumbent only if the challenger is CHEAPER.
 //   R5. The caller wins its lane only when no eligible delegate remains —
 //       it has to WIN, not be protected.
-//   R6. A pool at 100% used is exhausted; quarantined pools are ineligible
-//       until their quarantine expires (the re-probe path).
-//   R7. 5h headroom outranks pace: a pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of
-//       its 5h window AND above that window's elapsed share (R10 — the
-//       threshold is clock-relative, not a fixed line) is chosen only when no
-//       eligible pool below the threshold exists for the lane. Like quarantine
-//       and burst gates, this outranks an explicit assignment and incumbency —
-//       a near-limit pool that is picked anyway spends the run's next attempt
-//       on a quota failure.
+//   R6. A pool whose 5h reading is exhausted at 100%, or whose recorded quota
+//       retryAfter is still in the future, is exhausted; quarantined pools are
+//       ineligible until their quarantine expires (the re-probe path).
+//   R7. A pool at/above FIVE_HOUR_NEAR_LIMIT_PCT of its 5h window is a
+//       last-mile candidate, not a hard skip. When another eligible pool is
+//       behind pace, its near-limit status is a soft ordering penalty. A pick
+//       in this band names the handoff that covers the wall.
 //   R8. Route on the FORECAST, not on the reading. A reading is already old at
 //       the moment it is read: work dispatched seconds ago has spent quota the
 //       meter has not seen, and the assignment being routed will spend more.
 //       When a caller attaches in-flight work (pool.inflight) and a spend model
-//       (pool.spend / pool.projected*Pct), R7's tiers apply to the projection
-//       plus this candidate's own expected consumption, a pool projected at or
-//       above BURST_BLOCK_PCT is gated out entirely, and pools already carrying
+//       (pool.spend / pool.projected*Pct), R7's soft ordering applies to the projection
+//       plus this candidate's own expected consumption, a pool forecast past
+//       100% is ranked last but remains eligible, and pools already carrying
 //       in-flight work yield to quieter pools of similar pace — so a burst of
 //       parallel actions spreads instead of stacking on the most-behind pool.
 //       A measured pacing rate charges each timed in-flight record at
@@ -41,25 +39,22 @@
 //       quieter pool wins as soon as its effective surplus is higher. Effective
 //       surplus subtracts the measured remaining-work charge when a rate is
 //       known, and the flat per-agent tie-breaker only when it is not.
-//  R10. The near-limit line is clock-relative. R7's tier is for a pool that
-//       will hit its 5h wall mid-run, and that danger is time-shaped: 88%
-//       projected with 23 minutes left in the window is a pool spending at its
-//       own pace that is about to be handed a fresh window; 77% with four
-//       hours left is a pool heading for the wall. So a pool is deprioritized
-//       only when its forecast is at/above FIVE_HOUR_NEAR_LIMIT_PCT *and*
-//       above the percentage of the 5h window already elapsed. (Observed
+//  R10. The near-limit line remains clock-relative for the soft penalty. A
+//       forecast at/above FIVE_HOUR_NEAR_LIMIT_PCT and above the percentage of
+//       the 5h window already elapsed is the last-mile case; a near-limit
+//       forecast under its clock is spending at its own pace and keeps its
+//       ordinary ordering. (Observed
 //       2026-09-10T22:19Z: claude-code:acme, 81% used with 23 minutes left —
-//       92.3% of its window elapsed — was tiered down for a forecast of 88.1%,
-//       so a high-tier integrator went to the one account already ahead of its
-//       weekly pace while acme's quota, 34% of the week unspent with 13% of
-//       the week left, expired unused.) Spend that lands after the reset
+//       92.3% of its window elapsed — was the last-mile handoff case at 88.1%,
+//       so a high-tier integrator could still use the account while its retry
+//       handoff covered the wall. Spend that lands after the reset
 //       belongs to the NEXT window: the candidate's minutes and each in-flight
 //       record's remaining minutes are clipped at resets_at before they are
 //       charged to the 5h forecast — the weekly/monthly pacing penalty is
 //       never clipped, that spend does count against its window. No
 //       resets_at, an unparsable one, or a reset already in the past means no
-//       clock: R7 keeps its fixed line and nothing is clipped, because a pool
-//       is never treated differently for a number nobody produced (R8).
+//       clock: the fixed line applies without a soft clock exemption, because
+//       a pool is never treated differently for a number nobody produced (R8).
 //  R11. Quota that expires sooner is worth more ("expiring soon"). A pace
 //       surplus is a difference in points and says nothing about how long the
 //       pool has left to spend it. (Observed 2026-09-11T04:26Z: grok held
@@ -100,14 +95,15 @@
 //       urgent challenger needs neither the 10-point margin nor the cost
 //       guard. It never overrides a strict pin (workflow strictPool filters
 //       the pool list before pickPool ever sees it), and never the 5h rules:
-//       a pool tiered down by R7/R10 or gated by R8 is not rescued by
-//       urgency. No pacing window, no parsable paceResetsAt, a reset already
+//       a pool's 5h wall is not rescued by urgency; the near-limit and
+//       forecast-over-wall states remain eligible and are ordered accordingly.
+//       No pacing window, no parsable paceResetsAt, a reset already
 //       in the past, or any window other than weekly/monthly means there is
 //       no lead time to measure and nothing about the pool changes (R8).
 //  R12. A healthy free model forms a tier ahead of metered pools while it is
 //       available; metered pools keep their R1-R11 ordering. A soft-benched
 //       pool is out until its re-probe deadline, and the bench never overrides
-//       quarantine, exhaustion, 5h headroom or burst gates. Evidence steps do
+//       quarantine, exhaustion, the 5h wall or last-mile ordering. Evidence steps do
 //       normal routing (and prefer a pool that did not write the evidence) so
 //       a free model cannot judge its own work unless it is the only option.
 
@@ -308,8 +304,10 @@ function inflightOverflowMinutes(pool, minutesToReset) {
  * exactly its old meaning so nothing changes for callers that attach no model.
  *
  * `nearLimit` is the raw R7 test (forecast >= FIVE_HOUR_NEAR_LIMIT_PCT);
- * `underClock` is R10's exemption from it — near the limit, but no further
- * into the window's quota than into the window's time.
+ * `underClock` records R10's clock-relative exemption from the soft penalty —
+ * near the limit, but no further into the window's quota than into the
+ * window's time. A forecast over 100% is still dispatchable and is reported as
+ * `overLimit` for the last-place ordering and handoff explanation.
  *
  * @param {object} pool
  * @param {number|null} [candidateMinutes] expected minutes of this assignment
@@ -319,7 +317,7 @@ function inflightOverflowMinutes(pool, minutesToReset) {
  *            forecast: number|null, forecasted: boolean,
  *            minutesToReset: number|null, elapsedPct: number|null,
  *            inflightCreditPct: number, nearLimit: boolean,
- *            underClock: boolean}}
+ *            underClock: boolean, overLimit: boolean}}
  */
 export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()) {
   const raw = num(pool?.fiveHourUsedPct);
@@ -345,6 +343,7 @@ export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()
   const forecast = base == null ? null : base + (candidateAdd ?? 0);
   const elapsedPct = fiveHourElapsedPct(pool, now);
   const nearLimit = forecast != null && forecast >= FIVE_HOUR_NEAR_LIMIT_PCT;
+  const overLimit = forecast != null && forecast > BURST_BLOCK_PCT;
   return {
     raw,
     projected,
@@ -356,6 +355,7 @@ export function fiveHourForecast(pool, candidateMinutes = null, now = Date.now()
     elapsedPct,
     inflightCreditPct,
     nearLimit,
+    overLimit,
     // R10: at/above the line but no further through its quota than through its
     // window — the reset arrives before the wall does.
     underClock: nearLimit && elapsedPct != null && forecast <= elapsedPct,
@@ -650,16 +650,47 @@ export function expiringSoonView(pool, opts = {}) {
   };
 }
 
-export function isExhausted(pool) {
+export function isExhausted(pool, now = Date.now()) {
   // Flat shape (buildPools) first, legacy meter shape second. A stale
   // meterSource reading must not permanently exclude a pool: if the reading
   // is stale-labeled and older than the window could explain, trust the pool
   // may have reset — the next live poll will decide.
-  const used = pool?.usedPct ?? pool?.meter?.usedPct;
-  if (!Number.isFinite(used)) return false;
-  if (used < 100) return false;
-  if (pool.meterSource === 'stale') return false;
-  return true;
+  const fiveHourUsed = num(pool?.fiveHourUsedPct)
+    ?? (pool?.meter?.type === '5h' ? num(pool.meter.usedPct) : null)
+    // Legacy meter snapshots without a dedicated 5h field were only emitted
+    // by the old cache path (no pacing window); keep that compatibility shape
+    // without treating a weekly/monthly `usedPct` as 5h exhaustion.
+    ?? (pool?.meterSource === 'cache' && pool?.pacingWindow == null
+      ? num(pool?.usedPct)
+      : null);
+  if (fiveHourUsed != null && fiveHourUsed >= 100) {
+    if (pool.meterSource !== 'stale') return true;
+  }
+
+  // A quota failure is a recorded wall even when its meter reading is still
+  // below 100%. Accept the durable quarantine shape and the retryAfter shapes
+  // used by workflow/action state; auth and generic holds do not count.
+  const records = [
+    pool?.quarantine,
+    pool?.quotaFailure,
+    pool?.lastFailure,
+    pool?.failure,
+  ];
+  for (const record of records) {
+    if (!record || (record.kind ?? record.failureKind) !== 'quota') continue;
+    const retryAfter = record.retryAfter ?? record.retry_after ?? record.until;
+    const retryAt = typeof retryAfter === 'number'
+      ? retryAfter
+      : Date.parse(String(retryAfter ?? ''));
+    if (Number.isFinite(retryAt) && retryAt > now) return true;
+    const retryAfterMs = num(record.retryAfterMs ?? record.retry_after_ms);
+    if (retryAfterMs != null && retryAfterMs > 0) {
+      const failedAt = Date.parse(String(record.failedAt ?? record.failed_at ?? ''));
+      const until = Number.isFinite(failedAt) ? failedAt + retryAfterMs : now + retryAfterMs;
+      if (until > now) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -676,6 +707,9 @@ export function isExhausted(pool) {
  *                        projectedWeeklyPct, projectedPacingPct.
  * @param {object} [opts] { callerEligible=true, callerName='claude', now,
  *                        requiredCapabilities, preferredPool, effortTier,
+ *                        strictPool (the --worker-pool pin the caller already
+ *                        filtered `pools` down to; naming it here is what lets
+ *                        the reason say the pick was pinned rather than chosen),
  *                        evidence: { writerPools: string[] },
  *                        callerSession, candidateMinutes=null (expected minutes
  *                        of the assignment being routed),
@@ -692,6 +726,7 @@ export function pickPool(lane, pools, opts = {}) {
     now = Date.now(),
     requiredCapabilities = [],
     preferredPool = null,
+    strictPool = null,
     candidateMinutes = null,
     inflightPenaltyPct = DEFAULT_INFLIGHT_PENALTY_PCT,
     evidence = null,
@@ -723,7 +758,7 @@ export function pickPool(lane, pools, opts = {}) {
       requiredCapabilities.every((capability) =>
         (p.capabilities ?? p.connector?.capabilities ?? []).includes(capability)) &&
       !isQuarantined(p, now) &&
-      !isExhausted(p),
+      !isExhausted(p, now),
   );
   const benchedOut = laneCapableBeforeBench.filter((p) => isBenched(p, now));
   const laneCapable = laneCapableBeforeBench.filter((p) => !isBenched(p, now));
@@ -756,31 +791,40 @@ export function pickPool(lane, pools, opts = {}) {
       forecast,
       expiring,
       // urgent first, draining last, everything else in the middle — the tier
-      // R11 adds under R7's 5h tier and above the pace comparison.
+      // R11 adds below the soft 5h ordering key and above the pace comparison.
       urgencyRank: expiring.state === 'urgent' ? 0 : expiring.state === 'draining' ? 2 : 1,
-      // R12: a free model gets its own tier, but only after the hard forecast
-      // gates and 5h headroom tiers have been applied below.
+      // R12: a free model gets its own tier, after the last-mile ordering key.
       freeRank: isFree(p) ? 0 : 1,
       // Evidence prefers a pool that did not write the work it is judging.
       writerRank: writerPools.has(p.name) ? 1 : 0,
-      // R8b: R7's tier, applied to the forecast instead of the reading — and
-      // R10: only for a pool further through its 5h quota than through its 5h
-      // window. A pool at 88% with 23 minutes left keeps its tier 0.
-      tier: forecast.nearLimit && !forecast.underClock ? 1 : 0,
-      // A pool is gated only by a FORECAST at/above the burst line — a bare
-      // reading keeps its current meaning (dispatch owns that gate), so pools
-      // without a spend model behave exactly as before.
-      gated: forecast.forecasted && forecast.forecast != null && forecast.forecast >= BURST_BLOCK_PCT,
+      // R7/R10: near-limit status is a soft ordering penalty only when some
+      // other eligible pool is behind pace. The comparison is filled after all
+      // entries exist so "another" really means another candidate.
+      nearPenalty: false,
+      // R8b: a forecast past the 100% wall remains eligible, but is sorted
+      // behind every pool whose forecast stays within the window.
+      overLimit: forecast.forecasted && forecast.forecast != null && forecast.forecast > BURST_BLOCK_PCT,
     };
   });
-  // R8 before R7 before R12/R11 before R2: forecast-gated pools last, then 5h
-  // headroom, then the evidence/writer and free tiers, then urgent < normal <
-  // draining, then the group's own score — urgency among the urgent,
-  // most-behind-after-load everywhere else. The candidate list is reported in
-  // this exact preference order.
+
+  // A near-limit pool gives way only when another eligible pool is also behind
+  // pace. This is deliberately a score key, not an eligibility filter: a
+  // configured assignment, incumbent, urgency tier, or the only remaining
+  // pool can still select it, and the reason then records the last-mile handoff.
+  for (const entry of scored) {
+    entry.nearPenalty = entry.forecast.nearLimit
+      && !entry.forecast.underClock
+      && scored.some((other) => other !== entry && other.pace > 0);
+    entry.tier = entry.nearPenalty ? 1 : 0;
+  }
+
+  // R8 before R7 before R12/R11 before R2: forecasts past the wall sort last,
+  // then the soft near-limit penalty, then evidence/free tiers, then urgent <
+  // normal < draining, then the group's own score. The candidate list is
+  // reported in this exact preference order.
   scored.sort(
     (a, b) =>
-      (a.gated ? 1 : 0) - (b.gated ? 1 : 0) ||
+      (a.overLimit ? 1 : 0) - (b.overLimit ? 1 : 0) ||
       a.tier - b.tier ||
       a.writerRank - b.writerRank ||
       (evidence ? 1 : a.freeRank) - (evidence ? 1 : b.freeRank) ||
@@ -811,8 +855,12 @@ export function pickPool(lane, pools, opts = {}) {
     projectedPacingPct: num(e.pool.projectedPacingPct),
     ratePerMinute: e.forecast.ratePerMinute,
     estimateSource: e.load.estimateSource,
-    nearFiveHourLimit: e.tier === 1,
-    forecastGated: e.gated,
+    nearFiveHourLimit: e.forecast.nearLimit,
+    nearFiveHourPenalty: e.nearPenalty,
+    // Kept for consumers that already render the candidate shape. A forecast
+    // past the wall is no longer gated; it is merely ranked last.
+    forecastGated: false,
+    forecastOverLimit: e.overLimit,
     // R11: when the pacing window resets, whether that is close enough to
     // count, and the urgency/forecast that decided the pool's standing. Every
     // field but the first is null for a pool whose window is not about to
@@ -829,8 +877,12 @@ export function pickPool(lane, pools, opts = {}) {
     // candidate shape stable for callers that render routing explanations.
     benched: false,
   }));
-  const gatedNames = scored.filter((e) => e.gated).map((e) => e.pool.name);
-  const forecastReport = { candidateMinutes: candidateMins, gated: gatedNames };
+  const forecastReport = {
+    candidateMinutes: candidateMins,
+    // No forecast is a hard gate anymore. The candidate rows carry
+    // `forecastOverLimit`, and the reason names those rows explicitly.
+    gated: [],
+  };
 
   if (scored.length === 0) {
     // D7: name the stage that emptied the list. A tier allow-list that matched
@@ -860,30 +912,24 @@ export function pickPool(lane, pools, opts = {}) {
         };
   }
 
-  // R8b: forecast-gated pools are out of selection entirely — unless every
-  // capable pool is gated, in which case routing still has to name one. The
-  // least-loaded (lowest forecast) wins then, and `why` says so: returning
-  // nothing would strand the action while a pool is still dispatchable.
-  const open = scored.filter((e) => !e.gated);
-  const gatedEntries = scored.filter((e) => e.gated);
-  const allGated = open.length === 0;
+  // Forecasts past the wall remain eligible but are the last ordering rung: use
+  // every within-wall candidate while one exists, and fall back to the
+  // over-limit set only when the whole eligible set is beyond the wall. This
+  // is a ranking boundary, not an exhaustion filter, so the handoff can still
+  // retry a run that reaches the provider's wall.
+  const withinWall = scored.filter((e) => !e.overLimit);
+  const open = withinWall.length ? withinWall : scored;
+  const overLimitEntries = scored.filter((e) => e.overLimit);
 
   let winnerEntry;
-  let skippedNearLimit = [];
   let skippedDraining = [];
   let skippedFree = [];
   let evidenceOnlyWriter = false;
-  if (allGated) {
-    winnerEntry = [...scored].sort(
-      (a, b) =>
-        (a.forecast.forecast ?? Infinity) - (b.forecast.forecast ?? Infinity) ||
-        b.effective - a.effective,
-    )[0];
-  } else {
-    // R7: selection happens only among pools with 5h headroom while any exists.
-    const withHeadroom = open.filter((e) => e.tier === 0);
-    const headroomSet = withHeadroom.length ? withHeadroom : open;
-    skippedNearLimit = withHeadroom.length ? open.filter((e) => e.tier === 1) : [];
+  {
+    // R7: every non-exhausted pool remains eligible; near-limit status is only
+    // a score key, not the old headroom allow-list. The wall boundary above
+    // keeps a within-wall option ahead of an over-limit forecast.
+    const headroomSet = open;
 
     // R12 evidence and free tiers sit above the ordinary R11 selection. An
     // evidence step disables free-first and prefers non-writers whenever one
@@ -917,7 +963,7 @@ export function pickPool(lane, pools, opts = {}) {
 
     if (preferredEntry) {
       // A user-applied effort-tier assignment is an explicit choice, but it
-      // never bypasses eligibility, quarantine, exhaustion, or burst gates.
+      // never bypasses eligibility, quarantine, exhaustion, or the wall.
       winnerEntry = preferredEntry;
     } else if (incumbentEntry) {
       // R3+R4: challenger needs margin. The cost guard protects the incumbent
@@ -929,7 +975,7 @@ export function pickPool(lane, pools, opts = {}) {
       // to displace than an idle one at the same reading.
       const INCUMBENT_DISTRESS = -20;
       const incumbentDistressed =
-        incumbentEntry.effective <= INCUMBENT_DISTRESS || isExhausted(incumbentEntry.pool);
+        incumbentEntry.effective <= INCUMBENT_DISTRESS || isExhausted(incumbentEntry.pool, now);
       // R9: incumbency guards against flapping on noisy pace numbers, not
       // against real concurrent load. Against a challenger carrying fewer
       // in-flight agents, a loaded incumbent keeps neither its margin nor its
@@ -949,29 +995,36 @@ export function pickPool(lane, pools, opts = {}) {
     }
   }
   evidenceOnlyWriter = Boolean(evidence) && winnerEntry?.writerRank === 1;
+  // R12 visibility: the pools that produced the work this evidence step is
+  // judging and were therefore ranked below the winner. Without them the
+  // reason said only "normal routing", which hid why an urgent writer lost
+  // (seen on run is9aaa: grok picked over an urgent claude-code:acme).
+  const deprioritizedWriters = evidence && !evidenceOnlyWriter
+    ? scored.filter((e) => e !== winnerEntry && e.writerRank === 1)
+    : [];
   // R8c visibility: pools that would have won on raw pace and lost only
   // because of the work they are already carrying. Empty unless a caller
   // attached in-flight counts, so today's reasons are unchanged.
   const yieldedBusier = scored.filter(
     (e) =>
       e !== winnerEntry &&
-      !e.gated &&
+      !e.overLimit &&
       e.tier === winnerEntry.tier &&
       e.load.count > 0 &&
       e.pace >= winnerEntry.pace &&
       e.effective < winnerEntry.effective,
   );
   const why = routingReason(winnerEntry, {
-    preferred: !allGated && Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
+    preferred: Boolean(preferredPool) && winnerEntry.pool.name === preferredPool,
     effortTier: opts.effortTier,
+    pinned: Boolean(strictPool) && winnerEntry.pool.name === strictPool,
     evidence,
     evidenceOnlyWriter,
+    deprioritizedWriters,
     skippedFree,
     benchedOut,
-    skippedNearLimit,
     skippedDraining,
-    gated: allGated ? [] : gatedEntries,
-    gatedFallback: allGated,
+    overLimit: overLimitEntries,
     yieldedBusier,
   });
 
@@ -1049,21 +1102,22 @@ function formatBenched(benchedOut) {
 /**
  * Explain the pick: why this pool, at what 5h utilization (reading and, when a
  * forecast exists, the projection), how much work it is already carrying, and
- * which pools it was preferred over — near their 5h limit or forecast-gated.
+ * which pools it was preferred over — near their 5h limit or forecast over
+ * the wall.
  */
 function routingReason(
   winnerEntry,
   {
     preferred,
     effortTier,
+    pinned = false,
     evidence = null,
     evidenceOnlyWriter = false,
+    deprioritizedWriters = [],
     skippedFree = [],
     benchedOut = [],
-    skippedNearLimit = [],
     skippedDraining = [],
-    gated = [],
-    gatedFallback = false,
+    overLimit = [],
     yieldedBusier = [],
   },
 ) {
@@ -1073,14 +1127,24 @@ function routingReason(
     .filter(Boolean)
     .join(', ');
   let base;
-  if (evidenceOnlyWriter) {
+  let baseDetail = null;
+  if (pinned) {
+    // `--worker-pool` already reduced the candidate list to one pool, so no
+    // other clause describes a choice that was made. Saying the pin out loud
+    // stops the reason from claiming a comparison happened (seen on run
+    // uamgfi, attempt accept-1, which read "only the writer pool ... is
+    // eligible" when the operator had pinned that pool themselves).
+    base = `pinned to ${winnerEntry.pool.name} (--worker-pool)`;
+    baseDetail = detail || null;
+  } else if (evidenceOnlyWriter) {
     base = `evidence step: only the writer pool ${winnerEntry.pool.name} is eligible`;
+  } else if (deprioritizedWriters.length) {
+    base = `evidence: independent of ${deprioritizedWriters
+      .map((e) => e.pool.name)
+      .join(', ')} (they produced the judged work)`;
+    baseDetail = detail || null;
   } else if (evidence) {
     base = 'evidence step: normal routing (free tier not applied)';
-  } else if (gatedFallback) {
-    base = `every capable pool is forecast-gated at/above ${BURST_BLOCK_PCT}% of its 5h window; least loaded wins (${
-      [winnerEntry.pool.name, note, inflight].filter(Boolean).join(', ')
-    })`;
   } else if (winnerEntry.freeRank === 0) {
     const freeModel = winnerEntry.pool.freeModel ?? winnerEntry.pool.modelPolicy?.model ?? null;
     const freeDetail = [
@@ -1099,17 +1163,18 @@ function routingReason(
     // the window still to run, and the forecast that kept it out of draining.
     base = urgencyClause(winnerEntry, [note, inflight].filter(Boolean).join(', '));
   } else {
-    // Three states, not two (R10): headroom, near the limit and tiered down,
-    // or near the limit but under the window's clock — where the note itself
-    // carries the explanation, so the label stays out of its way.
+    // The note carries the reading/projection; the last-mile clause below
+    // explains why a near-limit winner is still safe to hand off.
     const standing =
       !note ? ''
-      : winnerEntry.tier === 1 ? ' near its 5h limit'
-      : winnerEntry.forecast.underClock ? ''
+      : winnerEntry.forecast.nearLimit ? ' near its 5h limit'
       : ' with 5h headroom';
     base = `most-behind capable pool${standing} (${detail})`;
   }
   const clauses = [base];
+  // Kept as its own clause so the opening text stays exactly the pin or the
+  // named-writer reason, which is what readers and tests match on.
+  if (baseDetail) clauses.push(baseDetail);
   if (skippedFree.length) {
     clauses.push(
       `metered pools ranked below free: ${skippedFree
@@ -1119,17 +1184,21 @@ function routingReason(
   }
   const benchWhy = formatBenched(benchedOut);
   if (benchWhy) clauses.push(benchWhy);
-  if (skippedNearLimit.length) {
-    const projected = skippedNearLimit.some((e) => e.forecast.forecasted);
+  if (winnerEntry.forecast.nearLimit) {
+    const pct = winnerEntry.forecast.forecasted
+      ? winnerEntry.forecast.forecast
+      : winnerEntry.forecast.raw;
+    if (pct != null) {
+      clauses.push(
+        `last mile: ${winnerEntry.pool.name} ${tenth(pct)}% of 5h, handoff covers the wall`,
+      );
+    }
+  }
+  if (overLimit.length) {
     clauses.push(
-      `skipped near 5h limit${projected ? ' (projected)' : ''}: ${skippedNearLimit
+      `forecast over ${BURST_BLOCK_PCT}% (still eligible; ranked last): ${overLimit
         .map((e) => poolPctLabel(e))
         .join(', ')}`,
-    );
-  }
-  if (gated.length) {
-    clauses.push(
-      `forecast-gated at/above ${BURST_BLOCK_PCT}%: ${gated.map((e) => poolPctLabel(e)).join(', ')}`,
     );
   }
   if (skippedDraining.length) {

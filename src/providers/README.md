@@ -18,6 +18,17 @@ which line carries the final answer, and `args` are the flags that make the CLI
 emit it. `src/lib/agent-events.js` applies those rules; provider quirks never
 leave the manifest.
 
+### `eventStream.usage`: provider-reported totals
+
+Usage rules are independent of response extraction. Each rule has a `match`, a
+`mode` (`last` for one cumulative result event, `sum` for per-request rows, or
+`max` for a monotonic counter), and `fields` whose paths name the provider's
+`standardRead`, `cacheRead`, `cacheWrite5m`, `cacheWrite1h`, `output`,
+`costUsd`, `sessionId`, or `model` values. The decoder exposes the merged
+object through `usage()`, and the watcher records it before falling back to
+text parsing or the UTF-8 byte estimate. Use paths rather than regexes so a
+single result object cannot be counted once for every nested alias.
+
 ## `eventStream.capture`: how much of the stream is kept
 
 Every attempt's decoded events are persisted to
@@ -58,6 +69,16 @@ connector takes part with no code at all — set a key only when this CLI's
 answers or event volume make the default the wrong size. Both values must be
 positive integers; anything else, or an unknown key inside `capture`, fails
 `bullswarm provider validate` with exit 2.
+
+### Model pricing and prompt-cache writes
+
+`modelProfiles[].pricing` is a local rate card, not a provider subscription
+debit. When the named `pricingSource` publishes prompt-cache write rates,
+declare `cacheWrite5mUsdPerMillion` and `cacheWrite1hUsdPerMillion` alongside
+the input, cache-read, and output rates, and refresh `pricingUpdatedAt` when
+the source is checked. If the vendor publishes no cache-write rate, omit the
+fields; `bullswarm provider validate` warns so an unpriced cache write cannot
+silently look free.
 
 What the stream is used for: when a step's attempt fails and the next attempt
 starts, the task it receives ends with a `## Prior attempt on this step` block

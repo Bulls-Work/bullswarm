@@ -277,9 +277,11 @@ test('provider validate accepts every shipped connector, including a capture ove
         output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
       },
       model: 'local',
+      modelProfiles: [{ id: 'local', pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } }],
     }));
     const accepted = validateProvider(home, withCapture, loaderOpts);
     assert.equal(accepted.ok, true, JSON.stringify(accepted));
+    assert.ok(accepted.pools[0].warnings.some((warning) => /cache-write rate missing/.test(warning)));
 
     writeFileSync(join(withCapture, 'connector.json'), JSON.stringify({
       name: 'captor',

@@ -75,3 +75,21 @@ test('Fleet keeps the sub-tabs and every row inside every supported width', () =
   assert.equal(phone.lines[2], 'high · integration · architecture · adversarial-accept…');
   assert.notEqual(phone.lines[3], 'architecture · adversarial-acceptance');
 });
+
+test('Fleet shows a free-model probe strike reason in the provider blurb', () => {
+  const result = fleetLines([
+    { name: 'opencode', enabled: true, bench: { until: null, reason: 'probe: 404', count: 1 } },
+  ], [
+    { pool: 'opencode', tier: 'low', model: 'zen/union-free', dispatches: 0 },
+  ], { width: 120, by: 'provider', ansi: false });
+  assert.match(result.lines.join('\n'), /strike \(probe: 404\)/);
+});
+
+test('Fleet lane view keeps the probe reason beside the rung', () => {
+  const result = fleetLines([
+    { name: 'opencode', enabled: true, bench: { until: null, reason: 'probe: provider error', count: 1 } },
+  ], [
+    { pool: 'opencode', tier: 'low', model: 'zen/union-free', dispatches: 0 },
+  ], { width: 120, by: 'lane', ansi: false });
+  assert.match(result.lines.join('\n'), /probe: provider error/);
+});

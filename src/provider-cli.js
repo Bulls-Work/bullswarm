@@ -285,6 +285,17 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
       if (profile?.tier !== undefined && !TIERS.includes(profile.tier)) {
         errors.push(`modelProfiles[${i}].tier: must be ${TIERS.join(', ')}`);
       }
+      if (profile?.pricing && typeof profile.pricing === 'object') {
+        const hasCacheWriteRate = [
+          profile.pricing.cacheWriteUsdPerMillion,
+          profile.pricing.cacheWrite5mUsdPerMillion,
+          profile.pricing.cacheWrite1hUsdPerMillion,
+        ].some((rate) => rate !== null && rate !== undefined && rate !== ''
+          && Number.isFinite(Number(rate)) && Number(rate) >= 0);
+        if (!hasCacheWriteRate) {
+          warnings.push(`modelProfiles[${i}].pricing: cache-write rate missing (cacheWrite5mUsdPerMillion/cacheWrite1hUsdPerMillion)`);
+        }
+      }
     });
   }
 
