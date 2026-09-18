@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- update: a global pnpm install is recognised as its own shape and upgraded with
+  `pnpm add -g`, verified through the link under the pnpm global node_modules.
+  It used to be read as an npm prefix — but pnpm's `.pnpm/<name>@<version>/`
+  is a per-version store directory, so `npm install -g --prefix` wrote into the
+  old version's folder and `bullswarm update` could never exit 0. A pnpm
+  project dependency is reported as unknown rather than upgraded globally.
+- update: `--json` carries `verifiedAt`, the copy `after` was read from.
+  `install.root` is where the RUNNING copy was found, which pnpm leaves behind
+  on its old per-version store directory, so it cannot also mean "where
+  bullswarm lives now".
+
 - workflow: a kernel that has taken SIGTERM or SIGINT can no longer write a
   terminal lifecycle. The progress check reached `finalize()` without asking
   whether the run had been signalled, so a run interrupted in that window was

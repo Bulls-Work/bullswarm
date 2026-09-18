@@ -61,6 +61,167 @@ test('detectInstall: checkout beats global; posix and windows global layouts yie
   assert.equal(detectInstall({ packageRoot: '/opt/somewhere/bullswarm', exists: () => false }).kind, 'unknown');
 });
 
+test('detectInstall: a pnpm global store is its own shape, and a pnpm project dependency is not global', () => {
+  // The store path satisfies the generic "parent is node_modules" rule, so
+  // without its own branch the prefix would be the per-version store directory.
+  assert.deepEqual(detectInstall({
+    packageRoot: '/home/u/Library/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    exists: () => false,
+  }), {
+    kind: 'pnpm-global',
+    root: '/home/u/Library/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    prefix: '/home/u/Library/pnpm/global/5',
+  });
+  // <project>/node_modules/.pnpm/... is a dependency of somebody's project.
+  assert.deepEqual(detectInstall({
+    packageRoot: '/home/u/proj/node_modules/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    exists: () => false,
+  }), {
+    kind: 'unknown',
+    root: '/home/u/proj/node_modules/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    prefix: null,
+  });
+  // A checkout still wins, even when it sits inside a pnpm store.
+  assert.equal(detectInstall({
+    packageRoot: '/home/u/Library/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    exists: (p) => p.endsWith('/.git'),
+  }).kind, 'checkout');
+  // A Windows pnpm home, written with forward slashes for the same reason the
+  // npm case above is: node:path only splits backslashes when running ON
+  // Windows, so a backslash fixture would assert posix behaviour, not win32.
+  assert.deepEqual(detectInstall({
+    packageRoot: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    exists: () => false,
+  }), {
+    kind: 'pnpm-global',
+    root: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    prefix: 'C:/Users/u/AppData/Local/pnpm/global/5',
+  });
+});
+
+test('update: a pnpm global install is upgraded with pnpm add -g and verified through the link, not the store', async () => {
+  const home = '/home/u/Library/pnpm/global/5';
+  const root = `${home}/.pnpm/bullswarm@0.29.1/node_modules/bullswarm`;
+  const link = `${home}/node_modules/bullswarm`;
+  // pnpm leaves the old store directory in place and re-points the link.
+  const onDisk = { [root]: '0.29.1', [link]: '0.29.1' };
+  const { calls, exec } = fakeExec({
+    'pnpm add': () => { onDisk[link] = '0.30.0'; return ''; },
+  });
+  const io = quiet();
+  const code = await runUpdate({
+    packageRoot: root, exists: () => false, currentVersion: '0.29.1',
+    fetchImpl: async () => okJson({ version: '0.30.0' }),
+    exec, readVersion: (r) => onDisk[r] ?? null, lookupShellBinary: false, json: true, ...io,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [['pnpm', 'add', '-g', 'bullswarm@0.30.0'], ['pnpm', 'root', '-g']]);
+  assert.ok(!calls.some((c) => c[0] === 'npm'), 'a pnpm install must never be handed to npm');
+  const result = JSON.parse(io.out.at(-1));
+  assert.equal(result.install.kind, 'pnpm-global');
+  assert.equal(result.install.prefix, home);
+  assert.equal(result.updated, true);
+  assert.equal(result.after, '0.30.0');
+  // install.root still names the superseded store directory; verifiedAt is the
+  // copy `after` was actually read from, and the one the shell now runs.
+  assert.equal(result.install.root, root);
+  assert.equal(result.verifiedAt, link);
+});
+
+test('update: the pnpm copy that is verified is the one pnpm names now, not the one found before', async () => {
+  // pnpm's global directory is configurable, and the running copy was found in
+  // whichever one was current when IT was installed. Trusting that stale path
+  // would report a real upgrade as a failure.
+  const home = '/home/u/Library/pnpm/global/5';
+  const root = `${home}/.pnpm/bullswarm@0.29.1/node_modules/bullswarm`;
+  const moved = '/home/u/Library/pnpm/global/6/node_modules';
+  const onDisk = { [root]: '0.29.1', [`${home}/node_modules/bullswarm`]: '0.29.1' };
+  const { exec } = fakeExec({
+    'pnpm add': () => { onDisk[`${moved}/bullswarm`] = '0.30.0'; return ''; },
+    'pnpm root -g': () => `${moved}\n`,
+  });
+  const io = quiet();
+  const code = await runUpdate({
+    packageRoot: root, exists: () => false, currentVersion: '0.29.1',
+    fetchImpl: async () => okJson({ version: '0.30.0' }),
+    exec, readVersion: (r) => onDisk[r] ?? null, lookupShellBinary: false, json: true, ...io,
+  });
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(io.out.at(-1)).after, '0.30.0');
+});
+
+test('update: pnpm\'s own shim is not reported as a stale copy, and an unknown bin dir warns about nothing', async () => {
+  // Real paths on disk: the note resolves the shell's binary with realpathSync,
+  // so an invented path would simply vanish and prove nothing either way.
+  const tmp = mkdtempSync(join(tmpdir(), 'bs-update-pnpm-'));
+  try {
+    const binDir = join(tmp, 'Library', 'pnpm');
+    const home = join(binDir, 'global', '5');
+    const root = join(home, '.pnpm', 'bullswarm@0.29.1', 'node_modules', 'bullswarm');
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(tmp, 'usr-local-bin'), { recursive: true });
+    writeFileSync(join(binDir, 'bullswarm'), '#!/bin/sh\n');
+    writeFileSync(join(tmp, 'usr-local-bin', 'bullswarm'), '#!/bin/sh\n');
+
+    const run = async (answers) => {
+      const io = quiet();
+      const { exec } = fakeExec({ 'pnpm add': '', ...answers });
+      await runUpdate({
+        packageRoot: root, exists: () => false, currentVersion: '0.29.1',
+        fetchImpl: async () => okJson({ version: '0.30.0' }),
+        exec, readVersion: () => '0.30.0', json: true, ...io,
+      });
+      return JSON.parse(io.out.at(-1)).notes.join('\n');
+    };
+
+    // The shim lives in pnpm's bin dir, above the global store: ours, not stale.
+    assert.doesNotMatch(await run({
+      'pnpm bin -g': `${binDir}\n`,
+      'sh -c command -v bullswarm': `${join(binDir, 'bullswarm')}\n`,
+    }), /stale one/);
+
+    // A genuinely different install still earns the warning.
+    assert.match(await run({
+      'pnpm bin -g': `${binDir}\n`,
+      'sh -c command -v bullswarm': `${join(tmp, 'usr-local-bin', 'bullswarm')}\n`,
+    }), /resolves to .*usr-local-bin\/bullswarm.*stale one/s);
+
+    // A sibling whose NAME merely starts with the bin dir's is not ours: a
+    // character-wise prefix test would call this stale copy owned and say
+    // nothing, leaving the shell on the old binary with the update reported
+    // as a success.
+    const lookalike = `${binDir}-old-v8`;
+    mkdirSync(lookalike, { recursive: true });
+    writeFileSync(join(lookalike, 'bullswarm'), '#!/bin/sh\n');
+    assert.match(await run({
+      'pnpm bin -g': `${binDir}\n`,
+      'sh -c command -v bullswarm': `${join(lookalike, 'bullswarm')}\n`,
+    }), /resolves to .*pnpm-old-v8\/bullswarm.*stale one/s);
+
+    // pnpm refusing to name its bin dir is not evidence of a stale copy.
+    assert.doesNotMatch(await run({
+      'pnpm bin -g': new Error('ERR_PNPM_NO_GLOBAL_BIN_DIR'),
+      'sh -c command -v bullswarm': `${join(binDir, 'bullswarm')}\n`,
+    }), /stale one/);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('update: pnpm exit 0 without the linked version changing is a failure', async () => {
+  const home = '/home/u/Library/pnpm/global/5';
+  const root = `${home}/.pnpm/bullswarm@0.29.1/node_modules/bullswarm`;
+  const { exec } = fakeExec({ 'pnpm add': '' });
+  const io = quiet();
+  const code = await runUpdate({
+    packageRoot: root, exists: () => false, currentVersion: '0.29.1',
+    fetchImpl: async () => okJson({ version: '0.30.0' }),
+    exec, readVersion: () => '0.29.1', lookupShellBinary: false, json: true, ...io,
+  });
+  assert.equal(code, 1);
+  const result = JSON.parse(io.out.at(-1));
+  assert.equal(result.updated, false);
+  assert.match(result.error, /pnpm exited 0 but .*global\/5\/node_modules\/bullswarm\/package\.json now reads 0\.29\.1, not 0\.30\.0/);
+});
+
 test('fetchLatestVersion: reads the dist-tag, and reports HTTP, shape and network failures without throwing', async () => {
   assert.deepEqual(await fetchLatestVersion({ fetchImpl: async () => okJson({ version: '0.28.8' }) }), { version: '0.28.8', error: null });
   assert.equal((await fetchLatestVersion({ fetchImpl: async () => ({ ok: false, status: 503 }) })).error, 'registry returned HTTP 503');

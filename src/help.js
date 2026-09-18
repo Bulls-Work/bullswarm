@@ -292,18 +292,21 @@ const updateText = rich({
   purpose: 'Upgrade this installation of bullswarm to the latest version published on npm, in '
     + 'place. A global npm install is upgraded with `npm install -g bullswarm@<latest> --prefix '
     + '<its own prefix>`, so the copy that is running is the one replaced even when several Node '
-    + 'installs are on PATH. A source checkout (a clone, or a global install that is an `npm link` '
-    + 'into one) is pulled with `git pull --ff-only` instead and is refused while it has local '
-    + 'changes. The result is verified by re-reading package.json on disk, never by npm\'s exit code.',
+    + 'installs are on PATH. A global pnpm install lives in a per-version store directory that is '
+    + 'not a prefix, so it is upgraded with `pnpm add -g bullswarm@<latest>` and verified through '
+    + 'the link under the pnpm global node_modules. A source checkout (a clone, or a global '
+    + 'install that is an `npm link` into one) is pulled with `git pull --ff-only` instead and is '
+    + 'refused while it has local changes. The result is verified by re-reading package.json on '
+    + 'disk, never by the package manager\'s exit code.',
   args: [],
   options: [
     { flag: '--check', desc: 'only compare the installed version with the latest published one; changes nothing', default: 'off (upgrades)' },
-    { flag: '--json', desc: 'machine-readable result: install {kind, root, prefix}, before, latest, after, upToDate, updated, error, notes[]', default: 'human-readable lines' },
+    { flag: '--json', desc: 'machine-readable result: install {kind: global|pnpm-global|checkout|unknown, root, prefix}, verifiedAt (the copy `after` was read from — install.root is where the RUNNING copy was found, which pnpm leaves on its old store directory), before, latest, after, upToDate, updated, error, notes[]', default: 'human-readable lines' },
   ],
   safety: [
-    'reads https://registry.npmjs.org/bullswarm/latest (8s timeout); without --check, runs npm install -g into the running install\'s own prefix, or git pull --ff-only in a source checkout',
+    'reads https://registry.npmjs.org/bullswarm/latest (8s timeout); without --check, runs npm install -g into the running install\'s own prefix, pnpm add -g for a pnpm global install, or git pull --ff-only in a source checkout',
     'a source checkout with uncommitted changes is left untouched and the exit is 1',
-    'exit 0 = at the latest published version afterwards (or --check reported); exit 1 = registry, npm or git refused, or the install shape is unknown',
+    'exit 0 = at the latest published version afterwards (or --check reported); exit 1 = registry, npm, pnpm or git refused, or the install shape is unknown',
     'the running process keeps its old version; the next bullswarm command runs the new one',
   ],
   examples: [
