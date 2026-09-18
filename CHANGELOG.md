@@ -79,7 +79,12 @@
   one chart the same colour (the 30-day Trends had three purples and the
   Models chart seven models in two colours); slices stack smallest at the
   bottom, biggest on top; the legend wraps to name every series instead of
-  hiding the rest behind `+N more`.
+  hiding the rest behind `+N more`. The mouse now lights the clickable row
+  under the pointer in reverse video, the way the Mod pane does (a whole row
+  when it is the row's only target, just the button when several share a
+  row); the TUI asks the terminal for motion reports and releases them on the
+  way out. Home's breakdown percents sit right-aligned in one column, so `2%`
+  lines up under `19%`.
 - dashboard: no page draws an empty track where it has no data. The `Run`
   page's budget block is titled `licence this run used`, shows whole percents
   (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty

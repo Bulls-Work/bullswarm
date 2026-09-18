@@ -2379,9 +2379,13 @@ function breakdownCells(model, opts, { cellWidth }) {
   const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
   const spend = model.stats?.spendPerDay ?? null;
   const rows = 4;
+  // The percent sits in a fixed four-cell field (`100%` at widest), right
+  // aligned, so every bar in a list ends on the same column and `2%` lines
+  // up under `19%` instead of stealing a cell from its bar.
   const barOf = (share, role, label, width) => {
     const value = Number(share);
-    const text = shareText(share) ?? blank();
+    const raw = shareText(share) ?? blank();
+    const text = raw.padStart(4);
     const bars = Math.max(3, width - visibleLength(label) - visibleLength(text) - 2);
     const bar = Number.isFinite(value) ? tint(progressBar(value, bars), role) : ' '.repeat(bars);
     return `${label} ${bar} ${text}`;
@@ -3772,6 +3776,12 @@ export async function runDashboard(bullswarmDir, {
   let allRows = activeRuns;
   let rows = filterDashboardRows(allRows, dashboardFilter, query);
   let lastPaintedFrame = null;
+  // The clickable region under the mouse pointer, painted in reverse video
+  // the way the Mod pane lights a row: a whole row when it is the only
+  // region on that row, just the region's cells when several buttons share it.
+  let hover = null;
+  const stripAnsiText = (text) => String(text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  let lastFrameText = null;
   let lastFrameResult = null;
   let regions = [];
   let usage = null;
@@ -3880,6 +3890,17 @@ export async function runDashboard(bullswarmDir, {
     const height = Math.max(1, Number(output.rows) || source.split('\n').length);
     const lines = source.split('\n').slice(0, height);
     while (lines.length < height) lines.push('');
+    lastFrameText = text;
+    if (hover && hover.y >= 1 && hover.y <= lines.length) {
+      const plain = stripAnsiText(lines[hover.y - 1]);
+      if (hover.whole) {
+        lines[hover.y - 1] = `${ESC}7m${plain.padEnd(frameWidth())}${ESC}0m`;
+      } else {
+        const from = Math.max(0, hover.x1 - 1);
+        const to = Math.min(plain.length, hover.x2);
+        lines[hover.y - 1] = `${plain.slice(0, from)}${ESC}7m${plain.slice(from, to)}${ESC}0m${plain.slice(to)}`;
+      }
+    }
     const frame = `${ESC}H${lines.map((line) => `${line}${ESC}K`).join('\n')}`;
     if (frame === lastPaintedFrame) return;
     lastPaintedFrame = frame;
@@ -4284,13 +4305,13 @@ export async function runDashboard(bullswarmDir, {
     output.removeListener?.('resize', onResize);
     input.setRawMode?.(false);
     input.pause?.();
-    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    output.write(`${ESC}?1006l${ESC}?1003l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
     try {
       await openSetup({ bullswarmDir, input, output });
     } catch (err) {
       message = `setup error: ${err.message}`;
     } finally {
-      output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+      output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1003h${ESC}?1006h`);
       input.setRawMode?.(true);
       input.resume?.();
       input.on('data', onData);
@@ -4388,9 +4409,22 @@ export async function runDashboard(bullswarmDir, {
     if (action.kind === 'quit') return finish();
     return undefined;
   };
+  const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2 && region.action);
+  const hoverMove = (mouse) => {
+    const region = regionAt(mouse.x, mouse.y) ?? null;
+    const whole = region ? regions.filter((other) => other.y === region.y && other.action).length === 1 : false;
+    const next = region ? { y: region.y, x1: region.x1, x2: region.x2, whole } : null;
+    const same = (next == null && hover == null)
+      || (next && hover && next.y === hover.y && next.x1 === hover.x1 && next.x2 === hover.x2 && next.whole === hover.whole);
+    if (same) return undefined;
+    hover = next;
+    if (lastFrameText != null) writeFrame(lastFrameText);
+    return undefined;
+  };
   const handleMouse = (mouse) => {
     if (mouse.kind === 'wheel-up') return scrollActivePage(3);
     if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
+    if (mouse.kind === 'move') return hoverMove(mouse);
     if (mouse.kind !== 'press') return undefined;
     const action = regions.find((region) => mouse.y === region.y
       && mouse.x >= region.x1 && mouse.x <= region.x2)?.action;
@@ -4409,7 +4443,7 @@ export async function runDashboard(bullswarmDir, {
     input.pause?.();
     input.removeListener('data', onData);
     output.removeListener?.('resize', onResize);
-    output.write(`${ESC}?1006l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
+    output.write(`${ESC}?1006l${ESC}?1003l${ESC}?1000l${ESC}?25h${ESC}?1049l`);
     resolveDashboard?.(0);
   };
   const moveVertical = (delta) => {
@@ -4685,7 +4719,7 @@ export async function runDashboard(bullswarmDir, {
   input.resume();
   // SGR mouse reporting travels with the alternate screen: on for the whole
   // session, off again in finish() and around the setup hand-off.
-  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1006h`);
+  output.write(`${ESC}?1049h${ESC}?25l${ESC}2J${ESC}H${ESC}?1000h${ESC}?1003h${ESC}?1006h`);
   readIntegration();
   readIndex();
   readPrices();

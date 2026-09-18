@@ -521,6 +521,9 @@ test('parseMouse reads press, release and wheel SGR sequences', () => {
   assert.deepEqual(parseMouse('\x1b[<64;3;7M'), { kind: 'wheel-up', x: 3, y: 7 });
   assert.deepEqual(parseMouse('\x1b[<65;3;7M'), { kind: 'wheel-down', x: 3, y: 7 });
   assert.deepEqual(parseMouse('\x1b[<0;80;24Mq'), { kind: 'press', x: 80, y: 24 });
+  // Motion with no button held (35) is a move; a drag (32, button 0 held) is not.
+  assert.deepEqual(parseMouse('\x1b[<35;12;9M'), { kind: 'move', x: 12, y: 9 });
+  assert.equal(parseMouse('\x1b[<32;12;9M'), null);
 });
 
 test('parseMouse ignores what is not a click', () => {
