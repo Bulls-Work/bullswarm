@@ -95,7 +95,9 @@ Page-specific controls include `/` (filter), `a` (active/all), and `i`
 (install) on Runs; `o`, `v`, and `t` on Run; and `e` on Fleet to open setup.
 `c` requests a cooperative stop from Run, and `y` confirms it. Mouse reporting
 is enabled while the dashboard is open: click any tab, tile, bar, run, step,
-date, or control, and use the wheel to scroll the body.
+date, or control, and use the wheel to scroll the body. The row or button
+under the pointer lights up in reverse video, so you can see what a click
+will open before you click.
 
 ::: tip
 `r`, `b`, `Tab`, and `h` were rebound in 0.33.0: the view refreshes itself, Esc

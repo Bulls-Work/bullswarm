@@ -341,6 +341,40 @@ test('a Runs-table cursor on a finished run survives the refresh tick, so Enter 
   } finally { cleanup(); }
 });
 
+test('moving the mouse over a clickable row lights it in reverse video and leaving it clears the light', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
+  const { home, cleanup } = fixture();
+  try {
+    addV2HistoricalRun(home);
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    assert.ok(session.output.text.includes('\x1b[?1003h'), 'the TUI asks the terminal for mouse motion');
+    session.press('r');
+    const frame = lastFrame(session.output);
+    const rows = frame.split('\n');
+    const rowIndex = rows.findIndex((line) => plain(line).includes('v2n456'));
+    assert.ok(rowIndex >= 0, 'the finished run has a row');
+    const y = rowIndex + 1;
+    // The frame is painted from the cursor-home; the row's y is its 1-based line.
+    const moved = session.press(`\x1b[<35;6;${String(y)}M`);
+    assert.ok(moved.length > 0, 'a hover repaints');
+    const hovered = lastFrame(session.output).split('\n')[rowIndex];
+    assert.match(hovered, /^\x1b\[7m/, `the hovered row is painted in reverse: ${JSON.stringify(hovered.slice(0, 40))}`);
+    assert.ok(plain(hovered).includes('v2n456'), 'the row keeps its text');
+    // Move onto the header line, which has no clickable region: the light goes.
+    session.press('\x1b[<35;6;2M');
+    const cleared = lastFrame(session.output).split('\n')[rowIndex];
+    assert.doesNotMatch(cleared, /^\x1b\[7m/, 'leaving the row clears the highlight');
+    // Standing still sends nothing new.
+    session.press('\x1b[<35;7;2M');
+    const before = session.output.text.length;
+    session.press('\x1b[<35;8;2M');
+    assert.equal(session.output.text.length, before, 'a move that changes nothing does not repaint');
+    const exit = await session.quit();
+    assert.equal(exit, 0);
+    assert.ok(session.output.text.includes('\x1b[?1003l'), 'motion tracking is released on the way out');
+  } finally { cleanup(); }
+});
+
 test('recent-list V2 selection opens that run on the Run page', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-30T03:00:00.000Z') });
   const { home, cleanup } = fixture();
@@ -525,7 +559,7 @@ test('the interactive TUI takes the alternate screen with mouse reporting, and q
   try {
     const session = shellSession(home, { columns: 110, rows: 26, token: 'abc234' });
     // SGR mouse reporting is asked for with the alternate screen.
-    assert.equal(session.output.text.includes('\x1b[?1000h\x1b[?1006h'), true);
+    assert.equal(session.output.text.includes('\x1b[?1000h\x1b[?1003h\x1b[?1006h'), true);
     session.press('\r'); // run -> its agents
     session.press('\r'); // agents -> the selected step
     assert.match(frameHeader(lastFrame(session.output)), /audit-files · run abc234/);
@@ -535,7 +569,7 @@ test('the interactive TUI takes the alternate screen with mouse reporting, and q
     assert.match(session.output.text, /\x1b\[\?1049h/);
     assert.match(session.output.text, /\x1b\[\?1049l/);
     // Leaving releases the mouse and shows the cursor again.
-    assert.match(session.output.text, /\x1b\[\?1006l\x1b\[\?1000l\x1b\[\?25h\x1b\[\?1049l/);
+    assert.match(session.output.text, /\x1b\[\?1006l\x1b\[\?1003l\x1b\[\?1000l\x1b\[\?25h\x1b\[\?1049l/);
     // Detaching the viewer never asks the kernel to stop.
     assert.equal(existsSync(join(home, 'workflows', 'wf-test', 'cancellation.json')), false);
   } finally { cleanup(); }
@@ -2383,9 +2417,9 @@ test('the [edit] button pauses the dashboard for setup and resumes on the Fleet 
     const handover = session.output.text.slice(before);
     // The terminal is handed over cleanly: mouse reporting and the cursor
     // restored, the alternate screen left.
-    assert.ok(handover.includes('\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l'), 'the dashboard did not release the terminal');
+    assert.ok(handover.includes('\x1b[?1006l\x1b[?1003l\x1b[?1000l\x1b[?25h\x1b[?1049l'), 'the dashboard did not release the terminal');
     // And taken back: alternate screen, hidden cursor, mouse reporting on.
-    assert.ok(handover.includes('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h'), 'the dashboard did not take the terminal back');
+    assert.ok(handover.includes('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H\x1b[?1000h\x1b[?1003h\x1b[?1006h'), 'the dashboard did not take the terminal back');
     assert.deepEqual(session.input.rawModes, [true, false, true]);
     // It returns to the Fleet page with the note and a fresh repaint.
     assert.match(frameHeader(lastFrame(session.output)), /^ Fleet · /);
@@ -3000,13 +3034,17 @@ test("Home's 7-day breakdown is four columns on one band at 120 and 200, and one
       // And the bars under them are proportional to the percentage beside them.
       const pool = lines.slice(head + 1, head + 5).find((line) => /\d+%$/.test(line.trim()));
       const share = Number(/(\d+)%$/.exec(pool.trim())[1]);
+      // The percent sits right-aligned in a four-cell field, so one or more
+      // blanks separate the track from it.
       const bar = /([▇█]+)[░\s]*\s\d+%$/.exec(pool.trim());
-      const track = /([▇█]+)([░]*)\s\d+%$/.exec(pool.trim());
+      const track = /([▇█]+)([░]*)\s+\d+%$/.exec(pool.trim());
       assert.ok(bar, `no bar beside the percentage at ${width}: ${pool}`);
       const filled = track[1].length;
       const cells = filled + track[2].length;
       assert.ok(Math.abs(filled / cells - share / 100) <= 0.12,
         `the bar is ${filled}/${cells} cells for ${share}% at ${width}: ${pool}`);
+      const percentEnds = lines.slice(head + 1, head + 5).filter((line) => /\d+%\s*$/.test(line)).map((line) => line.replace(/\s+$/, '').length);
+      assert.ok(percentEnds.length >= 2 && new Set(percentEnds).size === 1, `percents end on one column at ${width}: ${percentEnds.join(',')}`);
     }
     // 55: the same four sections, one under the other.
     const narrow = bandOf(55);

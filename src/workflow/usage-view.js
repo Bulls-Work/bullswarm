@@ -518,8 +518,8 @@ const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/;
  * The first SGR mouse report in a key chunk, as the dashboard needs it:
  * button 0 pressed, the button released (`m`, or the 3 that some terminals
  * send), and the wheel (64 up, 65 down). Coordinates are 1-based cells, the
- * same ones the enables `\x1b[?1000h\x1b[?1006h` report. Anything else —
- * plain keys, motion, another button — is null.
+ * same ones the enables `\x1b[?1000h\x1b[?1003h\x1b[?1006h` report. Motion with
+ * no button held is `move`. Anything else — plain keys, drags, another button — is null.
  */
 export function parseMouse(chunk) {
   const match = SGR_MOUSE.exec(String(chunk ?? ''));
@@ -530,5 +530,8 @@ export function parseMouse(chunk) {
   if (button & 64) return { kind: (button & 1) === 1 ? 'wheel-down' : 'wheel-up', x, y };
   if (match[4] === 'm') return { kind: 'release', x, y };
   if ((button & 3) === 0 && (button & 32) === 0) return { kind: 'press', x, y };
+  // Motion (bit 32) with no button held, reported under `\x1b[?1003h`: the
+  // pointer moved over a cell. Drags (a button held while moving) stay null.
+  if ((button & 32) !== 0 && (button & 3) === 3) return { kind: 'move', x, y };
   return null;
 }
