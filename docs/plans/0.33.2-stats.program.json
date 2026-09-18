@@ -1,0 +1,126 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "stats-design",
+      "kind": "implement",
+      "purpose": "Specify the shared stat component, the four tabs and the Spending layout, with frames",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3"
+      ],
+      "ownedFiles": [
+        "docs/design/stats-refactor-0.33.2.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, write /home/dev/Repo/bullswork/bullswarm-0.33.2/docs/design/stats-refactor-0.33.2.md: the specification the three implementation steps after you will follow. Study first, with file:line anchors: src/workflow/stats-view.js (1831 lines: its tab list near line 36, tableModel, overviewModel, trendModel and every place it draws a chart by hand), src/workflow/stats-model.js (periodRange, trendModel, poolsModel, modelsModel, projectsModel, overviewModel and exactly which fields each row carries), src/workflow/dash-kit.js (columnBars, stackedBars, shareBar, sparkline, seriesColors, columns, tabsRow, periodToggle, niceStep and their current signatures), and how src/workflow/dashboard.js registers hover regions and renders a hovered label (search HOVER_KINDS, textSpans, and the slice regions the Stats charts already produce). The review screenshot of the Stats overview as it stood is [screenshot removed: it showed private project data] — open it; the goal file docs/plans/0.33.2-stats.goal.txt carries the paraphrased owner request. Specify: (a) the API of a new module src/workflow/stat-kit.js — the exact exported function names, their inputs and what each returns, where every drawing function returns both lines and the hit regions of each bar it drew (region shape: kind, row, column span, and the payload the hover label needs), covering a titled panel of rows with share bars, a vertical column chart with a value axis and dated x labels, a stacked column chart, a legend and a summary card; (b) which of dash-kit's existing exports stat-kit wraps and which new dash-kit exports are needed, given that no existing export may change behaviour because Budget depends on them; (c) the four tabs Spending, Pool, Model, Project: for each, exactly which panels in which order, and a table of what today's Overview and Trends tabs showed, where each item goes, and what is dropped and why; (d) the Spending tab layout at 120 columns: the column chart on the left half, a two-by-two grid of panels on the right half, the By Pool / By Model toggle and what it changes, and which panel fills the fourth cell — name it from what the rollups actually carry (check whether a lane, an outcome or a duration breakdown exists in the rollup records before proposing one; if none does, say so and propose a summary card of the counts that do exist); (e) the day-label rule that replaces the single letters in the screenshot, at 55, 120 and 200 columns; (f) the hover contract: what label text each bar kind produces, where the reserved label row sits, and how a pinned label is cleared. Include two text frames of the Spending tab, 120x40 and 55x26, drawn from real rollup data with every number sourced. No code changes. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json, src/workflow/budget-view.js, src/workflow/budget-model.js or git (no commit, no branch, no stash). Real data only: every figure you show or quote comes from the rollups in ~/.bullswarm, read from a COPY (cp -Rp ~/.bullswarm /tmp/<your-step>-home and point BULLSWARM_HOME at it), never the real one. Run the tests you own with \"node --test <file>\" and quote the summaries, then \"npm test\" and quote its summary line. Write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\"."
+    },
+    {
+      "id": "stat-kit",
+      "kind": "implement",
+      "purpose": "Build the shared stat component module with hit regions",
+      "dependsOn": [
+        "stats-design"
+      ],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "src/workflow/stat-kit.js",
+        "src/workflow/dash-kit.js",
+        "tests/stat-kit.test.js",
+        "tests/dash-kit.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, build src/workflow/stat-kit.js exactly as /home/dev/Repo/bullswork/bullswarm-0.33.2/docs/design/stats-refactor-0.33.2.md specifies (read it first; it is your contract). Every drawing function returns an object of lines and regions, where each region names the bar it covers: its kind, the row and column span it occupies, and the payload a hover label needs (series name, value, share, and the bucket such as a date). Additions to src/workflow/dash-kit.js are new exports only: do not change the signature or behaviour of columnBars, stackedBars, shareBar, sparkline, seriesColors, columns, tabsRow, periodToggle, niceStep or heatRow, because Budget, Home, Runs and Fleet draw with them. Tests in tests/stat-kit.test.js: every component renders inside its width at 55, 120 and 200 columns; regions tile each bar with no gaps and no overlap; a column chart's axis labels are the dated form the design specifies and each label names a value the chart reaches; an empty series renders an honest empty panel rather than a zero bar. Do not edit the Stats pages; the next step does. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json, src/workflow/budget-view.js, src/workflow/budget-model.js or git (no commit, no branch, no stash). Real data only: every figure you show or quote comes from the rollups in ~/.bullswarm, read from a COPY (cp -Rp ~/.bullswarm /tmp/<your-step>-home and point BULLSWARM_HOME at it), never the real one. Run the tests you own with \"node --test <file>\" and quote the summaries, then \"npm test\" and quote its summary line. Write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\"."
+    },
+    {
+      "id": "stats-pages",
+      "kind": "implement",
+      "purpose": "Rebuild the four Stats tabs on the shared component with the Spending layout",
+      "dependsOn": [
+        "stat-kit"
+      ],
+      "affects": [
+        "requirement-2",
+        "requirement-3",
+        "requirement-5"
+      ],
+      "ownedFiles": [
+        "src/workflow/stats-view.js",
+        "src/workflow/stats-model.js",
+        "tests/workflow-stats-view.test.js",
+        "tests/workflow-stats-model.test.js",
+        "docs/design/stats-frames-0.33.2/spending-55.txt",
+        "docs/design/stats-frames-0.33.2/spending-120.txt"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, rebuild the Stats pages on src/workflow/stat-kit.js (read the stat-kit step's output and /home/dev/Repo/bullswork/bullswarm-0.33.2/docs/design/stats-refactor-0.33.2.md first). Deliver: the tabs are exactly Spending, Pool, Model, Project with the panels and order the design names; the Spending tab puts the spend-per-day column chart in the left half and a two-by-two grid of panels in the right half at 120 columns and wider, stacked at 55; the chart's x labels are the dated form the design specifies, never a bare weekday initial (the pre-refactor overview screenshot [screenshot removed: it showed private project data] uses single-letter weekday labels, which is what you are removing); a toggle switches the chart and the grid between By Pool and By Model, by keyboard and by click, with the active choice visible. Delete the hand-rolled chart drawing that stats-view.js carries today rather than leaving it beside the new code, and delete any stats-model export no tab uses any more. Keep every figure sourced from the rollups; a bucket with no measurement shows a dash. Save the two frames named in your territory from a real render at 120x40 and 55x26. Tests: the four tabs each render inside 55, 120 and 200 columns; the toggle changes the stacking; a day with no spend still appears on the axis; a pool with no model rows renders an empty panel honestly. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json, src/workflow/budget-view.js, src/workflow/budget-model.js or git (no commit, no branch, no stash). Real data only: every figure you show or quote comes from the rollups in ~/.bullswarm, read from a COPY (cp -Rp ~/.bullswarm /tmp/<your-step>-home and point BULLSWARM_HOME at it), never the real one. Run the tests you own with \"node --test <file>\" and quote the summaries, then \"npm test\" and quote its summary line. Write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\"."
+    },
+    {
+      "id": "stats-hover",
+      "kind": "implement",
+      "purpose": "Make every Stats bar hoverable and tappable with a pinned label",
+      "dependsOn": [
+        "stats-pages"
+      ],
+      "affects": [
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "src/workflow/dashboard.js",
+        "tests/workflow-dashboard.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, wire the hit regions the Stats pages now return (see the stat-kit and stats-pages outputs and /home/dev/Repo/bullswork/bullswarm-0.33.2/docs/design/stats-refactor-0.33.2.md) into the dashboard's mouse handling in src/workflow/dashboard.js. Today the dashboard tracks motion with SGR 1003 and hovers text spans whose region kind is in HOVER_KINDS, and 0.33.1 added labels for stacked chart slices; extend that so EVERY bar on the Stats pages is covered: the spend-per-day columns and their stacked slices, every breakdown row's share bar in the two-by-two grid, and the legend entries. On a move inside a region show the label the design specifies in the reserved row under the chart or panel, and bold only the matching legend entry; a click pins the label until Escape or another click, so a tablet tap works; a move outside clears an unpinned label. Never recolour, invert or redraw the bar itself, and keep the reserved row present when nothing is hovered so the layout does not jump. Preserve the existing hover behaviour for run and step rows and the per-row diff painter. Tests in tests/workflow-dashboard.test.js using the existing harness: a synthetic move inside a column produces the label text; a click pins it and Escape clears it; a move outside clears an unpinned label; the frame height is unchanged between hovered and unhovered states at 55 and 120 columns. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json, src/workflow/budget-view.js, src/workflow/budget-model.js or git (no commit, no branch, no stash). Real data only: every figure you show or quote comes from the rollups in ~/.bullswarm, read from a COPY (cp -Rp ~/.bullswarm /tmp/<your-step>-home and point BULLSWARM_HOME at it), never the real one. Run the tests you own with \"node --test <file>\" and quote the summaries, then \"npm test\" and quote its summary line. Write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\"."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile, document, and prove the whole page works",
+      "dependsOn": [
+        "stats-design",
+        "stat-kit",
+        "stats-pages",
+        "stats-hover"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, you are the sole writer now. Read all four dependency outputs. (1) Apply every open Shared-file request or say why not. (2) Confirm no existing dash-kit export changed behaviour: run the Budget, Home, Runs and Fleet tests, quote their summaries, and read the diff of src/workflow/dash-kit.js to check it is additions only. (3) Docs: docs/guide/observing.md describes the four Stats tabs, the By Pool and By Model toggle and the hover labels; if docs/reference/cli.md names the old tabs, fix it. (4) CHANGELOG.md, under the Unreleased heading: one plain-words bullet per requirement, built from the writers' proposed bullets; do not bump package.json. (5) Run \"npm test\" until it is green twice in a row and quote both summary lines; fix real failures at the root and name any flake with its test name and evidence. (6) Prove it: cp -Rp ~/.bullswarm /tmp/bsw-stats-integrate, then in tmux at 120x40 and again at 55x26 run the dashboard with BULLSWARM_HOME=/tmp/bsw-stats-integrate, press s, visit all four tabs and paste the captures; never run against ~/.bullswarm itself. Commit nothing."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently judge the refactor against the owner request",
+      "dependsOn": [
+        "stats-design",
+        "stat-kit",
+        "stats-pages",
+        "stats-hover",
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6"
+      ],
+      "reasoning": "high",
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-0.33.2, judge the six requirements of docs/plans/0.33.2-stats.goal.txt against the tree as it stands; inspect and exercise, edit nothing, commit nothing. Work from the paraphrased owner request in the goal and the review screenshot [screenshot removed: it showed private project data]. For 1, check that src/workflow/stat-kit.js is the single drawing path: search the Stats pages for any remaining hand-rolled chart code and for direct dash-kit chart calls that bypass it, and diff dash-kit.js against commit 8230c36 to confirm additions only. For 2, render the Spending tab at 120 and 200 columns and measure that the chart occupies about half the width and four panels sit in a two-by-two grid in the other half; read the x labels and confirm a person can tell which date each column is; exercise the By Pool and By Model toggle and check both the chart and the grid follow it. For 3, visit all four tabs and check they share one layout; confirm nothing a reader needs vanished with Overview and Trends by comparing against a render from commit 8230c36. For 4, feed synthetic mouse moves into a column, a stacked slice, a breakdown row bar and a legend entry, confirm each produces a label naming the thing, its value and its share, that a click pins and Escape clears, that no bar glyph or colour changes, and that the frame height is identical hovered and unhovered. For 5, render at 55, 120 and 200 and check no line exceeds the width, and that the two saved frames match a real render. For 6, run npm test yourself twice and read the docs named. Try to break each claim; a claim about what the screen shows must be backed by a capture you took."
+    }
+  ]
+}
