@@ -1,0 +1,26 @@
+bullswarm Step / attempt 1 · source S1                 
+mini-map: ●--H--A--╋--P--✓                             
+offsets S1: +0.0 +48.5 +50.9 +52.2                     
+         +54.2 +56.0 +81.2s                            
+turn 0  agent  Hi! What would you like to work on?     
+        tokens 2 in / 73 out (S1:11)                   
+turn 1  human  /statusline · branch: main              
+        model: Opus 5                                  
+        agent  launch statusline-setup                 
+        ├─ TOOL Agent                                  
+        │  description: Configure status line          
+        │  subagent: statusline-setup                  
+        │  tokens 2 in / 219 out (S1:18)               
+        ├─ result acknowledged (+54.2s)                
+        └─ parent background (+56.0s)                  
+subagent group · parallel=true                         
+        completed · 23,676 tok                         
+        2 tools · 25.495s (S1:27)                      
+turn 1 stats · elapsed: — · tokens: —                  
+tool args/result: source only                          
+degraded: no eventAt / turnId                          
+select a block · open detail · Esc back                
+source S1: ~/.claude-acme/projects/                    
+source S1: -home-dev-Repo-bullswarm/             
+source S1: af411e34-f6b3-4ca0-be25-7d8be6e024fe.jsonl  
+window S1 lines 11-28 · streams: 0                     
