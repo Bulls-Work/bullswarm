@@ -398,6 +398,7 @@ export function notableWatchEvents({
   const stalled = new Map(carried.stalled);
   const retry = new Map(carried.retry);
   const moving = new Map(carried.moving);
+  const handoffs = new Map(carried.handoffs);
   const notable = [];
 
   const onAttemptStarted = (actionId, payload, ordinal) => {
@@ -415,6 +416,17 @@ export function notableWatchEvents({
       });
       moving.delete(actionId);
     }
+    const incoming = payload.handoff ?? handoffs.get(actionId) ?? null;
+    if (incoming) {
+      notable.push({
+        type: 'attempt.handoff',
+        actionId,
+        pool: incoming.pool ?? null,
+        files: incoming.files ?? incoming.changedFileCount ?? 0,
+        lastSaid: incoming.lastSaid ?? incoming.lastResponse ?? '',
+      });
+      handoffs.delete(actionId);
+    }
     if (verbose) {
       notable.push({
         type: 'action.started', actionId,
@@ -427,6 +439,14 @@ export function notableWatchEvents({
     const failureKind = payload.failureKind
       ?? (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId)?.failureKind;
     const record = (state.attempts ?? []).find((attempt) => attempt.id === payload.attemptId);
+    const rememberHandoff = () => {
+      if (payload.willRetry !== true || failureKind === 'schema') return;
+      handoffs.set(actionId, {
+        pool: record?.pool ?? payload.pool ?? null,
+        files: payload.changedFileCount ?? record?.changedFileCount ?? 0,
+        lastSaid: payload.lastResponse ?? '',
+      });
+    };
     if (failureKind === 'stalled') {
       const pool = record?.pool ?? payload.pool ?? null;
       const why = payload.why ?? record?.why ?? null;
@@ -440,6 +460,7 @@ export function notableWatchEvents({
         partialOutput: payload.partialOutput ?? record?.partialOutput ?? null,
         willRetry: payload.willRetry === true,
       });
+      rememberHandoff();
       moving.set(actionId, true);
       return;
     }
@@ -455,10 +476,12 @@ export function notableWatchEvents({
         until: quotaDeadlineIso(bullswarmDir, pool, why),
         willRetry: payload.willRetry === true,
       });
+      rememberHandoff();
       moving.set(actionId, true);
       return;
     }
     retry.set(actionId, payload.failureKind ?? payload.status ?? 'unknown');
+    rememberHandoff();
   };
 
   for (const event of events) {
@@ -633,7 +656,7 @@ export function notableWatchEvents({
     });
   }
 
-  return { notable, memory: { stages, stalled, retry, moving } };
+  return { notable, memory: { stages, stalled, retry, moving, handoffs } };
 }
 
 /** One notable event as one human line. `now` anchors the attempt.quota
@@ -685,6 +708,10 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
         + (event.willRetry ? 'retrying on another pool' : 'no retry left');
     case 'attempt.moved':
       return `${glyphs().reroute} ${event.actionId} now on ${event.pool ?? '?'} · ${event.model ?? '?'}`;
+    case 'attempt.handoff': {
+      const said = String(event.lastSaid ?? '').replace(/\s+/g, ' ').trim();
+      return `${glyphs().handoff} ${event.actionId} handed off from ${event.pool ?? '?'} · ${event.files ?? 0} file${event.files === 1 ? '' : 's'} · last said "${said}"`;
+    }
     case 'pool.benched':
       {
         const until = typeof event.until === 'number'

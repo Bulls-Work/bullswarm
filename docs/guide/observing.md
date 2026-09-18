@@ -223,6 +223,110 @@ bullswarm workflow events ab12cd --after 0
 
 `action show` names the action's `outputFile` — read it before deciding the rest of the plan still fits. `events` is the machine-oriented replay; page through it by passing the last returned `sequence` to `--after`.
 
+## What one attempt leaves on disk
+
+Every attempt writes its normalized event stream into the run directory
+(`~/.bullswarm/workflows/<runId>/`, or `$BULLSWARM_HOME/workflows/<runId>/`)
+next to its task and output files:
+
+| File | Written when |
+| --- | --- |
+| `task-<action>-attempt-<n>.md` | the task text the attempt was handed |
+| `out-<action>-attempt-<n>.md` | its final answer, or the partial text a stalled worker left |
+| `stream-<action>-attempt-<n>.jsonl` | the connector declares an `eventStream` |
+| `stdout-<action>-attempt-<n>.log` | it does not: a bounded plain tail instead |
+| `diff-<action>-attempt-<n>.txt` | `git diff --stat` of the step's territory, taken the moment the worker exited |
+
+The stream is one JSON object per line with `seq`, `at` (ISO, stamped by the
+kernel, not by the provider), `source`, `providerType`, `kind`, `status`, and
+`summary`. A `response` event keeps its text here up to `responseBytes` — the
+live pane's 180-character clip is a display choice, not the record:
+
+```json
+{"seq":1,"at":"2026-09-17T08:30:46.101Z","source":"stdout","providerType":"item.started","kind":"command_execution","status":"running","summary":"ls src/workflow"}
+{"seq":3,"at":"2026-09-17T08:30:46.102Z","source":"stdout","providerType":"item.completed","kind":"response","status":"completed","summary":"Read the task file and enumerated 3 candidate files."}
+{"seq":7,"at":"2026-09-17T08:30:46.102Z","source":"stdout","providerType":"item.completed","kind":"response","status":"completed","summary":"## Partial\n\nRead the task file and enumerated 3 candidate files before going quiet."}
+```
+
+The JSONL stream is bounded as a head, then one
+`{"truncated":true,"dropped":<n>}` marker line, then a tail. The fallback for
+a connector with no `eventStream` is different: `stdout-…-attempt-….log` is a
+marker-free bounded plain tail. Core allows 1048576 bytes per file and 64000
+bytes per `response` event; a connector may raise or lower either in its
+`eventStream.capture` block (see [providers](../reference/providers.md)).
+
+The sink appends head records synchronously. Once a cap is exceeded, its
+in-memory tail is flushed to the sibling `.tail` segment every 32 events or
+2 seconds, whichever comes first; `close()` folds the head, marker, and tail
+back into the final JSONL file (or the marker-free stdout tail). If the kernel
+is killed outright (`SIGKILL`) the head records are already on disk and the
+final file holds them; whatever the tail segment had flushed stays in the
+orphan `.tail` sibling, which nothing reads back or folds in, and the events
+still in memory are lost.
+
+`action show` reports the paths and the byte counts on every attempt, failed
+ones included, plus `handoff` on an attempt that inherited a predecessor:
+
+```json
+{
+  "id": "edit-owned-1", "ordinal": 1, "pool": "staller", "status": "interrupted",
+  "failureKind": "stalled",
+  "outputFile": ".../out-edit-owned-attempt-1.md", "outputBytes": 83,
+  "streamFile": ".../stream-edit-owned-attempt-1.jsonl",
+  "diffFile": ".../diff-edit-owned-attempt-1.txt", "changedFileCount": 1,
+  "lastResponse": "## Partial\n\nRead the task file and enumerated 3 candidate files before going quiet."
+}
+{
+  "id": "edit-owned-2", "ordinal": 2, "pool": "answerer", "status": "succeeded",
+  "handoff": { "from": "edit-owned-1", "bytes": 1108 }
+}
+```
+
+`handoff.bytes` is the size of the block the attempt was handed; it varies
+with the run directory's path length, so the figure above is one measurement,
+not a constant.
+
+## The next attempt is told what the last one did
+
+When an attempt ends without success and the step is retried — on another pool
+or the same one — the task the next worker receives ends with a
+`## Prior attempt on this step` block built from those files. (The bounded
+schema-correction path keeps its own block and never gets this one.) A real
+block, from a two-step fixture run whose first pool went silent:
+
+````markdown
+## Prior attempt on this step
+
+- Pool: staller
+- Model: zen/union-free
+- Started: 2026-09-17T08:30:46.056Z
+- Finished: 2026-09-17T08:30:54.133Z
+- Duration: 8s
+- Failure: stalled — stalled: the worker wrote nothing for 8 s and was stopped
+- Files changed inside this step's territory: owned.txt
+- Diff stat at the moment it ended:
+```
+owned.txt | 1 +
+ 1 file changed, 1 insertion(+)
+```
+- Diff snapshot: .../diff-edit-owned-attempt-1.txt
+- Final answer / partial output: .../out-edit-owned-attempt-1.md (83 bytes)
+- Stream file: .../stream-edit-owned-attempt-1.jsonl
+- Last response events:
+  - 2026-09-17T08:30:46.102Z: Read the task file and enumerated 3 candidate files.
+  - 2026-09-17T08:30:46.102Z: Editing owned.txt with the first pass before checking the tests.
+  - 2026-09-17T08:30:46.102Z: ## Partial Read the task file and enumerated 3 candidate files before going quiet.
+- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.
+````
+
+The diff stat is frozen at the moment the worker exited, so edits a sibling
+step makes afterwards are never blamed on it. The stream is named by path and
+never pasted in. `workflow watch` prints the same handoff as one line:
+
+```text
+↪ edit-owned handed off from staller · 1 files · last said "## Partial Read the task file and enumerated 3 candidate files before going quiet."
+```
+
 ## One frame for a caller
 
 ```bash

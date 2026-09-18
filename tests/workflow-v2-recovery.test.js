@@ -213,3 +213,52 @@ console.log(result.result.status);
   assert.match(results.find((result) => result.code !== 0).output, /active kernel|kernel lease lost/);
   assert.equal(readFileSync(join(f.cwd, 'a.txt'), 'utf8'), 'seed\nreplacement\n');
 });
+
+// The kernel itself can die mid-attempt. The worker's partial output and its
+// stream are still on disk beside the task file; the interrupted record the
+// resume writes must say so, exactly as a normally finished attempt would
+// (verifier of run gqq2ra, 2026-09-17: tick-step-1 had streamFile absent while
+// a 14 KB stream-tick-step-attempt-1.jsonl sat in the run directory).
+test('a resume after SIGKILL fills the interrupted attempt with the artifacts it left on disk', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t);
+  const runId = 'wf-artifacts-abcdef';
+  const script = join(f.root, 'kernel.mjs');
+  writeFileSync(script, `
+import { writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { runV2AutonomousWorkflow } from ${JSON.stringify(runtimeUrl)};
+const resume = process.argv[2] === 'resume';
+try {
+const result = await runV2AutonomousWorkflow({ bullswarmDir: ${JSON.stringify(f.home)},
+  ...(resume ? { resumeRunId: ${JSON.stringify(runId)} } : { runId: ${JSON.stringify(runId)}, goalDocument: ${JSON.stringify(f.goal)}, initialPlannerResponse: ${JSON.stringify(program)} }),
+  dependencies: { dispatchV2Action: async (options) => {
+    // The kernel adds the prior attempt count to this ordinal itself.
+    const files = options.paths(1);
+    const record = { ordinal: 1, pool: 'fixture', model: 'fixture', status: 'running', startedAt: new Date().toISOString(), taskFile: files.taskFile, outFile: files.outFile };
+    options.onAttempt('started', record);
+    if (!resume) {
+      writeFileSync(files.outFile, '## Partial\\n\\nhalf done');
+      writeFileSync(join(dirname(files.taskFile), 'stream-write-attempt-1.jsonl'), JSON.stringify({ seq: 1, at: new Date().toISOString(), kind: 'response', summary: 'half done' }) + '\\n');
+      process.kill(process.pid, 'SIGKILL');
+    }
+    writeFileSync(files.outFile, 'Delivered and checked the requested files.');
+    record.status = 'succeeded'; record.finishedAt = new Date().toISOString();
+    const verdict = { ok: true, outFile: files.outFile };
+    options.onAttempt('finished', record, verdict);
+    return { ok: true, status: 'succeeded', attempts: [record], verdict };
+  } }
+});
+console.log(result.result.status);
+} catch (error) { console.error(error.message); process.exitCode = 1; }
+`);
+  assert.equal(spawnSync(process.execPath, [script], { timeout: 5000 }).signal, 'SIGKILL');
+  const resumed = spawnSync(process.execPath, [script, 'resume'], { timeout: 10_000, encoding: 'utf8' });
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  const state = JSON.parse(readFileSync(join(f.home, 'workflows', runId, 'state.json'), 'utf8'));
+  const interrupted = state.attempts.find((attempt) => attempt.ordinal === 1);
+  assert.equal(interrupted.status, 'interrupted');
+  assert.match(interrupted.outputFile, /out-write-attempt-1\.md$/);
+  assert.equal(interrupted.outputBytes, Buffer.byteLength('## Partial\n\nhalf done'));
+  assert.match(interrupted.streamFile, /stream-write-attempt-1\.jsonl$/);
+  assert.equal(interrupted.diffFile, undefined, 'no diff snapshot was written, so none is claimed');
+});
