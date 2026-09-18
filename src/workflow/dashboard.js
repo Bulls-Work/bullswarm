@@ -17,7 +17,7 @@ import { loadUsage, parseMouse, METER_COLORS, meterBar, paceWord, untilText } fr
 // The 0.33.0 pages: the render kit, the two aggregation models, and the four
 // view modules each territory owns. The shell composes them and owns no
 // arithmetic of its own beyond laying the lines out.
-import { absentLine, columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, shareBar, sparkline, tabsRow } from './dash-kit.js';
+import { absentLine, chartRowCount, columns, compactRow, columnBars, cut, formatDashboardValue, periodToggle, progressBar, rule, seriesColor, shareBar, sparkline, tabsRow } from './dash-kit.js';
 import { PERIODS, TREND_METRICS, modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from './stats-model.js';
 import { biggestRuns, budgetModel } from './budget-model.js';
 import { budgetLines, budgetNotes } from './budget-view.js';
@@ -1357,11 +1357,11 @@ function dimText(value, width) {
 
 // ------------------------------------------------- the palette on the page
 //
-// The pages name a role — `orange`, `cyan`, `purple`, `green`, `red`, `dim` —
-// and never a hex. Every value comes from METER_COLORS in usage-view.js, the
-// one palette the product has; this file adds none. Colour is off wherever
-// the meters are off, so an ascii terminal and a plain-text capture read the
-// same words with no escapes in them.
+// The pages name a palette role — or the stable hex returned by dash-kit for a
+// pool/model series — and never invent a colour. Every value comes from
+// METER_COLORS in usage-view.js, the one palette the product has; this file
+// adds none. Colour is off wherever the meters are off, so an ascii terminal
+// and a plain-text capture read the same words with no escapes in them.
 
 const SGR_RESET = '\x1b[0m';
 const SGR_BOLD = '\x1b[1m';
@@ -1376,7 +1376,7 @@ const rgbOf = (hex) => {
 function tint(text, role) {
   const body = String(text ?? '');
   if (!body || !meterAnsi()) return body;
-  const hex = METER_COLORS[role];
+  const hex = typeof role === 'string' && role.startsWith('#') ? role : METER_COLORS[role];
   if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return body;
   return `\x1b[38;2;${rgbOf(hex).join(';')}m${body}${SGR_RESET}`;
 }
@@ -1746,7 +1746,6 @@ const PAGE_TABS = Object.freeze([
   Object.freeze({ id: 'budget', label: 'Budget', key: 'b' }),
   Object.freeze({ id: 'stats', label: 'Stats', key: 's' }),
   Object.freeze({ id: 'fleet', label: 'Fleet', key: 'f' }),
-  Object.freeze({ id: 'help', label: 'Help', key: '?' }),
 ]);
 /** Run and Step are read as Runs: the tab row marks the page they came from. */
 const TAB_OF_PAGE = Object.freeze({ run: 'runs', step: 'runs', history: 'runs' });
@@ -1931,11 +1930,12 @@ const underline = (text) => `\x1b[4m${text}\x1b[24m`;
 /**
  * The page tab row: the active tab inverted with its key letter underlined.
  * Fleet is dropped while the terminal is narrow unless it is the page being
- * read, and Help only ever appears while it is.
+ * read. Help remains available from the bottom nav and the `?` key, but is
+ * intentionally not a top-level tab.
  */
 function pageTabs(page, width) {
-  const active = TAB_OF_PAGE[page] ?? page;
-  const hidden = ['help'];
+  const active = TAB_OF_PAGE[page] ?? (page === 'help' ? null : page);
+  const hidden = [];
   if (width < 38) hidden.push('fleet');
   return tabsRow(PAGE_TABS, { active, width, hidden });
 }
@@ -2397,7 +2397,7 @@ function breakdownCells(model, opts, { cellWidth }) {
       rows: [
         dimText(label, cellWidth),
         ...(list.length
-          ? list.map((row) => barOf(row.minutesShare, role, cut(String(row.name ?? '?'), nameWidth).padEnd(nameWidth), cellWidth))
+          ? list.map((row) => barOf(row.minutesShare, seriesColor(row.name ?? '?') ?? role, cut(String(row.name ?? '?'), nameWidth).padEnd(nameWidth), cellWidth))
           : [dimText('no finished run in this period', cellWidth)]),
       ],
     };
@@ -2412,7 +2412,9 @@ function breakdownCells(model, opts, { cellWidth }) {
       [{ name: 'spent', values: buckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
       buckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
       {
-        width: cellWidth, height: rows - 1, col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, buckets.length))),
+        width: cellWidth,
+        rowCount: chartRowCount(opts.height ?? 36),
+        col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, buckets.length))),
         barW: 3, unit: '$', mark: about(), totals: false, colors: meterAnsi(),
       },
     )
@@ -3456,7 +3458,7 @@ function statsPage(model, opts, body) {
     return ' Stats';
   }
   pushView(body, statsLines(model.stats, {
-    width, tab, period: opts.period, metric, ansi: meterAnsi(),
+    width, height: opts.height, tab, period: opts.period, metric, ansi: meterAnsi(),
   }));
   body.anchor = { tabs: 1 };
   return ` Stats · ${tab}`;

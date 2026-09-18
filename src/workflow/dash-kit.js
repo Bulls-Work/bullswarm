@@ -36,6 +36,41 @@
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import { METER_COLORS } from './usage-view.js';
 
+// Series colours are keyed by the name being drawn, not by the order in
+// which a particular period happens to return it.  The two grey roles are
+// deliberately reserved for the honest aggregations the charts can produce.
+const SERIES_COLOR_ROLES = Object.freeze(['purple', 'amber', 'green', 'cyan', 'orange', 'red']);
+const SERIES_COLOR_GREYS = Object.freeze({ unknown: METER_COLORS.dim, other: METER_COLORS.others });
+
+function seriesHash(value) {
+  let hash = 2166136261;
+  for (const character of String(value ?? '')) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/** A deterministic colour for a pool/model series across every period. */
+export function seriesColor(name) {
+  const key = String(name ?? '').trim().toLowerCase();
+  if (!key || key === 'unknown') return SERIES_COLOR_GREYS.unknown;
+  if (key === 'other' || key.startsWith('other (')) return SERIES_COLOR_GREYS.other;
+  return METER_COLORS[SERIES_COLOR_ROLES[seriesHash(key) % SERIES_COLOR_ROLES.length]];
+}
+
+// A descriptive alias for callers that do not use the chart terminology.
+export const paletteColor = seriesColor;
+
+/** Row budget shared by the chart callers at each frame height. */
+export function chartRowCount(height, { min = 5, max = 16 } = {}) {
+  const value = Number(height);
+  const lower = Math.max(1, Math.trunc(Number(min)) || 5);
+  const upper = Math.max(lower, Math.trunc(Number(max)) || 16);
+  const derived = Number.isFinite(value) ? Math.floor((value - 2) / 4) : lower;
+  return Math.max(lower, Math.min(upper, derived));
+}
+
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
 const INVERT = '\x1b[7m';
@@ -619,7 +654,7 @@ export function stackedBars(rows, { width = 120, colors = true } = {}) {
  * `segments` (`{ sourceIndex, eighths, low, high }`) for hit regions.
  */
 export function columnBars(series, labels, {
-  width = null, height = 6, col = 8, barW = 6, unit = '$', mark = '', totals = true, cumulative = false,
+  width = null, height = 6, rowCount: requestedRowCount = null, col = 8, barW = 6, unit = '$', mark = '', totals = true, cumulative = false,
   colors = true,
 } = {}) {
   const sourceLabels = Array.isArray(labels) ? labels.map((label) => String(label ?? '')) : [];
@@ -638,7 +673,7 @@ export function columnBars(series, labels, {
     values: entry.values.slice(offset),
   }));
   const n = labelsView.length;
-  const requestedRows = Math.max(1, cellsOf(height, 6));
+  const requestedRows = Math.max(1, cellsOf(requestedRowCount ?? height, 6));
   const baseCol = Math.max(1, Math.trunc(Number(col)) || 8);
   const markText = typeof mark === 'string' ? mark : '';
   // The tick gutter, the axis column, and the cell the mark needs in front of
@@ -675,7 +710,11 @@ export function columnBars(series, labels, {
   const axisInfo = niceStep(max, requestedRows);
   const axisTop = axisInfo.ticks.at(-1) ?? 0;
   const intervals = Math.max(1, axisInfo.ticks.length - 1);
-  const rowsPerTick = Math.max(1, Math.floor(requestedRows / intervals));
+  // Nice-number rounding can leave fewer intervals than requested (for
+  // example a 0–20 axis at a wanted height of six).  Round the rows per tick
+  // upward so the caller's minimum density is honoured rather than collapsing
+  // the chart back to four rows.
+  const rowsPerTick = Math.max(1, Math.ceil(requestedRows / intervals));
   const rowCount = intervals * rowsPerTick;
   const scale = axisTop > 0 ? axisTop : 1;
   const eighths = sums.map((value) => value == null || value <= 0
@@ -684,9 +723,36 @@ export function columnBars(series, labels, {
   const heights = eighths.map((value) => Math.ceil(value / 8));
   const stacks = sums.map((_, index) => {
     const entries = seriesView.map((entry, sourceIndex) => ({
-      color: entry.color, sourceIndex, value: Math.max(0, readAt(entry, index) ?? 0),
+      color: entry.color, name: entry.name ?? null, sourceIndex, value: Math.max(0, readAt(entry, index) ?? 0),
     })).filter((entry) => entry.value > 0).sort((a, b) => b.value - a.value || a.sourceIndex - b.sourceIndex);
-    const counts = allocate(entries.map((entry) => entry.value), eighths[index]);
+    const totalEighths = eighths[index];
+    if (!entries.length || totalEighths <= 0) return [];
+    // A single sub-eighth slice gets the one-cell minimum. Several can keep
+    // that minimum while the column has enough eighths; only an impossible
+    // allocation is collapsed into one dim `other` slice at the top.
+    const tiny = entries.filter((entry) => (entry.value / sums[index]) * totalEighths < 1);
+    let drawable = entries;
+    // Keep every tiny slice when the column has enough eighths to give each
+    // one a minimum. Only an actually impossible allocation (more tiny
+    // slices than available eighths) is collapsed into the honest `other`
+    // aggregate.
+    const nonTiny = entries.length - tiny.length;
+    const tinySlots = Math.max(0, totalEighths - nonTiny);
+    if (tiny.length > tinySlots) {
+      const tinyValue = tiny.reduce((sum, entry) => sum + entry.value, 0);
+      const tinyIndexes = new Set(tiny.map((entry) => entry.sourceIndex));
+      drawable = [
+        ...entries.filter((entry) => !tinyIndexes.has(entry.sourceIndex)),
+        {
+          color: METER_COLORS.others,
+          name: `other (${tiny.length} pools)`,
+          otherCount: tiny.length,
+          sourceIndex: -1,
+          value: tinyValue,
+        },
+      ];
+    }
+    const counts = allocate(drawable.map((entry) => entry.value), totalEighths);
     for (let at = 0; at < counts.length; at += 1) {
       if (counts[at] > 0) continue;
       const donor = counts.reduce((best, count, candidate) => count > counts[best] ? candidate : best, 0);
@@ -696,7 +762,7 @@ export function columnBars(series, labels, {
       }
     }
     let cursor = 0;
-    return entries.map((entry, at) => {
+    return drawable.map((entry, at) => {
       const low = cursor;
       cursor += counts[at];
       return { ...entry, low, high: cursor, eighths: counts[at] };
@@ -719,7 +785,27 @@ export function columnBars(series, labels, {
       if (number !== 0 && Number(text) === 0) text = number.toPrecision(1);
     }
     if (unit === '$') return `${markText}${formatDashboardValue(number, 'money')}`;
+    if (unit === 'minutes') return `${markText}${formatDashboardValue(number, 'minutes')}`;
     return `${markText}${unit ?? ''}${text}`;
+  };
+  // A value under a column keeps one blank cell before the next column. When
+  // the full text would fill the cell (`16h34m` in a six-cell phone column ran
+  // straight into `3h52m`), a duration falls back to whole hours and anything
+  // else is clipped, so neighbouring totals never read as one number.
+  // Money keeps the whole cell (a six-cell phone column must still show
+  // `≈$0.12`), so only durations, whose neighbours are the same length, give
+  // up the last cell.
+  const compactValue = (value) => {
+    const full = numberText(value) ?? '—';
+    if (unit !== 'minutes') return full;
+    const limit = Math.max(1, cellWidth - 1);
+    if (visibleLength(full) <= limit) return full;
+    const number = reading(value);
+    if (number != null && number >= 60) {
+      const hours = `${markText}${Math.round(number / 60)}h`;
+      if (visibleLength(hours) <= limit) return hours;
+    }
+    return cut(full, limit);
   };
   const cellText = (value, limit, fallback = '') => {
     if (limit <= 0) return '';
@@ -739,7 +825,12 @@ export function columnBars(series, labels, {
     if (!text || !colors || ascii || !isHex(color)) return text;
     return `${fgOf(color)}${text}${RESET}`;
   };
-  const ticksByRow = new Map(axisInfo.ticks.map((tick, index) => [index * rowsPerTick, tick]));
+  // Tick labels belong to the bottom edge of a bar row.  The zero label is
+  // therefore on row one; the axis-top tick would land one row beyond the
+  // chart and is intentionally omitted to keep the requested height.
+  const ticksByRow = new Map(axisInfo.ticks
+    .map((tick, index) => [index * rowsPerTick + 1, tick])
+    .filter(([row]) => row <= rowCount));
   const segmentCell = (index, row) => {
     const low = (row - 1) * 8;
     const filled = Math.max(0, Math.min(8, eighths[index] - low));
@@ -748,19 +839,16 @@ export function columnBars(series, labels, {
     const top = segments.at(-1);
     const glyph = ascii ? (filled === 8 ? block : '.') : SPARK_UNICODE[filled - 1];
     if (segments.length < 2 || !colors || ascii) return columnCell('', colored(glyph, top?.color));
-    if (filled === 8 && segments.length === 2 && segments.every((entry) => isHex(entry.color))) {
-      const lower = segments[0];
-      const bottomGlyph = SPARK_UNICODE[lower.high - low - 1];
-      return columnCell('', `${bgOf(rgbOf(top.color))}${fgOf(lower.color)}${bottomGlyph}${RESET}`);
-    }
-    const lanes = allocate(segments.map((entry) => Math.min(entry.high, low + filled) - Math.max(entry.low, low)), barWidth);
-    for (let at = lanes.length - 1; at >= 0; at -= 1) {
-      if (lanes[at]) continue;
-      const donor = lanes.findIndex((count) => count > 1);
-      if (donor >= 0) { lanes[donor] -= 1; lanes[at] = 1; }
-    }
-    const run = segments.map((entry, at) => colored(glyph.repeat(lanes[at]), entry.color)).join('');
-    return cellWidth <= 1 ? run : ` ${run}${' '.repeat(cellWidth - barWidth - 1)}`;
+    // A cell is a vertical slice, never a set of horizontal colour lanes.
+    // When two slices cross it, the lower one becomes the background and the
+    // upper one the foreground; middle slices remain vertical in neighbouring
+    // cells but never introduce a third colour into this row.
+    const lower = segments[0];
+    const run = glyph.repeat(barWidth);
+    const painted = isHex(lower?.color) && isHex(top?.color)
+      ? `${bgOf(rgbOf(lower.color))}${fgOf(top.color)}${run}${RESET}`
+      : colored(run, top?.color);
+    return cellWidth <= 1 ? painted : ` ${painted}${' '.repeat(Math.max(0, cellWidth - barWidth - 1))}`;
   };
 
   const lines = [];
@@ -770,13 +858,13 @@ export function columnBars(series, labels, {
     for (let index = 0; index < n; index += 1) line += segmentCell(index, row);
     lines.push(line);
   }
-  let labelsLine = cellText(numberText(0) ?? '0', axisWidth) + baseAxis;
+  let labelsLine = ' '.repeat(axisWidth) + baseAxis;
   labelsView.forEach((label) => { labelsLine += columnCell(cellText(label, cellWidth - 1)); });
   lines.push(labelsLine);
   const valueRow = lines.length;
   if (totals) {
     let valuesLine = ' '.repeat(axisWidth + 1);
-    sums.forEach((value) => { valuesLine += columnCell(numberText(value) ?? '—'); });
+    sums.forEach((value) => { valuesLine += columnCell(compactValue(value)); });
     lines.push(valuesLine);
   }
   let cumulativeRow = null;
@@ -805,6 +893,10 @@ export function columnBars(series, labels, {
         barWidth, height: heights[index], eighths: eighths[index], sourceIndex: offset + index,
         segments: stacks[index],
       })),
+      legend: [...new Set(stacks.flatMap((column) => column
+        .filter((entry) => entry.sourceIndex >= 0 || entry.name?.startsWith('other ('))
+        .map((entry) => entry.name)
+        .filter(Boolean)))],
       sums,
     },
   });

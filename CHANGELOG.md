@@ -59,6 +59,23 @@
   Runs. The one-second refresh keeps the table cursor where the reader put it
   (it used to snap back to the in-flight run, so `Enter` opened the wrong
   workflow).
+- dashboard: the second owner-review round, from phone screenshots of the
+  0.33.0 preview. `Stats` `Models` draws stacked columns per day and model
+  instead of a three-row line chart that flattened every model under four
+  hours onto the zero line (Opus ran 29, 9, 897, 75, 278 and 686 minutes on
+  six consecutive days and showed on one). Axis labels mark the bottom of
+  their row, so a bar of 15 rises half a row above `14` instead of reading as
+  16. Phone columns are equal width and the charts use the rows the screen
+  has. A column never lays two colours side by side in one row: slices too
+  small for their own eighth merge into one grey `other` slice, counted in the
+  legend. Each pool and model keeps one colour on every page and period. Under
+  a column, totals keep one blank cell apart and a long duration falls back to
+  whole hours. `Budget`: a pool whose meter never moved during its measured
+  runs says `share unknown · meter did not move during 32 measured runs`
+  instead of `≈ 0%`; credits join the `used` row (`0 of 70 credits`); a pool
+  with nothing left says `no room left before the reset`. The Runs day table
+  never cuts a duration (`3h21m`, not `3h2…`). The tab row stays five tabs on
+  the Help page.
 - dashboard: no page draws an empty track where it has no data. The `Run`
   page's budget block is titled `licence this run used`, shows whole percents
   (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty

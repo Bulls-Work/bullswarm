@@ -561,7 +561,9 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · all/);
     // The project derives from the run's goal.json cwd (requirement 3), so the
     // temp fixture home names the row, not `unknown project`.
-    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit documentation fr…/);
+    // The widest visible duration in this day is six cells, so the elastic
+    // goal gives back one cell to keep `5m` and `12h34m` whole.
+    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit documentation f…/);
     assert.match(plain(session.output.text), /── timeline ─/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
@@ -894,18 +896,17 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     for (const name of DASHBOARD_PAGE_NAMES) {
       assert.deepEqual(
         tabNames(page(name)),
-        name === 'help'
-          ? ['Home', 'Runs', 'Budget', 'Stats', 'Fleet', 'Help']
-          : ['Home', 'Runs', 'Budget', 'Stats', 'Fleet'],
+        ['Home', 'Runs', 'Budget', 'Stats', 'Fleet'],
         `${name} painted the wrong tab row`,
       );
     }
     // Run and Step are read as Runs, so the tab row marks Runs on both.
     for (const [name, active] of [['home', 'Home'], ['runs', 'Runs'], ['run', 'Runs'], ['step', 'Runs'],
-      ['budget', 'Budget'], ['stats', 'Stats'], ['history', 'Runs'], ['fleet', 'Fleet'], ['help', 'Help']]) {
+      ['budget', 'Budget'], ['stats', 'Stats'], ['history', 'Runs'], ['fleet', 'Fleet']]) {
       assert.ok(String(page(name)).includes(`\x1b[7m`), `${name} painted no active tab`);
       assert.ok(activeTab(page(name)).includes(active), `${name} marked ${activeTab(page(name))}, not ${active}`);
     }
+    assert.equal(activeTab(page('help')), '', 'Help has no highlighted tab');
 
     // The header names the page: the product on Home, the run on Run, the step
     // on Step, the window on Budget, the tab on Stats.
@@ -2099,7 +2100,7 @@ test('the Budget page draws every pool meter, its money and what still fits', ()
   // with their reasons, the room row, and the money line with its basis.
   assert.match(text, /no measured usage rate yet/);
   assert.match(text, /27% of the window gone/);
-  assert.match(text, /64 \/ 70 credits used/);
+  assert.match(text, /64 of 70 credits/);
   // Money is the recorded estimate, labelled, and the undeclared plan price is
   // a blank with the reason — never a number.
   assert.match(text, /≈ \$0\.42 of API-equivalent work/);

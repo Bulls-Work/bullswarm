@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  absentLine, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule,
+  absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, paletteColor, periodToggle, progressBar, rule,
+  seriesColor,
   shareBar, sparkline, stackedBars, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
@@ -12,6 +13,31 @@ const visible = (text) => String(text ?? '').replace(SGR, '');
 const visibleLength = (text) => visible(text).length;
 const WIDTHS = [32, 54, 55, 100, 200];
 const ASCII = ['.', ':', '-', '=', '#'];
+
+function foregroundColoursIn(line, start, width) {
+  const colours = new Set();
+  const source = String(line ?? '');
+  let at = 0;
+  let column = 0;
+  let foreground = null;
+  while (at < source.length) {
+    if (source[at] === '\x1b') {
+      const match = source.slice(at).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
+      if (match) {
+        const sequence = match[0];
+        const colour = sequence.match(/^\x1b\[38;2;([^m]+)m$/);
+        if (colour) foreground = colour[1];
+        else if (/^\x1b\[0m$/.test(sequence)) foreground = null;
+        at += sequence.length;
+        continue;
+      }
+    }
+    if (column >= start && column < start + width && foreground) colours.add(foreground);
+    column += 1;
+    at += 1;
+  }
+  return colours;
+}
 
 /** Every `$` the text paints with no `≈` in front of it. */
 function unmarkedDollars(text) {
@@ -76,8 +102,8 @@ const ROWS = Object.freeze([
 
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'absentLine', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'periodToggle',
-    'progressBar', 'rule', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
+    'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
+    'progressBar', 'rule', 'seriesColor', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
   ]);
 });
 
@@ -325,7 +351,7 @@ test('columnBars keeps magnitude, value labels and cumulative totals in a narrow
   ], ['2026-09-15', '2026-09-16'], {
     width: 55, height: 6, col: 8, barW: 3, cumulative: true, colors: false,
   });
-  assert.equal(chart.length, 7, 'four evenly spaced axis rows plus labels, values and cumulative rows');
+  assert.equal(chart.length, chart.meta.chartRows + 3, 'chart rows plus labels, values and cumulative rows');
   assert.ok(chart.meta.columns[1].height > chart.meta.columns[0].height, '36x value is visibly taller than 1x');
   assert.deepEqual(chart.meta.sums, [1, 36]);
   assert.ok(chart.some((line) => visible(line).includes('36')), 'value row carries the total');
@@ -365,30 +391,36 @@ test('columnBars floors $2.93 to eighths under an evenly spaced $3 axis', () => 
     const chart = columnBars([{ values: [2.93] }], ['day'], {
       height: 8, mark: '≈', colors: false, col: 4, barW: 3, totals: false,
     });
-    assert.deepEqual([...chart], [
-      '≈$3.00 ┤ ▆▆▆',
-      '≈$2.50 ┤ ███',
-      '≈$2.00 ┤ ███',
-      '≈$1.50 ┤ ███',
-      '≈$1.00 ┤ ███',
-      '≈$0.50 ┤ ███',
-      '≈$0.00 ┼day ',
-    ]);
-    assert.equal(chart.meta.columns[0].eighths, 46);
-    assert.equal(chart.meta.columns[0].height, 6);
+    const rows = [...chart];
+    assert.match(rows[0], /┤ ▅▅▅/);
+    assert.match(rows.at(-1), /┼day/);
+    assert.equal(rows.filter((line) => line.includes('≈\$')).length, 6);
+    assert.equal(rows.filter((line) => line.includes('≈\$')).at(-1), '≈$0.00 ┤ ███');
+    assert.equal(chart.meta.columns[0].eighths, 93);
+    assert.equal(chart.meta.columns[0].height, chart.meta.chartRows);
     assert.equal(chart.meta.axisTop, 3);
   });
   for (const height of [2, 3, 5, 6, 8, 9, 12, 20]) {
     for (const value of [0.01, 0.3, 2.93, 36, 293]) {
       const chart = columnBars([{ values: [value] }], ['day'], { height, colors: false });
       const meta = chart.meta;
-      assert.ok(meta.chartRows <= height);
+      assert.ok(meta.chartRows >= height);
       const ticks = chart.slice(0, meta.chartRows).flatMap((line, row) => visible(line).split(/[┤|]/)[0].trim() ? [row] : []);
       for (let at = 1; at < ticks.length; at += 1) assert.equal(ticks[at] - ticks[at - 1], meta.rowsPerTick);
       assert.ok(meta.columns[0].eighths / 8 / meta.chartRows * meta.axisTop <= value + 1e-12);
       assert.equal(meta.axisRow, meta.chartRows + 1);
     }
   }
+});
+
+test('columnBars places a one-step tick on the row above the filled bottom cell', () => {
+  const chart = columnBars([{ values: [0.5, 2] }], ['small', 'large'], {
+    height: 4, colors: false, col: 4, barW: 2, totals: false,
+  });
+  const stepLabel = chart.findIndex((line) => visible(line).includes('0.50'));
+  assert.equal(chart.meta.columns[0].height, 1);
+  assert.equal(stepLabel, chart.meta.chartRows - 2, 'the one-step label marks the filled row\'s top edge');
+  assert.match(visible(chart[stepLabel]), /0\.50/);
 });
 
 test('columnBars gives a one-cent slice one eighth at the top without increasing the total', () => {
@@ -400,27 +432,74 @@ test('columnBars gives a one-cent slice one eighth at the top without increasing
     const column = chart.meta.columns[0];
     assert.equal(column.eighths, 48);
     assert.deepEqual(column.segments.map((entry) => [entry.sourceIndex, entry.eighths]), [[1, 47], [0, 1]]);
-    assert.match(chart[0], /\x1b\[48;2;191;108;105m\x1b\[38;2;182;189;115m▇\x1b\[0m/);
-    assert.equal(visible(chart[0]).match(/▇/g).length, 3);
+    assert.match(chart[0], /\x1b\[48;2;182;189;115m\x1b\[38;2;191;108;105m/);
+    assert.equal(visible(chart[0]).match(/█/g).length, 3);
     assert.match(chart[1], /\x1b\[38;2;182;189;115m█/);
     assert.equal(column.height, 6);
   });
 });
 
-test('columnBars keeps several tiny pools coloured in a shared top cell and colours a partial peak', () => {
+test('columnBars merges several sub-eighth pools into one vertical other slice', () => {
   withEnv(UNICODE_ENV, () => {
     const chart = columnBars([
-      { values: [2.98], color: METER_COLORS.green },
-      { values: [0.01], color: METER_COLORS.red },
-      { values: [0.01], color: METER_COLORS.cyan },
-    ], ['day'], { height: 6, barW: 3 });
-    assert.deepEqual(chart.meta.columns[0].segments.map((entry) => entry.eighths), [46, 1, 1]);
-    for (const color of ['182;189;115', '191;108;105', '143;199;207']) {
-      assert.ok(chart[0].includes(`\x1b[38;2;${color}m`), color);
+      { name: 'main', values: [2.97, 75], color: METER_COLORS.green },
+      { values: [0.01, 0], color: METER_COLORS.red },
+      { values: [0.01, 0], color: METER_COLORS.cyan },
+      { values: [0.01, 0], color: METER_COLORS.amber },
+    ], ['day', 'large'], { height: 6, barW: 3 });
+    assert.deepEqual(chart.meta.columns[0].segments.map((entry) => entry.eighths), [1, 1]);
+    assert.equal(chart.meta.columns[0].segments[1].name, 'other (3 pools)');
+    assert.deepEqual(chart.meta.legend, ['main', 'other (3 pools)']);
+    // No rendered chart row contains horizontal colour lanes. A cell may
+    // carry one foreground (plus the lower slice as a background), never a
+    // sequence of side-by-side foregrounds inside its own column width.
+    for (const line of chart.slice(0, chart.meta.chartRows)) {
+      for (const column of chart.meta.columns) {
+        assert.ok(
+          foregroundColoursIn(line, column.x - 1, column.width).size <= 1,
+          `horizontal colour lane in ${JSON.stringify(visible(line))}`,
+        );
+      }
     }
     const partial = columnBars([{ values: [2.93], color: METER_COLORS.red }], ['day'], { height: 6 });
     assert.match(partial[0], /\x1b\[38;2;191;108;105m▆\x1b\[0m/);
   });
+});
+
+test('columnBars uses equal-width phone columns and keeps a single small slice', () => {
+  const chart = columnBars([
+    { name: 'large', values: [424, 10, 20, 30, 40, 50, 60] },
+    { name: 'small', values: [29, 0, 0, 0, 0, 0, 0] },
+  ], ['1', '2', '3', '4', '5', '6', '7'], { width: 55, rowCount: 6, colors: false });
+  assert.equal(new Set(chart.meta.columns.map((column) => column.width)).size, 1);
+  assert.ok(chart.meta.columns[0].segments.some((segment) => segment.sourceIndex === 1 && segment.eighths >= 1));
+  assert.ok(chart.meta.chartRows >= 6);
+});
+
+test('columnBars keeps a 29-minute model slice visible on a 424-minute day', () => {
+  const opus = [29, 9, 897, 75, 278, 686];
+  const other = [395, 0, 0, 0, 0, 0];
+  const chart = columnBars([
+    { name: 'opus', values: opus, color: seriesColor('opus') },
+    { name: 'grok', values: other, color: seriesColor('grok') },
+  ], ['12', '13', '14', '15', '16', '17'], {
+    width: 120, rowCount: 12, unit: 'minutes', colors: false,
+  });
+  assert.equal(chart.meta.sums[0], 424);
+  for (const [index, value] of opus.entries()) {
+    if (value <= 0) continue;
+    const slice = chart.meta.columns[index].segments.find((entry) => entry.sourceIndex === 0);
+    assert.ok(slice && slice.eighths >= 1, `opus day ${index} keeps a visible slice`);
+  }
+});
+
+test('series colours are stable by name and reserve unknown/other greys', () => {
+  assert.equal(seriesColor('grok'), seriesColor('grok'));
+  assert.equal(paletteColor('grok'), seriesColor('grok'));
+  assert.notEqual(seriesColor('unknown'), seriesColor('grok'));
+  assert.notEqual(seriesColor('other'), seriesColor('grok'));
+  assert.equal(seriesColor('unknown'), METER_COLORS.dim);
+  assert.equal(seriesColor('other (3 pools)'), METER_COLORS.others);
 });
 
 test('absentLine is a dim single row of words bounded by width', () => {
@@ -812,4 +891,19 @@ test('every primitive survives null, empty and junk data without NaN', () => {
   }
   assert.equal(heatRow([null, Number.NaN, undefined], { ansi: false }), '· · ·', 'no reading, no cell');
   assert.equal(sparkline([null, Number.NaN, undefined], 3), '', 'no reading, no sparkline');
+});
+
+test('columnBars keeps one blank cell between per-column totals, rounding a long duration to hours', () => {
+  // Seven phone columns at 55 cells give a six-cell column: `16h34m` would fill
+  // it and run into the next total, as the owner's phone capture showed.
+  const series = [{ name: 'opus', color: '#a99be0', values: [424, 34, 994, 232, 1154, 2529, 523] }];
+  const labels = ['12', '13', '14', '15', '16', '17', 'now'];
+  const chart = columnBars(series, labels, { width: 55, height: 8, unit: 'minutes', totals: true, colors: false });
+  const valuesLine = visible(chart[chart.meta.valueRow - 1]);
+  const totals = valuesLine.trim().split(/\s+/);
+  assert.equal(totals.length, 7, `seven separate totals, got: ${valuesLine}`);
+  for (const total of totals) assert.match(total, /^(\d+h(\d\dm)?|\d+m)$/, `total "${total}" is one duration`);
+  assert.ok(totals.includes('17h'), `16h34m compacts to whole hours: ${valuesLine}`);
+  assert.ok(totals.includes('42h'), `42h09m compacts to whole hours: ${valuesLine}`);
+  assert.ok(totals.includes('34m'), 'a short total keeps its full text');
 });

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { statsLines } from '../src/workflow/stats-view.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
+import { seriesColor } from '../src/workflow/dash-kit.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (line) => String(line ?? '').replace(SGR, '');
@@ -375,14 +376,14 @@ test('the models chart is real worker-minutes from the model\u2019s own daily se
   const text = view.lines.map(visible).join('\n');
   assert.match(text, /── worker-minutes per day/);
   assert.equal(text.includes('No per-model daily series'), false, 'the real series is drawn');
-  assert.ok(view.lines.some((line) => String(line).includes('┤') && String(line).includes('─')), 'the chart itself is drawn');
+  assert.ok(view.lines.some((line) => String(line).includes('┤') && String(line).includes('█')), 'the stacked column chart itself is drawn');
   // Two series on the chart, two distinct palette colours, and the legend
   // names both (gpt-5.6 comes from the buckets' segments, not the list).
   assert.match(text, /█ claude-opus-5 · █ gpt-5.6/);
   const legend = view.lines.find((line) => visible(line).includes('█ claude-opus-5'));
   const legendColors = paintedColours([legend]);
   // The marks carry both series colours (the dim `·` separator is a third).
-  assert.ok(legendColors.has('169;156;240') && legendColors.has('233;200;128'), 'legend marks carry the two series colours');
+  assert.ok(legendColors.has(rgbTriple(seriesColor('claude-opus-5'))) && legendColors.has(rgbTriple(seriesColor('gpt-5.6'))), 'legend marks carry the stable series colours');
   assert.match(text, /179 of 296 rollups carried the per-model series/);
   assert.match(text, /● claude-opus-5 \(100%\)/);
   assert.match(text, /4 attempts · 67% ok · p50 3m/);

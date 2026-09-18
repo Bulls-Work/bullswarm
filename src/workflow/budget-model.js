@@ -308,7 +308,11 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   }
 
   // B2/B3. The only licence arithmetic allowed: rate × measured minutes.
-  const workflowsPct = rate.ratePerMinute != null && shareMinutes != null
+  const zeroRateWithWork = rate.ratePerMinute === 0 && shareMinutes != null && shareMinutes > 0;
+  const rateNote = zeroRateWithWork
+    ? `meter did not move during ${rate.samples != null && rate.samples > 0 ? `${Math.round(rate.samples)} measured` : 'the measured'} runs`
+    : null;
+  const workflowsPct = rate.ratePerMinute != null && shareMinutes != null && !zeroRateWithWork
     ? round(rate.ratePerMinute * shareMinutes, 4)
     : null;
   const restPct = workflowsPct != null && usedPct != null
@@ -317,7 +321,7 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
 
   // B2. What one median run draws, and therefore how many more fit.
   const medianRunMinutes = median(perRunMinutes);
-  const drawPerRunPct = rate.ratePerMinute != null && medianRunMinutes != null
+  const drawPerRunPct = rate.ratePerMinute != null && medianRunMinutes != null && !zeroRateWithWork
     ? round(rate.ratePerMinute * medianRunMinutes, 6)
     : null;
   const remainingPct = usedPct == null ? null : round(Math.max(0, 100 - usedPct), 4);
@@ -373,20 +377,24 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
       windowSource: shareRange.source,
       stale: shareRange.stale === true,
       exceedsMeter: workflowsPct != null && usedPct != null && workflowsPct > usedPct,
-      basis: rate.ratePerMinute == null
+      rateNote,
+      basis: rateNote
+        ?? (rate.ratePerMinute == null
         ? 'no measured usage rate yet'
-      : `≈ ${formatDashboardValue(rate.ratePerMinute, 'rate')} × measured worker-minutes (rate source: ${rate.source ?? 'unknown'})`,
+        : `≈ ${formatDashboardValue(rate.ratePerMinute, 'rate')} × measured worker-minutes (rate source: ${rate.source ?? 'unknown'})`),
     },
+    rateNote,
     subscription,
     apiEquivalentUsd: round(apiEquivalentUsd, 6),
     apiEquivalentBasis: 'recorded per-attempt API-equivalent estimates, summed over the period',
     fits,
     fitsBasis: fits == null
-      ? (rate.ratePerMinute == null
-        ? 'no measured usage rate yet'
+      ? (rateNote
+        ?? (rate.ratePerMinute == null
+          ? 'no measured usage rate yet'
         : medianRunMinutes == null
           ? 'not computable: no run on this pool recorded worker-minutes in the period'
-          : 'not computable: the licence meter reports no used%')
+          : 'not computable: the licence meter reports no used%'))
       : `≈ ${remainingPct}% licence left ÷ ${drawPerRunPct}% per median run (${round(medianRunMinutes, 2)} worker-minutes)`,
     medianRunMinutes: round(medianRunMinutes, 2),
     drawPerRunPct,

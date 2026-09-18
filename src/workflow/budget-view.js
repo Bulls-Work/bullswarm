@@ -96,17 +96,22 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
     const header = `${row.name ?? 'pool'} · ${plan} · ${resetLabel(row, narrow)}`;
     lines.push(cut(ansi ? `\x1b[1m${header}\x1b[0m` : header, cols));
     const used = finite(row.usedPct);
+    const credits = finite(row.credits?.used) != null && finite(row.credits?.limit) != null
+      ? `${Math.round(row.credits.used)} of ${Math.round(row.credits.limit)} ${row.credits.unit || 'credits'}`
+      : null;
     if (used == null) {
-      lines.push(missing('used', 'meter unavailable', cols, ansi, labelWidth));
+      lines.push(labelled('used', `meter unavailable${credits ? ` · ${credits}` : ''}`));
     } else {
       const elapsed = finite(row.elapsedPct);
       const pace = row.paceWord || 'pace unavailable';
-      const tail = `${Math.round(used)}% · ${elapsed == null ? 'window age unavailable' : `${Math.round(elapsed)}% ${narrow ? 'gone' : 'of the window gone'}`} → ${pace}`;
+      const tail = `${Math.round(used)}% · ${elapsed == null ? 'window age unavailable' : `${Math.round(elapsed)}% ${narrow ? 'gone' : 'of the window gone'}`} → ${pace}${credits ? ` · ${credits}` : ''}`;
       const barWidth = Math.max(1, Math.min(40, cols - labelWidth - tail.length - 1));
       lines.push(labelled('used', `${meterBar(used, elapsed, barWidth, { ansi })} ${tail}`));
     }
     if (used == null || finite(row.share?.workflows) == null || finite(row.share?.rest) == null) {
-      lines.push(missing(narrow ? 'by bsw' : 'by bullswarm', used == null ? 'no licence meter' : 'no measured usage rate yet', cols, ansi, labelWidth));
+      const rateNote = row.rateNote || row.share?.rateNote;
+      const reason = used == null ? 'no licence meter' : rateNote ? `share unknown · ${rateNote}` : 'no measured usage rate yet';
+      lines.push(missing(narrow ? 'by bsw' : 'by bullswarm', reason, cols, ansi, labelWidth));
     } else {
       const share = row.share;
       const minutes = finite(share.workflowMinutes);
@@ -118,12 +123,17 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
       lines.push(labelled(narrow ? 'by bsw' : 'by bullswarm', `${paint(bar, METER_COLORS.purple, ansi)} ${tail}`));
     }
     if (finite(row.fits) == null) {
-      const reason = used == null ? 'no licence meter' : finite(row.share?.ratePerMinute) == null ? 'no measured usage rate yet' : finite(row.medianRunMinutes) == null ? 'no recorded run duration yet' : 'no measured usage per run yet';
+      const rateNote = row.rateNote || row.share?.rateNote;
+      const reason = used == null ? 'no licence meter' : rateNote ? `unknown · ${rateNote}` : finite(row.share?.ratePerMinute) == null ? 'no measured usage rate yet' : finite(row.medianRunMinutes) == null ? 'no recorded run duration yet' : 'no measured usage per run yet';
       lines.push(missing('room', reason, cols, ansi, labelWidth));
     } else {
       const fits = Math.round(row.fits);
-      const runWord = fits === 1 ? 'run' : 'runs';
-      lines.push(labelled('room', narrow ? `about ${fits} medium ${runWord} before reset` : `about ${fits} more medium ${runWord} before the reset`));
+      if (fits === 0) {
+        lines.push(labelled('room', 'no room left before the reset'));
+      } else {
+        const runWord = fits === 1 ? 'run' : 'runs';
+        lines.push(labelled('room', narrow ? `about ${fits} medium ${runWord} before reset` : `about ${fits} more medium ${runWord} before the reset`));
+      }
     }
     const api = money(row.apiEquivalentUsd);
     const biggest = biggestSource(budget, row).slice(0, 2);
@@ -144,9 +154,6 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
         regions.push({ x: at + 1, y: lines.length, width: item.id.length, action: { kind: 'run', runId: item.run.runId } });
         from = at + item.id.length;
       }
-    }
-    if (finite(row.credits?.used) != null && finite(row.credits?.limit) != null) {
-      lines.push(labelled('credits', `${Math.round(row.credits.used)} / ${Math.round(row.credits.limit)} ${row.credits.unit || 'credits'} used`));
     }
     const price = finite(row.subscription?.monthlyPriceUsd);
     if (price != null) lines.push(`plan · $${Number.isInteger(price) ? price : price.toFixed(2)}/mo declared`);
