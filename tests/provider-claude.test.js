@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  accountIdentity,
   accountSlugForConfigDir,
   connectors,
   discoverClaudeAccounts,
@@ -100,6 +101,85 @@ test('discoverClaudeAccounts returns one usable login per distinct token', () =>
     assert.deepEqual(accounts.map((a) => a.slug), [null, 'work']);
     assert.deepEqual(accounts.map((a) => a.pool), ['claude-code', 'claude-code:work']);
     assert.equal(accounts[1].command, `CLAUDE_CONFIG_DIR=${resolve(join(home, '.claude-work'))} claude`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('one account signed into two homes is discovered once, keeping the default home', () => {
+  const home = makeHome();
+  try {
+    const future = Date.now() + 3_600_000;
+    const oauthAccount = { accountUuid: 'acct-1', emailAddress: 'me@example.com' };
+    // Same account, two separate logins: the tokens differ, the subscription
+    // does not.
+    touchClaudeHome(join(home, '.claude'), {
+      '.credentials.json': JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-default', expiresAt: future },
+      }),
+      '.claude.json': JSON.stringify({ oauthAccount }),
+    });
+    touchClaudeHome(join(home, '.claude-dup'), {
+      '.credentials.json': JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-dup', expiresAt: future },
+      }),
+      '.claude.json': JSON.stringify({ oauthAccount }),
+    });
+    const accounts = discoverClaudeAccounts({
+      homeDir: home, envConfigDir: '', platform: 'linux', nowMs: Date.now(),
+    });
+    assert.deepEqual(accounts.map((a) => a.pool), ['claude-code']);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('distinct accounts both survive, and a home with no recorded account falls back to its token', () => {
+  const home = makeHome();
+  try {
+    const future = Date.now() + 3_600_000;
+    touchClaudeHome(join(home, '.claude'), {
+      '.credentials.json': JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-default', expiresAt: future },
+      }),
+      '.claude.json': JSON.stringify({ oauthAccount: { accountUuid: 'acct-1' } }),
+    });
+    touchClaudeHome(join(home, '.claude-other'), {
+      '.credentials.json': JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-other', expiresAt: future },
+      }),
+      '.claude.json': JSON.stringify({ oauthAccount: { accountUuid: 'acct-2' } }),
+    });
+    // No .claude.json at all: keyed on its token, so it is its own account.
+    touchClaudeHome(join(home, '.claude-legacy'), {
+      '.credentials.json': JSON.stringify({
+        claudeAiOauth: { accessToken: 'sk-legacy', expiresAt: future },
+      }),
+    });
+    const accounts = discoverClaudeAccounts({
+      homeDir: home, envConfigDir: '', platform: 'linux', nowMs: Date.now(),
+    });
+    assert.deepEqual(accounts.map((a) => a.pool), [
+      'claude-code', 'claude-code:legacy', 'claude-code:other',
+    ]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('accountIdentity reads the recorded account, and is null when there is none to read', () => {
+  const home = makeHome();
+  try {
+    touchClaudeHome(join(home, '.claude'), {
+      '.claude.json': JSON.stringify({ oauthAccount: { accountUuid: 'acct-1' } }),
+    });
+    touchClaudeHome(join(home, '.claude-empty'), { '.claude.json': '{}' });
+    touchClaudeHome(join(home, '.claude-broken'), { '.claude.json': 'not json' });
+    touchClaudeHome(join(home, '.claude-none'));
+    assert.equal(accountIdentity(join(home, '.claude')), 'account:acct-1');
+    assert.equal(accountIdentity(join(home, '.claude-empty')), null);
+    assert.equal(accountIdentity(join(home, '.claude-broken')), null);
+    assert.equal(accountIdentity(join(home, '.claude-none')), null);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
