@@ -39,7 +39,20 @@ import { METER_COLORS } from './usage-view.js';
 // Series colours are keyed by the name being drawn, not by the order in
 // which a particular period happens to return it.  The two grey roles are
 // deliberately reserved for the honest aggregations the charts can produce.
-const SERIES_COLOR_ROLES = Object.freeze(['purple', 'amber', 'green', 'cyan', 'orange', 'red']);
+// Fourteen hues, muted to sit with the meter colours; the first six are the
+// meter roles themselves so pools keep the colours they had. The two greys
+// are reserved for the honest aggregations (`unknown`, `other`).
+export const SERIES_PALETTE = Object.freeze([
+  METER_COLORS.purple, METER_COLORS.amber, METER_COLORS.green, METER_COLORS.cyan, METER_COLORS.orange, METER_COLORS.red,
+  '#d69ac4', // pink
+  '#7fbfa8', // teal
+  '#7fa3e0', // blue
+  '#c9d47a', // lime
+  '#c98ad9', // magenta
+  '#d9b060', // gold
+  '#9bc4e8', // sky
+  '#e08a7a', // coral
+]);
 const SERIES_COLOR_GREYS = Object.freeze({ unknown: METER_COLORS.dim, other: METER_COLORS.others });
 
 function seriesHash(value) {
@@ -51,12 +64,42 @@ function seriesHash(value) {
   return hash >>> 0;
 }
 
-/** A deterministic colour for a pool/model series across every period. */
-export function seriesColor(name) {
-  const key = String(name ?? '').trim().toLowerCase();
+const seriesKey = (name) => String(name ?? '').trim().toLowerCase();
+const greyFor = (key) => {
   if (!key || key === 'unknown') return SERIES_COLOR_GREYS.unknown;
   if (key === 'other' || key.startsWith('other (')) return SERIES_COLOR_GREYS.other;
-  return METER_COLORS[SERIES_COLOR_ROLES[seriesHash(key) % SERIES_COLOR_ROLES.length]];
+  return null;
+};
+
+/** A deterministic colour for a pool/model series across every period. */
+export function seriesColor(name) {
+  const key = seriesKey(name);
+  return greyFor(key) ?? SERIES_PALETTE[seriesHash(key) % SERIES_PALETTE.length];
+}
+
+/**
+ * Colours for every series drawn together. Each name starts from its own
+ * deterministic colour (`seriesColor`), so a pool keeps its colour from one
+ * period to the next; when two names in the same chart would share a hue the
+ * later one (in the order given) moves to the next unused hue, so no two
+ * series in one chart look alike until the palette is exhausted.
+ */
+export function seriesColors(names) {
+  const assigned = new Map();
+  const used = new Set();
+  for (const name of Array.isArray(names) ? names : []) {
+    if (assigned.has(name)) continue;
+    const key = seriesKey(name);
+    const grey = greyFor(key);
+    if (grey) { assigned.set(name, grey); continue; }
+    let at = seriesHash(key) % SERIES_PALETTE.length;
+    for (let probe = 0; probe < SERIES_PALETTE.length && used.has(SERIES_PALETTE[at]); probe += 1) {
+      at = (at + 1) % SERIES_PALETTE.length;
+    }
+    used.add(SERIES_PALETTE[at]);
+    assigned.set(name, SERIES_PALETTE[at]);
+  }
+  return assigned;
 }
 
 // A descriptive alias for callers that do not use the chart terminology.
@@ -647,7 +690,7 @@ export function stackedBars(rows, { width = 120, colors = true } = {}) {
  * `niceStep` implies are laid one whole row apart (`meta.rowsPerTick`), so
  * every tick label sits on a row and the spacing between labels is even. Bars
  * are measured in eighths of a row and their top cell uses ▁▂▃▄▅▆▇█, so a bar
- * never rises above its own value; stacked slices are laid smallest-on-top,
+ * never rises above its own value; stacked slices are laid smallest at the bottom and biggest on top,
  * every non-zero slice keeps at least one eighth (taken from the largest
  * slice), and a partial top cell carries the colour of its own slice. `meta`
  * exposes `axisTop`, `tickStep`, `rowsPerTick`, and per-column `eighths` and
@@ -724,7 +767,7 @@ export function columnBars(series, labels, {
   const stacks = sums.map((_, index) => {
     const entries = seriesView.map((entry, sourceIndex) => ({
       color: entry.color, name: entry.name ?? null, sourceIndex, value: Math.max(0, readAt(entry, index) ?? 0),
-    })).filter((entry) => entry.value > 0).sort((a, b) => b.value - a.value || a.sourceIndex - b.sourceIndex);
+    })).filter((entry) => entry.value > 0).sort((a, b) => a.value - b.value || a.sourceIndex - b.sourceIndex);
     const totalEighths = eighths[index];
     if (!entries.length || totalEighths <= 0) return [];
     // A single sub-eighth slice gets the one-cell minimum. Several can keep
@@ -735,14 +778,13 @@ export function columnBars(series, labels, {
     // Keep every tiny slice when the column has enough eighths to give each
     // one a minimum. Only an actually impossible allocation (more tiny
     // slices than available eighths) is collapsed into the honest `other`
-    // aggregate.
+    // aggregate, drawn at the bottom of the column.
     const nonTiny = entries.length - tiny.length;
     const tinySlots = Math.max(0, totalEighths - nonTiny);
     if (tiny.length > tinySlots) {
       const tinyValue = tiny.reduce((sum, entry) => sum + entry.value, 0);
       const tinyIndexes = new Set(tiny.map((entry) => entry.sourceIndex));
       drawable = [
-        ...entries.filter((entry) => !tinyIndexes.has(entry.sourceIndex)),
         {
           color: METER_COLORS.others,
           name: `other (${tiny.length} pools)`,
@@ -750,6 +792,7 @@ export function columnBars(series, labels, {
           sourceIndex: -1,
           value: tinyValue,
         },
+        ...entries.filter((entry) => !tinyIndexes.has(entry.sourceIndex)),
       ];
     }
     const counts = allocate(drawable.map((entry) => entry.value), totalEighths);

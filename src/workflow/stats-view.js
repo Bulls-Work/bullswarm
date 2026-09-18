@@ -21,7 +21,7 @@
 
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import {
-  absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, seriesColor, sparkline, tabsRow,
+  absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, seriesColor, seriesColors, sparkline, tabsRow,
 } from './dash-kit.js';
 import { METER_COLORS, paceWord, severityColor } from './usage-view.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
@@ -890,22 +890,28 @@ function stepChart(series, labels, {
 // --------------------------------------------------------------------- trends
 
 /**
- * The legend, capped: every series the frame can name, then `+N more` — a
- * legend never ends mid-name and never paints past the width.
+ * The legend: every series the chart drew, wrapped onto as many rows as the
+ * width needs — a legend never ends mid-name, never hides a name behind
+ * `+N more`, and never paints past the width.
  */
 function legendRows(names, { width = 120, ansi = true, colorOf = null } = {}) {
   const cols = widthOf(width);
   const items = (Array.isArray(names) ? names : []).filter(Boolean);
   if (!items.length || cols <= 0) return [];
   const mark = asciiGlyphsPreferred() ? '#' : '█';
-  const build = (list) => {
-    const parts = list.map((entry) => `${painted(mark, colorOf ? colorOf(entry) : null, ansi)} ${entry.name}`);
-    if (list.length < items.length) parts.push(`${dimmed('+', ansi)}${items.length - list.length}${dimmed(' more', ansi)}`);
-    return parts.join(dimmed(' · ', ansi));
-  };
-  let kept = items.slice();
-  while (kept.length > 1 && visible(build(kept)).length > cols - 1) kept = kept.slice(0, -1);
-  return [fit(` ${build(kept)}`, cols, ansi)];
+  const separator = dimmed(' · ', ansi);
+  const part = (entry) => `${painted(mark, colorOf ? colorOf(entry) : null, ansi)} ${entry.name}`;
+  const rows = [];
+  let current = [];
+  for (const entry of items) {
+    const candidate = [...current, entry].map(part).join(separator);
+    if (current.length && visible(candidate).length > cols - 1) {
+      rows.push(current);
+      current = [entry];
+    } else current.push(entry);
+  }
+  if (current.length) rows.push(current);
+  return rows.map((row) => fit(` ${row.map(part).join(separator)}`, cols, ansi));
 }
 
 function trendLines(stats, lines, regions, width, period, metric, ansi, licence, poolModel = null, rowCount = null) {
@@ -946,15 +952,13 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
   const money = MONEY_METRICS.includes(metric);
   const base = narrow ? 6 : Math.max(12, Math.floor((cols - 8) / displayBuckets.length));
   const names = [];
-  const colorByName = new Map();
   for (const bucket of displayBuckets) {
     for (const segment of Array.isArray(bucket?.segments) ? bucket.segments : []) {
-      if (!names.includes(segment.name)) {
-        names.push(segment.name);
-        colorByName.set(segment.name, seriesColor(segment.name));
-      }
+      if (!names.includes(segment.name)) names.push(segment.name);
     }
   }
+  const colorByName = seriesColors(names);
+
   const series = names.length
     ? names.map((name) => ({
       color: colorByName.get(name),
@@ -1361,7 +1365,7 @@ function modelLines(model, lines, regions, cols, period, ansi, rowCount = null) 
     .flatMap((bucket) => Array.isArray(bucket?.segments) ? bucket.segments.map((segment) => textOf(segment?.name, '')) : [])
     .filter(Boolean);
   const keyed = [...new Set([...names, ...bucketNames])];
-  const colorsBy = new Map(keyed.map((name) => [name, seriesColor(name)]));
+  const colorsBy = seriesColors(keyed);
   const trend = tableTrend(model) ?? trendFromDailyRows(rows);
   const drawn = trend
     ? seriesFromTrend(trend, keyed.filter((name) => (trend.buckets ?? [])
