@@ -1,0 +1,33 @@
+Budget · sampled 4m ago · by urgency                   
+───────────────────────────────────────────────────────
+claude-code:acme · watch · 15 pts unspent, 11h left    
+5h ██████▏░│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 14.0%  
+   resets 4h05m · on track +4pp                        
+7d ██████████████████████████████████▍░░░░░░│░░ 78.0%  
+   resets 11h05m · slow +15pp                          
+   today: minutes measured · cost not yet              
+command-code · GOAT · watch · 5h resets in 14m, unused 
+5h ▋░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│░ 1.4%   
+   resets 14m · slow +93pp                             
+7d ▍░░░░░░│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0.9%   
+   resets 5d21h · slow +15pp                           
+mo ▏│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0.4%   
+   resets 28d20h · on track +3pp · 0.31 / 70 credits   
+   today: minutes measured · cost not yet              
+claude-code · hot · 7d 11 pts ahead of clock           
+5h ██████▋░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│░░░░░░ 15.0%  
+   resets 45m · slow +69pp                             
+7d ████████████████████████████▋░░░░░░░░░░░░░░░ 65.0%  
+   resets 3d5h · on track -11pp                        
+   today: minutes measured · cost not yet              
+codex · prolite · fine                                 
+7d ██████████████████████████▉░░░░░░│░░░░░░░░░░ 61.0%  
+   resets 1d19h · on track +13pp                       
+   today: minutes measured · cost not yet              
+grok · fine · window just reset                        
+7d │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0.0%   
+   resets 6d23h · on track +0pp                        
+   today: minutes measured · cost not yet              
+3 disabled: initech · echo · opencode          Enter ↵ 
+───────────────────────────────────────────────────────
+│ = elapsed · Enter on a pool → its runs               
