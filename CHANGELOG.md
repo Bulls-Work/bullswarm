@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- stats: every Stats page now uses one shared set of panels, charts, legends,
+  summary cards, and hover regions; the old page-specific chart drawing is gone.
+- stats: Spending puts its dated chart on the left and four real-data breakdowns
+  on the right, with a By Pool or By Model switch that changes both sides.
+- stats: the tabs are now exactly Spending, Pool, Model, and Project, with the
+  same component order and spacing on every tab.
+- stats: every Stats bar shows its name, value, and share on hover, and a click
+  pins the label until Escape or the next click without recolouring the bar.
+- stats: Stats fits 55, 120, and 200 columns without horizontal scrolling, and
+  the saved 55- and 120-column Spending frames use real rollup data.
+- stats: the guide now explains the four tabs and their controls, and the full
+  test suite is required to finish twice without failures or cancellations.
 - accounts: two homes holding the same Anthropic login are now discovered as
   one pool. Discovery deduplicated on the access-token string, but signing one
   account in twice mints two unrelated tokens, so `~/.claude` and a

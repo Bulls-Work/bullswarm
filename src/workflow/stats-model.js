@@ -1006,6 +1006,51 @@ function keyValues(records) {
 }
 
 /**
+ * The honest fourth Spending/Project panel: outcomes and wall-clock duration.
+ *
+ * Rollups do not carry a lane field, so this aggregate deliberately stays on
+ * the fields the records actually persist: status, verified,
+ * requirements.{passed,total}, and minutes.wall.  Counts remain counts even
+ * when no money or duration was measured; a share of an empty set is null.
+ */
+export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {}) {
+  const range = periodRange(period, now);
+  const records = selectRecords(toRecords(rollups), range);
+  const statusCounts = {};
+  let verified = 0;
+  let requirementsPassed = null;
+  let requirementsTotal = null;
+  const wall = [];
+  for (const record of records) {
+    const status = typeof record?.status === 'string' && record.status.trim()
+      ? record.status.trim().toLowerCase()
+      : null;
+    if (status) statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    if (record?.verified === true) verified += 1;
+    requirementsPassed = add(requirementsPassed, finite(record?.requirements?.passed));
+    requirementsTotal = add(requirementsTotal, finite(record?.requirements?.total));
+    const duration = finite(record?.minutes?.wall);
+    if (duration != null) wall.push(duration);
+  }
+  const model = {
+    period: range.period,
+    from: range.from,
+    to: range.to,
+    statusCounts,
+    verified,
+    verifiedTotal: records.length,
+    verifiedShare: share(verified, records.length),
+    requirementsPassed,
+    requirementsTotal,
+    requirementsShare: share(requirementsPassed, requirementsTotal),
+    medianWallMinutes: round(median(wall), 2),
+    maxWallMinutes: wall.length ? round(Math.max(...wall), 2) : null,
+  };
+  model.nulls = nullPaths(model);
+  return model;
+}
+
+/**
  * The Home / Stats Overview model.
  *
  * Today's tiles are the runs that FINISHED today (the same attribution
@@ -1036,6 +1081,7 @@ export function overviewModel(rollups, pools, { period = '7d', now = Date.now() 
     },
     heat: heatCells(all, at),
     keys: keyValues(inPeriod),
+    outcomes: outcomesModel(inPeriod, { period: range.period, now: at }),
     notes: [
       'model cost is not recorded per model; the breakdown by model carries attempts and minutes only',
       `${today.measuredAttempts} of ${today.attempts} attempts measured · the rest are byte estimates`,

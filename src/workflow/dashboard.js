@@ -2120,7 +2120,7 @@ const PERIOD_ITEMS = Object.freeze([
   Object.freeze({ id: 'all', label: 'All time' }),
 ]);
 /** Stats' sub-tabs and Fleet's, in the order Tab cycles them. */
-const STATS_TABS = Object.freeze(['overview', 'trends', 'pools', 'models', 'projects']);
+const STATS_TABS = Object.freeze(['spending', 'pool', 'model', 'project']);
 const FLEET_TABS = Object.freeze(['lane', 'provider']);
 /** How many columns a painted line really occupies. */
 const visibleLength = (value) => String(value ?? '').replace(ANSI_SGR, '').length;
@@ -4104,18 +4104,202 @@ function fleetPage(model, opts, body) {
   return ` Fleet · by ${by}`;
 }
 
-/** Stats: the five tabs, the four metrics and the three periods. */
+/**
+ * Add a shell hit target for each visible Stats legend name.  The shared
+ * renderer quite intentionally treats a legend as explanatory text, but the
+ * interactive shell still needs to let a reader tap the same series there as
+ * on its chart slice.  Aggregate one measured cell per date so the legend
+ * label carries an honest value/share rather than counting the painted height
+ * of a column more than once.
+ */
+function addStatsLegendRegions(view) {
+  if (!view || !Array.isArray(view.lines)) return view;
+  const lines = view.lines;
+  const legendAt = lines.findIndex((line) => String(line ?? '').replace(ANSI_SGR, '').startsWith('Legend'));
+  if (legendAt < 0) return view;
+  const cells = new Map();
+  for (const region of Array.isArray(view.regions) ? view.regions : []) {
+    const payload = region?.action?.payload;
+    const kind = payload?.kind;
+    if (!payload || (kind !== 'slice' && kind !== 'column')) continue;
+    const identity = String(payload.series ?? payload.label ?? '').trim();
+    if (!identity || identity === 'total') continue;
+    const bucket = String(payload.bucketKey ?? payload.bucketLabel ?? '');
+    const key = `${identity}\u0000${bucket}`;
+    if (cells.has(key)) continue;
+    cells.set(key, { identity, payload });
+  }
+  if (!cells.size) return view;
+  const grouped = new Map();
+  for (const cell of cells.values()) {
+    const entry = grouped.get(cell.identity) ?? { identity: cell.identity, cells: [] };
+    entry.cells.push(cell.payload);
+    grouped.set(cell.identity, entry);
+  }
+  const extra = [];
+  for (const { identity, cells: entries } of grouped.values()) {
+    let value = 0;
+    let hasValue = false;
+    let total = 0;
+    let hasTotal = false;
+    const first = entries[0] ?? {};
+    for (const payload of entries) {
+      const measured = finiteOrNull(payload.value);
+      if (measured != null) { value += measured; hasValue = true; }
+      const measuredTotal = finiteOrNull(payload.total);
+      if (measuredTotal != null) { total += measuredTotal; hasTotal = true; }
+    }
+    const aggregate = {
+      ...first,
+      kind: 'share',
+      bucketKey: null,
+      bucketLabel: null,
+      series: identity,
+      label: identity,
+      value: hasValue ? value : null,
+      total: hasTotal ? total : null,
+      share: hasValue && hasTotal && total > 0 ? value / total : null,
+    };
+    const action = {
+      kind: 'slice',
+      tab: aggregate.tab,
+      metric: aggregate.metric,
+      period: aggregate.period,
+      bucket: null,
+      series: identity,
+      payload: aggregate,
+    };
+    const lineIndex = lines.findIndex((line, index) => {
+      if (index < legendAt) return false;
+      const plain = String(line ?? '').replace(ANSI_SGR, '');
+      const at = plain.indexOf(identity);
+      if (at < 0) return false;
+      const before = plain[at - 1] ?? ' ';
+      const after = plain[at + identity.length] ?? ' ';
+      return !/[A-Za-z0-9_-]/.test(before) && !/[A-Za-z0-9_-]/.test(after);
+    });
+    if (lineIndex < 0) continue;
+    const plain = String(lines[lineIndex] ?? '').replace(ANSI_SGR, '');
+    const x = plain.indexOf(identity) + 1;
+    if (x < 1) continue;
+    const width = Math.min(identity.length, Math.max(0, plain.length - x + 1));
+    if (width > 0) extra.push({ x, y: lineIndex + 1, width, action });
+  }
+  return extra.length ? { ...view, regions: [...(view.regions ?? []), ...extra] } : view;
+}
+
+/**
+ * Keep the shell's hit cells on the glyphs actually painted by a panel.  The
+ * shared panel metadata is intentionally independent of ANSI styling; when a
+ * narrow label is clipped, a styled bar can begin a couple of cells before
+ * the logical label-column offset.  Re-anchor only share regions, and only
+ * when a contiguous share-glyph run is present, so chart-column and legend
+ * geometry remains untouched (and a future corrected metadata path is a
+ * no-op).
+ */
+function alignStatsShareRegions(view) {
+  const shareGlyph = /[▓▒░█#.|]/;
+  const sourceLines = Array.isArray(view?.lines) ? view.lines : [];
+  for (const region of Array.isArray(view?.regions) ? view.regions : []) {
+    if (region?.action?.payload?.kind !== 'share' || !(region.width > 0)) continue;
+    const line = String(sourceLines[(Number(region.y) || 1) - 1] ?? '').replace(ANSI_SGR, '');
+    if (line.trimStart().startsWith('Legend')) continue;
+    const positions = [];
+    for (let index = 0; index < line.length; index += 1) {
+      if (shareGlyph.test(line[index])) positions.push(index + 1);
+    }
+    if (!positions.length) continue;
+    const runs = [];
+    let start = positions[0];
+    let previous = positions[0];
+    for (let index = 1; index <= positions.length; index += 1) {
+      const current = positions[index];
+      if (current === previous + 1) { previous = current; continue; }
+      runs.push({ start, end: previous });
+      start = current;
+      previous = current;
+    }
+    const target = Number(region.x) || 1;
+    const run = runs
+      .map((candidate) => ({ candidate, distance: target < candidate.start
+        ? candidate.start - target : target > candidate.end ? target - candidate.end : 0 }))
+      .sort((left, right) => left.distance - right.distance)[0]?.candidate;
+    if (!run) continue;
+    const width = Math.min(region.width, run.end - run.start + 1);
+    if (width > 0) { region.x = run.start; region.width = width; }
+  }
+  return view;
+}
+
+/** Bold just the matching legend name while leaving its coloured marker alone. */
+function boldStatsLegend(view, series) {
+  const identity = String(series ?? '').trim();
+  if (!identity || !Array.isArray(view?.lines)) return view;
+  const legendAt = view.lines.findIndex((line) => String(line ?? '').replace(ANSI_SGR, '').startsWith('Legend'));
+  if (legendAt < 0) return view;
+  for (let index = legendAt; index < view.lines.length; index += 1) {
+    const source = String(view.lines[index] ?? '');
+    const plain = source.replace(ANSI_SGR, '');
+    let at = plain.indexOf(identity);
+    while (at >= 0) {
+      const before = plain[at - 1] ?? ' ';
+      const after = plain[at + identity.length] ?? ' ';
+      if (!/[A-Za-z0-9_-]/.test(before) && !/[A-Za-z0-9_-]/.test(after)) {
+        view.lines[index] = boldVisibleSpan(source, at, at + identity.length);
+        return view;
+      }
+      at = plain.indexOf(identity, at + 1);
+    }
+  }
+  return view;
+}
+
+function boldVisibleSpan(line, start, end) {
+  const sgr = /\x1b\[[0-9;?]*[A-Za-z]/y;
+  let out = '';
+  let cell = 0;
+  let at = 0;
+  while (at < line.length) {
+    sgr.lastIndex = at;
+    const match = sgr.exec(line);
+    if (match) {
+      out += match[0];
+      at += match[0].length;
+      continue;
+    }
+    if (cell === start) out += '\x1b[1m';
+    out += line[at];
+    cell += 1;
+    if (cell === end) out += '\x1b[22m';
+    at += 1;
+  }
+  if (cell <= start) return line;
+  if (cell < end) out += '\x1b[22m';
+  return out;
+}
+
+/** Stats: the four shared surfaces and the three periods. */
 function statsPage(model, opts, body) {
   const { width } = opts;
-  const tab = STATS_TABS.includes(opts.statsTab) ? opts.statsTab : 'overview';
-  const metric = TREND_METRICS.includes(opts.metric) ? opts.metric : 'runs';
+  const tab = STATS_TABS.includes(opts.statsTab) ? opts.statsTab : 'spending';
+  const stackBy = opts.statsStackBy === 'model' ? 'model' : 'pool';
   if (!model.stats) {
     body.push(dimText(' reading the rollup index…', width));
     return ' Stats';
   }
-  pushView(body, statsLines(model.stats, {
-    width, height: opts.height, tab, period: opts.period, metric, ansi: meterAnsi(), slice: opts.slice ?? null,
-  }));
+  const slice = opts.slice ?? null;
+  const view = statsLines(model.stats, {
+    width, height: opts.height, tab, period: opts.period, stackBy,
+    ansi: meterAnsi(), slice,
+  });
+  // stat-kit deliberately keeps legend markers as presentation text.  The
+  // shell adds the same durable bar action to the matching legend name so a
+  // legend tap has the exact same label/pin affordance as a chart or panel
+  // bar, without making the marker itself a second drawing system.
+  const statsView = alignStatsShareRegions(addStatsLegendRegions(view));
+  const activeSeries = slice?.payload?.series ?? slice?.series ?? null;
+  if (activeSeries && meterAnsi()) boldStatsLegend(statsView, activeSeries);
+  pushView(body, statsView);
   body.anchor = { tabs: 1 };
   return ` Stats · ${tab}`;
 }
@@ -4198,7 +4382,7 @@ function helpPage(model, opts, body) {
   body.push(rule('other', null, width));
   row('e · c · y', 'edit the fleet · stop this workflow · y confirms it');
   row('/ · a · i', 'filter · active/all · install (on Runs)');
-  row('o · v · t', 'planner · technical · phases (on Run)');
+  row('o · v · t', 'planner · technical · phases (on Run) · Stats By Pool/By Model');
   row(DASHBOARD_KEYS.copy.keys, 'copy the screen · OSC 52, else pbcopy/wl-copy');
   row(DASHBOARD_KEYS.detach.keys, 'quit to the shell; workflows keep running');
   row('under 100', 'Fleet leaves the tab row until f opens it');
@@ -4230,7 +4414,8 @@ export function renderDashboardPage(model, options = {}) {
     page,
     narrow: options.narrow ?? width < 100,
     period: PERIODS.includes(options.period) ? options.period : '7d',
-    statsTab: STATS_TABS.includes(options.statsTab) ? options.statsTab : 'overview',
+    statsTab: STATS_TABS.includes(options.statsTab) ? options.statsTab : 'spending',
+    statsStackBy: options.statsStackBy === 'model' ? 'model' : 'pool',
     metric: TREND_METRICS.includes(options.metric) ? options.metric : 'runs',
     fleetBy: FLEET_TABS.includes(options.fleetBy) ? options.fleetBy : 'lane',
     nowMs: Number(options.nowMs) || model.nowMs || Date.now(),
@@ -4545,7 +4730,8 @@ export async function runDashboard(bullswarmDir, {
     page: token ? 'run' : 'home',
     focus: 0,
     period: '7d',
-    statsTab: 'overview',
+    statsTab: 'spending',
+    statsStackBy: 'pool',
     metric: 'runs',
     fleetBy: 'lane',
     budgetPool: null,
@@ -4709,7 +4895,8 @@ export async function runDashboard(bullswarmDir, {
     rows, allRows, selected,
     filter: dashboardFilter, query, filterEditing,
     selectedRunId, selectedTaskId, listSelectedId: selectedRunId, message, bodyScroll,
-    period: ui.period, statsTab: ui.statsTab, metric: ui.metric, fleetBy: ui.fleetBy,
+    period: ui.period, statsTab: ui.statsTab, statsStackBy: ui.statsStackBy,
+    metric: ui.metric, fleetBy: ui.fleetBy,
     slice: slicePinned ?? sliceHover,
     budgetPool: ui.budgetPool,
     spinnerFrame: ui.spinnerFrame,
@@ -5142,7 +5329,9 @@ export async function runDashboard(bullswarmDir, {
       output.on?.('resize', onResize);
       lastPaintedFrame = null;
       timer = setInterval(refresh, refreshMs);
+      timer.unref?.();
       spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
+      spinnerTimer.unref?.();
       readUsage();
       ui.page = 'fleet';
       ui.focus = 0;
@@ -5219,12 +5408,17 @@ export async function runDashboard(bullswarmDir, {
     if (action.kind === 'back') return moveOut();
     if (action.kind === 'install') return runInstall();
     if (action.kind === 'tab') return showTab(action.tab);
+    if (action.kind === 'stackBy') {
+      clearSliceState();
+      if (ui.page === 'stats') ui.statsStackBy = action.statsStackBy === 'model' || action.stackBy === 'model' ? 'model' : 'pool';
+      return paint();
+    }
     if (action.kind === 'trend') {
       clearSliceState();
       if (PERIODS.includes(action.period)) ui.period = action.period;
       if (action.bucket != null) return openTrendBucket(action);
       ui.page = 'stats';
-      ui.statsTab = 'trends';
+      ui.statsTab = 'spending';
       if (TREND_METRICS.includes(action.metric)) ui.metric = action.metric;
       bodyScroll = 0;
       return paint();
@@ -5252,10 +5446,21 @@ export async function runDashboard(bullswarmDir, {
   const HOVER_KINDS = new Set(['run', 'step', 'task']);
   const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
     && region.action && HOVER_KINDS.has(region.action.kind));
-  const sliceRegionAt = (x, y) => regions.find((region) => y === region.y
-    && x >= region.x1 && x <= region.x2 && region.action?.kind === 'slice');
+  // A stacked chart paints its total-column hit region before its per-slice
+  // regions.  Prefer the slice (then a panel share) when the pointer lands on
+  // overlapping cells; the total remains the fallback for an unstacked bar.
+  const sliceRegionAt = (x, y) => regions
+    .filter((region) => y === region.y && x >= region.x1 && x <= region.x2 && region.action?.kind === 'slice')
+    .sort((left, right) => {
+      const rank = (region) => {
+        const kind = region.action?.payload?.kind;
+        return kind === 'slice' ? 0 : kind === 'share' ? 1 : 2;
+      };
+      return rank(left) - rank(right);
+    })[0] ?? null;
   const sliceKey = (action) => action?.kind === 'slice'
-    ? [action.tab, action.metric, action.period, action.bucket, action.series].join('|')
+    ? [action.tab, action.metric, action.period, action.bucket, action.series,
+      action.payload?.kind, action.payload?.label].join('|')
     : '';
   const sameSlice = (left, right) => sliceKey(left) === sliceKey(right);
   const hoverMove = (mouse) => {
@@ -5281,7 +5486,7 @@ export async function runDashboard(bullswarmDir, {
     if (mouse.kind === 'wheel-down') return scrollActivePage(-3);
     if (mouse.kind === 'move') return hoverMove(mouse);
     if (mouse.kind !== 'press') return undefined;
-    const region = regions.find((entry) => mouse.y === entry.y
+    const region = sliceRegionAt(mouse.x, mouse.y) ?? regions.find((entry) => mouse.y === entry.y
       && mouse.x >= entry.x1 && mouse.x <= entry.x2);
     const action = region?.action;
     if (action?.kind === 'slice') return runAction(action);
@@ -5571,6 +5776,14 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('in', key) || key === '\r' || key === '\n') return drillIn();
     if (keyPressed('up', key)) return moveVertical(-1);
     if (keyPressed('down', key)) return moveVertical(1);
+    // Spending's stack basis is a page-local view toggle.  Keep it on a
+    // letter that is otherwise only meaningful on Run/Step, while the click
+    // regions emitted by stats-view use the same state path below.
+    if (ui.page === 'stats' && ui.statsTab === 'spending' && (key === 'v' || key === 'V')) {
+      clearSliceState();
+      ui.statsStackBy = ui.statsStackBy === 'model' ? 'pool' : 'model';
+      return paint();
+    }
     const runPageOpen = ui.page === 'run' || ui.page === 'step';
     const timelineScroll = runPageOpen && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
     if (keyPressed('pageUp', key)) {
@@ -5640,7 +5853,9 @@ export async function runDashboard(bullswarmDir, {
   if (token) ensureCatalog();
   paint();
   let timer = setInterval(refresh, refreshMs);
+  timer.unref?.();
   let spinnerTimer = setInterval(spin, Math.max(50, Number(spinnerMs) || 400));
+  spinnerTimer.unref?.();
   input.on('data', onData);
   output.on?.('resize', onResize);
   void readUsage();

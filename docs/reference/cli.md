@@ -1020,14 +1020,14 @@ recent workflows, and pool/model/project breakdown), Runs (the `active` block
 over the day-grouped history table, plus the commands), Run (plan, Live, Next,
 ETA, and budget), Step (one action's full panel), Budget (quota, measured
 worker-time share, labelled money, fit, and biggest workflows), Stats
-(Overview, Trends, Pools, Models, Projects), Fleet (lane/provider rungs), and
+(Spending, Pool, Model, Project), Fleet (lane/provider rungs), and
 Help. The tab row is Home, Runs, Budget, Stats, Fleet — Run and Step read as
 Runs, and Help appears only while it is open. Every page has a sticky header
 and bottom nav; the current run or page is marked `●`, and Step prepends
 `[ back ]`. The shared keys are `h` Home, `r` Runs, `b` Budget, `s` Stats,
 `y` the first day header of the Runs history table, `f` Fleet, `?` Help,
 `1`–`9` to open a run, `Tab` for sub-tabs, `Shift+Tab` for workflows, `p` for
-the period, `Esc`/`←` for back, arrows for one line, `PgUp`/`PgDn` for a
+the period, `v` to switch Spending between By Pool and By Model, `Esc`/`←` for back, arrows for one line, `PgUp`/`PgDn` for a
 screen, `Home`/`End` for top/bottom, `ctrl+s` to copy, and `q` to quit.
 `Enter`/`→`/`l` opens a selection. In 0.33.0, `r` no longer refreshes, `b` no
 longer moves out, `Tab` no longer cycles workflows, and `h` opens Home rather

@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as kit from '../src/workflow/dash-kit.js';
 import {
-  absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, paletteColor, periodToggle, progressBar, rule,
+  absentLine, chartRowCount, columnBars, columns, compactRow, cut, dateLabels, formatDashboardValue, heatRow, niceStep, paletteColor, periodToggle, progressBar, rule,
   seriesColor,
   seriesColors,
-  shareBar, sparkline, stackedBars, tabsRow,
+  shareBar, shareBarMeta, sparkline, stackedBars, stackedBarsMeta, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
@@ -103,8 +103,8 @@ const ROWS = Object.freeze([
 
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'SERIES_PALETTE', 'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
-    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
+    'SERIES_PALETTE', 'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'dateLabels', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
+    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'shareBarMeta', 'sparkline', 'stackedBars', 'stackedBarsMeta', 'tabsRow',
   ]);
 });
 
@@ -257,6 +257,18 @@ test('shareBar draws an empty bar rather than a wrong one', () => {
   assert.equal(shareBar([{ value: -5 }, { value: 3 }], { width: 10 }).includes('NaN'), false);
 });
 
+test('shareBarMeta mirrors shareBar allocation and exposes contiguous parts', () => {
+  const parts = [{ id: 'a', value: 1 }, { id: 'b', value: 2 }, { id: 'c', value: 1 }];
+  const meta = shareBarMeta(parts, { width: 40, colors: false });
+  assert.equal(visibleLength(meta.text), 40);
+  assert.deepEqual(meta.parts.map((part) => part.id), ['a', 'b', 'c']);
+  assert.equal(meta.parts.reduce((sum, part) => sum + part.width, 0), 40);
+  for (let index = 1; index < meta.parts.length; index += 1) {
+    assert.equal(meta.parts[index].x, meta.parts[index - 1].x + meta.parts[index - 1].width);
+  }
+  assert.deepEqual(meta.parts.map((part) => Number(part.share.toFixed(2))), [0.25, 0.5, 0.25]);
+});
+
 test('sparkline scales the window and never invents a peak', () => {
   assert.equal(sparkline([0, 1, 2, 3, 4, 5, 6, 7], 8), '▁▂▃▄▅▆▇█');
   assert.equal(sparkline([7, 7, 7, 7], 4), '▄▄▄▄', 'a flat non-zero series sits mid');
@@ -344,6 +356,24 @@ test('stackedBars handles ascii, no colour, empty rows and zero values', () => {
   const [long] = stackedBars([{ label: 'x'.repeat(80), segments: [{ value: 1 }] }], { width: 32, colors: false });
   assert.ok(visibleLength(long) <= 32);
   assert.ok(visible(long).includes('…'), 'a label too long for the gutter is cut');
+});
+
+test('stackedBarsMeta uses the same gutter and segment widths as stackedBars', () => {
+  const rows = [{ label: 'claude-code', segments: [{ id: 'a', value: 3 }, { id: 'b', value: 1 }] }];
+  const meta = stackedBarsMeta(rows, { width: 40, colors: false });
+  assert.equal(visibleLength(meta.lines[0]), 40);
+  assert.equal(meta.rows.length, 1);
+  assert.equal(meta.rows[0].segments.reduce((sum, segment) => sum + segment.width, 0), 28);
+  assert.equal(meta.rows[0].segments[0].x, 13);
+  assert.equal(meta.rows[0].segments[1].x, meta.rows[0].segments[0].x + meta.rows[0].segments[0].width);
+});
+
+test('dateLabels keeps calendar dates and never falls back to weekday initials', () => {
+  const keys = ['2026-09-13', '2026-09-14'];
+  assert.deepEqual(dateLabels(keys, { width: 55 }), ['Sep13', 'Sep14']);
+  assert.deepEqual(dateLabels(keys, { width: 120 }), ['13 Sep', '14 Sep']);
+  assert.deepEqual(dateLabels(keys, { width: 200 }), ['Sun 13 Sep', 'Mon 14 Sep']);
+  assert.equal(dateLabels(['2026-09-13'], { width: 120, bucketSpan: 7 })[0], '13–19 Sep');
 });
 
 test('columnBars keeps magnitude, value labels and cumulative totals in a narrow width', () => {
