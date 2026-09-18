@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendRollupIndex, readRollups, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
 import {
-  PERIODS, TREND_METRICS, periodRange, overviewModel, trendModel,
+  PERIODS, TREND_METRICS, periodRange, overviewModel, outcomesModel, trendModel,
   poolsModel, modelsModel, projectsModel,
 } from '../src/workflow/stats-model.js';
 
@@ -299,6 +299,36 @@ test('overviewModel: a legacy record is a run and nothing more — no NaN, no ze
   assert.equal(model.keys.totalWorkerMinutes, null);
   assert.equal(model.keys.favouritePool, null, 'a record with no pools names no favourite pool');
   assert.deepEqual(model.breakdown.pools, []);
+  assertNoNaN(model);
+});
+
+test('outcomesModel aggregates status, verification, requirements and wall duration without inventing values', () => {
+  const model = outcomesModel(indexOf(corpus()), { period: '7d', now: NOW });
+  assert.deepEqual(model.statusCounts, { completed: 3, failed: 1 });
+  assert.equal(model.verified, 2);
+  assert.equal(model.verifiedTotal, 5);
+  assert.equal(model.verifiedShare, 0.4);
+  assert.equal(model.requirementsPassed, 2);
+  assert.equal(model.requirementsTotal, 5);
+  assert.equal(model.requirementsShare, 0.4);
+  assert.equal(model.medianWallMinutes, 2.5);
+  assert.equal(model.maxWallMinutes, 100);
+  assert.equal(model.period, '7d');
+  assert.equal(model.from, periodRange('7d', NOW).from);
+  assertNoNaN(model);
+});
+
+test('outcomesModel keeps an empty period measurable for counts but null for shares and durations', () => {
+  const model = outcomesModel(indexOf([]), { period: '30d', now: NOW });
+  assert.deepEqual(model.statusCounts, {});
+  assert.equal(model.verified, 0);
+  assert.equal(model.verifiedTotal, 0);
+  assert.equal(model.verifiedShare, null);
+  assert.equal(model.requirementsPassed, null);
+  assert.equal(model.requirementsTotal, null);
+  assert.equal(model.medianWallMinutes, null);
+  assert.equal(model.maxWallMinutes, null);
+  assert.ok(model.nulls.includes('verifiedShare'));
   assertNoNaN(model);
 });
 

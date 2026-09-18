@@ -1,0 +1,47 @@
+ Spending  Pool  Model  Project
+Spending · 7d · 30d · all  [By Pool] By Model
+                                                       
+── Summary · 7d ───────────────────────────────────────
+Totals 60 workflows · 7226.66 worker-minutes · ≈$7.11 …
+── Spend per day · API-equivalent · pool ──────────────
+≈$2.50 ┤       ▆▆▆▆                               
+≈$2.00 ┤       ████                               
+≈$1.50 ┤       ████                               
+≈$1.00 ┤       ████        ▂▂▂▂                   
+≈$0.50 ┤       ████        ████                   
+≈$0.00 ┤       ████  ▅▅▅▅  ████              ▁▁▁▁ 
+       ┼Sep13 Sep14 Sep15 Sep16 Sep17 Sep18 Sep19      
+
+── Pool spend ─────────────────────────────────────────
+codex         ▏▒▒▒▒▒                        ≈$0.30 4.3%
+claude-code   ▓▓▓▒▒▒                       ≈$3.00 42.2%
+acme          ▓▓▓▒▒▒                       ≈$3.31 46.6%
+command-code  ▏▒▒▒▒▒                          ≈$0.07 1%
+grok          ▏▒▒▒▒▒                          ≈$0.42 6%
++4 more                               — scroll for more
+
+── Pool worker-minutes ────────────────────────────────
+codex         ▓▓▒▒▒▒                       36h26m 30.3%
+claude-code   ▓▒▒▒▒▒                       16h22m 13.6%
+acme          ▓▒▒▒▒▒                       21h16m 17.6%
+command-code  ▓▒▒▒▒▒                         16h49m 14%
+grok          ▏▒▒▒▒▒                         9h14m 7.7%
++4 more                               — scroll for more
+
+── Project runs ───────────────────────────────────────
+system                                    20 runs 33.3%
+bullswarm                                 16 runs 26.7%
+project-a                                 11 runs 18.3%
+platform                                  10 runs 16.7%
+repo                                        2 runs 3.3%
+e2e-repo                                     1 run 1.7%
+
+── Outcome & duration ─────────────────────────────────
+Status        ▓▓▓▓▓▓             54 completed · 6 other
+Verified      ▓▓▓▒▒▒                  31 verified 51.7%
+Requirements  ▓▓▓▓▓▒               241/307 passed 78.5%
+Median wall   ▓▓▓▓▓▓                         56m median
+Longest wall  ▓▓▓▓▓▓                      9h03m maximum
+Legend  ● claude-code  ● claude-code:acme  ● codex
+● command-code  ● grok
+Basis · the recorded API-equivalent estimate per pool.

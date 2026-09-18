@@ -573,6 +573,49 @@ export function shareBar(parts, { width = 20, colors = true, partialGlyph = null
   return `${out}${' '.repeat(Math.max(0, cols - painted))}`;
 }
 
+/**
+ * The geometry sibling of shareBar().  It deliberately repeats shareBar's
+ * allocation rules instead of deriving widths from the rendered string: a
+ * coloured or styled bar still has the same one-cell hit regions, and a
+ * partial glyph moves one cell from the largest part just as shareBar does.
+ * `x` is one-based, matching the other dash-kit metadata.
+ */
+export function shareBarMeta(parts, { width = 20, colors = true, partialGlyph = null } = {}) {
+  const cols = colsOf(width, 20);
+  const source = (Array.isArray(parts) ? parts : []).filter(Boolean);
+  const list = source.map((part, index) => ({
+    ...part,
+    value: Math.max(0, Number(part.value) || 0),
+    index,
+  }));
+  const counts = allocate(list.map((part) => part.value), cols);
+  if (typeof partialGlyph === 'string' && [...partialGlyph].length === 1) {
+    list.forEach((part, index) => {
+      if (!(part.value > 0) || counts[index]) return;
+      const donor = counts.reduce((best, count, at) => count > counts[best] ? at : best, 0);
+      if (counts[donor] > 1) {
+        counts[donor] -= 1;
+        counts[index] = 1;
+      }
+    });
+  }
+  const total = list.reduce((sum, part) => sum + part.value, 0);
+  let x = 1;
+  const geometries = list.map((part, index) => {
+    const own = counts[index] || 0;
+    const geometry = {
+      id: part.id ?? part.label ?? index,
+      x,
+      width: own,
+      value: part.value,
+      share: reading(part.share) ?? (total > 0 ? part.value / total : null),
+    };
+    x += own;
+    return geometry;
+  });
+  return { text: shareBar(parts, { width: cols, colors, partialGlyph }), parts: geometries };
+}
+
 const SPARK_UNICODE = Object.freeze(['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']);
 const SPARK_ASCII = Object.freeze(['.', ':', '-', '=', '#']);
 
@@ -665,6 +708,42 @@ export function stackedBars(rows, { width = 120, colors = true } = {}) {
     });
     return `${lead}${bar}${' '.repeat(Math.max(0, barWidth - painted))}`;
   });
+}
+
+/**
+ * Geometry for stackedBars().  Segment widths are allocated by the exact
+ * largest-remainder allocator used by the string painter; no second rounding
+ * policy is introduced here.
+ */
+export function stackedBarsMeta(rows, { width = 120, colors = true } = {}) {
+  const cols = colsOf(width, 120);
+  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const labels = list.map((row) => String(row.label ?? ''));
+  const longest = labels.reduce((most, label) => Math.max(most, visibleLength(label)), 0);
+  const gutter = Math.min(longest + 1, Math.floor(cols / 3));
+  const barWidth = Math.max(0, cols - gutter);
+  const geometry = list.map((row, rowIndex) => {
+    const segments = (Array.isArray(row.segments) ? row.segments : [])
+      .filter((segment) => segment && Number(segment.value) > 0)
+      .map((segment, index) => ({ ...segment, value: Number(segment.value), index }));
+    const counts = allocate(segments.map((segment) => segment.value), barWidth);
+    const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+    let x = gutter + 1;
+    const result = segments.map((segment, index) => {
+      const own = counts[index] || 0;
+      const item = {
+        id: segment.id ?? segment.label ?? index,
+        x,
+        width: own,
+        value: segment.value,
+        share: reading(segment.share) ?? (total > 0 ? segment.value / total : null),
+      };
+      x += own;
+      return item;
+    });
+    return { row: rowIndex + 1, segments: result };
+  });
+  return { lines: stackedBars(rows, { width: cols, colors }), rows: geometry };
 }
 
 /**
@@ -1063,4 +1142,64 @@ export function niceStep(max, ticks = 4) {
     values.push(Number(tick.toPrecision(12)));
   }
   return { step, ticks: values };
+}
+
+const DATE_MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+const DATE_WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+
+function dateParts(key) {
+  const match = String(key ?? '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return date;
+}
+
+/**
+ * Calendar labels shared by dated charts.  A compact phone label is always a
+ * month+day token (never a weekday initial); roomier cells add the day/month
+ * separator and, once a cell has ten columns, a three-letter weekday word.
+ */
+export function dateLabels(keys, { width = null, cellWidth = null, newest = false, bucketSpan = 1 } = {}) {
+  const list = Array.isArray(keys) ? keys : [];
+  return list.map((key) => dateLabel(key, { width, cellWidth, newest, bucketSpan }));
+}
+
+/** Format one ISO calendar bucket without allowing locale/timezone drift. */
+function dateLabel(key, { width = null, cellWidth = null, newest = false, bucketSpan = 1 } = {}) {
+  const start = dateParts(key);
+  if (!start) return String(key ?? '');
+  const span = Math.max(1, Math.trunc(Number(bucketSpan)) || 1);
+  const end = new Date(start.getTime());
+  end.setUTCDate(end.getUTCDate() + span - 1);
+  const own = cellWidth == null || cellWidth === ''
+    ? null
+    : Number.isFinite(Number(cellWidth)) ? Math.max(1, Math.trunc(Number(cellWidth))) : null;
+  const frame = Number.isFinite(Number(width)) ? Math.trunc(Number(width)) : null;
+  // `newest` is intentionally not rendered as "today": the concrete date is
+  // required on the axis; callers may use it only in hover prose.
+  void newest;
+  // The phone frame deliberately chooses the compact token even when an
+  // unusually sparse chart happens to give one bucket six cells.  Medium and
+  // wide frames can use the cell hint to opt into the richer forms.
+  const roomy = frame != null && frame <= 55
+    ? 5
+    : own != null ? own : frame != null && frame >= 180 ? 10 : frame != null && frame >= 90 ? 6 : 5;
+  const month = DATE_MONTHS[start.getUTCMonth()];
+  const day = String(start.getUTCDate());
+  const sameMonth = end.getUTCMonth() === start.getUTCMonth() && end.getUTCFullYear() === start.getUTCFullYear();
+  if (span > 1) {
+    const endDay = String(end.getUTCDate());
+    if (roomy >= 10) return sameMonth
+      ? `${DATE_WEEKDAYS[start.getUTCDay()]} ${day}–${endDay} ${month}`
+      : `${DATE_WEEKDAYS[start.getUTCDay()]} ${day} ${month}–${endDay} ${DATE_MONTHS[end.getUTCMonth()]}`;
+    if (roomy >= 6) return sameMonth ? `${day}–${endDay} ${month}` : `${day} ${month}–${endDay} ${DATE_MONTHS[end.getUTCMonth()]}`;
+    return sameMonth ? `${month}${day}–${endDay}` : `${month}${day}–${endDay}${DATE_MONTHS[end.getUTCMonth()]}`;
+  }
+  if (roomy >= 10) return `${DATE_WEEKDAYS[start.getUTCDay()]} ${day} ${month}`;
+  if (roomy >= 6) return `${day} ${month}`;
+  return `${month}${day}`;
 }

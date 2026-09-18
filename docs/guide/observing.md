@@ -44,7 +44,7 @@ The pages answer different questions:
 | **Run** | Where is this workflow in its plan, which workers are live or next, and what are the current ETA and measured budget shares? |
 | **Step** | What is this action doing — its model, reasoning, route, attempt, activity, verdict or failure, prompt, usage, events, output, and artifact paths? |
 | **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
-| **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time, broken down by pool, model, and project? Its sub-tabs are Overview, Trends, Pools, Models, and Projects. |
+| **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time? Its four tabs are Spending, Pool, Model, and Project. Spending puts the dated chart beside four breakdown panels; `By Pool` / `By Model` changes both the chart stacks and the visible breakdowns. |
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
 | **Help** | What every key, click, layout rule, and dashboard command does. |
 
@@ -53,20 +53,22 @@ approved prototype. `Home` puts its 7-day breakdown in four columns and adds a
 `budget · this week` block; `Run` shows the plan strip with per-step bars and a
 `budget` / `live` / `so far` band (stacked on the phone); `Budget` gives each
 pool a header over four labelled rows (`used`, `by bullswarm`, `room`,
-`so far`) and one consolidated footer; `Stats` → `Trends` uses coloured stacked
-columns drawn to eighth-block precision; and the `Runs` history table uses
+`so far`) and one consolidated footer; every Stats tab uses the same summary,
+dated chart, breakdown-panel, legend, and note order; and the `Runs` history table uses
 fixed columns. At 55 columns the phone layouts keep one row per item — every
-`Home` today tile and per-step bar, every `Stats` `Models` model, `Stats`
-`Projects` project and its sparkline, every `Stats` `Pools` and `Fleet` pool
+`Home` today tile and per-step bar, every Stats model, project, and pool row,
+and every `Fleet` pool
 row, and every run row in the `Runs` history table — rather than wrapping an
 item into a second form. Three places deliberately keep more than one row:
 `Budget`'s per-pool block, `Home`'s `budget · this week` pool, which carries its
 reset line under the meter as the prototype frame does, and the `Runs`
 `active` entry, which keeps a plan strip and a per-step bar under each run.
-`Stats` `Pools` gives every pool its own seven-day sparkline on its own row,
-with `▏` on a day the quota window rolled over, instead of one shared chart;
-and at 200 columns every page composes to the frame rather than staying at the
-120-column composition.
+At 200 columns every page composes to the frame rather than staying at the
+120-column composition. On Stats, moving over any column, stacked slice, or
+breakdown-row bar shows its name, value, and share in the reserved label row.
+Clicking pins that label for taps; press Escape or click another bar to clear
+or replace it. Hover never recolours or inverts the bar, so the chart does not
+move or visually change beneath the pointer.
 
 The shared keyboard table is:
 
@@ -92,7 +94,8 @@ The shared keyboard table is:
 | `q` | quit the dashboard; workflows keep running |
 
 Page-specific controls include `/` (filter), `a` (active/all), and `i`
-(install) on Runs; `o`, `v`, and `t` on Run; and `e` on Fleet to open setup.
+(install) on Runs; `o`, `v`, and `t` on Run; `v` on Stats Spending to switch
+`By Pool` / `By Model`; and `e` on Fleet to open setup.
 `c` requests a cooperative stop from Run, and `y` confirms it. Mouse reporting
 is enabled while the dashboard is open: click any tab, tile, bar, run, step,
 date, or control, and use the wheel to scroll the body. The row or button
