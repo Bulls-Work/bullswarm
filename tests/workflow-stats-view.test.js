@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { SERIES_PALETTE } from '../src/workflow/dash-kit.js';
 import assert from 'node:assert/strict';
 import { statsLines } from '../src/workflow/stats-view.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
@@ -290,7 +291,7 @@ test('the running total is drawn as the chart\'s own row, not named beside it', 
   assert.equal(/· running total/.test(rows.join('\n')), false);
 });
 
-test('Trends stacks are coloured per pool and the legend is capped, never truncated', () => {
+test('Trends stacks are coloured per pool and the legend wraps, never truncated', () => {
   const many = { ...trend, buckets: Array.from({ length: 7 }, (_, index) => ({
     key: `2026-09-${String(11 + index).padStart(2, '0')}`,
     value: 1,
@@ -307,7 +308,7 @@ test('Trends stacks are coloured per pool and the legend is capped, never trunca
   const colors = paintedColours([legend]);
   assert.ok(colors.size >= 2, 'the legend marks are not all one colour');
   for (const triple of colors) {
-    assert.ok(Object.values(METER_COLORS).some((hex) => typeof hex === 'string' && rgbTriple(hex) === triple), `unpalette colour ${triple}`);
+    assert.ok([...Object.values(METER_COLORS), ...SERIES_PALETTE].some((hex) => typeof hex === 'string' && rgbTriple(hex) === triple), `unpalette colour ${triple}`);
   }
   // The chart itself paints the same colours as its legend.
   // The first chart row itself contains the bar glyph; stop before the
@@ -316,14 +317,15 @@ test('Trends stacks are coloured per pool and the legend is capped, never trunca
   const chart = view.lines.slice(0, legendIndex);
   assert.ok(paintedColours(chart).size >= 2, 'the stacks are painted per pool');
 
-  // Nine series cannot be named in 55 columns: the legend is capped, and no
-  // name is cut mid-glyph to make it fit.
+  // Nine series do not fit one 55-column row: the legend wraps onto more
+  // rows, names every series, and never cuts a name mid-glyph.
   const crowded = { ...many, buckets: [...many.buckets, ...many.buckets.map((bucket) => ({ ...bucket, key: `${bucket.key}x` }))] };
   const narrow = statsLines({ trend: many }, { width: 55, tab: 'trends', period: '7d', metric: 'spend', ansi: false });
-  const narrowLegend = narrow.lines.map(visible).find((line) => /\+\d+ more/.test(line));
-  assert.ok(narrowLegend, narrow.lines.map(visible).join('\n'));
-  assert.match(narrowLegend, /\+(\d+) more/);
-  assert.equal(narrowLegend.includes('…'), false, 'a capped legend never truncates a name');
+  const narrowText = narrow.lines.map(visible).join('\n');
+  assert.doesNotMatch(narrowText, /\+\d+ more/, 'no name hides behind +N more');
+  const legendRows = narrow.lines.map(visible).filter((line) => line.includes('█') && /[a-z]/.test(line) && !line.includes('┤'));
+  assert.ok(legendRows.length >= 2, `a crowded legend wraps: ${legendRows.join(' | ')}`);
+  assert.ok(legendRows.every((line) => !line.includes('…')), 'a wrapped legend never truncates a name');
   assert.ok(narrow.lines.every((line) => visible(line).length <= 55));
   assert.ok(crowded.buckets.length > many.buckets.length);
 });
@@ -701,4 +703,17 @@ test('a Pools sparkline marks a real window rollover and ignores restated bounda
   const spark = row.slice(0, row.search(/[\u2587\u2591]/));
   assert.equal((spark.match(/\u258f/g) ?? []).length, 1, `one reset mark, got ${JSON.stringify(spark)}`);
   assert.match(rows.join(' ').replace(/\s+/g, ' '), /a drop after \u258f is the window resetting/);
+});
+
+test('the Trends legend wraps to show every pool instead of `+N more`', () => {
+  const names = ['unknown', 'opencode2', 'opencode2:kaihk-2', 'opencode2:kaihk-3', 'command-code', 'grok', 'claude-code:acme', 'claude-code', 'codex', 'opencode', 'echo'];
+  const trend = {
+    metric: 'runs', period: '30d', bucketBy: 'week', total: 11, cumulative: [11],
+    buckets: [{ key: 'w1', label: '12 Sep', value: 11, segments: names.map((name) => ({ name, value: 1 })) }],
+  };
+  const view = statsLines({ trend }, { width: 120, tab: 'trends', period: '30d', metric: 'runs', ansi: false });
+  const text = view.lines.map(visible).join('\n');
+  assert.doesNotMatch(text, /\+\d+ more/, 'no name hides behind +N more');
+  for (const name of names) assert.ok(text.includes(name), `${name} is in the legend`);
+  for (const line of view.lines) assert.ok(visible(line).length <= 120, 'legend rows stay inside the width');
 });

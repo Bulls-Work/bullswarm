@@ -4,6 +4,7 @@ import * as kit from '../src/workflow/dash-kit.js';
 import {
   absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, paletteColor, periodToggle, progressBar, rule,
   seriesColor,
+  seriesColors,
   shareBar, sparkline, stackedBars, tabsRow,
 } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
@@ -102,8 +103,8 @@ const ROWS = Object.freeze([
 
 test('the kit exports its rendering primitives and shared value formatter', () => {
   assert.deepEqual(Object.keys(kit).sort(), [
-    'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
-    'progressBar', 'rule', 'seriesColor', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
+    'SERIES_PALETTE', 'absentLine', 'chartRowCount', 'columnBars', 'columns', 'compactRow', 'cut', 'formatDashboardValue', 'heatRow', 'niceStep', 'paletteColor', 'periodToggle',
+    'progressBar', 'rule', 'seriesColor', 'seriesColors', 'shareBar', 'sparkline', 'stackedBars', 'tabsRow',
   ]);
 });
 
@@ -423,7 +424,7 @@ test('columnBars places a one-step tick on the row above the filled bottom cell'
   assert.match(visible(chart[stepLabel]), /0\.50/);
 });
 
-test('columnBars gives a one-cent slice one eighth at the top without increasing the total', () => {
+test('columnBars gives a one-cent slice one eighth at the bottom without increasing the total', () => {
   withEnv(UNICODE_ENV, () => {
     const chart = columnBars([
       { values: [0.01], color: METER_COLORS.red },
@@ -431,10 +432,13 @@ test('columnBars gives a one-cent slice one eighth at the top without increasing
     ], ['day'], { height: 6, barW: 3 });
     const column = chart.meta.columns[0];
     assert.equal(column.eighths, 48);
-    assert.deepEqual(column.segments.map((entry) => [entry.sourceIndex, entry.eighths]), [[1, 47], [0, 1]]);
-    assert.match(chart[0], /\x1b\[48;2;182;189;115m\x1b\[38;2;191;108;105m/);
-    assert.equal(visible(chart[0]).match(/█/g).length, 3);
-    assert.match(chart[1], /\x1b\[38;2;182;189;115m█/);
+    // Smallest slice first (bottom), biggest on top; the total stays 48 eighths.
+    assert.deepEqual(column.segments.map((entry) => [entry.sourceIndex, entry.eighths]), [[0, 1], [1, 47]]);
+    // The bottom bar row holds the red eighth under the green slice: green
+    // foreground partial glyph over a red background.
+    const bottom = chart[chart.meta.chartRows - 1];
+    assert.match(bottom, /\x1b\[48;2;191;108;105m\x1b\[38;2;182;189;115m/);
+    assert.match(chart[0], /\x1b\[38;2;182;189;115m█/);
     assert.equal(column.height, 6);
   });
 });
@@ -448,8 +452,9 @@ test('columnBars merges several sub-eighth pools into one vertical other slice',
       { values: [0.01, 0], color: METER_COLORS.amber },
     ], ['day', 'large'], { height: 6, barW: 3 });
     assert.deepEqual(chart.meta.columns[0].segments.map((entry) => entry.eighths), [1, 1]);
-    assert.equal(chart.meta.columns[0].segments[1].name, 'other (3 pools)');
-    assert.deepEqual(chart.meta.legend, ['main', 'other (3 pools)']);
+    // The merged `other` slice sits at the bottom, under the named slice.
+    assert.equal(chart.meta.columns[0].segments[0].name, 'other (3 pools)');
+    assert.ok(chart.meta.legend.includes('main') && chart.meta.legend.includes('other (3 pools)'));
     // No rendered chart row contains horizontal colour lanes. A cell may
     // carry one foreground (plus the lower slice as a background), never a
     // sequence of side-by-side foregrounds inside its own column width.
@@ -906,4 +911,34 @@ test('columnBars keeps one blank cell between per-column totals, rounding a long
   assert.ok(totals.includes('17h'), `16h34m compacts to whole hours: ${valuesLine}`);
   assert.ok(totals.includes('42h'), `42h09m compacts to whole hours: ${valuesLine}`);
   assert.ok(totals.includes('34m'), 'a short total keeps its full text');
+});
+
+test('seriesColors gives every series in one chart its own hue and keeps a name stable across sets', () => {
+  const names = ['claude-opus-5', 'grok-4.6', 'deepseek/deepseek-v4.1-flash', 'claude-sonnet-5', 'gpt-5.6-luna', 'opencode/union-alpha', 'gpt-5.6-sol', 'unknown'];
+  const colors = seriesColors(names);
+  const hues = names.filter((name) => name !== 'unknown').map((name) => colors.get(name));
+  assert.equal(new Set(hues).size, hues.length, `seven models, seven hues: ${hues.join(' ')}`);
+  assert.equal(colors.get('unknown'), seriesColor('unknown'), 'unknown keeps its reserved grey');
+  // The first name in a set always starts from its own colour, so a pool
+  // drawn alone or first keeps the same hue from one period to the next.
+  assert.equal(seriesColors(['grok-4.6']).get('grok-4.6'), seriesColor('grok-4.6'));
+  assert.equal(seriesColors(['grok-4.6', 'codex']).get('grok-4.6'), seriesColor('grok-4.6'));
+});
+
+test('columnBars stacks the smallest slice at the bottom and the biggest on top', () => {
+  const chart = columnBars([
+    { name: 'big', color: '#a99cf0', values: [12] },
+    { name: 'small', color: '#bf6c69', values: [2] },
+    { name: 'mid', color: '#b6bd73', values: [6] },
+  ], ['d'], { width: 40, height: 10, colors: true });
+  const stack = chart.meta.columns?.[0]?.stack ?? chart.meta.stacks?.[0];
+  if (stack) {
+    assert.deepEqual(stack.map((slice) => slice.name), ['small', 'mid', 'big']);
+  } else {
+    // Fall back to reading the paint: the bottom painted row carries the small slice's colour.
+    const rows = chart.slice(0, chart.meta.chartRows);
+    const bottom = rows.at(-1); const top = rows.find((line) => /[█▁▂▃▄▅▆▇]/.test(line));
+    assert.ok(bottom.includes('bf6c69') || bottom.includes('191;108;105'), 'small slice is at the bottom');
+    assert.ok(top.includes('a99cf0') || top.includes('169;156;240'), 'big slice is on top');
+  }
 });

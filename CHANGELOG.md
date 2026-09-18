@@ -75,7 +75,11 @@
   instead of `≈ 0%`; credits join the `used` row (`0 of 70 credits`); a pool
   with nothing left says `no room left before the reset`. The Runs day table
   never cuts a duration (`3h21m`, not `3h2…`). The tab row stays five tabs on
-  the Help page.
+  the Help page. Charts draw from fourteen hues and never give two series in
+  one chart the same colour (the 30-day Trends had three purples and the
+  Models chart seven models in two colours); slices stack smallest at the
+  bottom, biggest on top; the legend wraps to name every series instead of
+  hiding the rest behind `+N more`.
 - dashboard: no page draws an empty track where it has no data. The `Run`
   page's budget block is titled `licence this run used`, shows whole percents
   (`≈ 0.4% of the weekly plan`, as a one-cell `▏` sliver rather than an empty
