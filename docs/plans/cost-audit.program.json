@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "estimator-audit",
+      "kind": "implement",
+      "purpose": "Trace how attempt.usage and the API≈ figures are produced and aggregated",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "docs/studies/cost-audit-2026-09-18/estimator-audit.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, write docs/studies/cost-audit-2026-09-18/estimator-audit.md. Trace, with file:line anchors: (1) src/lib/usage.js estimateInvocationUsage: what taskText and outputText are (the task file and the worker's final output), how estimateTextTokens works (utf8 bytes / 4), what parseReportedUsage looks for in the output text and which providers ever put usage there (search src/providers/*/provider.mjs, src/provider-cli.js, src/lib/watch.js for where the worker's stdout becomes outputText and whether the Claude `result` event's usage, total_cost_usd or modelUsage are read); (2) where the attempt.usage object is written (src/workflow/v2-dispatch.js, src/cli.js for single runs) and its tokenSource values; (3) how src/workflow/rollup.js, stats-model.js, budget-model.js, history.js and spend.js aggregate estimatedUsd into the API≈ numbers on Home, Runs, Stats and Budget, and how spend.js uses tokenSource; (4) the evidence from real state: run `node -e` over ~/.bullswarm/workflows/*/state.json to count attempts by tokenSource and list the ten longest attempts with their minutes, totalKnown tokens and estimatedUsd (read-only). Finish with a plain-words verdict on what the recorded number actually measures. Real data only: every number you write must be quoted from a file or command output you ran, with its path or command next to it; if a figure cannot be obtained, say so in words. Edit only the files you own; touch nothing under src/, tests/, ~/.bullswarm, ~/.claude-acme, ~/.codex or ~/.grok (read them freely). No git commands that change anything. Others write in parallel in this tree; preserve their files."
+    },
+    {
+      "id": "claude-actual-cost",
+      "kind": "implement",
+      "purpose": "Sum the real Claude transcript usage for three attempts and compare with the recorded estimate",
+      "dependsOn": [],
+      "affects": [
+        "requirement-2"
+      ],
+      "ownedFiles": [
+        "docs/studies/cost-audit-2026-09-18/claude-actual-vs-recorded.md",
+        "scripts/cost-audit/claude-transcript-cost.mjs",
+        "scripts/cost-audit/README.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, measure what three Claude Code worker sessions really consumed. Attempts (from ~/.bullswarm/workflows/wf-mu5ul9j7-4a3a73/state.json shortId fuyyca and wf-mu5ea0dx-b6a959 shortId ipccf2; read the attempt objects for the recorded usage): fuyyca integrate-2, pool claude-code:acme, model claude-opus-5, 2026-09-17T20:39:58Z to 21:15:23Z, cwd /home/dev/Repo/bullswork/bullswarm-dashboard; ipccf2 accept-3, 18:21:12Z about 32 min, and accept-4, 19:24:15Z about 15 min, cwd /home/dev/Repo/bullswork/project-a. The pool claude-code:acme uses the config dir ~/.claude-acme, so its transcripts are ~/.claude-acme/projects/-home-dev-Repo-bullswork-bullswarm-dashboard/*.jsonl and .../-home-dev-Repo-bullswork-project-a/*.jsonl; match a session by its first and last timestamps falling inside the attempt window (state its sessionId and line count). Write scripts/cost-audit/claude-transcript-cost.mjs (node, no dependencies) that takes a transcript path and prints per-model totals of input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens summed over assistant messages, deduplicating repeated message.id entries (streaming writes the same message several times; keep the last), counting sidechain (subagent) messages separately and in the total, and the number of turns and tool calls. Study /home/dev/project-n/packages/parser/src/claude-code.ts first for the dedupe and sidechain rules it applies and cite the lines you follow. Price with the rates on https://platform.claude.com/docs/en/about-claude/pricing (or the page src/lib/usage.js cites) for Opus: quote the exact lines for input, cache write, cache read and output; if you cannot load the page say so and use the rates in the repo's provider metadata, labelled as such. Report in docs/studies/cost-audit-2026-09-18/claude-actual-vs-recorded.md: one table row per attempt with recorded tokens, recorded USD, tokenSource, actual tokens by class, actual USD, ratio actual/recorded, and a paragraph on what drives the gap (cache reads per turn times turns). Document the script in scripts/cost-audit/README.md. Real data only: every number you write must be quoted from a file or command output you ran, with its path or command next to it; if a figure cannot be obtained, say so in words. Edit only the files you own; touch nothing under src/, tests/, ~/.bullswarm, ~/.claude-acme, ~/.codex or ~/.grok (read them freely). No git commands that change anything. Others write in parallel in this tree; preserve their files."
+    },
+    {
+      "id": "grok-codex-actual-cost",
+      "kind": "implement",
+      "purpose": "Sum real Grok and Codex usage for three attempts and compare with the recorded estimate",
+      "dependsOn": [],
+      "affects": [
+        "requirement-3"
+      ],
+      "ownedFiles": [
+        "docs/studies/cost-audit-2026-09-18/grok-codex-actual-vs-recorded.md",
+        "scripts/cost-audit/codex-session-cost.mjs",
+        "scripts/cost-audit/grok-session-cost.mjs"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, measure what a Grok and two Codex worker sessions really consumed. Attempts: fuyyca verify-1 (state ~/.bullswarm/workflows/wf-mu5ul9j7-4a3a73/state.json), pool grok, model grok-4.6, 2026-09-17T21:15:23Z, about 26 min, cwd /home/dev/Repo/bullswork/bullswarm-dashboard; run 2yrcxi (find its state.json under ~/.bullswarm/workflows by shortId) integrate-1 (codex, gpt-5.6-sol, 2026-09-18T04:08:58Z, 16 min) and widget-1 (codex, gpt-5.6-luna, 03:12:47Z, 44 min), cwd /home/dev/Repo/bullswork/project-a. Codex: sessions live in ~/.codex/sessions/<yyyy>/<mm>/<dd>/*.jsonl with token_count events carrying cumulative input/cached/output/reasoning tokens; study /home/dev/project-n/packages/parser/src/codex.ts for how it reads them and cite the lines; write scripts/cost-audit/codex-session-cost.mjs (node, no dependencies) printing the final cumulative totals and the number of turns. Grok: find where the grok CLI keeps transcripts or usage under ~/.grok (logs/unified.jsonl, grove/, or elsewhere; read the provider module src/providers/grok/provider.mjs for hints) and write scripts/cost-audit/grok-session-cost.mjs if a per-session record exists; if none exists, the report says exactly what ~/.grok holds and that the per-session tokens are not recoverable, and instead compares the pool's credits meter before and after if the meter history in ~/.bullswarm records it. Prices: for each model quote a vendor page URL and the exact line (OpenAI API pricing for the gpt-5.6 models; xAI pricing for grok-4.6); when a page does not name the model, write \"price not found\" and give no number. Report in docs/studies/cost-audit-2026-09-18/grok-codex-actual-vs-recorded.md: recorded vs actual tokens and USD per attempt with the ratio. Real data only: every number you write must be quoted from a file or command output you ran, with its path or command next to it; if a figure cannot be obtained, say so in words. Edit only the files you own; touch nothing under src/, tests/, ~/.bullswarm, ~/.claude-acme, ~/.codex or ~/.grok (read them freely). No git commands that change anything. Others write in parallel in this tree; preserve their files."
+    },
+    {
+      "id": "step-timeline-study",
+      "kind": "implement",
+      "purpose": "Study project-n transcript presentation and design a Step page timeline for bullswarm",
+      "dependsOn": [],
+      "affects": [
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "docs/studies/cost-audit-2026-09-18/step-timeline-design.md",
+        "docs/studies/cost-audit-2026-09-18/step-timeline-55.txt",
+        "docs/studies/cost-audit-2026-09-18/step-timeline-120.txt"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, study how project-n turns an agent transcript into something a person can follow, and design the same for bullswarm's Step page. project-n is at /home/dev/project-n (read only): packages/parser/src/claude-code.ts, codex.ts, presentation.ts, agent-metadata.ts, types.ts; apps/web/app/sessions/[id]/session-view.tsx and team-tab/turn-drawer.tsx; its README describes turn collapsing, tool cards, a mini-map timeline and parallel-run detection. Record, with file:line anchors, how it groups messages into turns, renders tool calls as cards, attaches subagent (sidechain) work to the parent turn, computes per-turn tokens and duration, and builds the mini-map. Then read bullswarm's stream capture in /home/dev/Repo/bullswork/bullswarm-0.33.1/src/lib/agent-events.js and attempt-stream.js (read only; that tree belongs to a running workflow) and one real stream-<action>-attempt-N.jsonl file if any exists under ~/.bullswarm/workflows/*/ (say which), and the current Step page renderer in /home/dev/Repo/bullswork/bullswarm-cost/src/workflow/dashboard.js (search \"Step\" and \"output\"). Write docs/studies/cost-audit-2026-09-18/step-timeline-design.md: the gap table (what project-n shows, what bullswarm's stream carries, what is missing: tool names and arguments, tool results size, turn boundaries, subagent ids, per-turn tokens, timestamps), a proposed normalized event schema extension, and the Step page design: a timeline of turns with tool calls as one-line cards, subagent groups indented, per-turn tokens and seconds when known, a mini-map strip, and how it degrades when the stream lacks a field. Draw docs/studies/cost-audit-2026-09-18/step-timeline-55.txt (55x26) and docs/studies/cost-audit-2026-09-18/step-timeline-120.txt (120x40) using events from the real stream file you read, or, if none exists, from a real Claude transcript under ~/.claude-acme/projects (say which) and mark every figure's source in the design doc. Real data only: every number you write must be quoted from a file or command output you ran, with its path or command next to it; if a figure cannot be obtained, say so in words. Edit only the files you own; touch nothing under src/, tests/, ~/.bullswarm, ~/.claude-acme, ~/.codex or ~/.grok (read them freely). No git commands that change anything. Others write in parallel in this tree; preserve their files."
+    },
+    {
+      "id": "digest-costs",
+      "kind": "digest",
+      "purpose": "Condense the three cost reports for the plan",
+      "dependsOn": [
+        "estimator-audit",
+        "claude-actual-cost",
+        "grok-codex-actual-cost"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Keep every table row of recorded vs actual, every file:line anchor, every \"not found\" or \"not recoverable\" statement, and every price quote with its URL."
+    },
+    {
+      "id": "cost-fix-plan",
+      "kind": "architecture",
+      "purpose": "Judge the gap and plan the measured-usage fix with file anchors",
+      "dependsOn": [
+        "digest-costs"
+      ],
+      "affects": [
+        "requirement-5"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, read the digest output and produce, as your report, the plan for measured usage. Judge first: how far off is the recorded API≈, per provider, and what does that do to the Budget and Stats pages. Then plan, with file:line anchors in /home/dev/Repo/bullswork/bullswarm-cost/src: (a) capture at attempt end the provider's own totals: Claude Code's final `result` event (fields usage, total_cost_usd, modelUsage, session_id when run with --output-format stream-json or json; confirm from src/providers/claude-code/provider.mjs and src/provider-cli.js how the worker is invoked and what stdout carries), Codex token_count events from its session file, Grok's equivalent or its credits meter delta; (b) store sessionId and a tokenSource of provider-reported or transcript-summed on the attempt; (c) a back-fill command that re-prices past attempts from transcripts where they exist and marks the rest unknown; (d) the dashboard label for the basis (measured, summed, estimated, unknown) so an estimate is never shown as a measurement; (e) cache-write pricing which the estimator currently leaves null. Size it: what fits a plan revise of the running 0.33.1 workflow (run u9d48s, worktree bullswarm-0.33.1, currently at its dashboard and integration steps) versus a 0.33.2 release, with the trade-offs in words. Read only; edit nothing."
+    },
+    {
+      "id": "record-plan",
+      "kind": "implement",
+      "purpose": "Record the architecture report as a file in the study folder",
+      "dependsOn": [
+        "cost-fix-plan"
+      ],
+      "affects": [
+        "requirement-5"
+      ],
+      "ownedFiles": [
+        "docs/studies/cost-audit-2026-09-18/cost-fix-plan.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, copy the cost-fix-plan dependency output into docs/studies/cost-audit-2026-09-18/cost-fix-plan.md verbatim with a one-line header naming the run and date, and add nothing else. Real data only: every number you write must be quoted from a file or command output you ran, with its path or command next to it; if a figure cannot be obtained, say so in words. Edit only the files you own; touch nothing under src/, tests/, ~/.bullswarm, ~/.claude-acme, ~/.codex or ~/.grok (read them freely). No git commands that change anything. Others write in parallel in this tree; preserve their files."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently check every number and the write boundary",
+      "dependsOn": [
+        "estimator-audit",
+        "claude-actual-cost",
+        "grok-codex-actual-cost",
+        "step-timeline-study",
+        "cost-fix-plan",
+        "record-plan"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6"
+      ],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-cost, judge the six requirements of docs/plans/cost-audit.goal.txt. Re-run scripts/cost-audit/*.mjs against the transcripts the reports name and compare every table figure; recompute at least one attempt's USD by hand from the quoted rates; open each quoted vendor URL and confirm the quoted line exists, or note that it could not be loaded; check the estimator report's file:line anchors exist in src; check the two timeline frames are exactly 55 and 120 columns and that their figures are sourced; run `git status --porcelain` and confirm only docs/studies/cost-audit-2026-09-18/ and scripts/cost-audit/ changed, and compare mtimes of ~/.bullswarm/workflows/*/state.json against the run start to confirm nothing there was modified by these steps. Try to break each claim; edit nothing."
+    }
+  ]
+}
