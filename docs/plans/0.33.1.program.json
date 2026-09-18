@@ -1,0 +1,361 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "fold-prs",
+      "kind": "implement",
+      "purpose": "Merge the four reviewed PR branches onto release-0.33.1 with green tests",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "CHANGELOG.md",
+        "docs/guide/observing.md",
+        "docs/plans/handoff.goal.txt",
+        "docs/plans/handoff.program.json",
+        "docs/plans/handoff.rev2.json",
+        "docs/plans/handoff.rev3.json",
+        "docs/reference/cli.md",
+        "docs/reference/providers.md",
+        "src/help.js",
+        "src/lib/agent-events.js",
+        "src/lib/attempt-stream.js",
+        "src/lib/glyphs.js",
+        "src/lib/update.js",
+        "src/lib/watch.js",
+        "src/provider-cli.js",
+        "src/providers/_schema.json",
+        "src/providers/claude-code/provider.mjs",
+        "src/providers/README.md",
+        "src/workflow/v2-dispatch.js",
+        "src/workflow/v2-runtime.js",
+        "src/workflow/v2-state.js",
+        "src/workflow/watch-cli.js",
+        "tests/agent-events.test.js",
+        "tests/attempt-stream.test.js",
+        "tests/fixtures/answering-connector.mjs",
+        "tests/fixtures/stalling-connector.mjs",
+        "tests/provider-claude.test.js",
+        "tests/providers.test.js",
+        "tests/update.test.js",
+        "tests/watch.test.js",
+        "tests/workflow-v2-dispatch.test.js",
+        "tests/workflow-v2-recovery.test.js",
+        "tests/workflow-v2-state.test.js",
+        "tests/workflow-watch.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1 (git branch release-0.33.1 at v0.33.0), fold four reviewed pull requests whose heads are already fetched as local refs. Run, in this order, `git merge --no-ff --no-edit pr-37` (attempt handoff), `git merge --no-ff --no-edit pr-35` (a signalled kernel writes a terminal lifecycle), `git merge --no-ff --no-edit pr-34` (pnpm global installs upgrade via pnpm), `git merge --no-ff --no-edit pr-33` (dedupe Claude logins by account identity). `git merge-tree` showed zero conflicts against main; if a merge still stops, resolve it inside the files listed below only, keeping both sides' intent, and say exactly what you resolved. If git refuses because another worker's uncommitted edit would be overwritten, run `git merge --abort`, wait 60 s and retry up to five times before reporting. Other workers are editing other files in this tree at the same time: never run `git stash`, `git checkout .`, `git reset` or `git clean`, and stage nothing outside the merge itself. After the merges, open CHANGELOG.md: every bullet the four branches added must sit under a single `## Unreleased` heading at the top (the branches may have put them under their own headings or duplicated the heading); do not add other bullets. Run `npm test` and quote the summary line; if a test fails, fix it within the merged files and explain. Report: the four merge commit hashes (`git log --oneline -6`), what CHANGELOG looked like before and after, and the test summary. These are the merge commits the run keeps; do not push."
+    },
+    {
+      "id": "single-task-ledger",
+      "kind": "implement",
+      "purpose": "Make bullswarm run tasks readable as ledger rows (in-flight from assignments, finished from the decision log)",
+      "dependsOn": [],
+      "affects": [
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "src/cli.js",
+        "src/lib/assignments.js",
+        "src/lib/tasks.js",
+        "tests/assignments.test.js",
+        "tests/cli-run.test.js",
+        "tests/tasks.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, make single tasks (`bullswarm run`, not workflows) visible to the dashboard and the Mod. Today `cmdRun` in src/cli.js (around line 235) registers an assignment in ~/.bullswarm/assignments/<id>.json with source \"run\" via src/lib/assignments.js while the worker runs, and appends a decisionLog entry to state.json (capped at 500). Deliver: (a) the decisionLog entry written for a run records taskFile, outFile, lane, pool, model, startedAt, endedAt, ok and a short reason on failure, plus the project name derived from --add-dir the way workflows derive theirs (read src/workflow/history.js projectName helpers for the convention, do not edit that file); (b) a new module src/lib/tasks.js exporting `listTasks({ home, since, now })` returning `{ inflight: [...], finished: [...] }` where inflight rows come from assignments with source \"run\" (id, lane, pool, model, project, startedAt, taskFile) and finished rows come from decisionLog entries of kind run since `since` (same fields plus endedAt, ok, reason, durationMs), newest first, tolerant of older entries that lack the new fields; (c) the assignment record for a run carries the same task fields so an in-flight row is as informative as a finished one. Tests in tests/tasks.test.js against a fixture home (in-flight + finished + a legacy entry without the fields), and updates to tests/assignments.test.js and tests/cli-run.test.js. Your report must show the exact JSON shape of both row kinds, because the dashboard and Mod steps build on it. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "mod-usage-and-tasks",
+      "kind": "implement",
+      "purpose": "Mod pane: usage button works with no run; an in-flight single task replaces the empty-pane text",
+      "dependsOn": [],
+      "affects": [
+        "requirement-8",
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "mods/bullswarm/hooks/pane.tsx",
+        "mods/bullswarm/hooks/register.ts",
+        "mods/bullswarm/hooks/runs.ts",
+        "mods/bullswarm/README.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, fix two gaps in the Mod (mods/bullswarm). (1) In mods/bullswarm/hooks/pane.tsx the early `if (!run)` return near line 206 precedes `if (model.poolsPage)` near line 274, so the usage button does nothing when no workflow run is in flight; the pools page must render whether or not a run exists (the user's screenshot shows \"No ongoing workflow run\" and a dead usage tab). (2) When no workflow run is in flight but an assignment file in ~/.bullswarm/assignments/*.json has source \"run\", the empty pane shows that single task instead: lane, pool · model, project or task file name, and elapsed time, refreshing on the pane's existing tick; read the assignment JSON directly from the home directory the Mod already uses (fields are id, lane, pool, model, source, startedAt and whatever else the file holds; tolerate missing fields). Keep register.ts's button wiring consistent, update mods/bullswarm/README.md to describe both behaviours, and run the repository's TypeScript check for mods (see mods/bullswarm/tsconfig.json and package.json scripts) and quote its output. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "budget-windows",
+      "kind": "implement",
+      "purpose": "Budget shows every meter window a pool reports with reset time, pace and sample age",
+      "dependsOn": [],
+      "affects": [
+        "requirement-9"
+      ],
+      "ownedFiles": [
+        "src/workflow/budget-view.js",
+        "src/workflow/budget-model.js",
+        "src/workflow/usage-view.js",
+        "tests/workflow-budget-model.test.js",
+        "tests/workflow-budget-view.test.js",
+        "tests/workflow-usage-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, the Budget page (src/workflow/budget-view.js over src/workflow/budget-model.js) shows one window per pool although providers report several: src/workflow/usage-view.js `poolWindows` (around line 174) already pushes {key, usedPct, resetsAt, elapsedPct} for each window (5-hour, 7-day, monthly) and `usageLines` there is dead code to delete. Deliver: every window a pool reports appears under that pool with its used share, reset time in the user's local clock, and pace (elapsed share of the window vs used share, in words like \"ahead\" or \"behind by 12 pts\"); the page header states the sample age from the usage sample's own timestamp (`sampled 5m ago`, `sampled just now`), never a made-up time; narrow widths (55 columns) stack windows one per line and 120 columns may place them side by side. Keep existing tests green and add cases: pool with three windows, pool with one, stale sample. If dashboard.js call sites must change, describe the exact change under Shared-file requests. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "strategy-median",
+      "kind": "implement",
+      "purpose": "Stalled attempts no longer pollute medianMinutes",
+      "dependsOn": [],
+      "affects": [
+        "requirement-10"
+      ],
+      "ownedFiles": [
+        "src/lib/strategy.js",
+        "tests/strategy.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, src/lib/strategy.js around line 313 computes `medianMinutes` over all rung rows including stalled attempts (rows with stalled === true or failureKind \"stalled\"), which the dispatcher already filters privately (see recordedRung in src/workflow/v2-dispatch.js, read only). Exclude stalled rows from medianMinutes centrally, keep okShare semantics unchanged, and add a test in tests/strategy.test.js showing a stall row no longer moves the median. Note in the report which commands' displayed p50 change (`bullswarm strategy`, `workflow usage`). Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "budget-prototype",
+      "kind": "implement",
+      "purpose": "Budget verdict redesign as text frames from real 2026-09-18 pool figures",
+      "dependsOn": [],
+      "affects": [
+        "requirement-6"
+      ],
+      "ownedFiles": [
+        "docs/design/prototype-frames-0.33.1/budget-55.txt",
+        "docs/design/prototype-frames-0.33.1/budget-120.txt",
+        "docs/design/prototype-frames-0.33.1/budget-README.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, draw prototype frames (plain text, no code) for a redesigned Budget verdict page. The owner's complaint about the current page (src/workflow/budget-view.js, read only): a wall of percentages, the reader cannot tell which licence is the problem. Get the real figures first: run `node /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1/bin/bullswarm.js pools` and `node /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1/bin/bullswarm.js workflow usage --json` (they read this machine's live meters; the opencode pool is disabled and must be shown as such). Write docs/design/prototype-frames-0.33.1/budget-55.txt (55 columns, 26 rows) and docs/design/prototype-frames-0.33.1/budget-120.txt (120 columns, 40 rows), fenced to exactly that width: one line per pool, sorted by urgency, each line a verdict in words (\"codex: fine, 41% used with 3 days left\", \"claude-code: will run out Friday at this pace\"), one bar per pool, and a footer with the sample age. Use only the numbers the two commands printed and quote them in docs/design/prototype-frames-0.33.1/budget-README.md next to the frames, with what Enter on a row would reveal (the per-window detail) and the two or three design decisions you made. No colour codes in the files. Edit nothing else."
+    },
+    {
+      "id": "home-today-prototype",
+      "kind": "implement",
+      "purpose": "Home \"today\" redesign as text frames: run cards left, licence spend right",
+      "dependsOn": [],
+      "affects": [
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "docs/design/prototype-frames-0.33.1/home-today-55.txt",
+        "docs/design/prototype-frames-0.33.1/home-today-120.txt",
+        "docs/design/prototype-frames-0.33.1/home-today-README.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, draw prototype frames (plain text, no code) for a redesigned \"today\" section of the dashboard Home page (current renderer: src/workflow/dashboard.js, search \"today\"; read only). The owner asked: left-hand side a card-style list of today's finished runs, each card naming what the run was for (its goal's first line) and its project; right-hand side what licences were spent today per pool and the share depleted by workflows, single `bullswarm run` tasks and minutes as of today's metrics. Take real data: `node /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1/bin/bullswarm.js workflow runs list --json` (today's runs, their goal and project), `node /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1/bin/bullswarm.js workflow usage --json` and `node /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1/bin/bullswarm.js pools` for the meters. Write docs/design/prototype-frames-0.33.1/home-today-55.txt (55 columns: cards stacked above the spend block) and docs/design/prototype-frames-0.33.1/home-today-120.txt (120 columns: two columns side by side), fenced to exactly that width, and docs/design/prototype-frames-0.33.1/home-today-README.md quoting the numbers you used and where each came from, plus what a row does on Enter. Where a figure does not exist yet (for example single-task minutes before requirement 4 lands), show the cell as \"—\" and say so in the README rather than inventing it. No colour codes. Edit nothing else."
+    },
+    {
+      "id": "plan-prices",
+      "kind": "implement",
+      "purpose": "Detect plan names per provider and price only what a vendor page was actually loaded for",
+      "dependsOn": [
+        "fold-prs",
+        "budget-windows"
+      ],
+      "affects": [
+        "requirement-5"
+      ],
+      "ownedFiles": [
+        "src/lib/prices.js",
+        "data/plan-prices.json",
+        "src/lib/usage.js",
+        "src/providers/claude-code/provider.mjs",
+        "src/providers/codex/provider.mjs",
+        "src/workflow/budget-model.js",
+        "src/workflow/budget-view.js",
+        "tests/prices.test.js",
+        "tests/usage.test.js",
+        "tests/provider-claude.test.js",
+        "tests/workflow-budget-model.test.js",
+        "tests/workflow-budget-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, plan prices without typing. Today src/lib/prices.js (planPrices, priceFor, subscriptionCostUsd) reads a declared monthly price from data/plan-prices.json whose \"prices\" object is empty, so Budget has no cost. Read the fold-prs output first (src/providers/claude-code/provider.mjs changed under it). Deliver: (a) each provider reports the plan name it can detect: Claude from ~/.claude/.credentials.json subscriptionType and rateLimitTier (via the provider module, never by shelling out), Codex from the plan_type its usage payload already carries (src/providers/codex/provider.mjs around line 198), and for pools whose provider is configured outside the repo (command-code, opencode) whatever their usage payload exposes, else null; (b) data/plan-prices.json gains a \"plans\" map from provider+plan name to monthly USD ONLY for entries where you loaded the vendor's pricing page in this task and can quote its URL and the exact line you read, stored beside the price as \"source\" and \"quotedLine\" and \"checkedAt\"; if you have no web access or the page does not state a figure, leave the price null and write that in the report, never a remembered number; (c) src/workflow/budget-model.js prefers a declared price, then a detected plan's price, and labels the origin so budget-view.js prints `declared` or `detected <plan>`; unknown prints \"price unknown: set it with bullswarm strategy ...\" using the command that already exists (check src/help.js for it). Budget-view and budget-model were just edited by the budget-windows step: read its output and keep its work. Tests for detection with fixture credential files and payloads, for the price fallback order, and for the labels. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "kernel-attempts",
+      "kind": "implement",
+      "purpose": "Recovered stream errors do not fail an attempt; attempts record output over time; handoff survives a kernel restart",
+      "dependsOn": [
+        "fold-prs"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-10"
+      ],
+      "ownedFiles": [
+        "src/lib/watch.js",
+        "src/lib/agent-events.js",
+        "src/lib/attempt-stream.js",
+        "src/workflow/v2-dispatch.js",
+        "src/workflow/v2-state.js",
+        "src/workflow/v2-runtime.js",
+        "tests/watch.test.js",
+        "tests/watch-structured.test.js",
+        "tests/agent-events.test.js",
+        "tests/attempt-stream.test.js",
+        "tests/workflow-v2-dispatch.test.js",
+        "tests/workflow-v2-state.test.js",
+        "tests/workflow-v2-runtime.test.js",
+        "tests/workflow-v2-recovery.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, three kernel changes on the attempt path; read the fold-prs output first because PR #37 (attempt handoff: src/lib/attempt-stream.js, stream-<action>-attempt-N.jsonl files, priorHandoff in src/workflow/v2-dispatch.js) and PR #35 (v2-runtime.js) landed in these files. (1) src/lib/watch.js providerFailureType (lines ~204-334) fails an attempt when the stream carried a provider error even though the worker recovered and finished; change it so a stream error followed by usable output (non-empty result, the worker exited 0) succeeds, and the recovered error is kept on the attempt as `notes: [{ at, kind: \"recovered-stream-error\", text }]` (add the field to ATTEMPT_FIELDS in src/workflow/v2-state.js, which rejects unknown keys, and to the events payload); a stream error with empty or unusable output still fails as before. (2) Output over time: the Run and Step pages need a series of output bytes per attempt. Prefer deriving it from the persisted stream file when its events carry timestamps and sizes; if not, record `outputSamples: [[atMs, bytes], ...]` on the attempt, sampled at most every 5 s and capped at 240 points, surviving the durable-state validator. Export one helper `attemptOutputSeries(attempt, runDir)` from src/workflow/v2-state.js or attempt-stream.js that returns the series either way, and document its shape in your report for the dashboard step. (3) After a kernel restart the retry gets no handoff block because priorHandoff lives only in memory: build the block from the durable attempt record and stream file instead, so `bullswarm workflow resume` after a kill still hands the retry the prior-attempt block; extend tests/workflow-v2-recovery.test.js to prove it. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "free-model-probe",
+      "kind": "implement",
+      "purpose": "Liveness probe for an explicitly named free model before dispatch; bench with reason on failure",
+      "dependsOn": [
+        "fold-prs",
+        "single-task-ledger"
+      ],
+      "affects": [
+        "requirement-2"
+      ],
+      "ownedFiles": [
+        "src/lib/route.js",
+        "src/lib/probe.js",
+        "src/lib/state.js",
+        "src/provider-cli.js",
+        "src/cli.js",
+        "src/workflow/fleet-view.js",
+        "tests/route.test.js",
+        "tests/probe.test.js",
+        "tests/state.test.js",
+        "tests/provider-cli.test.js",
+        "tests/cli-run.test.js",
+        "tests/workflow-fleet-view.test.js",
+        "docs/guide/routing.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, add a free-model liveness probe. Context: free models (for example zen/union-free via opencode) die without warning; the owner's decision is that the probe runs ONLY for a rung whose configured model is a free model explicitly named in the pool's strategy (see src/lib/route.js isFreeModel near line 221 and the \"free pool first\" ranking near line 1091); a rung set to the CLI default is never probed, a paid model is never probed, no free catalogue is ever scanned, and bullswarm never picks a replacement model. Read the fold-prs and single-task-ledger outputs first (src/provider-cli.js and src/cli.js changed under them). Deliver: new src/lib/probe.js exporting `probeFreeModel({ pool, model, home, timeoutMs = 30000, now })` that sends a one-word prompt through the pool's own provider CLI the same way src/provider-cli.js runs a worker (injectable runner for tests), caches the result per pool+model in the home directory for 15 minutes, and returns {ok, reason, at}; wire it where both the workflow dispatcher and `bullswarm run` pick a pool (pickPool in route.js near line 688 or its shared caller: find the one place both paths pass through and say which), so that a failed probe benches the pool via recordPoolStrike in src/lib/state.js (near line 607) with reason `probe: <404|provider error|timeout>` and routing falls through to metered pools; the reason must appear in routeWhy, in `bullswarm pools` (which already prints bench reasons; adjust src/cli.js only if it does not) and in the Fleet page (src/workflow/fleet-view.js). Tests: probe skipped for CLI-default rung and for a paid model, probe cached, probe failure benches with the reason and the route falls through, pools/fleet show the reason. Document the rule in docs/guide/routing.md in plain words. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "digest-for-dashboard",
+      "kind": "digest",
+      "purpose": "Condense the four outputs the dashboard step reads",
+      "dependsOn": [
+        "single-task-ledger",
+        "kernel-attempts",
+        "budget-windows",
+        "plan-prices"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Keep verbatim: the row JSON shapes from single-task-ledger, the output-series helper name and shape from kernel-attempts, and every Shared-file request naming src/workflow/dashboard.js or dash-kit.js."
+    },
+    {
+      "id": "dashboard-runs-and-run-page",
+      "kind": "implement",
+      "purpose": "Dashboard shows single tasks on Runs and Home, draws live output sparklines, never truncates a pool name",
+      "dependsOn": [
+        "digest-for-dashboard"
+      ],
+      "affects": [
+        "requirement-4",
+        "requirement-10"
+      ],
+      "ownedFiles": [
+        "src/workflow/dashboard.js",
+        "src/workflow/dash-kit.js",
+        "src/workflow/history.js",
+        "src/workflow/history-view.js",
+        "tests/workflow-dashboard.test.js",
+        "tests/dash-kit.test.js",
+        "tests/workflow-history.test.js",
+        "tests/workflow-history-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, three dashboard changes in src/workflow/dashboard.js (about 4800 lines; the TUI with pages Home/Runs/Run/Step/Budget/Stats/Fleet/Help, diff painter, hover on text spans only). Read the digest output first: it carries the single-task row shapes from src/lib/tasks.js (listTasks), the output-series helper from the kernel step, and Shared-file requests for dashboard.js from the Budget steps, which you apply. (1) Single tasks: the Runs page active block lists in-flight `bullswarm run` tasks beside in-flight workflows (glyph distinct from a workflow, lane, pool · model, project, elapsed), and the day table lists finished tasks as rows (glyph, lane, pool · model, ok or short reason, duration never cut, time) sorted with the workflows by time; Home's today band counts tasks in its totals and says \"3 runs · 2 tasks\"; Enter on a task row opens a small detail view (task file path, output file path, reason) and Escape returns; hover lights only the row's text like other rows. (2) Live output sparkline: on the Run page each running step's row and on the Step page's header, draw a sparkline (dash-kit.js sparkline) of output bytes over time from the kernel helper, with the current total; nothing when the series is empty. (3) The plan strip on the Run page must show a pool name whole or not at all: replace the `openc…` truncation with a rule that drops the pool name first and the model second when the row is short of room. Regression tests for each, using the existing test harness in tests/workflow-dashboard.test.js (lastFrame and press helpers). Keep the frame within the width; do not reintroduce whole-row or bar highlighting. Others share this tree and work in parallel: preserve their edits, edit only the files you own, and put any change you need in a file outside your territory into your report under a heading \"Shared-file requests\" (file, exact change, why). Do not touch CHANGELOG.md, package.json or git (no commit, no branch); write the one-line CHANGELOG bullet you propose under a heading \"Changelog bullet\" in your report. Real data only: never invent a figure or an API fact; if something cannot be measured, say so in words. Run the tests you own with `node --test <file>` and quote the pass/fail summary; finish with `npm test` and quote its summary line."
+    },
+    {
+      "id": "digest-all",
+      "kind": "digest",
+      "purpose": "Condense every writer output for the integrator",
+      "dependsOn": [
+        "fold-prs",
+        "single-task-ledger",
+        "mod-usage-and-tasks",
+        "budget-windows",
+        "strategy-median",
+        "budget-prototype",
+        "home-today-prototype",
+        "plan-prices",
+        "kernel-attempts",
+        "free-model-probe",
+        "dashboard-runs-and-run-page"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Keep verbatim every \"Shared-file requests\" section, every \"Changelog bullet\" line, every npm test summary line, and every unresolved question a writer raised."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile all territories, write docs and CHANGELOG, run the full suite",
+      "dependsOn": [
+        "digest-all"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-8",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, you are the sole writer now. Read the digest output. (1) Apply every Shared-file request that is still open, or say why it must not be applied. (2) CHANGELOG.md `## Unreleased`: one plain-words bullet per requirement 1-5 and 8-10 of the goal (docs/plans/0.33.1.goal.txt), built from the writers' proposed bullets, plus a line saying the Budget verdict and Home today redesigns are prototype frames under docs/design/prototype-frames-0.33.1/ awaiting the owner; keep the folded PRs' bullets; do not bump package.json. (3) Docs: docs/guide/observing.md describes single tasks on the Runs page and the Home count, the output sparkline, the Budget windows and sample age, and the plan-price detection; docs/reference/cli.md describes anything whose CLI output changed (pools bench reason, run decision-log fields); docs/guide/routing.md and mods/bullswarm/README.md already edited by writers must match the code. (4) Run `npm test` until it is green twice in a row and quote both summary lines; fix real failures at the root, and name any flake with its test name and evidence. (5) Run `node bin/bullswarm.js` in a tmux session of 120x40 against BULLSWARM_HOME=$HOME/.bullswarm for 10 seconds, capture the Home, Runs and Budget pages with `tmux capture-pane -p`, and paste them in the report as evidence that the TUI starts and renders. Commit nothing; leave the tree for the owner."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently confirm every requirement against the real tree",
+      "dependsOn": [
+        "fold-prs",
+        "single-task-ledger",
+        "mod-usage-and-tasks",
+        "budget-windows",
+        "strategy-median",
+        "budget-prototype",
+        "home-today-prototype",
+        "plan-prices",
+        "kernel-attempts",
+        "free-model-probe",
+        "dashboard-runs-and-run-page",
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7",
+        "requirement-8",
+        "requirement-9",
+        "requirement-10",
+        "requirement-11"
+      ],
+      "reasoning": "high",
+      "prompt": "In /Users/cowcow02/Repo/bullswork/bullswarm-0.33.1, judge the eleven requirements of docs/plans/0.33.1.goal.txt against the tree as it stands; inspect and exercise, edit nothing, commit nothing. For 1, check `git log --oneline -8` shows four merge commits of pr-37, pr-35, pr-34, pr-33 and their tests pass. For 2, build a fixture home (a pool whose rung names a free model backed by a connector that fails, plus a metered pool; tests/fixtures has connectors) and run a real `node bin/bullswarm.js run --lane=build` or a two-action workflow with BULLSWARM_HOME pointing at it; confirm the bench reason appears in routeWhy, `pools` and the Fleet page, and that a CLI-default rung and a paid model are never probed. For 3, use the watch tests and a fixture stream containing a provider error followed by real output. For 4, run a real `bullswarm run` against a fixture home and check the decision-log entry, then render the Runs and Home pages in tmux at 55 and 120 columns and the Mod's empty pane logic via its tests. For 5, check every price in data/plan-prices.json carries a source URL and quoted line and that no price exists without them; check the detection code paths with fixture credentials. For 6 and 7, check the frames exist at exactly 55 and 120 columns and that every number in them is quoted in the README with its source command. For 8, read pane.tsx for the usage path when run is null and the mods type check. For 9, render Budget with a fixture pool that has three windows. For 10, check the sparkline renders from a fixture series, the plan strip at 55 columns never shows a truncated pool name, the recovery test proves the handoff after a kernel kill, and the strategy median test. For 11, run `npm test` yourself and read the docs named. Try to break each claim."
+    }
+  ]
+}
