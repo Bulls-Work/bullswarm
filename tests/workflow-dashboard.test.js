@@ -364,6 +364,17 @@ test('moving the mouse over a clickable row lights it in reverse video and leavi
     session.press('\x1b[<35;6;2M');
     const cleared = lastFrame(session.output).split('\n')[rowIndex];
     assert.doesNotMatch(cleared, /^\x1b\[7m/, 'leaving the row clears the highlight');
+    // A chart column or a meter is clickable but is not a row: no light.
+    session.press('h');
+    const homeRows = lastFrame(session.output).split('\n');
+    const chartRow = homeRows.findIndex((line) => plain(line).includes('┤') && /[▇█]/.test(plain(line)));
+    if (chartRow >= 0) {
+      const beforeChart = session.output.text.length;
+      const barX = plain(homeRows[chartRow]).search(/[▇█]/) + 1;
+      session.press(`\x1b[<35;${String(barX)};${String(chartRow + 1)}M`);
+      assert.equal(session.output.text.length, beforeChart, 'hovering a chart column paints nothing');
+    }
+    session.press('r');
     // Standing still sends nothing new.
     session.press('\x1b[<35;7;2M');
     const before = session.output.text.length;

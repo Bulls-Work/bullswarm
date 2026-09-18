@@ -137,7 +137,16 @@ function lastWriteIso(path) {
 // One run directory the index does not name, read the way its own kind has to
 // be read (H6). Returns a finished record, a legacy record, an unfinished row,
 // or null when the directory says nothing reliable.
-function uncoveredRun(bullswarmDir, name, now) {
+/** `projectName(cwd)` runs `git`; within one rebuild, each cwd is asked once. */
+function projectNameCached(cwd, cache) {
+  if (!cache || cwd == null) return projectName(cwd);
+  if (cache.has(cwd)) return cache.get(cwd);
+  const name = projectName(cwd);
+  cache.set(cwd, name);
+  return name;
+}
+
+function uncoveredRun(bullswarmDir, name, now, projectByCwd = null) {
   const runDir = join(bullswarmDir, 'workflows', name);
   try { if (!statSync(runDir).isDirectory()) return null; } catch { return null; }
   const statePath = join(runDir, 'state.json');
@@ -160,7 +169,7 @@ function uncoveredRun(bullswarmDir, name, now) {
   // finished run the index has not caught up with is named by its project,
   // never `unknown project`, when a cwd is on record.
   const project = readGoalProject(runDir)?.name
-    ?? projectName(state.intent?.cwd ?? null);
+    ?? projectNameCached(state.intent?.cwd ?? null, projectByCwd);
   const startedAt = state.lifecycle?.startedAt ?? null;
   if (state.lifecycle?.finishedAt) {
     // Finished, and the index simply has not caught up (a home nothing has
@@ -204,9 +213,12 @@ function uncoveredRuns(bullswarmDir, indexedIds, now) {
   let names;
   try { names = readdirSync(runsRoot); } catch { return []; }
   const rows = [];
+  // The project name of an unindexed run comes from `git` in its working
+  // directory; many runs share a directory, so each is asked once per rebuild.
+  const projectByCwd = new Map();
   for (const name of names.sort()) {
     if (!name.startsWith('wf-') || indexedIds.has(name)) continue;
-    const row = uncoveredRun(bullswarmDir, name, now);
+    const row = uncoveredRun(bullswarmDir, name, now, projectByCwd);
     if (row) rows.push(row);
   }
   return rows;

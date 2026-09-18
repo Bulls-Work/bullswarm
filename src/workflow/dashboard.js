@@ -3853,12 +3853,19 @@ export async function runDashboard(bullswarmDir, {
   // licence meter" forever. A read in flight now absorbs the tick.
   let usageTicket = 0;
   let usageInFlight = false;
-  const readUsage = () => {
+  // Meter snapshots and account discovery cost hundreds of milliseconds
+  // (the Claude keychain read alone shells out to `security`), so usage is
+  // reloaded every ten seconds, not on every one-second tick.
+  const USAGE_EVERY_MS = 10_000;
+  let usageLoadedAt = 0;
+  const readUsage = ({ force = false } = {}) => {
     if (usageInFlight) return Promise.resolve(undefined);
+    if (!force && usage && Date.now() - usageLoadedAt < USAGE_EVERY_MS) return Promise.resolve(undefined);
     const ticket = (usageTicket += 1);
     usageInFlight = true;
     return loadUsage(bullswarmDir).finally(() => { usageInFlight = false; }).then((loaded) => {
       if (ticket !== usageTicket) return undefined;
+      usageLoadedAt = Date.now();
       // Budget's licence share is `ratePerMinute x measured minutes`, and
       // loadUsage now measures that rate itself — once per meter snapshot,
       // not once per one-second refresh.
@@ -3924,7 +3931,7 @@ export async function runDashboard(bullswarmDir, {
   /** The whole catalogue, parsed once and only for the page that lists it. */
   const ensureCatalog = () => {
     if (catalog) return catalog;
-    try { catalog = dashboardRows(bullswarmDir, { all: true }); }
+    try { catalog = dashboardRows(bullswarmDir, { all: true }); catalogAt = Date.now(); catalogSignature = `${activeSignature()}#${rollupFingerprint}`; }
     catch (err) { message = `display error: ${err.message}`; catalog = activeRuns; }
     allRows = catalog;
     rows = filterDashboardRows(allRows, dashboardFilter, query);
@@ -4004,13 +4011,28 @@ export async function runDashboard(bullswarmDir, {
       return lastFrameResult;
     }
   };
+  // The full catalogue reads every run directory (120–760 ms on a home with
+  // 300 runs), far too much for a one-second tick. Rebuild it only when an
+  // active run changed state, the history index changed, or 15 s passed;
+  // the active rows themselves are cheap and stay fresh every tick.
+  const CATALOG_TTL_MS = 15_000;
+  let catalogAt = 0;
+  let catalogSignature = null;
+  const activeSignature = () => activeRuns.map((row) => `${row.runId}:${row.state?.lifecycle?.status ?? ''}:${row.ongoing ? 1 : 0}`).join('|');
   const refresh = () => {
     const previousRunId = selectedRunId;
     try {
       activeRuns = activeDashboardRows(bullswarmDir);
+      const indexBefore = rollupFingerprint;
       readIndex();
       if (catalog) {
-        catalog = dashboardRows(bullswarmDir, { all: true });
+        const signature = `${activeSignature()}#${rollupFingerprint}`;
+        const stale = Date.now() - catalogAt >= CATALOG_TTL_MS || signature !== catalogSignature || rollupFingerprint !== indexBefore;
+        if (stale) {
+          catalog = dashboardRows(bullswarmDir, { all: true });
+          catalogAt = Date.now();
+          catalogSignature = signature;
+        }
         allRows = catalog;
       } else allRows = activeRuns;
       rows = filterDashboardRows(allRows, dashboardFilter, query);
@@ -4409,9 +4431,17 @@ export async function runDashboard(bullswarmDir, {
     if (action.kind === 'quit') return finish();
     return undefined;
   };
-  const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2 && region.action);
+  // Only list rows light up — a run in a table, a step or phase in a plan.
+  // Chart columns, tiles, meters, tabs and toggles are click targets too, but
+  // reverse-painting a chart row destroys its colours and tells the reader
+  // nothing a cursor would not.
+  const HOVER_KINDS = new Set(['run', 'step']);
+  const regionAt = (x, y) => regions.find((region) => y === region.y && x >= region.x1 && x <= region.x2
+    && region.action && HOVER_KINDS.has(region.action.kind));
   const hoverMove = (mouse) => {
     const region = regionAt(mouse.x, mouse.y) ?? null;
+    // The nav's run buttons are `run` regions too, but they share their row
+    // with other buttons: those light only their own cells.
     const whole = region ? regions.filter((other) => other.y === region.y && other.action).length === 1 : false;
     const next = region ? { y: region.y, x1: region.x1, x2: region.x2, whole } : null;
     const same = (next == null && hover == null)
