@@ -10,6 +10,8 @@ import {
   renderStackedColumnChart,
   renderStatsSurface,
   renderSummaryCard,
+  measurePanelGridLayout,
+  shortenLabel,
 } from '../src/workflow/stat-kit.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -112,6 +114,23 @@ test('dated axis labels use concrete calendar dates at every target width', () =
   }
 });
 
+test('shortening keeps scoped pool names distinct before any cut', () => {
+  assert.equal(shortenLabel('claude-code:wati'), 'wati');
+  const panel = renderPanel({
+    title: 'Pool spend', width: 29, labelWidth: 14, barWidth: 6, unit: 'usd', colors: false, labelKind: 'pool',
+    rows: [
+      { label: 'claude-code', value: 3.12, total: 7.48, share: 0.418 },
+      { label: 'claude-code:wati', value: 3.29, total: 7.48, share: 0.44 },
+    ],
+  });
+  const rows = panel.lines.slice(1).map(visible);
+  assert.match(rows[0], /claude/);
+  assert.match(rows[1], /wati/);
+  assert.notEqual(rows[0].slice(0, 8), rows[1].slice(0, 8));
+  assert.equal(panel.meta.barDropped, false);
+  assert.equal(panel.regions[1].payload.label, 'claude-code:wati');
+});
+
 test('panel rows keep fixed label/bar/value columns and cut a label only once', () => {
   const panel = renderPanel({
     title: 'Pool spend', width: 29, labelWidth: 14, barWidth: 6, unit: 'usd', colors: false,
@@ -126,8 +145,97 @@ test('panel rows keep fixed label/bar/value columns and cut a label only once', 
   assert.equal(new Set(barStarts).size, 1, rows.join('\n'));
   assert.ok(rows.every((line) => line.length === 29));
   assert.ok(rows.every((line) => line.includes('$') && /%$/.test(line)));
-  assert.match(rows[2], /claude-co…/);
-  assert.doesNotMatch(rows[2], /claude-co….*claude-code/);
+  assert.match(rows[2], /wati/);
+  assert.notEqual(rows[0].slice(0, 8), rows[2].slice(0, 8));
+});
+
+test('desktop panel grids measure one label column across every cell', () => {
+  const panels = [
+    { unit: 'usd', barWidth: 6, rows: [{ label: 'codex', value: 3, share: 0.3 }, { label: 'command-code', value: 7, share: 0.7 }] },
+    { unit: 'minutes', barWidth: 6, rows: [{ label: 'codex', value: 3, valueText: '3h', share: 0.3 }, { label: 'command-code', value: 7, valueText: '7h', share: 0.7 }] },
+    { unit: 'runs', barWidth: 6, rows: [{ label: 'project', value: 3, valueText: '3 runs', share: 0.3 }] },
+    { unit: 'runs', barWidth: 6, rows: [{ label: 'status', value: 3, valueText: '3 ok', share: 0.3 }] },
+  ];
+  const layout = measurePanelGridLayout(panels, [39, 38, 39, 38]);
+  assert.equal(layout.labelWidth, 12);
+  assert.equal(layout.barEnabled, true);
+  const first = renderPanel({ ...panels[0], width: 39, layout, colors: false });
+  const second = renderPanel({ ...panels[1], width: 38, layout, colors: false });
+  assert.equal(first.meta.barDropped, false);
+  assert.equal(second.meta.barDropped, false);
+  assert.equal(first.lines[1].search(/[▓▒░█#]/), second.lines[1].search(/[▓▒░█#]/));
+});
+
+test('a desktop grid drops every panel bar when one cell cannot fit it', () => {
+  const panels = [
+    { title: 'one', unit: 'usd', barWidth: 6, rows: [{ label: 'pool-a', value: 3, share: 0.3 }] },
+    { title: 'two', unit: 'minutes', barWidth: 6, rows: [{ label: 'pool-b', value: 3, valueText: '123 completed · 9 other', share: 0.3 }] },
+    { title: 'three', unit: 'runs', barWidth: 6, rows: [{ label: 'pool-c', value: 3, valueText: '3 runs', share: 0.3 }] },
+    { title: 'four', unit: 'runs', barWidth: 6, rows: [{ label: 'pool-d', value: 3, valueText: '3 ok', share: 0.3 }] },
+  ];
+  const layout = measurePanelGridLayout(panels, [29, 28, 29, 28]);
+  assert.equal(layout.barEnabled, false);
+  for (const [index, panel] of panels.entries()) {
+    const drawn = renderPanel({ ...panel, width: [29, 28, 29, 28][index], layout, colors: false });
+    assert.equal(drawn.meta.barDropped, true);
+    assert.ok(drawn.lines.slice(1).every((line) => !/[▓▒░█#]/.test(line)));
+  }
+});
+
+test('desktop +N more rows keep the complete label in the shared column', () => {
+  const panels = [
+    { unit: 'usd', barWidth: 6, rows: [{ label: 'codex', value: 3, share: 0.3 }, { id: '__more__', label: '+4 more', value: null, missingReason: 'scroll for more' }] },
+    { unit: 'minutes', barWidth: 6, rows: [{ label: 'codex', value: 3, valueText: '3h', share: 0.3 }, { id: '__more__', label: '+4 more', value: null, missingReason: 'scroll for more' }] },
+    { unit: 'runs', barWidth: 6, rows: [{ label: 'status', value: 3, valueText: '3 runs', share: 0.3 }] },
+    { unit: 'runs', barWidth: 6, rows: [{ label: 'status', value: 3, valueText: '3 ok', share: 0.3 }] },
+  ];
+  const layout = measurePanelGridLayout(panels, [29, 28, 29, 28]);
+  const drawn = renderPanel({ ...panels[0], width: 29, layout, colors: false });
+  const more = drawn.lines.find((line) => line.includes('+4'));
+  assert.ok(more);
+  assert.match(more, /\+4 more/);
+  assert.doesNotMatch(more, /\+4 …/);
+});
+
+test('a colliding project label drops its bar but preserves value and share', () => {
+  const panel = renderPanel({
+    title: 'Project runs', width: 29, labelWidth: 14, barWidth: 6, unit: 'runs', colors: false, labelKind: 'project',
+    rows: [
+      { label: 'repo', value: 2, total: 3, share: 2 / 3 },
+      { label: 'e2e-repo', value: 1, total: 3, share: 1 / 3 },
+    ],
+  });
+  const rows = panel.lines.slice(1).map(visible);
+  assert.equal(panel.meta.barsDroppedForCollision, true);
+  assert.ok(rows.every((line) => !/[▓▒░█#]/.test(line)));
+  assert.match(rows[0], /2 runs 66\.7%$/);
+  assert.match(rows[1], /1 run 33\.3%$/);
+  assert.notEqual(rows[0].slice(0, 15), rows[1].slice(0, 15));
+});
+
+test('a remaining collision cuts from the middle and keeps both name ends', () => {
+  const panel = renderPanel({
+    title: 'Pool spend', width: 24, labelWidth: 14, barWidth: 6, unit: 'runs', colors: false, labelKind: 'pool',
+    rows: [
+      { label: 'claude-code:wati', value: 1, total: 2, share: 0.5 },
+      { label: 'codex-code:wati', value: 1, total: 2, share: 0.5 },
+    ],
+  });
+  const rows = panel.lines.slice(1).map(visible);
+  assert.equal(panel.meta.barsDroppedForCollision, true);
+  assert.equal(panel.meta.usedMiddleCut, true);
+  assert.match(rows[0], /claude-co…wati/);
+  assert.match(rows[1], /codex-cod…wati/);
+  assert.ok(rows.every((line) => /1 run 50%$/.test(line)));
+});
+
+test('the legend keeps the full untouched name for compact panel labels', () => {
+  const legend = renderLegend({
+    width: 40, colors: false,
+    items: [{ id: 'claude-code:wati', label: 'wati' }],
+  });
+  assert.match(legend.lines.join('\n'), /claude-code:wati/);
+  assert.doesNotMatch(legend.lines.join('\n'), /Legend.*wati$/);
 });
 
 test('panel hit regions cover the complete drawn track, including zero-filled values', () => {

@@ -10,6 +10,7 @@ import {
   renderPanel,
   renderStackedColumnChart,
   renderStatsSurface,
+  measurePanelGridLayout,
 } from './stat-kit.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
@@ -174,7 +175,7 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
       else if (unit === 'percent') text = `${raw}%`;
     }
     return {
-      id: rowName(row), label: rowName(row), value: raw, total,
+      id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: raw, total,
       share: shareFor(row, raw, total, shareField ? row?.[shareField] : null),
       color: seriesColor(rowName(row)), valueText: text,
       missingReason: missingReason ?? reasonFor(field, row),
@@ -186,11 +187,11 @@ function limitedRows(rows) {
   if (list.length <= 6) return list;
   return [...list.slice(0, 5), { id: '__more__', label: `+${list.length - 5} more`, value: null, missingReason: 'scroll for more' }];
 }
-function panel(title, rows, tab, metric, period, unit, basis = null) {
-  // stat-kit accepts an explicit label column; supplying it also keeps the
-  // geometry deterministic for a panel whose labels are all clipped to the
-  // same visible width.
-  return { title, rows: limitedRows(rows), labelWidth: 14, barWidth: 6, tab, metric, period, unit, basis };
+function panel(title, rows, tab, metric, period, unit, basis = null, labelKind = null, sharedGrid = true) {
+  // The desktop renderer measures one label/bar plan across all four cells.
+  // The stacked phone path keeps the requested bar size but may measure each
+  // full-width panel independently.
+  return { title, rows: limitedRows(rows), labelWidth: sharedGrid ? null : 14, barWidth: 6, tab, metric, period, unit, basis, labelKind, sharedGrid };
 }
 function outcomeRows(outcomes) {
   if (!outcomes) return [{ id: 'outcome', label: 'Outcome data', value: null, missingReason: 'rollup outcomes unavailable' }];
@@ -215,7 +216,7 @@ function licenceRows(table) {
   return rowsOf(table).map((row) => {
     const used = finite(row?.live?.usedPct);
     const reset = row?.live?.resetsAt ? `reset ${String(row.live.resetsAt).slice(0, 10)}` : null;
-    return { id: rowName(row), label: rowName(row), value: used, valueText: used == null ? null : `${used}%${reset ? ` · ${reset}` : ''}`, color: seriesColor(rowName(row)), missingReason: 'meter unavailable' };
+    return { id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: used, valueText: used == null ? null : `${used}%${reset ? ` · ${reset}` : ''}`, color: seriesColor(rowName(row)), missingReason: 'meter unavailable' };
   });
 }
 function modelCostRows(table) {
@@ -226,8 +227,11 @@ function modelCostRows(table) {
 function desktopPanelColumns(panels, rightWidth, tab, period) {
   const inner = Math.max(2, rightWidth - 2);
   const widths = [Math.ceil(inner / 2), Math.floor(inner / 2)];
+  const layout = panels.every((panelInput) => panelInput?.sharedGrid !== false)
+    ? measurePanelGridLayout(panels, [widths[0], widths[1], widths[0], widths[1]])
+    : null;
   const compose = (top, bottom, width) => {
-    const draw = (input) => renderPanel({ ...input, width });
+    const draw = (input) => renderPanel({ ...input, width, ...(layout ? { layout } : {}) });
     const first = draw(top);
     const second = draw(bottom);
     const offset = first.lines.length + 1;
@@ -362,24 +366,27 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
   if (tab === 'spending') {
     const byModel = stackBy === 'model';
     return [
-      { ...panel(byModel ? 'Model worker-minutes' : 'Pool spend', byModel ? modelMinutes : poolSpend, tab, byModel ? 'minutes' : 'spend', period, byModel ? 'minutes' : 'usd', basis) },
-      { ...panel(byModel ? 'Model attempts' : 'Pool worker-minutes', byModel ? modelAttempts : poolMinutes, tab, byModel ? 'attempts' : 'minutes', period, byModel ? 'attempts' : 'minutes', basis) },
-      { ...panel('Project runs', projectRuns, tab, 'runs', period, 'runs', basis) },
-      { ...panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count', basis) },
+      // Spending's By Model comparison keeps the model identity readable for
+      // hover/legend parity; the dedicated Model tab applies the compact
+      // model-name form through the same renderer.
+      { ...panel(byModel ? 'Model worker-minutes' : 'Pool spend', byModel ? modelMinutes : poolSpend, tab, byModel ? 'minutes' : 'spend', period, byModel ? 'minutes' : 'usd', basis, byModel ? null : 'pool', !byModel) },
+      { ...panel(byModel ? 'Model attempts' : 'Pool worker-minutes', byModel ? modelAttempts : poolMinutes, tab, byModel ? 'attempts' : 'minutes', period, byModel ? 'attempts' : 'minutes', basis, byModel ? null : 'pool', !byModel) },
+      { ...panel('Project runs', projectRuns, tab, 'runs', period, 'runs', basis, 'project', !byModel) },
+      { ...panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count', basis, null, !byModel) },
     ];
   }
   if (tab === 'pool') return [
-    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd'), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes'), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts'), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent'),
+    panel('Pool spend', poolSpend, tab, 'spend', period, 'usd', null, 'pool'), panel('Pool worker-minutes', poolMinutes, tab, 'minutes', period, 'minutes', null, 'pool'), panel('Pool attempts', poolAttempts, tab, 'attempts', period, 'attempts', null, 'pool'), panel('Licence / reset history', licenceRows(poolTable), tab, 'percent', period, 'percent', null, 'pool'),
   ];
   if (tab === 'model') return [
-    panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts'), panel('Model verified / ok', modelVerified, tab, 'verified', period, 'runs'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd'),
+    panel('Model worker-minutes', modelMinutes, tab, 'minutes', period, 'minutes', null, 'model'), panel('Model attempts', modelAttempts, tab, 'attempts', period, 'attempts', null, 'model'), panel('Model verified / ok', modelVerified, tab, 'verified', period, 'runs', null, 'model'), panel('Cost availability', modelCostRows(modelTable), tab, 'spend', period, 'usd', null, 'model'),
   ];
   return [
-    panel('Project runs', projectRuns, tab, 'runs', period, 'runs'), panel('Project worker-minutes', projectMinutes, tab, 'minutes', period, 'minutes'), panel('Project API-equivalent', projectSpend, tab, 'spend', period, 'usd'), panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count'),
+    panel('Project runs', projectRuns, tab, 'runs', period, 'runs', null, 'project'), panel('Project worker-minutes', projectMinutes, tab, 'minutes', period, 'minutes', null, 'project'), panel('Project API-equivalent', projectSpend, tab, 'spend', period, 'usd', null, 'project'), panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count'),
   ];
 }
 function legendItems(names) {
-  return names.map((name) => ({ id: name, label: name, color: name === 'model cost unavailable' ? seriesColor('unallocated') : seriesColor(name) }));
+  return names.map((name) => ({ id: name, label: name, fullLabel: name, color: name === 'model cost unavailable' ? seriesColor('unallocated') : seriesColor(name) }));
 }
 function actionForRegion(region) {
   const payload = region.payload ?? {};

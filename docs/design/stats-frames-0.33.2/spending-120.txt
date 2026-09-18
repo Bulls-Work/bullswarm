@@ -1,39 +1,22 @@
  Spending  Pool  Model  Project
 Spending · 7d · 30d · all  [By Pool] By Model
-
+                                                                                                                        
 ── Summary · 7d ────────────────────────────────────────────────────────────────────────────────────────────────────────
-Totals 59 workflows · 7018.74 worker-minutes · ≈$7.03 API-equivalent · 6 active days
+Totals 60 workflows · 7226.66 worker-minutes · ≈$7.11 API-equivalent · 7 active days
 ── Spend per day · API-equivalent · pool ─────────────────│  ── Pool spend ───────────────  ── Pool worker-minutes ─────
-≈$2.50 ┤       ▆▆▆▆                                       │  cla… ▓▓▓▒▒▒      ≈$3.00 42.6%  cl… ▓▒▒▒▒▒        16h22m 14%
-≈$2.00 ┤       ████                                       │  cod… ▒▒▒▒▒▒       ≈$0.27 3.8%  co… ▓▓▒▒▒▒      33h15m 28.4%
-≈$1.50 ┤       ████                                       │  cla… ▓▓▓▒▒▒      ≈$3.27 46.6%  cl… ▓▒▒▒▒▒      20h58m 17.9%
-≈$1.00 ┤       ████        ▂▂▂▂                           │  com… ▒▒▒▒▒▒         ≈$0.07 1%  co… ▓▒▒▒▒▒      16h49m 14.4%
-≈$0.50 ┤       ████        ████                           │  grok ▒▒▒▒▒▒         ≈$0.42 6%  gr… ▒▒▒▒▒▒        9h14m 7.9%
-≈$0.00 ┤       ████  ▅▅▅▅  ████                           │  +2 …        — scroll for more  +2…        — scroll for more
+≈$2.50 ┤       ▆▆▆▆                                       │  codex             ≈$0.30 4.3%  codex           36h26m 30.3%
+≈$2.00 ┤       ████                                       │  claude…          ≈$3.00 42.2%  claude…         16h22m 13.6%
+≈$1.50 ┤       ████                                       │  wati             ≈$3.31 46.6%  wati            21h16m 17.6%
+≈$1.00 ┤       ████        ▂▂▂▂                           │  comman…             ≈$0.07 1%  comman…           16h49m 14%
+≈$0.50 ┤       ████        ████                           │  grok                ≈$0.42 6%  grok              9h14m 7.7%
+≈$0.00 ┤       ████  ▅▅▅▅  ████              ▁▁▁▁         │  +2 more     — scroll for more  +2 more    — scroll for more
        ┼13 Sep      15 Sep      17 Sep      19 Sep        │
                                                           │  ── Project runs ─────────────  ── Outcome & duration ──────
-                                                          │  agentic… ▓▓▒▒▒▒ 20 runs 33.9%  St… ▓ 53 completed · 6 other
-                                                          │  bullswa… ▓▓▒▒▒▒ 15 runs 25.4%  Ve… ▓      30 verified 50.8%
-                                                          │  bullseye ▓▒▒▒▒▒ 11 runs 18.6%  Re… ▓   235/301 passed 78.1%
-                                                          │  bullsey… ▓▒▒▒▒▒ 10 runs 16.9%  Me… ▓             54m median
-                                                          │  repo     ▒▒▒▒▒▒   2 runs 3.4%  Lo… ▓          9h03m maximum
-                                                          │  e2e-repo ▒▒▒▒▒▒    1 run 1.7%
+                                                          │  system          20 runs 33.3%  Status  54 completed · 6 ot…
+                                                          │  bullsw…         16 runs 26.7%  Verifi…    31 verified 51.7%
+                                                          │  bullse…         11 runs 18.3%  Requir… 241/307 passed 78.5%
+                                                          │  platfo…         10 runs 16.7%  Median…           56m median
+                                                          │  repo              2 runs 3.3%  Longes…        9h03m maximum
+                                                          │  e2…repo            1 run 1.7%
 Legend  ● claude-code  ● claude-code:wati  ● codex  ● command-code  ● grok
 Basis · the recorded API-equivalent estimate per pool.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
