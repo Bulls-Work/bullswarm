@@ -1,5 +1,15 @@
 # bullswarm changelog
 
+## Unreleased
+
+- workflow: a kernel that has taken SIGTERM or SIGINT can no longer write a
+  terminal lifecycle. The progress check reached `finalize()` without asking
+  whether the run had been signalled, so a run interrupted in that window was
+  recorded `cancelled` with a `finishedAt` and a result.json — terminal, and no
+  longer the resumable `interrupted` the durability contract promises. The
+  guard now sits in `finalize()` itself, the only place a lifecycle becomes
+  terminal, rather than at each call site.
+
 ## 0.33.0 — the dashboard release
 
 - dashboard: the phone `Home` no longer hides data behind its width. The
