@@ -1,0 +1,17 @@
+today · 18 Sep · 3 workflows finished · 1 verified     
+───────────────────────────────────────────────────────
+✓ 2yrcxi  project-a   104.9m  unverified               
+✓ fuyyca  bullswarm   208.2m  unverified               
+✓ ipccf2  project-a   542.7m  verified                 
+Enter on a run → its goal, steps and spend             
+───────────────────────────────────────────────────────
+licence spent today · measured worker minutes          
+pool         wf min   wf %   run min  API≈ (est.)      
+acme           84.0   2.9%        —   $0.16            
+codex         161.8   2.1%     60.0   $0.03            
+grok           26.0   4.3%        —   $0.01            
+opencode      634.6      —     17.6       —            
+wf % = pool window points drawn by workflows today     
+— = not measured · API≈ = bytes/4 estimate, under      
+audit 2026-09-18 (Opus sessions ran ~250× higher)      
+live window used% lives on Budget, not here            

@@ -1,0 +1,21 @@
+Budget · verdict · 5 pools · sampled 06:15 (2m ago)                                                                     
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+grok          full · 98% used · 99.8% of window gone · resets in 16m (Fri 14:29)                                        
+  ██████████████████████████████████████████████████████████████████████████████████████████████████░░ 98%              
+                                                                                                     ▲ 99.8% gone       
+claude-code   hot · 64% used · 53.7% of window gone · resets Mon 20:00 (3d 5h)                                          
+  ████████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 64%              
+                                                        ▲ 53.7% gone · behind by 10 pts · spending faster than the week 
+acme          watch · 76% used · 93% of window gone · resets Sat 02:00 (11h)                                            
+  ████████████████████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░ 76%              
+                                                                                               ▲ 93% gone               
+codex         fine · 60% used · 73.8% of window gone · resets Sun 10:18 (1d 19h)                                        
+  ████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 60%              
+                                                                            ▲ 73.8% gone · 6 in flight · 14 pts ahead   
+command-code  fine · 0.4% used · 3.8% of window gone · resets 17 Oct · 0 of 70 credits                                  
+  ▍░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0.4%             
+      ▲ 3.8% gone · monthly window                                                                                      
+3 disabled: initech · echo · opencode                                                                           Enter ↵ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Enter on a pool → its 5h · 7d · monthly windows, pace and plan price                                                    
+▲ = share of the window already elapsed · bar = share used, drawn in eighth-blocks                                      
