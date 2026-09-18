@@ -28,7 +28,7 @@ import {
 import {
   consolidateV2Gaps, createV2ResultEnvelope, deserializeV2ResultEnvelope, evaluateV2Progress, v2RetryPlan,
 } from './v2-outcome.js';
-import { dispatchV2Action } from './v2-dispatch.js';
+import { attemptArtifactsOnDisk, dispatchV2Action } from './v2-dispatch.js';
 import { createPoolRefresher } from './pool-refresh.js';
 import { scoutPrompt } from './goal.js';
 import {
@@ -471,6 +471,15 @@ function normalizeAttempt(record, { id, actionId, ordinal }) {
     // the recorded object in place instead of erasing it.
     ...(record.bytes !== undefined ? { bytes: clone(record.bytes) } : {}),
     ...(record.lastAgentEvent !== undefined ? { lastAgentEvent: clone(record.lastAgentEvent) } : {}),
+    ...(record.outputBytes !== undefined ? { outputBytes: record.outputBytes } : {}),
+    ...(record.streamFile !== undefined ? { streamFile: record.streamFile } : {}),
+    ...(record.diffFile !== undefined ? { diffFile: record.diffFile } : {}),
+    ...(record.changedFileCount !== undefined ? { changedFileCount: record.changedFileCount } : {}),
+    // The last `response` event the persisted stream recorded, kept so the
+    // handoff line names what the worker actually said last rather than
+    // whatever event happened to arrive last (`lastAgentEvent` is any kind).
+    ...(record.lastResponse !== undefined ? { lastResponse: record.lastResponse } : {}),
+    ...(record.handoff !== undefined ? { handoff: clone(record.handoff) } : {}),
   };
 }
 
@@ -709,6 +718,60 @@ function correctionTask(verdict, { originalTask }) {
   return `${originalTask}\n\nYour prior final structured output failed deterministic validation:\n${errors.map((error) => `- ${error}`).join('\n')}\nReturn one corrected final object after rerunning the mandatory preflight.`;
 }
 
+/**
+ * Fixed prior-attempt preamble appended to the task attempt N+1 receives after
+ * a mechanical retry or cross-pool fallback. Schema correction keeps its own
+ * block and never goes through this template. Facts only — no I/O.
+ * The stream log is referenced by path, never inlined.
+ */
+export function handoffBlock(facts = {}) {
+  const durationMs = Date.parse(facts.finishedAt) - Date.parse(facts.startedAt);
+  const durationText = Number.isFinite(durationMs)
+    ? `${Math.max(0, Math.round(durationMs / 1000))}s`
+    : 'unknown';
+  const outputPath = facts.outputFile ?? facts.partialOutput ?? null;
+  const outputLine = outputPath
+    ? (facts.outputBytes != null ? `${outputPath} (${facts.outputBytes} bytes)` : outputPath)
+    : 'none';
+  const streamLine = facts.streamFile || 'no stream recorded';
+  const changed = Array.isArray(facts.changedFiles) ? facts.changedFiles : [];
+  const events = Array.isArray(facts.lastEvents) ? facts.lastEvents.slice(-3) : [];
+  const lines = [
+    '## Prior attempt on this step',
+    '',
+    `- Pool: ${facts.pool ?? 'unknown'}`,
+    `- Model: ${facts.model ?? (facts.pool != null ? `${facts.pool} connector default` : 'unknown')}`,
+    `- Started: ${facts.startedAt ?? 'unknown'}`,
+    `- Finished: ${facts.finishedAt ?? 'unknown'}`,
+    `- Duration: ${durationText}`,
+    `- Failure: ${facts.failureKind ?? 'unknown'} — ${facts.why ?? 'no reason recorded'}`,
+    `- Files changed inside this step's territory: ${changed.join(', ') || 'none'}`,
+    '- Diff stat at the moment it ended:',
+    '```',
+    facts.diffStatText || '(no diff)',
+    '```',
+    `- Diff snapshot: ${facts.diffFile ?? 'none taken'}`,
+    `- Final answer / partial output: ${outputLine}`,
+    `- Stream file: ${streamLine}`,
+  ];
+  if (events.length) {
+    lines.push('- Last response events:');
+    for (const event of events) {
+      // One line per event. A response carrying its own newlines (or a `##`
+      // heading) would otherwise break out of the list and read as part of the
+      // task the new worker is being handed.
+      const said = typeof event.summary === 'string'
+        ? event.summary.replace(/\s+/g, ' ').trim()
+        : '';
+      lines.push(`  - ${event.at ?? 'time unknown'}: ${said || '(no summary)'}`);
+    }
+  } else if (facts.hasEventStream === false) {
+    lines.push(`- Last response events: none decoded (the ${facts.pool ?? 'unknown'} connector declares no eventStream; see the stream file)`);
+  }
+  lines.push('- Those edits are unverified. You decide whether to keep, fix or revert them, and you must report which.');
+  return lines.join('\n');
+}
+
 function reconcileResume(state, at, runDir) {
   // The receipt precedes the attempt snapshot. Recover either side of that
   // atomic-write boundary without dispatching successful work a second time.
@@ -730,6 +793,12 @@ function reconcileResume(state, at, runDir) {
     attempt.finishedAt = at;
     attempt.failureKind = 'interrupted';
     attempt.why = 'runner stopped before the attempt reached a durable terminal state';
+    // The worker may have left partial output, a stream and a diff snapshot
+    // on disk before the kernel died; the record should say so, as it would
+    // have had the attempt finished normally.
+    for (const [field, value] of Object.entries(attemptArtifactsOnDisk(attempt.taskFile, attempt.actionId, attempt.ordinal))) {
+      if (attempt[field] == null) attempt[field] = value;
+    }
   }
   for (const attempt of state.planner.attempts) if (attempt.status === 'running') {
     attempt.status = 'interrupted';
@@ -1348,13 +1417,33 @@ async function runV2Kernel({
       shouldCancel: () => stopRequested.has(action.id) || refreshCancellation(), onSpawn, onWorkerExit,
       outputValidator: evidence ? () => readEvidenceCandidate(candidatePath, contract) : null,
       correctionTask: evidence ? correctionTask : null,
+      handoffBlock,
       onAttempt: (stage, record, verdict) => {
         if (stage === 'started') {
           const ordinal = baseAttemptOrdinal + record.ordinal;
           currentAttemptId = `${action.id}-${ordinal}`;
           runtime.attempts = ordinal;
+          if (record.handoff) {
+            const prior = state.attempts.findLast((item) => item.actionId === action.id);
+            if (prior?.id) record = { ...record, handoff: { ...record.handoff, from: prior.id } };
+          }
           state.attempts.push(normalizeAttempt({ ...record, bytes: clone(dispatchedBytes) }, { id: currentAttemptId, actionId: action.id, ordinal }));
-          emit('attempt.started', { actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model, reasoning: clone(record.reasoning ?? null) });
+          const prior = record.handoff
+            ? state.attempts.find((item) => item.id === record.handoff.from)
+            : null;
+          emit('attempt.started', {
+            actionId: action.id, attemptId: currentAttemptId, pool: record.pool, model: record.model,
+            reasoning: clone(record.reasoning ?? null),
+            ...(record.handoff ? {
+              handoff: {
+                from: record.handoff.from,
+                bytes: record.handoff.bytes,
+                pool: prior?.pool ?? null,
+                files: prior?.changedFileCount ?? 0,
+                lastSaid: prior?.lastResponse ?? prior?.lastAgentEvent?.summary ?? '',
+              },
+            } : {}),
+          });
         } else {
           lease.assertOwner();
           // An attempt stopped by a plan revision or a pause is not a failure of
@@ -1380,6 +1469,12 @@ async function runV2Kernel({
             model: record.model ?? attempt?.model ?? null,
             why: record.why ?? null,
             willRetry: record.willRetry === true,
+            outputFile: attempt?.outputFile ?? record.outputFile ?? record.outFile ?? null,
+            ...(attempt?.outputBytes != null ? { outputBytes: attempt.outputBytes } : (record.outputBytes != null ? { outputBytes: record.outputBytes } : {})),
+            ...(attempt?.streamFile ?? record.streamFile ? { streamFile: attempt?.streamFile ?? record.streamFile } : {}),
+            ...(attempt?.diffFile ?? record.diffFile ? { diffFile: attempt?.diffFile ?? record.diffFile } : {}),
+            ...(attempt?.changedFileCount != null ? { changedFileCount: attempt.changedFileCount } : (record.changedFileCount != null ? { changedFileCount: record.changedFileCount } : {})),
+            ...(record.lastResponse != null ? { lastResponse: record.lastResponse } : {}),
             ...(record.stalled ? {
               stalled: true,
               partialOutput: record.partialOutput ?? attempt?.partialOutput ?? record.outFile ?? null,

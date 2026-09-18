@@ -1,0 +1,165 @@
+{
+ "schemaVersion": "bullswarm.workflow.revision.v1",
+ "baseRevision": 2,
+ "summary": "Acceptance proved write-on-close loses the stream on SIGKILL, git-diff-based attribution misses untracked and pre-dirty territory files, and the docs misdescribe the stdout tail. Add fix-durability-and-diff and re-verify.",
+ "rerun": [],
+ "steeringIds": [],
+ "program": {
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+   {
+    "id": "design-map",
+    "kind": "architecture",
+    "purpose": "Exact code sites, file names, caps and the shared interface between the stream writer and the handoff builder",
+    "dependsOn": [],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-3",
+     "requirement-4"
+    ],
+    "ownedFiles": [],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff (branch handoff, cut from main after v0.32.1; bullswarm routes work across vendor coding-agent CLIs and re-dispatches a failed step on another pool). Context, verified on 2026-09-17: a retry attempt today receives a task file byte-identical to the failed attempt's (observed: run wf-mu4vhjvu-8dd5d4, step stats-pages, attempt 1 on command-code ended 'announcement without substance' after 19 min leaving +1050/-277 unverified lines in src/workflow/stats-view.js; attempt 2 on codex was told nothing). The worker's stream is decoded by src/lib/agent-events.js createAgentEventDecoder from the connector's declarative `eventStream` block (rules, kindPaths, kindMap, summaryPaths; `compact()` clips summaries to 180 chars) and held only in memory: src/lib/watch.js keeps stdout in a BoundedCapture (head+tail, MAX_CAPTURED_STREAM_BYTES) and writes only the final answer to paths.outFile (`writeFileSync(paths.outFile, output)`); events reach the kernel through opts.onAgentEvent / onAgentProgress (src/workflow/v2-dispatch.js ~L214 and L385, src/workflow/v2-runtime.js ~L1057 stores lastAgentEvent). The dispatcher loop in src/workflow/v2-dispatch.js (attempts[], `let nextTask = taskText`, `tried` set, `remaining`, `maxMechanicalRetries`, `retriesUsed`) only ever changes the task text on schema correction via correctionTask() in src/workflow/v2-runtime.js (~L701, appends the validation errors to originalTask). Attempt records are validated on load by src/workflow/v2-state.js: ATTEMPT_FIELDS (~L31) plus noUnknown rejects any unlisted key, so every new attempt field must be added there or runs stop loading (this bit the free-pool branch: `stalled`, `partialOutput`, `silentSec` were added the same way and must stay). The run directory (~/.bullswarm/workflows/<runId>/) holds task-<action>-attempt-N.md, out-<action>-attempt-N.md, workspace-baseline.json (changedFiles at run start, from src/workflow/workspace-report.js `git status -z`), events.jsonl, state.json. Connector manifests live in src/providers/*/connector.json and providers/contrib/*/connector.json, schema in src/providers/_schema.json (`eventStream` is optional; echo has none), validated by `bullswarm providers validate`. tests/agent-events.test.js already holds one real line shape per vendor (codex item.*, claude-code assistant/tool_use, grok text/tool_call, command-code event.*, opencode2 part.*). tests/fixtures/stalling-connector.mjs prints one line then sleeps; tests/fixtures/answering-connector.mjs answers and writes an evidence envelope when the task names a candidate path. Read the goal in docs/plans/handoff.goal.txt and map, with file:line citations you verified by reading, exactly where each part lands: (A) the stream sink \u2014 where watch.js can call a per-attempt sink for each decoded event and for raw stdout when there is no eventStream, the bounded-file design (head+tail cap in bytes, the marker line, fsync/append strategy that survives a SIGKILL of the worker and of the kernel), and how the full response text reaches the sink when compact() has already clipped it for the pane (keep the pane path unchanged); (B) the manifest `eventStream.capture` block: fields, defaults, where `providers validate` checks it; (C) the handoff builder \u2014 a pure function `handoffBlock(prior, facts) -> string` in v2-runtime.js beside correctionTask(), the exact template text, and where the dispatcher calls it (every re-dispatch of the same action after a not-ok verdict except the schema-correction path), plus the snapshot: `git diff --stat` (and the name list) filtered to the action's ownedFiles taken in the dispatcher the moment the worker exits, saved as diff-<actionId>-attempt-N.txt; (D) every new attempt field and event field with its ATTEMPT_FIELDS entry, the `outputFile`-on-failure fix, `action show` and `watch` rendering; (E) tests to write and the fixture run command; (F) risks: bounded memory, a worker that writes megabytes of response, a connector that emits no `response` kind, ownedFiles empty (integration/evidence steps: diff the whole tree), Windows-free path assumptions. Split the work into two territories that do not collide \u2014 stream+manifest (src/lib/agent-events.js, src/lib/watch.js, src/providers/_schema.json, their tests) and dispatcher+state+render (src/workflow/*, tests/workflow-*) \u2014 and name the one interface between them (the sink's file path and the response-text accessor) so both writers can build against your report. Read-only: change nothing. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit.",
+    "lane": "analyze",
+    "effort": "high"
+   },
+   {
+    "id": "stream-persist",
+    "kind": "implement",
+    "purpose": "Persist the normalized event stream per attempt with full response text, bounded; manifest capture block",
+    "dependsOn": [
+     "design-map"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2"
+    ],
+    "ownedFiles": [
+     "src/lib/agent-events.js",
+     "src/lib/attempt-stream.js",
+     "src/lib/watch.js",
+     "src/providers/_schema.json",
+     "tests/agent-events.test.js",
+     "tests/attempt-stream.test.js",
+     "tests/providers.test.js",
+     "tests/watch.test.js"
+    ],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff (branch handoff, cut from main after v0.32.1; bullswarm routes work across vendor coding-agent CLIs and re-dispatches a failed step on another pool). Context, verified on 2026-09-17: a retry attempt today receives a task file byte-identical to the failed attempt's (observed: run wf-mu4vhjvu-8dd5d4, step stats-pages, attempt 1 on command-code ended 'announcement without substance' after 19 min leaving +1050/-277 unverified lines in src/workflow/stats-view.js; attempt 2 on codex was told nothing). The worker's stream is decoded by src/lib/agent-events.js createAgentEventDecoder from the connector's declarative `eventStream` block (rules, kindPaths, kindMap, summaryPaths; `compact()` clips summaries to 180 chars) and held only in memory: src/lib/watch.js keeps stdout in a BoundedCapture (head+tail, MAX_CAPTURED_STREAM_BYTES) and writes only the final answer to paths.outFile (`writeFileSync(paths.outFile, output)`); events reach the kernel through opts.onAgentEvent / onAgentProgress (src/workflow/v2-dispatch.js ~L214 and L385, src/workflow/v2-runtime.js ~L1057 stores lastAgentEvent). The dispatcher loop in src/workflow/v2-dispatch.js (attempts[], `let nextTask = taskText`, `tried` set, `remaining`, `maxMechanicalRetries`, `retriesUsed`) only ever changes the task text on schema correction via correctionTask() in src/workflow/v2-runtime.js (~L701, appends the validation errors to originalTask). Attempt records are validated on load by src/workflow/v2-state.js: ATTEMPT_FIELDS (~L31) plus noUnknown rejects any unlisted key, so every new attempt field must be added there or runs stop loading (this bit the free-pool branch: `stalled`, `partialOutput`, `silentSec` were added the same way and must stay). The run directory (~/.bullswarm/workflows/<runId>/) holds task-<action>-attempt-N.md, out-<action>-attempt-N.md, workspace-baseline.json (changedFiles at run start, from src/workflow/workspace-report.js `git status -z`), events.jsonl, state.json. Connector manifests live in src/providers/*/connector.json and providers/contrib/*/connector.json, schema in src/providers/_schema.json (`eventStream` is optional; echo has none), validated by `bullswarm providers validate`. tests/agent-events.test.js already holds one real line shape per vendor (codex item.*, claude-code assistant/tool_use, grok text/tool_call, command-code event.*, opencode2 part.*). tests/fixtures/stalling-connector.mjs prints one line then sleeps; tests/fixtures/answering-connector.mjs answers and writes an evidence envelope when the task names a candidate path. Implement the stream half of the design-map dependency output (read it first). Deliver: the per-attempt sink in watch.js writing stream-<actionId>-attempt-<N>.jsonl (normalized events, `seq`, `at`, `source`, `providerType`, `kind`, `status`, `summary`, with `response` events carrying full text up to the per-event cap) or the plain stdout tail file when the connector has no eventStream, bounded as the design map specifies with the truncated marker line; the file path returned on the verdict (`verdict.meta.streamFile`) so the dispatcher can record it; the optional `eventStream.capture` block in _schema.json with core defaults applied when absent; the pane path (onAgentEvent summaries) byte-for-byte unchanged. Tests: one persisted-stream test per vendor line shape already in tests/agent-events.test.js, the cap and marker, the no-eventStream fallback, a manifest with `capture` overriding a default, and `bullswarm providers validate` accepting every shipped connector. Run `npm test` and quote the summary line. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit. The design map places the sink in a new module src/lib/attempt-stream.js with its test tests/attempt-stream.test.js; both are in your territory.",
+    "lane": "build",
+    "effort": "medium"
+   },
+   {
+    "id": "handoff-preamble",
+    "kind": "implement",
+    "purpose": "Deterministic prior-attempt block on re-dispatch, diff snapshot at attempt end, attempt/event fields, action show and watch lines",
+    "dependsOn": [
+     "design-map"
+    ],
+    "affects": [
+     "requirement-3",
+     "requirement-4"
+    ],
+    "ownedFiles": [
+     "src/workflow/v2-dispatch.js",
+     "src/workflow/v2-runtime.js",
+     "src/workflow/v2-state.js",
+     "src/workflow/watch-cli.js",
+     "tests/workflow-v2-dispatch.test.js",
+     "tests/workflow-v2-runtime.test.js",
+     "tests/workflow-v2-state.test.js",
+     "tests/workflow-watch.test.js"
+    ],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff (branch handoff, cut from main after v0.32.1; bullswarm routes work across vendor coding-agent CLIs and re-dispatches a failed step on another pool). Context, verified on 2026-09-17: a retry attempt today receives a task file byte-identical to the failed attempt's (observed: run wf-mu4vhjvu-8dd5d4, step stats-pages, attempt 1 on command-code ended 'announcement without substance' after 19 min leaving +1050/-277 unverified lines in src/workflow/stats-view.js; attempt 2 on codex was told nothing). The worker's stream is decoded by src/lib/agent-events.js createAgentEventDecoder from the connector's declarative `eventStream` block (rules, kindPaths, kindMap, summaryPaths; `compact()` clips summaries to 180 chars) and held only in memory: src/lib/watch.js keeps stdout in a BoundedCapture (head+tail, MAX_CAPTURED_STREAM_BYTES) and writes only the final answer to paths.outFile (`writeFileSync(paths.outFile, output)`); events reach the kernel through opts.onAgentEvent / onAgentProgress (src/workflow/v2-dispatch.js ~L214 and L385, src/workflow/v2-runtime.js ~L1057 stores lastAgentEvent). The dispatcher loop in src/workflow/v2-dispatch.js (attempts[], `let nextTask = taskText`, `tried` set, `remaining`, `maxMechanicalRetries`, `retriesUsed`) only ever changes the task text on schema correction via correctionTask() in src/workflow/v2-runtime.js (~L701, appends the validation errors to originalTask). Attempt records are validated on load by src/workflow/v2-state.js: ATTEMPT_FIELDS (~L31) plus noUnknown rejects any unlisted key, so every new attempt field must be added there or runs stop loading (this bit the free-pool branch: `stalled`, `partialOutput`, `silentSec` were added the same way and must stay). The run directory (~/.bullswarm/workflows/<runId>/) holds task-<action>-attempt-N.md, out-<action>-attempt-N.md, workspace-baseline.json (changedFiles at run start, from src/workflow/workspace-report.js `git status -z`), events.jsonl, state.json. Connector manifests live in src/providers/*/connector.json and providers/contrib/*/connector.json, schema in src/providers/_schema.json (`eventStream` is optional; echo has none), validated by `bullswarm providers validate`. tests/agent-events.test.js already holds one real line shape per vendor (codex item.*, claude-code assistant/tool_use, grok text/tool_call, command-code event.*, opencode2 part.*). tests/fixtures/stalling-connector.mjs prints one line then sleeps; tests/fixtures/answering-connector.mjs answers and writes an evidence envelope when the task names a candidate path. Implement the dispatcher half of the design-map dependency output (read it first). Deliver: `handoffBlock()` in v2-runtime.js as a pure template over facts (pool, model, startedAt, finishedAt, duration, failureKind, why, the diff-stat snapshot text, output/partial path and bytes, the last three `response` events from the prior attempt's stream file with their `at`, the stream file path, and the fixed sentence about unverified edits and reporting keep/fix/revert), appended to the task text for every re-dispatch of the same action after a not-ok verdict except the existing schema-correction path; the diff snapshot taken in the dispatcher at worker exit (`git diff --stat` and `--name-only`, filtered to ownedFiles when non-empty, whole tree when empty, saved to diff-<actionId>-attempt-N.txt, cwd-relative paths); attempt record and `attempt.finished` fields `outputFile` (+ bytes, present whenever the file exists, including failures), `streamFile`, `diffFile`, and `handoff: {from, bytes}` on the receiving attempt, each added to ATTEMPT_FIELDS in v2-state.js with a round-trip test; `action show` printing them; one `watch` line at handoff (`\u21aa <action> handed off from <pool> \u00b7 <n> files \u00b7 last said \"<text>\"`). Until stream-persist lands, read the stream file path from `verdict.meta.streamFile` if present and tolerate its absence (block says `no stream recorded`). Tests: string-assert the block against a fixture run with tests/fixtures/stalling-connector.mjs and tests/fixtures/answering-connector.mjs (attempt 2's task file names attempt 1's pool, its changed file, its partial output path); the snapshot ignores edits made after attempt end; schema correction still gets only its own block; state round-trip. Run `npm test` and quote the summary line. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit.",
+    "lane": "build",
+    "effort": "medium"
+   },
+   {
+    "id": "integrate",
+    "kind": "integration",
+    "purpose": "Join the sink to the dispatcher, docs, changelog, full suite and a real fixture run",
+    "dependsOn": [
+     "stream-persist",
+     "handoff-preamble"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-3",
+     "requirement-4",
+     "requirement-5",
+     "requirement-6"
+    ],
+    "ownedFiles": [],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff (branch handoff, cut from main after v0.32.1; bullswarm routes work across vendor coding-agent CLIs and re-dispatches a failed step on another pool). Context, verified on 2026-09-17: a retry attempt today receives a task file byte-identical to the failed attempt's (observed: run wf-mu4vhjvu-8dd5d4, step stats-pages, attempt 1 on command-code ended 'announcement without substance' after 19 min leaving +1050/-277 unverified lines in src/workflow/stats-view.js; attempt 2 on codex was told nothing). The worker's stream is decoded by src/lib/agent-events.js createAgentEventDecoder from the connector's declarative `eventStream` block (rules, kindPaths, kindMap, summaryPaths; `compact()` clips summaries to 180 chars) and held only in memory: src/lib/watch.js keeps stdout in a BoundedCapture (head+tail, MAX_CAPTURED_STREAM_BYTES) and writes only the final answer to paths.outFile (`writeFileSync(paths.outFile, output)`); events reach the kernel through opts.onAgentEvent / onAgentProgress (src/workflow/v2-dispatch.js ~L214 and L385, src/workflow/v2-runtime.js ~L1057 stores lastAgentEvent). The dispatcher loop in src/workflow/v2-dispatch.js (attempts[], `let nextTask = taskText`, `tried` set, `remaining`, `maxMechanicalRetries`, `retriesUsed`) only ever changes the task text on schema correction via correctionTask() in src/workflow/v2-runtime.js (~L701, appends the validation errors to originalTask). Attempt records are validated on load by src/workflow/v2-state.js: ATTEMPT_FIELDS (~L31) plus noUnknown rejects any unlisted key, so every new attempt field must be added there or runs stop loading (this bit the free-pool branch: `stalled`, `partialOutput`, `silentSec` were added the same way and must stay). The run directory (~/.bullswarm/workflows/<runId>/) holds task-<action>-attempt-N.md, out-<action>-attempt-N.md, workspace-baseline.json (changedFiles at run start, from src/workflow/workspace-report.js `git status -z`), events.jsonl, state.json. Connector manifests live in src/providers/*/connector.json and providers/contrib/*/connector.json, schema in src/providers/_schema.json (`eventStream` is optional; echo has none), validated by `bullswarm providers validate`. tests/agent-events.test.js already holds one real line shape per vendor (codex item.*, claude-code assistant/tool_use, grok text/tool_call, command-code event.*, opencode2 part.*). tests/fixtures/stalling-connector.mjs prints one line then sleeps; tests/fixtures/answering-connector.mjs answers and writes an evidence envelope when the task names a candidate path. Read both writers' outputs and the design map, then make the two halves one feature: the dispatcher records the real stream file the sink wrote, the handoff block's last-three-responses come from that file, `action show` and `watch` show the fields, and no attempt field is missing from ATTEMPT_FIELDS. Write the docs: docs/guide/workflows.md or observing.md (whichever already describes attempts) gets the stream file and the handoff block with a REAL excerpt copied from a fixture run you execute; the connector authoring notes beside src/providers/_schema.json (create src/providers/README.md if none exists) describe `eventStream.capture`; CHANGELOG.md `## Unreleased` gets the entry; do not bump package.json. Run `npm test` twice and quote both summary lines. Then run the fixture scenario end to end against a throwaway BULLSWARM_HOME (never ~/.bullswarm): a two-step program where the first step's pool stalls (BULLSWARM_WORKER_SILENCE_SEC=8) and falls back, and quote: the `workflow watch` handoff line, `action show --json` for the step showing streamFile/diffFile/handoff, the first 5 and last 3 lines of the stream file, and the `## Prior attempt on this step` block from task-<step>-attempt-2.md. Report what you changed, what the acceptance step should try to break, and any place where the two writers' interfaces disagreed and how you resolved it. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit.",
+    "lane": "build",
+    "effort": "high"
+   },
+   {
+    "id": "verify",
+    "kind": "adversarial-acceptance",
+    "purpose": "Independently prove the persisted stream, the manifest block and the handoff on the real binary",
+    "dependsOn": [
+     "fix-durability-and-diff",
+     "handoff-preamble",
+     "integrate",
+     "stream-persist"
+    ],
+    "affects": [],
+    "ownedFiles": [],
+    "evidenceFor": [
+     "requirement-1",
+     "requirement-2",
+     "requirement-3",
+     "requirement-4",
+     "requirement-5",
+     "requirement-6"
+    ],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff (branch handoff, cut from main after v0.32.1; bullswarm routes work across vendor coding-agent CLIs and re-dispatches a failed step on another pool). Context, verified on 2026-09-17: a retry attempt today receives a task file byte-identical to the failed attempt's (observed: run wf-mu4vhjvu-8dd5d4, step stats-pages, attempt 1 on command-code ended 'announcement without substance' after 19 min leaving +1050/-277 unverified lines in src/workflow/stats-view.js; attempt 2 on codex was told nothing). The worker's stream is decoded by src/lib/agent-events.js createAgentEventDecoder from the connector's declarative `eventStream` block (rules, kindPaths, kindMap, summaryPaths; `compact()` clips summaries to 180 chars) and held only in memory: src/lib/watch.js keeps stdout in a BoundedCapture (head+tail, MAX_CAPTURED_STREAM_BYTES) and writes only the final answer to paths.outFile (`writeFileSync(paths.outFile, output)`); events reach the kernel through opts.onAgentEvent / onAgentProgress (src/workflow/v2-dispatch.js ~L214 and L385, src/workflow/v2-runtime.js ~L1057 stores lastAgentEvent). The dispatcher loop in src/workflow/v2-dispatch.js (attempts[], `let nextTask = taskText`, `tried` set, `remaining`, `maxMechanicalRetries`, `retriesUsed`) only ever changes the task text on schema correction via correctionTask() in src/workflow/v2-runtime.js (~L701, appends the validation errors to originalTask). Attempt records are validated on load by src/workflow/v2-state.js: ATTEMPT_FIELDS (~L31) plus noUnknown rejects any unlisted key, so every new attempt field must be added there or runs stop loading (this bit the free-pool branch: `stalled`, `partialOutput`, `silentSec` were added the same way and must stay). The run directory (~/.bullswarm/workflows/<runId>/) holds task-<action>-attempt-N.md, out-<action>-attempt-N.md, workspace-baseline.json (changedFiles at run start, from src/workflow/workspace-report.js `git status -z`), events.jsonl, state.json. Connector manifests live in src/providers/*/connector.json and providers/contrib/*/connector.json, schema in src/providers/_schema.json (`eventStream` is optional; echo has none), validated by `bullswarm providers validate`. tests/agent-events.test.js already holds one real line shape per vendor (codex item.*, claude-code assistant/tool_use, grok text/tool_call, command-code event.*, opencode2 part.*). tests/fixtures/stalling-connector.mjs prints one line then sleeps; tests/fixtures/answering-connector.mjs answers and writes an evidence envelope when the task names a candidate path. Verify against docs/plans/handoff.goal.txt. Build your own fixture home (never ~/.bullswarm) with a stalling free pool, an answering pool and a metered pool, run a real `node bin/bullswarm.js workflow goal` with a two-step program under BULLSWARM_WORKER_SILENCE_SEC=8, and read the run directory: is there a stream file per attempt, does every line parse with `seq`, `at`, `kind`; does the `response` line hold full text while `action show`'s lastAgentEvent is still compact; is task-<step>-attempt-2.md's `## Prior attempt on this step` block correct against the attempt record and the diff snapshot (make an edit to a territory file AFTER attempt 1 ends and confirm it is not attributed); is `outputFile` recorded on the failed attempt; does the schema-correction path still get only its own block; does a connector without eventStream (the echo provider) produce the stdout tail file; does a manifest `eventStream.capture` override apply and does `providers validate` accept every shipped connector and reject a malformed block. Try to break it: a worker that prints 20 MB of one response; a step with empty ownedFiles; a kernel SIGKILL mid-attempt then `workflow resume` (the stream file must be intact up to the kill); a retry on the same pool; a run recorded before this change loading without error. Run `npm test` yourself and quote the summary. Read the docs excerpt against the file it claims to quote. Inspect only; do not edit. Others share this tree: preserve their edits and report any file you need outside your territory instead of editing it. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit. SECOND PASS: your first pass's evidence is at /home/dev/.bullswarm/workflows/wf-mu561vxs-afd0a6/candidate-verify.json; re-run its SIGKILL probe and its untracked-file probe against the fixed tree, re-check the four documentation sentences, then re-judge all six requirements, confirming the passed ones did not regress.",
+    "lane": "analyze",
+    "effort": "high"
+   },
+   {
+    "id": "fix-durability-and-diff",
+    "kind": "implement",
+    "purpose": "Stream survives a kernel SIGKILL; the diff snapshot catches untracked and pre-dirty files; docs describe the stdout tail truthfully",
+    "dependsOn": [
+     "integrate"
+    ],
+    "affects": [
+     "requirement-1",
+     "requirement-3",
+     "requirement-5",
+     "requirement-6"
+    ],
+    "ownedFiles": [
+     "src/lib/attempt-stream.js",
+     "tests/attempt-stream.test.js",
+     "src/workflow/v2-dispatch.js",
+     "tests/workflow-v2-dispatch.test.js",
+     "docs/guide/observing.md",
+     "src/providers/README.md",
+     "docs/reference/providers.md",
+     "CHANGELOG.md"
+    ],
+    "evidenceFor": [],
+    "inputs": [],
+    "produces": [],
+    "prompt": "In /home/dev/Repo/bullswork/bullswarm-handoff close the three failures the acceptance pass proved (read /home/dev/.bullswarm/workflows/wf-mu561vxs-afd0a6/candidate-verify.json first; requirement-1, requirement-3 and requirement-6 carry file:line evidence and the probe results). (1) Durability: src/lib/attempt-stream.js:114-118 declares write-on-close and event() only pushes into memory (lines 148-156) with the first writeFileSync in close() (161-170); a probe SIGKILLed after one event left no file. Make the sink append-as-you-go: open the JSONL (or stdout log) at creation, append each line synchronously (appendFileSync or a kept fd) while under the head cap, and when the cap is exceeded keep the in-memory tail but flush it to a sibling `.tail` segment on a bounded cadence (every N events or every 2 s, whichever first) so that a SIGKILL loses at most that window; close() folds head + marker + tail into the final file as today. A probe that SIGKILLs the process after the first event must find the file with that event on disk; write that as a test using a child process (tests/attempt-stream.test.js). (2) Diff snapshot: src/workflow/v2-dispatch.js:224-249 collects names with `git diff --name-only`/`--stat`, which omit untracked files and staged changes, and filters out every path in the pre-attempt dirty set (line 245), so a new file in the territory or a further edit to an already-dirty owned file is not attributed. Replace the name-filter with content comparison: at attempt start record a hash (sha1 of file bytes, or the git blob hash via `git hash-object`) for every file in the territory (ownedFiles when non-empty; when empty, every tracked and untracked non-ignored file from `git status --porcelain -uall` plus the tracked set) and at attempt end compare, so attribution = files whose bytes changed during the attempt, including new and deleted ones; render the stat with `git diff --stat` for tracked files and `+N lines (new)` for untracked ones; keep diff-<action>-attempt-N.txt as the snapshot. Tests: a new untracked territory file, a pre-dirty owned file edited further, a deleted file, and a file outside the territory (not attributed) \u2014 in tests/workflow-v2-dispatch.test.js. (3) Docs: docs/guide/observing.md:207-210, src/providers/README.md:26-29, docs/reference/providers.md and CHANGELOG.md:10-13 say both files carry the head + marker + tail shape; the stdout log is a marker-free bounded tail \u2014 make every sentence match the implementation (and if you change the stdout log to carry a marker instead, change all four consistently and say so). Also add a sentence on the flush cadence and what a kernel SIGKILL can lose. Run `npm test` and quote the summary, then repeat the acceptance pass's two probes yourself (SIGKILL after first event; untracked file created during a simulated attempt) and quote their output. Others share this tree: preserve their edits. Real data only: read every field name, path and cap from the code; never invent numbers. Do not commit."
+   }
+  ]
+ }
+}

@@ -39,7 +39,16 @@ const ATTEMPT_FIELDS = new Set([
   // the threshold that ended it. Absent on every attempt that did not stall,
   // and on every attempt recorded before the free-pool stall clock existed.
   'stalled', 'partialOutput', 'silentSec',
+  // Prior-attempt handoff: the finished attempt records the out file byte
+  // count (whenever the file exists, including failures), the persisted
+  // stream path, the diff snapshot taken at worker exit, and the file
+  // count that snapshot attributed to it. The receiving attempt records
+  // `handoff: { from, bytes }` pointing at the attempt it was briefed on.
+  // `lastResponse` is the text of the last `response` event in that stream,
+  // which is what the watch handoff line quotes.
+  'outputBytes', 'streamFile', 'diffFile', 'changedFileCount', 'lastResponse', 'handoff',
 ]);
+const ATTEMPT_HANDOFF_FIELDS = new Set(['from', 'bytes']);
 // `state.attempts[].bytes` — the kernel's byte ledger for one dispatch, written
 // at dispatch and completed when the attempt ends (src/workflow/v2-runtime.js
 // `attemptBytes`). `taskFile` is the task file the attempt was handed,
@@ -639,12 +648,20 @@ function validateAttempts(attempts, program) {
     if (!programIds.has(actionId)) fail(`state.attempts[${index}] references unknown program action ${actionId}`);
     nonNegativeInteger(attempt.ordinal, `state.attempts[${index}].ordinal`);
     if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.attempts[${index}].status is invalid`);
-    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'streamFile', 'diffFile', 'lastResponse']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
     if (attempt.failure !== undefined && attempt.failure !== null && !isObject(attempt.failure)) fail(`state.attempts[${index}].failure must be null or an object`);
     for (const field of ['usage', 'routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.attempts[${index}].continued must be a boolean`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    if (attempt.outputBytes !== undefined && attempt.outputBytes !== null) nonNegativeInteger(attempt.outputBytes, `state.attempts[${index}].outputBytes`);
+    if (attempt.changedFileCount !== undefined) nonNegativeInteger(attempt.changedFileCount, `state.attempts[${index}].changedFileCount`);
+    if (attempt.handoff !== undefined && attempt.handoff !== null) {
+      object(attempt.handoff, `state.attempts[${index}].handoff`);
+      noUnknown(attempt.handoff, ATTEMPT_HANDOFF_FIELDS, `state.attempts[${index}].handoff`);
+      if (attempt.handoff.from !== undefined) nullableString(attempt.handoff.from, `state.attempts[${index}].handoff.from`);
+      if (attempt.handoff.bytes !== undefined) nonNegativeInteger(attempt.handoff.bytes, `state.attempts[${index}].handoff.bytes`);
+    }
     if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);
