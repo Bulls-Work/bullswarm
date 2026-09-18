@@ -21,7 +21,7 @@
 
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import {
-  absentLine, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, sparkline, tabsRow,
+  absentLine, chartRowCount, columnBars, columns, compactRow, cut, formatDashboardValue, heatRow, niceStep, periodToggle, progressBar, rule, seriesColor, sparkline, tabsRow,
 } from './dash-kit.js';
 import { METER_COLORS, paceWord, severityColor } from './usage-view.js';
 import { PERIODS, TREND_METRICS } from './stats-model.js';
@@ -63,9 +63,6 @@ const LICENCE_METRIC = 'licence';
  * legends in this order (purple, amber, green, cyan) and paints the project
  * sparkline orange; the rest of the palette follows.
  */
-const SERIES_ROLES = Object.freeze(['purple', 'amber', 'green', 'cyan', 'orange', 'red', 'dim', 'others']);
-const seriesColor = (index) => METER_COLORS[SERIES_ROLES[index % SERIES_ROLES.length]];
-
 const weekdayNames = Object.freeze(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
 const monthNames = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
 
@@ -911,7 +908,7 @@ function legendRows(names, { width = 120, ansi = true, colorOf = null } = {}) {
   return [fit(` ${build(kept)}`, cols, ansi)];
 }
 
-function trendLines(stats, lines, regions, width, period, metric, ansi, licence, poolModel = null) {
+function trendLines(stats, lines, regions, width, period, metric, ansi, licence, poolModel = null, rowCount = null) {
   const cols = widthOf(width);
   lines.push('');
   addMetricRow(lines, regions, metric, cols, ansi, { licence });
@@ -954,7 +951,7 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
     for (const segment of Array.isArray(bucket?.segments) ? bucket.segments : []) {
       if (!names.includes(segment.name)) {
         names.push(segment.name);
-        colorByName.set(segment.name, isHex(segment.color) ? segment.color : seriesColor(names.length - 1));
+        colorByName.set(segment.name, seriesColor(segment.name));
       }
     }
   }
@@ -970,7 +967,7 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
   const labels = chartTickLabels(displayBuckets, cellWidth, { narrow: narrow || base < 12 });
   const chartLines = columnBars(series, labels, {
     width: cols,
-    height: narrow ? 5 : 8,
+    rowCount: rowCount ?? chartRowCount(narrow ? 26 : 36),
     col: base,
     barW: narrow ? Math.max(3, base - 1) : Math.max(7, base - 5),
     unit: money ? '$' : '',
@@ -1004,7 +1001,8 @@ function trendLines(stats, lines, regions, width, period, metric, ansi, licence,
     pushLine(lines, regions, line, cols, ansi, lineRegions);
   });
   if (money) pushLine(lines, regions, moneyBasisLine(cols), cols, ansi);
-  for (const line of legendRows(names.map((name) => ({ name })), { width: cols, ansi, colorOf: (entry) => colorByName.get(entry.name) })) {
+  const legendNames = chartLines.meta?.legend?.length ? chartLines.meta.legend : names;
+  for (const line of legendRows(legendNames.map((name) => ({ name })), { width: cols, ansi, colorOf: (entry) => colorByName.get(entry.name) ?? seriesColor(entry.name) })) {
     pushLine(lines, regions, line, cols, ansi);
   }
   if (model?.segmentBasis) pushLine(lines, regions, ` ${dimmed(`Split basis: ${model.segmentBasis}`, ansi)}`, cols, ansi);
@@ -1201,7 +1199,7 @@ function poolMeterLines(model, lines, regions, cols, ansi) {
     });
     const shape = sparkline(values, 7, { markers });
     const historyText = shape ? [...shape].map((glyph, index) => values[index] == null && !markers.includes(index) ? ' ' : glyph).join('').padStart(7) : 'no history';
-    const spark = painted(historyText, METER_COLORS.orange, ansi);
+    const spark = painted(historyText, seriesColor(row.name), ansi);
     const tail = facts && cols >= 96 ? `  ${facts}` : '';
     const prefix = ` ${name} ${spark} `;
     const barWidth = Math.max(1, Math.min(64, cols - visible(prefix).length - reading.length - visible(tail).length - 2));
@@ -1350,7 +1348,7 @@ function seriesFromTrend(trend, names, cols, { axisRoom = 7, narrow = false } = 
   };
 }
 
-function modelLines(model, lines, regions, cols, period, ansi) {
+function modelLines(model, lines, regions, cols, period, ansi, rowCount = null) {
   lines.push('');
   const rows = asRows(model);
   const names = rows.map((row) => textOf(row.name, 'unknown'));
@@ -1363,7 +1361,7 @@ function modelLines(model, lines, regions, cols, period, ansi) {
     .flatMap((bucket) => Array.isArray(bucket?.segments) ? bucket.segments.map((segment) => textOf(segment?.name, '')) : [])
     .filter(Boolean);
   const keyed = [...new Set([...names, ...bucketNames])];
-  const colorsBy = new Map(keyed.map((name, index) => [name, seriesColor(index)]));
+  const colorsBy = new Map(keyed.map((name) => [name, seriesColor(name)]));
   const trend = tableTrend(model) ?? trendFromDailyRows(rows);
   const drawn = trend
     ? seriesFromTrend(trend, keyed.filter((name) => (trend.buckets ?? [])
@@ -1372,8 +1370,18 @@ function modelLines(model, lines, regions, cols, period, ansi) {
   const chartUnit = 'minutes';
   addTitleRule(lines, regions, 'worker-minutes per day', period, cols, ansi);
   const chart = drawn && drawn.series.length
-    ? stepChart(drawn.series.map((entry) => ({ ...entry, color: colorsBy.get(entry.name) })), drawn.labels, {
-      width: cols, height: 4, unit: chartUnit, mark: chartUnit === '$' ? ESTIMATE_MARK : '', colors: ansi,
+    ? columnBars(drawn.series.map((entry) => ({
+      ...entry,
+      color: colorsBy.get(entry.name),
+      name: entry.name,
+    })), drawn.labels, {
+      width: cols,
+      rowCount: rowCount ?? chartRowCount(cols < 90 ? 26 : 36),
+      col: Math.max(2, Math.floor((cols - 7) / Math.max(1, drawn.labels.length))),
+      barW: cols < 90 ? Math.max(3, Math.floor((cols - 7) / Math.max(1, drawn.labels.length)) - 1) : 7,
+      unit: chartUnit,
+      totals: true,
+      colors: ansi,
     }) : [];
   if (chart.length) {
     for (const line of chart) pushLine(lines, regions, line, cols, ansi);
@@ -1533,7 +1541,7 @@ function projectLines(model, lines, regions, cols, period, ansi) {
 
 // ------------------------------------------------------------------ the page
 
-function statsLines(stats, { width = 120, tab = 'overview', period = '7d', metric = 'runs', ansi = true } = {}) {
+function statsLines(stats, { width = 120, height = 36, tab = 'overview', period = '7d', metric = 'runs', ansi = true } = {}) {
   const cols = widthOf(width);
   const contentCols = cols;
   const activeTab = normalizeTab(tab);
@@ -1567,12 +1575,12 @@ function statsLines(stats, { width = 120, tab = 'overview', period = '7d', metri
     .some((row) => historySegments(row).some((segment) => finite(segment.value) != null));
   const activeMetric = normalizeMetric(metric, licence);
   if (activeTab === 'overview') overviewLines(overview, lines, regions, contentCols, activePeriod, ansi);
-  else if (activeTab === 'trends') trendLines(stats, lines, regions, contentCols, activePeriod, activeMetric, ansi, licence, pools);
+  else if (activeTab === 'trends') trendLines(stats, lines, regions, contentCols, activePeriod, activeMetric, ansi, licence, pools, chartRowCount(height));
   else if (activeTab === 'pools') {
     poolLines(pools, lines, regions, contentCols, activePeriod, ansi);
   } else if (activeTab === 'models') {
     const base = tableModel(stats, 'models', overview);
-    modelLines({ ...base, trend: base.trend ?? stats?.modelTrend ?? null }, lines, regions, contentCols, activePeriod, ansi);
+    modelLines({ ...base, trend: base.trend ?? stats?.modelTrend ?? null }, lines, regions, contentCols, activePeriod, ansi, chartRowCount(height));
   } else {
     const base = tableModel(stats, 'projects', overview);
     projectLines({ ...base, trend: base.trend ?? stats?.projectTrend ?? null }, lines, regions, contentCols, activePeriod, ansi);

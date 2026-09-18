@@ -43,15 +43,15 @@ function budget(overrides = {}) {
   return { rows: [budgetRow(overrides)], notes: [] };
 }
 
-test('Budget labels the five reader rows and preserves measured credits and run links', () => {
+test('Budget folds measured credits into the used row and preserves run links', () => {
   const result = budgetLines(budget(), { width: 170, ansi: false });
-  assert.equal(result.lines.length, 6);
+  assert.equal(result.lines.length, 5);
   assert.match(result.lines[0], /claude-code · weekly plan · resets Sat 19 Sep 20:00/);
   assert.match(result.lines[1], /^used\s+.*40% · 29% of the window gone → on track/);
   assert.match(result.lines[2], /^by bullswarm\s+.*≈ 8% \(80 min of work\) · other tools 32%/);
   assert.match(result.lines[3], /^room\s+about 20 more medium runs before the reset/);
   assert.match(result.lines[4], /biggest: qv6242 ≈ \$0.30, gcxzza/);
-  assert.match(result.lines[5], /66 \/ 70 credits used/);
+  assert.match(result.lines[1], /40% · 29% of the window gone → on track · 66 of 70 credits/);
   assert.equal(result.regions.length, 2);
   assert.ok(result.regions.every((region) => region.y === 5));
 });
@@ -87,6 +87,18 @@ test('A missing share stays blank and the legend never invents a you term', () =
   assert.match(text, /API estimate unrecorded/);
 });
 
+test('A zero measured rate names the unknown share and room instead of drawing a bar', () => {
+  const result = budgetLines(budget({
+    share: { workflows: null, rest: null, workflowMinutes: 922, ratePerMinute: 0, rateSamples: 32, rateNote: 'meter did not move during 32 measured runs' },
+    rateNote: 'meter did not move during 32 measured runs',
+    fits: null,
+    credits: null,
+  }), { width: 120, ansi: false });
+  assert.match(result.lines.find((line) => line.startsWith('by bullswarm')), /share unknown · meter did not move during 32 measured runs/);
+  assert.match(result.lines.find((line) => line.startsWith('room')), /unknown · meter did not move during 32 measured runs/);
+  assert.doesNotMatch(result.lines.find((line) => line.startsWith('by bullswarm')), /▇|░|#/);
+});
+
 test('Every pool atom and hit region stays inside widths from 32 through 200 columns', () => {
   for (const width of [32, 54, 55, 80, 100, 200]) {
     const result = budgetLines(budget(), { width, ansi: true });
@@ -95,7 +107,7 @@ test('Every pool atom and hit region stays inside widths from 32 through 200 col
       && region.x + region.width - 1 <= width
       && region.y >= 1
       && region.y <= result.lines.length), `region overflow at ${width}`);
-    assert.equal(result.lines.length, 6);
+    assert.equal(result.lines.length, 5);
   }
 });
 
@@ -145,7 +157,7 @@ test('Disabled pools remain one footer row rather than becoming pool blocks', ()
   const result = budgetLines({ ...budget(), disabledPools: ['codex', 'echo'] }, { width: 120, ansi: true });
   const text = result.lines.join('\n');
   assert.match(text, /disabled: codex, echo/);
-  assert.equal(result.lines.length, 7);
+  assert.equal(result.lines.length, 6);
 });
 
 test('an absent Budget row keeps the label column, and one run reads as one run', () => {
@@ -174,6 +186,8 @@ test('an absent Budget row keeps the label column, and one run reads as one run'
   assert.match(one.find((line) => line.startsWith('room')), /about 1 more medium run before the reset$/);
   const many = budgetLines(budget({ fits: 4 }), { width: 170, ansi: false }).lines;
   assert.match(many.find((line) => line.startsWith('room')), /about 4 more medium runs before the reset$/);
+  const none = budgetLines(budget({ fits: 0 }), { width: 170, ansi: false }).lines;
+  assert.match(none.find((line) => line.startsWith('room')), /no room left before the reset$/);
 
   // A run with no recorded cost gets one space before its reason, not two.
   const soFar = metered.find((line) => line.startsWith('so far'));

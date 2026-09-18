@@ -200,6 +200,19 @@ function durationText(run) {
   return minutes == null ? 'duration unavailable' : minutesText(minutes);
 }
 
+function displayedDuration(run) {
+  if (unfinishedRun(run)) {
+    // The summary already carries the words `elapsed unavailable`; repeating
+    // that sentence in a fixed duration cell would steal the whole goal on a
+    // wide row. A measured live duration remains a real duration; otherwise
+    // the cell has no number to show.
+    return run.running && finite(run.elapsedMinutes) != null
+      ? elapsedText(run).replace(/ elapsed$/, '')
+      : '—';
+  }
+  return durationText(run);
+}
+
 // How long a run still in flight has been going, from its recorded start to
 // the instant the model measured. A run with no readable start says so rather
 // than printing a bare unit.
@@ -392,7 +405,7 @@ function rowSummary(run) {
  * estimate and clock. A one-cell trailing spacer reserves the prototype's
  * final blank without painting it, keeping the right columns stable at 120.
  */
-function runRow(run, width, ansi) {
+function runRow(run, width, ansi, { durationWidth = null } = {}) {
   const cols = widthOf(width);
   const desktop = cols >= 100;
   const phone = !desktop;
@@ -403,12 +416,15 @@ function runRow(run, width, ansi) {
   const cost = isLegacy(run) ? null : recordCost(run);
   const estimate = apiEstimate(cost);
   const mark = resultMark(run);
+  const duration = displayedDuration(run);
+  const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
   const projectWidth = desktop
     ? 25
     : Math.min(18, Math.max(9, Math.floor(cols * 0.2)));
-  const duration = unfinishedRun(run)
-    ? (run.running ? elapsedText(run).replace(/ elapsed$/, '') : '—')
-    : durationText(run);
+  // A legacy row's read-only marker is the important fact on a phone. Keep
+  // it whole when the wider duration cell consumes the last elastic cells;
+  // the goal remains available on desktop and in the day header.
+  const summary = phone && isLegacy(run) ? 'legacy · read-only' : rowSummary(run);
   // A live run has a start but no result time; never let its start clock read
   // as a finished timestamp. A stopped run may expose its last file write,
   // which is the only honest time available for that row.
@@ -426,7 +442,7 @@ function runRow(run, width, ansi) {
   const rightFields = compactUnfinished
     ? []
     : [
-      { text: duration, width: 4, align: 'right', gap: 1 },
+      { text: duration, width: durationCells, align: 'right', gap: 1 },
       ...((desktop || cost != null) ? [
         { text: cost == null ? '' : '·', width: 1, gap: 1 },
         { text: estimateText, width: estimateWidth, align: 'right', gap: 0 },
@@ -441,16 +457,16 @@ function runRow(run, width, ansi) {
       { text: tint(mark, markRole(mark, run), ansi), width: 1, gap: 0 },
       { text: bold(id, ansi), width: 6, gap: 1 },
       { text: project(run), width: projectWidth, gap: 2 },
-      { text: rowSummary(run), grow: true, min: 1, gap: desktop ? 2 : 1 },
+      { text: summary, grow: true, min: 1, gap: desktop ? 2 : 1 },
       ...rightFields,
       { text: ' ', width: 1, gap: 0 },
     ], { width: cols, gap: 1 }),
   };
 }
 
-function renderRun(run, lines, regions, width, ansi) {
+function renderRun(run, lines, regions, width, ansi, options = {}) {
   const action = { kind: 'run', runId: runId(run) || shortId(run) || '------' };
-  const rendered = runRow(run, width, ansi);
+  const rendered = runRow(run, width, ansi, options);
   lines.push(fit(rendered.line, width, ansi));
   // The shell has always made the id the click target. The leading spacer and
   // result mark restore its prototype x coordinate at column 4.
@@ -510,9 +526,10 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
           ? '  Workflow rows are not loaded for this day yet.'
           : '  No workflows recorded.', cols, ansi, '');
     } else {
+      const durationWidth = runs.reduce((longest, run) => Math.max(longest, visible(displayedDuration(run)).length), 5);
       let normal = 0;
       for (const run of runs) {
-        renderRun(run, lines, regions, cols, ansi);
+        renderRun(run, lines, regions, cols, ansi, { durationWidth });
         if (!isLegacy(run)) normal += 1;
       }
       if (!normal && runs.length) pushWrapped(lines, 'Legacy workflows are read-only: no cost and no pool minutes were recorded.', cols, ansi);

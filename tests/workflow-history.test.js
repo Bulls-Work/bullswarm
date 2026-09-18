@@ -555,7 +555,7 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
     const wide = historyLines([{ ...days[0], rows: [{ ...running, goal: 'g'.repeat(200) }] }], { width: 120, ansi: false });
     const row = wide.lines.find((line) => line.includes('running'));
     assert.match(row, /^ ● run101\s+bullswarm/);
-    assert.match(row, /5h0…\s+—$/, `fixed measurements trimmed instead of the summary: ${JSON.stringify(row)}`);
+    assert.match(row, /5h00m\s+—$/, `fixed measurements trimmed instead of the summary: ${JSON.stringify(row)}`);
     assert.ok(row.length <= 120, `over the frame: ${row.length}`);
 
     // The legacy-only day prints no money at all (H3), at either width.

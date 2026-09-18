@@ -109,6 +109,23 @@ test('History keeps identity and trailing metric columns at stable x positions o
   assert.deepEqual(rows.map((line) => line.slice(3, 9).trim()).sort(), ['first1', 'second']);
 });
 
+test('History never truncates visible duration text on phone widths', () => {
+  for (const width of [55, 60]) {
+    const view = historyLines([{
+      date: '2026-09-17',
+      runs: [
+        { runId: 'wf-duration-000001', shortId: 'dur001', project: 'bullswarm', goal: 'short', status: 'completed', duration: '3h21m', finishedAt: '2026-09-17T09:00:00Z' },
+        { runId: 'wf-duration-000002', shortId: 'dur002', project: 'bullswarm', goal: 'long', status: 'completed', duration: '12h34m', finishedAt: '2026-09-17T10:00:00Z' },
+      ],
+    }], { width, ansi: false });
+    const rows = view.lines.filter((line) => line.includes('dur00'));
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((line) => !line.includes('…')));
+    assert.ok(rows.some((line) => line.includes('3h21m')));
+    assert.ok(rows.some((line) => line.includes('12h34m')));
+  }
+});
+
 test('History emits the shared palette roles for marks, estimates and day totals', () => {
   const view = historyLines([{
     date: '2026-09-17',

@@ -263,6 +263,18 @@ test('poolBudget: no measured rate means no licence share at all (B2)', () => {
   assert.ok(row.nulls.includes('share.rest'));
 });
 
+test('poolBudget: a zero rate with measured work is unknown, not a real 0% share', () => {
+  const row = poolBudget(metered({
+    spend: { pacing: { window: 'weekly', ratePerMinute: 0, source: 'meter-history', samples: 32 } },
+  }), { rollups: indexOf(corpus()), now: NOW });
+  assert.equal(row.share.workflowMinutes, 80);
+  assert.equal(row.share.workflows, null);
+  assert.equal(row.share.rest, null);
+  assert.equal(row.rateNote, 'meter did not move during 32 measured runs');
+  assert.equal(row.share.rateNote, row.rateNote);
+  assert.match(row.fitsBasis, /meter did not move during 32 measured runs/);
+});
+
 test('poolBudget: an unmetered pool reports nulls, not a full or an empty meter', () => {
   const row = poolBudget(unmetered(), { rollups: indexOf(corpus()), now: NOW });
   assert.equal(row.usedPct, null);
