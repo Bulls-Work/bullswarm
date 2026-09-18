@@ -1,0 +1,21 @@
+Budget · verdict · 5 pools · sampled 06:15 (2m ago)    
+───────────────────────────────────────────────────────
+grok         full · 98% · ↻ in 16m · no room left      
+  █████████████████████████████████████████████▏ 98%   
+                                    99.8% gone ▲       
+claude-code  hot · 64% · ↻ Mon 20:00 · behind by 10 pts
+  █████████████████████████████▌░░░░░░░░░░░░░░░░ 64%   
+                           ▲ 53.7% gone                
+wati         watch · 76% · ↻ Sat 02:00 · 17 pts unspent
+  ███████████████████████████████████░░░░░░░░░░░ 76%   
+                                             ▲ 93% gone
+codex        fine · 60% · ↻ Sun 10:18 · 6 in flight    
+  ███████████████████████████▋░░░░░░░░░░░░░░░░░░ 60%   
+                                    ▲ 73.8% gone       
+command-code fine · 0.4% · ↻ 17 Oct · monthly window   
+  ▏░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0.4%  
+    ▲ 3.8% gone · monthly window                       
+3 disabled: petsona · echo · opencode          Enter ↵ 
+───────────────────────────────────────────────────────
+Enter on a pool → 5h · 7d · monthly windows & price    
+▲ = window elapsed · bar = used · ↻ = resets           

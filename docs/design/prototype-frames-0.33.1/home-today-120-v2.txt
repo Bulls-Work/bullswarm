@@ -1,0 +1,11 @@
+today · 18 Sep 2026                                                                                                     
+finished today · 3 workflows · 1 verified                │ licence spent today · measured worker minutes                
+──────────────────────────────────────────────────────── │ ─────────────────────────────────────────────────────────────
+✓ 2yrcxi  bullseye    104.9m  unverified                 │ pool          wf min    wf %   run min   API≈ (est.)         
+  The person manages their own comments, under their own │ wati            84.0    2.9%         —     $0.16             
+✓ fuyyca  bullswarm   208.2m  unverified                 │ codex          161.8    2.1%      60.0     $0.03             
+  The 0.33.0 owner-review pass: close the eight readabil │ grok            26.0    4.3%         —     $0.01             
+✓ ipccf2  bullseye    542.7m  verified                   │ opencode       634.6       —      17.6         —             
+  Seven queued widget and inbox follow-ups…              │ wf % = pool window points drawn by workflows today           
+Enter on a run → its steps and spend                     │ — = not measured · API≈ is the bytes/4 estimate, under audit 
+                                                         │ live window used% is on Budget, not in this table            
