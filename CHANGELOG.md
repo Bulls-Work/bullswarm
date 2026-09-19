@@ -26,6 +26,11 @@
   the saved 55- and 120-column Spending frames use real rollup data.
 - stats: the guide now explains the four tabs and their controls, and the full
   test suite is required to finish twice without failures or cancellations.
+- bars: a reading worth anything at all now draws at least a sliver instead of
+  rounding down to an empty track. On a six-cell panel bar `codex` at 4.3%,
+  `grok` at 6% and `command-code` at 1% all painted nothing, which reads as a
+  pool that was never used. The sliver is one cell in the geometry too, so it
+  answers on hover like any other bar, and a true zero is still empty.
 - accounts: two homes holding the same Anthropic login are now discovered as
   one pool. Discovery deduplicated on the access-token string, but signing one
   account in twice mints two unrelated tokens, so `~/.claude` and a

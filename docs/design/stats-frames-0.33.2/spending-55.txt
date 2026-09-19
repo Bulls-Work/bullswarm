@@ -13,20 +13,20 @@ Totals 60 workflows · 7226.66 worker-minutes · ≈$7.11 …
        ┼Sep13 Sep14 Sep15 Sep16 Sep17 Sep18 Sep19      
 
 ── Pool spend ─────────────────────────────────────────
-codex         ▒▒▒▒▒▒                        ≈$0.30 4.3%
+codex         ▏▒▒▒▒▒                        ≈$0.30 4.3%
 claude-code   ▓▓▓▒▒▒                       ≈$3.00 42.2%
 wati          ▓▓▓▒▒▒                       ≈$3.31 46.6%
-command-code  ▒▒▒▒▒▒                          ≈$0.07 1%
-grok          ▒▒▒▒▒▒                          ≈$0.42 6%
-+2 more                               — scroll for more
+command-code  ▏▒▒▒▒▒                          ≈$0.07 1%
+grok          ▏▒▒▒▒▒                          ≈$0.42 6%
++4 more                               — scroll for more
 
 ── Pool worker-minutes ────────────────────────────────
 codex         ▓▓▒▒▒▒                       36h26m 30.3%
 claude-code   ▓▒▒▒▒▒                       16h22m 13.6%
 wati          ▓▒▒▒▒▒                       21h16m 17.6%
 command-code  ▓▒▒▒▒▒                         16h49m 14%
-grok          ▒▒▒▒▒▒                         9h14m 7.7%
-+2 more                               — scroll for more
+grok          ▏▒▒▒▒▒                         9h14m 7.7%
++4 more                               — scroll for more
 
 ── Project runs ───────────────────────────────────────
 system                                    20 runs 33.3%

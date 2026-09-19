@@ -266,8 +266,9 @@ export function dateLabel(key, options = {}) {
 
 /**
  * Render one horizontal allocation and register the exact cells painted by
- * each part.  A positive part that is too small for a cell remains too small
- * in its payload; `partialGlyph` only opts into the existing one-cell sliver.
+ * each part.  A positive part too small for a cell still gets a sliver and a
+ * hit region of its own, while its payload keeps the real, tiny reading;
+ * `partialGlyph` only chooses which sliver dash-kit draws.
  */
 export function renderShareBar({
   parts, width, colors = true, partialGlyph = null,
@@ -520,7 +521,7 @@ export function renderPanel({
     // single region over the complete painted track so every cell answers the
     // same name/value/share payload (and avoid overlapping foreground and
     // background regions in the shell's hit-test).
-    if (barCols > 0 && /[▓▒░█#.|]/.test(visible(bar.text))) {
+    if (barCols > 0 && /[▓▒░█▏#.|]/.test(visible(bar.text))) {
       const share = finite(row.share) ?? (total > 0 ? value / total : null);
       const payload = payloadFor({ ...row, total, share, label: fullLabels[rowIndex] }, {
         tab, metric, period, unit: row.unit ?? unit, basis, total,
