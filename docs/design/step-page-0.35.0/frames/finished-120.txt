@@ -1,0 +1,19 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ stats-design · run 7e4w3i · SUCCEEDED · workflow VERIFIED
+ Specify the shared stat component, the four tabs and the Spending layout, with frames
+ Attempt 1/1 · codex/gpt-5.6-luna · reasoning max · build/medium · 39m21s · output 928 KB
+ Route  most-behind capable pool · surplus 11.3 · 1 in flight
+ Money  ~$0.000556 API equivalent · subscription — unknown       Tokens  ~1,832 · estimated:utf8-bytes/4
+
+── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────
+ ✓ workflow result verified                 ✓ action status succeeded
+ Durable result contains the action output, route, byte count, and verification reason.
+ “Succeeded” is execution state; the separate workflow verdict supplies “verified.”
+
+── activity ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Event stream unavailable for this historical attempt.
+ No turn boundaries, tool cards, event-level durations, or event-level usage can be reconstructed.
+
+── attempts ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>1 SUCCEEDED · codex/gpt-5.6-luna · 39m21s · ~1,832 tokens · ~$0.000556 API · subscription —
+ [a attempts] [o outcome] [p prompt] [ back ]

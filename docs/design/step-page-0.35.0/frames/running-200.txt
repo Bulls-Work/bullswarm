@@ -1,0 +1,21 @@
+ Home  Runs  Budget  Stats  Fleet
+ ⠋ study · qvh8e2 · RUNNING · attempt 1/1 · following
+ Purpose  Study project-n and the current Step page, design the new page, and plan the extraction refactor
+ Attempt  codex · gpt-5.6-sol · reasoning medium · started 23:24 · elapsed 5m · output 12 KB
+ Route    analyze/high · expiring soon: reset in 10h54m · surplus 21.4 over 6.5% week remaining · urgency 329 · forecast 72.1% · 1 in flight
+ Money    API — pending · subscription — pending                    Tokens — pending                    Verification — while running
+
+── activity · capture order · following ───────────────────────────────────────────────────────────────┬── selected event ─────────────────────────────────────────────────
+ ▁▂▃▄▆██  7 events · turns not captured                                                               │ command · completed · source codex
+ 23:24:51.183  RESPONSE    I’ll read the task file and required RTK instructions first.                 │ captured 23:25:07.543
+ 23:24:54.021  COMMAND ▶   read task-study-attempt-1.md and RTK.md                                     │ duration 0.035s · exit 0
+ 23:24:54.023  COMMAND ✓   exit 0 · 0.002s                                                            │
+ 23:25:05.138  RESPONSE    The assignment is read-only; preserve the live home.                         │ Not captured:
+ 23:25:07.508  COMMAND ▶   inspect git state and memory                                                │ tool ID · provider time · turn ID
+>23:25:07.543  COMMAND ✓   exit 0 · 0.035s                                                            │ arguments · result · event usage
+ 23:25:15.715  COMMAND ▶   copy ~/.bullswarm to /tmp/bsw-study35                                      │
+────────────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────
+ Attempts  >1 RUNNING · codex/gpt-5.6-sol · reasoning medium · started 23:24 · output 12 KB · usage pending
+ Output    nothing written yet · /home/dev/.bullswarm/workflows/wf-mu8jg6cd-9d7b33/out-study-attempt-1.md      
+ Task      /home/dev/.bullswarm/workflows/wf-mu8jg6cd-9d7b33/task-study-attempt-1.md      
+ [↑↓ select] [Enter detail] [Space follow] [Tab region] [a attempts] [o outcome] [p prompt] [e errors] [t tools] [ back ]

@@ -1,0 +1,19 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ cli · run ytdsii · FAILED · workflow PARTIAL · not verified
+ Failure  Provider stream reported an error after two interrupted attempts
+ Tokens   ~5,531 total · estimated:utf8-bytes/4                        Money  API — unknown · subscription — unknown
+
+── attempt history ────────────────────────────────────────────────────────────────────────────┬── selected attempt 2 ─────────────────────────────────────────────────
+ 1  INTERRUPTED · opencode2:kaihk-3 · kaihk-3/gpt-5.6-luna                                  │ status interrupted · reasoning max
+    1m25s · ~2,766 tokens · provider stream error                                              │ build/medium · duration 1m19s
+>2  INTERRUPTED · opencode2 · kaihk/gpt-5.6-luna                                              │ ~2,765 tokens · estimated
+    1m19s · ~2,765 tokens · provider stream error                                              │ API — · subscription —
+                                                                                               │
+                                                                                               │ Failure
+                                                                                               │ Provider stream reported an error.
+                                                                                               │ No structured provider payload captured.
+────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────
+ Activity  Event streams unavailable for both historical attempts; turn, tool, subagent, and event-duration views are disabled.
+ Outcome   action failed · workflow partial · verified false · token total is the sum of both attempts
+ Result    /tmp/bsw-study35/workflows/wf-mtwyg33h-a19ccd/result.json
+ [↑↓ attempt] [Enter detail] [Tab region] [a attempts] [o outcome] [p prompt] [e errors] [ back ]

@@ -1,0 +1,20 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ stats-design · 7e4w3i · VERIFIED
+ Specify the shared stat component and four tabs…
+ SUCCEEDED · attempt 1/1 · codex/gpt-5.6-luna
+ 39m21s · reasoning max · output 928 KB
+ Route build/medium · most-behind capable pool
+ Money ~$0.000556 API · subscription —
+ Tokens ~1,832 · estimated:utf8-bytes/4
+── outcome ────────────────────────────────────────────
+ ✓ workflow verified
+ ✓ action succeeded
+ Durable result and action output recorded.
+── activity ───────────────────────────────────────────
+ Event stream unavailable for this historical attempt.
+ Turns, tools, and event timing cannot be reconstructed
+── attempts ───────────────────────────────────────────
+>1 SUCCEEDED · codex · 39m21s · ~1,832 tokens
+── artifacts ──────────────────────────────────────────
+ result.json · out-stats-design-attempt-1.md
+ [a attempts] [o outcome] [p prompt] [ back ]

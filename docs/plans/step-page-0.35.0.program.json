@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "step-page",
+      "kind": "implement",
+      "purpose": "Extract the Step page and implement the evidence-honest activity, attempt, cost, and outcome design",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-2"
+      ],
+      "ownedFiles": [
+        "src/workflow/step-model.js",
+        "src/workflow/step-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-step-model.test.js",
+        "tests/workflow-step-view.test.js",
+        "tests/workflow-dashboard.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Other workers share this worktree. Edit only the owned files and preserve unrelated changes. First mechanically extract the current stepPage into step-model.js and step-view.js without changing rendered output; run tests/workflow-dashboard.test.js and record that checkpoint. Then implement the approved Step design: independent execution and verification verdicts, attempt history, route explanation, stream feed with follow and selection, selected-event detail, 0.34 API/subscription money pairs and legacy fallbacks, durable outcome, prompt/artifacts, and explicit unavailable states. Never infer turns, tools, subagents, duration, or cost from prose. Add pure model and width-bounded view tests at 55, 120, and 200 columns. Report test summaries and any requested changes outside the territory."
+    },
+    {
+      "id": "stream-contract",
+      "kind": "implement",
+      "purpose": "Add provider-neutral event identity and optional structured fields needed by the Step activity view",
+      "dependsOn": [],
+      "affects": [
+        "requirement-2"
+      ],
+      "ownedFiles": [
+        "src/lib/agent-events.js",
+        "src/lib/attempt-stream.js",
+        "src/providers/_schema.json",
+        "src/providers/codex/connector.json",
+        "src/providers/claude-code/connector.json",
+        "src/providers/grok/connector.json",
+        "tests/agent-events.test.js",
+        "tests/attempt-stream.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Other workers share this worktree. Edit only the owned files and preserve unrelated changes. Extend the additive normalized event contract using real provider output only. Preserve seq, at, source, providerType, kind, status, and summary. Add stable turnId, eventId, toolCallId, tool name, arguments/result, provider timestamp, duration, usage, and parent/subagent identifiers only where a provider proves them; otherwise omit them. Keep old streams readable. Test malformed lines, missing optional fields, capture ordering, paired events, and each real provider fixture. Do not encode provider quirks in core beyond the neutral record contract. Report unsupported fields per provider."
+    },
+    {
+      "id": "docs",
+      "kind": "implement",
+      "purpose": "Document the new Step page, event availability, keyboard controls, and provider contract",
+      "dependsOn": [
+        "step-page",
+        "stream-contract"
+      ],
+      "affects": [
+        "requirement-2"
+      ],
+      "ownedFiles": [
+        "docs/guide/observing.md",
+        "docs/reference/providers.md",
+        "CHANGELOG.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "Other workers share this worktree. Edit only the owned files. Document the Step information hierarchy, attempts, activity feed, follow/selection/filter keys, success-versus-verification distinction, API/subscription money pair, and all degradation states. Document optional normalized stream fields and which first-class providers actually supply them. Do not promise turns, tools, subagents, usage, or duration when capture does not support them. Add a concise changelog entry."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Resolve shared-file requests and run the complete repository verification",
+      "dependsOn": [
+        "step-page",
+        "stream-contract",
+        "docs"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Read every dependency report and inspect the combined diff. Resolve only explicitly reported integration gaps. Verify territories did not overlap unexpectedly. Run the focused Step, stream, provider, and dashboard tests, then npm test. Render real copied-home running, finished-verified, and failed-two-attempt pages at widths 55, 120, and 200; assert no line exceeds its width. Confirm unknown cost never renders as zero and estimated cost never renders with a bare dollar glyph. Report exact commands and summaries."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently challenge the Step page’s evidence claims and responsive behavior",
+      "dependsOn": [
+        "integrate"
+      ],
+      "affects": [
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2"
+      ],
+      "prompt": "Do not edit files. Independently inspect the implementation and durable test/render evidence. Attempt to disprove: execution success is distinct from verified; attempt retries and failures are preserved; missing streams and optional event fields are labeled rather than invented; API and subscription money retain basis and unknown remains null; old streams and legacy usage remain readable; all nine real-data frames fit 55, 120, and 200 columns; keyboard selection and follow state behave as documented. Mark each requirement verified only with cited evidence from code, tests, and captured frames."
+    }
+  ]
+}

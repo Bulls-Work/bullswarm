@@ -1,0 +1,17 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ stats-design · run 7e4w3i · SUCCEEDED · workflow VERIFIED
+ Purpose  Specify the shared stat component, the four tabs and the Spending layout, with frames
+ Attempt  codex/gpt-5.6-luna · reasoning max · build/medium · 39m21s · output 930,553 bytes
+ Route    most-behind capable pool · surplus 11.3 · 1 in flight
+ Money    ~$0.000556 API equivalent · basis estimated                         subscription — unknown
+ Tokens   ~1,832 total · 1,642 read · 190 output · estimated:utf8-bytes/4
+
+── outcome and verification ──────────────────────────────────────────────────────────────────┬── attempt 1 ─────────────────────────────────────────────────────────
+ ✓ workflow result verified                                                                   │ SUCCEEDED · codex/gpt-5.6-luna
+ ✓ action execution succeeded                                                                 │ reasoning max · wall 2,361s
+ Durable result records output, route, byte count, and verification reason.                    │ output 930,553 bytes
+ Execution success and independent verification remain separate fields.                       │ event stream unavailable
+────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────
+ Activity  Event stream unavailable for this historical attempt; no turn, tool, subagent, or event-cost reconstruction is possible.
+ Result    /tmp/bsw-study35/workflows/wf-mu7873tx-3b973b/result.json
+ [↑↓ select] [Enter detail] [Tab region] [a attempts] [o outcome] [p prompt] [ back ]

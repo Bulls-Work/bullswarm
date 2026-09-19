@@ -1,0 +1,21 @@
+ Home  Runs  Budget  Stats  Fleet
+ ⠋ study · qvh8e2 · RUNNING · attempt 1/1
+ Study project-n and the current Step page…
+ codex · gpt-5.6-sol · reasoning medium · 5m
+ Route analyze/high · expiring soon · urgency 329
+ Money API — pending · subscription — pending
+ Tokens — pending · output 12 KB
+── activity · capture order · following ───────────────
+ ▁▂▃▄▆██  7 events · turns not captured
+ 23:24:51 RESPONSE  I’ll read the task file…
+ 23:24:54 COMMAND ▶ read task and RTK instructions
+ 23:24:54 COMMAND ✓ 0.002s
+ 23:25:05 RESPONSE  The assignment is read-only…
+ 23:25:07 COMMAND ▶ inspect git and memory
+>23:25:07 COMMAND ✓ 0.035s
+ 23:25:15 COMMAND ▶ copy ~/.bullswarm
+── attempts ───────────────────────────────────────────
+>1 RUNNING codex · gpt-5.6-sol · since 23:24
+── output ─────────────────────────────────────────────
+ nothing written yet · out-study-attempt-1.md
+ [↑↓ select] [Enter detail] [Space follow] [ back ]
