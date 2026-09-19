@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "home-extraction",
+      "kind": "mechanical",
+      "purpose": "Extract Home model and view into dedicated modules",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "src/workflow/home-model.js",
+        "src/workflow/home-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-home-model.test.js",
+        "tests/workflow-home-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-dash-split (git worktree, branch dash-split, rebased on release-0.35.0 at b3a0b4e where the Step page already lives in step-model.js/step-view.js, so the study's line numbers for dashboard.js are stale: re-derive them by function name). The study and module layout are in docs/design/dashboard-split/README.md; read it first. Never read or write the live ~/.bullswarm; copy it (cp -Rp ~/.bullswarm /tmp/bsw-split-<your-action-id>) and DELETE the copy when you finish. Byte-identical is the bar: render every page you touch at 55, 120 and 200 columns from the copy before and after and diff. In /home/dev/Repo/bullswork/bullswarm-dash-split, mechanically extract exactly the Home model and view functions from the study into home-model.js and home-view.js, update dashboard.js imports and dispatch, preserve all public compatibility exports and output bytes, do not alter Step or existing page behavior, add focused tests, run the focused tests and npm test, and report the summary. Others share this tree: preserve their edits and do not revert unrelated work."
+    },
+    {
+      "id": "runs-extraction",
+      "kind": "mechanical",
+      "purpose": "Extract Runs view into a dedicated module",
+      "dependsOn": [
+        "home-extraction"
+      ],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "src/workflow/runs-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-runs-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-dash-split (git worktree, branch dash-split, rebased on release-0.35.0 at b3a0b4e where the Step page already lives in step-model.js/step-view.js, so the study's line numbers for dashboard.js are stale: re-derive them by function name). The study and module layout are in docs/design/dashboard-split/README.md; read it first. Never read or write the live ~/.bullswarm; copy it (cp -Rp ~/.bullswarm /tmp/bsw-split-<your-action-id>) and DELETE the copy when you finish. Byte-identical is the bar: render every page you touch at 55, 120 and 200 columns from the copy before and after and diff. In /home/dev/Repo/bullswork/bullswarm-dash-split, mechanically extract exactly the Runs view functions from the study into runs-view.js, consume activeRunLines from home-view.js, preserve the legacy renderDashboard adapter and all existing output, add focused tests, run the focused tests and npm test, and report the summary. Others share this tree: preserve their edits and do not revert unrelated work."
+    },
+    {
+      "id": "run-extraction",
+      "kind": "mechanical",
+      "purpose": "Extract Run model and view into dedicated modules",
+      "dependsOn": [
+        "runs-extraction"
+      ],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "src/workflow/run-model.js",
+        "src/workflow/run-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-run-model.test.js",
+        "tests/workflow-run-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-dash-split (git worktree, branch dash-split, rebased on release-0.35.0 at b3a0b4e where the Step page already lives in step-model.js/step-view.js, so the study's line numbers for dashboard.js are stale: re-derive them by function name). The study and module layout are in docs/design/dashboard-split/README.md; read it first. Never read or write the live ~/.bullswarm; copy it (cp -Rp ~/.bullswarm /tmp/bsw-split-<your-action-id>) and DELETE the copy when you finish. Byte-identical is the bar: render every page you touch at 55, 120 and 200 columns from the copy before and after and diff. In /home/dev/Repo/bullswork/bullswarm-dash-split, mechanically extract exactly the Run model and view functions from the study into run-model.js and run-view.js, preserve the Step shared-helper contract, preserve workflowPanelModel compatibility, keep hit regions and interactive behavior identical, add focused tests, run the focused tests and npm test, and report the summary. Others share this tree: preserve their edits and do not revert unrelated work."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile the page extractions and prove the full suite remains green",
+      "dependsOn": [
+        "home-extraction",
+        "runs-extraction",
+        "run-extraction"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-dash-split (git worktree, branch dash-split, rebased on release-0.35.0 at b3a0b4e where the Step page already lives in step-model.js/step-view.js, so the study's line numbers for dashboard.js are stale: re-derive them by function name). The study and module layout are in docs/design/dashboard-split/README.md; read it first. Never read or write the live ~/.bullswarm; copy it (cp -Rp ~/.bullswarm /tmp/bsw-split-<your-action-id>) and DELETE the copy when you finish. Byte-identical is the bar: render every page you touch at 55, 120 and 200 columns from the copy before and after and diff. In /home/dev/Repo/bullswork/bullswarm-dash-split, inspect all dependency outputs and reconcile imports, exports, compatibility adapters, and shared-helper ownership. Use only a safe temporary fixture, never live ~/.bullswarm. Capture Home, Runs, Run, and Step raw ANSI frames before and after at widths 55, 120, and 200 with fixed inputs; compare them with cmp and diff; check hit-region widths and dispatch; run npm test; report exact commands and results."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently try to disprove behavioral and byte identity",
+      "dependsOn": [
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3"
+      ],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-dash-split (git worktree, branch dash-split, rebased on release-0.35.0 at b3a0b4e where the Step page already lives in step-model.js/step-view.js, so the study's line numbers for dashboard.js are stale: re-derive them by function name). The study and module layout are in docs/design/dashboard-split/README.md; read it first. Never read or write the live ~/.bullswarm; copy it (cp -Rp ~/.bullswarm /tmp/bsw-split-<your-action-id>) and DELETE the copy when you finish. Byte-identical is the bar: render every page you touch at 55, 120 and 200 columns from the copy before and after and diff. In /home/dev/Repo/bullswork/bullswarm-dash-split, inspect only and try to break the extraction: compare raw frames at 55, 120, and 200 columns, exercise page dispatch, narrow layouts, unknown budgets, legacy Runs, Step rendering, keyboard and mouse actions, hit regions, cache refresh, timers, and public dashboard imports. Use a safe copied fixture and never live ~/.bullswarm. Do not edit files; report any discrepancy and quote npm test evidence."
+    }
+  ]
+}
