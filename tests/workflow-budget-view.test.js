@@ -120,3 +120,21 @@ test('The view never overflows narrow or wide frames and retains pool spacing', 
   assert.ok(result.lines.includes(''));
   assert.deepEqual(result.regions, []);
 });
+
+test('a window that has spent anything at all keeps at least one filled cell', () => {
+  // Rounding a live 1% down to an empty track reads as "this pool was never
+  // touched", which is a different fact from "barely touched".
+  const rows = budgetLines(budget({
+    windows: [
+      windowRow({ key: '5h', usedPct: 0, elapsedPct: 10, resetsInMinutes: 60 }),
+      windowRow({ key: '7d', usedPct: 2, elapsedPct: 40, resetsInMinutes: 5000 }),
+      windowRow({ key: 'mo', usedPct: 0.4, elapsedPct: 50, resetsInMinutes: 20000 }),
+    ],
+  }), { width: 60, ansi: false }).lines;
+  const bar = (key) => rows.find((line) => line.startsWith(`${key} `)).replace(/^\S+\s+/, '');
+  assert.equal(bar('5h').includes('#'), false);
+  assert.equal(bar('7d').split('').filter((cell) => cell === '#').length, 1);
+  assert.equal(bar('mo').split('').filter((cell) => cell === '#').length, 1);
+  // The mark still lands where the clock is, not where the fill ends.
+  assert.match(bar('7d'), /^#\.*\|\./);
+});

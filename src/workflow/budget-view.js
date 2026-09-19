@@ -91,7 +91,12 @@ function windowBar(window, width, ansi) {
   if (!cells) return '';
   const used = finite(window?.usedPct);
   const elapsed = finite(window?.elapsedPct);
-  const filled = used == null ? 0 : Math.max(0, Math.min(cells, Math.floor((used / 100) * cells)));
+  // A pool that has spent anything at all shows at least one cell: rounding a
+  // live 1% or 2% down to an empty track reads as "untouched", which is wrong.
+  const exact = used == null ? 0 : (used / 100) * cells;
+  const filled = used == null || used <= 0
+    ? 0
+    : Math.max(1, Math.min(cells, Math.floor(exact)));
   let mark = -1;
   let markGlyph = '\u258f';
   if (elapsed != null) {
