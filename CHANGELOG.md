@@ -24,6 +24,15 @@
 - reprice: `workflow reprice` can dry-run or apply current cards and transcript matches to terminal V2 attempts without appending historical calibration samples; it defaults to 30 days (`--all` overrides), indexes transcript stores once, and streams progress rows.
 - validation: `provider validate` warns when an event stream has no usage rules and when a model profile omits cache-write pricing.
 - providers: a new transcript-usage hook lets each provider resolve durable session records without putting provider quirks in core accounting.
+- watch: a truncated delegate response now gets one connector-declared recovery turn or a derived workspace/test report, with the recovery source persisted on the attempt.
+- meters: a quota refusal forces a fresh meter read and marks the pool blocked until it clears, with the refusal age shown in Pools, Budget, and Usage.
+- stats: single `bullswarm run` records retain their working directory so Stats and history derive the project while truly legacy records remain unknown.
+- dashboard: the navigation footer keeps active run names visible and adds `+N more` when the terminal is too narrow.
+- stats: model labels preserve provider/model identity at narrow widths instead of collapsing to a bare version.
+- reprice: transcript matches can back-fill missing cwd and project fields for workflow attempts and single tasks, reporting the project changes.
+- money: sub-cent API, subscription, budget, and strategy amounts keep three significant digits instead of rounding to `$0.00`.
+- meters: a continuous, window-specific ledger records resolution and source, names each interval, attributes positive quota deltas to each attempt, shares overlaps by API cost, and reconciles same-pool totals at run finish.
+- home: `home snapshot` creates a selective dashboard-readable copy of routing, meters, providers, task records, and chosen workflow runs without modifying the source.
 
 ## 0.33.2 — one way to draw a chart, and every bar answers
 

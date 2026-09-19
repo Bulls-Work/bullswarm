@@ -81,6 +81,43 @@ bullswarm setup --yes --integrate --agents claude,codex
 
 Writes `state.json` and `routing.json`. With `--integrate --yes`, also writes under `~/.codex`, `~/.claude`, `~/.grok`. A non-TTY caller auto-applies discovered defaults without prompting, even without `--yes`.
 
+## home
+
+Create a compact, dashboard-readable copy of a Bullswarm home without touching
+the source. `home snapshot` copies routing, provider and meter state (including
+meter history), connectors, calibration, the single-task ledger, and only the
+selected workflow run directories. It then rebuilds each copied rollup and
+`history/runs.jsonl`, so Home, Runs, and Stats describe the same trimmed set.
+
+```bash
+# Keep the three newest workflow runs and omit large per-attempt streams.
+bullswarm home snapshot /tmp/bsw-snapshot --recent 3 --no-streams --json
+
+# Select runs by their short ids instead.
+bullswarm home snapshot /tmp/bsw-snapshot --runs ab12cd,ef34gh
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--runs <shortId,...>` | comma-separated short ids or full `wf-...` run ids to copy | three newest workflow runs |
+| `--recent <n>` | copy the newest `n` workflow runs | `3` |
+| `--since <date>` | keep only runs started at or after an ISO/date-only bound; relative bounds such as `7d` are accepted | unbounded |
+| `--no-streams` | omit `stream-*.jsonl` and `stdout-*.log` from copied workflow directories | keep them |
+| `--json` | print destination, byte size, and the selected run list as JSON | human summary |
+
+The destination must be new or empty and outside both the source home and the
+live `~/.bullswarm`. Single-task records remain available in the copied
+`state.json`, `assignments/`, and `runs/` surfaces; only workflow directories
+are trimmed. Point inspection commands at the copy with `BULLSWARM_HOME`:
+
+```bash
+BULLSWARM_HOME=/tmp/bsw-snapshot bullswarm workflow tui --json --all
+```
+
+Snapshot destinations carry a small marker so `workflow tui --json` includes
+the complete copied catalogue by default; ordinary homes retain the usual
+ongoing-only default and need `--all` for historical runs.
+
 ## integrate
 
 Manage the packaged Bullswarm skill and a short recursion-safe awareness rule inside each installed coding agent's global configuration.
