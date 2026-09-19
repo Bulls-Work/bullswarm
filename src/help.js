@@ -72,6 +72,7 @@ const top = rich({
     { name: 'strategy', desc: 'discover models and manage tier assignments' },
     { name: 'provider', desc: 'list, enable, validate, scaffold, and probe the providers that define pools' },
     { name: 'doctor', desc: 'report installation readiness' },
+    { name: 'home', desc: 'make a selective, dashboard-readable snapshot of a Bullswarm home' },
     { name: 'workflow', desc: 'plan, execute, observe, and audit workflows' },
     { name: 'runs', desc: 'alias for workflow runs' },
     { name: 'version', desc: 'print the installed version' },
@@ -131,6 +132,57 @@ const setupText = rich({
     { cmd: 'bullswarm setup --yes --integrate --agents claude,codex', note: 'non-interactive initialization plus agent integration; safe in CI or from an agent' },
   ],
   next: 'bullswarm doctor to confirm readiness, then bullswarm run or bullswarm workflow goal to dispatch work.',
+});
+
+// --- home ---------------------------------------------------------------------
+
+const homeText = rich({
+  usage: 'bullswarm home <command> [options]',
+  purpose: 'Create a compact, safe copy of the Bullswarm home for dashboard tests, '
+    + 'bug reports, and reproducible inspection. The source home is read-only; use '
+    + '`home snapshot` to keep only the workflow runs you need instead of copying '
+    + 'the entire workflow archive.',
+  argsTitle: 'Commands',
+  args: [
+    { name: 'snapshot <dest>', desc: 'copy routing, meters, providers, the single-task ledger, and a selected set of workflow run directories' },
+  ],
+  options: [],
+  safety: [
+    'never writes the source home; the destination must be outside both the source and ~/.bullswarm',
+    'the copied history index is rebuilt from the selected workflow directories so Home, Runs, and Stats agree about what is present',
+    'single-task records remain available through the copied state, assignments, and runs surfaces; workflow directories are the trimmed surface',
+  ],
+  examples: [
+    { cmd: 'bullswarm home snapshot /tmp/bsw-snapshot --recent 3 --no-streams --json', note: 'make a small dashboard fixture from the current home' },
+  ],
+  next: 'bullswarm home snapshot <dest> --help for selection and stream-retention options.',
+});
+
+const homeSnapshotText = rich({
+  usage: 'bullswarm home snapshot <dest> [--runs <shortId,...>|--recent <n>] [--since <date>] [--no-streams] [--json]',
+  purpose: 'Copy a selected slice of a Bullswarm home into a new directory. The default '
+    + 'keeps the three newest workflow runs, copies the routing/meter/provider state and '
+    + 'the single-task ledger, then rebuilds history rollups and the index in the copy.',
+  args: [
+    { name: '<dest>', desc: 'new destination directory; it must be empty or not exist and must not be inside ~/.bullswarm' },
+  ],
+  options: [
+    { flag: '--runs <shortId,...>', desc: 'copy these workflow runs by short id or full wf-... run id; comma-separated', default: 'three newest runs' },
+    { flag: '--recent <n>', desc: 'copy the newest n workflow runs', default: '3' },
+    { flag: '--since <date>', desc: 'only select runs started at or after this ISO/date-only bound (durations such as 7d are also accepted)', default: 'unbounded' },
+    { flag: '--no-streams', desc: 'omit stream-*.jsonl and stdout-*.log files from copied workflow directories', default: 'keep stream and stdout files' },
+    { flag: '--json', desc: 'print the destination, byte size, and selected run list as JSON', default: 'human summary' },
+  ],
+  safety: [
+    'reads the source home without modifying it; refuses a destination inside the source or the live ~/.bullswarm',
+    'refuses a non-empty destination rather than deleting or overwriting existing data',
+    'rebuilds history/runs.jsonl and each selected run rollup from the copied workflow directories; unfinished runs remain visible but are not indexed as finished',
+  ],
+  examples: [
+    { cmd: 'bullswarm home snapshot /tmp/bsw-snap-test --recent 3 --json', note: 'machine-readable size and run list for a three-run fixture' },
+    { cmd: 'bullswarm home snapshot /tmp/bsw-failure --runs ab12cd,ef34gh --no-streams', note: 'copy two explicit runs without large stream artifacts' },
+  ],
+  next: 'BULLSWARM_HOME=/tmp/bsw-snap-test bullswarm workflow tui --json to inspect exactly the copied workflow catalogue; ordinary homes use --all for historical runs.',
 });
 
 // --- integrate ----------------------------------------------------------------
@@ -1577,6 +1629,10 @@ const HELP = {
   pools: { _text: poolsText },
   assignments: { _text: assignmentsText },
   doctor: { _text: doctorText },
+  home: {
+    _text: homeText,
+    snapshot: { _text: homeSnapshotText },
+  },
   version: { _text: versionText },
   update: { _text: updateText },
   release: { _text: releaseText },

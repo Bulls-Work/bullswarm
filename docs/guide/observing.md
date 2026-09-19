@@ -233,6 +233,19 @@ still in flight are skipped. The command is idempotent, so a second run
 writes nothing new, and `--force` rewrites every record. See
 [`workflow reindex`](/reference/cli#reindex) for the flags and the JSON it prints.
 
+### Testing with a copied home
+
+When a dashboard render or an observation bug needs a real home, prefer a
+selective snapshot over `cp -Rp ~/.bullswarm`. It keeps the routing, meters,
+provider files, single-task ledger, and a small workflow slice, then rebuilds
+the copied history index. The source is never written, and `--no-streams`
+drops the large per-attempt stream and stdout files:
+
+```bash
+bullswarm home snapshot /tmp/bsw-snapshot --recent 3 --no-streams --json
+BULLSWARM_HOME=/tmp/bsw-snapshot bullswarm workflow tui --json
+```
+
 Budget's meter cells use the shared green (`#b6bd73`), amber (`#e9c880`), red
 (`#bf6c69`), and dark-track (`#3a3a3a`) palette. The other shared roles are
 `purple`, `orange`, `cyan`, `dim`, `others`, and a four-shade `heat` ramp. A
