@@ -79,6 +79,47 @@
         "summaryPaths": [
           "safe command/path/text scalar paths"
         ],
+        "eventIdPaths": [
+          "optional provider event-id paths; omitted when the provider supplies none"
+        ],
+        "turnIdPaths": [
+          "optional stable turn-id paths"
+        ],
+        "toolCallIdPaths": [
+          "optional provider tool-call-id paths"
+        ],
+        "toolNamePaths": [
+          "optional provider tool-name paths"
+        ],
+        "argumentsPaths": [
+          "optional bounded provider tool-arguments paths"
+        ],
+        "resultPaths": [
+          "optional bounded provider tool-result paths"
+        ],
+        "providerAtPaths": [
+          "optional provider-origin timestamp paths"
+        ],
+        "durationMsPaths": [
+          "optional provider duration-in-milliseconds paths"
+        ],
+        "parentIdPaths": [
+          "optional causal parent-id paths"
+        ],
+        "subagentIdPaths": [
+          "optional child/subagent-id paths"
+        ],
+        "$comment-optional-match": "Each optional field may add <field>Match to restrict mapping to a provider context; absent matches map whenever its paths resolve.",
+        "usagePaths": {
+          "input": "optional per-event input token path",
+          "output": "optional per-event output token path",
+          "cacheRead": "optional per-event cache-read token path",
+          "cacheWrite": "optional per-event cache-write token path",
+          "reasoning": "optional per-event reasoning-token path",
+          "costUsd": "optional per-event provider cost path",
+          "cumulative": "true when the mapped values are cumulative"
+        },
+        "usageCumulative": false,
         "status": "queued|running|streaming|completed|failed",
         "statusPath": "optional provider status path",
         "statusMap": {

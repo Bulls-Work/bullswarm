@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ stats-design · run 7e4w3i · SUCCEEDED · VERIFIED
+ Purpose  Specify the shared stat component, the four tabs and the Spending layout, with frames
+ Pool      codex · attempt 1 · gpt-5.6-luna · reasoning max · started 01:21 · elapsed 39m21s · output 909 KB
+ Route    build/medium · most-behind capable pool (surplus 11.3, 1 in flight) · candidate codex/gpt-5.6-luna · surplus 11.3
+ Money    API ~ $0.00 api estimated · subscription — unknown                                      Tokens ~1,832 · estimated:utf8-bytes/4
+ Status   SUCCEEDED · workflow completed · execution SUCCEEDED · verified VERIFIED
+
+── budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ codex · paid model · reader licence meter · weekly
+ token classes read 1,642 · cache read — · cache write — · output 190 · reasoning —
+
+── activity · capture order ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── following ──
+ event stream unavailable.                                                                                       selected event detail unavailable.
+ turns, tools, and event timing cannot be reconstructed.                                                         No event is selected in the captured stream.
+
+── attempt history ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>1 SUCCEEDED · codex · gpt-5.6-luna · 39m21s · 909 KB · ~1,832 tokens
+
+── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ✓ workflow VERIFIED
+ ✓ action execution SUCCEEDED
+ workflow status completed · execution and verification are separate
+ Durable result and action output recorded.
+ requirement evidence 6/6 recorded
+
+── prompt preview ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bullswarm program action: stats-design
+ Purpose: Specify the shared stat component, the four tabs and the Spending layout, with frames
+ Workspace: /home/dev/Repo/bullswork/bullswarm-0.33.2      
+ Your intended territory: docs/design/stats-refactor-0.33.2.md. This is coordination guidance, not an exact-file enforcement gate. Stay within your action purpose; report cross-territory requests for…
+ Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, reset the repository, or format unrelated files. Do not commit unless the user ex…
+ Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file requests. An integration action applies those requests, reconciles the combined work, …
+ … 8 more lines
+
+── task · first lines ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bullswarm program action: stats-design
+ Purpose: Specify the shared stat component, the four tabs and the Spending layout, with frames
+
+── output ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── recorded ──
+ Delivered [stats-refactor-0.33.2.md](/home/dev/Repo/bullswork/bullswarm-0.33.2/docs/design/stats-refactor-0.33.2.md).      
+ 
+ It includes the shared `stat-kit` API, four-tab layout, Spending toggle/data boundary, hover contract, migration table, integrator requests, changelog bullet, and real-data 120×40 / 55×26 frames.
+ 
+ Validation:
+ 
+ - Stats model: 31/31 passed.
+ - Stats view: 37/37 passed.
+ - Dash kit: 54/54 passed.
+ - Dashboard: 87 passed, 1 known baseline failure; existing live handle prevented final summary.
+
+── artifacts ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ task   /tmp/bsw-int35/workflows/wf-mu7873tx-3b973b/task-stats-design-attempt-1.md
+ output /tmp/bsw-int35/workflows/wf-mu7873tx-3b973b/out-stats-design-attempt-1.md
+ stream /tmp/bsw-int35/workflows/wf-mu7873tx-3b973b/stream-stats-design-attempt-1.jsonl
+ result /tmp/bsw-int35/workflows/wf-mu7873tx-3b973b/result.json
+ [↑↓ select] [Enter detail] [Space follow] [a attempts] [o outcome] [p prompt]
+
+
+ [ back ] [ ● 1.7e4w3i ] [ ?.help ] [ quit ] 

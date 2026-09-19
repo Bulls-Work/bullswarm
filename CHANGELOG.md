@@ -1,5 +1,20 @@
 # bullswarm changelog
 
+## 0.35.0 — the Step page tells the whole story
+
+- step: the Step page leads with identity and verdict, the selected attempt,
+  retry history, route, money pair, activity, outcome, prompt, and artifacts.
+- verification: execution success stays separate from the workflow's durable
+  `verified` result, so a successful action is not mistaken for accepted work.
+- activity: the page follows a bounded per-attempt stream with capture-order
+  minimap, selection, filters, and explicit unavailable states instead of
+  inferring turns, tools, timing, usage, or subagents from prose.
+- usage: API-rate and subscription figures remain a labeled pair; token source,
+  unknown values, pending live usage, and estimated bases stay visible across
+  retries rather than becoming zero or a bare dollar amount.
+- providers: the guide and provider reference now list the optional normalized
+  stream fields each shipped capture can actually supply.
+
 ## 0.34.0 — every dollar says how it was measured
 
 - usage: Claude, Codex, and Grok attempts now retain provider-reported or transcript-summed token classes, with the byte estimate and unknown kept as explicit fallbacks.

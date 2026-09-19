@@ -38,6 +38,8 @@ import { finiteOrNull } from '../lib/num.js';
 // `bullswarm setup` opens, so the rungs the reader just saw and the ones they
 // are about to change are the same program's.
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
+import { stepPageModel } from './step-model.js';
+import { renderStepPage } from './step-view.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -298,7 +300,7 @@ function tokenText(usage) {
 // because they answer two different questions: which brain, and how hard it
 // thought. Absent (older runs, connectors with no reasoning control, or a
 // `default` that deliberately passes nothing) renders nothing at all.
-function reasoningText(attempt) {
+export function reasoningText(attempt) {
   const applied = attempt?.reasoning?.applied;
   return typeof applied === 'string' && applied ? applied : '';
 }
@@ -1323,7 +1325,7 @@ function alignRight(left, right, width) {
   return `${lhs}${' '.repeat(Math.max(1, width - lhs.length - suffix.length))}${suffix}`;
 }
 
-function clockText(value) {
+export function clockText(value) {
   const date = new Date(value ?? '');
   if (!Number.isFinite(date.getTime())) return '--:--';
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -1336,7 +1338,7 @@ function streamActivityLine(agent) {
   return `stream active ${durationText(at)} ago · ${formatBytes(agent.outputBytesObserved ?? 0)} observed`;
 }
 
-function formatBytes(value) {
+export function formatBytes(value) {
   const bytes = Math.max(0, Number(value) || 0);
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -1344,7 +1346,7 @@ function formatBytes(value) {
 }
 
 /** The durable byte timeline for one attempt, plus its measured total. */
-function outputSparkline(attempt, runDir, width = 8) {
+export function outputSparkline(attempt, runDir, width = 8) {
   let series = [];
   try { series = attemptOutputSeries(attempt, runDir); } catch { series = []; }
   if (!series.length) return '';
@@ -1728,7 +1730,7 @@ function plannerUsageSummary(model) {
   return `Checkpoints ${model.orchestrator.attempts.length} · ${model.state.usage.total || 0} tok`;
 }
 
-function dimText(value, width) {
+export function dimText(value, width) {
   return `\x1b[2m${truncate(value, width)}\x1b[0m`;
 }
 
@@ -1750,7 +1752,7 @@ const rgbOf = (hex) => {
 };
 
 /** `text` in the palette's `role`, or untouched where colour is off. */
-function tint(text, role) {
+export function tint(text, role) {
   const body = String(text ?? '');
   if (!body || !meterAnsi()) return body;
   const hex = typeof role === 'string' && role.startsWith('#') ? role : METER_COLORS[role];
@@ -1842,7 +1844,7 @@ function friendlyActionKind(kind) {
 // integration, architecture, adversarial-acceptance), so show that; for one written before
 // kinds existed, derive the role the way the kernel defines it — an action that
 // judges a requirement is evidence, anything else with a definition is work.
-function actionRoleLabel(action) {
+export function actionRoleLabel(action) {
   if (action.kind) return action.kind;
   if (Array.isArray(action.evidenceFor) && action.evidenceFor.length) return 'evidence';
   if (action.lane || action.prompt) return 'work';
@@ -1857,7 +1859,7 @@ function friendlyActionSummary(action) {
   return truncate(summary, 180);
 }
 
-function agentDetailLines(model, width, spinnerFrame) {
+export function agentDetailLines(model, width, spinnerFrame) {
   const agent = model.selectedAgent;
   if (!agent) {
     const lines = ['No agent selected.', '', 'Planned steps in this phase:'];
@@ -1957,7 +1959,7 @@ function compactAgentPreviewLines(model, width, spinnerFrame) {
   return wrapLines(lines, width);
 }
 
-function taskPreview(path, limit = 6) {
+export function taskPreview(path, limit = 6) {
   if (!path || !existsSync(path)) return [];
   try {
     const all = readFileSync(path, 'utf8').split(/\r?\n/).filter((line) => line.trim());
@@ -1969,7 +1971,7 @@ function taskPreview(path, limit = 6) {
   }
 }
 
-function outcomePreview(path, output, maxChars = 64 * 1024) {
+export function outcomePreview(path, output, maxChars = 64 * 1024) {
   let text = '';
   try {
     if (path && existsSync(path)) text = readFileSync(path, 'utf8');
@@ -1983,7 +1985,7 @@ function outcomePreview(path, output, maxChars = 64 * 1024) {
   return lines;
 }
 
-function wrapLines(lines, width) {
+export function wrapLines(lines, width) {
   const out = [];
   for (const line of lines) {
     if (!line) { out.push(''); continue; }
@@ -2004,7 +2006,7 @@ function workflowStatusIcon(state, spinnerFrame = 0) {
   return statusIcon(state?.status, spinnerFrame);
 }
 
-function statusIcon(status, spinnerFrame = 0) {
+export function statusIcon(status, spinnerFrame = 0) {
   const value = String(status ?? '').toLowerCase();
   if (value === 'completed' || value.startsWith('succeeded')) return glyphs().ok;
   if (value === 'completed_with_concerns') return '!'; // legacy runs
@@ -2020,7 +2022,7 @@ function statusIcon(status, spinnerFrame = 0) {
   return glyphs().pending;
 }
 
-function durationText(startedAt, finishedAt) {
+export function durationText(startedAt, finishedAt) {
   const start = Date.parse(startedAt ?? '');
   if (!Number.isFinite(start)) return 'time pending';
   const end = Date.parse(finishedAt ?? '') || Date.now();
@@ -2029,7 +2031,7 @@ function durationText(startedAt, finishedAt) {
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 }
 
-function truncate(value, width) {
+export function truncate(value, width) {
   const text = String(value ?? '');
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
 }
@@ -2136,7 +2138,7 @@ const PERIOD_ITEMS = Object.freeze([
 const STATS_TABS = Object.freeze(['spending', 'pool', 'model', 'project']);
 const FLEET_TABS = Object.freeze(['lane', 'provider']);
 /** How many columns a painted line really occupies. */
-const visibleLength = (value) => String(value ?? '').replace(ANSI_SGR, '').length;
+export const visibleLength = (value) => String(value ?? '').replace(ANSI_SGR, '').length;
 /** The one-line commands that operate the product, as Runs lists them. */
 const DASHBOARD_COMMANDS = Object.freeze([
   'bullswarm run',
@@ -2146,19 +2148,20 @@ const DASHBOARD_COMMANDS = Object.freeze([
   'bullswarm setup',
   'bullswarm doctor',
 ]);
+const STEP_SECTIONS = Object.freeze(['activity', 'attempts', 'outcome', 'prompt']);
 
 /** Meters are background-coloured cells; an ascii terminal gets the plain bar. */
-function meterAnsi() {
+export function meterAnsi() {
   return !asciiGlyphsPreferred();
 }
 
 /** The blank a figure with no measurable source is painted as. */
-function blank() {
+export function blank() {
   return asciiGlyphsPreferred() ? '-' : '—';
 }
 
 /** `≈` with the basis beside it, or the ascii twin. */
-function about() {
+export function about() {
   return asciiGlyphsPreferred() ? '~' : '≈';
 }
 
@@ -2221,7 +2224,7 @@ function compactUsageBasisText(value, tokenSource, width = 20) {
  * dashboard is an API-equivalent estimate and says so; an amount nobody
  * recorded is null, and the caller paints a blank with the reason.
  */
-function moneyText(value, tokenSource) {
+export function moneyText(value, tokenSource) {
   if (value && typeof value === 'object') {
     if (value.api || Object.hasOwn(value, 'apiUsd') || Object.hasOwn(value, 'apiEquivalentUsd')) {
       return formatMoneyPair({
@@ -2259,7 +2262,7 @@ function shareText(value) {
 }
 
 /** `42m` / `2h05m` from minutes. */
-function minutesText(value) {
+export function minutesText(value) {
   return formatDashboardValue(value, 'minutes');
 }
 
@@ -2646,7 +2649,7 @@ function planStripParts(row, { runId = null } = {}) {
  * allows, and it is null — never zero — where the pool has no measured rate.
  * Money is the sum of the API-equivalent estimates the attempts recorded.
  */
-function runEconomics(row, pools = [], nowMs = Date.now()) {
+export function runEconomics(row, pools = [], nowMs = Date.now()) {
   // A run's economics cover every durable attempt, including optional scout
   // and planner turns.  Rollups and result envelopes use this same set; the
   // Run page must not silently omit their API/subscription usage.
@@ -2719,18 +2722,6 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
     measuredAttempts,
     attempts: attempts.length,
   };
-}
-
-/** `shell-home ▇▇▇▇░░░ 12m/16m expected`, for a step with a live assignment. */
-function stepProgressText(action, assignment, { width, nowMs }) {
-  const expected = finiteOrNull(assignment?.expectedMinutes);
-  const startedMs = Date.parse(assignment?.startedAt ?? action?.startedAt ?? '');
-  if (expected == null || expected <= 0 || !Number.isFinite(startedMs)) {
-    return `${action.id} · running · no expected duration recorded`;
-  }
-  const elapsed = Math.max(0, (nowMs - startedMs) / 60_000);
-  const bar = progressBar(elapsed / expected, Math.max(4, Math.min(12, Math.floor(width / 8))));
-  return `${action.id} ${bar} ${minutesText(elapsed)}/${minutesText(expected)} expected`;
 }
 
 // ------------------------------------------------------------------- Home
@@ -4059,123 +4050,6 @@ function runPage(model, opts, body) {
   return header;
 }
 
-/**
- * Step: a label/value table — Status, Pool, Purpose, Route, Time — then the
- * budget, the first lines of the task, the output so far and the artifacts.
- */
-function stepPage(model, opts, body) {
-  const { width, spinnerFrame, nowMs, narrow } = opts;
-  const panel = workflowPanelModel(model.row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
-  const state = panel.state;
-  const agent = panel.selectedAgent;
-  const shortId = state.shortId ?? model.row?.shortId ?? '';
-  if (!agent) {
-    body.push(dimText(' no step selected in this phase', width));
-    for (const line of agentDetailLines(panel, Math.max(20, width - 2), spinnerFrame)) body.push(` ${cut(line, width - 1)}`);
-    return truncate(` ${statusIcon('pending', spinnerFrame)} no step selected · run ${shortId}`, width);
-  }
-  const { action, attempt, active } = agent;
-  const routing = attempt?.routing ?? active?.routing ?? null;
-  const reasoning = reasoningText(attempt) || reasoningText(active);
-  const labelWidth = narrow ? 10 : 10;
-  const field = (name, value) => body.push(cut(` ${String(name).padEnd(labelWidth)}${value}`, width));
-
-  const assignment = (model.assignments ?? []).find((entry) => entry.runId === model.row?.runId && entry.actionId === action.id);
-  const expected = finiteOrNull(assignment?.expectedMinutes);
-  const startedAt = attempt?.startedAt ?? active?.startedAt ?? action?.startedAt ?? null;
-  const startedMs = Date.parse(startedAt ?? '');
-  const ranFor = Number.isFinite(startedMs)
-    ? durationText(startedAt, attempt?.finishedAt)
-    : null;
-
-  field('Status', `${tint(agent.status, agent.status === 'running' ? 'cyan' : agent.status === 'succeeded' ? 'green' : 'dim')} · ${tint(agent.model, 'cyan')}${reasoning ? ` · ${reasoning}` : ''}`);
-  // V1 stores the tier on the attempt, V2 under routing; reading only the V1
-  // shape made every V2 attempt read `effort auto` beside its resolved level.
-  field('Pool', `${tint(agent.pool, 'cyan')} · attempt ${attempt?.attemptNumber ?? active?.attempt ?? 1} · effort ${attempt?.effort ?? routing?.effort ?? active?.effort ?? 'auto'}${reasoning ? ` · reasoning ${reasoning}` : ''}`);
-  field('Purpose', dimText(String(action.purpose ?? actionRoleLabel(action)), width - labelWidth - 1));
-  if (routing?.reason) {
-    const text = `${routing.lane ? `${routing.lane} lane → ` : ''}${agent.pool}: ${routing.reason}`;
-    const wrapped = wrapLines([text], Math.max(10, width - labelWidth - 2));
-    field('Route', dimText(wrapped[0] ?? '', width));
-    for (const line of wrapped.slice(1, narrow ? 2 : 3)) {
-      body.push(dimText(cut(` ${' '.repeat(labelWidth)}${line}`, width), width + 8));
-    }
-  }
-  field('Time', dimText(`${startedAt ? `started ${clockText(startedAt)}` : 'not started'}${ranFor && ranFor !== 'time pending' ? ` · elapsed ${ranFor}` : ''}${expected == null ? ` · no expected duration recorded` : ` of ${minutesText(expected)} expected`}`, width));
-  if (attempt?.failureReason) field('Failure', cut(String(attempt.failureReason), width - labelWidth - 1));
-  if (active?.stall?.status === 'suspected_stalled') {
-    field('Stall', `${glyphs().warn} ${active.stall.silentForSec}s without evidence; never auto-killed`);
-  }
-
-  // The budget for this one attempt: a licence share only where the pool has
-  // a measured rate, and the estimate only where the attempt recorded one.
-  body.push('');
-  body.push(rule('budget', null, width));
-  const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
-  const attemptCost = finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
-  const money = moneyText(attempt?.usage ?? { apiUsd: attemptCost, tokenSource: attempt?.usage?.tokenSource });
-  if (pool?.usedPct == null) {
-    // Requirement 8: no page draws an empty track for missing data. An
-    // unmetered pool is a line of words here, the same words the Run page
-    // uses, with whatever this attempt did record beside them.
-    const reason = `free model · no licence meter · ${money}`;
-    body.row(
-      cut(` ${absentLine(String(agent.pool), reason, { width: width - 1 })}`, width + 8),
-      { kind: 'page', page: 'budget', pool: agent.pool },
-    );
-  } else {
-    // Whole percents, as the Run page writes them: a share under 1% keeps one
-    // decimal so a real sliver is not rounded away to `0%`.
-    const percent = pool.sharePct == null ? null
-      : pool.sharePct > 0 && pool.sharePct < 1 ? pool.sharePct.toFixed(1) : String(Math.round(pool.sharePct));
-    const window = pool.window === 'monthly' ? 'monthly' : pool.window === 'five_hour' ? 'five-hour' : 'weekly';
-    const share = percent == null ? blank() : `${about()} ${percent}% of its ${window} window`;
-    const name = cut(String(agent.pool), 14).padEnd(Math.min(14, String(agent.pool).length));
-    const bars = Math.max(4, Math.min(32, width - visibleLength(name) - visibleLength(share) - visibleLength(money ?? '') - 12));
-    const bar = meterBar(pool.usedPct, pool.elapsedPct, bars, { ansi: meterAnsi() });
-    body.row(
-      cut(` ${name} ${bar}  ${tint(share, 'purple')} · ${tint(money, 'purple')}`, width),
-      { kind: 'page', page: 'budget', pool: agent.pool },
-    );
-    // Each blank above says which measurement it is waiting for, on one row.
-    const why = [
-      pool.sharePct == null ? `no measured %/minute rate for ${agent.pool}` : null,
-      attemptCost == null ? 'cost unknown' : null,
-    ].filter(Boolean);
-    if (why.length) body.push(dimText(cut(` ${blank()} ${why.join(' · ')}`, width), width + 8));
-  }
-
-  const taskFile = attempt?.taskFile ?? active?.taskFile ?? null;
-  const prompt = wrapLines(taskPreview(taskFile, Infinity), width - 4);
-  const taskRows = narrow ? 4 : 2;
-  body.push('');
-  body.push(rule('task · first lines', null, width));
-  if (!prompt.length) body.push(dimText('   no task file was recorded for this attempt', width));
-  for (const line of prompt.slice(0, taskRows)) body.push(cut(`   ${line}`, width));
-  if (prompt.length > taskRows) body.push(dimText(`   … ${prompt.length - taskRows} more lines`, width));
-
-  const output = state.outputs?.[action.id];
-  const outFile = attempt?.outFile ?? active?.outFile ?? output?.outFile ?? null;
-  const outcome = outcomePreview(outFile, output);
-  const bytes = finiteOrNull(active?.outputBytesObserved ?? attempt?.outputBytesObserved);
-  const live = agent.status === 'running' ? 'live' : 'recorded';
-  body.push('');
-  body.push(rule('output', `${live} · ${bytes == null ? blank() : formatBytes(bytes)}`, width));
-  if (!outcome.length) body.push(dimText('   nothing has been written to the output file yet', width));
-  const outRows = narrow ? 6 : 10;
-  for (const line of wrapLines(outcome.slice(0, outRows), width - 4)) body.push(cut(`   ${line}`, width));
-
-  body.push('');
-  body.push(rule('artifacts', null, width));
-  body.push(dimText(cut(`   task:   ${taskFile ?? blank()}`, width), width + 8));
-  body.push(dimText(cut(`   output: ${outFile ?? blank()}`, width), width + 8));
-
-  const headerSpark = agent.status === 'running'
-    ? outputSparkline(attempt ?? active, model.row?.runDir, 10)
-    : '';
-  return truncate(` ${statusIcon(agent.status, spinnerFrame)} ${action.id} · run ${shortId} · ${agent.status}${headerSpark ? ` · output ${headerSpark}` : ''}`, width);
-}
-
 /** A compact detail view for one standalone `bullswarm run` task. */
 function taskPage(model, opts, body) {
   const { width } = opts;
@@ -4580,7 +4454,26 @@ export function renderDashboardPage(model, options = {}) {
   else if (page === 'history') header = runsPage(model, opts, body);
   else if (page === 'fleet') header = fleetPage(model, opts, body);
   else if (page === 'help') header = helpPage(model, opts, body);
-  else if (page === 'step') header = stepPage(model, { ...opts, bodyHeight }, body);
+  else if (page === 'step') {
+    const stepPanel = workflowPanelModel(model.row, {
+      phaseIndex: opts.phaseIndex,
+      agentIndex: opts.agentIndex,
+    });
+    const stepActionId = stepPanel.selectedAgent?.action?.id
+      ?? stepPanel.selectedPhase?.actions?.[0]?.id
+      ?? null;
+    const step = stepPageModel(model, {
+      phaseIndex: opts.phaseIndex,
+      agentIndex: opts.agentIndex,
+      actionId: stepActionId,
+      nowMs: opts.nowMs,
+      selectedEventIndex: opts.stepSelectedEventIndex,
+      attemptOrdinal: opts.stepAttemptOrdinal,
+      activityFilter: opts.stepFilter,
+      follow: opts.stepFollow,
+    });
+    header = renderStepPage(step, { ...opts, bodyHeight }, body);
+  }
   else if (page === 'task') header = taskPage(model, { ...opts, bodyHeight }, body);
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
@@ -4876,6 +4769,15 @@ export async function runDashboard(bullswarmDir, {
     workflowVerbose: false,
     mobileTimeline: true,
     timelineSelection: null,
+    // Step-page-only transient state. The durable attempt/activity model stays
+    // immutable; these values drive selection, detail, filters, and section
+    // navigation while the reader is on the Step page.
+    stepDetail: false,
+    stepSection: 'activity',
+    stepSelectedEventIndex: null,
+    stepAttemptOrdinal: null,
+    stepFollow: true,
+    stepFilter: 'all',
     spinnerFrame: 0,
   };
   if (directV2) {
@@ -5039,6 +4941,12 @@ export async function runDashboard(bullswarmDir, {
     mobileTimeline: ui.mobileTimeline,
     timelineSelection: ui.timelineSelection,
     confirmCancel: ui.confirmCancel,
+    stepDetail: ui.stepDetail,
+    stepSection: ui.stepSection,
+    stepSelectedEventIndex: ui.stepSelectedEventIndex,
+    stepAttemptOrdinal: ui.stepAttemptOrdinal,
+    stepFollow: ui.stepFollow,
+    stepFilter: ui.stepFilter,
   });
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
@@ -5237,6 +5145,12 @@ export async function runDashboard(bullswarmDir, {
     ui.page = 'step';
     ui.focus = 2;
     ui.detailScroll = 0;
+    ui.stepDetail = false;
+    ui.stepSection = 'activity';
+    ui.stepSelectedEventIndex = null;
+    ui.stepAttemptOrdinal = null;
+    ui.stepFollow = true;
+    ui.stepFilter = 'all';
     bodyScroll = 0;
     paint();
   };
@@ -5867,11 +5781,93 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('stats', key)) return openPage('stats');
     if (keyPressed('history', key)) return openPage('history');
     if (keyPressed('fleet', key)) return openPage('fleet');
+    // `p` and Tab are global dashboard bindings elsewhere, but on Step they
+    // are the page's prompt and section navigation. Handle them before the
+    // period/sub-tab dispatch below; the remaining Step keys are handled in
+    // the fuller branch after Home/End have had their normal precedence.
+    if (ui.page === 'step' && (key === 'p' || key === '\t' || key === '\x1b[Z')) {
+      if (key === 'p') ui.stepSection = 'prompt';
+      else {
+        const at = STEP_SECTIONS.indexOf(ui.stepSection);
+        const delta = key === '\x1b[Z' ? -1 : 1;
+        ui.stepSection = STEP_SECTIONS[(at + delta + STEP_SECTIONS.length) % STEP_SECTIONS.length];
+      }
+      ui.stepDetail = false;
+      bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.[ui.stepSection] ?? 1) - 1);
+      // Preserve the shell's long-standing sibling-workflow affordance too;
+      // the Step region has already advanced, so callers that inspect the
+      // local section still observe the design's reverse traversal.
+      if (key === '\x1b[Z' && (allRows.length > 1 || activeRuns.length > 1)) return switchWorkflow(1);
+      return paint();
+    }
     if (keyPressed('period', key)) return nextPeriod();
     if (keyPressed('nextTab', key)) return nextTab();
     if (keyPressed('cycleWorkflow', key)) return switchWorkflow(1);
     if (keyPressed('top', key)) { bodyScroll = 0; ui.detailScroll = 0; return paint(); }
     if (keyPressed('end', key)) return scrollToEnd();
+    // Step owns a small, page-local reader: arrows select captured events or
+    // retry attempts, Enter opens the selected event, Tab cycles sections,
+    // Space follows the stream, and e/t choose the evidence filters. Keep it
+    // before the dashboard-wide p/o/t bindings so those keys cannot steal a
+    // Step interaction; q, Home, End and ? have already been handled above.
+    if (ui.page === 'step') {
+      const row = detailRow(bullswarmDir, selectedRunId);
+      const step = stepPageModel(row, {
+        phaseIndex: ui.phaseIndex,
+        agentIndex: ui.agentIndex,
+        selectedEventIndex: ui.stepSelectedEventIndex,
+        attemptOrdinal: ui.stepAttemptOrdinal,
+        activityFilter: ui.stepFilter,
+        follow: ui.stepFollow,
+      });
+      const activityIndices = step.activity?.visibleEventIndices ?? [];
+      const attempts = step.attemptHistory ?? [];
+      const moveSelection = (delta) => {
+        if (ui.stepSection === 'attempts') {
+          if (!attempts.length) return;
+          const at = attempts.findIndex((attempt) => Number(attempt.ordinal) === Number(ui.stepAttemptOrdinal ?? step.selectedAttempt?.ordinal));
+          const next = clamp((at < 0 ? (delta > 0 ? -1 : attempts.length) : at) + delta, 0, attempts.length - 1);
+          ui.stepAttemptOrdinal = attempts[next]?.ordinal ?? null;
+          ui.stepFollow = false;
+          ui.stepDetail = false;
+          return;
+        }
+        if (!activityIndices.length) return;
+        const at = activityIndices.findIndex((index) => Number(index) === Number(ui.stepSelectedEventIndex ?? step.activity?.selectedIndex));
+        const next = clamp((at < 0 ? (delta > 0 ? -1 : activityIndices.length) : at) + delta, 0, activityIndices.length - 1);
+        ui.stepSelectedEventIndex = activityIndices[next] ?? null;
+        ui.stepFollow = false;
+        ui.stepDetail = false;
+      };
+      if (keyPressed('up', key)) { moveSelection(-1); return paint(); }
+      if (keyPressed('down', key)) { moveSelection(1); return paint(); }
+      if (key === '\t' || key === '\x1b[Z') {
+        const at = STEP_SECTIONS.indexOf(ui.stepSection);
+        const delta = key === '\x1b[Z' ? -1 : 1;
+        ui.stepSection = STEP_SECTIONS[(at + delta + STEP_SECTIONS.length) % STEP_SECTIONS.length];
+        ui.stepDetail = false;
+        bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.[ui.stepSection] ?? 1) - 1);
+        return paint();
+      }
+      if (key === '\r' || key === '\n') {
+        if (ui.stepSection === 'activity' && step.activity?.selectedEvent != null) ui.stepDetail = !ui.stepDetail;
+        return paint();
+      }
+      if (key === ' ') {
+        ui.stepFollow = !ui.stepFollow;
+        if (ui.stepFollow) ui.stepSelectedEventIndex = null;
+        return paint();
+      }
+      if (key === 'a') { ui.stepSection = 'attempts'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.attempts ?? 1) - 1); return paint(); }
+      if (key === 'o') { ui.stepSection = 'outcome'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.outcome ?? 1) - 1); return paint(); }
+      if (key === 'p') { ui.stepSection = 'prompt'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.prompt ?? 1) - 1); return paint(); }
+      if (key === 'e') { ui.stepFilter = ui.stepFilter === 'errors' ? 'all' : 'errors'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
+      if (key === 't') { ui.stepFilter = ui.stepFilter === 'tools' ? 'all' : 'tools'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
+      if (keyPressed('out', key) || key === '\x7f' || key === '\b') {
+        if (ui.stepDetail) { ui.stepDetail = false; return paint(); }
+        return moveOut();
+      }
+    }
     if (ui.page === 'fleet' && key === 'e') { void runEdit(); return; }
     if (ui.page === 'runs') {
       if (key === '/') {

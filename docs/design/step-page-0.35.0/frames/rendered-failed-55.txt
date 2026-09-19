@@ -1,0 +1,30 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ cli · run clifx · FAILED · not verified · 1–27/46
+ Build the cli fixture
+ Pool      opencode2 · kaihk-3/gpt-5.6-luna · reasonin…
+ Route build/medium · most-behind capable pool · candi…
+ Money API — unknown · subscription — unknown
+ Tokens ~5,531 · estimated:utf8-bytes/4 · output 122 B
+
+── budget ─────────────────────────────────────────────
+ opencode2 · paid model · no licence meter
+ token classes read 4,814 · cache read — · cache write…
+
+── activity · capture order ────────────── following ──
+ event stream unavailable.
+ turns, tools, and event timing cannot be reconstructe…
+
+── attempts ───────────────────────────────────────────
+ 1 INTERRUPTED · opencode2 · kaihk-3/gpt-5.6-luna · 1m…
+>2 INTERRUPTED · opencode2 · kaihk-3/gpt-5.6-luna · 1m…
+
+── outcome and verification ───────────────────────────
+ ✗ workflow not verified
+ ✗ action execution FAILED
+ workflow status partial · execution and verification …
+ Durable result and action output recorded.
+ requirement evidence 0/1 recorded
+
+── prompt preview ─────────────────────────────────────
+ Bullswarm program action: step-model
+ [ back ] [ ● 1.clifx ] [Top] [End] [?.Help] 

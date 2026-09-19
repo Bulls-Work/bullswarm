@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0baae-6818-74e3-a244-aa628c17b83f"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc pwd","aggregated_output":"/tmp/bsw-codex-sample-QU2ZFx\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":45895,"cached_input_tokens":29184,"cache_write_input_tokens":0,"output_tokens":116,"reasoning_output_tokens":50}}

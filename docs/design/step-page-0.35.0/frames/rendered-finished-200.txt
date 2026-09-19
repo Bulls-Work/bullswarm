@@ -1,0 +1,28 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ step-view · run stefx · SUCCEEDED · VERIFIED · 1–25/44
+ Purpose  Build the step-view fixture
+ Pool      codex · attempt 1 · gpt-5.6-luna · reasoning unavailable · started 01:21 · elapsed 39m21s · output 122 B
+ Route    build/medium · most-behind capable pool · candidate codex/gpt-5.6-luna
+ Money    API ~ $0.000556 api estimated · subscription — unknown                                      Tokens ~1,832 · estimated:utf8-bytes/4
+ Status   SUCCEEDED · workflow completed · execution SUCCEEDED · verified VERIFIED
+
+── budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ codex · paid model · reader licence meter · weekly
+ token classes read 1,642 · cache read — · cache write — · output 190 · reasoning —
+
+── activity · capture order ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── following ──
+ event stream unavailable.                                                                                       selected event detail unavailable.
+ turns, tools, and event timing cannot be reconstructed.                                                         No event is selected in the captured stream.
+
+── attempt history ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>1 SUCCEEDED · codex · gpt-5.6-luna · 39m21s · ~1,832 tokens
+
+── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ✓ workflow VERIFIED
+ ✓ action execution SUCCEEDED
+ workflow status completed · execution and verification are separate
+ Durable result and action output recorded.
+ requirement evidence 1/1 recorded
+
+── prompt preview ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [ back ] [ ● 1.stefx ] [ ?.help ] [ quit ] 

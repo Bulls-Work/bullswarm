@@ -162,6 +162,120 @@ persisted event stream when the connector has one, and otherwise from
 without loading the transcript. An attempt with no samples draws no sparkline
 rather than a flat line.
 
+## The Step page: one action, all its evidence
+
+Press `Enter` on an action to open its Step page. Step is an evidence view,
+not a second output file: it combines the durable action and attempt records,
+the per-attempt stream when one was captured, the task and output files, and
+the workflow result envelope. It presents those sources in this order so the
+important answer is visible before the detail:
+
+1. **Identity and verdict** — action, run, purpose, execution status, workflow
+   status, and the independent verification verdict.
+2. **Selected attempt** — ordinal, pool, model, effort and reasoning, start and
+   finish or elapsed time, failure, output size, and usage.
+3. **Attempt history** — every retry in order, including interrupted and
+   failed attempts; the selected attempt is highlighted.
+4. **Route** — lane, effort, route reason, candidates, urgency, and forecast
+   when the attempt recorded them.
+5. **Money and tokens** — the API-rate amount and subscription amount are a
+   pair, with their bases beside them, followed by token classes and source.
+6. **Activity** — the captured event stream in persistence order, its minimap,
+   follow state, counts, and filters.
+7. **Selected activity detail** — only fields the selected event actually
+   captured: tool identity, arguments, result, provider time, duration, usage,
+   and causal ids.
+8. **Outcome and verification** — durable output, result-envelope status and
+   reason, requirement evidence, and the separate verification verdict.
+9. **Prompt and artifacts** — the task preview and paths for task, output,
+   stream, and result files.
+
+Execution success and verification are deliberately different facts. An
+action can be `succeeded` while a workflow is still unverified; a result can
+say `verified: true` only when the durable evidence gate says so. A failed
+action can leave output and token estimates while the workflow is `partial`
+and `verified: false`. While an action is running, verification is pending,
+not false.
+
+The attempt list is the retry record, not an inferred transcript. A row keeps
+the pool and model that actually ran, its ordinal, status, timing, route,
+failure, output bytes, token source, and money pair. When an attempt has no
+stream, the page says so; it does not rebuild turns or tools from the task or
+answer text. Aggregated money and token totals include all attempts, but a
+money side remains unknown when any required attempt value is unknown.
+
+### Activity is capture-order evidence
+
+When a connector declares a JSONL event stream, the Step page reads
+`stream-<action>-attempt-<n>.jsonl` and shows its `seq`/`at` order. `at` is the
+kernel's capture timestamp; a provider timestamp is a separate optional field.
+The minimap is a compact event-count view, and `following` keeps the selection
+on the newest visible event as a live stream grows. Start/completion cards are
+paired only when both events carry the same stable tool-call id. Prose that
+looks like a turn, tool, duration, usage, or subagent is never promoted into
+that structure.
+
+The activity filters are `all`, `turns`, `tools`, and `errors`. The selected
+event detail labels each absent field instead of filling it with a guess. A
+provider with no structured stream leaves a bounded `stdout-…-attempt-….log`
+tail; that is readable output, not an event feed. A bounded JSONL stream keeps
+its head, a `truncated` marker and its tail, so the page also reports that
+capture is incomplete.
+
+### Money pair and honest degradation
+
+The two money columns answer different questions:
+
+```text
+API       $0.61 api · provider-reported    subscription 1.5% wk · $0.42
+API       ~ $0.25 api · estimated           subscription — · no meter/calibration
+```
+
+API is the dated model-rate equivalent (or a transcript sum/byte estimate),
+while subscription is a measured or calibrated quota-window debit. `~` and
+`≈` keep estimates visibly different from measured dollars. Unknown is `—` or
+an `unknown` reason, never `$0.00`; a real measured zero remains `$0.00`.
+`pending` is used for a live attempt whose usage has not arrived yet.
+
+Every missing layer has a named state rather than a blank that looks complete:
+
+| What is missing | Step page says |
+| --- | --- |
+| No stream file, or a historical attempt whose stream was not retained | `event stream unavailable`; turns, tools, timing, and event usage cannot be reconstructed |
+| Plain stdout fallback | `plain stdout capture has no structured events` |
+| Bad JSONL lines | the parse-error count and `malformed stream lines ignored` |
+| Bounded capture | `truncated` and the dropped-event count |
+| No stable turn ids | `turns not captured` |
+| No tool id/name/arguments/result | the corresponding detail field is `unavailable` |
+| No provider timestamp or duration | capture time is shown; provider time/duration is `unavailable` |
+| No parent or subagent ids | subagent structure is `not captured` |
+| Live attempt without usage | `usage pending` and unknown money, not zero |
+| No API rate, subscription meter, plan price, or calibration | `api unknown` and/or `sub unknown` with its reason |
+| No durable result envelope | `result unavailable`; any separately recorded verification remains separate |
+| No verification verdict or requirement evidence | `verification unavailable` |
+| No task, output, stream, or result path | the artifact row says `not recorded` |
+
+At 55 columns the page is one column and selected detail replaces the feed. At
+120 columns the summary and activity remain full width with compact detail. At
+200 columns the activity and selected detail share the middle row. The sticky
+header and bottom navigation remain in all three layouts.
+
+### Step keys
+
+| Key | Does on Step |
+| --- | --- |
+| `↑`/`↓` | select the next or previous visible activity event or attempt |
+| `Enter` | open or close selected-event detail |
+| `Tab` / `Shift+Tab` | cycle Activity, Attempts, Outcome, and Prompt |
+| `Space` | toggle follow-tail |
+| `a` | jump to Attempts |
+| `o` | jump to Outcome |
+| `p` | show Prompt |
+| `e` | filter activity to errors |
+| `t` | filter activity to tools |
+| `Esc` / `Backspace` | close detail, then return to the previous page |
+| `?`, `q`, `Home`, `End` | open Help, quit the dashboard (the run continues), or jump to the top/bottom |
+
 ## Budget: every window a pool reports
 
 `Budget` no longer shows one window per pool. It shows every window the

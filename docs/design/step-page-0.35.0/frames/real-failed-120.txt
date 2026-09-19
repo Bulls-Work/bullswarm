@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ cli · run ytdsii · FAILED · not verified
+ Status   failed · kaihk/gpt-5.6-luna · reasoning max · NOT VERIFIED
+ Pool      opencode2 · attempt 2 · effort medium · reasoning max · history 2/2
+ Purpose  sample text …                                                                                                
+ Route    build/medium · most-behind capable pool (surplus 8.3) · skipped near 5h limit (projected): claude-code:acme 8…
+ Time     started 20:52 · elapsed 1m19s · API — unknown · subscription — unknown · Tokens ~5,531 · estimated:utf8-bytes…
+
+── budget ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ opencode2 · model class — · licence meter —
+ token classes read 4,814 · cache read — · cache write — · output 717 · reasoning —
+
+── activity · capture order ─────────────────────────────────────────────────────────────────────────────── following ──
+ event stream unavailable.
+ turns, tools, and event timing cannot be reconstructed.
+
+── selected event ──────────────────────────────────────────────────────────────────────────────────────────────────────
+ attempt 2 · interrupted · opencode2
+ failure provider stream reported error
+ not captured: structured provider payload, tool identity, final event
+
+── attempt history ─────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1 INTERRUPTED · opencode2:kaihk-3 · kaihk-3/gpt-5.6-luna · 1m25s · 1 KB · ~2,766 tokens · provider stream reported err…
+>2 INTERRUPTED · opencode2 · kaihk/gpt-5.6-luna · 1m19s · 1 KB · ~2,765 tokens · provider stream reported error
+
+── outcome and verification ────────────────────────────────────────────────────────────────────────────────────────────
+ ✗ workflow not verified
+ ✗ action execution FAILED
+ workflow status partial · execution and verification are separate
+ Durable result and action output recorded.
+ requirement evidence 0/8 recorded
+
+── prompt preview ──────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bullswarm program action: cli
+ Purpose: sample text …                                                                                                
+ Workspace: sample text …                                  
+ Your intended territory: sample text …                                                                                 
+ Other agents may share this tree. Preserve their changes and all pre-existing user work. Never revert sibling edits, r…
+ Read every dependency output below before starting. Carry forward concrete findings and outstanding shared-file reques…
+ … 8 more lines
+
+── task · first lines ──────────────────────────────────────────────────────────────────────────────────────────────────
+ Bullswarm program action: cli
+ Purpose: sample text …                                                                                                
+
+── output ────────────────────────────────────────────────────────────────────────────────────────────────── recorded ──
+ {"type":"error","timestamp":1789131237391,"sessionID":"ses_f6f7905b9ffeWsLC2hGEYc2wWT","error":{"name":"APIError","dat…
+ 
+
+── artifacts ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ task   /tmp/bsw-int35/workflows/wf-mtwyg33h-a19ccd/task-cli-attempt-2.md
+ output /tmp/bsw-int35/workflows/wf-mtwyg33h-a19ccd/out-cli-attempt-2.md
+ stream /tmp/bsw-int35/workflows/wf-mtwyg33h-a19ccd/stream-cli-attempt-2.jsonl
+ result /tmp/bsw-int35/workflows/wf-mtwyg33h-a19ccd/result.json
+ [↑↓ select] [Enter detail] [Space follow] [a attempts] [o outcome] [p prompt]
+
+
+
+
+ [ back ] [ ● 1.ytdsii ] [ ?.help ] [ quit ] 

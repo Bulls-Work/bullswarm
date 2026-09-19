@@ -1454,7 +1454,8 @@ function usageFixture(nowMs = Date.now()) {
       },
       {
         name: 'codex', enabled: false, usedPct: 81, elapsedPct: 60, pace: -21, pacingWindow: 'monthly',
-        incumbentLane: [], quarantine: null, meterSnapshot: null,
+        incumbentLane: [], quarantine: null, meterSnapshot: null, free: true, meterSource: 'none',
+        connector: { meter: { type: 'none' }, modelProfiles: [{ match: '.*', free: true }] },
       },
     ],
     assignments: [{ pool: 'relay', actionId: 'build-alpha', lane: 'build' }],
@@ -1551,6 +1552,41 @@ test('Enter walks in and Esc walks out one page at a time', async () => {
     const list = session.press(ESC_KEY); // run -> home
     assert.match(frameHeader(list), /^ bullswarm · home/);
     assert.doesNotMatch(list, /Workflow timeline/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Step keyboard controls select, filter, follow, open detail, and jump sections', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    writeFileSync(join(dir, 'stream-build-alpha-attempt-1.jsonl'), [
+      { seq: 1, at: '2026-08-29T00:02:01.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'started work' },
+      { seq: 2, at: '2026-08-29T00:02:02.000Z', source: 'codex', providerType: 'item.started', kind: 'command_execution', status: 'running', summary: 'run tests', eventId: 'evt-2', toolCallId: 'call-1', toolName: 'shell', arguments: { command: 'npm test' } },
+      { seq: 3, at: '2026-08-29T00:02:03.000Z', source: 'codex', providerType: 'item.completed', kind: 'command_execution', status: 'failed', summary: 'test failed', eventId: 'evt-3', toolCallId: 'call-1', toolName: 'shell', result: 'exit 1', durationMs: 1000 },
+    ].map((event) => JSON.stringify(event)).join('\n'));
+    const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 26 });
+    session.press('\r');
+    session.press('\r');
+    assert.match(frameHeader(lastFrame(session.output)), /build-alpha · run aaa111/);
+
+    assert.match(plain(session.press(' ')), /paused/);
+    assert.match(plain(session.press('t')), /\[tools\]/);
+    assert.match(plain(session.press('e')), /\[errors\]/);
+    session.press('\u001b[A');
+    session.press('\u001b[B');
+    const detail = plain(session.press('\r'));
+    assert.match(detail, /selected event/i);
+    assert.match(detail, /tool shell|result exit 1/);
+    const closed = plain(session.press(ESC_KEY));
+    assert.match(closed, /activity · capture order/);
+
+    assert.match(plain(session.press('a')), /attempt history/);
+    assert.match(plain(session.press('o')), /outcome and verification/);
+    session.press('p');
+    assert.match(plain(lastFrame(session.output)), /prompt preview/);
+    session.press('\t');
+    assert.match(plain(lastFrame(session.output)), /activity · capture order/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -1855,7 +1891,7 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     assert.match(plain(phaseOne), /implement-result · relay · gpt-5\.6-luna · max · #1/);
     // The drilled-in agent pane states it as a labelled field beside effort.
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
-    assert.match(agentPane, /succeeded · gpt-5\.6-luna · max/);
+    assert.match(agentPane, /succeeded · gpt-5\.6-luna · reasoning max/);
     // The V2 tier lives under attempt.routing; both fields read correctly.
     assert.match(agentPane, /relay · attempt 1 · effort low · reasoning max/);
     // Narrow mode keeps the same fact on the single full-width agent pane.
@@ -1869,7 +1905,7 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('attempts without a reasoning record render exactly as before', () => {
+test('attempts without a reasoning record mark the Step field unavailable', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-dashboard-noreasoning-'));
   try {
     const runId = 'wf-v2plain-abcdef';
@@ -1904,7 +1940,7 @@ test('attempts without a reasoning record render exactly as before', () => {
     assert.match(pane, /implement-result · relay · gpt-5\.6-luna · #1/);
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
     assert.match(agentPane, /relay · attempt 1 · effort auto/);
-    assert.doesNotMatch(agentPane, /reasoning/);
+    assert.match(agentPane, /reasoning —/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -2988,6 +3024,10 @@ test('the Step page writes an unmetered pool in words, never a dotted track', ()
     const row = rows.find((entry) => entry.runId === 'wf-alpha');
     const usage = usageFixture();
     for (const pool of usage.pools) delete pool.spend;
+    usage.pools.push({
+      name: 'opencode2', enabled: true, free: true, meterSource: 'none', pacingWindow: null,
+      connector: { meter: { type: 'none' }, modelProfiles: [{ match: '.*', free: true }] },
+    });
     const model = dashboardModel(row, { runs: rows.filter((entry) => entry.ongoing), usage });
     for (const width of [55, 120, 170, 200]) {
       const lines = plain(renderDashboardPage(model, {
@@ -3063,7 +3103,8 @@ test('an explicitly recorded "estimatedUsd: null" stays blank and is never count
       }).lines.join('\n'));
       assert.doesNotMatch(text, /\$0\.00/, `${page} manufactured a zero from a null estimate`);
       assert.doesNotMatch(text, /attempts priced/, `${page} counted a null estimate as priced`);
-      assert.match(text, /cost unknown/);
+      if (page === 'run') assert.match(text, /cost unknown/);
+      else assert.match(text, /API — unknown · subscription — unknown/);
       // A null ratePerMinute is a blank share, never 0.00%.
       assert.doesNotMatch(text, /≈ 0\.00% of its/, `${page} claimed a zero licence share`);
     }

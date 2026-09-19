@@ -105,7 +105,7 @@ function persistRecord(event, fullSummary, seq, responseBytes, stamp) {
       : (typeof event?.summary === 'string' ? event.summary : null);
     summary = clipUtf8(full, responseBytes);
   }
-  return {
+  const record = {
     seq,
     at: stamp(),
     source: event?.source ?? 'stdout',
@@ -114,6 +114,16 @@ function persistRecord(event, fullSummary, seq, responseBytes, stamp) {
     status: event?.status ?? null,
     summary,
   };
+  // Keep the original seven fields stable and append only provider-proven
+  // optional fields. Older streams simply do not have these keys, so readers
+  // can continue to decode them unchanged.
+  for (const field of [
+    'turnId', 'eventId', 'toolCallId', 'toolName', 'arguments', 'result',
+    'providerAt', 'durationMs', 'usage', 'parentId', 'subagentId',
+  ]) {
+    if (event?.[field] !== undefined && event?.[field] !== null) record[field] = event[field];
+  }
+  return record;
 }
 
 export function createAttemptStreamSink({

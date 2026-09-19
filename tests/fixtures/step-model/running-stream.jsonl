@@ -1,0 +1,7 @@
+{"seq":1,"at":"2026-09-19T17:50:31.709Z","source":"stdout","providerType":"item.completed","kind":"response","status":"completed","summary":"sample dolor qui excepteur amet non sit adipiscing proident, enim minim non sed exercitation aliqua sed consequat est mollit est mollit."}
+{"seq":2,"at":"2026-09-19T17:50:35.490Z","source":"stdout","providerType":"item.started","kind":"command_execution","status":"running","summary":"/bin/zsh -lc inspect task and repository guidance"}
+{"seq":3,"at":"2026-09-19T17:50:35.491Z","source":"stdout","providerType":"item.completed","kind":"command_execution","status":"completed","summary":"/bin/zsh -lc inspect task and repository guidance"}
+{"seq":4,"at":"2026-09-19T17:50:46.904Z","source":"stdout","providerType":"item.started","kind":"command_execution","status":"running","summary":"inspect dependency reports and stream contract"}
+{"seq":5,"at":"2026-09-19T17:50:46.905Z","source":"stdout","providerType":"item.completed","kind":"command_execution","status":"completed","summary":"inspect dependency reports and stream contract"}
+{"seq":6,"at":"2026-09-19T17:50:58.747Z","source":"stdout","providerType":"item.completed","kind":"response","status":"completed","summary":"sample e enim proident a exercitation, adipiscingdolor duis velit."}
+{"seq":7,"at":"2026-09-19T17:51:12.686Z","source":"stdout","providerType":"item.started","kind":"command_execution","status":"running","summary":"copy the Bullswarm home before inspection"}

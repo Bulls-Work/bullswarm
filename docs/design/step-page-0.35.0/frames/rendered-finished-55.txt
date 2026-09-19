@@ -1,0 +1,30 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ step-view · run stefx · SUCCEEDED · VERIFIED · 1–27…
+ Build the step-view fixture
+ Pool      codex · gpt-5.6-luna · reasoning — · 39m21s
+ Route build/medium · most-behind capable pool · candi…
+ Money API ~ $0.000556 api estimated · subscription — …
+ Tokens ~1,832 · estimated:utf8-bytes/4 · output 122 B
+
+── budget ─────────────────────────────────────────────
+ codex · paid model · reader licence meter · weekly
+ token classes read 1,642 · cache read — · cache write…
+
+── activity · capture order ────────────── following ──
+ event stream unavailable.
+ turns, tools, and event timing cannot be reconstructe…
+
+── attempts ───────────────────────────────────────────
+>1 SUCCEEDED · codex · gpt-5.6-luna · 39m21s · ~1,832 …
+
+── outcome and verification ───────────────────────────
+ ✓ workflow VERIFIED
+ ✓ action execution SUCCEEDED
+ workflow status completed · execution and verificatio…
+ Durable result and action output recorded.
+ requirement evidence 1/1 recorded
+
+── prompt preview ─────────────────────────────────────
+ Bullswarm program action: step-model
+ Purpose: build the evidence-honest Step model from du…
+ [ back ] [ ● 1.stefx ] [Top] [End] [?.Help] 

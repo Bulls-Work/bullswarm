@@ -95,6 +95,32 @@ test('jsonl under the cap is one object per line with the required fields and no
   } finally { cleanup(); }
 });
 
+test('provider-proven optional fields append without changing the legacy field set', () => {
+  const { dir, cleanup } = tmp();
+  try {
+    const streamFile = join(dir, 'stream.jsonl');
+    const sink = createAttemptStreamSink({ streamFile, now: () => STAMP });
+    sink.event({
+      source: 'stdout', providerType: 'assistant', kind: 'tool', status: 'running', summary: 'pwd',
+      eventId: 'event-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'Bash',
+      arguments: { command: 'pwd' }, providerAt: '2026-09-17T00:00:01.000Z',
+      usage: { input: 2, output: 1 }, parentId: 'parent-1', subagentId: 'child-1',
+    });
+    sink.event({ source: 'stdout', providerType: 'legacy', kind: 'response', status: 'completed', summary: 'DONE' });
+    sink.close();
+    const { rows } = parseJsonl(streamFile);
+    assert.deepEqual(rows[0], {
+      seq: 1, at: STAMP, source: 'stdout', providerType: 'assistant', kind: 'tool', status: 'running', summary: 'pwd',
+      eventId: 'event-1', turnId: 'turn-1', toolCallId: 'tool-1', toolName: 'Bash', arguments: { command: 'pwd' },
+      providerAt: '2026-09-17T00:00:01.000Z', usage: { input: 2, output: 1 }, parentId: 'parent-1', subagentId: 'child-1',
+    });
+    assert.deepEqual(rows[1], {
+      seq: 2, at: STAMP, source: 'stdout', providerType: 'legacy', kind: 'response', status: 'completed', summary: 'DONE',
+    });
+    assert.equal(Object.hasOwn(rows[1], 'eventId'), false);
+  } finally { cleanup(); }
+});
+
 test('a file that exceeds the cap is a head, one truncated marker, and a tail', () => {
   const { dir, cleanup } = tmp();
   try {

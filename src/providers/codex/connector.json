@@ -61,6 +61,30 @@
         "idPaths": [
           "item.id"
         ],
+        "eventIdPaths": [
+          "item.id"
+        ],
+        "toolCallIdPaths": [
+          "item.id"
+        ],
+        "toolCallIdMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
+        "toolNamePaths": [
+          "item.type"
+        ],
+        "toolNameMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
+        "argumentsPaths": [
+          "item.command"
+        ],
+        "argumentsMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
         "kindPaths": [
           "item.type"
         ],
@@ -81,6 +105,37 @@
         "idPaths": [
           "item.id"
         ],
+        "eventIdPaths": [
+          "item.id"
+        ],
+        "toolCallIdPaths": [
+          "item.id"
+        ],
+        "toolCallIdMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
+        "toolNamePaths": [
+          "item.type"
+        ],
+        "toolNameMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
+        "argumentsPaths": [
+          "item.command"
+        ],
+        "argumentsMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
+        "resultPaths": [
+          "item.aggregated_output"
+        ],
+        "resultMatch": {
+          "path": "item.type",
+          "equals": "command_execution"
+        },
         "kindPaths": [
           "item.type"
         ],
@@ -92,6 +147,21 @@
           "item.text"
         ],
         "status": "completed"
+      },
+      {
+        "rootMatch": {
+          "path": "type",
+          "equals": "turn.completed"
+        },
+        "kind": "result",
+        "status": "completed",
+        "usagePaths": {
+          "input": "usage.input_tokens",
+          "cacheRead": "usage.cached_input_tokens",
+          "cacheWrite": "usage.cache_write_input_tokens",
+          "output": "usage.output_tokens",
+          "reasoning": "usage.reasoning_output_tokens"
+        }
       }
     ],
     "usage": [

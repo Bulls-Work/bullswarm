@@ -190,6 +190,41 @@ report containing `git status --short`, `git diff --stat`, and the last
 is marked `outputSource: "derived"`; a non-truncated response is never
 overwritten.
 
+### Optional normalized activity fields
+
+Every persisted event keeps the seven transport fields — `seq`, `at`,
+`source`, `providerType`, `kind`, `status`, and `summary`. Connector rules may
+append these optional fields when a provider path resolves. The decoder bounds
+and redacts structured values before they reach the stream; an absent value is
+omitted, not guessed from a neighbouring summary.
+
+| Field | Meaning and boundary |
+| --- | --- |
+| `eventId` | The provider's event identity, when one exists. |
+| `turnId` | A stable provider turn identity. No shipped real fixture currently supplies one. |
+| `toolCallId` | The stable id used to correlate a tool start and completion. |
+| `toolName` | Provider tool name, bounded to a short scalar. |
+| `arguments` / `result` | Bounded JSON-safe provider input/output; sensitive keys are redacted. |
+| `providerAt` | Timestamp emitted by the provider; distinct from the kernel-captured `at`. |
+| `durationMs` | Provider-reported duration in milliseconds. |
+| `usage` | Per-event numeric fields from the rule: `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, and optionally `costUsd` (plus `cumulative` where declared). This is not an attempt's `standardRead`/`totalKnown` aggregate. |
+| `parentId` / `subagentId` | Causal or child-agent identity, only when the provider emits it and the connector maps it. |
+
+The following matrix is what the current shipped mappings actually supplied in
+the real trimmed captures under `tests/fixtures/stream/`. It describes those
+captures, not a promise that every event from a provider has every field:
+
+| Provider and capture | Optional fields supplied | Not supplied by that capture |
+| --- | --- | --- |
+| `codex` (`codex.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, and `result` on command events; `usage` on `turn.completed` with `input`, `cacheRead`, `cacheWrite`, `output`, and `reasoning` | `turnId`, `providerAt`, `durationMs`, `costUsd`, `parentId`, and `subagentId` |
+| `claude-code` (`claude-code.jsonl`) | `eventId`, `toolCallId`, `toolName`, `arguments`, `result`, and `providerAt`; `durationMs` on the result; event `usage` with input/cache/output/reasoning fields and `costUsd` on the result | No `turnId` or `subagentId`; the mapped `parentId` is null in this capture; no provider timestamp is present on the result event |
+| `grok` (`grok.jsonl`) | `toolCallId`, `toolName`, `arguments`, and `result` on tool events; `eventId` on the end event; event `usage` with input/cache/output/reasoning fields and `costUsd` on the end event | No `turnId`, `providerAt`, `durationMs`, `parentId`, or `subagentId`; the tool events have no `eventId` in this capture |
+
+For example, a Codex command can be paired because its `item.started` and
+`item.completed` records both map `item.id` to `toolCallId`. Claude Code's
+`tool_use_id` and Grok's `toolCallId` provide the same safe correlation. The
+core does not pair two events merely because their summaries look alike.
+
 The transcript fallback hook has this exact signature:
 
 ```js

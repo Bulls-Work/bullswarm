@@ -1,0 +1,11 @@
+{
+  "status": "partial",
+  "verified": false,
+  "reason": "program finished with 3 unsuccessful action(s)",
+  "requirements": [
+    {"id": "requirement-1", "mandatory": true, "status": "pending", "evidence": []}
+  ],
+  "actions": [
+    {"id": "cli", "status": "failed", "outputFile": "out-cli-attempt-2.md"}
+  ]
+}

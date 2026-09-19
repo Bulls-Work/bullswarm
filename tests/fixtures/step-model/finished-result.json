@@ -1,0 +1,16 @@
+{
+  "status": "completed",
+  "verified": true,
+  "reason": "all 8 steps succeeded and every mandatory requirement passed its check",
+  "requirements": [
+    {
+      "id": "requirement-1",
+      "mandatory": true,
+      "status": "passed",
+      "evidence": ["src/workflow/stat-kit.js exists and the mandatory requirement passed"]
+    }
+  ],
+  "actions": [
+    {"id": "stats-design", "status": "succeeded", "outputFile": "out-stats-design-attempt-1.md"}
+  ]
+}

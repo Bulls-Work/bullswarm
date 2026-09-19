@@ -38,6 +38,149 @@ function compact(value, max = 180) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// Optional fields in the normalized stream are deliberately mapped by the
+// connector. These helpers keep the core provider-neutral: a rule supplies
+// paths, while the decoder only applies bounded, JSON-safe normalization.
+const OPTIONAL_PATH_ALIASES = {
+  eventId: ['eventIdPaths', 'eventIdPath'],
+  turnId: ['turnIdPaths', 'turnIdPath'],
+  toolCallId: ['toolCallIdPaths', 'toolCallIdPath'],
+  toolName: ['toolNamePaths', 'toolNamePath'],
+  arguments: ['argumentsPaths', 'argumentsPath', 'argumentPaths', 'argumentPath'],
+  result: ['resultPaths', 'resultPath'],
+  providerAt: ['providerAtPaths', 'providerAtPath', 'timestampPaths', 'timestampPath'],
+  durationMs: ['durationMsPaths', 'durationMsPath', 'durationPaths', 'durationPath'],
+  parentId: ['parentIdPaths', 'parentIdPath'],
+  subagentId: ['subagentIdPaths', 'subagentIdPath'],
+};
+
+const STRUCTURED_VALUE_MAX_BYTES = 64_000;
+const STRUCTURED_VALUE_MAX_DEPTH = 6;
+const STRUCTURED_VALUE_MAX_KEYS = 96;
+const STRUCTURED_STRING_MAX_LENGTH = 16_000;
+const SENSITIVE_KEY_PATTERN = /(?:api[-_]?key|access[-_]?token|auth(?:orization)?|bearer|cookie|credential|password|passphrase|private[-_]?key|refresh[-_]?token|secret|signature)/i;
+const EVENT_USAGE_NUMERIC_FIELDS = new Set([
+  'input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'costUsd',
+]);
+
+function pathList(rule, field) {
+  for (const key of OPTIONAL_PATH_ALIASES[field] ?? []) {
+    if (rule?.[key] === undefined || rule?.[key] === null) continue;
+    return Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+  }
+  return [];
+}
+
+function valueAt(context, root, paths = []) {
+  for (const rawPath of paths) {
+    if (typeof rawPath !== 'string' || !rawPath) continue;
+    const rootOnly = rawPath.startsWith('$root.') || rawPath.startsWith('root.');
+    const path = rootOnly ? rawPath.replace(/^\$?root\./, '') : rawPath;
+    const candidates = rootOnly ? [root] : [context, root];
+    for (const candidate of candidates) {
+      const value = getPath(candidate, path);
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+  }
+  return null;
+}
+
+function mappedValue(rule, field, context, root) {
+  const match = rule?.[`${field}Match`];
+  if (match && !matches(context, match) && !matches(root, match)) return null;
+  return valueAt(context, root, pathList(rule, field));
+}
+
+function normalizeIdentifier(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value).trim();
+  return text ? text.slice(0, 240) : null;
+}
+
+function normalizeProviderAt(value) {
+  if (typeof value === 'string') return value.slice(0, 120) || null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return null;
+}
+
+function structuredValue(value, depth = 0, key = null) {
+  if (value === null || value === undefined) return null;
+  if (key && SENSITIVE_KEY_PATTERN.test(key)) return '[redacted]';
+  if (typeof value === 'string') return value.slice(0, STRUCTURED_STRING_MAX_LENGTH);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (depth >= STRUCTURED_VALUE_MAX_DEPTH) {
+    try { return compact(JSON.stringify(value), STRUCTURED_STRING_MAX_LENGTH); } catch { return null; }
+  }
+  if (Array.isArray(value)) return value.slice(0, STRUCTURED_VALUE_MAX_KEYS).map((item) => structuredValue(item, depth + 1));
+  if (typeof value !== 'object') return null;
+  const result = {};
+  for (const key of Object.keys(value).slice(0, STRUCTURED_VALUE_MAX_KEYS)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    const normalized = structuredValue(value[key], depth + 1, key);
+    if (normalized !== null) result[key] = normalized;
+  }
+  return result;
+}
+
+function normalizeStructured(value) {
+  const normalized = structuredValue(value);
+  if (normalized === null) return null;
+  try {
+    if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') <= STRUCTURED_VALUE_MAX_BYTES) return normalized;
+  } catch { return null; }
+  // The recursive limits above normally keep this branch unreachable. Keep
+  // the final guard deterministic if a provider sends an unusually wide tree.
+  return compact(JSON.stringify(normalized), STRUCTURED_VALUE_MAX_BYTES);
+}
+
+function normalizeDuration(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function eventUsage(rule, context, root) {
+  const mappings = rule?.usagePaths ?? rule?.eventUsagePaths;
+  if (!mappings || typeof mappings !== 'object' || Array.isArray(mappings)) return null;
+  const usage = {};
+  for (const [field, paths] of Object.entries(mappings)) {
+    if (field === 'cumulative' && typeof paths === 'boolean') continue;
+    const value = valueAt(context, root, Array.isArray(paths) ? paths : [paths]);
+    if (value === null || value === undefined || value === '') continue;
+    if (EVENT_USAGE_NUMERIC_FIELDS.has(field) && (typeof value === 'number' || typeof value === 'string')) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric >= 0 && value !== '') usage[field] = numeric;
+    } else if (typeof value === 'boolean' && field === 'cumulative') {
+      usage[field] = value;
+    }
+  }
+  if (!Object.keys(usage).length) return null;
+  if (rule.usageCumulative === true || mappings.cumulative === true) usage.cumulative = true;
+  return usage;
+}
+
+function optionalEventFields(rule, context, root) {
+  const fields = {};
+  const identifiers = ['eventId', 'turnId', 'toolCallId', 'parentId', 'subagentId'];
+  for (const field of identifiers) {
+    const value = normalizeIdentifier(mappedValue(rule, field, context, root));
+    if (value !== null) fields[field] = value;
+  }
+  const toolName = compact(mappedValue(rule, 'toolName', context, root), 120);
+  if (toolName !== null) fields.toolName = toolName;
+  const argumentsValue = normalizeStructured(mappedValue(rule, 'arguments', context, root));
+  if (argumentsValue !== null) fields.arguments = argumentsValue;
+  const resultValue = normalizeStructured(mappedValue(rule, 'result', context, root));
+  if (resultValue !== null) fields.result = resultValue;
+  const providerAt = normalizeProviderAt(mappedValue(rule, 'providerAt', context, root));
+  if (providerAt !== null) fields.providerAt = providerAt;
+  const durationMs = normalizeDuration(mappedValue(rule, 'durationMs', context, root));
+  if (durationMs !== null) fields.durationMs = durationMs;
+  const usage = eventUsage(rule, context, root);
+  if (usage !== null) fields.usage = usage;
+  return fields;
+}
+
 function outputText(value, max = 1_000_000) {
   if (typeof value !== 'string' || !value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -195,6 +338,7 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
           status: mappedStatus(rule, context) ?? 'observed',
           summary,
           summaryMode: rule.summaryMode ?? 'replace',
+          ...optionalEventFields(rule, context, root),
         };
         // Second arg is the pre-compaction scalar so a persist sink can keep
         // full response text; the pane reads `normalized.summary` only.

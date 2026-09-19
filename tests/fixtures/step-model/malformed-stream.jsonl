@@ -1,0 +1,4 @@
+{"seq":1,"at":"2026-09-19T17:50:31.709Z","kind":"response","status":"completed","summary":"captured"}
+not-json
+{"truncated":true,"dropped":2}
+{"seq":2,"kind":"response","status":"completed","summary":"after marker"}
