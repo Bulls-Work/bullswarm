@@ -69,6 +69,8 @@ const TABLE = {
   pools: ['force', 'json'],
   assignments: ['json'],
   doctor: ['json'],
+  home: [],
+  'home snapshot': ['runs', 'recent', 'since', 'no-streams', 'json'],
   version: [],
   update: ['check', 'json'],
   release: ['dry-run'],

@@ -448,7 +448,7 @@ function runsDelete(idToken, opts, rest) {
 // minutes. History is a timeline of every workflow, so all of them join the
 // index. A legacy directory nothing can be read from still records nothing and
 // raises nothing.
-export function cmdReindex(args = []) {
+export function cmdReindex(args = [], { bullswarmDir = BULLSWARM_DIR(), silent = false } = {}) {
   const opts = { json: false, force: false };
   for (const arg of args) {
     if (arg === '--json') opts.json = true;
@@ -458,7 +458,6 @@ export function cmdReindex(args = []) {
       return 2;
     }
   }
-  const bullswarmDir = BULLSWARM_DIR();
   const counts = { scanned: 0, written: 0, skipped: 0, legacy: 0, unfinished: 0, present: 0, failed: 0 };
   const failures = [];
   // One git resolution per working directory, not per run: 293 run
@@ -527,9 +526,9 @@ export function cmdReindex(args = []) {
   }
 
   const indexPath = rollupIndexPath(bullswarmDir);
-  if (opts.json) {
+  if (opts.json && !silent) {
     jsonOut({ ok: counts.failed === 0, indexPath, ...counts, failures }, { json: true });
-  } else {
+  } else if (!silent) {
     console.log(
       `✓ reindex: wrote ${counts.written}, skipped ${counts.skipped} `
       + `(${counts.legacy} legacy, ${counts.unfinished} unfinished, ${counts.present} already indexed`

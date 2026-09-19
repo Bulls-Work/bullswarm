@@ -53,6 +53,15 @@ function bullswarmDir() {
 }
 export const BULLSWARM_DIR = bullswarmDir; // back-compat for any external import
 
+function isHomeSnapshot(dir) {
+  try {
+    const marker = JSON.parse(readFileSync(join(dir, '.snapshot.json'), 'utf8'));
+    return marker?.kind === 'bullswarm-home-snapshot' && marker?.version === 1;
+  } catch {
+    return false;
+  }
+}
+
 export async function cmdWorkflow(args, {
   bullswarmDir = BULLSWARM_DIR(), input = process.stdin, output = process.stdout,
   runsAlias = null,
@@ -122,7 +131,7 @@ export async function cmdWorkflow(args, {
         if (opts.json || opts.cancel || opts.show || opts.all) {
           const token = opts.rest[0] ?? opts.show;
           const result = dashboardJson(bullswarmDir, {
-            all: opts.all,
+            all: opts.all || (opts.json && isHomeSnapshot(bullswarmDir)),
             token,
             cancel: opts.cancel,
           });
