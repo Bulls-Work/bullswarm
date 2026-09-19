@@ -19,8 +19,8 @@
 //       credential fails every following attempt on that pool in seconds; a
 //       verdict that carries no hint sends the next attempt straight back.
 
-import { spawn } from 'node:child_process';
-import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +35,9 @@ import { getMeterReading } from '../meters/registry.js';
 import { loadProviders, transcriptReaderFor } from './providers.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+export const FOLLOW_UP_PROMPT = 'Your previous turn ended without a final report. Write it now: what you changed per file, the test summary lines, contract deviations, shared-file requests.';
+const TRUNCATED_OUTPUT_MAX = 500;
 
 // The usage/subscription workers land their modules independently of this
 // wiring action. Resolve them lazily so the watcher remains usable in a
@@ -206,6 +209,121 @@ export function substituteArgv(cmdTemplate, { taskFile, cwd }) {
   );
 }
 
+function substituteFollowUpArgv(cmdTemplate, { taskFile, cwd, sessionId, prompt }) {
+  return cmdTemplate.map((arg) => String(arg)
+    .replaceAll('{taskFile}', taskFile)
+    .replaceAll('{bullswarmDir}', BULLSWARM_DIR)
+    .replaceAll('{cwd}', cwd)
+    .replaceAll('{sessionId}', sessionId)
+    .replaceAll('{prompt}', prompt));
+}
+
+function followUpArgv(connector, { taskFile, cwd, sessionId, prompt }) {
+  const followUp = connector.conversation?.followUp;
+  if (!Array.isArray(followUp?.cmd) || !followUp.cmd.length || !sessionId) return null;
+  const argv = substituteFollowUpArgv(followUp.cmd, { taskFile, cwd, sessionId, prompt });
+  const streamArgs = Array.isArray(followUp.eventStreamArgs)
+    ? followUp.eventStreamArgs
+    : (connector.eventStream?.args ?? []);
+  return argv.concat(streamArgs.map(String));
+}
+
+function toolOrCommandEvent(event) {
+  const kind = `${event?.kind ?? ''} ${event?.providerType ?? ''}`
+    .toLowerCase().replace(/[_-]/g, ' ');
+  return /\btool\b|\bcommand\b|\bfunction\b|\bshell\b/.test(kind);
+}
+
+function streamTextFor(obs, paths) {
+  const file = obs?.streamFile ?? paths?.streamFile ?? null;
+  if (file && existsSync(file)) {
+    try { return readFileSync(file, 'utf8'); } catch { /* use captured transport below */ }
+  }
+  return [obs?.eventOutput, obs?.stdout, obs?.stderr].filter(Boolean).join('\n');
+}
+
+function decodedStreamLines(text) {
+  const lines = [];
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    lines.push(line);
+    try {
+      const row = JSON.parse(line);
+      for (const value of [
+        row?.summary,
+        row?.text,
+        row?.result,
+        row?.message,
+        row?.command,
+        row?.item?.text,
+        row?.item?.command,
+        row?.content,
+      ]) {
+        if (typeof value === 'string') lines.push(...value.split(/\r?\n/));
+      }
+    } catch { /* plain transport line */ }
+  }
+  return lines;
+}
+
+function testSummaryFromStream(text) {
+  const lines = decodedStreamLines(text);
+  const blocks = [];
+  let current = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^#\s+tests\b/i.test(trimmed)) {
+      if (current.length) blocks.push(current);
+      current = [trimmed];
+      continue;
+    }
+    if (current.length && /^#\s+(?:pass|fail)\b/i.test(trimmed)) {
+      current.push(trimmed);
+      continue;
+    }
+    if (current.length && trimmed && !/^#\s+(?:skip|skipped|todo)\b/i.test(trimmed)) {
+      blocks.push(current);
+      current = [];
+    }
+  }
+  if (current.length) blocks.push(current);
+  return blocks.at(-1)?.join('\n') ?? '';
+}
+
+function gitSummary(targetDir, command) {
+  try {
+    return execFileSync('git', command, {
+      cwd: resolve(targetDir),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    }).trim();
+  } catch { return ''; }
+}
+
+function derivedReport(targetDir, obs, paths) {
+  const status = gitSummary(targetDir, ['status', '--short']);
+  const diffStat = gitSummary(targetDir, ['diff', '--stat']);
+  const tests = testSummaryFromStream(streamTextFor(obs, paths));
+  return [
+    'Derived report: the worker ended without a final report, so Bullswarm reconstructed the durable workspace evidence.',
+    '',
+    'Workspace status:',
+    status || '(no status output)',
+    '',
+    'Diff stat:',
+    diffStat || '(no diff stat output)',
+    '',
+    'Test summary:',
+    tests || '(no # tests/# pass/# fail block found in the captured stream)',
+  ].join('\n');
+}
+
+function outputIsTruncated(output, eventTimeline) {
+  if (typeof output !== 'string' || output.trim().length >= TRUNCATED_OUTPUT_MAX) return false;
+  return Number(eventTimeline?.lastToolSequence ?? 0) > Number(eventTimeline?.lastResponseSequence ?? 0);
+}
+
 function resolveAttemptStream(connector, opts = {}) {
   if (opts.attemptStream) return opts.attemptStream;
   const streamFile = opts.streamFile ?? null;
@@ -273,7 +391,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
     ? configuredTimeout * 1000
     : null;
-  const argv = argvWithModel(connector, {
+  const argv = opts.argv ?? argvWithModel(connector, {
     taskFile,
     cwd: resolve(targetDir),
   }, opts.model, opts.conversation, opts.reasoning ?? null);
@@ -327,12 +445,18 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     let providerFailureType = null;
     let providerFailureAt = null;
     let providerFailureText = null;
+    let eventSequence = 0;
+    let lastResponseSequence = 0;
+    let lastToolSequence = 0;
     // Assistant prose only. Tool results are quoted file/command output and
     // routinely contain limit wording that says nothing about OUR quota.
     let responseText = '';
     const attemptStream = resolveAttemptStream(connector, opts);
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
       onEvent: (event, fullSummary) => {
+        eventSequence += 1;
+        if (event?.kind === 'response') lastResponseSequence = eventSequence;
+        if (toolOrCommandEvent(event)) lastToolSequence = eventSequence;
         if (event?.kind === 'response' && typeof event.summary === 'string'
           // A truncation marker means a long answer, not a bare limit notice;
           // judging the collapsed head of a real report would kill a healthy
@@ -480,6 +604,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         reportedUsage: finishedStream.reportedUsage,
+        eventTimeline: { lastResponseSequence, lastToolSequence },
         detectedModel,
         providerFailureType,
         providerFailureAt,
@@ -502,6 +627,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         exitCode: code, signal, ...capturedStreams(), timedOut, stalled, cancelled, fatalSignature,
         eventOutput: eventDecoder?.output() ?? '',
         reportedUsage: finishedStream.reportedUsage,
+        eventTimeline: { lastResponseSequence, lastToolSequence },
         detectedModel,
         providerFailureType,
         providerFailureAt,
@@ -624,7 +750,43 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   }
   const wallSec = Math.round((endedAt - startedAt) / 100) / 10;
 
-  const output = extractOutput(connector, obs);
+  const initialOutput = extractOutput(connector, obs);
+  const outputTruncated = outputIsTruncated(initialOutput, obs.eventTimeline);
+  let output = initialOutput;
+  let outputSource = null;
+  if (outputTruncated) {
+    const sessionId = obs.reportedUsage?.sessionId ?? opts.conversation?.sessionId ?? null;
+    const followUp = connector.conversation?.followUp;
+    const followUpCommand = followUpArgv(connector, {
+      taskFile: paths.taskFile,
+      cwd: resolve(targetDir),
+      sessionId,
+      prompt: FOLLOW_UP_PROMPT,
+    });
+    if (followUpCommand) {
+      const originalStreamFile = opts.streamFile ?? paths.streamFile ?? null;
+      const originalStdoutFile = opts.stdoutFile ?? paths.stdoutFile ?? null;
+      const followUpObs = await runDelegate(connector, paths.taskFile, targetDir, {
+        ...opts,
+        argv: followUpCommand,
+        conversation: null,
+        attemptStream: null,
+        streamFile: originalStreamFile ? `${originalStreamFile}.follow-up` : null,
+        stdoutFile: originalStdoutFile ? `${originalStdoutFile}.follow-up` : null,
+      });
+      const followUpOutput = extractOutput(connector, followUpObs);
+      if (followUpOutput.trim()) {
+        output = followUpOutput;
+        outputSource = 'follow-up';
+      } else {
+        output = derivedReport(targetDir, obs, paths);
+        outputSource = 'derived';
+      }
+    } else {
+      output = derivedReport(targetDir, obs, paths);
+      outputSource = 'derived';
+    }
+  }
   writeFileSync(paths.outFile, output);
   const selectedModel = opts.model ?? obs.detectedModel ?? obs.reportedUsage?.model ?? connector.model ?? (() => {
     const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
@@ -928,6 +1090,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
 
   return {
     ...verdict,
+    ...(outputTruncated ? { outputTruncated: true, outputSource } : {}),
     ...(notes.length ? { notes } : {}),
     ok: verdict.ok,
     keepOnClaude: false,
@@ -946,6 +1109,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       providerFailureText: obs.providerFailureText,
       wallSec,
       outBytes: output.length,
+      ...(outputTruncated ? { outputTruncated: true, ...(outputSource ? { outputSource } : {}) } : {}),
       ...(obs.streamFile ? { streamFile: obs.streamFile } : {}),
       usage,
       // The level this attempt actually ran at, exactly as resolved. Reported

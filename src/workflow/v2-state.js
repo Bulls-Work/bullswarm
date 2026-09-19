@@ -52,6 +52,7 @@ const ATTEMPT_FIELDS = new Set([
   // bounded fallback when a persisted stream has no byte measurements.
   'outputBytes', 'streamFile', 'diffFile', 'changedFileCount', 'lastResponse', 'handoff',
   'notes', 'outputSamples',
+  'outputTruncated', 'outputSource',
   // The provider conversation this attempt ran in, when the connector supports
   // resuming one (src/workflow/v2-dispatch.js `sessionFor`): which pool and
   // model the session belongs to, the provider's own session id, how many
@@ -92,6 +93,7 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
   'ordinal', 'turn', 'status', 'pool', 'model', 'reasoning', 'startedAt', 'finishedAt',
   'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
   'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
+  'outputTruncated', 'outputSource',
 ]);
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
@@ -416,6 +418,7 @@ function validatePlanner(planner) {
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.planner.attempts[${index}].continued must be a boolean`);
     for (const field of ['lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.planner.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    validateOutputRecovery(attempt, `state.planner.attempts[${index}]`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.planner.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.planner.attempts[${index}].lastAgentEvent must be null or an object`);
   }
@@ -499,6 +502,7 @@ function validatePreflight(preflight) {
     if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.preflight.scout.attempts[${index}].usage must be null or an object`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.preflight.scout.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.preflight.scout.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
+    validateOutputRecovery(attempt, `state.preflight.scout.attempts[${index}]`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.preflight.scout.attempts[${index}].lastAgentEvent must be null or an object`);
   }
   if (preflight.scout.status === 'succeeded' && !preflight.scout.outputFile) fail('successful state.preflight.scout requires outputFile');
@@ -761,6 +765,18 @@ function validateOutputSamples(samples, at) {
   }
 }
 
+function validateOutputRecovery(attempt, at) {
+  if (attempt.outputTruncated !== undefined && typeof attempt.outputTruncated !== 'boolean') {
+    fail(`${at}.outputTruncated must be a boolean`);
+  }
+  if (attempt.outputSource !== undefined) {
+    nullableString(attempt.outputSource, `${at}.outputSource`);
+    if (attempt.outputSource !== null && !['follow-up', 'derived'].includes(attempt.outputSource)) {
+      fail(`${at}.outputSource must be follow-up or derived`);
+    }
+  }
+}
+
 function validateAttempts(attempts, program) {
   if (!Array.isArray(attempts)) fail('state.attempts must be an array');
   const programIds = new Set(program.actions.map((action) => action.id));
@@ -793,6 +809,7 @@ function validateAttempts(attempts, program) {
     if (attempt.session !== undefined && attempt.session !== null) validateAttemptSession(attempt.session, `state.attempts[${index}].session`);
     if (attempt.notes !== undefined) validateAttemptNotes(attempt.notes, `state.attempts[${index}].notes`);
     if (attempt.outputSamples !== undefined) validateOutputSamples(attempt.outputSamples, `state.attempts[${index}].outputSamples`);
+    validateOutputRecovery(attempt, `state.attempts[${index}]`);
     if (attempt.bytes !== undefined) validateAttemptBytes(attempt.bytes, `state.attempts[${index}].bytes`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.attempts[${index}].wallSec must be null or a non-negative finite number`);
     if (attempt.lastAgentEvent !== undefined && attempt.lastAgentEvent !== null && !isObject(attempt.lastAgentEvent)) fail(`state.attempts[${index}].lastAgentEvent must be null or an object`);

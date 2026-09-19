@@ -906,6 +906,10 @@ export async function dispatchV2Action({
       ...(streamFile ? { streamFile } : {}),
       ...(snapshot.ok ? { diffFile: files.diffFile, changedFileCount: snapshot.changedFiles.length } : {}),
       lastResponse: lastEvents.at(-1)?.summary ?? null,
+      ...(verdict.outputTruncated === true ? {
+        outputTruncated: true,
+        ...(verdict.outputSource ? { outputSource: verdict.outputSource } : {}),
+      } : {}),
       ...(Array.isArray(verdict.notes) && verdict.notes.length ? { notes: clone(verdict.notes) } : {}),
       ...(kind === 'stalled'
         ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }

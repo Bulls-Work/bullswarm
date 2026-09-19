@@ -125,7 +125,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `displayName` (a provider export) | strategy tables |
 | `bin`, `configDirs` | the default `setup` health check |
 | `env` | merged into the child process environment verbatim, never inspected |
-| `conversation.newArgs`, `resumeArgs` | dispatch session resume |
+| `conversation.newArgs`, `resumeArgs`, `followUp` | dispatch session resume and one connector-declared recovery turn |
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
 | `eventStream.usage` (`match`, `mode`, `fields`, optional `inclusive`) | provider-reported usage extraction; the watcher prefers this before transcript and byte fallback |
 | `eventStream.capture.responseBytes`, `capture.fileBytes` (both optional positive integers) | the per-attempt stream sink (`src/lib/attempt-stream.js`). Core defaults are 64000 bytes per persisted `response` event and 1048576 bytes per stream file; set either only when this CLI's answers or event volume make the default the wrong size. Omit the block and a connector still gets a persisted stream with no code |
@@ -161,6 +161,34 @@ components after collection and floors the parent at zero. Codex therefore
 declares `standardRead: ["cacheRead"]` and `output: ["reasoning"]`, while
 Claude Code declares `output: ["reasoning"]` because its thinking count is
 reported separately from output.
+
+### `conversation.followUp`
+
+An optional connector-owned recovery command lets the watcher send one more
+turn to the same provider session when an event-stream response is visibly
+truncated. It is a direct argv template, never a shell command. The watcher
+substitutes `{sessionId}`, `{prompt}`, `{cwd}`, `{taskFile}`, and
+`{bullswarmDir}`, then appends the declared `eventStreamArgs` (or the
+connector's `eventStream.args` when the follow-up block omits it):
+
+```json
+{
+  "conversation": {
+    "followUp": {
+      "cmd": ["example-cli", "resume", "{sessionId}", "{prompt}"],
+      "eventStreamArgs": ["--json"]
+    }
+  }
+}
+```
+
+The watcher runs at most one follow-up, using the session id decoded from the
+provider's `thread.started` event, and records `outputSource: "follow-up"`.
+When no `followUp` is declared, a truncated response is replaced by a derived
+report containing `git status --short`, `git diff --stat`, and the last
+`# tests`/`# pass`/`# fail` block found in the captured stream. Such a report
+is marked `outputSource: "derived"`; a non-truncated response is never
+overwritten.
 
 The transcript fallback hook has this exact signature:
 
