@@ -115,6 +115,7 @@ function blankRecord(confidence = 'none') {
     tokens: blankTokens(),
     model: null,
     sessionId: null,
+    cwd: null,
     file: null,
     firstAt: null,
     lastAt: null,
@@ -128,6 +129,7 @@ function resultRecord({ tokens, model = null, sessionId = null, file = null, at 
     tokens,
     model: typeof model === 'string' && model ? model : null,
     sessionId: typeof sessionId === 'string' && sessionId ? sessionId : null,
+    cwd: null,
     file,
     firstAt: at,
     lastAt: at,
@@ -307,7 +309,7 @@ function parsedSession(parentPath, {
 }
 
 function cwdMatches(parsed, cwd, parentPath) {
-  if (typeof cwd !== 'string' || cwd === '') return false;
+  if (typeof cwd !== 'string' || cwd === '') return true;
   return parsed.cwd === cwd || basename(dirname(parentPath)) === slugForCwd(cwd);
 }
 
@@ -327,7 +329,7 @@ function candidateFiles(home, cwd, sessionId) {
 export function buildTranscriptIndex({ home = homedir() } = {}) {
   const entries = parentFiles(home, null, null).map((filePath) => {
     const edge = transcriptEdges(filePath);
-    const rows = [...edge.head, ...edge.tail];
+    const rows = edge.head;
     const cwd = rows.find((row) => typeof row.cwd === 'string' && row.cwd)?.cwd ?? null;
     const sessionId = rows.find((row) => typeof (row.sessionId ?? row.session_id) === 'string');
     return {
@@ -384,7 +386,8 @@ export function readTranscriptUsage({
   const files = indexed
     ? indexed.filter((entry) => wantedId
       ? entry.sessionId === wantedId
-      : (entry.cwd === cwd || basename(dirname(entry.file)) === slugForCwd(cwd))
+      : (typeof cwd !== 'string' || cwd === ''
+        || entry.cwd === cwd || basename(dirname(entry.file)) === slugForCwd(cwd))
         && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
     : candidateFiles(home, cwd, wantedId);
   const candidates = [];
@@ -418,6 +421,7 @@ export function readTranscriptUsage({
     tokens: chosen.tokens,
     model: chosen.model ?? null,
     sessionId: chosen.sessionId ?? wantedId,
+    cwd: chosen.cwd ?? null,
     file: chosen.file,
     firstAt: chosen.firstAt,
     lastAt: chosen.lastAt,

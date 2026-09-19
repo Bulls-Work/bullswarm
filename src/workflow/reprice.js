@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { loadConnectors } from '../lib/config.js';
+import { projectName } from '../lib/project.js';
 import { attachTranscriptUsage, estimateInvocationUsage } from '../lib/usage.js';
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
@@ -145,6 +146,62 @@ function attemptEntries(state) {
   return entries;
 }
 
+function taskRecord(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  if (entry.kind === 'run' || entry.source === 'run') return true;
+  return entry.source == null && entry.picked != null && entry.outFile != null;
+}
+
+function taskTimes(entry) {
+  const endedAt = entry?.endedAt ?? entry?.finishedAt ?? entry?.ts ?? null;
+  const endedMs = timeMs(endedAt);
+  const wallSec = nonNegative(entry?.wallSec);
+  const startedAt = entry?.startedAt
+    ?? (endedMs != null && wallSec != null ? new Date(endedMs - wallSec * 1000).toISOString() : null);
+  return { startedAt, endedAt };
+}
+
+function taskEntries(state) {
+  return (Array.isArray(state?.decisionLog) ? state.decisionLog : [])
+    .map((entry, index) => ({
+      task: entry,
+      index,
+      attempt: {
+        ...entry,
+        id: entry.id ?? `single-task-${index + 1}`,
+        actionId: 'single-task',
+        ordinal: 1,
+        pool: entry.pool ?? entry.picked ?? null,
+        model: entry.model ?? null,
+        ...taskTimes(entry),
+        cwd: entry.cwd ?? null,
+        project: entry.project ?? entry.projectName ?? null,
+        session: entry.session ?? null,
+        usage: entry.usage ?? null,
+      },
+      actionId: 'single-task',
+      ordinal: 1,
+      attemptId: entry.id ?? entry.outFile ?? `single-task-${index + 1}`,
+    }))
+    .filter(({ task }) => taskRecord(task));
+}
+
+function projectLabel(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text && text.toLowerCase() !== 'unknown' ? text : 'unknown';
+}
+
+function projectForRecord(record, state) {
+  return projectLabel(record?.project ?? record?.projectName
+    ?? state?.project ?? state?.intent?.project);
+}
+
+function projectDisplay(oldProject, newProject) {
+  const oldName = projectLabel(oldProject);
+  const newName = projectLabel(newProject);
+  return oldName === newName ? newName : `${oldName} → ${newName}`;
+}
+
 function tokenReport(usage) {
   const tokens = usage?.tokens ?? {};
   return {
@@ -216,7 +273,13 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
   const poolName = attempt.pool ?? oldUsage?.subscription?.pool ?? null;
   const connector = connectorFor(connectors, poolName);
   const model = attempt.model ?? oldUsage?.model ?? connector.model ?? null;
-  const sessionId = attempt.session?.sessionId ?? oldUsage?.sessionId ?? null;
+  const sessionId = attempt.session?.sessionId
+    ?? (typeof attempt.session === 'string' ? attempt.session : null)
+    ?? attempt.sessionId
+    ?? oldUsage?.sessionId
+    ?? null;
+  const cwd = attempt.cwd ?? state.intent?.cwd ?? null;
+  const oldProject = projectForRecord(attempt, state);
   const oldSubscription = oldUsage?.subscription ?? null;
   const subscription = subscriptionFor({ home, poolName, connector, oldSubscription });
   const endedAt = attempt.finishedAt ?? state.lifecycle?.finishedAt ?? null;
@@ -238,6 +301,10 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
       confidence: 'provider-reported',
       poolName,
       model,
+      cwd: null,
+      oldProject,
+      project: oldProject,
+      projectChanged: false,
       oldSource,
     };
   }
@@ -247,7 +314,7 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
     transcript = readTranscriptUsage({
       provider: poolName,
       sessionId,
-      cwd: state.intent?.cwd ?? null,
+      cwd,
       startedAt: attempt.startedAt ?? null,
       endedAt,
       home: transcriptHome,
@@ -257,6 +324,12 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
   }
   const confidence = transcript?.confidence ?? 'none';
   const matched = confidence === 'exact' || confidence === 'window';
+  const transcriptCwd = matched && typeof transcript?.cwd === 'string' && transcript.cwd
+    ? transcript.cwd : null;
+  const derivedProject = oldProject === 'unknown' && transcriptCwd
+    ? projectName(transcriptCwd) : null;
+  const project = oldProject === 'unknown' && derivedProject
+    ? projectLabel(derivedProject) : oldProject;
   let usage;
   if (matched && transcript?.tokens) {
     const estimated = usageFromTokens({
@@ -287,6 +360,10 @@ function candidateFor({ attempt, state, connectors, home, transcriptHome, readTr
     confidence,
     poolName,
     model: usage.model ?? model,
+    cwd: transcriptCwd,
+    oldProject,
+    project,
+    projectChanged: oldProject !== project,
     oldSource,
   };
 }
@@ -413,6 +490,7 @@ function table(rows) {
     ['try', (row) => row.ordinal],
     ['pool', (row) => row.pool ?? '-'],
     ['model', (row) => row.model ?? '-'],
+    ['project', (row) => row.project ?? 'unknown'],
     ['old tokenSource', (row) => row.oldTokenSource],
     ['old cost', (row) => money(row.oldCost)],
     ['new tokenSource', (row) => row.tokenSource],
@@ -424,6 +502,32 @@ function table(rows) {
   const widths = columns.map(([header], index) => Math.max(header.length, ...values.map((line) => line[index].length)));
   const format = (line) => line.map((value, index) => value.padEnd(widths[index])).join('  ').trimEnd();
   return [format(columns.map(([header]) => header)), format(widths.map((width) => '-'.repeat(width))), ...values.map(format)].join('\n');
+}
+
+function rowForCandidate({ runId, shortId = null, actionId, attemptId, ordinal, candidate, oldUsage }) {
+  const usage = candidate.usage;
+  return {
+    runId,
+    shortId,
+    actionId,
+    attemptId,
+    ordinal,
+    pool: candidate.poolName,
+    model: usage.model ?? candidate.model ?? null,
+    project: projectDisplay(candidate.oldProject, candidate.project),
+    oldProject: candidate.oldProject,
+    newProject: candidate.project,
+    projectChanged: candidate.projectChanged,
+    cwd: candidate.cwd,
+    oldTokenSource: sourceOf(oldUsage),
+    oldCost: oldApiUsd(oldUsage),
+    confidence: candidate.confidence,
+    tokenSource: sourceOf(usage),
+    totalKnown: usage.tokens?.totalKnown ?? null,
+    apiUsd: usage.api?.usd ?? null,
+    subscriptionUsd: usage.subscription?.usd ?? null,
+    subscriptionBasis: basisOf(usage),
+  };
 }
 
 /**
@@ -456,10 +560,13 @@ export function repriceRuns({
     filters: { since: since ?? null, pool: pool ?? null },
     scannedRuns: 0,
     scannedAttempts: 0,
+    scannedTasks: 0,
     matched: 0,
     ambiguous: 0,
     missing: 0,
     changedRuns: 0,
+    changedTasks: 0,
+    changedProjects: 0,
     rows: [],
     failures: [],
   };
@@ -476,7 +583,6 @@ export function repriceRuns({
       report.scannedAttempts += 1;
       const attempt = entry.attempt;
       const oldUsage = attempt.usage && typeof attempt.usage === 'object' ? attempt.usage : null;
-      const oldSource = sourceOf(oldUsage);
       let candidate;
       try {
         candidate = candidateFor({
@@ -496,24 +602,17 @@ export function repriceRuns({
       else if (confidence === 'none') report.missing += 1;
       else report.matched += 1;
       const usage = candidate.usage;
-      const row = {
+      const row = rowForCandidate({
         runId: run.runId,
         shortId: run.shortId ?? null,
         actionId: entry.actionId,
         attemptId: entry.attemptId,
         ordinal: entry.ordinal,
-        pool: candidate.poolName,
-        model: usage.model ?? candidate.model ?? null,
-        oldTokenSource: oldSource,
-        oldCost: oldApiUsd(oldUsage),
-        confidence,
-        tokenSource: sourceOf(usage),
-        totalKnown: usage.tokens?.totalKnown ?? null,
-        apiUsd: usage.api?.usd ?? null,
-        subscriptionUsd: usage.subscription?.usd ?? null,
-        subscriptionBasis: basisOf(usage),
-      };
-      runRows.push({ entry, usage, row });
+        candidate,
+        oldUsage,
+      });
+      if (candidate.projectChanged) report.changedProjects += 1;
+      runRows.push({ entry, usage, candidate, row });
       report.rows.push(row);
       onRow?.(row);
     }
@@ -523,7 +622,11 @@ export function repriceRuns({
       continue;
     }
     if (!apply || !runRows.length) continue;
-    for (const { entry, usage } of runRows) entry.attempt.usage = clone(usage);
+    for (const { entry, usage, candidate } of runRows) {
+      entry.attempt.usage = clone(usage);
+      if (candidate.cwd && !entry.attempt.cwd) entry.attempt.cwd = candidate.cwd;
+      if (candidate.projectChanged) entry.attempt.project = candidate.project;
+    }
     if (JSON.stringify(state) === original) continue;
     try {
       state.usage = stateUsage(state);
@@ -545,10 +648,70 @@ export function repriceRuns({
       // primitives; reprice deliberately does not duplicate index logic.
       writeRunRollup(run.runDir, state, result, {
         now: timeMs(finishedAt) ?? Date.now(),
+        cwd: runRows.find(({ candidate }) => candidate.cwd)?.candidate.cwd,
+        project: runRows.find(({ candidate }) => candidate.projectChanged)?.candidate.project,
       });
       report.changedRuns += 1;
     } catch (error) {
       report.failures.push({ runId: run.runId, error: error.message });
+    }
+  }
+
+  const taskStatePath = join(bullswarmDir, 'state.json');
+  const taskState = readJsonSafe(taskStatePath, null);
+  const taskRows = [];
+  if (taskState && typeof taskState === 'object') {
+    const original = JSON.stringify(taskState);
+    for (const entry of taskEntries(taskState)) {
+      if (!eligible(entry, { sinceMs, pool })) continue;
+      report.scannedTasks += 1;
+      const oldUsage = entry.attempt.usage && typeof entry.attempt.usage === 'object'
+        ? entry.attempt.usage : null;
+      let candidate;
+      try {
+        candidate = candidateFor({
+          attempt: entry.attempt,
+          state: { runId: `task:${entry.attemptId}`, lifecycle: { finishedAt: entry.attempt.finishedAt }, intent: { cwd: entry.attempt.cwd } },
+          connectors: connectorMap,
+          home: bullswarmDir,
+          transcriptHome,
+          readTranscriptUsage,
+        });
+      } catch (error) {
+        report.failures.push({ runId: entry.attemptId, error: error.message });
+        continue;
+      }
+      const confidence = candidate.confidence;
+      if (confidence === 'ambiguous') report.ambiguous += 1;
+      else if (confidence === 'none') report.missing += 1;
+      else report.matched += 1;
+      const row = rowForCandidate({
+        runId: entry.attemptId,
+        actionId: entry.actionId,
+        attemptId: entry.attemptId,
+        ordinal: entry.ordinal,
+        candidate,
+        oldUsage,
+      });
+      if (candidate.projectChanged) report.changedProjects += 1;
+      taskRows.push({ entry, candidate, usage: candidate.usage, row });
+      report.rows.push(row);
+      onRow?.(row);
+    }
+    if (apply && taskRows.length) {
+      for (const { entry, candidate, usage } of taskRows) {
+        entry.task.usage = clone(usage);
+        if (candidate.cwd && !entry.task.cwd) entry.task.cwd = candidate.cwd;
+        if (candidate.projectChanged) entry.task.project = candidate.project;
+      }
+      if (JSON.stringify(taskState) !== original) {
+        try {
+          writeJsonAtomic(taskStatePath, taskState);
+          report.changedTasks += 1;
+        } catch (error) {
+          report.failures.push({ runId: 'state.json', error: error.message });
+        }
+      }
     }
   }
   report.elapsedMs = Date.now() - beganAt;
@@ -610,7 +773,7 @@ export function cmdReprice(args = [], {
   } else {
     log(table(report.rows));
     log(REPRICE_RETENTION_CAVEAT);
-    log(`✓ reprice: ${report.rows.length} attempt${report.rows.length === 1 ? '' : 's'}, ${report.changedRuns} run${report.changedRuns === 1 ? '' : 's'} changed, ${(report.elapsedMs / 1000).toFixed(1)}s elapsed`);
+    log(`✓ reprice: ${report.rows.length} record${report.rows.length === 1 ? '' : 's'}, ${report.changedRuns} run${report.changedRuns === 1 ? '' : 's'} changed, ${report.changedProjects} project${report.changedProjects === 1 ? '' : 's'} backfilled, ${(report.elapsedMs / 1000).toFixed(1)}s elapsed`);
     for (const failure of report.failures) error(`✗ ${failure.runId}: ${failure.error}`);
   }
   return report.failures.length ? 1 : 0;

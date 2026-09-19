@@ -40,6 +40,7 @@ function none() {
     tokens: blankTokens(),
     model: null,
     sessionId: null,
+    cwd: null,
     file: null,
     firstAt: null,
     lastAt: null,
