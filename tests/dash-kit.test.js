@@ -549,21 +549,35 @@ test('absentLine is a dim single row of words bounded by width', () => {
   assert.equal(absentLine(null, null), '');
 });
 
-test('partial glyphs opt into licence slivers without changing default bars', () => {
+test('a reading too small for a cell draws a sliver, and only a true zero is empty', () => {
   withEnv(UNICODE_ENV, () => {
     assert.equal(progressBar(0.004, 10, { partialGlyph: '▏' }), `▏${'░'.repeat(9)}`);
     assert.equal(progressBar(0.24, 10, { partialGlyph: '▍' }), `▇▇▍${'░'.repeat(7)}`);
     assert.equal(progressBar(0, 10, { partialGlyph: '▏' }), '░'.repeat(10));
     assert.equal(progressBar(1, 10, { partialGlyph: '▏' }), '▇'.repeat(10));
+    // No opt-in needed: 0.4% of the bar rounds to no whole cell, and an empty
+    // track would say the pool was never touched rather than barely touched.
+    assert.equal(progressBar(0.004, 10), `▏${'░'.repeat(9)}`);
+    assert.equal(progressBar(0, 10), '░'.repeat(10));
+    assert.equal(progressBar(null, 10), '░'.repeat(10));
+    // A value that already earns whole cells is still rounded, not slivered.
+    assert.equal(progressBar(0.44, 10), `${'▇'.repeat(4)}${'░'.repeat(6)}`);
     const parts = [{ value: 0.4, glyph: '▇', color: METER_COLORS.red }, { value: 99.6, glyph: '░' }];
     const bar = shareBar(parts, { width: 10, partialGlyph: '▏' });
     assert.equal(visible(bar), `▏${'░'.repeat(9)}`);
     assert.match(bar, /\x1b\[38;2;191;108;105m▏/);
-    assert.equal(visible(shareBar(parts, { width: 10 })), '░'.repeat(10));
+    assert.equal(visible(shareBar(parts, { width: 10 })), `▏${'░'.repeat(9)}`);
+    // The sliver is one cell wide in the geometry too, so it can be hovered.
+    const meta = shareBarMeta(parts, { width: 10, colors: false });
+    assert.deepEqual(meta.parts.map((part) => part.width), [1, 9]);
+    // A part with no value at all borrows nothing.
+    assert.equal(visible(shareBar([{ value: 0, glyph: '▇' }, { value: 100, glyph: '░' }], { width: 10 })), '░'.repeat(10));
   });
   withEnv(ASCII_ENV, () => {
     assert.equal(progressBar(0.004, 10, { partialGlyph: '▏' }), '|.........');
+    assert.equal(progressBar(0.004, 10), '|.........');
     assert.equal(shareBar([{ value: 0.4 }, { value: 99.6 }], { width: 10, colors: false, partialGlyph: '▏' }), '|.........');
+    assert.equal(shareBar([{ value: 0.4 }, { value: 99.6 }], { width: 10, colors: false }), '|.........');
   });
 });
 

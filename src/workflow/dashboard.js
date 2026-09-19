@@ -4198,7 +4198,7 @@ function addStatsLegendRegions(view) {
  * no-op).
  */
 function alignStatsShareRegions(view) {
-  const shareGlyph = /[▓▒░█#.|]/;
+  const shareGlyph = /[▓▒░█▏#.|]/;
   const sourceLines = Array.isArray(view?.lines) ? view.lines : [];
   for (const region of Array.isArray(view?.regions) ? view.regions : []) {
     if (region?.action?.payload?.kind !== 'share' || !(region.width > 0)) continue;

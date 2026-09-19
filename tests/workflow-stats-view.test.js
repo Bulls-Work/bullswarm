@@ -157,7 +157,7 @@ test('every visible Spending panel track is covered cell-for-cell, including tin
   const desktop = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', ansi: false });
   assert.equal(desktop.regions.filter((region) => region.action.payload?.kind === 'share').length, 0);
   const view = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false });
-  const glyph = /[▓▒░█#.|]/;
+  const glyph = /[▓▒░█▏#.|]/;
   const shares = view.regions.filter((region) => region.action.payload?.kind === 'share');
   assert.ok(shares.length > 0);
   for (const region of shares) {

@@ -141,7 +141,7 @@ test('panel rows keep fixed label/bar/value columns and cut a label only once', 
     ],
   });
   const rows = panel.lines.slice(1).map(visible);
-  const barStarts = rows.map((line) => line.search(/[▓▒░█#]/));
+  const barStarts = rows.map((line) => line.search(/[▓▒░█▏#]/));
   assert.equal(new Set(barStarts).size, 1, rows.join('\n'));
   assert.ok(rows.every((line) => line.length === 29));
   assert.ok(rows.every((line) => line.includes('$') && /%$/.test(line)));
@@ -163,7 +163,7 @@ test('desktop panel grids measure one label column across every cell', () => {
   const second = renderPanel({ ...panels[1], width: 38, layout, colors: false });
   assert.equal(first.meta.barDropped, false);
   assert.equal(second.meta.barDropped, false);
-  assert.equal(first.lines[1].search(/[▓▒░█#]/), second.lines[1].search(/[▓▒░█#]/));
+  assert.equal(first.lines[1].search(/[▓▒░█▏#]/), second.lines[1].search(/[▓▒░█▏#]/));
 });
 
 test('a desktop grid drops every panel bar when one cell cannot fit it', () => {
@@ -178,7 +178,7 @@ test('a desktop grid drops every panel bar when one cell cannot fit it', () => {
   for (const [index, panel] of panels.entries()) {
     const drawn = renderPanel({ ...panel, width: [29, 28, 29, 28][index], layout, colors: false });
     assert.equal(drawn.meta.barDropped, true);
-    assert.ok(drawn.lines.slice(1).every((line) => !/[▓▒░█#]/.test(line)));
+    assert.ok(drawn.lines.slice(1).every((line) => !/[▓▒░█▏#]/.test(line)));
   }
 });
 
@@ -207,7 +207,7 @@ test('a colliding project label drops its bar but preserves value and share', ()
   });
   const rows = panel.lines.slice(1).map(visible);
   assert.equal(panel.meta.barsDroppedForCollision, true);
-  assert.ok(rows.every((line) => !/[▓▒░█#]/.test(line)));
+  assert.ok(rows.every((line) => !/[▓▒░█▏#]/.test(line)));
   assert.match(rows[0], /2 runs 66\.7%$/);
   assert.match(rows[1], /1 run 33\.3%$/);
   assert.notEqual(rows[0].slice(0, 15), rows[1].slice(0, 15));
@@ -254,11 +254,36 @@ test('panel hit regions cover the complete drawn track, including zero-filled va
   for (const region of regions) {
     const line = rows[region.row - 2];
     for (let x = region.columns.start; x <= region.columns.end; x += 1) {
-      assert.match(line[x - 1], /[▓▒░█#.|]/, `${region.payload.label} cell ${x} is not drawn`);
+      assert.match(line[x - 1], /[▓▒░█▏#.|]/, `${region.payload.label} cell ${x} is not drawn`);
     }
   }
   assert.equal(regions[1].payload.value, 0.01);
   assert.equal(regions[2].payload.value, 0);
+});
+
+test('a row worth anything at all draws a sliver, and only a true zero is empty', () => {
+  // The owner caught this on the Budget meters and on Pool spend, where codex
+  // at 3.8% of a six-cell bar rounded to no filled cell and read as unused.
+  const panel = renderPanel({
+    title: 'Pool spend', width: 29, labelWidth: 14, barWidth: 6, unit: 'usd', colors: false,
+    rows: [
+      { label: 'acme', value: 3.31, total: 7.11, share: 0.466 },
+      { label: 'codex', value: 0.27, total: 7.11, share: 0.038 },
+      { label: 'command-code', value: 0.07, total: 7.11, share: 0.01 },
+      { label: 'never-used', value: 0, total: 7.11, share: 0 },
+    ],
+  });
+  const { start, end } = panel.regions[0].columns;
+  const bars = panel.lines.slice(1).map((line) => visible(line).slice(start - 1, end));
+  assert.equal(bars[0], '▓▓▓▒▒▒');
+  assert.equal(bars[1], '▏▒▒▒▒▒');
+  assert.equal(bars[2], '▏▒▒▒▒▒');
+  assert.equal(bars[3], '▒▒▒▒▒▒');
+  // Every drawn row still answers on hover, the sliver included.
+  assert.deepEqual(
+    panel.regions.map((region) => [region.payload.label, region.payload.value]),
+    [['acme', 3.31], ['codex', 0.27], ['command-code', 0.07], ['never-used', 0]],
+  );
 });
 
 test('a narrow panel drops its bars before it cuts a value or missing reason', () => {
@@ -274,7 +299,7 @@ test('a narrow panel drops its bars before it cuts a value or missing reason', (
   assert.match(rows[0], /completed 53 · partial 2$/);
   assert.match(rows[1], /235\/301 passed 78\.1%$/);
   assert.match(rows[2], /— scroll for more$/);
-  assert.ok(rows.every((line) => !/[▓▒░█#]/.test(line)), rows.join('\n'));
+  assert.ok(rows.every((line) => !/[▓▒░█▏#]/.test(line)), rows.join('\n'));
 });
 
 test('neighbouring dated axis and value labels never touch', () => {

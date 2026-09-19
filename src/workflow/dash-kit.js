@@ -493,6 +493,30 @@ function allocate(values, cells) {
   return counts;
 }
 
+const TINY_GLYPH = '\u258f';
+
+/**
+ * A part that has any value at all keeps at least one cell, borrowed from the
+ * widest part that can spare one.  Rounding a live 1% down to nothing reads as
+ * "never used", which is a different fact from "barely used".  The borrowed
+ * cell is drawn as a sliver so the bar never overstates the reading either:
+ * one of six cells is 17% of the track, and the value that earned it is not.
+ * Returns the indexes that were promoted, so the caller can pick their glyph.
+ */
+function promoteTinyParts(values, counts) {
+  const promoted = new Set();
+  values.forEach((value, index) => {
+    if (!(value > 0) || counts[index]) return;
+    const donor = counts.reduce((best, count, at) => count > counts[best] ? at : best, 0);
+    if (counts[donor] > 1) {
+      counts[donor] -= 1;
+      counts[index] = 1;
+      promoted.add(index);
+    }
+  });
+  return promoted;
+}
+
 /**
  * A reading, or null when there is none. Only a finite number — or a string
  * that is one — counts: `Number(null)`, `Number('')` and `Number([])` are all
@@ -532,6 +556,11 @@ const SHARE_ASCII = Object.freeze(['#', '.', '|', '#']);
  * names one of the palette's hex values is painted in it, and the parts after
  * the first are dimmed — the closest this palette comes to the prototype's
  * bright `▓` over quieter `▒` and `░`.
+ *
+ * A part with any value at all is never rounded away to nothing: it borrows a
+ * cell from the widest part and is drawn as a sliver (`▏`, `|` in ascii), so a
+ * live 1% reads as barely used rather than untouched without claiming a whole
+ * cell's worth of share. `partialGlyph` only chooses which sliver is drawn.
  */
 export function shareBar(parts, { width = 20, colors = true, partialGlyph = null } = {}) {
   const cols = colsOf(width, 20);
@@ -546,25 +575,17 @@ export function shareBar(parts, { width = 20, colors = true, partialGlyph = null
     index,
   }));
   const counts = allocate(list.map((part) => part.value), cols);
-  const partials = new Set();
-  if (typeof partialGlyph === 'string' && [...partialGlyph].length === 1) {
-    list.forEach((part, index) => {
-      if (!(part.value > 0) || counts[index]) return;
-      const donor = counts.reduce((best, count, at) => count > counts[best] ? at : best, 0);
-      if (counts[donor] > 1) {
-        counts[donor] -= 1;
-        counts[index] = 1;
-        partials.add(index);
-      }
-    });
-  }
+  const partials = promoteTinyParts(list.map((part) => part.value), counts);
+  const sliver = typeof partialGlyph === 'string' && [...partialGlyph].length === 1
+    ? partialGlyph
+    : TINY_GLYPH;
   if (!counts.some((count) => count > 0)) return ' '.repeat(cols);
   let out = '';
   let painted = 0;
   list.forEach((part, index) => {
     const count = counts[index];
     if (!count) return;
-    const run = partials.has(index) ? (ascii ? '|' : partialGlyph) : part.glyph.repeat(count);
+    const run = partials.has(index) ? (ascii ? '|' : sliver) : part.glyph.repeat(count);
     if (colors && part.color) out += `${fgOf(part.color)}${run}${RESET}`;
     else if (colors && part.index > 0) out += `${DIM}${run}${RESET}`;
     else out += run;
@@ -589,16 +610,7 @@ export function shareBarMeta(parts, { width = 20, colors = true, partialGlyph = 
     index,
   }));
   const counts = allocate(list.map((part) => part.value), cols);
-  if (typeof partialGlyph === 'string' && [...partialGlyph].length === 1) {
-    list.forEach((part, index) => {
-      if (!(part.value > 0) || counts[index]) return;
-      const donor = counts.reduce((best, count, at) => count > counts[best] ? at : best, 0);
-      if (counts[donor] > 1) {
-        counts[donor] -= 1;
-        counts[index] = 1;
-      }
-    });
-  }
+  promoteTinyParts(list.map((part) => part.value), counts);
   const total = list.reduce((sum, part) => sum + part.value, 0);
   let x = 1;
   const geometries = list.map((part, index) => {
@@ -653,8 +665,11 @@ export function sparkline(values, width = 20, { markers = [] } = {}) {
 /**
  * `▇▇▇░░░░` for a fraction of the whole, rounded to the nearest cell and
  * clamped to the bar: a fraction of null or NaN fills nothing rather than
- * painting NaN cells. Plain glyphs, so a caller colours the bar it draws; an
- * ascii terminal gets `#` and `.`.
+ * painting NaN cells. A fraction too small to round up to one cell still draws
+ * a sliver (`▏`, `|` in ascii) rather than an empty track; only a true zero is
+ * empty. Plain glyphs, so a caller colours the bar it draws; an ascii terminal
+ * gets `#` and `.`. `partialGlyph` additionally shows the fractional tail of a
+ * bar that is part-way through a cell.
  */
 export function progressBar(fraction, width = 20, { partialGlyph = null } = {}) {
   const cols = colsOf(width, 20);
@@ -665,7 +680,9 @@ export function progressBar(fraction, width = 20, { partialGlyph = null } = {}) 
   const whole = Math.max(0, Math.min(cols, partial ? Math.floor(filled) : Math.round(filled)));
   const ascii = asciiGlyphsPreferred();
   const [full, empty] = ascii ? ['#', '.'] : ['▇', '░'];
-  const sliver = partial && filled > whole && whole < cols ? (ascii ? '|' : partialGlyph) : '';
+  // Same rule as the share bars: anything spent at all keeps a mark.
+  const wantsSliver = filled > whole && whole < cols && (partial || whole === 0);
+  const sliver = wantsSliver ? (ascii ? '|' : (partial ? partialGlyph : TINY_GLYPH)) : '';
   return full.repeat(whole) + sliver + empty.repeat(cols - whole - (sliver ? 1 : 0));
 }
 
