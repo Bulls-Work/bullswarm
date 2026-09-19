@@ -22,7 +22,12 @@ function tempHome() {
   mkdirSync(join(home, 'workflows'), { recursive: true });
   writeFileSync(join(home, 'state.json'), JSON.stringify({
     version: 1,
-    strategy: { subscriptions: { codex: { monthlyPriceUsd: 30, quotaWindow: 'weekly' } } },
+    strategy: {
+      subscriptions: {
+        codex: { monthlyPriceUsd: 30, quotaWindow: 'weekly' },
+        'claude-code': { monthlyPriceUsd: 30, quotaWindow: 'weekly' },
+      },
+    },
   }));
   return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -33,10 +38,16 @@ function fixtureState(home, {
   // fields needed for reprice and supplies its captured transcript separately.
   runId = 'wf-mtsz2t1c-763f7c',
   shortId = 'jrqubs',
+  lifecycleStatus = 'partial',
+  actionStatus = lifecycleStatus === 'completed' ? 'succeeded' : 'failed',
+  actionId = 'reprice-step',
+  pool = 'codex',
+  model = 'gpt-5.6-luna',
+  startedAt = '2026-09-19T15:15:01.830Z',
+  finishedAt = '2026-09-19T15:15:14.719Z',
+  initialTotal = 15,
   attempts = null,
 } = {}) {
-  const startedAt = '2026-09-19T15:15:01.830Z';
-  const finishedAt = '2026-09-19T15:15:14.719Z';
   const goal = createV2GoalDocument({
     goal: 'Reprice one captured provider attempt.',
     cwd: '/tmp/bs-reprice-fixture',
@@ -47,16 +58,16 @@ function fixtureState(home, {
   const runDir = join(home, 'workflows', runId);
   mkdirSync(runDir, { recursive: true });
   const action = {
-    id: 'reprice-step', purpose: 'Reprice one captured provider attempt.', dependsOn: [],
+    id: actionId, purpose: 'Reprice one captured provider attempt.', dependsOn: [],
     affects: [], ownedFiles: [], prompt: 'Inspect the captured usage.', lane: 'analyze',
     effort: 'low', evidenceFor: [], inputs: [], produces: [],
   };
   const defaultAttempt = {
-    id: 'reprice-step-1', actionId: action.id, ordinal: 1, status: 'failed',
-    pool: 'codex', model: 'gpt-5.6-luna', startedAt, finishedAt,
+    id: `${action.id}-1`, actionId: action.id, ordinal: 1, status: actionStatus,
+    pool, model, startedAt, finishedAt,
     outputFile: null, failureKind: 'semantic', why: 'fixture',
     usage: {
-      model: 'gpt-5.6-luna',
+      model,
       tokens: { standardRead: 12, cacheRead: null, cacheWrite: null, output: 3, reasoning: null, totalKnown: 15 },
       tokenSource: 'estimated:utf8-bytes/4',
       cost: { estimatedUsd: 0.0001, breakdown: null, basis: 'api-equivalent rate; subscription debit may differ' },
@@ -64,7 +75,11 @@ function fixtureState(home, {
     wallSec: 1,
   };
   state.lifecycle = {
-    status: 'partial', startedAt, finishedAt, resultFile: join(runDir, 'result.json'),
+    // A real completed run has already published its envelope. Build the
+    // fixture through the pre-publication state, then retain the published
+    // resultFile so reprice exercises the completed-status branch.
+    status: lifecycleStatus, startedAt, finishedAt,
+    resultFile: lifecycleStatus === 'completed' ? null : join(runDir, 'result.json'),
   };
   state.program = { schemaVersion: 'bullswarm.workflow.program.v2', revision: 1, actions: [action] };
   state.presentation.stages = [{
@@ -73,7 +88,7 @@ function fixtureState(home, {
   }];
   const durableAttempts = attempts ?? [defaultAttempt];
   state.actions = [{
-    id: action.id, status: 'failed', attempts: durableAttempts.length, programRevision: 1,
+    id: action.id, status: actionStatus, attempts: durableAttempts.length, programRevision: 1,
     workRevision: 'work-1', startedAt, finishedAt, outputFile: null, artifactIds: [],
     lastFailure: { kind: 'semantic', message: 'fixture' },
   }];
@@ -81,9 +96,10 @@ function fixtureState(home, {
   state.planner.status = 'completed';
   state.ledger.requirements['requirement-1'].status = 'pending';
   state.budget = { agents: durableAttempts.length, seconds: durableAttempts.length, expansions: 0 };
-  state.usage = { total: 15, byPool: { codex: 15 } };
+  state.usage = { total: initialTotal, byPool: { [pool]: initialTotal } };
   validateV2DurableState(state);
   const result = createV2ResultEnvelope(state, { finishedAt });
+  if (lifecycleStatus === 'completed') state.lifecycle.resultFile = join(runDir, 'result.json');
   writeJsonAtomic(join(runDir, 'state.json'), state);
   writeJsonAtomic(join(runDir, 'result.json'), result);
   return { runDir, state, result };
@@ -100,6 +116,79 @@ function connectorMap() {
         pricingSource: 'fixture-rate-card', pricingUpdatedAt: '2026-08-27',
       }],
     },
+    'claude-code': {
+      name: 'claude-code', model: 'claude-sonnet-5',
+      subscription: { quotaWindow: 'weekly', monthlyPriceUsd: 30 },
+      modelProfiles: [{
+        id: 'claude-sonnet-5',
+        pricing: {
+          inputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.2,
+          cacheWrite5mUsdPerMillion: 2.5, cacheWrite1hUsdPerMillion: 4,
+          outputUsdPerMillion: 10,
+        },
+        pricingSource: 'fixture-rate-card', pricingUpdatedAt: '2026-09-19',
+      }],
+    },
+  };
+}
+
+// Trimmed from the real completed run
+// /tmp/bsw-repricefix/workflows/wf-mtxvrham-9b0ffe (gznxqs). The two
+// attempts retain the copied run's real Claude model/pool and byte-estimate
+// numbers; the second attempt uses the same real-run values from the adjacent
+// completed Slack attempt so the fixture exercises aggregate step totals.
+function realCompletedFixture(home) {
+  const attempts = [
+    {
+      id: 'slack-live-proof-1', actionId: 'slack-live-proof', ordinal: 1, status: 'succeeded',
+      pool: 'claude-code', model: 'claude-sonnet-5',
+      startedAt: '2026-09-12T04:23:52.467Z', finishedAt: '2026-09-12T04:26:04.319Z',
+      usage: {
+        model: 'claude-sonnet-5', sessionId: 'real-claude-session-1',
+        tokens: { standardRead: 889, cacheRead: null, cacheWrite: null, output: 334, totalKnown: 1223 },
+        tokenSource: 'estimated:utf8-bytes/4', cost: { estimatedUsd: 0.005118 },
+      },
+      wallSec: 131.8,
+    },
+    {
+      id: 'slack-live-proof-2', actionId: 'slack-live-proof', ordinal: 2, status: 'succeeded',
+      pool: 'claude-code', model: 'claude-sonnet-5',
+      startedAt: '2026-09-12T04:24:02.467Z', finishedAt: '2026-09-12T04:25:04.319Z',
+      usage: {
+        model: 'claude-sonnet-5', sessionId: 'real-claude-session-2',
+        tokens: { standardRead: 1056, cacheRead: null, cacheWrite: null, output: 416, totalKnown: 1472 },
+        tokenSource: 'estimated:utf8-bytes/4', cost: { estimatedUsd: 0.006272 },
+      },
+      wallSec: 61.8,
+    },
+  ];
+  return fixtureState(home, {
+    runId: 'wf-mtxvrham-9b0ffe', shortId: 'gznxqs', lifecycleStatus: 'completed',
+    actionStatus: 'succeeded', actionId: 'slack-live-proof', pool: 'claude-code',
+    model: 'claude-sonnet-5', startedAt: '2026-09-12T04:23:52.194Z',
+    finishedAt: '2026-09-12T04:26:04.343Z', initialTotal: 2695, attempts,
+  });
+}
+
+function capturedClaudeUsage(sessionId) {
+  if (sessionId === 'real-claude-session-1') {
+    // 115,017 * $2/M + 495,679 * $0.2/M + 20,000 * $10/M.
+    return {
+      tokens: {
+        standardRead: 115017, cacheRead: 495679, cacheWrite5m: null,
+        cacheWrite1h: null, cacheWrite: 0, output: 20000, reasoning: null,
+        totalKnown: 630696,
+      },
+      model: 'claude-sonnet-5', sessionId, requests: [], confidence: 'window',
+    };
+  }
+  return {
+    tokens: {
+      standardRead: 1056, cacheRead: null, cacheWrite5m: null,
+      cacheWrite1h: null, cacheWrite: 0, output: 416, reasoning: null,
+      totalKnown: 1472,
+    },
+    model: 'claude-sonnet-5', sessionId, requests: [], confidence: 'exact',
   };
 }
 
@@ -169,6 +258,74 @@ test('--apply rewrites usage, result totals, rollup, and history through shared 
     assert.equal(existsSync(join(runDir, 'rollup.json')), true);
     assert.equal(existsSync(join(home, 'history', 'runs.jsonl')), true);
     assert.equal(JSON.parse(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8')).runId, 'wf-mtsz2t1c-763f7c');
+  } finally { cleanup(); }
+});
+
+test('--apply refreshes a completed real-run fixture without rebuilding its envelope', () => {
+  const { home, cleanup } = tempHome();
+  try {
+    const { runDir } = realCompletedFixture(home);
+    const beforeState = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    const beforeResult = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
+    const report = repriceRuns({
+      bullswarmDir: home,
+      apply: true,
+      connectors: connectorMap(),
+      readTranscriptUsage: ({ sessionId }) => capturedClaudeUsage(sessionId),
+    });
+    assert.equal(report.changedRuns, 1);
+    assert.equal(report.failures.length, 0);
+
+    const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
+    assert.deepEqual(state.lifecycle, beforeState.lifecycle);
+    assert.equal(state.attempts[0].usage.tokenSource, 'transcript-summed');
+    assert.equal(state.attempts[0].usage.tokens.totalKnown, 630696);
+    assert.equal(state.attempts[0].usage.api.usd, 0.5291698);
+    assert.equal(state.attempts[0].usage.subscription.pool, 'claude-code');
+    assert.equal(state.attempts[0].usage.subscription.basis, 'unknown:no-meter');
+
+    const result = JSON.parse(readFileSync(join(runDir, 'result.json'), 'utf8'));
+    assert.equal(result.status, beforeResult.status);
+    assert.equal(result.verified, beforeResult.verified);
+    assert.equal(result.reason, beforeResult.reason);
+    assert.deepEqual(result.requirements, beforeResult.requirements);
+    assert.equal(result.usage.totals.tokenSource, 'transcript-summed');
+    assert.equal(result.usage.totals.tokens, 632168);
+    assert.equal(result.usage.totals.apiUsd, 0.535442);
+    assert.equal(result.usage.totals.subscriptionUsd, null);
+    assert.equal(result.usage.steps['slack-live-proof'].tokens, 632168);
+    assert.equal(result.actions[0].usage.apiUsd, 0.535442);
+    assert.equal(result.actions[0].usage.subscriptionBasis, 'unknown:no-meter');
+
+    const rollup = JSON.parse(readFileSync(join(runDir, 'rollup.json'), 'utf8'));
+    assert.equal(rollup.pools['claude-code'].tokens, 632168);
+    assert.equal(rollup.pools['claude-code'].costUsd, 0.535442);
+    assert.equal(rollup.usage.tokenSource, 'transcript-summed');
+    assert.equal(rollup.usage.apiUsd, 0.535442);
+    const history = readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(history.at(-1).runId, 'wf-mtxvrham-9b0ffe');
+    assert.equal(history.at(-1).pools['claude-code'].tokens, 632168);
+  } finally { cleanup(); }
+});
+
+test('completed-run dry-run leaves state and result bytes unchanged', () => {
+  const { home, cleanup } = tempHome();
+  try {
+    const { runDir } = realCompletedFixture(home);
+    const before = new Map(['state.json', 'result.json'].map((name) => [
+      name, readFileSync(join(runDir, name)),
+    ]));
+    const report = repriceRuns({
+      bullswarmDir: home,
+      connectors: connectorMap(),
+      readTranscriptUsage: ({ sessionId }) => capturedClaudeUsage(sessionId),
+    });
+    assert.equal(report.apply, false);
+    assert.equal(report.failures.length, 0);
+    assert.equal(report.changedRuns, 0);
+    for (const [name, bytes] of before) assert.equal(readFileSync(join(runDir, name)).equals(bytes), true);
+    assert.equal(existsSync(join(runDir, 'rollup.json')), false);
   } finally { cleanup(); }
 });
 

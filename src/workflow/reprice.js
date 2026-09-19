@@ -326,6 +326,41 @@ function stateUsage(state) {
   };
 }
 
+// A result envelope is durable evidence, not a projection that may be
+// regenerated after a run has finished. Once resultFile is present,
+// evaluateV2Progress reports `completed`, while createV2ResultEnvelope only
+// accepts the pre-publication `ready-to-finalize` state. Reprice therefore
+// refreshes only usage-bearing fields in an existing envelope and leaves its
+// status, verdict, reason, requirements, and evidence intact.
+function refreshExistingResult(result, state) {
+  const refreshed = clone(result) ?? {};
+  const attempts = allAttempts(state);
+  const totals = aggregateAttemptUsage(attempts);
+  const actionIds = new Set([
+    ...(Array.isArray(state.program?.actions) ? state.program.actions : []).map((action) => action.id),
+    ...(Array.isArray(result?.actions) ? result.actions : []).map((action) => action.id),
+  ]);
+  const steps = {};
+  for (const actionId of actionIds) {
+    steps[actionId] = aggregateAttemptUsage(attempts.filter((attempt) => attempt?.actionId === actionId));
+  }
+  const oldUsage = result?.usage && typeof result.usage === 'object' ? result.usage : {};
+  refreshed.usage = {
+    ...oldUsage,
+    total: state.usage?.total ?? (totals.tokens ?? 0),
+    byPool: clone(state.usage?.byPool) ?? {},
+    totals,
+    steps,
+  };
+  if (Array.isArray(result?.actions)) {
+    refreshed.actions = result.actions.map((action) => ({
+      ...action,
+      usage: steps[action.id] ?? aggregateAttemptUsage([]),
+    }));
+  }
+  return refreshed;
+}
+
 function parseArgs(args) {
   const opts = { apply: false, json: false, since: null, pool: null, all: false };
   const values = new Set(['since', 'pool']);
@@ -494,21 +529,16 @@ export function repriceRuns({
       state.usage = stateUsage(state);
       const existingResult = readJsonSafe(join(run.runDir, 'result.json'), null);
       const finishedAt = existingResult?.finishedAt ?? state.lifecycle?.finishedAt;
-      // Until the integrator widens the result envelope's top-level usage
-      // validator, createV2ResultEnvelope accepts only its historical
-      // `total`/`byPool` state projection.  The richer counters remain in the
-      // durable state; the envelope recomputes `usage.totals`/`steps` from
-      // the canonical attempts itself.
-      const resultState = {
-        ...state,
-        usage: { total: state.usage.total, byPool: state.usage.byPool },
-      };
-      const result = createV2ResultEnvelope(resultState, { finishedAt });
+      const result = existingResult && isTerminalWorkflowStatus(state.lifecycle?.status)
+        ? refreshExistingResult(existingResult, state)
+        : createV2ResultEnvelope({
+          ...state,
+          usage: { total: state.usage.total, byPool: state.usage.byPool },
+        }, { finishedAt });
       // A copied home can retain an absolute resultFile from the source home.
       // Never follow that path: reprice writes only inside the run directory it
       // is currently operating on.
       const resultPath = join(run.runDir, 'result.json');
-      state.lifecycle.resultFile = resultPath;
       writeJsonAtomic(join(run.runDir, 'state.json'), state);
       writeJsonAtomic(resultPath, result);
       // The normal finish path and `workflow reindex` both use these exact
