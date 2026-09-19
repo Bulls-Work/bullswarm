@@ -487,6 +487,8 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     // whatever event happened to arrive last (`lastAgentEvent` is any kind).
     ...(record.lastResponse !== undefined ? { lastResponse: record.lastResponse } : {}),
     ...(record.handoff !== undefined ? { handoff: clone(record.handoff) } : {}),
+    ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
+    ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
   };
 }
 
@@ -1196,9 +1198,17 @@ async function runV2Kernel({
             status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
             failureKind: record.failureKind ?? null, why: record.why ?? null,
             usage: clone(record.usage ?? null), wallSec: record.wallSec ?? null,
+            ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
+            ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
           });
           addUsage(state, record);
-          emit('preflight.scout_attempt_finished', { ordinal: current.ordinal, status: current.status, failureKind: current.failureKind });
+          emit('preflight.scout_attempt_finished', {
+            ordinal: current.ordinal,
+            status: current.status,
+            failureKind: current.failureKind,
+            ...(current.outputTruncated === true ? { outputTruncated: true } : {}),
+            ...(current.outputSource ? { outputSource: current.outputSource } : {}),
+          });
         }
       },
       onActivity: ({ at, bytes }) => {
@@ -1345,9 +1355,18 @@ async function runV2Kernel({
             status: record.status, finishedAt: record.finishedAt, outputFile: record.outFile,
             failureKind: record.failureKind ?? null, why: record.why ?? null, usage: clone(record.usage ?? null),
             wallSec: record.wallSec ?? null,
+            ...(record.outputTruncated !== undefined ? { outputTruncated: record.outputTruncated } : {}),
+            ...(record.outputSource !== undefined ? { outputSource: record.outputSource } : {}),
           });
           addUsage(state, record);
-          emit('planner.attempt_finished', { turn, ordinal: currentAttemptId, status: record.status, failureKind: record.failureKind ?? null });
+          emit('planner.attempt_finished', {
+            turn,
+            ordinal: currentAttemptId,
+            status: record.status,
+            failureKind: record.failureKind ?? null,
+            ...(attempt?.outputTruncated === true ? { outputTruncated: true } : {}),
+            ...(attempt?.outputSource ? { outputSource: attempt.outputSource } : {}),
+          });
         }
       },
       onActivity: ({ at, bytes }) => {
@@ -1561,6 +1580,8 @@ async function runV2Kernel({
             ...(attempt?.diffFile ?? record.diffFile ? { diffFile: attempt?.diffFile ?? record.diffFile } : {}),
             ...(attempt?.changedFileCount != null ? { changedFileCount: attempt.changedFileCount } : (record.changedFileCount != null ? { changedFileCount: record.changedFileCount } : {})),
             ...(record.lastResponse != null ? { lastResponse: record.lastResponse } : {}),
+            ...(attempt?.outputTruncated === true ? { outputTruncated: true } : {}),
+            ...(attempt?.outputSource ? { outputSource: attempt.outputSource } : {}),
             ...(attempt?.notes ? { notes: clone(attempt.notes) } : (record.notes ? { notes: clone(record.notes) } : {})),
             ...(attempt?.outputSamples ? { outputSamples: clone(attempt.outputSamples) } : (record.outputSamples ? { outputSamples: clone(record.outputSamples) } : {})),
             ...(record.stalled ? {

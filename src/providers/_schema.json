@@ -16,6 +16,27 @@
     "cwdMode": "add-dir|task-file-dir",
     "$comment-cwd": "cwdMode documents how the CLI resolves its project: 'pwd' means the CLI resolves from $PWD so the watcher MUST set PWD and spawn inside --add-dir"
   },
+  "conversation": {
+    "$comment": "Optional session arguments. followUp is a connector-owned one-turn recovery command; the watcher substitutes {sessionId}, {prompt}, {cwd}, {taskFile}, and {bullswarmDir}, then appends eventStreamArgs verbatim (or eventStream.args when followUp omits it).",
+    "newArgs": [
+      "optional arguments for a new session, with {sessionId}"
+    ],
+    "resumeArgs": [
+      "optional arguments for a resumed normal attempt, with {sessionId}"
+    ],
+    "followUp": {
+      "cmd": [
+        "example-cli",
+        "resume",
+        "{sessionId}",
+        "{prompt}"
+      ],
+      "eventStreamArgs": [
+        "optional machine-readable output flags"
+      ],
+      "$comment": "The command is spawned directly (no shell), so {prompt} is one argv element even when it contains spaces. The watcher runs at most one follow-up after a detected truncated response."
+    }
+  },
   "authSignatures": [
     "strings in output that mean auth/throttle failure"
   ],

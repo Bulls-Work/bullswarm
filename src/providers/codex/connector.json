@@ -18,6 +18,21 @@
     "cwdMode": "add-dir",
     "$comment-argv": "{cwd} is substituted by the watcher with the resolved target directory. `-s danger-full-access` because codex is the only connector that sandboxes writes to its workspace, and a workflow evidence action must write its structured candidate into the run's own state directory under the bullswarm home. Without it codex does the work, produces valid evidence, and still fails the attempt with EPERM — run wf-mu0q9bxz-01e488 on 2026-09-14 burned two attempts, about 26 minutes and their quota each, both `schema` with 'the sandbox denied writing it to the required .bullswarm path'. command-code already runs --yolo for the same reason."
   },
+  "conversation": {
+    "followUp": {
+      "cmd": [
+        "codex",
+        "exec",
+        "resume",
+        "{sessionId}",
+        "{prompt}"
+      ],
+      "eventStreamArgs": [
+        "--json"
+      ],
+      "$comment": "Verified with `codex exec --help` and `codex exec resume --help`: resume accepts a session id followed by a prompt. The watcher supplies the thread_id from thread.started and sends exactly one recovery turn."
+    }
+  },
   "authSignatures": [
     "usage_credits_required",
     "unauthorized",

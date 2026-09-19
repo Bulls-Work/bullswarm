@@ -174,6 +174,7 @@ function disableProvider(bullswarmDir, name) {
 
 const PROVIDER_EXPORTS = ['name', 'displayName', 'connectors', 'readUsage', 'readTranscriptUsage', 'doctor'];
 const SPAWN_PLACEHOLDERS = ['taskFile', 'cwd', 'sessionId', 'bullswarmDir'];
+const FOLLOW_UP_PLACEHOLDERS = ['taskFile', 'cwd', 'sessionId', 'prompt', 'bullswarmDir'];
 const TIERS = ['high', 'medium', 'low'];
 const LANES = ['analyze', 'build', 'chore'];
 const METER_WINDOWS = ['5h', 'weekly', 'monthly', 'none'];
@@ -226,6 +227,28 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
   }
   if (pool.spawn?.cwdMode !== undefined && !enums.cwdModes.includes(pool.spawn.cwdMode)) {
     errors.push(`spawn.cwdMode: must be ${enums.cwdModes.join(', ')}`);
+  }
+
+  const followUp = pool.conversation?.followUp;
+  if (followUp !== undefined) {
+    if (!followUp || typeof followUp !== 'object' || Array.isArray(followUp)) {
+      errors.push('conversation.followUp: must be an object');
+    } else {
+      if (!isStringArray(followUp.cmd) || followUp.cmd.length === 0) {
+        errors.push('conversation.followUp.cmd: required non-empty array of strings');
+      } else {
+        for (const arg of followUp.cmd) {
+          for (const [, placeholder] of arg.matchAll(/\{([A-Za-z]+)\}/g)) {
+            if (!FOLLOW_UP_PLACEHOLDERS.includes(placeholder)) {
+              errors.push(`conversation.followUp.cmd: unknown placeholder {${placeholder}} (allowed: ${FOLLOW_UP_PLACEHOLDERS.map((p) => `{${p}}`).join(' ')})`);
+            }
+          }
+        }
+      }
+      if (followUp.eventStreamArgs !== undefined && !isStringArray(followUp.eventStreamArgs)) {
+        errors.push('conversation.followUp.eventStreamArgs: must be an array of strings');
+      }
+    }
   }
 
   const strategy = pool.outputExtraction?.strategy;
