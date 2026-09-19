@@ -2390,7 +2390,8 @@ function pageTabs(page, width) {
  * A run's digit sits inside its button (`[ 1.aaa111 ]`) and a label's key
  * letter is underlined, so the keys read off the nav. Below 100 columns the
  * tail is the phone layout's `[Top] [End] [?.Help]`; the run buttons keep the
- * left and drop from the end when they do not fit.
+ * left and drop from the end when they do not fit. If any are hidden, the
+ * selected run stays visible and a `+N more` button accounts for the rest.
  */
 function navParts(model, { page, width, selectedRunId }) {
   const narrow = width < 100;
@@ -2426,15 +2427,41 @@ function navParts(model, { page, width, selectedRunId }) {
       { key: 'q', label: 'quit', action: { kind: 'quit' } },
     ];
   // The way out is the last thing to go: the tail is kept whole and the run
-  // buttons fill whatever the terminal has left for them — a terminal too
+  // buttons fill whatever the terminal has left for them. A terminal too
   // narrow for the whole tail still gets its last button.
   const lineLength = (items) => 1 + items.reduce((sum, item) => sum + visibleLength(button(item)) + 1, 0);
-  const shown = [...runs];
-  while (shown.length && lineLength([...back, ...shown, ...tail]) > width) shown.pop();
-  while (tail.length > 1 && lineLength([...back, ...tail]) > width) tail.shift();
+  const moreButton = (count) => ({
+    key: null,
+    label: `+${count} more`,
+    action: { kind: 'page', page: 'runs' },
+  });
+  // Keep the fixed hints together whenever they fit. If the terminal is too
+  // narrow even for those hints, retain the existing fallback of dropping
+  // their leftmost entries until at least one remains.
+  const fittedTail = [...tail];
+  while (fittedTail.length > 1 && lineLength([...back, ...fittedTail]) > width) fittedTail.shift();
+
+  let shown = [...runs];
+  let more = null;
+  if (lineLength([...back, ...shown, ...fittedTail]) > width) {
+    // Once there is overflow, the reader's current run is the useful thing
+    // to keep on the phone. Preserve each item's Runs-page digit while
+    // moving that selected chip to the front; the remaining visible chips
+    // continue in Runs-page order.
+    const selected = runs.find((run) => run.mark) ?? runs[0] ?? null;
+    const ordered = selected ? [selected, ...runs.filter((run) => run !== selected)] : [];
+    shown = ordered.length ? [ordered[0]] : [];
+    for (const run of ordered.slice(1)) {
+      const hidden = runs.length - (shown.length + 1);
+      if (lineLength([...back, ...shown, run, moreButton(hidden), ...fittedTail]) > width) break;
+      shown.push(run);
+    }
+    const hidden = runs.length - shown.length;
+    if (hidden > 0) more = moreButton(hidden);
+  }
 
   const parts = [{ text: ' ' }];
-  for (const item of [...back, ...shown, ...tail]) {
+  for (const item of [...back, ...shown, ...(more ? [more] : []), ...fittedTail]) {
     parts.push({ text: button(item), action: item.action });
     parts.push({ text: ' ' });
   }
