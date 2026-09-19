@@ -1,0 +1,259 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "design",
+      "kind": "architecture",
+      "purpose": "Prove every provider data format with real data and write the implementation contract",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0, a git worktree on branch release-0.34.0 that already contains the cost audit under docs/studies/cost-audit-2026-09-18/ (read cost-fix-plan.md section 2 and claude-actual-vs-recorded.md first) and three working transcript readers under scripts/cost-audit/. You edit nothing. Your deliverable is the implementation contract that six parallel writers will build to, so it must be exact and every claim about a provider's data must be proven from real data. Never touch the live ~/.bullswarm: copy it (cp -Rp ~/.bullswarm /tmp/bsw-design) and read the copy. Real data to gather and quote verbatim in the report: (1) Codex stdout: run `codex exec --json --skip-git-repo-check -s read-only 'Reply with exactly the word ok' > /tmp/bsw-design/codex-stdout.jsonl 2>/tmp/bsw-design/codex-stderr.txt` in an empty directory, then quote every distinct `type` value and the full `turn.completed` line (or whichever line carries `usage`), so we know which token fields codex reports on stdout (input_tokens, cached_input_tokens, output_tokens, reasoning?) and whether a thread/session id appears (thread.started?). Then find that run's rollout under ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (match by time), quote its session_meta line and the last event_msg token_count payload.info.total_token_usage object. (2) Grok: quote one real shell.turn.inference_done row from ~/.grok/logs/unified.jsonl (redact nothing but the prompt text) and state how a bullswarm attempt's session id maps to `sid` (see src/providers/grok/connector.json conversation.newArgs). (3) Claude: quote one real `result` event from a stream-*.jsonl under /tmp/bsw-design/workflows/*/ whose providerType is claude-code (search with grep -l), and state where claude-code transcripts live for a given session id (~/.claude/projects/<slug>/<id>.jsonl and ~/.claude-acme/projects/...; check both) and how the slug is derived from cwd. (4) Meters: read src/meters/framework.js (MeterCache, paceSnapshot, WINDOW_KEYS) and the readUsage exports of src/providers/claude-code/provider.mjs and src/providers/codex/provider.mjs; quote the exact normalized window object shape the cache stores (per-window usedPct, resetsAt, window kind) and how a pool's cached meter is read by name, so the writers can snapshot usedPct at attempt start and end without a network call, and separately how to force a fresh read. Quote the codex WHAM response shape and the claude usage shape as parsed today. (5) Prices: read src/lib/prices.js (priceFor, planPriceFor, subscriptionCostUsd) and quote how a pool's monthly price and plan are resolved today (declared via strategy set-subscription vs detected), and the current rate cards in the three connector.json files. (6) Current record shape: read src/lib/usage.js estimateInvocationUsage, src/lib/watch.js where it is called, src/workflow/v2-dispatch.js where verdict.meta.usage is cloned onto the attempt, src/workflow/v2-runtime.js normalizeAttempt and addUsage, src/workflow/rollup.js pool totals, src/workflow/v2-outcome.js createV2ResultEnvelope, src/workflow/usage-view.js, and the Run/Home/Stats money call sites in src/workflow/dashboard.js and src/workflow/stats-model.js. Then write the contract with these sections, each precise enough to code from without asking: A. attempt.usage v2 record: full field list with types, including tokens {standardRead, cacheRead, cacheWrite5m, cacheWrite1h, cacheWrite, output, reasoning, totalKnown}, tokenSource ladder ('provider-reported' > 'transcript-summed' > 'estimated:utf8-bytes/4' > 'unknown'), sessionId, model, api {usd, breakdown, pricedFields, unpricedFields, rateCard {source, updatedAt}, basis}, subscription {pool, window, deltaPct, usd, monthlyPriceUsd, windowDays, basis in exactly one of 'observed:meter-delta' | 'calibrated:usd-per-pct' | 'unknown:no-price' | 'unknown:no-meter' | 'unknown:no-cost'}, snapshots {start:{at, usedPct, resetsAt}, end:{...}} \u2014 and the rule that unknown is null never 0. Keep the existing field names (cost.estimatedUsd, tokens.totalKnown, tokenSource, normalizedQuota) working as aliases so nothing already reading them breaks; say exactly which old fields stay and how they map. B. src/lib/transcripts/: index.js exporting readTranscriptUsage({provider, sessionId, cwd, startedAt, endedAt, home}) that dispatches to claude-code.js, codex.js, grok.js, each exporting the same signature and returning {tokens, model, sessionId, file, firstAt, lastAt, requests, confidence: 'exact'|'window'|'ambiguous'|'none'}; the session-resolution rules per provider (direct id, else cwd + time window; ambiguous \u2192 none); the dedup rules to carry over verbatim from scripts/cost-audit (Claude message.id:requestId dedup and subagents/ traversal; Codex last cumulative total_token_usage never summed; Grok per-request sum with the 200K long-context tier). C. The provider hook: each src/providers/<name>/provider.mjs exports `readTranscriptUsage(args)` delegating to the lib module, and the provider loader exposes it; how core discovers it (import the provider module by connector name) and what happens when a provider lacks it. Also the exact eventStream.usage rule JSON for codex (based on the real stdout you captured) and grok (or a statement, with evidence, that grok stdout carries nothing). D. src/lib/subscription-cost.js: windowDays(window) (5h \u2192 5/24, weekly \u2192 7, monthly \u2192 calendar days from resetsAt), windowPriceUsd(monthlyPriceUsd, window, resetsAt) = monthlyPriceUsd \u00d7 windowDays/30.4375 (state the divisor), subscriptionUsdFromPct(pct, windowPriceUsd), the calibration ledger file format at $BULLSWARM_HOME/calibration/<pool>.json ({schema:'bullswarm.calibration.v1', pool, window, samples:[{at, apiUsd, deltaPct, runId, attemptId}], usdPerPct, sampleCount, updatedAt}), how usdPerPct is derived (sum(apiUsd)/sum(deltaPct) over samples with deltaPct > 0, minimum 3 samples before it is used, cap 500 samples), and the decision tree that picks observed vs calibrated vs unknown. E. src/lib/quota-snapshot.js: snapshotPool(poolName, {home}) reading the cached meter only, returning {at, window, usedPct, resetsAt, ageMs} or null; deltaBetween(start, end) handling a reset between the two snapshots (return null with reason) and a stale start; and where in src/lib/watch.js the start snapshot must be taken (before spawn) and the end snapshot (after the process exits, with one forced fresh meter read if the cache is older than 60 s \u2014 name the function that forces it). F. Wiring: the exact call sequence in src/lib/watch.js runDelegate \u2192 estimateInvocationUsage \u2192 transcript fallback (only when tokenSource would be estimated or unknown and a sessionId or cwd+window is known) \u2192 subscription attach \u2192 calibration append (only when basis is observed and api.usd is known), and what src/cli.js run prints. G. Aggregation: the fields rollup.js adds per pool and per run (apiUsd, subscriptionUsd, measuredAttempts, pricedAttempts, worst tokenSource, worst subscription basis), the same for v2-outcome.js result envelope (per step and total), and the one shared formatter in src/lib/usage-basis.js: formatMoneyPair({api, subscription}) \u2192 e.g. '$0.42 api \u00b7 1.2% wk \u2248 $0.84 sub' with the glyph rule ($ measured, \u2248 summed/calibrated, ~ estimated, \u00b7 unknown) and the exact strings for each basis. H. reprice: `bullswarm workflow reprice [--apply] [--since <date>] [--pool <name>] [--json]` behaviour per attempt, dry-run table format, and the rollup/history rewrite it calls (find reindex in src/workflow/cli.js and name the functions). I. Fixtures: the exact real excerpts (file path + line numbers in the copied home or the provider stores) each writer should copy into tests/fixtures/transcripts/codex-rollout.jsonl, grok-unified.jsonl, claude-session.jsonl, claude-result-event.json, codex-stdout.jsonl, trimmed to under 40 lines each, with the expected totals computed from them so tests can assert real numbers. J. Territory map: confirm for each of the six writers (transcripts, provider-rules, subscription, wiring, views, reprice) that its owned files as listed in the program are sufficient, and list any file that will need an integrator change. Write the whole contract in your final report; it is the only thing the writers will see."
+    },
+    {
+      "id": "transcripts",
+      "kind": "implement",
+      "purpose": "Transcript readers promoted into src/lib/transcripts and exposed as the provider hook",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/lib/transcripts/index.js",
+        "src/lib/transcripts/claude-code.js",
+        "src/lib/transcripts/codex.js",
+        "src/lib/transcripts/grok.js",
+        "src/providers/claude-code/provider.mjs",
+        "src/providers/codex/provider.mjs",
+        "src/providers/grok/provider.mjs",
+        "tests/transcripts.test.js",
+        "tests/fixtures/transcripts/codex-rollout.jsonl",
+        "tests/fixtures/transcripts/grok-unified.jsonl",
+        "tests/fixtures/transcripts/claude-session.jsonl",
+        "tests/fixtures/transcripts/claude-result-event.json",
+        "tests/fixtures/transcripts/codex-stdout.jsonl"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job: build src/lib/transcripts/index.js, claude-code.js, codex.js, grok.js per contract section B, promoting the logic of scripts/cost-audit/claude-transcript-cost.mjs, codex-session-cost.mjs, and grok-session-cost.mjs with their dedup rules intact (leave the scripts in place, unchanged). Export `readTranscriptUsage` from each of src/providers/claude-code/provider.mjs, src/providers/codex/provider.mjs, src/providers/grok/provider.mjs per contract section C, delegating to the lib module. Create the fixtures named in contract section I under tests/fixtures/transcripts/ from the real excerpts it names, and write tests/transcripts.test.js asserting the real totals the contract computed from those excerpts, plus one test per resolution rule (direct id, cwd+window, ambiguous \u2192 none, missing store \u2192 none)."
+    },
+    {
+      "id": "provider-rules",
+      "kind": "implement",
+      "purpose": "Provider usage rules, cache-write pricing, validator warnings, provider docs",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-6",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/providers/codex/connector.json",
+        "src/providers/grok/connector.json",
+        "src/providers/claude-code/connector.json",
+        "src/providers/_schema.json",
+        "src/provider-cli.js",
+        "docs/reference/providers.md",
+        "tests/provider-usage-rules.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job: (1) add the eventStream.usage rules from contract section C to src/providers/codex/connector.json and, if the contract proved grok stdout carries usage, to src/providers/grok/connector.json; extend the annotated template src/providers/_schema.json to show the reasoning field and the new hook. (2) Cache-write pricing: for every modelProfiles entry that has a pricing block in the three connector.json files, add cacheWrite5mUsdPerMillion / cacheWrite1hUsdPerMillion (Anthropic publishes both tiers) or the vendor's single cache-write rate, ONLY where the vendor publishes one; fetch the pricingSource page (curl -sL) to confirm every rate you write and re-stamp pricingUpdatedAt with today's date 2026-09-19 for each profile you touched; quote the confirming line from each page in your report. Where a vendor publishes no cache-write rate, leave it absent and say so. (3) In src/provider-cli.js make `bullswarm provider validate` warn (not fail) when a connector declares eventStream but no eventStream.usage, and when a modelProfiles pricing block lacks cache-write rates; keep existing exit codes. (4) Update docs/reference/providers.md with the eventStream.usage field table, the reasoning token class, the readTranscriptUsage hook signature from contract section C, and the two new warnings. (5) Write tests/provider-usage-rules.test.js: run the validator over each first-class connector and assert the warnings appear or not as expected, and run the agent-events decoder (src/lib/agent-events.js) over tests/fixtures/transcripts/codex-stdout.jsonl if the transcripts worker created it; if it is not there yet, embed the real codex stdout lines the contract quoted directly in your test."
+    },
+    {
+      "id": "subscription",
+      "kind": "implement",
+      "purpose": "Subscription cost model, quota snapshots, calibration ledger, usage v2 record, shared formatter",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/lib/subscription-cost.js",
+        "src/lib/quota-snapshot.js",
+        "src/lib/usage.js",
+        "src/lib/usage-basis.js",
+        "tests/subscription-cost.test.js",
+        "tests/quota-snapshot.test.js",
+        "tests/usage.test.js",
+        "tests/usage-basis.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job: (1) create src/lib/subscription-cost.js per contract section D and src/lib/quota-snapshot.js per section E, exactly as specified, including the calibration ledger read/append under $BULLSWARM_HOME/calibration/<pool>.json with atomic writes (write to a temp file then rename) and the minimum-sample and cap rules. (2) Extend src/lib/usage.js estimateInvocationUsage to return the attempt.usage v2 record from contract section A: add tokens.reasoning, the api block (usd, breakdown, pricedFields, unpricedFields, rateCard, basis), and accept a new `subscription` input computed by the caller; keep every existing field the contract lists as an alias so current tests keep passing, and add `attachTranscriptUsage(record, transcriptResult)` that upgrades tokens and tokenSource to 'transcript-summed' and re-prices. (3) Rewrite src/lib/usage-basis.js to be the one shared formatter from contract section G (formatMoneyPair and the per-basis glyph strings) while keeping formatUsageBasis working. (4) Tests: tests/subscription-cost.test.js (window math with the exact divisor, calibration derivation with fewer than the minimum samples \u2192 unknown, the observed/calibrated/unknown decision tree, ledger append and cap), tests/quota-snapshot.test.js (delta across a reset \u2192 null with reason, stale start), and extend tests/usage.test.js and tests/usage-basis.test.js for the v2 fields and every glyph string. Use a temp BULLSWARM_HOME under os.tmpdir() for ledger tests."
+    },
+    {
+      "id": "wiring",
+      "kind": "implement",
+      "purpose": "Every attempt measures tokens, prices them, snapshots the meter, and stores the v2 record",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-3",
+        "requirement-4",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/lib/watch.js",
+        "src/workflow/v2-dispatch.js",
+        "src/workflow/v2-runtime.js",
+        "src/cli.js",
+        "tests/attempt-usage-wiring.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job is contract section F: wire measurement into every attempt. In src/lib/watch.js take the pool meter snapshot before spawn and after exit using quota-snapshot.js (import from '../lib/quota-snapshot.js' relative to the file; the subscription worker creates it \u2014 code to the contract signatures and, if the module does not exist yet when you test, create a minimal stub only inside your test via a mock, never in src/), thread the decoder's usage() into estimateInvocationUsage as it is today, then when tokenSource is estimated or unknown and a sessionId or cwd+time window is known call the provider's readTranscriptUsage hook (discover it per contract section C) and apply attachTranscriptUsage, then compute the subscription block via subscription-cost.js and append a calibration sample when the basis is observed and api usd is known. Persist snapshots, sessionId, and the v2 usage record onto the attempt: src/workflow/v2-dispatch.js already clones verdict.meta.usage \u2014 make sure the v2 fields survive; in src/workflow/v2-runtime.js make normalizeAttempt keep `session` and the full usage record and make addUsage carry apiUsd and subscriptionUsd alongside tokens. In src/cli.js make `bullswarm run` print the money pair via the shared formatter (import formatMoneyPair from src/lib/usage-basis.js; if it is not there yet, code to the contract and say so). Write tests/attempt-usage-wiring.test.js using the existing watch test harness patterns from tests/watch.test.js and tests/workflow-v2-dispatch.test.js: a fake connector whose stream carries a real claude result event (copy from the contract), a meter cache seeded at 40.0% then 41.5% so the observed delta is 1.5, and assert the attempt record's tokens, tokenSource, subscription.basis 'observed:meter-delta', subscription.deltaPct 1.5, and that the ledger got one sample; a second case with no meter \u2192 basis 'unknown:no-meter' and usd null."
+    },
+    {
+      "id": "views",
+      "kind": "implement",
+      "purpose": "Aggregation from attempt to workflow and both costs shown everywhere through one formatter",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-4",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/workflow/rollup.js",
+        "src/workflow/v2-outcome.js",
+        "src/workflow/usage-view.js",
+        "src/workflow/dashboard.js",
+        "src/workflow/stats-model.js",
+        "src/workflow/stats-view.js",
+        "tests/workflow-rollup.test.js",
+        "tests/workflow-usage-view.test.js",
+        "tests/workflow-stats-model.test.js",
+        "tests/workflow-stats-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job is contract section G, aggregation and display. (1) src/workflow/rollup.js: add per-pool and per-run apiUsd, subscriptionUsd, measuredAttempts, pricedAttempts, worst tokenSource, worst subscription basis, and token class totals (cacheRead, cacheWrite, reasoning) instead of collapsing to totalKnown; null stays null, never 0. (2) src/workflow/v2-outcome.js createV2ResultEnvelope: per step and total apiUsd/subscriptionUsd with basis so `bullswarm workflow runs result --json` carries both. (3) src/workflow/usage-view.js, the Run page and step detail, Home, and Stats money call sites in src/workflow/dashboard.js, src/workflow/stats-model.js, src/workflow/stats-view.js: show API-rate and subscription cost side by side through formatMoneyPair from src/lib/usage-basis.js (the subscription worker writes it; code to the contract signature) so no call site formats money itself; a row whose worst basis is estimated must never render the bare $ form. Also `bullswarm workflow action show` output if it prints usage (find it in src/workflow/runs-cli.js only if that file prints money; otherwise leave it and file a shared-file request). (4) Tests: extend tests/workflow-rollup.test.js, tests/workflow-usage-view.test.js, tests/workflow-stats-model.test.js, tests/workflow-stats-view.test.js with fixtures whose attempts carry the v2 record, asserting the aggregated numbers and that an estimated row never shows a bare $. Render checks: copy the home (cp -Rp ~/.bullswarm /tmp/bsw-views), and with BULLSWARM_HOME=/tmp/bsw-views run `node bin/bullswarm.js workflow tui --json` and the stats/home renderers the tests use at 120 and 55 columns, and quote the money lines you see."
+    },
+    {
+      "id": "reprice",
+      "kind": "implement",
+      "purpose": "bullswarm workflow reprice back-fills history from transcripts",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-5",
+        "requirement-7"
+      ],
+      "ownedFiles": [
+        "src/workflow/reprice.js",
+        "src/workflow/cli.js",
+        "tests/workflow-reprice.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job is contract section H: add `bullswarm workflow reprice` as a new leaf in src/workflow/cli.js next to reindex, implemented in a new src/workflow/reprice.js. Dry-run by default: for every attempt in every $BULLSWARM_HOME/workflows/*/state.json (and single runs if the contract names their store) resolve the transcript through the provider hook from contract section C (import from src/lib/transcripts/index.js; the transcripts worker writes it \u2014 code to the contract signature and mock it in your tests), print a table: run, step, attempt, pool, model, old tokenSource, old cost, new tokenSource, new api usd, subscription usd if a calibration exists, and confidence. --apply writes the records (transcript-summed on a match; unknown with null cost on none or ambiguous \u2014 never leave the old byte estimate), then calls the same rollup and history rewrite reindex uses (name the functions you call). --since <date>, --pool <name>, --json. The command must print the retention caveat from cost-fix-plan.md section 2(c) verbatim. Tests in tests/workflow-reprice.test.js with a temp BULLSWARM_HOME built from a trimmed copy of one real run's state.json (cp -Rp ~/.bullswarm /tmp/bsw-reprice first, pick the smallest run there, quote its runId), a mocked transcript reader returning the contract's real fixture totals, and assertions on dry-run leaving files byte-identical and --apply rewriting tokenSource, cost, and the rollup."
+    },
+    {
+      "id": "docs",
+      "kind": "implement",
+      "purpose": "CHANGELOG 0.34.0, cost guide, design record, CLI and result reference",
+      "dependsOn": [
+        "design"
+      ],
+      "affects": [
+        "requirement-6"
+      ],
+      "ownedFiles": [
+        "CHANGELOG.md",
+        "docs/guide/cost.md",
+        "docs/guide/index.md",
+        "docs/index.md",
+        "docs/design/cost-0.34.0/README.md",
+        "docs/reference/cli.md",
+        "docs/reference/result.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0 (a git worktree on branch release-0.34.0). Other workers edit this tree at the same time: edit ONLY the files you own, preserve everyone else's edits, and when you need a change in a file outside your territory write the exact change you need under a heading 'Shared-file requests' in your report instead of editing it. Never read from or write to the live ~/.bullswarm; when you need a Bullswarm home for a test or a render, copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every format, field name, and number you rely on must be quoted from a real file or a real command's output in your report; never invent a sample. First read the 'design' dependency output in full and implement exactly the contract it defines (file paths, exported function names and signatures, record field names, basis strings). If the contract is impossible or wrong somewhere, say so in your report under 'Contract deviations' and explain what you did instead. Run the test files you own with `node --test <file>` and quote their summary lines (# tests / # pass / # fail). Finish with a report: what you changed per file, the test summary, contract deviations, shared-file requests. Your job: documentation for 0.34.0 from the design contract. (1) CHANGELOG.md: open a `## 0.34.0 \u2014 every dollar says how it was measured` section above 0.33.2 in the house style (read the 0.33.1 and 0.33.2 sections first: short declarative bullets, owner-facing, one line each) covering measured usage per provider, API-rate cost with cache writes, subscription cost with observed/calibrated bases, aggregation everywhere, reprice, the validator warnings, and the new provider hook. (2) docs/guide/cost.md (new): a plain-English guide \u2014 what the three token sources are, what the API-rate figure means and does not mean, how subscription cost is measured from meter deltas and calibrated from the ledger, the formulas with the exact divisor from the contract, how to declare a plan price, how to run reprice, and how to read the money pair glyphs; link it from docs/guide/index.md and docs/index.md. (3) docs/design/cost-0.34.0/README.md: the design record \u2014 copy the contract's sections A\u2013H faithfully, credit the audit under docs/studies/cost-audit-2026-09-18/, and list open questions. (4) docs/reference/cli.md: document `workflow reprice` and the new fields in `runs result --json` (coordinate by reading the contract; the provider-rules worker owns docs/reference/providers.md, do not touch it). (5) docs/reference/result.md: the new per-step and total cost fields. Quote real numbers only from the audit documents, cite their file names."
+    },
+    {
+      "id": "digest",
+      "kind": "digest",
+      "purpose": "Condense the seven writer reports for the integrator",
+      "dependsOn": [
+        "transcripts",
+        "provider-rules",
+        "subscription",
+        "wiring",
+        "views",
+        "reprice",
+        "docs"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Keep every 'Shared-file requests' and 'Contract deviations' section verbatim, and every quoted test summary line."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile the seven territories, make npm test green, prove it end to end on a copied home",
+      "dependsOn": [
+        "digest",
+        "design"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0. You are the sole writer now. Read the digest and every writer's report; apply every 'Shared-file request' and reconcile every 'Contract deviation' so the modules agree with each other (import paths, function names, field names). Run `npm test` and fix failures until it prints # fail 0; quote the final summary. Then prove it end to end with a copied home, never the live one: cp -Rp ~/.bullswarm /tmp/bsw-integrate; export BULLSWARM_HOME=/tmp/bsw-integrate; run `node bin/bullswarm.js provider validate codex` and quote its warnings; run `node bin/bullswarm.js run --lane=chore --add-dir=/tmp/bsw-integrate-work --prompt='Create a file named ok.txt containing the word ok' --json` (mkdir the work dir first) and quote the printed money pair and the saved record's tokens, tokenSource, api, and subscription blocks, then show the calibration ledger file it wrote (or explain, from the record's basis string, why none was written); run `node bin/bullswarm.js workflow reprice --json` (dry run) and quote the first five rows; run `node bin/bullswarm.js workflow runs result <the most recent finished run in the copy> --json` and quote its total apiUsd/subscriptionUsd fields. Update docs where the implementation diverged from the contract. Bump nothing in package.json and create no git commit. Finish with a report: test summary, the quoted evidence, and anything still open."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independent evidence for all seven requirements",
+      "dependsOn": [
+        "transcripts",
+        "provider-rules",
+        "subscription",
+        "wiring",
+        "views",
+        "reprice",
+        "docs",
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6",
+        "requirement-7"
+      ],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.34.0. Judge requirements 1\u20137 independently from the artifacts, inspecting only; try to break it. Never touch the live ~/.bullswarm: cp -Rp ~/.bullswarm /tmp/bsw-verify and export BULLSWARM_HOME=/tmp/bsw-verify. Run `npm test` and quote the summary. For requirement 1 run `node bin/bullswarm.js run --lane=analyze --add-dir=/tmp/bsw-verify-work --prompt='Reply with the word ok' --json` (mkdir first) and read the saved attempt record: is tokenSource provider-reported or transcript-summed, are the token classes populated, does the number match the provider's own transcript for that session (find it under ~/.codex/sessions or ~/.claude*/projects or ~/.grok/logs and compare)? For 2 check the api block has a per-class breakdown, rate card source and date, and that an unpriced class is named not zeroed; check the cache-write rates in the connectors against their pricingSource pages. For 3 check the subscription block basis strings, that unknown is null not 0, that a meter delta across two snapshots is used when present, and that the calibration ledger under /tmp/bsw-verify/calibration is written only on observed samples with the documented minimum-sample rule. For 4 compare the totals in `workflow runs result --json`, the Run page (`workflow tui --json` or the renderer tests), Home and Stats for one run: do attempt sums equal step sums equal run totals, and does an estimated attempt ever render as a bare $? For 5 run `workflow reprice` dry-run then --apply on the copy and diff a state.json before and after; confirm no-match attempts became unknown with null cost rather than keeping a byte estimate. For 6 run `provider validate` on each connector and read docs/reference/providers.md, docs/guide/cost.md, CHANGELOG.md. For 7 open tests/fixtures/transcripts/ and confirm the fixtures are real excerpts (compare a line against the real store) and the asserted totals follow from them."
+    }
+  ]
+}
