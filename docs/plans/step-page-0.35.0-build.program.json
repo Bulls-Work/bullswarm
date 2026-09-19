@@ -1,0 +1,164 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "extract",
+      "kind": "implement",
+      "purpose": "Mechanically extract the Step page into step-model.js and step-view.js with byte-identical output",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1"
+      ],
+      "ownedFiles": [
+        "src/workflow/step-model.js",
+        "src/workflow/step-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-dashboard.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0 (git worktree, branch release-0.35.0, rebased on the released 0.34.0 cost work: the attempt usage record now has api and subscription blocks, meter snapshots and tokenSource, and src/lib/usage-basis.js exports formatMoneyPair). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report. Never read or write the live ~/.bullswarm; copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every field and format you rely on must be quoted from a real file or command output. The design record is docs/design/step-page-0.35.0/README.md with frames under docs/design/step-page-0.35.0/frames/ (nine files, <state>-<width>.txt); read it in full first and build to it. Run your test files with `node --test <file>` and quote the summary lines; finish with a report of changes per file, test summary, contract deviations, shared-file requests. Your job is requirement 1 only, a mechanical extraction with no behaviour change: move the Step page out of src/workflow/dashboard.js (stepPage near line 3938 and the helpers the design record section 7 lists as Step-only) into src/workflow/step-model.js (data shaping: select action and attempts, resolve stream file path, read legacy and v2 cost fields, availability flags) and src/workflow/step-view.js (rendering and hit regions), leaving shared helpers (workflowPanelModel, reasoningText, clockText, formatBytes, outputSparkline, taskPreview, outcomePreview, wrapLines, statusIcon, durationText, truncate, visibleLength, meterAnsi, moneyText, runEconomics) in dashboard.js and importing them; stepBarText, stepPool and stepTally stay in dashboard.js because Home and Run use them; delete stepProgressText only if `grep -rn stepProgressText src tests` proves it has no caller. renderDashboardPage must call the extracted view at its existing Step dispatch point. Prove byte-identical output: before touching anything, render the Step page for one real running step and one finished step from the copied home at 55, 120 and 200 columns using the renderer entry the dashboard tests use, save the six frames, then after the extraction render again and `diff` each pair; quote the diff results (must be empty). Run `npm test` and quote the summary; it must be fully green. Write nothing new in the page: the feature work comes in later steps that depend on yours."
+    },
+    {
+      "id": "stream-contract",
+      "kind": "implement",
+      "purpose": "Additive normalized stream fields proven from real provider output",
+      "dependsOn": [],
+      "affects": [
+        "requirement-2",
+        "requirement-6"
+      ],
+      "ownedFiles": [
+        "src/lib/agent-events.js",
+        "src/lib/attempt-stream.js",
+        "src/providers/_schema.json",
+        "src/providers/codex/connector.json",
+        "src/providers/claude-code/connector.json",
+        "src/providers/grok/connector.json",
+        "tests/agent-events.test.js",
+        "tests/attempt-stream.test.js",
+        "tests/fixtures/stream/codex.jsonl",
+        "tests/fixtures/stream/claude-code.jsonl",
+        "tests/fixtures/stream/grok.jsonl"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0 (git worktree, branch release-0.35.0, rebased on the released 0.34.0 cost work: the attempt usage record now has api and subscription blocks, meter snapshots and tokenSource, and src/lib/usage-basis.js exports formatMoneyPair). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report. Never read or write the live ~/.bullswarm; copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every field and format you rely on must be quoted from a real file or command output. The design record is docs/design/step-page-0.35.0/README.md with frames under docs/design/step-page-0.35.0/frames/ (nine files, <state>-<width>.txt); read it in full first and build to it. Run your test files with `node --test <file>` and quote the summary lines; finish with a report of changes per file, test summary, contract deviations, shared-file requests. Your job is requirement 2: extend the normalized stream contract additively in src/lib/agent-events.js and src/lib/attempt-stream.js, with the declarative mapping in each connector's eventStream rules (src/providers/codex, claude-code, grok connector.json and the annotated _schema.json). Only add a field where the provider's real output proves it: capture fresh samples yourself (`codex exec --json` on a trivial task in an empty dir; a claude-code `--output-format stream-json --verbose` run; grok streaming-json) and quote the raw lines. Fields: turnId, eventId, toolCallId, tool name, arguments, result, providerAt, durationMs, usage per event, parentId/subagentId. Keep seq, at, source, providerType, kind, status, summary unchanged; old stream files must decode as before. Tests in tests/agent-events.test.js and tests/attempt-stream.test.js using the real captured lines as fixtures (trim to under 40 lines each and save under tests/fixtures/stream/<provider>.jsonl), covering malformed lines, missing optional fields, ordering, paired start/complete events. Report which fields each provider supplies and which it cannot."
+    },
+    {
+      "id": "step-model",
+      "kind": "implement",
+      "purpose": "The Step page data model with availability flags and real-fixture tests",
+      "dependsOn": [
+        "extract",
+        "stream-contract"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-6"
+      ],
+      "ownedFiles": [
+        "src/workflow/step-model.js",
+        "tests/workflow-step-model.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0 (git worktree, branch release-0.35.0, rebased on the released 0.34.0 cost work: the attempt usage record now has api and subscription blocks, meter snapshots and tokenSource, and src/lib/usage-basis.js exports formatMoneyPair). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report. Never read or write the live ~/.bullswarm; copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every field and format you rely on must be quoted from a real file or command output. The design record is docs/design/step-page-0.35.0/README.md with frames under docs/design/step-page-0.35.0/frames/ (nine files, <state>-<width>.txt); read it in full first and build to it. Run your test files with `node --test <file>` and quote the summary lines; finish with a report of changes per file, test summary, contract deviations, shared-file requests. Your job is the data layer for requirements 3 and 6: implement src/workflow/step-model.js to the design record's section 5 and 7: one width-independent model with identity and verdict (execution status separate from verification verdict read from the result envelope and evidence), selected attempt, attempt history, route explanation (from the attempt's routing record), money pair inputs (v2 api/subscription blocks with legacy cost.estimatedUsd and totalKnown fallbacks; unknown stays null), activity feed parsed defensively from the stream file with the additive fields the stream-contract step added (read its report for exactly which providers supply which), paired start/complete events only when identifiers make it safe, minimap buckets, follow and selection and filter state, selected event detail, durable outcome, prompt preview, artifact paths, and explicit availability flags (streamAvailable, turnsCaptured, toolDetailsCaptured, usagePending). Never infer turns, tools, subagents, duration or cost from prose. tests/workflow-step-model.test.js on real fixtures copied from the copied home (a running step's stream, a finished-verified step, a step with two failed attempts; plus malformed and missing stream; new and legacy cost records), asserting real numbers. Report the exact exported model shape field by field; the view step builds to it."
+    },
+    {
+      "id": "step-view",
+      "kind": "implement",
+      "purpose": "The responsive Step page renderer, keys, and width-bounded tests",
+      "dependsOn": [
+        "step-model"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-4",
+        "requirement-6"
+      ],
+      "ownedFiles": [
+        "src/workflow/step-view.js",
+        "src/workflow/dashboard.js",
+        "tests/workflow-step-view.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0 (git worktree, branch release-0.35.0, rebased on the released 0.34.0 cost work: the attempt usage record now has api and subscription blocks, meter snapshots and tokenSource, and src/lib/usage-basis.js exports formatMoneyPair). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report. Never read or write the live ~/.bullswarm; copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every field and format you rely on must be quoted from a real file or command output. The design record is docs/design/step-page-0.35.0/README.md with frames under docs/design/step-page-0.35.0/frames/ (nine files, <state>-<width>.txt); read it in full first and build to it. Run your test files with `node --test <file>` and quote the summary lines; finish with a report of changes per file, test summary, contract deviations, shared-file requests. Your job is the rendering for requirements 3 and 4: implement src/workflow/step-view.js against the model shape the step-model report defines (read it first) and the nine frames in docs/design/step-page-0.35.0/frames/ as the target look: 55 columns single column with detail replacing the feed, 120 full-width summary and activity with compact detail, 200 activity and detail side by side. Money through formatMoneyPair from src/lib/usage-basis.js only; unknown is a dash, never zero, and an estimated figure never renders a bare $. Keyboard: arrows select, Enter detail, Tab/Shift-Tab cycle sections, Space follow, a/o/p jump, e/t filters, Esc/Backspace close, keeping ?, q, Home, End. Wire the key handling at the dashboard's existing Step key dispatch if that lives in dashboard.js (you own it for this step; touch only the Step key branch). tests/workflow-step-view.test.js: render the model fixtures from the step-model tests at 55/120/200 for running, finished and failed states, assert no line exceeds width, the unavailable wording, selection/follow/filter states, and the bare-$ prohibition; save the rendered frames to docs/design/step-page-0.35.0/frames/rendered-<state>-<width>.txt so the verifier can diff them against the design frames."
+    },
+    {
+      "id": "docs",
+      "kind": "implement",
+      "purpose": "Guide, provider reference, and CHANGELOG 0.35.0",
+      "dependsOn": [
+        "step-model",
+        "stream-contract"
+      ],
+      "affects": [
+        "requirement-5"
+      ],
+      "ownedFiles": [
+        "docs/guide/observing.md",
+        "docs/reference/providers.md",
+        "CHANGELOG.md"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0 (git worktree, branch release-0.35.0, rebased on the released 0.34.0 cost work: the attempt usage record now has api and subscription blocks, meter snapshots and tokenSource, and src/lib/usage-basis.js exports formatMoneyPair). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report. Never read or write the live ~/.bullswarm; copy it first (cp -Rp ~/.bullswarm /tmp/bsw-<your-action-id>) and point BULLSWARM_HOME at the copy. Real data only: every field and format you rely on must be quoted from a real file or command output. The design record is docs/design/step-page-0.35.0/README.md with frames under docs/design/step-page-0.35.0/frames/ (nine files, <state>-<width>.txt); read it in full first and build to it. Run your test files with `node --test <file>` and quote the summary lines; finish with a report of changes per file, test summary, contract deviations, shared-file requests. Your job is requirement 5: document the new Step page in docs/guide/observing.md (information hierarchy, attempts, activity feed, keys, success-versus-verification distinction, money pair, every degradation state), the optional normalized stream fields per provider in docs/reference/providers.md (read the stream-contract report for what each provider actually supplies; promise nothing capture cannot deliver), and a `## 0.35.0 \u2014 the Step page tells the whole story` section in CHANGELOG.md above 0.34.0 in the house style (short declarative owner-facing bullets)."
+    },
+    {
+      "id": "digest",
+      "kind": "digest",
+      "purpose": "Condense the writer reports for the integrator",
+      "dependsOn": [
+        "extract",
+        "stream-contract",
+        "step-model",
+        "step-view",
+        "docs"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Keep every 'Shared-file requests' and 'Contract deviations' section verbatim and every quoted test summary."
+    },
+    {
+      "id": "integrate",
+      "kind": "integration",
+      "purpose": "Reconcile, make npm test green, render the real page at nine frames",
+      "dependsOn": [
+        "digest"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0. Sole writer now. Read the digest and every report; apply shared-file requests; reconcile the view with the model's actual shape and the stream fields actually supplied. Run `npm test` to fully green and quote the summary. Then on a copied home (cp -Rp ~/.bullswarm /tmp/bsw-int35; BULLSWARM_HOME=/tmp/bsw-int35) render the real Step page for a running step (start `node bin/bullswarm.js run --lane=chore --add-dir=/tmp/bsw-int35-work --prompt='Create ok.txt containing ok' --json` in the background if none is running), a finished-verified step and a failed step with two attempts, at 55, 120 and 200 columns, save them under docs/design/step-page-0.35.0/frames/real-<state>-<width>.txt, assert no line exceeds width, and quote the money line and the activity feed head from each. Confirm unknown never renders as zero and estimated never as a bare $. Bump nothing in package.json, create no commit."
+    },
+    {
+      "id": "verify",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independent evidence for all six requirements",
+      "dependsOn": [
+        "extract",
+        "stream-contract",
+        "step-model",
+        "step-view",
+        "docs",
+        "integrate"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4",
+        "requirement-5",
+        "requirement-6"
+      ],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0. Judge requirements 1\u20136 from the artifacts, inspecting only; try to break it. Use a copied home only (cp -Rp ~/.bullswarm /tmp/bsw-ver35). Run npm test and quote the summary. For 1 confirm dashboard.js no longer contains the Step renderer and that the extraction checkpoint frames the extract step saved were identical. For 2 decode one real old stream file from the copy and one new capture and compare. For 3 and 4 render the page yourself at the three widths for the three states and check every section of the design record is present or explicitly marked unavailable, that unknown cost is a dash, estimated never a bare $, and drive the keys through the dashboard's key handler in a test harness. For 5 read the three docs against what the code does. For 6 open the fixtures and confirm they are real excerpts."
+    }
+  ]
+}
