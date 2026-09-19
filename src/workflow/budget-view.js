@@ -1,9 +1,11 @@
-import { absentLine, cut, formatDashboardValue, progressBar } from './dash-kit.js';
-import { METER_COLORS, meterBar } from './usage-view.js';
-import { formatUsageBasis } from '../lib/usage-basis.js';
+import { cut } from './dash-kit.js';
+import { METER_COLORS } from './usage-view.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const COMMAND = 'bullswarm strategy set-subscription <pool> --monthly-usd <amount>';
+const BOLD = '\x1b[1m';
+const RESET = '\x1b[0m';
+const PACE_THRESHOLD_PP = 15;
 
 function columns(width) {
   return Number.isFinite(Number(width)) ? Math.max(1, Math.trunc(Number(width))) : 120;
@@ -18,21 +20,17 @@ function finite(value) {
   return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
-function money(value) {
-  return formatDashboardValue(value, 'money');
-}
+const WHITE = '\x1b[38;2;255;255;255m';
 
-function usageMoney(value, tokenSource) {
-  const basis = ['provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown'].includes(tokenSource)
-    ? tokenSource
-    : value == null ? 'unknown' : 'estimated:utf8-bytes/4';
-  return formatUsageBasis({ tokenSource: basis, costUsd: value });
+function bg(hex) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[48;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m`;
 }
 
 function paint(text, hex, ansi) {
   if (!ansi) return visible(text);
   const n = Number.parseInt(hex.slice(1), 16);
-  return `\x1b[38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}\x1b[0m`;
+  return `\x1b[38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}${RESET}`;
 }
 
 function rowsOf(budget) {
@@ -42,47 +40,203 @@ function rowsOf(budget) {
   return Array.isArray(budget?.pools) ? budget.pools : [];
 }
 
-function missing(label, reason, width, ansi, labelWidth = 0) {
-  const line = absentLine(label, reason, { width, labelWidth });
-  return ansi ? line : visible(line);
+function durationText(minutes) {
+  const value = Math.round(Number(minutes));
+  if (!Number.isFinite(value)) return null;
+  if (value <= 0) return 'now';
+  if (value < 60) return `${value}m`;
+  const hours = Math.floor(value / 60);
+  const mins = value % 60;
+  if (hours < 24) return mins ? `${hours}h${String(mins).padStart(2, '0')}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remainder = hours % 24;
+  return remainder ? `${days}d${remainder}h` : `${days}d`;
 }
 
-function resetLabel(row, narrow) {
-  const minutes = finite(row.resetsInMinutes);
-  const relative = minutes == null ? null : minutes <= 0 ? 'reset due' : `in ${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
-  let absolute = row.resetsText;
-  if (row.resetsAt && Number.isFinite(Date.parse(row.resetsAt))) {
-    try {
-      absolute = new Intl.DateTimeFormat('en-GB', {
-        timeZone: row.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-        weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
-      }).format(new Date(row.resetsAt));
-    } catch { absolute = row.resetsAt; }
+function resetDuration(window) {
+  const minutes = finite(window?.resetsInMinutes);
+  if (minutes != null) return durationText(minutes);
+  if (window?.resetsAt && Number.isFinite(Date.parse(window.resetsAt))) {
+    return durationText((Date.parse(window.resetsAt) - Date.now()) / 60_000);
   }
-  absolute = absolute ? String(absolute).replace(/,/g, '').replace(/\s+(?:GMT|UTC).*$/, '') : null;
-  if (narrow && relative) return `resets ${relative}`;
-  return absolute ? `resets ${absolute}${relative ? ` (${relative})` : ''}` : relative ? `resets ${relative}` : 'reset time unavailable';
+  return null;
 }
 
-function biggestSource(budget, row) {
-  for (const candidate of [row.biggestRuns, row.biggest, budget?.biggestRuns, budget?.biggest]) {
-    if (Array.isArray(candidate)) return candidate;
-    if (Array.isArray(candidate?.byMinutes)) return candidate.byMinutes;
-    if (Array.isArray(candidate?.runs)) return candidate.runs;
-    const named = candidate?.[row.name];
-    if (Array.isArray(named)) return named;
-    if (Array.isArray(named?.byMinutes)) return named.byMinutes;
-    if (Array.isArray(named?.runs)) return named.runs;
+function computedPace(window) {
+  const used = finite(window?.usedPct);
+  const elapsed = finite(window?.elapsedPct);
+  if (used == null || elapsed == null) return null;
+  const points = Math.round(elapsed - used);
+  const signed = `${points >= 0 ? '+' : '−'}${Math.abs(points)}pp`;
+  if (points >= PACE_THRESHOLD_PP) return `slow ${signed}`;
+  if (points <= -PACE_THRESHOLD_PP) return `fast ${signed}`;
+  return `on track ${signed}`;
+}
+
+function windowPace(window) {
+  const supplied = typeof window?.paceText === 'string' ? window.paceText.trim() : '';
+  if (/^(?:on track [+-−]\d+pp|slow \+\d+pp|fast −\d+pp)$/.test(supplied)) return supplied;
+  return computedPace(window) ?? null;
+}
+
+function paceColor(pace) {
+  if (pace?.startsWith('slow ')) return METER_COLORS.amber;
+  if (pace?.startsWith('fast ')) return METER_COLORS.red;
+  if (pace?.startsWith('on track ')) return METER_COLORS.green;
+  return METER_COLORS.dim;
+}
+
+function windowBar(window, width, ansi) {
+  const cells = Math.max(0, Math.trunc(width));
+  if (!cells) return '';
+  const used = finite(window?.usedPct);
+  const elapsed = finite(window?.elapsedPct);
+  // A pool that has spent anything at all shows at least one cell: rounding a
+  // live 1% or 2% down to an empty track reads as "untouched", which is wrong.
+  const exact = used == null ? 0 : (used / 100) * cells;
+  const filled = used == null || used <= 0
+    ? 0
+    : Math.max(1, Math.min(cells, Math.floor(exact)));
+  let mark = -1;
+  let markGlyph = '\u258f';
+  if (elapsed != null) {
+    mark = Math.floor((elapsed / 100) * cells);
+    if (mark >= cells) { mark = cells - 1; markGlyph = '\u2595'; }
   }
-  return [];
+  if (!ansi) {
+    let plainOut = '';
+    for (let index = 0; index < cells; index += 1) {
+      plainOut += index === mark ? '|' : index < filled ? '#' : '.';
+    }
+    return plainOut;
+  }
+  // Background-coloured cells, not glyph bars: the fill has to read as one
+  // solid block at any font (the owner's 0.33.0 review), and the colour says
+  // pace — green on track, amber slow, red burning ahead of the clock.
+  const fill = paceColor(windowPace(window));
+  let out = '';
+  for (let index = 0; index < cells; index += 1) {
+    const cellBg = index < filled ? fill : METER_COLORS.track;
+    out += index === mark
+      ? `${bg(cellBg)}${WHITE}${markGlyph}${RESET}`
+      : `${bg(cellBg)} ${RESET}`;
+  }
+  return out;
+}
+
+function creditText(row) {
+  const credits = row?.credits;
+  const used = finite(credits?.used);
+  const limit = finite(credits?.limit);
+  if (used == null || limit == null) return null;
+  return `${Math.round(used)} of ${Math.round(limit)} ${credits.unit || 'credits'}`;
+}
+
+function isMonthly(window) {
+  return window?.key === 'mo' || window?.key === 'monthly' || window?.label === 'monthly';
+}
+
+function windowLabel(window) {
+  return String(window?.key ?? window?.label ?? 'window');
+}
+
+function resetLine(window, ansi) {
+  const reset = resetDuration(window);
+  const base = paint(reset ? `  resets ${reset}` : '  reset time unavailable', METER_COLORS.dim, ansi);
+  const pace = windowPace(window);
+  return pace ? `${base}${paint(` · ${pace}`, paceColor(pace), ansi)}` : base;
+}
+
+function planLine(row, ansi) {
+  const subscription = row?.subscription ?? null;
+  const price = finite(subscription?.monthlyPriceUsd);
+  if (price != null) {
+    const origin = subscription?.origin === 'detected'
+      ? `detected ${subscription.detectedPlan ?? row.detectedPlan ?? row.planType ?? 'plan'}`
+      : 'declared';
+    const amount = Number.isInteger(price) ? price : price.toFixed(2);
+    return paint(`plan · $${amount}/mo ${origin}`, METER_COLORS.dim, ansi);
+  }
+  if (row?.detectedPlan) return paint(`plan ${row.detectedPlan} · price unknown`, METER_COLORS.dim, ansi);
+  return null;
+}
+
+function windowsOf(row) {
+  return (Array.isArray(row?.windows) ? row.windows : [])
+    .filter((window) => finite(window?.usedPct) != null);
+}
+
+function percentText(window) {
+  const percent = finite(window?.usedPct);
+  return percent == null ? '\u2014' : `${percent.toFixed(1)}%`;
+}
+
+/**
+ * One measuring pass over every pool, so the label column and the percent
+ * column line up down the whole page rather than per pool.
+ */
+function windowMetrics(rows, width) {
+  let labelWidth = 3;
+  let rightWidth = 6;
+  for (const row of rows) {
+    for (const window of windowsOf(row)) {
+      labelWidth = Math.max(labelWidth, visible(windowLabel(window)).length);
+      rightWidth = Math.max(rightWidth, visible(percentText(window)).length);
+    }
+  }
+  return { labelWidth, rightWidth, barWidth: Math.max(1, width - labelWidth - 4 - rightWidth) };
+}
+
+function windowLines(row, metrics, ansi) {
+  const windows = windowsOf(row);
+  if (!windows.length) return [];
+  const { labelWidth, rightWidth, barWidth } = metrics;
+  const credits = creditText(row);
+  // Credits belong to the window they meter, which is the monthly one where a
+  // pool has it. A pool that reports credits and no monthly window must not
+  // lose them, so they ride on the last window it does report.
+  const creditIndex = credits
+    ? (windows.findIndex(isMonthly) >= 0 ? windows.findIndex(isMonthly) : windows.length - 1)
+    : -1;
+  const lines = [];
+  for (const [index, window] of windows.entries()) {
+    const right = percentText(window).padStart(rightWidth);
+    lines.push(`${windowLabel(window).padEnd(labelWidth)}  ${windowBar(window, barWidth, ansi)}  ${right}`);
+    const extra = index === creditIndex ? ` \u00b7 ${credits}` : '';
+    lines.push(`${resetLine(window, ansi)}${extra ? paint(extra, METER_COLORS.dim, ansi) : ''}`);
+  }
+  return lines;
+}
+
+export function budgetLines(budget, { width = 120, ansi = true } = {}) {
+  const cols = columns(width);
+  const rows = rowsOf(budget);
+  const regions = [];
+  if (!rows.length) return { lines: [cut('Budget · no pool budget data is available', cols)], regions };
+
+  const lines = [];
+  const metrics = windowMetrics(rows, cols);
+  for (const [index, row] of rows.entries()) {
+    const name = String(row?.name ?? 'pool');
+    lines.push(cut(ansi ? `${BOLD}${name}${RESET}` : name, cols));
+    lines.push(...windowLines(row, metrics, ansi).map((line) => cut(line, cols)));
+    const plan = planLine(row, ansi);
+    if (plan) lines.push(cut(plan, cols));
+    if (index < rows.length - 1) lines.push('');
+  }
+  if (budget?.disabledPools?.length) {
+    lines.push(cut(paint(`disabled: ${budget.disabledPools.join(', ')}`, METER_COLORS.dim, ansi), cols));
+  }
+  return { lines, regions };
 }
 
 function wrap(text, width) {
   let rest = visible(text);
   const lines = [];
-  while (rest.length > width) {
-    const space = rest.lastIndexOf(' ', width);
-    const at = space > 0 ? space : width;
+  const cols = Math.max(1, width);
+  while (rest.length > cols) {
+    const space = rest.lastIndexOf(' ', cols);
+    const at = space > 0 ? space : cols;
     lines.push(rest.slice(0, at));
     rest = rest.slice(at).trimStart();
   }
@@ -90,182 +244,15 @@ function wrap(text, width) {
   return lines;
 }
 
-function windowPace(window) {
-  if (window?.paceText) return String(window.paceText);
-  const used = finite(window?.usedPct);
-  const elapsed = finite(window?.elapsedPct);
-  if (used == null || elapsed == null) return 'pace unavailable';
-  const points = Math.round(used - elapsed);
-  if (points > 0) return `ahead by ${points} pts`;
-  if (points < 0) return `behind by ${Math.abs(points)} pts`;
-  return 'on track';
-}
-
-function localClock(window) {
-  if (!window?.resetsAt || !Number.isFinite(Date.parse(window.resetsAt))) return null;
-  try {
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: window.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-      hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short',
-    }).format(new Date(window.resetsAt));
-  } catch { return null; }
-}
-
-function windowReset(window, narrow) {
-  const clock = window?.resetClock || localClock(window);
-  if (clock) return `resets ${clock}`;
-  if (window?.resetsText) return `resets ${window.resetsText}`;
-  const minutes = finite(window?.resetsInMinutes);
-  if (minutes != null) {
-    if (minutes <= 0) return 'reset due';
-    return `resets in ${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
-  }
-  return narrow ? 'reset time unavailable' : 'reset time unavailable';
-}
-
-function windowCard(window, { narrow, ansi }) {
-  const used = finite(window?.usedPct);
-  const usedText = used == null ? 'used unavailable' : `${Math.round(used)}% used`;
-  const pace = windowPace(window);
-  const label = narrow ? (window?.key || window?.label || 'window') : (window?.label || window?.key || 'window');
-  const key = !narrow && window?.key && window?.key !== label ? ` (${window.key})` : '';
-  const clock = window?.resetClock || localClock(window);
-  const reset = narrow && clock
-    ? `reset ${String(clock).split(/\s+/)[0]}`
-    : windowReset(window, narrow);
-  const text = `${label}${key} · ${usedText} · ${reset} · ${pace}`;
-  return ansi ? paint(text, METER_COLORS.cyan, ansi) : text;
-}
-
-function windowLines(row, width, ansi) {
-  const windows = Array.isArray(row?.windows) ? row.windows : [];
-  if (!windows.length) return [];
-  const narrow = width < 80;
-  const cards = windows.map((window) => windowCard(window, { narrow, ansi }));
-  // A wide terminal can keep the compact cards on one line when the actual
-  // text fits. At review/phone widths each window is deliberately its own
-  // line so no provider window disappears behind a clipped neighbour.
-  const joined = `windows  ${cards.join('  ')}`;
-  if (!narrow && visible(joined).length <= width) return [joined];
-  return cards.map((card, index) => `${index === 0 ? 'windows ' : '        '}${card}`);
-}
-
-export function budgetLines(budget, { width = 120, ansi = true } = {}) {
-  const cols = columns(width);
-  const narrow = cols < 80;
-  const lines = [];
-  const regions = [];
-  const rows = rowsOf(budget);
-  if (!rows.length) return { lines: [cut('Budget · no pool budget data is available', cols)], regions };
-  const labelWidth = narrow ? 7 : 13;
-  const labelled = (label, text) => `${label.padEnd(labelWidth)}${text}`;
-  for (const row of rows) {
-    const plan = row.window ? `${row.window} plan` : 'plan window unavailable';
-    const header = `${row.name ?? 'pool'} · ${plan} · ${resetLabel(row, narrow)}`;
-    lines.push(cut(ansi ? `\x1b[1m${header}\x1b[0m` : header, cols));
-    for (const line of windowLines(row, cols, ansi)) lines.push(cut(line, cols));
-    const used = finite(row.usedPct);
-    const credits = finite(row.credits?.used) != null && finite(row.credits?.limit) != null
-      ? `${Math.round(row.credits.used)} of ${Math.round(row.credits.limit)} ${row.credits.unit || 'credits'}`
-      : null;
-    if (used == null) {
-      lines.push(labelled('used', `meter unavailable${credits ? ` · ${credits}` : ''}`));
-    } else {
-      const elapsed = finite(row.elapsedPct);
-      const pace = row.paceWord || 'pace unavailable';
-      const tail = `${Math.round(used)}% · ${elapsed == null ? 'window age unavailable' : `${Math.round(elapsed)}% ${narrow ? 'gone' : 'of the window gone'}`} → ${pace}${credits ? ` · ${credits}` : ''}`;
-      const barWidth = Math.max(1, Math.min(40, cols - labelWidth - tail.length - 1));
-      lines.push(labelled('used', `${meterBar(used, elapsed, barWidth, { ansi })} ${tail}`));
-    }
-    if (used == null || finite(row.share?.workflows) == null || finite(row.share?.rest) == null) {
-      const rateNote = row.rateNote || row.share?.rateNote;
-      const reason = used == null ? 'no licence meter' : rateNote ? `share unknown · ${rateNote}` : 'no measured usage rate yet';
-      lines.push(missing(narrow ? 'by bsw' : 'by bullswarm', reason, cols, ansi, labelWidth));
-    } else {
-      const share = row.share;
-      const minutes = finite(share.workflowMinutes);
-      const tail = narrow
-        ? `≈ ${Math.round(share.workflows)}%${minutes == null ? '' : ` (${Math.round(minutes)} min)`} · other ${Math.round(share.rest)}%`
-        : `≈ ${Math.round(share.workflows)}%${minutes == null ? '' : ` (${Math.round(minutes)} min of work)`} · other tools ${Math.round(share.rest)}%`;
-      const barWidth = Math.max(1, Math.min(40, cols - labelWidth - tail.length - 1));
-      const bar = progressBar(Math.min(used, Math.max(0, share.workflows)) / 100, barWidth, { partialGlyph: '▏' });
-      lines.push(labelled(narrow ? 'by bsw' : 'by bullswarm', `${paint(bar, METER_COLORS.purple, ansi)} ${tail}`));
-    }
-    if (finite(row.fits) == null) {
-      const rateNote = row.rateNote || row.share?.rateNote;
-      const reason = used == null ? 'no licence meter' : rateNote ? `unknown · ${rateNote}` : finite(row.share?.ratePerMinute) == null ? 'no measured usage rate yet' : finite(row.medianRunMinutes) == null ? 'no recorded run duration yet' : 'no measured usage per run yet';
-      lines.push(missing('room', reason, cols, ansi, labelWidth));
-    } else {
-      const fits = Math.round(row.fits);
-      if (fits === 0) {
-        lines.push(labelled('room', 'no room left before the reset'));
-      } else {
-        const runWord = fits === 1 ? 'run' : 'runs';
-        lines.push(labelled('room', narrow ? `about ${fits} medium ${runWord} before reset` : `about ${fits} more medium ${runWord} before the reset`));
-      }
-    }
-    const api = usageMoney(row.apiEquivalentUsd, row.tokenSource);
-    const biggest = biggestSource(budget, row).slice(0, 2);
-    const items = biggest.map((run) => {
-      const id = String(run.shortId ?? run.runId ?? 'run');
-      const value = usageMoney(run.apiEquivalentUsd, run.tokenSource);
-      return { run, id, text: `${id}${narrow && value != null ? '' : ' '}${value}` };
-    });
-    const primary = narrow ? api : `${api} of API-equivalent work`;
-    const detail = items.length ? `${narrow ? ' · ' : ' · biggest: '}${items.map((item) => item.text).join(', ')}` : '';
-    const plain = cut(labelled('so far', `${primary}${detail}`), cols);
-    lines.push(paint(plain, METER_COLORS.purple, ansi));
-    let from = 0;
-    for (const item of items) {
-      const at = plain.indexOf(item.id, from);
-      if (at >= 0 && item.run.runId) {
-        regions.push({ x: at + 1, y: lines.length, width: item.id.length, action: { kind: 'run', runId: item.run.runId } });
-        from = at + item.id.length;
-      }
-    }
-    const subscription = row.subscription ?? null;
-    const price = finite(subscription?.monthlyPriceUsd);
-    if (price != null) {
-      const origin = subscription?.origin === 'detected'
-        ? `detected ${subscription.detectedPlan ?? row.detectedPlan ?? row.planType ?? 'plan'}`
-        : 'declared';
-      lines.push(`plan · $${Number.isInteger(price) ? price : price.toFixed(2)}/mo ${origin}`);
-    } else if (row.detectedPlan) {
-      lines.push(`plan ${row.detectedPlan} · price unknown`);
-    }
-  }
-  if (budget?.disabledPools?.length) lines.push(`disabled: ${budget.disabledPools.join(', ')}`);
-  return { lines: lines.map((line) => cut(line, cols)), regions };
-}
-
 export function budgetNotes(budget, { width = 120 } = {}) {
   const cols = columns(width);
   const rows = rowsOf(budget);
-  const rowTotals = rows.reduce((totals, row) => ({
-    measured: totals.measured + (Number(row?.measuredAttempts) || 0),
-    attempts: totals.attempts + (Number(row?.attempts) || 0),
-  }), { measured: 0, attempts: 0 });
-  const measured = Number.isFinite(Number(budget?.totals?.measuredAttempts))
-    ? Number(budget.totals.measuredAttempts) : rowTotals.measured;
-  const attempts = Number.isFinite(Number(budget?.totals?.attempts))
-    ? Number(budget.totals.attempts) : rowTotals.attempts;
-  const notes = [
-    'Basis: $ provider-reported · ≈ transcript-summed · ~ estimated · cost unknown.',
-    measured != null && attempts != null
-      ? `${measured} of ${attempts} attempts measured · the rest are byte estimates`
-      : null,
-    '≈ means estimated work, not an invoice; licence share uses measured work time.',
-  ].filter(Boolean);
-  if (rows.some((row) => row.share?.exceedsMeter)) notes.push("bullswarm's own measurement is above what the meter reports; the meter lags");
-  // Name the pools that still have no price of either kind, and print the
-  // command once: the note used to repeat the same command twice in one
-  // sentence and never said which pools it was about.
   const unpriced = rows
-    .filter((row) => finite(row.subscription?.monthlyPriceUsd) == null)
-    .map((row) => row.name)
+    .filter((row) => finite(row?.subscription?.monthlyPriceUsd) == null)
+    .map((row) => row?.name)
     .filter(Boolean);
-  if (unpriced.length) {
-    notes.push(`Declare a price: ${COMMAND} · no price for ${unpriced.join(', ')}`);
-  }
+  const notes = [];
+  if (unpriced.length) notes.push(`Declare a price: ${COMMAND} · no price for ${unpriced.join(', ')}`);
+  notes.push('spend by run is on Home and Stats');
   return notes.flatMap((note) => wrap(note, cols));
 }

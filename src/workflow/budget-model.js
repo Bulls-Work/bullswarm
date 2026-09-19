@@ -34,6 +34,10 @@ const DAY_MS = 86_400_000;
 // normalizePacingWindow resolves to exactly these two, or null).
 const WINDOW_MS = { weekly: 7 * DAY_MS, monthly: 30 * DAY_MS };
 const WINDOW_LABELS = Object.freeze({ '5h': '5-hour', '7d': '7-day', mo: 'monthly' });
+const MODEL_WINDOW_FIELDS = Object.freeze([
+  ['opus', 'seven_day_opus'],
+  ['sonnet', 'seven_day_sonnet'],
+]);
 
 // The rollup keeps one worst-of basis per pool.  Keep the same ordering in
 // every aggregate on this page: an estimate or an unknown attempt makes the
@@ -248,15 +252,16 @@ function paceWordOf(usedPct, elapsedPct) {
 }
 
 // The Budget page speaks in the direction a reader can act on: usage is
-// ahead when the used share has passed the elapsed share, and behind when it
-// has not. Keep the exact point difference; unlike the compact pool rows,
-// this is a per-window audit and should not hide a 12-point gap in a bucket.
+// slow when it has not reached the elapsed share, and fast when it has passed
+// it. Keep the exact point difference in the same vocabulary as the meter
+// window rows: a positive number is slow, a negative number is fast.
 function paceTextOf(usedPct, elapsedPct) {
   if (usedPct == null || elapsedPct == null) return null;
-  const points = Math.round(usedPct - elapsedPct);
-  if (points > 0) return `ahead by ${points} pts`;
-  if (points < 0) return `behind by ${Math.abs(points)} pts`;
-  return 'on track';
+  const points = Math.round(elapsedPct - usedPct);
+  const signed = `${points >= 0 ? '+' : '−'}${Math.abs(points)}pp`;
+  if (points >= PACE_THRESHOLD_PP) return `slow ${signed}`;
+  if (points <= -PACE_THRESHOLD_PP) return `fast ${signed}`;
+  return `on track ${signed}`;
 }
 
 function creditsOf(pool) {
@@ -376,6 +381,27 @@ function detectedPlansOf(pool) {
   return detected ? [detected] : [];
 }
 
+// Claude's OAuth meter can report separate seven-day model-family windows.
+// They are optional: a null utilization is absence, not a zero-utilization
+// row. Model windows use the same seven-day elapsed clock as their provider
+// window when a reset is present.
+function modelWindowsOf(pool, now) {
+  const snapshot = pool?.meterSnapshot ?? null;
+  if (!snapshot) return [];
+  return MODEL_WINDOW_FIELDS.flatMap(([key, field]) => {
+    const raw = snapshot[field];
+    const usedPct = finite(raw?.utilization);
+    if (usedPct == null) return [];
+    const resetsAt = typeof raw?.resets_at === 'string' ? raw.resets_at : null;
+    let elapsedPct = null;
+    if (resetsAt) {
+      const left = parseIso(resetsAt) - now;
+      if (Number.isFinite(left)) elapsedPct = Math.max(0, Math.min(100, 100 - (left / (7 * DAY_MS)) * 100));
+    }
+    return [{ key, label: key, usedPct, resetsAt, elapsedPct }];
+  });
+}
+
 // --------------------------------------------------------------- one pool
 
 /**
@@ -397,7 +423,20 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   const elapsedPct = finite(pool?.elapsedPct);
   const rate = rateBlock(pool);
   const sampledAt = capturedAtOf([pool]);
-  const windows = poolWindows(pool, at).map((window) => {
+  const reportedWindows = poolWindows(pool, at);
+  const modelWindows = modelWindowsOf(pool, at);
+  const orderedWindows = [];
+  let modelWindowsInserted = false;
+  for (const window of reportedWindows) {
+    orderedWindows.push(window);
+    if (window.key === '7d') {
+      orderedWindows.push(...modelWindows);
+      modelWindowsInserted = true;
+    }
+  }
+  if (!modelWindowsInserted) orderedWindows.push(...modelWindows);
+
+  const windows = orderedWindows.map((window) => {
     const resetMs = parseIso(window.resetsAt);
     const resetMinutes = resetMs == null ? null : Math.round((resetMs - at) / MINUTE_MS);
     let resetClock = null;
