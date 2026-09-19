@@ -1155,6 +1155,40 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     // Step prepends the way back out.
     assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', '?.help', 'quit']);
 
+    // A narrow footer keeps the selected run and accounts for every other
+    // active run; desktop widths still paint every run in Runs-page order.
+    const threeRows = [...rows, { ...rows[1], runId: 'wf-gamma', shortId: 'ccc333' }];
+    const threeModel = dashboardModel(row, {
+      runs: threeRows.filter((entry) => entry.ongoing),
+      usage: usageFixture(),
+      integration: { ok: true, agents: [] },
+    });
+    const narrowThree = renderDashboardPage(threeModel, {
+      page: 'runs', width: 55, height: 30, rows: threeRows, allRows: threeRows,
+      selectedRunId: 'wf-alpha',
+    });
+    assert.equal(
+      plain(narrowThree.lines.at(-1)),
+      ' [ ● 1.aaa111 ] [ +2 more ] [Top] [End] [?.Help] ',
+    );
+    const wideThree = renderDashboardPage(threeModel, {
+      page: 'runs', width: 200, height: 30, rows: threeRows, allRows: threeRows,
+      selectedRunId: 'wf-alpha',
+    });
+    assert.deepEqual(navButtons(wideThree.lines.join('\n')), ['● aaa111', 'bbb222', 'ccc333', '?.help', 'quit']);
+
+    // One active run is the existing footer, byte-for-byte.
+    const oneModel = dashboardModel(row, {
+      runs: [row],
+      usage: usageFixture(),
+      integration: { ok: true, agents: [] },
+    });
+    const one = renderDashboardPage(oneModel, {
+      page: 'runs', width: 55, height: 30, rows: [row], allRows: [row],
+      selectedRunId: 'wf-alpha',
+    });
+    assert.equal(plain(one.lines.at(-1)), ' [ ● 1.aaa111 ] [Top] [End] [?.Help] ');
+
     for (const name of DASHBOARD_PAGE_NAMES) {
       const frame = renderDashboardPage(model, {
         page: name, width: 100, height: 30, rows, allRows: rows, selectedRunId: 'wf-alpha',
