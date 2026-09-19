@@ -216,7 +216,7 @@ function moneyText(rowOrValue, tokenSource = null) {
     window: row.subscriptionWindow ?? row.window,
     basis: row.subscriptionBasis,
   };
-  const text = formatMoneyPair({ api, subscription });
+  const text = formatMoneyPair({ api, subscription, tokens: row.tokens ?? null });
   return text;
 }
 function minuteText(value) {

@@ -30,7 +30,7 @@ import { loadState } from '../lib/state.js';
 import { readMeterHistoryDays } from '../meters/registry.js';
 import { listTasks } from '../lib/tasks.js';
 import { attemptOutputSeries } from './v2-state.js';
-import { formatMoneyPair } from '../lib/usage-basis.js';
+import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 // N1: a missing measurement never becomes a confident zero. Number(null) is
 // 0 and Number.isFinite(0) is true, so every reading below goes through this.
 import { finiteOrNull } from '../lib/num.js';
@@ -271,6 +271,7 @@ function compactUsage(usage) {
     api: usage.api ?? { usd: usage.cost?.estimatedUsd ?? null, tokenSource: usage.tokenSource },
     subscription: usage.subscription,
     tokenSource: usage.tokenSource,
+    tokens,
   });
   const quota = usage.normalizedQuota?.estimatedPercent == null
     ? usage.normalizedQuota?.knownSubtotalPercent != null
@@ -2230,6 +2231,7 @@ function moneyText(value, tokenSource) {
           basis: value.subscriptionBasis ?? 'unknown:no-meter',
         },
         tokenSource: value.tokenSource,
+        tokens: value.tokens ?? null,
       });
     }
     return formatMoneyPair(value);
@@ -2907,7 +2909,7 @@ function budgetWeekLines(body, model, { width, narrow, nowMs }) {
     const pace = paceWord(row.usedPct, row.elapsedPct);
     const money = row.subscription?.windowUsd == null
       ? blank()
-      : formatDashboardValue(row.subscription.windowUsd, 'money');
+      : formatMoney(row.subscription.windowUsd);
     if (row.subscription?.windowUsd == null) unpriced.push(row.name);
     const fits = row.fits == null
       ? null

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatMoneyPair, formatUsageBasis } from '../src/lib/usage-basis.js';
+import { formatMoney, formatMoneyPair, formatUsageBasis } from '../src/lib/usage-basis.js';
 
 test('usage basis keeps provider-reported dollars distinct', () => {
   assert.equal(formatUsageBasis({ tokenSource: 'provider-reported', cost: { estimatedUsd: 3.06 } }), '$ 3.06');
@@ -9,6 +9,33 @@ test('usage basis keeps provider-reported dollars distinct', () => {
 test('usage basis labels transcript sums and byte estimates', () => {
   assert.equal(formatUsageBasis({ tokenSource: 'transcript-summed', costUsd: 3.06 }), '≈ $3.06 summed');
   assert.equal(formatUsageBasis({ tokenSource: 'estimated:utf8-bytes/4', costUsd: 3.06 }), '~ $3.06 estimated');
+});
+
+test('shared money formatter keeps cents for normal amounts and precision for small ones', () => {
+  assert.equal(formatMoney(0.42), '$0.42');
+  assert.equal(formatMoney(0.0005564), '$0.000556');
+  assert.equal(formatMoney(0.0459), '$0.0459');
+  assert.equal(formatMoney(0.00418), '$0.00418');
+  assert.equal(formatMoney({ usd: 0.0005564 }), '$0.000556');
+  assert.equal(formatMoneyPair({
+    api: { usd: 0.0005564, tokenSource: 'estimated:utf8-bytes/4' },
+    subscription: { usd: 0.0459, deltaPct: 1.2, window: 'weekly', basis: 'observed:meter-delta' },
+  }), '~ $0.000556 api estimated · 1.2% wk $0.0459 sub');
+  assert.equal(formatMoneyPair({
+    api: { usd: 0.00418, tokenSource: 'provider-reported' },
+    subscription: { usd: 0.42, basis: 'observed:meter-delta' },
+  }), '$0.00418 api · $0.42 sub');
+});
+
+test('money formatter distinguishes a real zero from an unpriced amount', () => {
+  assert.equal(formatMoney(0, { totalKnown: 0 }), '$0');
+  assert.equal(formatMoney(0, { totalKnown: 12 }), '$0.000');
+  assert.equal(formatMoney(null), '-');
+  assert.equal(formatMoneyPair({
+    api: { usd: 0, tokenSource: 'provider-reported' },
+    subscription: { usd: 0, basis: 'observed:meter-delta' },
+    tokens: { totalKnown: 0 },
+  }), '$0 api · $0 sub');
 });
 
 test('estimated and unknown usage never render a bare dollar sign', () => {

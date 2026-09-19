@@ -14,6 +14,7 @@ import { attachTranscriptUsage, estimateInvocationUsage } from '../lib/usage.js'
 import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUsage } from '../lib/transcripts/index.js';
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
+import { formatMoney } from '../lib/usage-basis.js';
 import { aggregateAttemptUsage, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
@@ -400,10 +401,8 @@ function eligible(entry, { sinceMs, pool }) {
   return started != null && started >= sinceMs;
 }
 
-function money(value) {
-  const number = nonNegative(value);
-  if (number == null) return '-';
-  return `$${number.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+function money(value, tokens = null) {
+  return formatMoney(nonNegative(value), tokens);
 }
 
 function table(rows) {
@@ -414,10 +413,10 @@ function table(rows) {
     ['pool', (row) => row.pool ?? '-'],
     ['model', (row) => row.model ?? '-'],
     ['old tokenSource', (row) => row.oldTokenSource],
-    ['old cost', (row) => money(row.oldCost)],
+    ['old cost', (row) => money(row.oldCost, row.totalKnown)],
     ['new tokenSource', (row) => row.tokenSource],
-    ['new api usd', (row) => money(row.apiUsd)],
-    ['subscription usd', (row) => money(row.subscriptionUsd)],
+    ['new api usd', (row) => money(row.apiUsd, row.totalKnown)],
+    ['subscription usd', (row) => money(row.subscriptionUsd, row.totalKnown)],
     ['confidence', (row) => row.confidence],
   ];
   const values = rows.map((row) => columns.map(([, value]) => String(value(row) ?? '-')));

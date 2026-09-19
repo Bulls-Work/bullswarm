@@ -44,14 +44,26 @@ import * as usageBasis from './lib/usage-basis.js';
 // compatibility fallback for this action's pre-integration checkout so the
 // CLI can still print a clearly-basis-labelled pair while that module is being
 // integrated.
+const formatMoney = usageBasis.formatMoney ?? ((value) => {
+  if (value == null || value === '' || typeof value === 'boolean') return '-';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  if (number >= 0.10) {
+    return `$${number.toLocaleString('en-US', {
+      useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2,
+    })}`;
+  }
+  if (number === 0) return '$0.000';
+  return `$${Number(number.toPrecision(3))}`;
+});
 const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
   const api = usage.api ?? { usd: usage.cost?.estimatedUsd ?? null, basis: usage.cost?.basis ?? null };
   const subscription = usage.subscription ?? null;
   const apiUsd = Number(api.usd);
   const apiText = Number.isFinite(apiUsd)
-    ? (usage.tokenSource === 'provider-reported' ? `$${apiUsd.toFixed(2)} api`
-      : usage.tokenSource === 'transcript-summed' ? `≈ $${apiUsd.toFixed(2)} api summed`
-        : usage.tokenSource === 'estimated:utf8-bytes/4' ? `~ $${apiUsd.toFixed(2)} api estimated`
+    ? (usage.tokenSource === 'provider-reported' ? `${formatMoney(apiUsd, usage.tokens)} api`
+      : usage.tokenSource === 'transcript-summed' ? `≈ ${formatMoney(apiUsd, usage.tokens)} api summed`
+        : usage.tokenSource === 'estimated:utf8-bytes/4' ? `~ ${formatMoney(apiUsd, usage.tokens)} api estimated`
           : '· api unknown')
     : '· api unknown';
   if (!subscription) return `${apiText} · sub unknown`;
@@ -67,7 +79,7 @@ const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
   }
   const glyph = basis === 'observed:meter-delta' ? '' : basis === 'calibrated:usd-per-pct' ? '≈ ' : '~ ';
   const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
-  return `${apiText} · ${pct}${glyph}$${usd.toFixed(2)} sub`.replace(/\s+/g, ' ').trim();
+  return `${apiText} · ${pct}${glyph}${formatMoney(usd, usage.tokens)} sub`.replace(/\s+/g, ' ').trim();
 });
 
 export function getBullswarmDir() {

@@ -77,7 +77,7 @@ test('strategy subscription view states a missing price and then a declared pric
     } finally { console.log = originalLog; }
     await refreshStrategy(f.dir, { executor: () => '', getReadings: async () => ({}) });
     const declared = await runStrategy(['show'], f.dir);
-    assert.match(declared.out, /\$10\/mo → \$70 included/);
+    assert.match(declared.out, /\$10\.00\/mo → \$70\.00 included/);
   } finally { f.cleanup(); }
 });
 

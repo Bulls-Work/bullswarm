@@ -22,6 +22,7 @@ import { startStrategyDashboard } from './strategy-dashboard.js';
 import { loadOpenRouterCatalog } from './lib/openrouter-models.js';
 import { loadEpochBenchmarks, rungEvidence } from './lib/epoch-benchmarks.js';
 import { priceFor } from './lib/prices.js';
+import { formatMoney } from './lib/usage-basis.js';
 
 // Strategy operates on what ships with the package plus what the operator
 // installed, so the packaged tiers load here even under node:test, where the
@@ -118,10 +119,10 @@ function subscriptionValueText(sub) {
   const included = sub?.includedValueUsd;
   const basis = sub?.priceBasis ?? sub?.priceSource ?? 'declared subscription';
   if (monthly != null && included != null) {
-    return `$${monthly}/mo → $${included} included (${basis})`;
+    return `${formatMoney(monthly)}/mo → ${formatMoney(included)} included (${basis})`;
   }
   if (monthly != null) {
-    return `$${monthly}/mo · included value unavailable (${basis})`;
+    return `${formatMoney(monthly)}/mo · included value unavailable (${basis})`;
   }
   return sub?.priceReason
     ?? 'price unavailable: no published or operator-declared monthly price'

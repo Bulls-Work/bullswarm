@@ -1034,6 +1034,7 @@ export function formatHoverLabel(payload = {}) {
     valueText = formatMoneyPair({
       api: { usd: payload.apiUsd ?? value },
       tokenSource: payload.tokenSource,
+      tokens: payload.tokens ?? null,
       subscription: {
         usd: payload.subscriptionUsd,
         deltaPct: payload.subscriptionDeltaPct,
