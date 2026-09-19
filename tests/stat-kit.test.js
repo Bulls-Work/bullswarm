@@ -131,6 +131,41 @@ test('shortening keeps scoped pool names distinct before any cut', () => {
   assert.equal(panel.regions[1].payload.label, 'claude-code:acme');
 });
 
+test('model labels keep the full identity when the 55-column panel has room', () => {
+  const names = [
+    'claude-opus-5',
+    'gpt-5.6-luna',
+    'deepseek/deepseek-v4.1-flash',
+    'grok-4.6',
+    'claude-sonnet-5',
+  ];
+  const valueText = ['36h43m', '37h15m', '16h49m', '9h36m', '34m'];
+  const panel = renderPanel({
+    title: 'Model worker-minutes', width: 55, unit: 'minutes', labelKind: 'model', colors: false,
+    rows: names.map((label, index) => ({ label, value: index + 1, total: 15, share: (index + 1) / 15, valueText: valueText[index] })),
+  });
+  const rows = panel.lines.slice(1).map(visible);
+  for (const name of names) assert.ok(rows.some((row) => row.includes(name)), `${name}: ${rows.join('\n')}`);
+  assert.deepEqual(panel.meta.labels, names);
+});
+
+test('model labels shorten by semantic stages without bare versions', () => {
+  assert.equal(shortenLabel('openrouter/stealth/union-alpha', { kind: 'model', width: 20 }), 'union-alpha');
+  assert.equal(shortenLabel('deepseek/deepseek-v4.1-flash', { kind: 'model', width: 19 }), 'deepseek-v4.1-flash');
+  assert.equal(shortenLabel('deepseek/deepseek-v4.1-flash', { kind: 'model', width: 10 }), 'v4.1-flash');
+
+  const panel = renderPanel({
+    title: 'Model attempts', width: 25, unit: 'attempts', labelKind: 'model', colors: false,
+    rows: [
+      { label: 'gpt-5.6-luna', value: 100, total: 200, share: 0.5, valueText: '100 attempts' },
+      { label: 'grok-4.6', value: 100, total: 200, share: 0.5, valueText: '100 attempts' },
+    ],
+  });
+  assert.deepEqual(panel.meta.labels, ['5.6-luna', 'grok-4.6']);
+  assert.ok(!panel.meta.labels.includes('luna'));
+  assert.ok(!panel.meta.labels.includes('4.6'));
+});
+
 test('panel rows keep fixed label/bar/value columns and cut a label only once', () => {
   const panel = renderPanel({
     title: 'Pool spend', width: 29, labelWidth: 14, barWidth: 6, unit: 'usd', colors: false,

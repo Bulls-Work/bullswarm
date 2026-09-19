@@ -59,14 +59,46 @@ function fit(text, width) {
   return visible(source).length <= cols ? source : cut(source, cols);
 }
 
+function modelRemainderNamesModel(remainder) {
+  const parts = String(remainder ?? '').split(/[-_]/).filter(Boolean);
+  if (parts.length < 2) return false;
+  const isVersion = (part) => /^(?:v)?\d+(?:[._]\d+)*$/i.test(part);
+  return parts.some(isVersion) && parts.some((part) => /[a-z]/i.test(part) && !isVersion(part));
+}
+
+function modelLabelStages(value) {
+  const source = String(value ?? '');
+  if (!source) return [''];
+  const candidates = [source];
+  const slash = Math.max(source.lastIndexOf('/'), source.lastIndexOf('\\'));
+  const pathName = slash >= 0 ? source.slice(slash + 1) : source;
+  if (pathName && pathName !== source) candidates.push(pathName);
+  const base = candidates.at(-1) ?? source;
+  const dash = base.indexOf('-');
+  if (dash > 0) {
+    const remainder = base.slice(dash + 1);
+    if (modelRemainderNamesModel(remainder)) candidates.push(remainder);
+  }
+  return [...new Set(candidates)];
+}
+
+function modelLabelAtWidth(value, width) {
+  const cols = widthOf(width);
+  const candidates = modelLabelStages(value);
+  for (const candidate of candidates) {
+    if (visible(candidate).length <= cols) return candidate;
+  }
+  return middleCut(candidates.at(-1) ?? String(value ?? ''), cols);
+}
+
 /**
  * Return the reader-facing short form for a data-series name.
  *
  * The untouched name remains on every payload and in the legend; this helper
  * is only for labels painted inside a bounded panel.  Pool scopes are the
- * useful identity after the final colon.  Projects and models commonly carry
- * a repository path or provider prefix, so their final dash/path segment is
- * the compact form that is still useful at a glance.
+ * useful identity after the final colon.  Projects retain their deliberate
+ * repository suffix rule; models use the identity-preserving staged rule
+ * below when the caller supplies the panel's actual label width.
  */
 export function shortenLabel(value, context = {}) {
   const source = String(value ?? '');
@@ -74,12 +106,21 @@ export function shortenLabel(value, context = {}) {
   const options = typeof context === 'string' ? { kind: context } : (context ?? {});
   if (options.full === true) return source;
 
+  const kind = String(options.kind ?? options.type ?? '').trim().toLowerCase();
+  const requestedWidth = options.width ?? options.labelWidth;
   const scope = source.lastIndexOf(':');
+  if (kind === 'model') {
+    // Model names are identity-bearing.  A caller that knows its label column
+    // gets the first semantic stage that fits; without a width, retain the
+    // untouched name so the panel measurer can decide from its actual room.
+    const modelSource = scope >= 0 && scope < source.length - 1 ? source.slice(scope + 1) : source;
+    return requestedWidth == null ? modelSource : modelLabelAtWidth(modelSource, requestedWidth);
+  }
+
   if (scope >= 0 && scope < source.length - 1) return source.slice(scope + 1);
 
   const pathSegments = source.split(/[\\/]/).filter(Boolean);
   const lastPath = pathSegments.at(-1) ?? source;
-  const kind = String(options.kind ?? options.type ?? '').trim().toLowerCase();
   if (pathSegments.length > 1 || kind === 'project' || kind === 'model') {
     const dashSegments = lastPath.split('-').filter(Boolean);
     if (dashSegments.length > 1) return dashSegments.at(-1);
@@ -335,6 +376,7 @@ function moreRow(row, label) {
  */
 function panelMetrics({ rows, width, unit, labelKind, labelWidth = null, barWidth = null } = {}) {
   const cols = widthOf(width, 55);
+  const normalizedKind = String(labelKind ?? '').trim().toLowerCase();
   const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
   const fullLabels = list.map((row) => String(row.fullLabel ?? row.label ?? row.id ?? ''));
   const shortLabels = fullLabels.map((label) => shortenLabel(label, { kind: labelKind }));
@@ -353,7 +395,9 @@ function panelMetrics({ rows, width, unit, labelKind, labelWidth = null, barWidt
     ? most
     : Math.max(most, visible(suffixes[index]).length), 0);
   const requestedLabel = labelWidth == null
-    ? Math.min(Math.max(1, longest + 1), Math.max(1, Math.floor(cols * 0.36)))
+    ? normalizedKind === 'model'
+      ? Math.max(1, longest + 1)
+      : Math.min(Math.max(1, longest + 1), Math.max(1, Math.floor(cols * 0.36)))
     : Math.max(1, Math.trunc(Number(labelWidth)) || 1);
   const requestedBar = barWidth == null ? Math.max(1, Math.floor(cols * 0.2)) : Math.max(1, Math.trunc(Number(barWidth)) || 1);
   const moreLongest = list.reduce((most, row, index) => moreRow(row, fullLabels[index])
@@ -484,6 +528,7 @@ export function renderPanel({
   let rowGaps = gaps;
   let barCols = Math.min(requestedBar, Math.max(minBar, cols - rowGaps - minLabel - suffixTarget));
   let labelCols = Math.min(requestedLabel, Math.max(minLabel, cols - rowGaps - barCols - suffixTarget));
+  const modelKind = String(labelKind ?? '').trim().toLowerCase() === 'model';
   if (layout) {
     rowGaps = Math.max(1, Math.trunc(Number(layout.gap)) || 1);
     barCols = layout.barEnabled === false ? 0 : Math.max(0, Math.trunc(Number(layout.barWidth)) || 0);
@@ -499,8 +544,19 @@ export function renderPanel({
     rowGaps = 1;
     labelCols = Math.max(1, cols - rowGaps - suffixTarget);
   }
+  // Model identity is more useful than a decorative share bar.  If the full
+  // names cannot fit beside the measured value field, give the label column
+  // the bar's room before asking the staged model rule to shorten them.
+  if (modelKind && !layout && labelWidth == null && barCols > 0 && labelCols < measured.longest) {
+    barCols = 0;
+    rowGaps = 1;
+    labelCols = Math.max(1, Math.min(requestedLabel, cols - rowGaps - suffixTarget));
+  }
   let suffixCols = Math.max(1, cols - rowGaps - labelCols - barCols);
-  let displayLabels = shortLabels.map((label) => cut(label, labelCols));
+  const labelsAtWidth = () => modelKind
+    ? fullLabels.map((label) => shortenLabel(label, { kind: 'model', width: labelCols }))
+    : shortLabels.map((label) => cut(label, labelCols));
+  let displayLabels = labelsAtWidth();
   let usedMiddleCut = false;
   let barsDroppedForCollision = false;
   if (duplicateLabels(displayLabels)) {
@@ -512,8 +568,9 @@ export function renderPanel({
       labelCols = Math.max(1, cols - rowGaps - suffixTarget);
       suffixCols = Math.max(1, cols - rowGaps - labelCols);
       barsDroppedForCollision = true;
+      displayLabels = labelsAtWidth();
     }
-    const resolvedLabels = resolveLabels(shortLabels, fullLabels, labelCols);
+    const resolvedLabels = resolveLabels(modelKind ? displayLabels : shortLabels, fullLabels, labelCols);
     displayLabels = resolvedLabels.labels;
     usedMiddleCut = resolvedLabels.usedMiddleCut;
   }
