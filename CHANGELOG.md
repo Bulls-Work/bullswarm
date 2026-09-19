@@ -1,6 +1,6 @@
 # bullswarm changelog
 
-## Unreleased
+## 0.33.1 — say what a number is, or say you do not know
 
 - budget: the page is the pool meters and nothing else. Every window a pool
   reports gets its own row — a background-coloured bar whose fill says pace,
