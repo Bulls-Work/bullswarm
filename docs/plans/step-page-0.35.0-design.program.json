@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "actions": [
+    {
+      "id": "study",
+      "kind": "architecture",
+      "purpose": "Study project-n and the current Step page, design the new page, and plan the extraction refactor",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0, a git worktree on branch release-0.35.0 branched from main (0.33.2). You edit nothing; your report is the input to the recorder. Never read or write the live ~/.bullswarm: copy it first (cp -Rp ~/.bullswarm /tmp/bsw-study35) and read the copy. Real data only: quote file paths and line numbers for every claim. Part 1, project-n: a sibling dashboard project at /home/dev/project-n (Next.js app under apps/web, parser under packages/parser). Read its CLAUDE.md, then find the session detail route and its components (search apps/web for the session page, timeline, tool call, turn, token, cost components). List every panel, what data each shows, how it handles a live session versus a finished one, how it presents tool calls, per-turn tokens and cost, subagents, errors, and duration. Quote the component file names. Part 2, Bullswarm today: read `stepPage` in src/workflow/dashboard.js (around line 3938) and every helper it calls (stepProgressText ~2616, stepBarText ~2752, stepPool ~2787, stepTally ~3667), the Step page section of docs/guide/observing.md, and the step-timeline design at docs/studies/cost-audit-2026-09-18/step-timeline-design.md if present on this branch (it is on branch cost-audit in the sibling worktree /home/dev/Repo/bullswork/bullswarm-cost; read it there). Render the current page yourself against the copied home: `BULLSWARM_HOME=/tmp/bsw-study35 node bin/bullswarm.js workflow tui --json` to list runs, then use the renderer the tests in tests/workflow-dashboard.test.js use to draw the Step page for one real running-or-finished step at 55, 120 and 200 columns, and paste the three frames. Part 3, data available per step: from the copied home, quote one real attempt record from a workflows/*/state.json (fields: pool, model, effort, reasoning, startedAt/finishedAt, usage, session, routing, outputFile, eventStream file), the first and last five lines of that attempt's stream-<action>-attempt-N.jsonl, its task file's head, and the step's entry in the result envelope (runs result --json). Note that the sibling worktree /home/dev/Repo/bullswork/bullswarm-0.34.0 is adding a v2 usage record with api and subscription blocks and meter snapshots; read its docs/plans/cost-0.34.0.goal.txt and any design output under docs/design/cost-0.34.0/ if it exists yet, and design the page to consume those fields. Part 4, the design: information architecture for the new Step page with a section list in priority order; for each section its data source field by field, its behaviour while running versus finished versus failed, and how it degrades at 55 columns; a live event feed drawn from the stream file (tool calls, commands, responses, with timestamps and durations); an attempt history block; a per-turn token/cost strip; the money pair; the route explanation; keyboard actions. Draw the frames as plain text at exactly 55, 120 and 200 columns for three states: running, finished-verified, and failed-with-two-attempts, using the real data you quoted. Part 5, refactor: enumerate every function in dashboard.js that only the Step page uses and every shared helper it depends on, with line numbers; propose src/workflow/step-view.js (rendering) and, if a pure data-shaping layer is warranted, src/workflow/step-model.js, following the existing budget-model.js/budget-view.js and stats-model.js/stats-view.js split; list callers to update and tests affected (grep tests/ for stepPage and the helpers). Assess, in one paragraph with numbers, whether a wider split of dashboard.js by page (home, runs, run) is worth doing in 0.35.0 or should wait. Part 6, the implementation program draft: propose the actions (ids, kinds, owned files, one-paragraph prompts) for the 0.35.0 build run such that territories do not collide and the refactor lands first. Write everything in your final report."
+    },
+    {
+      "id": "record",
+      "kind": "implement",
+      "purpose": "Write the design record, the nine frames, and the implementation program draft",
+      "dependsOn": [
+        "study"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "docs/design/step-page-0.35.0/README.md",
+        "docs/plans/step-page-0.35.0.program.json",
+        "docs/design/step-page-0.35.0/frames/running-55.txt",
+        "docs/design/step-page-0.35.0/frames/running-120.txt",
+        "docs/design/step-page-0.35.0/frames/running-200.txt",
+        "docs/design/step-page-0.35.0/frames/finished-55.txt",
+        "docs/design/step-page-0.35.0/frames/finished-120.txt",
+        "docs/design/step-page-0.35.0/frames/finished-200.txt",
+        "docs/design/step-page-0.35.0/frames/failed-55.txt",
+        "docs/design/step-page-0.35.0/frames/failed-120.txt",
+        "docs/design/step-page-0.35.0/frames/failed-200.txt"
+      ],
+      "evidenceFor": [],
+      "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.0. Read the 'study' dependency output in full. Record it faithfully into files, adding nothing the study did not establish: docs/design/step-page-0.35.0/README.md (the study, gap list, design, refactor plan, with the study's file:line citations kept), docs/design/step-page-0.35.0/frames/ with one file per frame exactly as the study drew them, named <state>-<width>.txt for state in running, finished, failed and width in 55, 120, 200 (nine files), and docs/plans/step-page-0.35.0.program.json holding the study's implementation program draft as valid bullswarm.workflow.program.v2 JSON. Then validate that program with `bullswarm workflow plan validate \"$(cat docs/plans/step-page-0.35.0.program.json | python3 -c 'import json,sys; print(\"placeholder goal 1. a 2. b\")')\" --cwd=/home/dev/Repo/bullswork/bullswarm-0.35.0 --program=/home/dev/Repo/bullswork/bullswarm-0.35.0/docs/plans/step-page-0.35.0.program.json --json` only if bullswarm is on PATH; if validation reports issues, fix the JSON shape (not the content) and say what you changed. Check every frame file is exactly its stated width or narrower on every line (awk 'length>W') and report the check. Never touch ~/.bullswarm."
+    }
+  ]
+}

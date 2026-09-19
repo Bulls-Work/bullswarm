@@ -1,0 +1,6 @@
+Bullswarm 0.35.0 design study: a complete revamp of the dashboard Step detail page, as rich as project-n's session detail view, recorded as a design that a later implementation run can build from without further research.
+
+1. A written study of what project-n shows for one agent session (its session detail page, timeline, tool-call feed, token and cost per turn, and any other panel) and what the current Bullswarm Step page shows, with a gap list, all grounded in the real project-n source at /home/dev/project-n and the real Bullswarm renderer.
+2. The 0.35.0 Step page design: information architecture, every section with its data source named field by field from the real attempt record, stream file, and result envelope, with design frames rendered as plain text at 55, 120, and 200 columns for a running step, a finished step, and a failed step with two attempts.
+3. A refactor plan for extracting the Step page out of src/workflow/dashboard.js into src/workflow/step-view.js (and step-model.js if the study finds a model layer is warranted), listing every function that moves, every caller, and the test files affected, so it can be done as the first step of the implementation run.
+4. The implementation program draft: a bullswarm.workflow.program.v2 JSON with territories that do not collide, saved beside the design record.
