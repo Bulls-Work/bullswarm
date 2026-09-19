@@ -13,6 +13,37 @@ import { getAllMeterReadings } from '../meters/registry.js';
 import { attachForecast } from '../lib/forecast.js';
 import { loadState } from '../lib/state.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
+import { formatMoneyPair } from '../lib/usage-basis.js';
+
+/**
+ * The Usage page mostly paints quota windows, but callers also use its pool
+ * rows as the compact tail of Home and Run. Keep the v2-to-view projection in
+ * one place so those callers cannot accidentally render an API amount without
+ * its subscription/basis companion.
+ */
+export function formatUsageMoney(usage = null) {
+  const value = usage && typeof usage === 'object' ? usage : {};
+  return formatMoneyPair({
+    api: value.api ?? {
+      usd: value.apiUsd ?? value.cost?.estimatedUsd ?? null,
+    },
+    subscription: value.subscription ?? (
+      Object.hasOwn(value, 'subscriptionUsd') || Object.hasOwn(value, 'subscriptionBasis')
+        ? {
+          usd: value.subscriptionUsd ?? null,
+          deltaPct: value.subscriptionDeltaPct ?? value.deltaPct ?? null,
+          window: value.subscriptionWindow ?? value.window ?? null,
+          basis: value.subscriptionBasis ?? 'unknown:no-meter',
+        }
+        : null
+    ),
+    tokenSource: value.tokenSource ?? null,
+  });
+}
+
+// A descriptive alias for small view adapters that already call their value
+// a money pair. Both names intentionally share the same implementation.
+export const usageMoneyPair = formatUsageMoney;
 
 /**
  * The one palette the product draws from. The first four are the truecolour

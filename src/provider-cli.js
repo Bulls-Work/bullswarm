@@ -172,7 +172,7 @@ function disableProvider(bullswarmDir, name) {
 
 // --- validate -----------------------------------------------------------------
 
-const PROVIDER_EXPORTS = ['name', 'displayName', 'connectors', 'readUsage', 'doctor'];
+const PROVIDER_EXPORTS = ['name', 'displayName', 'connectors', 'readUsage', 'readTranscriptUsage', 'doctor'];
 const SPAWN_PLACEHOLDERS = ['taskFile', 'cwd', 'sessionId', 'bullswarmDir'];
 const TIERS = ['high', 'medium', 'low'];
 const LANES = ['analyze', 'build', 'chore'];
@@ -235,6 +235,13 @@ function checkPool(pool, providerName, { enums, hasReadUsage }) {
   }
   if (strategy === 'event-stream' && !Array.isArray(pool.eventStream?.output)) {
     warnings.push('eventStream.output: event-stream extraction without output rules falls back to raw stdout');
+  }
+  const usageRules = pool.eventStream?.usage;
+  const hasUsageRules = Array.isArray(usageRules)
+    ? usageRules.length > 0
+    : Boolean(usageRules && typeof usageRules === 'object' && Object.keys(usageRules).length > 0);
+  if (pool.eventStream !== undefined && !hasUsageRules) {
+    warnings.push('eventStream.usage: eventStream is declared but no usage rules exist; attempts require transcript or byte fallback');
   }
   const capture = pool.eventStream?.capture;
   if (capture !== undefined) {
@@ -392,7 +399,7 @@ export function validateProvider(bullswarmDir, dir, loaderOpts = {}) {
     for (const key of PROVIDER_EXPORTS) report.exports[key] = typeof mod[key];
     if (typeof mod.name !== 'string' || mod.name === '') report.errors.push('export name: required non-empty string');
     if (mod.displayName !== undefined && typeof mod.displayName !== 'string') report.errors.push('export displayName: must be a string');
-    for (const fn of ['connectors', 'readUsage', 'doctor']) {
+    for (const fn of ['connectors', 'readUsage', 'readTranscriptUsage', 'doctor']) {
       if (mod[fn] !== undefined && typeof mod[fn] !== 'function') report.errors.push(`export ${fn}: must be a function`);
     }
     report.name = typeof mod.name === 'string' && mod.name ? mod.name : null;

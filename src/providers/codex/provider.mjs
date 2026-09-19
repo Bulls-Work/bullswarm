@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
+import { readTranscriptUsage as readCodexTranscriptUsage } from '../../lib/transcripts/codex.js';
 
 export const name = 'codex';
 export const displayName = 'Codex';
@@ -275,4 +276,8 @@ export async function fetchCodexUsage({ pool = 'codex', env, home } = {}) {
 export async function readUsage(pool, ctx = {}) {
   const poolName = typeof pool === 'string' ? pool : pool?.name;
   return fetchCodexUsage({ pool: poolName ?? 'codex', env: ctx.env, home: ctx.home });
+}
+
+export function readTranscriptUsage(args = {}) {
+  return readCodexTranscriptUsage(args);
 }

@@ -451,6 +451,10 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
     outputFile: record.outFile ?? record.outputFile ?? null,
     failureKind: record.failureKind ?? null,
     why: record.why ?? null,
+    // Keep the complete v2 usage envelope exactly as watchOnce produced it:
+    // token classes, API-rate basis, subscription snapshots, calibration
+    // basis, and the provider session id are all needed by reprice and the
+    // result rollups. Do not project it back to the legacy cost aliases here.
     usage: clone(record.usage ?? null),
     ...(record.session !== undefined ? { session: clone(record.session) } : {}),
     wallSec: record.wallSec ?? null,
@@ -486,12 +490,78 @@ export function normalizeAttempt(record, { id, actionId, ordinal }) {
   };
 }
 
+const TOKEN_SOURCE_ORDER = new Map([
+  ['unknown', 0],
+  ['estimated:utf8-bytes/4', 1],
+  ['transcript-summed', 2],
+  ['provider-reported', 3],
+]);
+const SUBSCRIPTION_BASIS_ORDER = new Map([
+  ['unknown:no-price', 0],
+  ['unknown:no-meter', 1],
+  ['unknown:no-cost', 2],
+  ['calibrated:usd-per-pct', 3],
+  ['observed:meter-delta', 4],
+]);
+
+function worstBasis(current, next, order) {
+  if (!next || !order.has(next)) return current ?? null;
+  if (!current || !order.has(current)) return next;
+  return order.get(next) < order.get(current) ? next : current;
+}
+
 function addUsage(state, attempt) {
-  const tokens = Number(attempt?.usage?.tokens?.totalKnown ?? 0);
-  if (Number.isFinite(tokens) && tokens > 0) {
-    state.usage.total += tokens;
+  state.usage ??= { total: 0, byPool: {} };
+  state.usage.byPool ??= {};
+  const usage = attempt?.usage ?? null;
+  const tokens = Number(usage?.tokens?.totalKnown);
+  if (Number.isFinite(tokens) && tokens >= 0) {
+    state.usage.total = Number(state.usage.total ?? 0) + tokens;
     const pool = attempt.pool ?? 'unknown';
     state.usage.byPool[pool] = Number(state.usage.byPool[pool] ?? 0) + tokens;
+  }
+  // The explicit subtotals retain partial knowledge while the public fields
+  // stay null unless every relevant attempt has a priced amount. This keeps a
+  // missing value from becoming a misleading `$0.00` in result summaries.
+  // The state-level cost counters are opt-in because pre-v2 result envelopes
+  // reject unknown enumerable keys. The attempt record is always full-fidelity;
+  // once the integrator widens state.usage, this block carries the paired
+  // dollar totals without another runtime change.
+  const tracksCosts = Object.hasOwn(state.usage, 'apiUsd')
+    || Object.hasOwn(state.usage, 'subscriptionUsd')
+    || Object.hasOwn(state.usage, 'apiKnownSubtotalUsd');
+  if (tracksCosts) {
+    const apiUsd = Number(usage?.api?.usd ?? usage?.cost?.estimatedUsd);
+    const subscriptionUsd = Number(usage?.subscription?.usd);
+    if (Number.isFinite(apiUsd) && apiUsd >= 0) {
+      state.usage.apiKnownSubtotalUsd = Number(state.usage.apiKnownSubtotalUsd ?? 0) + apiUsd;
+      state.usage.pricedAttempts = Number(state.usage.pricedAttempts ?? 0) + 1;
+    } else {
+      state.usage.apiMissingAttempts = Number(state.usage.apiMissingAttempts ?? 0) + 1;
+    }
+    if (Number.isFinite(subscriptionUsd) && subscriptionUsd >= 0) {
+      state.usage.subscriptionKnownSubtotalUsd = Number(state.usage.subscriptionKnownSubtotalUsd ?? 0) + subscriptionUsd;
+      state.usage.subscriptionPricedAttempts = Number(state.usage.subscriptionPricedAttempts ?? 0) + 1;
+    } else {
+      state.usage.subscriptionMissingAttempts = Number(state.usage.subscriptionMissingAttempts ?? 0) + 1;
+    }
+    const measured = usage?.tokenSource === 'provider-reported' || usage?.tokenSource === 'transcript-summed';
+    if (measured) state.usage.measuredAttempts = Number(state.usage.measuredAttempts ?? 0) + 1;
+    state.usage.attempts = Number(state.usage.attempts ?? 0) + 1;
+    state.usage.apiUsd = state.usage.apiMissingAttempts
+      ? null : state.usage.apiKnownSubtotalUsd ?? null;
+    state.usage.subscriptionUsd = state.usage.subscriptionMissingAttempts
+      ? null : state.usage.subscriptionKnownSubtotalUsd ?? null;
+    state.usage.tokenSource = worstBasis(
+      state.usage.tokenSource,
+      usage?.tokenSource,
+      TOKEN_SOURCE_ORDER,
+    );
+    state.usage.subscriptionBasis = worstBasis(
+      state.usage.subscriptionBasis,
+      usage?.subscription?.basis,
+      SUBSCRIPTION_BASIS_ORDER,
+    );
   }
   state.budget.agents += 1;
   const wall = Number(attempt?.wallSec ?? 0);

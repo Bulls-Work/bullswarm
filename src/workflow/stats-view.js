@@ -12,6 +12,7 @@ import {
   renderStatsSurface,
   measurePanelGridLayout,
 } from './stat-kit.js';
+import { formatMoneyPair } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
@@ -198,14 +199,25 @@ function shareFor(row, value, total, preferred = null) {
   return value != null && total != null && total > 0 ? value / total : null;
 }
 function costValue(row) {
-  const value = finite(row?.apiEquivalentUsd);
+  const value = finite(row?.apiUsd ?? row?.apiEquivalentUsd);
   return row?.tokenSource === 'unknown' ? null : value;
 }
-function moneyText(value, tokenSource = null) {
-  const number = finite(value);
-  if (number == null) return 'value unavailable';
-  const mark = tokenSource === 'estimated:utf8-bytes/4' || tokenSource === 'unknown' ? '≈' : '';
-  return `${mark}${formatDashboardValue(number, 'money')}`;
+function moneyText(rowOrValue, tokenSource = null) {
+  const row = rowOrValue && typeof rowOrValue === 'object'
+    ? rowOrValue
+    : { apiUsd: rowOrValue, tokenSource };
+  const api = {
+    usd: finite(row.apiUsd ?? row.apiEquivalentUsd),
+    tokenSource: row.tokenSource ?? tokenSource,
+  };
+  const subscription = row.subscription ?? {
+    usd: finite(row.subscriptionUsd),
+    deltaPct: finite(row.subscriptionDeltaPct ?? row.deltaPct),
+    window: row.subscriptionWindow ?? row.window,
+    basis: row.subscriptionBasis,
+  };
+  const text = formatMoneyPair({ api, subscription });
+  return text;
 }
 function minuteText(value) {
   const number = finite(value);
@@ -233,9 +245,13 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
   return rows.map((row) => {
     const raw = field === 'apiEquivalentUsd' ? costValue(row) : finite(row?.[field]);
     let text = null;
-    if (raw != null) {
+    const hasSubscriptionMoney = unit === 'usd' && (
+      finite(row?.subscriptionUsd) != null
+      || finite(row?.subscription?.usd) != null
+    );
+    if (raw != null || hasSubscriptionMoney) {
       if (valueText) text = valueText(row, raw);
-      else if (unit === 'usd') text = moneyText(raw, row?.tokenSource);
+      else if (unit === 'usd') text = moneyText(row);
       else if (unit === 'minutes') text = minuteText(raw);
       else if (unit === 'runs') text = countText(raw, 'run');
       else if (unit === 'attempts') text = countText(raw, 'attempt');
@@ -390,7 +406,10 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   const title = tab === 'spending'
     ? info.modelCostMeasured ? 'Spend per day · API-equivalent · model' : stackBy === 'model' ? 'Worker-minutes per day · model cost is not measured' : 'Spend per day · API-equivalent · pool'
     : tab === 'pool' ? 'Spend per day · API-equivalent · pool' : tab === 'model' ? 'Worker-minutes per day · model' : 'Runs per day · project';
-  const mark = info.unit === 'usd' && sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '≈' : '';
+  // Keep the chart's compact marker aligned with formatMoneyPair: `~` means
+  // a local byte estimate, while `≈` is reserved for calibrated subscription
+  // amounts/transcript-summed API values.
+  const mark = info.unit === 'usd' && sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : '';
   const chart = (info.unit === 'usd' || info.unit === 'minutes' || info.unit === 'runs')
     ? renderStackedColumnChart({ title, buckets: sourceBuckets, series, width, height: 6, rowCount: 6, unit: info.unit, mark, totals: false, tab, metric: info.metric, period, basis: trend.segmentBasis ?? info.basis ?? null })
     : renderColumnChart({ title, buckets: sourceBuckets, width, height: 6, unit: info.unit, totals: false, tab, metric: info.metric, period });
@@ -413,13 +432,12 @@ function summaryItems(overview, outcomes, poolTable, projectTable) {
   const keys = object(overview?.keys) ?? {};
   const workflows = finite(keys.workflows) ?? totalFor(rowsOf(projectTable), projectTable?.totals, 'runs');
   const workerMinutes = finite(keys.totalWorkerMinutes);
-  const api = finite(keys.apiEquivalentUsd);
-  const tokenSource = keys.tokenSource ?? null;
+  const api = finite(keys.apiUsd ?? keys.apiEquivalentUsd);
   const activeDays = finite(keys.activeDays);
   const totals = [
     workflows == null ? null : countText(workflows, 'workflow'),
     workerMinutes == null ? null : `${workerMinutes} worker-minutes`,
-    api == null ? null : `${moneyText(api, tokenSource)} API-equivalent`,
+    api == null && finite(keys.subscriptionUsd) == null ? null : `${moneyText({ ...keys, apiUsd: api })}`,
     activeDays == null ? null : `${activeDays} active days`,
   ].filter(Boolean).join(' · ');
   // Verification, requirements and wall duration already have a durable home

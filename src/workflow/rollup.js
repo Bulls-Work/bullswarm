@@ -70,6 +70,14 @@ const TOKEN_SOURCE_RANK = {
   'provider-reported': 3,
 };
 
+const SUBSCRIPTION_BASIS_RANK = {
+  'unknown:no-price': 0,
+  'unknown:no-meter': 1,
+  'unknown:no-cost': 2,
+  'calibrated:usd-per-pct': 3,
+  'observed:meter-delta': 4,
+};
+
 function tokenSourceOf(value) {
   return Object.hasOwn(TOKEN_SOURCE_RANK, value) ? value : 'unknown';
 }
@@ -78,6 +86,153 @@ function worstTokenSource(current, candidate) {
   const next = tokenSourceOf(candidate);
   if (current == null) return next;
   return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function subscriptionBasisOf(value) {
+  return Object.hasOwn(SUBSCRIPTION_BASIS_RANK, value) ? value : 'unknown:no-meter';
+}
+
+function worstSubscriptionBasis(current, candidate) {
+  const next = subscriptionBasisOf(candidate);
+  if (current == null) return next;
+  return SUBSCRIPTION_BASIS_RANK[next] < SUBSCRIPTION_BASIS_RANK[current] ? next : current;
+}
+
+function addNullable(total, value) {
+  return value == null ? total : (total ?? 0) + value;
+}
+
+function tokenTotal(tokens) {
+  if (!tokens || typeof tokens !== 'object') return null;
+  const direct = finiteNumber(tokens.totalKnown);
+  if (direct != null) return direct;
+  const fields = ['standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWrite', 'output', 'reasoning'];
+  let total = null;
+  for (const field of fields) total = addNullable(total, finiteNumber(tokens[field]));
+  return total;
+}
+
+function cacheWriteOf(tokens) {
+  if (!tokens || typeof tokens !== 'object') return null;
+  const direct = finiteNumber(tokens.cacheWrite);
+  if (direct != null) return direct;
+  const five = finiteNumber(tokens.cacheWrite5m);
+  const one = finiteNumber(tokens.cacheWrite1h);
+  return five != null && one != null ? five + one : null;
+}
+
+function attemptCanonicalUsage(attempt) {
+  const usage = attempt?.usage && typeof attempt.usage === 'object' ? attempt.usage : null;
+  const tokens = usage?.tokens && typeof usage.tokens === 'object' ? usage.tokens : null;
+  const apiUsd = finiteNumber(usage?.api?.usd ?? usage?.cost?.estimatedUsd);
+  const subscriptionUsd = finiteNumber(usage?.subscription?.usd);
+  const tokenSource = tokenSourceOf(usage?.tokenSource);
+  const subscriptionBasis = subscriptionBasisOf(usage?.subscription?.basis);
+  const subscriptionDeltaPct = finiteNumber(usage?.subscription?.deltaPct);
+  const subscriptionWindow = typeof usage?.subscription?.window === 'string'
+    ? usage.subscription.window : null;
+  return {
+    canonical: Boolean(usage && (usage.api !== undefined || usage.subscription !== undefined)),
+    apiUsd,
+    subscriptionUsd,
+    tokenSource,
+    subscriptionBasis,
+    subscriptionDeltaPct,
+    subscriptionWindow,
+    tokens: tokenTotal(tokens),
+    cacheRead: finiteNumber(tokens?.cacheRead),
+    cacheWrite: cacheWriteOf(tokens),
+    reasoning: finiteNumber(tokens?.reasoning),
+  };
+}
+
+function emptyUsageAggregate() {
+  return {
+    attempts: 0,
+    minutes: null,
+    tokens: null,
+    cacheRead: null,
+    cacheWrite: null,
+    reasoning: null,
+    apiUsd: null,
+    apiKnownSubtotalUsd: null,
+    subscriptionUsd: null,
+    subscriptionKnownSubtotalUsd: null,
+    measuredAttempts: 0,
+    pricedAttempts: 0,
+    subscriptionPricedAttempts: 0,
+    // Keep these unset while walking attempts so the first real attempt's
+    // source/basis is retained.  Initializing to the lowest-ranked value
+    // would incorrectly make every all-measured aggregate look unknown.
+    tokenSource: null,
+    subscriptionBasis: null,
+    subscriptionDeltaPct: null,
+    subscriptionWindow: null,
+    subscriptionWindows: {},
+  };
+}
+
+function finalizeUsageAggregate(aggregate) {
+  const complete = aggregate.attempts > 0 && aggregate.pricedAttempts === aggregate.attempts;
+  const subscriptionComplete = aggregate.attempts > 0
+    && aggregate.subscriptionPricedAttempts === aggregate.attempts;
+  aggregate.apiUsd = complete ? round(aggregate.apiKnownSubtotalUsd, 6) : null;
+  aggregate.apiKnownSubtotalUsd = round(aggregate.apiKnownSubtotalUsd, 6);
+  aggregate.subscriptionUsd = subscriptionComplete ? round(aggregate.subscriptionKnownSubtotalUsd, 6) : null;
+  aggregate.subscriptionKnownSubtotalUsd = round(aggregate.subscriptionKnownSubtotalUsd, 6);
+  aggregate.minutes = round(aggregate.minutes, 2);
+  for (const field of ['tokens', 'cacheRead', 'cacheWrite', 'reasoning']) {
+    aggregate[field] = aggregate[field] == null ? null : Math.round(aggregate[field]);
+  }
+  aggregate.tokenSource ??= 'unknown';
+  aggregate.subscriptionBasis ??= 'unknown:no-meter';
+  const windows = Object.entries(aggregate.subscriptionWindows ?? {});
+  if (windows.length === 1) {
+    aggregate.subscriptionWindow = windows[0][0];
+    aggregate.subscriptionDeltaPct = round(windows[0][1], 6);
+  }
+  return aggregate;
+}
+
+/**
+ * Aggregate canonical attempt usage with strict completeness semantics.
+ *
+ * `apiUsd` and `subscriptionUsd` are whole-scope totals only when every
+ * attempt has the corresponding amount. The named `*KnownSubtotalUsd` fields
+ * retain partial sums, while all token classes stay null until at least one
+ * attempt reports that class.
+ */
+export function aggregateAttemptUsage(attempts) {
+  const aggregate = emptyUsageAggregate();
+  for (const attempt of Array.isArray(attempts) ? attempts : []) {
+    if (!attempt || typeof attempt !== 'object') continue;
+    aggregate.attempts += 1;
+    const wallSec = finiteNumber(attempt.wallSec);
+    if (wallSec != null && wallSec >= 0) aggregate.minutes = addNullable(aggregate.minutes, wallSec / 60);
+    const usage = attemptCanonicalUsage(attempt);
+    aggregate.tokens = addNullable(aggregate.tokens, usage.tokens);
+    aggregate.cacheRead = addNullable(aggregate.cacheRead, usage.cacheRead);
+    aggregate.cacheWrite = addNullable(aggregate.cacheWrite, usage.cacheWrite);
+    aggregate.reasoning = addNullable(aggregate.reasoning, usage.reasoning);
+    aggregate.tokenSource = worstTokenSource(aggregate.tokenSource, usage.tokenSource);
+    aggregate.subscriptionBasis = worstSubscriptionBasis(aggregate.subscriptionBasis, usage.subscriptionBasis);
+    if (usage.subscriptionDeltaPct != null && usage.subscriptionWindow) {
+      aggregate.subscriptionWindows[usage.subscriptionWindow] =
+        (aggregate.subscriptionWindows[usage.subscriptionWindow] ?? 0) + usage.subscriptionDeltaPct;
+    }
+    if (usage.apiUsd != null) {
+      aggregate.apiKnownSubtotalUsd = addNullable(aggregate.apiKnownSubtotalUsd, usage.apiUsd);
+      aggregate.pricedAttempts += 1;
+    }
+    if (usage.subscriptionUsd != null) {
+      aggregate.subscriptionKnownSubtotalUsd = addNullable(aggregate.subscriptionKnownSubtotalUsd, usage.subscriptionUsd);
+      aggregate.subscriptionPricedAttempts += 1;
+    }
+    if (usage.tokenSource === 'provider-reported' || usage.tokenSource === 'transcript-summed') {
+      aggregate.measuredAttempts += 1;
+    }
+  }
+  return finalizeUsageAggregate(aggregate);
 }
 
 // A time bound may be an ISO string, a Date, epoch milliseconds, or a
@@ -98,52 +253,73 @@ export function toBoundMs(bound, now = Date.now()) {
 // dispatcher recorded. `null` pool/model keys land under 'unknown', which is
 // what src/workflow/v2-runtime.js addUsage() already does for pool totals.
 function attemptTotals(attempts) {
+  const list = (Array.isArray(attempts) ? attempts : []).filter((attempt) => attempt && typeof attempt === 'object');
   const pools = {};
   const models = {};
-  for (const attempt of Array.isArray(attempts) ? attempts : []) {
-    if (!attempt || typeof attempt !== 'object') continue;
+  const poolAttempts = new Map();
+  const canonical = list.some((attempt) => attemptCanonicalUsage(attempt).canonical);
+  for (const attempt of list) {
     const poolKey = attempt.pool ?? 'unknown';
     const modelKey = attempt.model ?? 'unknown';
+    const pool = poolAttempts.get(poolKey) ?? [];
+    pool.push(attempt);
+    poolAttempts.set(poolKey, pool);
     const wallSec = finiteNumber(attempt.wallSec);
     const minutes = wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
-    const costUsd = finiteNumber(attempt.usage?.cost?.estimatedUsd);
-    const tokens = finiteNumber(attempt.usage?.tokens?.totalKnown);
-    const cacheRead = finiteNumber(attempt.usage?.tokens?.cacheRead);
-    const explicitCacheWrite = finiteNumber(attempt.usage?.tokens?.cacheWrite);
-    const cacheWrite5m = finiteNumber(attempt.usage?.tokens?.cacheWrite5m);
-    const cacheWrite1h = finiteNumber(attempt.usage?.tokens?.cacheWrite1h);
-    const cacheWrite = explicitCacheWrite ?? (cacheWrite5m != null || cacheWrite1h != null
-      ? (cacheWrite5m ?? 0) + (cacheWrite1h ?? 0)
-      : null);
-    const tokenSource = tokenSourceOf(attempt.usage?.tokenSource);
-
-    const pool = pools[poolKey] ??= {
-      attempts: 0, minutes: null, costUsd: null, tokens: null,
-      cacheRead: null, cacheWrite: null, tokenSource: null,
-    };
-    pool.attempts += 1;
-    pool.tokenSource = worstTokenSource(pool.tokenSource, tokenSource);
-    if (minutes != null) pool.minutes = (pool.minutes ?? 0) + minutes;
-    // R2: only an attempt that recorded an estimate moves the money.
-    if (costUsd != null) pool.costUsd = (pool.costUsd ?? 0) + costUsd;
-    if (tokens != null) pool.tokens = (pool.tokens ?? 0) + tokens;
-    if (cacheRead != null) pool.cacheRead = (pool.cacheRead ?? 0) + cacheRead;
-    if (cacheWrite != null) pool.cacheWrite = (pool.cacheWrite ?? 0) + cacheWrite;
-
     const model = models[modelKey] ??= { attempts: 0, minutes: null };
     model.attempts += 1;
     if (minutes != null) model.minutes = (model.minutes ?? 0) + minutes;
   }
-  for (const pool of Object.values(pools)) {
-    pool.minutes = round(pool.minutes, 2);
-    pool.costUsd = round(pool.costUsd, 6);
-    pool.tokens = pool.tokens == null ? null : Math.round(pool.tokens);
-    pool.cacheRead = pool.cacheRead == null ? null : Math.round(pool.cacheRead);
-    pool.cacheWrite = pool.cacheWrite == null ? null : Math.round(pool.cacheWrite);
-    pool.tokenSource ??= 'unknown';
+  if (canonical) {
+    for (const [poolKey, grouped] of poolAttempts) {
+      const aggregate = aggregateAttemptUsage(grouped);
+      pools[poolKey] = {
+        ...aggregate,
+        // `costUsd` is the pre-v2 alias. It follows the strict whole-scope
+        // amount; partial sums live only in the explicitly named subtotal.
+        costUsd: aggregate.apiUsd,
+      };
+    }
+  } else {
+    // Historical records only carried costUsd and token classes. Preserve
+    // their enumerable shape so older readers and fixtures continue to load.
+    for (const attempt of list) {
+      const poolKey = attempt.pool ?? 'unknown';
+      const pool = pools[poolKey] ??= {
+        attempts: 0, minutes: null, costUsd: null, tokens: null,
+        cacheRead: null, cacheWrite: null, tokenSource: null,
+      };
+      const wallSec = finiteNumber(attempt.wallSec);
+      const minutes = wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
+      const costUsd = finiteNumber(attempt.usage?.cost?.estimatedUsd);
+      const tokens = finiteNumber(attempt.usage?.tokens?.totalKnown);
+      const cacheRead = finiteNumber(attempt.usage?.tokens?.cacheRead);
+      const explicitCacheWrite = finiteNumber(attempt.usage?.tokens?.cacheWrite);
+      const cacheWrite5m = finiteNumber(attempt.usage?.tokens?.cacheWrite5m);
+      const cacheWrite1h = finiteNumber(attempt.usage?.tokens?.cacheWrite1h);
+      const cacheWrite = explicitCacheWrite ?? (cacheWrite5m != null || cacheWrite1h != null
+        ? (cacheWrite5m ?? 0) + (cacheWrite1h ?? 0)
+        : null);
+      const tokenSource = tokenSourceOf(attempt.usage?.tokenSource);
+      pool.attempts += 1;
+      pool.tokenSource = worstTokenSource(pool.tokenSource, tokenSource);
+      if (minutes != null) pool.minutes = (pool.minutes ?? 0) + minutes;
+      if (costUsd != null) pool.costUsd = (pool.costUsd ?? 0) + costUsd;
+      if (tokens != null) pool.tokens = (pool.tokens ?? 0) + tokens;
+      if (cacheRead != null) pool.cacheRead = (pool.cacheRead ?? 0) + cacheRead;
+      if (cacheWrite != null) pool.cacheWrite = (pool.cacheWrite ?? 0) + cacheWrite;
+    }
+    for (const pool of Object.values(pools)) {
+      pool.minutes = round(pool.minutes, 2);
+      pool.costUsd = round(pool.costUsd, 6);
+      pool.tokens = pool.tokens == null ? null : Math.round(pool.tokens);
+      pool.cacheRead = pool.cacheRead == null ? null : Math.round(pool.cacheRead);
+      pool.cacheWrite = pool.cacheWrite == null ? null : Math.round(pool.cacheWrite);
+      pool.tokenSource ??= 'unknown';
+    }
   }
   for (const model of Object.values(models)) model.minutes = round(model.minutes, 2);
-  return { pools, models };
+  return { pools, models, canonical };
 }
 
 // The result envelope is the authority on requirements when it exists; a run
@@ -176,7 +352,26 @@ export function rollupRecord(state, result, { project = null, now = Date.now() }
   const finishedAt = lifecycle.finishedAt ?? result?.finishedAt ?? isoOf(now);
   const finishedAtMs = parseIso(finishedAt);
   const agentSeconds = finiteNumber(state?.budget?.seconds);
-  const { pools, models } = attemptTotals(state?.attempts);
+  const attempts = [
+    ...(state?.preflight?.scout?.attempts ?? []),
+    ...(state?.planner?.attempts ?? []),
+    ...(state?.attempts ?? []),
+  ];
+  // Pre-v2 attempts can include the planner's transport record, but the
+  // historical per-pool/model ledgers counted only worker attempts. Preserve
+  // that enumerable shape for a legacy-shaped run; once any canonical v2
+  // usage is present, aggregate every durable attempt so planner/scout usage
+  // cannot disappear from a cost-aware run.
+  const hasCanonicalUsage = attempts.some((attempt) => attemptCanonicalUsage(attempt).canonical);
+  const ledgerAttempts = hasCanonicalUsage ? attempts : (state?.attempts ?? attempts);
+  const { pools, models, canonical } = attemptTotals(ledgerAttempts);
+  const usage = aggregateAttemptUsage(attempts);
+  // Keep the legacy token ledger alongside the richer v2 aggregate. The
+  // explicit cost/coverage fields are authoritative for all new views.
+  usage.total = state?.usage?.total ?? (usage.tokens ?? 0);
+  usage.byPool = state?.usage?.byPool && typeof state.usage.byPool === 'object'
+    ? { ...state.usage.byPool }
+    : {};
   return {
     schemaVersion: ROLLUP_SCHEMA_VERSION,
     runId: state?.runId ?? result?.runId ?? null,
@@ -195,6 +390,10 @@ export function rollupRecord(state, result, { project = null, now = Date.now() }
     },
     pools,
     models,
+    usage: canonical ? usage : {
+      total: usage.total,
+      byPool: usage.byPool,
+    },
     legacy: false,
   };
 }

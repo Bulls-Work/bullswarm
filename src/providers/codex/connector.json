@@ -79,6 +79,30 @@
         "status": "completed"
       }
     ],
+    "usage": [
+      {
+        "match": { "path": "type", "equals": "thread.started" },
+        "mode": "last",
+        "fields": {
+          "sessionId": "thread_id"
+        }
+      },
+      {
+        "match": { "path": "type", "equals": "turn.completed" },
+        "mode": "last",
+        "fields": {
+          "standardRead": "usage.input_tokens",
+          "cacheRead": "usage.cached_input_tokens",
+          "cacheWrite": "usage.cache_write_input_tokens",
+          "output": "usage.output_tokens",
+          "reasoning": "usage.reasoning_output_tokens"
+        },
+        "inclusive": {
+          "standardRead": ["cacheRead"],
+          "output": ["reasoning"]
+        }
+      }
+    ],
     "output": [
       {
         "match": {

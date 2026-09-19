@@ -18,6 +18,7 @@ import {
   tabsRow,
 } from './dash-kit.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
+import { formatMoneyPair } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const BOLD = '\x1b[1m';
@@ -188,7 +189,11 @@ function formatValue(value, unit) {
   const number = finite(value);
   if (number == null) return 'value unavailable';
   const normalized = unitName(unit);
-  if (normalized === 'usd') return formatDashboardValue(number, 'money');
+  if (normalized === 'usd') {
+    const api = formatMoneyPair({ api: { usd: number, tokenSource: 'provider-reported' }, subscription: null })
+      .split(' · ')[0];
+    return api.replace(/ api(?: summed| estimated)?$/, '');
+  }
   if (normalized === 'minutes') return formatDashboardValue(number, 'minutes');
   if (normalized === 'percent') return `${Number((number * 100).toFixed(1))}%`;
   if (normalized === 'runs') return `${number} run${number === 1 ? '' : 's'}`;
@@ -232,6 +237,11 @@ function payloadFor(part, common = {}) {
     unit: unitName(part?.unit ?? common.unit),
     tokenSource: part?.tokenSource ?? common.tokenSource ?? null,
     basis: part?.basis ?? common.basis ?? null,
+    apiUsd: part?.apiUsd ?? common.apiUsd ?? null,
+    subscriptionUsd: part?.subscriptionUsd ?? common.subscriptionUsd ?? null,
+    subscriptionDeltaPct: part?.subscriptionDeltaPct ?? common.subscriptionDeltaPct ?? null,
+    subscriptionWindow: part?.subscriptionWindow ?? common.subscriptionWindow ?? null,
+    subscriptionBasis: part?.subscriptionBasis ?? common.subscriptionBasis ?? null,
   };
 }
 
@@ -1017,9 +1027,21 @@ export function formatHoverLabel(payload = {}) {
   const kind = payload.kind
     ?? (payload.bucketKey == null && payload.label ? 'share' : payload.series ? 'slice' : 'column');
   const missingText = kind === 'slice' ? (payload.missingReason ?? 'not measured') : 'value unavailable';
-  const valueText = value == null
+  let valueText = value == null
     ? missingText
     : `${estimated && unitName(payload.unit) === 'usd' ? '≈' : ''}${formatValue(value, payload.unit)}`;
+  if (value != null && unitName(payload.unit) === 'usd' && payload.subscriptionUsd != null) {
+    valueText = formatMoneyPair({
+      api: { usd: payload.apiUsd ?? value },
+      tokenSource: payload.tokenSource,
+      subscription: {
+        usd: payload.subscriptionUsd,
+        deltaPct: payload.subscriptionDeltaPct,
+        window: payload.subscriptionWindow,
+        basis: payload.subscriptionBasis,
+      },
+    });
+  }
   const shareText = formatShare(payload.share);
   const date = payload.bucketLabel ?? payload.bucketKey ?? 'date unavailable';
   if (value == null || finite(payload.share) == null && kind !== 'column') {

@@ -358,6 +358,9 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     // Non-blocking authoring advice recorded when a program is accepted, so
     // `runs show` can list what the launch already printed.
     advisories: [],
+    // Cost rollups are optional additions to this legacy state counter. The
+    // durable attempt.usage record is authoritative; an integrator may opt
+    // the state-level counters in by adding the v2 keys here.
     usage: { total: 0, byPool: {} },
     events: { sequence: 0, last: null },
     ledger,
@@ -775,7 +778,8 @@ function validateAttempts(attempts, program) {
     for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'streamFile', 'diffFile', 'lastResponse']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
     if (attempt.failure !== undefined && attempt.failure !== null && !isObject(attempt.failure)) fail(`state.attempts[${index}].failure must be null or an object`);
-    for (const field of ['usage', 'routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
+    for (const field of ['routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);
+    validateUsageV2(attempt.usage, `state.attempts[${index}].usage`);
     if (attempt.continued !== undefined && typeof attempt.continued !== 'boolean') fail(`state.attempts[${index}].continued must be a boolean`);
     if (attempt.outputBytesObserved !== undefined && (!Number.isFinite(attempt.outputBytesObserved) || attempt.outputBytesObserved < 0)) fail(`state.attempts[${index}].outputBytesObserved must be a non-negative finite number`);
     if (attempt.outputBytes !== undefined && attempt.outputBytes !== null) nonNegativeInteger(attempt.outputBytes, `state.attempts[${index}].outputBytes`);
@@ -820,6 +824,95 @@ function validatePoolUsage(value, name) {
   for (const [key, count] of Object.entries(value)) {
     if (typeof key !== 'string' || !key || key.includes('\0')) fail(`${name} contains an invalid pool name`);
     if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) fail(`${name}.${key} must be a non-negative finite number`);
+  }
+}
+
+const USAGE_TOKEN_SOURCES = new Set([
+  'provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown',
+]);
+const USAGE_SUBSCRIPTION_BASES = new Set([
+  'observed:meter-delta', 'calibrated:usd-per-pct',
+  'unknown:no-price', 'unknown:no-meter', 'unknown:no-cost',
+]);
+
+function nullableFiniteNumber(value, name) {
+  if (value === undefined) return;
+  if (value !== null && (typeof value !== 'number' || !Number.isFinite(value))) {
+    fail(`${name} must be null or a finite number`);
+  }
+}
+
+function validateUsageV2(usage, at) {
+  if (usage === undefined || usage === null) return;
+  object(usage, at);
+  // Preserve legacy usage aliases and tolerate provider-specific diagnostic
+  // keys, while validating every canonical v2 block when it is present.
+  if (usage.tokens !== undefined && usage.tokens !== null) {
+    object(usage.tokens, `${at}.tokens`);
+    for (const field of [
+      'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWrite',
+      'output', 'reasoning', 'totalKnown',
+    ]) nullableFiniteNumber(usage.tokens[field], `${at}.tokens.${field}`);
+  }
+  if (usage.tokenSource !== undefined
+    && (typeof usage.tokenSource !== 'string' || !USAGE_TOKEN_SOURCES.has(usage.tokenSource))) {
+    fail(`${at}.tokenSource is invalid`);
+  }
+  for (const field of ['model', 'sessionId', 'costSource']) {
+    if (usage[field] !== undefined && usage[field] !== null && typeof usage[field] !== 'string') {
+      fail(`${at}.${field} must be null or a string`);
+    }
+  }
+  if (usage.api !== undefined && usage.api !== null) {
+    object(usage.api, `${at}.api`);
+    nullableFiniteNumber(usage.api.usd, `${at}.api.usd`);
+    if (usage.api.breakdown !== undefined && usage.api.breakdown !== null) {
+      object(usage.api.breakdown, `${at}.api.breakdown`);
+      for (const [key, value] of Object.entries(usage.api.breakdown)) {
+        nullableFiniteNumber(value, `${at}.api.breakdown.${key}`);
+      }
+    }
+    for (const field of ['pricedFields', 'unpricedFields']) {
+      if (usage.api[field] !== undefined
+        && (!Array.isArray(usage.api[field]) || usage.api[field].some((item) => typeof item !== 'string'))) {
+        fail(`${at}.api.${field} must be an array of strings`);
+      }
+    }
+    if (usage.api.rateCard !== undefined && usage.api.rateCard !== null) {
+      object(usage.api.rateCard, `${at}.api.rateCard`);
+      for (const field of ['source', 'updatedAt']) {
+        if (usage.api.rateCard[field] !== undefined && usage.api.rateCard[field] !== null
+          && typeof usage.api.rateCard[field] !== 'string') fail(`${at}.api.rateCard.${field} must be null or a string`);
+      }
+    }
+    if (usage.api.basis !== undefined && typeof usage.api.basis !== 'string') fail(`${at}.api.basis must be a string`);
+  }
+  if (usage.subscription !== undefined && usage.subscription !== null) {
+    object(usage.subscription, `${at}.subscription`);
+    for (const field of ['pool', 'window', 'basis']) {
+      if (usage.subscription[field] !== undefined && usage.subscription[field] !== null
+        && typeof usage.subscription[field] !== 'string') fail(`${at}.subscription.${field} must be null or a string`);
+    }
+    for (const field of ['deltaPct', 'usd', 'monthlyPriceUsd', 'windowDays']) {
+      nullableFiniteNumber(usage.subscription[field], `${at}.subscription.${field}`);
+    }
+    if (usage.subscription.basis !== undefined && usage.subscription.basis !== null
+      && !USAGE_SUBSCRIPTION_BASES.has(usage.subscription.basis)) fail(`${at}.subscription.basis is invalid`);
+    if (usage.subscription.snapshots !== undefined && usage.subscription.snapshots !== null) {
+      object(usage.subscription.snapshots, `${at}.subscription.snapshots`);
+      for (const side of ['start', 'end']) {
+        const snapshot = usage.subscription.snapshots[side];
+        if (snapshot === undefined || snapshot === null) continue;
+        object(snapshot, `${at}.subscription.snapshots.${side}`);
+        if (typeof snapshot.at !== 'string' || Number.isNaN(Date.parse(snapshot.at))) fail(`${at}.subscription.snapshots.${side}.at must be an ISO timestamp`);
+        if (typeof snapshot.usedPct !== 'number' || !Number.isFinite(snapshot.usedPct) || snapshot.usedPct < 0) fail(`${at}.subscription.snapshots.${side}.usedPct must be a non-negative finite number`);
+        if (snapshot.resetsAt !== undefined && snapshot.resetsAt !== null && typeof snapshot.resetsAt !== 'string') fail(`${at}.subscription.snapshots.${side}.resetsAt must be null or a string`);
+      }
+    }
+  }
+  if (usage.pricing !== undefined && usage.pricing !== null && !isObject(usage.pricing)) fail(`${at}.pricing must be null or an object`);
+  for (const field of ['cost', 'normalizedQuota']) {
+    if (usage[field] !== undefined && usage[field] !== null && !isObject(usage[field])) fail(`${at}.${field} must be null or an object`);
   }
 }
 
@@ -903,9 +996,23 @@ function validateState(state) {
     || state.cancellation.requesterPid !== undefined
   )) fail('state.cancellation metadata requires requested=true');
   object(state.usage, 'state.usage');
-  noUnknown(state.usage, new Set(['total', 'byPool']), 'state.usage');
+  noUnknown(state.usage, new Set([
+    'total', 'byPool', 'apiUsd', 'apiKnownSubtotalUsd', 'subscriptionUsd',
+    'subscriptionKnownSubtotalUsd', 'measuredAttempts', 'pricedAttempts',
+    'subscriptionPricedAttempts', 'attempts', 'apiMissingAttempts',
+    'subscriptionMissingAttempts', 'tokenSource', 'subscriptionBasis',
+  ]), 'state.usage');
   if (typeof state.usage.total !== 'number' || !Number.isFinite(state.usage.total) || state.usage.total < 0) fail('state.usage.total must be a non-negative finite number');
   validatePoolUsage(state.usage.byPool, 'state.usage.byPool');
+  for (const field of ['apiUsd', 'apiKnownSubtotalUsd', 'subscriptionUsd', 'subscriptionKnownSubtotalUsd']) {
+    nullableFiniteNumber(state.usage[field], `state.usage.${field}`);
+    if (state.usage[field] !== null && state.usage[field] < 0) fail(`state.usage.${field} must be non-negative`);
+  }
+  for (const field of ['measuredAttempts', 'pricedAttempts', 'subscriptionPricedAttempts', 'attempts', 'apiMissingAttempts', 'subscriptionMissingAttempts']) {
+    if (state.usage[field] !== undefined) nonNegativeInteger(state.usage[field], `state.usage.${field}`);
+  }
+  if (state.usage.tokenSource !== undefined && !USAGE_TOKEN_SOURCES.has(state.usage.tokenSource)) fail('state.usage.tokenSource is invalid');
+  if (state.usage.subscriptionBasis !== undefined && !USAGE_SUBSCRIPTION_BASES.has(state.usage.subscriptionBasis)) fail('state.usage.subscriptionBasis is invalid');
   validateEvents(state.events);
   return state;
 }

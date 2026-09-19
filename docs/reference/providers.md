@@ -52,6 +52,7 @@ export const name = 'x';                        // required when provider.mjs ex
 export const displayName = 'X';                 // optional
 export function connectors(ctx) {}              // optional; sync, returns Pool[]
 export async function readUsage(pool, ctx) {}   // optional; returns a Snapshot
+export function readTranscriptUsage({ provider, sessionId = null, cwd = null, startedAt = null, endedAt = null, home }) {}
 export function doctor(ctx) {}                  // optional; returns a health object
 ```
 
@@ -61,6 +62,7 @@ export function doctor(ctx) {}                  // optional; returns a health ob
 | `displayName` | the label strategy tables print | the provider name |
 | `connectors(ctx)` | synchronous, cheap, no network; returns an array of pools | one pool: the template |
 | `readUsage(pool, ctx)` | async; returns a [snapshot](#the-snapshot); throws an `Error`, with an optional `.code` | the pool falls back to a declared meter, else it is unmetered |
+| `readTranscriptUsage(args)` | optional; sums this provider's durable transcript for one attempt and returns token classes plus `confidence` (`exact`, `window`, `ambiguous`, or `none`) | the attempt falls through to a UTF-8 byte estimate, then `unknown` |
 | `doctor(ctx)` | returns `{ installed: boolean, loggedIn: boolean \| null, hint?: string }` | installed means `bin` is on `PATH`; logged in means any `configDirs` entry exists |
 
 The core never branches on a thrown error's `code`; it is there for people reading the output of `bullswarm provider probe`.
@@ -125,6 +127,7 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `env` | merged into the child process environment verbatim, never inspected |
 | `conversation.newArgs`, `resumeArgs` | dispatch session resume |
 | `eventStream.rules`, `silenceThresholdSec`, `modelPaths`, `args`, `format` | watcher progress and silence detection |
+| `eventStream.usage` (`match`, `mode`, `fields`, optional `inclusive`) | provider-reported usage extraction; the watcher prefers this before transcript and byte fallback |
 | `eventStream.capture.responseBytes`, `capture.fileBytes` (both optional positive integers) | the per-attempt stream sink (`src/lib/attempt-stream.js`). Core defaults are 64000 bytes per persisted `response` event and 1048576 bytes per stream file; set either only when this CLI's answers or event volume make the default the wrong size. Omit the block and a connector still gets a persisted stream with no code |
 | `authSignatures`, `quotaSignatures` | verdict classification and quarantine. Generic phrases stay core defaults; list only this CLI's own |
 | `modelProfiles[]` (`match`, `tier`, `qualityRank`, `pricing`, `pricingSource`, `pricingUpdatedAt`, `autoRecommend`, `free`, `benchmark`) | rungs, the spend model, benchmarks |
@@ -134,6 +137,49 @@ These are all the pool fields a provider may set, and the part of the core that 
 | `costRank` (default 5), `lanes` (default all), `capabilities`, `flags.testFixture`, `flags.isCaller`, `flags.stealth` | routing and strategy |
 | `credentialGroup` (a string; the older `upstreamGroup` is still read) | quarantining siblings that share a credential, and dispatch avoidance |
 | `profile.providerId` | dispatch accepts an `<id>/<model>` pin only on this pool. `profile.configDir` and `profile.command` are display only |
+
+### `eventStream.usage`
+
+Usage rules are independent of response extraction. A rule's `mode` is `last`
+for one cumulative result event, `sum` for per-request rows, or `max` for a
+monotonic counter. `fields` maps provider paths to these mutually exclusive
+token classes:
+
+| Field | Meaning |
+|---|---|
+| `standardRead` | uncached input tokens |
+| `cacheRead` | cached input tokens |
+| `cacheWrite5m` / `cacheWrite1h` | five-minute or one-hour prompt-cache writes |
+| `cacheWrite` | a vendor's single or aggregate cache-write counter |
+| `output` | output tokens, excluding separately reported reasoning |
+| `reasoning` | reasoning or thinking tokens reported by the provider |
+| `sessionId`, `model`, `costUsd` | identity and diagnostic/provider-billed fields |
+
+Some vendor counters are inclusive. The optional `inclusive` map names the
+component fields contained in each parent; the decoder subtracts those
+components after collection and floors the parent at zero. Codex therefore
+declares `standardRead: ["cacheRead"]` and `output: ["reasoning"]`, while
+Claude Code declares `output: ["reasoning"]` because its thinking count is
+reported separately from output.
+
+The transcript fallback hook has this exact signature:
+
+```js
+export function readTranscriptUsage({
+  provider,
+  sessionId = null,
+  cwd = null,
+  startedAt = null,
+  endedAt = null,
+  home,
+}) {
+  // return { tokens, model, sessionId, file, firstAt, lastAt, requests, confidence }
+}
+```
+
+`tokens` uses the same classes above plus `totalKnown`; `confidence` is
+`exact`, `window`, `ambiguous`, or `none`. A provider without this hook is
+valid and falls through to `estimated:utf8-bytes/4` or `unknown`.
 
 For each attempt, a connector with `eventStream.format: "jsonl"` leaves a
 bounded `stream-<actionId>-attempt-<n>.jsonl` file: head records, one
@@ -196,6 +242,17 @@ The `usedUsd = 12.5` line is a placeholder: a real `readUsage` fetches the walle
 | `bullswarm provider validate <dir\|name> [--json]` | import the directory, check `name` and the export types, call `connectors(ctx)` with real templates, and check the prefix rule and every pool against the schema. Exits 2 on any failure |
 | `bullswarm provider scaffold <name> [--from <template>] [--dir <path>]` | write a commented provider directory, by default `~/.bullswarm/providers/<name>/`; `--from` copies a shipped `connector.json` into it |
 | `bullswarm provider probe <pool> [--json]` | spawn the pool's CLI once with a one-word task through the dispatcher's own runner, with no routing, quota gate, or ledger, then call `readUsage` once. Prints the argv, the output, the elapsed time, and the snapshot or error. Exits 1 if the reply lacks `PONG` or `readUsage` threw. Contrib providers can be probed before they are enabled |
+
+`bullswarm provider validate` keeps its existing exit codes and reports two
+non-fatal usage warnings. It warns
+`eventStream.usage: eventStream is declared but no usage rules exist; attempts
+require transcript or byte fallback` when a connector has an event stream with
+no usage rules, and warns
+`modelProfiles[i].pricing: cache-write rate missing
+(cacheWrite5mUsdPerMillion/cacheWrite1hUsdPerMillion)` when a pricing block has
+no published cache-write rate. The latter is intentional for vendors whose
+rate card publishes cache reads but no cache-write tier; omitting the field is
+preferable to silently pricing it at zero.
 
 ```bash
 # Author a local provider from a shipped template, then check shape and spawn.

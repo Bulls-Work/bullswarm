@@ -156,6 +156,7 @@ const TABLE = {
   'workflow action': [],
   'workflow action show': ['json'],
   'workflow reindex': ['json', 'force'],
+  'workflow reprice': ['apply', 'dry-run', 'since', 'pool', 'all', 'json'],
 
   // --- src/workflow/runs-cli.js -------------------------------------------
   // --from/--started-after and --to/--started-before are documented in the

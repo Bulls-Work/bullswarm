@@ -1,5 +1,15 @@
 # bullswarm changelog
 
+## 0.34.0 — every dollar says how it was measured
+
+- usage: Claude, Codex, and Grok attempts now retain provider-reported or transcript-summed token classes, with the byte estimate and unknown kept as explicit fallbacks.
+- pricing: API-rate cost now prices standard reads, cache reads, cache writes, output, and reasoning against the dated model card instead of treating cache writes as free.
+- subscription: quota-meter deltas are observed subscription spend, while the calibration ledger supplies a separate calibrated USD-per-percent basis when a meter snapshot is unavailable.
+- rollups: Home, Run, Stats, workflow results, and single-run output now aggregate token, API-cost, subscription-cost, and coverage fields through one money-pair formatter.
+- reprice: `workflow reprice` can dry-run or apply current cards and transcript matches to terminal V2 attempts without appending historical calibration samples; it defaults to 30 days (`--all` overrides), indexes transcript stores once, and streams progress rows.
+- validation: `provider validate` warns when an event stream has no usage rules and when a model profile omits cache-write pricing.
+- providers: a new transcript-usage hook lets each provider resolve durable session records without putting provider quirks in core accounting.
+
 ## 0.33.2 — one way to draw a chart, and every bar answers
 
 - stats: every Stats page now uses one shared set of panels, charts, legends,

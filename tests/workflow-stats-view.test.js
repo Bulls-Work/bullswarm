@@ -285,3 +285,42 @@ test('model cost never becomes a fabricated dollar chart or panel value', () => 
   assert.ok(costLine);
   assert.doesNotMatch(text.slice(text.indexOf('Cost availability')), /\$\d/);
 });
+
+test('Stats prints API and subscription money together without a bare estimate', () => {
+  const stats = fixture();
+  const money = {
+    apiUsd: 1.23,
+    apiEquivalentUsd: 1.23,
+    apiKnownSubtotalUsd: 1.23,
+    subscriptionUsd: 0.5,
+    subscriptionKnownSubtotalUsd: 0.5,
+    subscriptionDeltaPct: 2.5,
+    subscriptionWindow: 'weekly',
+    subscriptionBasis: 'calibrated:usd-per-pct',
+    tokenSource: 'estimated:utf8-bytes/4',
+  };
+  stats.overview.keys = { ...stats.overview.keys, ...money };
+  stats.overview.breakdown.pools = [{
+    ...stats.overview.breakdown.pools[0], ...money,
+  }];
+  stats.pools.rows = [{ ...stats.pools.rows[0], ...money }];
+  stats.pools.totals = { ...stats.pools.totals, ...money };
+  stats.spendPerDay = {
+    ...stats.spendPerDay,
+    total: 1.23,
+    buckets: [{
+      key: '2026-09-19', label: '2026-09-19', value: 1.23,
+      apiUsd: 1.23, apiKnownSubtotalUsd: 1.23,
+      subscriptionUsd: 0.5, subscriptionKnownSubtotalUsd: 0.5,
+      pricedAttempts: 1, subscriptionPricedAttempts: 1,
+      tokenSource: 'estimated:utf8-bytes/4',
+      subscriptionBasis: 'calibrated:usd-per-pct',
+      segments: [{ name: 'claude-code', value: 1.23 }],
+    }],
+  };
+  const text = statsLines(stats, { width: 120, tab: 'spending', period: '7d', ansi: false })
+    .lines.map(visible).join('\n');
+  assert.match(text, /~ \$1\.23 api estimated/);
+  assert.match(text, /2\.5% wk ≈ \$0\.50 sub/);
+  assert.doesNotMatch(text, /(?<!~ )\$1\.23 api(?:\s|·|$)/, 'estimated API money never uses the measured form');
+});

@@ -1173,6 +1173,31 @@ const workflowReindexText = rich({
   next: 'bullswarm workflow tui for the dashboard, or bullswarm workflow runs --all to inspect the indexed history.',
 });
 
+const workflowRepriceText = rich({
+  usage: 'bullswarm workflow reprice [--apply] [--since <date>|--all] [--pool <name>] [--json]',
+  purpose: 'Recompute historical workflow attempt token and money records from provider totals or durable transcripts. '
+    + 'The command builds one lightweight transcript-store index, reads only matched transcripts in full, and is a dry run unless --apply is passed.',
+  args: [],
+  options: [
+    { flag: '--apply', desc: 'write changed attempts, result envelopes, rollups, and the history index', default: 'off (dry run)' },
+    { flag: '--dry-run', desc: 'explicitly select the read-only preview', default: 'on' },
+    { flag: '--since <date>', desc: 'only attempts at or after this ISO-compatible date', default: '30 days ago' },
+    { flag: '--all', desc: 'scan all retained attempts instead of the default 30-day window; cannot combine with --since', default: 'off' },
+    { flag: '--pool <name>', desc: 'only attempts dispatched to this exact pool', default: 'all pools' },
+    { flag: '--json', desc: 'emit one JSON row per decided attempt followed by a JSON summary', default: 'human table rows and summary' },
+  ],
+  safety: [
+    'dry-run is read-only; --apply writes only the copied/current BULLSWARM_HOME selected by the caller',
+    'ambiguous or missing transcripts become unknown with null API cost instead of a guessed zero',
+    'provider transcripts may be pruned, so old attempts can remain unknown',
+  ],
+  examples: [
+    { cmd: 'bullswarm workflow reprice --json', note: 'preview the last 30 days' },
+    { cmd: 'bullswarm workflow reprice --all --pool codex --apply', note: 'apply every retained Codex match' },
+  ],
+  next: 'bullswarm workflow runs result <runId> --json to inspect the rewritten totals.',
+});
+
 const workflowCapabilitiesText = rich({
   usage: 'bullswarm workflow capabilities',
   purpose: 'Report the workflow engine, current routing policy, and live '
@@ -1606,6 +1631,7 @@ const HELP = {
     },
     pause: { _text: workflowPauseText },
     reindex: { _text: workflowReindexText },
+    reprice: { _text: workflowRepriceText },
     capabilities: { _text: workflowCapabilitiesText },
     tui: { _text: workflowTuiText },
     watch: { _text: workflowWatchText },

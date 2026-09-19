@@ -40,7 +40,7 @@ bullswarm run --lane analyze --add-dir . --json "List every TODO in src/ with fi
 | `reasoning` | `{ requested, applied, source, clamped }` — the level this attempt actually ran at |
 | `meta.exitCode`, `meta.signal`, `meta.timedOut`, `meta.stalled`, `meta.cancelled` | process observation |
 | `meta.wallSec`, `meta.outBytes` | duration and extracted output size |
-| `meta.usage` | token/cost estimate. When the CLI did not report counters, this is a labelled UTF-8-byte/4 estimate with standard-read, cache-read, cache-write, and output broken out. API-equivalent cost stays `null` unless the connector and a subscription can support it |
+| `meta.usage` | complete v2 attempt usage: provider-reported, transcript-summed, estimated, or unknown exclusive token classes; `api.usd` is the local dated rate-card calculation and `subscription.usd` is the separately measured or calibrated quota-window amount |
 | `structured` | only when an output validator ran (workflow evidence): `{ ok, errors, value? }` |
 
 `--dry-run` prints `ok`, `dryRun: true`, `keepOnClaude`, `why`, `forecast`, `candidates`, `pick` (resolved argv including the clamped reasoning flag), and `reasoning`. It omits `outFile`, `taskFile`, `contentUsableDespiteExit`, `meta`, and quarantine fields, because nothing was spawned. `--dry-run` with no eligible pool and `keepOnClaude: true` still exits 0. `--dry-run` that cannot pick and cannot keep the task sets `ok: false` and exits 1.
@@ -77,7 +77,7 @@ The full document is `schemaVersion: "bullswarm.workflow.result.v2"`. Allowed to
 | `requirements[]` | ledger: `id`, `text`, `mandatory`, `status` (`pending`/`passed`/`failed`/`blocked`), `workRevision`, `evidence[]` |
 | `actions[]` | `id`, `purpose`, `status`, `outputFile`, `artifactIds`, `reasoning`, `kind`, `bytes`, and on program runs `failure` |
 | `gaps` | `null` on a verified completed run; otherwise `bullswarm.workflow.gaps.v2` with open requirements and failed/blocked/cancelled/interrupted actions |
-| `usage` | `{ total, byPool, bytes: { taskFiles, dependencyInputs, outputs } }` — UTF-8 byte counts, never tokens |
+| `usage` | `{ total, byPool, bytes, steps, totals }`; `bytes` keeps UTF-8 byte counts, while `steps` and `totals` expose measured token and money rollups |
 | `finishedAt` | ISO timestamp |
 | `handback` | present unless the run is completed, verified, and has no unread steering. See below |
 
@@ -88,6 +88,40 @@ Each requirement `evidence[]` entry is `{ sourceAction, status, evidence, concer
 Each action `bytes` is `{ taskFile, authorPrompt, kernel, dependencyInputs, output }` — the task file the kernel wrote, the action's own prompt, the remainder after subtracting that prompt, the sum of dependency output files (0 when there are none), and the durable out file. Missing values are `null`, never guessed.
 
 `failure` is `{ kind, message? }`. Kinds a plain `workflow resume` can retry: `provider`, `quota`, `auth`, `process`, `unavailable`, `interrupted`, `runtime`, `schema`, `stalled`. A check that failed the work, or a semantic failure, is not retried; add a fix step or name the id in `plan revise --rerun`.
+
+## Cost rollups
+
+The result envelope keeps the older `usage.total`, `usage.byPool`, and
+`usage.bytes` fields for callers that only need counts. The v2 cost view adds:
+
+```ts
+usage.steps[actionId] = aggregate
+usage.totals = aggregate
+```
+
+An action can also carry the same value as `action.usage`. Each `aggregate` has
+these fields:
+
+| Field | Meaning |
+|---|---|
+| `attempts` | number of attempts included |
+| `minutes` | summed wall minutes, or `null` when unavailable |
+| `tokens` | total exclusive known tokens, or `null` |
+| `cacheRead`, `cacheWrite` | cache token subtotals, or `null` |
+| `apiUsd` | API-rate amount only when every relevant attempt has one |
+| `apiKnownSubtotalUsd` | partial API-rate sum when some attempts are unpriced |
+| `subscriptionUsd` | subscription amount only when every relevant attempt has one |
+| `subscriptionKnownSubtotalUsd` | partial subscription sum |
+| `measuredAttempts` | attempts with measured provider or transcript usage |
+| `pricedAttempts` | attempts with a non-null API amount |
+| `subscriptionPricedAttempts` | attempts with a non-null subscription amount |
+| `tokenSource` | worst token basis across attempts: `unknown` < `estimated:utf8-bytes/4` < `transcript-summed` < `provider-reported` |
+| `subscriptionBasis` | worst subscription basis across attempts: `unknown:no-price` < `unknown:no-meter` < `unknown:no-cost` < `calibrated:usd-per-pct` < `observed:meter-delta` |
+
+`apiUsd` and `subscriptionUsd` stay `null` when coverage is incomplete; the
+explicit subtotal fields are where partial sums live. Null means unknown and
+is not a zero. Individual attempt records, including their full v2 usage
+objects and money-pair basis, are available through `workflow action show`.
 
 ## Compact summary
 

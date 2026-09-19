@@ -15,6 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
+import { readTranscriptUsage as readClaudeTranscriptUsage } from '../../lib/transcripts/claude-code.js';
 
 export const name = 'claude-code';
 export const displayName = 'Claude';
@@ -475,4 +476,8 @@ export async function readUsage(pool, ctx = {}) {
     );
   }
   return fetchClaudeUsageWithCredentials(account.creds, poolName);
+}
+
+export function readTranscriptUsage(args = {}) {
+  return readClaudeTranscriptUsage(args);
 }

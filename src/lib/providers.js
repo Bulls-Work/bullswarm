@@ -153,6 +153,9 @@ function loadOne({ dir, file, tier, enabled, load }, shared) {
   hidden(entry, 'module', null);
   hidden(entry, 'template', null);
   hidden(entry, 'ctx', null);
+  // Keep the historical serialized provider-entry shape stable while still
+  // exposing the optional capability to code that needs it.
+  hidden(entry, 'hasReadTranscriptUsage', false);
 
   try {
     const jsonPath = file ?? join(dir, 'connector.json');
@@ -176,6 +179,10 @@ function loadOne({ dir, file, tier, enabled, load }, shared) {
       ? mod.displayName
       : (typeof template?.displayName === 'string' && template.displayName ? template.displayName : entry.name);
     entry.hasReadUsage = typeof mod?.readUsage === 'function';
+    // Transcript accounting is an optional provider capability. The flag is
+    // exposed to code that needs it while its enumerability remains hidden to
+    // preserve the established provider-entry JSON contract.
+    entry.hasReadTranscriptUsage = typeof mod?.readTranscriptUsage === 'function';
     entry.hasDoctor = typeof mod?.doctor === 'function';
     if (mod && mod.connectors !== undefined && typeof mod.connectors !== 'function') {
       throw new Error('provider.mjs `connectors` must be a function');
@@ -351,3 +358,42 @@ export function providerFor(providers, pool) {
   }
   return best;
 }
+
+/**
+ * Resolve the optional durable-transcript reader for one pool.
+ *
+ * The provider owns the on-disk format, so callers must not infer a provider
+ * from the pool name or reach into `module` themselves.  The returned
+ * closure preserves the provider's context and accepts the common
+ * `readTranscriptUsage({ provider, sessionId, cwd, startedAt, endedAt, home })`
+ * argument object.  A provider without the hook is an ordinary, supported
+ * case and returns null so usage can fall through to byte estimation.
+ */
+export function transcriptReaderFor(providers, pool) {
+  const owner = providerFor(providers, pool);
+  const readTranscriptUsage = owner?.module?.readTranscriptUsage;
+  if (typeof readTranscriptUsage !== 'function') return null;
+  return (args = {}) => readTranscriptUsage({
+    ...args,
+    provider: args.provider ?? owner.name,
+    home: args.home ?? owner.ctx?.home ?? null,
+  });
+}
+
+/**
+ * Convenience loader for callers that only have a Bullswarm home and pool.
+ * `providers` may be supplied to avoid a second provider load in a hot path.
+ */
+export function readTranscriptUsageFor(pool, {
+  bullswarmDir,
+  providers = null,
+  ...opts
+} = {}) {
+  const loaded = providers ?? loadProviders(bullswarmDir, opts).providers;
+  return transcriptReaderFor(loaded, pool);
+}
+
+// Descriptive aliases keep the helper discoverable to integrations that use
+// either the capability name or the provider-oriented name.
+export const providerTranscriptReader = transcriptReaderFor;
+export const transcriptUsageReaderFor = readTranscriptUsageFor;

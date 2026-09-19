@@ -2339,10 +2339,10 @@ test('the Budget page draws every window of every pool and no untrustworthy figu
 test('Home labels provider, transcript, estimated and unknown usage bases', () => {
   const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
   const cases = [
-    ['provider-reported', /\$ 1\.23/],
-    ['transcript-summed', /≈ \$1\.23 summed/],
-    ['estimated:utf8-bytes\/4', /~ \$1\.23 estimated/],
-    ['unknown', /cost unknown/],
+    ['provider-reported', /\$1\.23 api/],
+    ['transcript-summed', /≈ \$1\.23 api summed/],
+    ['estimated:utf8-bytes\/4', /~ \$1\.23 api estimated/],
+    ['unknown', /api unknown/],
   ];
   for (const [tokenSource, expected] of cases) {
     const record = {
@@ -3669,7 +3669,7 @@ test('Home today matches the approved 55/120 band with workflows, a task and fou
     assert.match(band.join('\n'), /wf % \(est\.\)/);
     assert.match(band.join('\n'), /API≈/);
     for (const pool of ['acme', 'codex', 'grok', 'opencode']) assert.match(band.join('\n'), new RegExp(`\\b${pool}\\b`));
-    assert.match(band.join('\n'), /opencode\s+634\.6\s+—\s+—\s+cost unknown/);
+    assert.match(band.join('\n'), /opencode\s+634\.6\s+—\s+—\s+api unknown/);
     assert.match(band.join('\n'), /wf % = pool window points drawn by workflows today/);
     assert.match(band.join('\n'), /— = not measured/);
     assert.match(band.join('\n'), /API≈(?: basis:|:)/);

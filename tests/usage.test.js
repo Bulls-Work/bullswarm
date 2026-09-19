@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  estimateTextTokens, parseReportedUsage, estimateInvocationUsage,
+  estimateTextTokens, parseReportedUsage, estimateInvocationUsage, attachTranscriptUsage,
 } from '../src/lib/usage.js';
 
 const connector = {
@@ -28,7 +28,7 @@ test('usage estimates text tokens without presenting them as provider reported',
   assert.equal(usage.tokenSource, 'estimated:utf8-bytes/4');
   assert.deepEqual(usage.tokens, {
     standardRead: 2, cacheRead: null, cacheWrite5m: null, cacheWrite1h: null,
-    cacheWrite: null, output: 1, totalKnown: 3,
+    cacheWrite: null, output: 1, reasoning: null, totalKnown: 3,
   });
   assert.equal(usage.cost.estimatedUsd, 0.000014);
   assert.equal(usage.normalizedQuota.estimatedPercent, 0.0001);
@@ -80,7 +80,7 @@ test('text fallback reads one final counter instead of triple-counting nested al
   });
 });
 
-test('structured provider usage wins over text and keeps billed cost/session/cache tiers', () => {
+test('structured provider usage wins over text and prices exclusive v2 token classes', () => {
   const usage = estimateInvocationUsage({
     taskText: 'ignored',
     outputText: '{"input_tokens":999999,"output_tokens":999999}',
@@ -103,13 +103,17 @@ test('structured provider usage wins over text and keeps billed cost/session/cac
     },
   });
   assert.equal(usage.tokenSource, 'provider-reported');
-  assert.equal(usage.costSource, 'provider-billed');
+  assert.equal(usage.costSource, 'local-rate-card');
   assert.equal(usage.sessionId, 'session-1');
   assert.equal(usage.tokens.totalKnown, 20);
   assert.equal(usage.tokens.cacheWrite, 9);
-  assert.equal(usage.cost.estimatedUsd, 0.61388);
+  assert.equal(usage.tokens.reasoning, null);
+  assert.equal(usage.api.basis, 'rate-card:complete');
+  assert.equal(usage.cost.estimatedUsd, 0.0000966);
   assert.equal(usage.cost.breakdown.cacheWriteUsd, 0.000032);
-  assert.deepEqual(usage.pricedFields, ['standardRead', 'cacheRead', 'cacheWrite', 'output']);
+  assert.deepEqual(usage.pricedFields, [
+    'standardRead', 'cacheRead', 'output', 'cacheWrite5m', 'cacheWrite1h',
+  ]);
 });
 
 test('unknown pricing and subscription values stay explicitly unknown', () => {
@@ -117,4 +121,58 @@ test('unknown pricing and subscription values stay explicitly unknown', () => {
   assert.equal(usage.cost.estimatedUsd, null);
   assert.match(usage.cost.basis, /unknown/);
   assert.equal(usage.normalizedQuota.estimatedPercent, null);
+});
+
+test('reasoning is exclusive from output and falls back to output pricing', () => {
+  const usage = estimateInvocationUsage({
+    connector: {
+      modelProfiles: [{
+        id: 'fixture-reasoning',
+        pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 },
+        pricingSource: 'https://example.test/rates', pricingUpdatedAt: '2026-09-19',
+      }],
+    },
+    model: 'fixture-reasoning',
+    reportedUsage: {
+      standardRead: 100, output: 30, reasoning: 10, sessionId: 'reasoning-1',
+    },
+  });
+  assert.equal(usage.tokens.output, 20);
+  assert.equal(usage.tokens.reasoning, 10);
+  assert.equal(usage.tokens.totalKnown, 130);
+  assert.equal(usage.api.breakdown.outputUsd, 0.00008);
+  assert.equal(usage.api.breakdown.reasoningUsd, 0.00004);
+  assert.equal(usage.api.usd, 0.00022);
+  assert.equal(usage.api.rateCard.source, 'https://example.test/rates');
+  assert.equal(usage.api.rateCard.updatedAt, '2026-09-19');
+});
+
+test('positive unpriced classes make API total unknown instead of zero', () => {
+  const usage = estimateInvocationUsage({
+    connector: {
+      modelProfiles: [{ id: 'partial', pricing: { inputUsdPerMillion: 1 } }],
+    },
+    model: 'partial',
+    reportedUsage: { standardRead: 100, output: 20 },
+  });
+  assert.equal(usage.api.usd, null);
+  assert.equal(usage.api.breakdown.outputUsd, null);
+  assert.deepEqual(usage.api.unpricedFields, ['output']);
+  assert.equal(usage.api.basis, 'rate-card:partial');
+});
+
+test('transcript attachment upgrades source and reprices the same canonical record', () => {
+  const initial = estimateInvocationUsage({
+    connector, model: 'fixture-pro', taskText: 'estimate', outputText: 'estimate',
+    sessionId: 'session-1',
+  });
+  const upgraded = attachTranscriptUsage(initial, {
+    model: 'fixture-pro', sessionId: 'session-1',
+    tokens: { standardRead: 100, cacheRead: 50, output: 20, reasoning: 5, totalKnown: 175 },
+  });
+  assert.equal(upgraded.tokenSource, 'transcript-summed');
+  assert.equal(upgraded.sessionId, 'session-1');
+  assert.equal(upgraded.tokens.output, 20);
+  assert.equal(upgraded.tokens.reasoning, 5);
+  assert.equal(upgraded.api.usd, 0.00046);
 });

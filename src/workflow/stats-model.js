@@ -8,9 +8,9 @@
 //   S1. A figure with no source is null, never 0. `Number(null)` is 0, so
 //       every numeric read goes through finite() and every running sum starts
 //       at null and only becomes a number when something real is added.
-//   S2. Money is the recorded API-equivalent estimate and is named
-//       `apiEquivalentUsd` wherever it appears. There is no other money in
-//       this module.
+//   S2. Money keeps the recorded API amount and subscription amount separate;
+//       strict whole-scope values are exposed as `apiUsd` and
+//       `subscriptionUsd`, with named subtotals for partial coverage.
 //   S3. A median is a real median over the values that exist. A mean is never
 //       presented as one.
 //   S4. Where a period asks for more history than exists, the model returns
@@ -21,9 +21,9 @@
 //
 // Two things the recorded data cannot answer, stated once and repeated in the
 // output rather than filled in:
-//   * cost per model — `rollupRecord` sums `usage.cost.estimatedUsd` per
+//   * cost per model — `rollupRecord` records API/subscription amounts per
 //     POOL. The `models` map carries attempts and minutes only, so every
-//     model's apiEquivalentUsd is null.
+//     model's API and subscription amounts are null.
 //   * a run's licence draw — `normalizedQuota.estimatedPercent` is null on
 //     all 877 recorded attempts, so no per-run percentage exists to total.
 
@@ -58,6 +58,14 @@ const TOKEN_SOURCE_RANK = Object.freeze({
   'provider-reported': 3,
 });
 
+const SUBSCRIPTION_BASIS_RANK = Object.freeze({
+  'unknown:no-price': 0,
+  'unknown:no-meter': 1,
+  'unknown:no-cost': 2,
+  'calibrated:usd-per-pct': 3,
+  'observed:meter-delta': 4,
+});
+
 function tokenSourceOf(value, cost = null) {
   if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
   return cost != null ? 'estimated:utf8-bytes/4' : 'unknown';
@@ -67,6 +75,16 @@ function worstTokenSource(current, candidate) {
   const next = tokenSourceOf(candidate);
   if (current == null) return next;
   return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
+}
+
+function subscriptionBasisOf(value) {
+  return Object.hasOwn(SUBSCRIPTION_BASIS_RANK, value) ? value : 'unknown:no-meter';
+}
+
+function worstSubscriptionBasis(current, candidate) {
+  const next = subscriptionBasisOf(candidate);
+  if (current == null) return next;
+  return SUBSCRIPTION_BASIS_RANK[next] < SUBSCRIPTION_BASIS_RANK[current] ? next : current;
 }
 
 function measuredAttemptCount(source, attempts) {
@@ -247,17 +265,86 @@ function mapEntries(value) {
 
 /** S2. The run's whole recorded estimate: null when no attempt recorded one. */
 function recordCostUsd(record) {
+  if (record?.usage && Object.hasOwn(record.usage, 'apiUsd')) return finite(record.usage.apiUsd);
+  if (record?.usage && Object.hasOwn(record.usage, 'apiKnownSubtotalUsd')) return null;
+  const direct = finite(record?.apiEquivalentUsd);
+  if (direct != null) return direct;
   let total = null;
   for (const [, entry] of mapEntries(record?.pools)) total = add(total, finite(entry?.costUsd));
   return total;
 }
 
+function recordKnownApiSubtotalUsd(record) {
+  const direct = finite(record?.usage?.apiKnownSubtotalUsd);
+  if (direct != null) return direct;
+  const directApi = record?.usage && Object.hasOwn(record.usage, 'apiUsd')
+    ? finite(record.usage.apiUsd)
+    : finite(record?.apiEquivalentUsd);
+  if (directApi != null) return directApi;
+  let total = null;
+  for (const [, entry] of mapEntries(record?.pools)) {
+    total = add(total, finite(entry?.apiKnownSubtotalUsd ?? entry?.costUsd));
+  }
+  return total;
+}
+
+function recordSubscriptionUsd(record) {
+  if (record?.usage && Object.hasOwn(record.usage, 'subscriptionUsd')) return finite(record.usage.subscriptionUsd);
+  if (record?.usage && Object.hasOwn(record.usage, 'subscriptionKnownSubtotalUsd')) return null;
+  const direct = finite(record?.subscriptionUsd);
+  if (direct != null) return direct;
+  return null;
+}
+
+function recordKnownSubscriptionUsd(record) {
+  const direct = finite(record?.usage?.subscriptionKnownSubtotalUsd);
+  if (direct != null) return direct;
+  const directSub = record?.usage && Object.hasOwn(record.usage, 'subscriptionUsd')
+    ? finite(record.usage.subscriptionUsd)
+    : finite(record?.subscriptionUsd);
+  return directSub;
+}
+
+function recordAttemptCount(record) {
+  const direct = finite(record?.usage?.attempts);
+  if (direct != null) return Math.max(0, Math.trunc(direct));
+  let total = 0;
+  for (const [, entry] of mapEntries(record?.pools)) total += Math.max(0, Math.trunc(finite(entry?.attempts) ?? 0));
+  return total;
+}
+
+function recordPricedAttempts(record) {
+  const direct = finite(record?.usage?.pricedAttempts);
+  if (direct != null) return Math.max(0, Math.trunc(direct));
+  return recordCostUsd(record) == null ? 0 : recordAttemptCount(record);
+}
+
+function recordSubscriptionPricedAttempts(record) {
+  const direct = finite(record?.usage?.subscriptionPricedAttempts);
+  if (direct != null) return Math.max(0, Math.trunc(direct));
+  return recordSubscriptionUsd(record) == null ? 0 : recordAttemptCount(record);
+}
+
 function recordTokenSource(record) {
+  if (record?.usage && Object.hasOwn(record.usage, 'tokenSource')) {
+    return tokenSourceOf(record.usage.tokenSource);
+  }
   let source = null;
   for (const [, entry] of mapEntries(record?.pools)) {
     source = worstTokenSource(source, tokenSourceOf(entry?.tokenSource, entry?.costUsd));
   }
   return source ?? 'unknown';
+}
+
+function recordSubscriptionBasis(record) {
+  if (record?.usage && Object.hasOwn(record.usage, 'subscriptionBasis')) {
+    return subscriptionBasisOf(record.usage.subscriptionBasis);
+  }
+  let basis = null;
+  for (const [, entry] of mapEntries(record?.pools)) {
+    basis = worstSubscriptionBasis(basis, entry?.subscriptionBasis);
+  }
+  return basis ?? 'unknown:no-meter';
 }
 
 /** Worker-minutes: the attempt wall time the run spent inside its pools. */
@@ -314,15 +401,81 @@ function newRow(name) {
     runs: 0,
     attempts: 0,
     minutes: null,
+    apiUsd: null,
+    apiKnownSubtotalUsd: null,
+    subscriptionUsd: null,
+    subscriptionKnownSubtotalUsd: null,
     apiEquivalentUsd: null,
     tokenSource: null,
+    subscriptionBasis: null,
+    subscriptionWindows: {},
     tokens: null,
     measuredAttempts: 0,
+    pricedAttempts: 0,
+    subscriptionPricedAttempts: 0,
     estimatedAttempts: 0,
+    v2Money: false,
     workflowsCompleted: 0,
     verified: 0,
     wallMinutes: [],
   };
+}
+
+function entryMetrics(entry) {
+  const v2 = Boolean(entry && (Object.hasOwn(entry, 'apiUsd')
+    || Object.hasOwn(entry, 'apiKnownSubtotalUsd')
+    || Object.hasOwn(entry, 'subscriptionUsd')
+    || Object.hasOwn(entry, 'subscriptionKnownSubtotalUsd')));
+  const attempts = Math.max(0, Math.trunc(finite(entry?.attempts) ?? 0));
+  const apiUsd = finite(v2 ? entry?.apiUsd : entry?.costUsd);
+  const apiKnownSubtotalUsd = finite(v2 ? entry?.apiKnownSubtotalUsd : entry?.costUsd);
+  const subscriptionUsd = finite(v2 ? entry?.subscriptionUsd : null);
+  const subscriptionKnownSubtotalUsd = finite(v2 ? entry?.subscriptionKnownSubtotalUsd : null);
+  const pricedAttempts = v2
+    ? Math.max(0, Math.trunc(finite(entry?.pricedAttempts) ?? 0))
+    : apiUsd == null ? 0 : attempts;
+  const subscriptionPricedAttempts = v2
+    ? Math.max(0, Math.trunc(finite(entry?.subscriptionPricedAttempts) ?? 0))
+    : 0;
+  const measured = v2
+    ? Math.max(0, Math.trunc(finite(entry?.measuredAttempts) ?? 0))
+    : measuredAttemptCount(tokenSourceOf(entry?.tokenSource, entry?.costUsd), attempts);
+  return {
+    v2,
+    attempts,
+    minutes: finite(entry?.minutes),
+    apiUsd,
+    apiKnownSubtotalUsd,
+    subscriptionUsd,
+    subscriptionKnownSubtotalUsd,
+    pricedAttempts,
+    subscriptionPricedAttempts,
+    measuredAttempts: measured,
+    tokenSource: tokenSourceOf(entry?.tokenSource, entry?.costUsd),
+    subscriptionBasis: subscriptionBasisOf(entry?.subscriptionBasis),
+    subscriptionWindows: entry?.subscriptionWindows && typeof entry.subscriptionWindows === 'object'
+      ? entry.subscriptionWindows : {},
+    tokens: finite(entry?.tokens),
+  };
+}
+
+function addEntryToRow(row, entry) {
+  const metrics = entryMetrics(entry);
+  row.attempts += metrics.attempts;
+  row.minutes = add(row.minutes, metrics.minutes);
+  row.apiKnownSubtotalUsd = add(row.apiKnownSubtotalUsd, metrics.apiKnownSubtotalUsd);
+  row.subscriptionKnownSubtotalUsd = add(row.subscriptionKnownSubtotalUsd, metrics.subscriptionKnownSubtotalUsd);
+  row.pricedAttempts += metrics.pricedAttempts;
+  row.subscriptionPricedAttempts += metrics.subscriptionPricedAttempts;
+  row.measuredAttempts += metrics.measuredAttempts;
+  row.tokenSource = worstTokenSource(row.tokenSource, metrics.tokenSource);
+  row.subscriptionBasis = worstSubscriptionBasis(row.subscriptionBasis, metrics.subscriptionBasis);
+  for (const [window, delta] of Object.entries(metrics.subscriptionWindows)) {
+    const value = finite(delta);
+    if (value != null) row.subscriptionWindows[window] = (row.subscriptionWindows[window] ?? 0) + value;
+  }
+  row.tokens = add(row.tokens, metrics.tokens);
+  row.v2Money ||= metrics.v2;
 }
 
 function countRun(row, record) {
@@ -353,34 +506,19 @@ function buildRows(records, kind) {
       const row = rowFor(recordProject(record));
       countRun(row, record);
       // A project's attempts are every attempt the run made, everywhere.
-      for (const [, entry] of mapEntries(record.pools)) row.attempts += finite(entry?.attempts) ?? 0;
-      row.minutes = add(row.minutes, recordWorkerMinutes(record));
-      row.apiEquivalentUsd = add(row.apiEquivalentUsd, recordCostUsd(record));
       for (const [, entry] of mapEntries(record.pools)) {
-        const cost = finite(entry?.costUsd);
-        const source = tokenSourceOf(entry?.tokenSource, cost);
-        const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
-        row.tokenSource = worstTokenSource(row.tokenSource, source);
-        row.measuredAttempts += measuredAttemptCount(source, count);
-        if (source === 'estimated:utf8-bytes/4') row.estimatedAttempts += count;
-        row.tokens = add(row.tokens, finite(entry?.tokens));
+        addEntryToRow(row, entry);
+        const metrics = entryMetrics(entry);
+        if (metrics.tokenSource === 'estimated:utf8-bytes/4') row.estimatedAttempts += metrics.attempts;
       }
       continue;
     }
     for (const [name, entry] of mapEntries(record[kind === 'pool' ? 'pools' : 'models'])) {
       const row = rowFor(name);
       countRun(row, record);
-      row.attempts += finite(entry?.attempts) ?? 0;
-      row.minutes = add(row.minutes, finite(entry?.minutes));
-      // S2. The models map has no costUsd at all, so this stays null for
-      // every model — which is the honest answer, not a zero.
-      row.apiEquivalentUsd = add(row.apiEquivalentUsd, finite(entry?.costUsd));
-      const source = tokenSourceOf(entry?.tokenSource, entry?.costUsd);
-      const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
-      row.tokenSource = worstTokenSource(row.tokenSource, source);
-      row.measuredAttempts += measuredAttemptCount(source, count);
-      if (source === 'estimated:utf8-bytes/4') row.estimatedAttempts += count;
-      row.tokens = add(row.tokens, finite(entry?.tokens));
+      addEntryToRow(row, entry);
+      const metrics = entryMetrics(entry);
+      if (metrics.tokenSource === 'estimated:utf8-bytes/4') row.estimatedAttempts += metrics.attempts;
     }
   }
   return [...rows.values()];
@@ -389,15 +527,31 @@ function buildRows(records, kind) {
 function finishRows(rows, { rankBy = 'attempts' } = {}) {
   let totalMinutes = null;
   for (const row of rows) totalMinutes = add(totalMinutes, row.minutes);
-  const finished = rows.map((row) => ({
+  const finished = rows.map((row) => {
+    const finishedRow = {
     name: row.name,
     runs: row.runs,
     attempts: row.attempts,
     minutes: round(row.minutes, 2),
     medianWallMinutes: round(median(row.wallMinutes), 2),
-    apiEquivalentUsd: round(row.apiEquivalentUsd, 6),
+    apiUsd: row.v2Money && row.attempts > 0 && row.pricedAttempts === row.attempts
+      ? round(row.apiKnownSubtotalUsd, 6) : row.v2Money ? null : round(row.apiKnownSubtotalUsd, 6),
+    apiKnownSubtotalUsd: round(row.apiKnownSubtotalUsd, 6),
+    subscriptionUsd: row.v2Money && row.attempts > 0 && row.subscriptionPricedAttempts === row.attempts
+      ? round(row.subscriptionKnownSubtotalUsd, 6) : null,
+    subscriptionKnownSubtotalUsd: round(row.subscriptionKnownSubtotalUsd, 6),
+    apiEquivalentUsd: row.v2Money && row.attempts > 0 && row.pricedAttempts === row.attempts
+      ? round(row.apiKnownSubtotalUsd, 6) : row.v2Money ? null : round(row.apiKnownSubtotalUsd, 6),
     tokenSource: row.tokenSource ?? 'unknown',
+    subscriptionBasis: row.subscriptionBasis ?? 'unknown:no-meter',
+    subscriptionWindows: { ...row.subscriptionWindows },
+    subscriptionWindow: Object.keys(row.subscriptionWindows).length === 1
+      ? Object.keys(row.subscriptionWindows)[0] : null,
+    subscriptionDeltaPct: Object.keys(row.subscriptionWindows).length === 1
+      ? round(Object.values(row.subscriptionWindows)[0], 6) : null,
     measuredAttempts: row.measuredAttempts,
+    pricedAttempts: row.pricedAttempts,
+    subscriptionPricedAttempts: row.subscriptionPricedAttempts,
     estimatedAttempts: row.estimatedAttempts,
     tokens: row.tokens == null ? null : Math.round(row.tokens),
     workflowsCompleted: row.workflowsCompleted,
@@ -405,7 +559,10 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
     verified: row.verified,
     verifiedShare: row.runs ? share(row.verified, row.runs) : null,
     minutesShare: share(row.minutes, totalMinutes),
-  }));
+    };
+    Object.defineProperty(finishedRow, '_v2Money', { value: row.v2Money, enumerable: false });
+    return finishedRow;
+  });
   finished.sort((a, b) => (b[rankBy] ?? 0) - (a[rankBy] ?? 0)
     || (b.minutes ?? 0) - (a.minutes ?? 0)
     || a.name.localeCompare(b.name));
@@ -414,22 +571,48 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
 
 function rowTotals(rows) {
   const totals = {
-    rows: rows.length, runs: 0, attempts: 0, minutes: null, apiEquivalentUsd: null,
-    tokenSource: null, measuredAttempts: 0, estimatedAttempts: 0, workflowsCompleted: 0,
+    rows: rows.length, runs: 0, attempts: 0, minutes: null, apiUsd: null,
+    apiKnownSubtotalUsd: null, subscriptionUsd: null, subscriptionKnownSubtotalUsd: null,
+    apiEquivalentUsd: null, tokenSource: null, subscriptionBasis: null,
+    subscriptionWindows: {},
+    measuredAttempts: 0, pricedAttempts: 0, subscriptionPricedAttempts: 0,
+    estimatedAttempts: 0, workflowsCompleted: 0,
   };
+  let v2Money = false;
   for (const row of rows) {
     totals.runs += row.runs;
     totals.attempts += row.attempts;
     totals.minutes = add(totals.minutes, row.minutes);
-    totals.apiEquivalentUsd = add(totals.apiEquivalentUsd, row.apiEquivalentUsd);
+    v2Money ||= row._v2Money === true;
+    totals.apiKnownSubtotalUsd = add(totals.apiKnownSubtotalUsd, row.apiKnownSubtotalUsd ?? row.apiEquivalentUsd);
+    totals.subscriptionKnownSubtotalUsd = add(totals.subscriptionKnownSubtotalUsd, row.subscriptionKnownSubtotalUsd);
     totals.tokenSource = worstTokenSource(totals.tokenSource, row.tokenSource);
+    totals.subscriptionBasis = worstSubscriptionBasis(totals.subscriptionBasis, row.subscriptionBasis);
+    for (const [window, delta] of Object.entries(row.subscriptionWindows ?? {})) {
+      const value = finite(delta);
+      if (value != null) totals.subscriptionWindows[window] = (totals.subscriptionWindows[window] ?? 0) + value;
+    }
     totals.measuredAttempts += Number(row.measuredAttempts) || 0;
+    totals.pricedAttempts += Number(row.pricedAttempts) || 0;
+    totals.subscriptionPricedAttempts += Number(row.subscriptionPricedAttempts) || 0;
     totals.estimatedAttempts += Number(row.estimatedAttempts) || 0;
     totals.workflowsCompleted += row.workflowsCompleted;
   }
   totals.minutes = round(totals.minutes, 2);
-  totals.apiEquivalentUsd = round(totals.apiEquivalentUsd, 6);
+  totals.apiUsd = v2Money && totals.attempts > 0 && totals.pricedAttempts === totals.attempts
+    ? round(totals.apiKnownSubtotalUsd, 6)
+    : v2Money ? null : round(totals.apiKnownSubtotalUsd, 6);
+  totals.subscriptionUsd = v2Money && totals.attempts > 0 && totals.subscriptionPricedAttempts === totals.attempts
+    ? round(totals.subscriptionKnownSubtotalUsd, 6) : null;
+  totals.apiEquivalentUsd = totals.apiUsd;
+  totals.apiKnownSubtotalUsd = round(totals.apiKnownSubtotalUsd, 6);
+  totals.subscriptionKnownSubtotalUsd = round(totals.subscriptionKnownSubtotalUsd, 6);
   totals.tokenSource ??= 'unknown';
+  totals.subscriptionBasis ??= 'unknown:no-meter';
+  totals.subscriptionWindow = Object.keys(totals.subscriptionWindows).length === 1
+    ? Object.keys(totals.subscriptionWindows)[0] : null;
+  totals.subscriptionDeltaPct = Object.keys(totals.subscriptionWindows).length === 1
+    ? round(Object.values(totals.subscriptionWindows)[0], 6) : null;
   return totals;
 }
 
@@ -606,7 +789,20 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
         weekday: bucketBy === 'day' ? weekdayIndex(at) : null,
         runs: 0,
         value: isCount ? 0 : null,
+        apiValue: isCount ? null : null,
+        apiKnownSubtotalUsd: null,
+        subscriptionValue: null,
+        subscriptionKnownSubtotalUsd: null,
+        attempts: 0,
+        subscriptionPricedAttempts: 0,
+        pricedAttempts: 0,
         tokenSource: null,
+        subscriptionBasis: null,
+        // A canonical v2 record may carry a known subtotal while one or more
+        // attempts have no price. Keep that marker internal so `value` never
+        // turns the partial subtotal into a spend measurement; legacy rows
+        // retain their historical cost semantics.
+        v2Money: false,
         segments: new Map(),
       });
     }
@@ -626,7 +822,23 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
     bucket.runs += 1;
     const value = metricValue(record, chosenMetric);
     if (value != null) bucket.value = (bucket.value ?? 0) + value;
-    if (chosenMetric === 'spend') bucket.tokenSource = worstTokenSource(bucket.tokenSource, recordTokenSource(record));
+    if (chosenMetric === 'spend') {
+      bucket.v2Money ||= Boolean(record?.usage && (
+        Object.hasOwn(record.usage, 'apiUsd')
+        || Object.hasOwn(record.usage, 'apiKnownSubtotalUsd')
+        || Object.hasOwn(record.usage, 'subscriptionUsd')
+        || Object.hasOwn(record.usage, 'subscriptionKnownSubtotalUsd')
+      ));
+      bucket.apiValue = add(bucket.apiValue, recordCostUsd(record));
+      bucket.apiKnownSubtotalUsd = add(bucket.apiKnownSubtotalUsd, recordKnownApiSubtotalUsd(record));
+      bucket.subscriptionValue = add(bucket.subscriptionValue, recordSubscriptionUsd(record));
+      bucket.subscriptionKnownSubtotalUsd = add(bucket.subscriptionKnownSubtotalUsd, recordKnownSubscriptionUsd(record));
+      bucket.attempts += recordAttemptCount(record);
+      bucket.pricedAttempts += recordPricedAttempts(record);
+      bucket.subscriptionPricedAttempts += recordSubscriptionPricedAttempts(record);
+      bucket.tokenSource = worstTokenSource(bucket.tokenSource, recordTokenSource(record));
+      bucket.subscriptionBasis = worstSubscriptionBasis(bucket.subscriptionBasis, recordSubscriptionBasis(record));
+    }
     for (const segment of metricSegments(record, chosenMetric, split)) {
       bucket.segments.set(segment.name, (bucket.segments.get(segment.name) ?? 0) + segment.value);
     }
@@ -636,7 +848,10 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
   let max = null;
   const cumulative = [];
   const out = buckets.map((bucket) => {
-    const value = bucket.value == null ? null : round(bucket.value, chosenMetric === 'spend' ? 6 : 2);
+    const strictApi = bucket.attempts > 0 && bucket.pricedAttempts === bucket.attempts
+      ? bucket.apiKnownSubtotalUsd : null;
+    const rawValue = chosenMetric === 'spend' && bucket.v2Money ? strictApi : bucket.value;
+    const value = rawValue == null ? null : round(rawValue, chosenMetric === 'spend' ? 6 : 2);
     if (value != null) {
       total = (total ?? 0) + value;
       max = max == null ? value : Math.max(max, value);
@@ -650,12 +865,34 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
       weekday: bucket.weekday,
       runs: bucket.runs,
       value,
+      apiUsd: chosenMetric === 'spend' && bucket.attempts > 0 && bucket.pricedAttempts === bucket.attempts
+        ? round(bucket.apiKnownSubtotalUsd, 6) : null,
+      apiKnownSubtotalUsd: chosenMetric === 'spend' ? round(bucket.apiKnownSubtotalUsd, 6) : null,
+      subscriptionUsd: chosenMetric === 'spend' && bucket.attempts > 0
+        && bucket.subscriptionPricedAttempts === bucket.attempts
+        ? round(bucket.subscriptionValue, 6) : null,
+      subscriptionKnownSubtotalUsd: chosenMetric === 'spend' ? round(bucket.subscriptionKnownSubtotalUsd, 6) : null,
+      pricedAttempts: chosenMetric === 'spend' ? bucket.pricedAttempts : null,
+      subscriptionPricedAttempts: chosenMetric === 'spend' ? bucket.subscriptionPricedAttempts : null,
       tokenSource: bucket.tokenSource ?? (isCount ? null : 'unknown'),
+      subscriptionBasis: chosenMetric === 'spend' ? bucket.subscriptionBasis ?? 'unknown:no-meter' : null,
       segments: [...bucket.segments.entries()]
         .map(([name, amount]) => ({ name, value: round(amount, chosenMetric === 'spend' ? 6 : 2) }))
         .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name)),
     };
   });
+
+  // A period-wide v2 spend total is a measurement only when every attempt in
+  // every v2 bucket has an API amount. Legacy-only periods keep the original
+  // nullable-sum behavior, while a mixed/partial v2 period exposes its named
+  // subtotal fields without presenting a misleading total or cumulative line.
+  const spendIncomplete = chosenMetric === 'spend'
+    && out.some((bucket) => bucket.attempts > 0 && bucket.pricedAttempts < bucket.attempts);
+  if (spendIncomplete) {
+    total = null;
+    max = null;
+    cumulative.fill(null);
+  }
 
   const model = {
     metric: chosenMetric,
@@ -669,6 +906,24 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
     segmentBasis: segmentBasis(chosenMetric, split),
     buckets: out,
     total: total == null ? null : round(total, chosenMetric === 'spend' ? 6 : 2),
+    apiUsd: chosenMetric === 'spend'
+      ? (() => {
+        const attempts = out.reduce((sum, bucket) => sum + (bucket.attempts ?? 0), 0);
+        const priced = out.reduce((sum, bucket) => sum + (bucket.pricedAttempts ?? 0), 0);
+        return attempts > 0 && priced === attempts ? round(out.reduce((sum, bucket) => add(sum, bucket.apiKnownSubtotalUsd), null), 6) : null;
+      })() : null,
+    apiKnownSubtotalUsd: chosenMetric === 'spend' ? round(out.reduce((sum, bucket) => add(sum, bucket.apiKnownSubtotalUsd), null), 6) : null,
+    subscriptionUsd: chosenMetric === 'spend'
+      ? (() => {
+        const attempts = out.reduce((sum, bucket) => sum + (bucket.attempts ?? 0), 0);
+        const priced = out.reduce((sum, bucket) => sum + (bucket.subscriptionPricedAttempts ?? 0), 0);
+        return attempts > 0 && priced === attempts ? round(out.reduce((sum, bucket) => add(sum, bucket.subscriptionKnownSubtotalUsd), null), 6) : null;
+      })() : null,
+    subscriptionKnownSubtotalUsd: chosenMetric === 'spend'
+      ? round(out.reduce((sum, bucket) => add(sum, bucket.subscriptionKnownSubtotalUsd), null), 6) : null,
+    subscriptionBasis: chosenMetric === 'spend'
+      ? out.reduce((basis, bucket) => worstSubscriptionBasis(basis, bucket.subscriptionBasis), null) ?? 'unknown:no-meter'
+      : null,
     cumulative,
     max,
     tokenSource: chosenMetric === 'spend'
@@ -765,12 +1020,18 @@ export function poolsModel(rollups, pools, { period = '7d', now = Date.now() } =
   }
   const merged = [...byName.values()].map((row) => {
     const pool = live.get(row.name) ?? null;
-    return {
+    const mergedRow = {
       ...row,
       live: pool ? liveMeter(pool) : null,
       enabled: pool ? pool.enabled !== false : null,
       lanes: pool?.lanes ?? null,
     };
+    // `_v2Money` is deliberately non-enumerable on finished rows so legacy
+    // table consumers keep their old JSON shape.  Re-attach it after this
+    // live-meter merge; otherwise rowTotals would mistake a partial v2 set
+    // for legacy data and expose a known subtotal as a strict total.
+    Object.defineProperty(mergedRow, '_v2Money', { value: row._v2Money === true, enumerable: false });
+    return mergedRow;
   });
   merged.sort((a, b) => b.attempts - a.attempts
     || (b.minutes ?? 0) - (a.minutes ?? 0)
@@ -845,19 +1106,38 @@ function todayTiles(records, now) {
   const today = dayKeyOf(now);
   const finishedToday = records.filter((record) => dayKeyOf(record.finishedAt) === today);
   let apiEquivalentUsd = null;
+  let apiKnownSubtotalUsd = null;
+  let subscriptionUsd = null;
+  let subscriptionKnownSubtotalUsd = null;
   let priced = 0;
+  let pricedAttempts = 0;
+  let subscriptionPricedAttempts = 0;
   let tokenSource = null;
+  let subscriptionBasis = null;
+  let v2Money = false;
   let measuredAttempts = 0;
   let attempts = 0;
   for (const record of finishedToday) {
+    v2Money ||= Boolean(record?.usage && (Object.hasOwn(record.usage, 'apiUsd') || Object.hasOwn(record.usage, 'subscriptionUsd')));
     const cost = recordCostUsd(record);
+    const knownCost = recordKnownApiSubtotalUsd(record);
+    const sub = recordSubscriptionUsd(record);
+    const knownSub = recordKnownSubscriptionUsd(record);
     const source = recordTokenSource(record);
     if (cost != null) { apiEquivalentUsd = add(apiEquivalentUsd, cost); priced += 1; }
+    apiKnownSubtotalUsd = add(apiKnownSubtotalUsd, knownCost);
+    subscriptionUsd = add(subscriptionUsd, sub);
+    subscriptionKnownSubtotalUsd = add(subscriptionKnownSubtotalUsd, knownSub);
+    pricedAttempts += recordPricedAttempts(record);
+    subscriptionPricedAttempts += recordSubscriptionPricedAttempts(record);
     tokenSource = worstTokenSource(tokenSource, source);
+    subscriptionBasis = worstSubscriptionBasis(subscriptionBasis, recordSubscriptionBasis(record));
     for (const [, entry] of mapEntries(record.pools)) {
       const count = Math.max(0, Math.trunc(Number(entry?.attempts) || 0));
       attempts += count;
-      measuredAttempts += measuredAttemptCount(tokenSourceOf(entry?.tokenSource, entry?.costUsd), count);
+      measuredAttempts += finite(entry?.measuredAttempts) != null
+        ? Math.max(0, Math.trunc(finite(entry.measuredAttempts)))
+        : measuredAttemptCount(tokenSourceOf(entry?.tokenSource, entry?.costUsd), count);
     }
   }
   const verified = finishedToday.filter((record) => record.verified === true).length;
@@ -868,10 +1148,23 @@ function todayTiles(records, now) {
     verified,
     // S1. A share of nothing is not 0%.
     verifiedShare: finishedToday.length ? share(verified, finishedToday.length) : null,
-    apiEquivalentUsd: round(apiEquivalentUsd, 6),
+    apiEquivalentUsd: v2Money
+      ? attempts > 0 && pricedAttempts === attempts ? round(apiKnownSubtotalUsd, 6) : null
+      : round(apiEquivalentUsd, 6),
+    apiUsd: v2Money
+      ? attempts > 0 && pricedAttempts === attempts ? round(apiKnownSubtotalUsd, 6) : null
+      : round(apiEquivalentUsd, 6),
+    apiKnownSubtotalUsd: round(apiKnownSubtotalUsd, 6),
+    subscriptionUsd: v2Money
+      ? attempts > 0 && subscriptionPricedAttempts === attempts ? round(subscriptionKnownSubtotalUsd, 6) : null
+      : round(subscriptionUsd, 6),
+    subscriptionKnownSubtotalUsd: round(subscriptionKnownSubtotalUsd, 6),
     tokenSource: tokenSource ?? 'unknown',
+    subscriptionBasis: subscriptionBasis ?? 'unknown:no-meter',
     // How much of today's tile is actually sourced, for the view's label.
     pricedRuns: priced,
+    pricedAttempts,
+    subscriptionPricedAttempts,
     attempts,
     measuredAttempts,
     basis: 'recorded per-attempt API-equivalent estimates, summed over the runs that finished today',
@@ -979,10 +1272,26 @@ function keyValues(records) {
   for (const record of records) agent = add(agent, finite(record?.minutes?.agent));
   const days = new Set(records.map((record) => dayKeyOf(record.finishedAt) ?? dayKeyOf(record.startedAt)).filter(Boolean));
   let apiEquivalentUsd = null;
+  let apiKnownSubtotalUsd = null;
+  let subscriptionUsd = null;
+  let subscriptionKnownSubtotalUsd = null;
   let tokenSource = null;
+  let subscriptionBasis = null;
+  let attempts = 0;
+  let pricedAttempts = 0;
+  let subscriptionPricedAttempts = 0;
+  let v2Money = false;
   for (const record of records) {
+    v2Money ||= Boolean(record?.usage && (Object.hasOwn(record.usage, 'apiUsd') || Object.hasOwn(record.usage, 'subscriptionUsd')));
+    attempts += recordAttemptCount(record);
+    pricedAttempts += recordPricedAttempts(record);
+    subscriptionPricedAttempts += recordSubscriptionPricedAttempts(record);
     apiEquivalentUsd = add(apiEquivalentUsd, recordCostUsd(record));
+    apiKnownSubtotalUsd = add(apiKnownSubtotalUsd, recordKnownApiSubtotalUsd(record));
+    subscriptionUsd = add(subscriptionUsd, recordSubscriptionUsd(record));
+    subscriptionKnownSubtotalUsd = add(subscriptionKnownSubtotalUsd, recordKnownSubscriptionUsd(record));
     tokenSource = worstTokenSource(tokenSource, recordTokenSource(record));
+    subscriptionBasis = worstSubscriptionBasis(subscriptionBasis, recordSubscriptionBasis(record));
   }
 
   const top = (rows, field) => {
@@ -1000,8 +1309,21 @@ function keyValues(records) {
     longestRunMinutes: wall.length ? round(Math.max(...wall), 2) : null,
     totalAgentMinutes: round(agent, 2),
     totalWorkerMinutes: round(records.reduce((sum, record) => add(sum, recordWorkerMinutes(record)), null), 2),
-    apiEquivalentUsd: round(apiEquivalentUsd, 6),
+    apiEquivalentUsd: v2Money
+      ? attempts > 0 && pricedAttempts === attempts ? round(apiKnownSubtotalUsd, 6) : null
+      : round(apiEquivalentUsd, 6),
+    apiUsd: v2Money
+      ? attempts > 0 && pricedAttempts === attempts ? round(apiKnownSubtotalUsd, 6) : null
+      : round(apiEquivalentUsd, 6),
+    apiKnownSubtotalUsd: round(apiKnownSubtotalUsd, 6),
+    subscriptionUsd: v2Money && attempts > 0 && subscriptionPricedAttempts === attempts
+      ? round(subscriptionKnownSubtotalUsd, 6) : null,
+    subscriptionKnownSubtotalUsd: round(subscriptionKnownSubtotalUsd, 6),
     tokenSource: tokenSource ?? 'unknown',
+    subscriptionBasis: subscriptionBasis ?? 'unknown:no-meter',
+    attempts,
+    pricedAttempts,
+    subscriptionPricedAttempts,
   };
 }
 

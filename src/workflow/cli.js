@@ -39,6 +39,7 @@ import { runWorkflowWatch } from './watch-cli.js';
 import { peekSteering, queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
+import { cmdReprice } from './reprice.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -71,7 +72,10 @@ export async function cmdWorkflow(args, {
   // One gate for every workflow verb whose flags are parsed here. `plan` and
   // `runs` re-parse their own tail against their own subcommand's table, so
   // they run the same check inside their own dispatcher instead.
-  if (sub !== 'plan' && sub !== 'runs') {
+  // Reprice owns its small flag grammar so it can also be invoked from tests
+  // with an injected transcript reader.  The central flag registry/help node
+  // is integrator-owned and will add its allow-list alongside the new leaf.
+  if (sub !== 'plan' && sub !== 'runs' && sub !== 'reprice') {
     const path = workflowHelpPath(sub, opts);
     if (path) {
       const flagExit = unknownFlagExit(opts.flags, path);
@@ -94,6 +98,8 @@ export async function cmdWorkflow(args, {
       return cmdRuns(tail, runsAlias ? { alias: runsAlias } : {});
     case 'reindex':
       return cmdReindex(tail);
+    case 'reprice':
+      return cmdReprice(tail, { bullswarmDir });
     case 'capabilities':
       return wfCapabilities(opts);
     case 'tui':
@@ -1856,7 +1862,7 @@ function wfAction(opts) {
 function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
-  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex'];
+  const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;
 }
 

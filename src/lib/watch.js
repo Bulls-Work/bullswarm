@@ -21,17 +21,124 @@
 
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
-import { estimateInvocationUsage } from './usage.js';
+import * as usageLib from './usage.js';
 import { createAgentEventDecoder } from './agent-events.js';
 import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
+import { getMeterReading } from '../meters/registry.js';
+import { loadProviders, transcriptReaderFor } from './providers.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+// The usage/subscription workers land their modules independently of this
+// wiring action. Resolve them lazily so the watcher remains usable in a
+// partially integrated checkout (and so focused tests can inject the exact
+// seams they exercise). Once present, these are the contract modules, not
+// alternate implementations.
+let accountingModulesPromise = null;
+async function accountingModules() {
+  accountingModulesPromise ??= Promise.all([
+    import('./quota-snapshot.js').catch(() => null),
+    import('./subscription-cost.js').catch(() => null),
+  ]).then(([quota, subscription]) => ({ quota, subscription }));
+  return accountingModulesPromise;
+}
+
+function finiteNonNegative(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function usageApiUsd(usage) {
+  return finiteNonNegative(usage?.api?.usd ?? usage?.cost?.estimatedUsd);
+}
+
+function usageSessionId(usage, reportedUsage, conversation) {
+  return usage?.sessionId
+    ?? reportedUsage?.sessionId
+    ?? conversation?.sessionId
+    ?? null;
+}
+
+function decoderUsageForEstimate(connector, reportedUsage) {
+  if (!reportedUsage || typeof reportedUsage !== 'object') return reportedUsage;
+  const rules = Array.isArray(connector?.eventStream?.usage)
+    ? connector.eventStream.usage
+    : connector?.eventStream?.usage ? [connector.eventStream.usage] : [];
+  const inclusiveOutput = rules.some((rule) => (
+    Array.isArray(rule?.inclusive?.output) && rule.inclusive.output.includes('reasoning')
+  ));
+  // agent-events applies declarative inclusive subtraction as it decodes the
+  // stream. usage.js also accepts raw provider counters and subtracts there,
+  // so restore the inclusive output only for this hand-off to avoid doing the
+  // same subtraction twice at the canonical record boundary.
+  if (inclusiveOutput
+    && Number.isFinite(Number(reportedUsage.output))
+    && Number.isFinite(Number(reportedUsage.reasoning))) {
+    return {
+      ...reportedUsage,
+      output: Number(reportedUsage.output) + Number(reportedUsage.reasoning),
+    };
+  }
+  return reportedUsage;
+}
+
+async function safeSnapshot(snapshotPool, poolName, home, now) {
+  if (typeof snapshotPool !== 'function' || !poolName || !home) return null;
+  try {
+    return await snapshotPool(poolName, { home, now });
+  } catch {
+    return null;
+  }
+}
+
+function snapshotDelta(quota, start, end) {
+  if (typeof quota?.deltaBetween !== 'function') return null;
+  try { return quota.deltaBetween(start, end); } catch { return null; }
+}
+
+function snapshotsFor(start, end) {
+  return { start: start ?? null, end: end ?? null };
+}
+
+function fallbackSubscription({ poolName, subscription, start, end, quota }) {
+  if (!poolName && !start && !end) return null;
+  const delta = snapshotDelta(quota, start, end);
+  const monthlyPriceUsd = finiteNonNegative(subscription?.monthlyPriceUsd);
+  const window = subscription?.quotaWindow
+    ?? (delta?.window === '5h' ? '5h' : delta?.window ?? null);
+  const block = {
+    pool: poolName ?? null,
+    window,
+    deltaPct: delta?.deltaPct ?? null,
+    usd: null,
+    monthlyPriceUsd,
+    windowDays: null,
+    basis: monthlyPriceUsd == null
+      ? 'unknown:no-price'
+      : delta?.deltaPct == null ? 'unknown:no-meter' : 'unknown:no-cost',
+    snapshots: snapshotsFor(start, end),
+  };
+  return block;
+}
+
+async function resolveTranscriptReader(opts, poolName, home) {
+  if (typeof opts.readTranscriptUsage === 'function') return opts.readTranscriptUsage;
+  if (!poolName || !home) return null;
+  try {
+    const providers = opts.providers ?? loadProviders(home, { packaged: true }).providers;
+    return transcriptReaderFor(providers, poolName);
+  } catch {
+    return null;
+  }
+}
 
 // A worker's stdout is an agent transcript and can run to hundreds of
 // megabytes (tool output echoed back by the CLI). Appending every chunk to one
@@ -476,14 +583,46 @@ function providerErrorText(obs) {
  * Watch one delegation end-to-end. Returns the standard verdict.
  */
 export async function watchOnce(connector, taskText, targetDir, paths, opts = {}) {
+  const loadedAccounting = await accountingModules();
+  const quota = opts.quotaSnapshot ?? loadedAccounting.quota;
+  const subscriptionCostModule = opts.subscriptionCost ?? loadedAccounting.subscription;
+  const snapshotPool = opts.snapshotPool ?? quota?.snapshotPool;
+  const deltaBetween = opts.deltaBetween ?? quota?.deltaBetween;
+  // Keep the delta helper on the same object shape as the contract module so
+  // the fallback formatter and injected focused tests follow one path.
+  const quotaForAttempt = quota && deltaBetween === quota.deltaBetween
+    ? quota
+    : (deltaBetween ? { ...quota, deltaBetween } : quota);
+  const home = opts.home ?? opts.bullswarmDir ?? process.env.BULLSWARM_HOME?.trim() ?? null;
+  // Provider CLIs keep transcripts under the real user home, independently
+  // of Bullswarm's relocatable state directory. Tests may override this seam.
+  const transcriptHome = opts.transcriptHome ?? opts.userHome ?? homedir();
+  const poolName = opts.poolName ?? connector.name ?? null;
   writeFileSync(paths.taskFile, taskText);
-  const startedAt = Date.now();
+  const startedAt = Number.isFinite(Date.parse(opts.startedAt))
+    ? Date.parse(opts.startedAt)
+    : Date.now();
+  // This is intentionally immediately before the child spawn. A meter cache
+  // is a shared provider observation, so taking it earlier would charge work
+  // that happened before this attempt.
+  const startSnapshot = await safeSnapshot(snapshotPool, poolName, home, startedAt);
   const obs = await runDelegate(connector, paths.taskFile, targetDir, {
     ...opts,
     streamFile: opts.streamFile ?? paths.streamFile,
     stdoutFile: opts.stdoutFile ?? paths.stdoutFile,
   });
-  const wallSec = Math.round((Date.now() - startedAt) / 100) / 10;
+  const endedAt = Date.now();
+  let endSnapshot = await safeSnapshot(snapshotPool, poolName, home, endedAt);
+  // A stale end cache is not an observation of the attempt's end. One forced
+  // provider read is allowed by the contract; a failed read deliberately
+  // leaves the result unknown rather than fabricating a delta.
+  if (endSnapshot?.ageMs != null && endSnapshot.ageMs > 60_000 && home && poolName) {
+    try {
+      await getMeterReading(poolName, { bullswarmDir: home, force: true });
+    } catch { /* retain the stale cache, which yields no observed delta */ }
+    endSnapshot = await safeSnapshot(snapshotPool, poolName, home, Date.now());
+  }
+  const wallSec = Math.round((endedAt - startedAt) / 100) / 10;
 
   const output = extractOutput(connector, obs);
   writeFileSync(paths.outFile, output);
@@ -491,14 +630,130 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     const index = connector.spawn?.cmd?.indexOf('--model') ?? -1;
     return index >= 0 ? connector.spawn.cmd[index + 1] ?? null : null;
   })();
-  const usage = estimateInvocationUsage({
+  let usage = usageLib.estimateInvocationUsage({
     taskText,
     outputText: output,
     connector,
     model: selectedModel,
     subscription: connector.subscription ?? null,
-    reportedUsage: obs.reportedUsage,
+    reportedUsage: decoderUsageForEstimate(connector, obs.reportedUsage),
   });
+
+  // A stream-reported session identity is authoritative. If a connector does
+  // not emit one, a workflow conversation id still gives transcript readers a
+  // direct lookup key (Claude/Grok); Codex can use cwd + time instead.
+  usage.sessionId = usageSessionId(usage, obs.reportedUsage, opts.conversation);
+
+  // Structured provider counters win. Only an estimated/unknown record may
+  // consult durable transcripts, and only when the provider exposes the
+  // optional hook. Ambiguous or missing transcript matches are ignored so the
+  // byte estimate remains visible for the live attempt; `workflow reprice`
+  // applies the stricter unknown policy to historical records.
+  if (usage.tokenSource === 'estimated:utf8-bytes/4' || usage.tokenSource === 'unknown') {
+    const reader = await resolveTranscriptReader(opts, poolName, home);
+    if (reader) {
+      try {
+        const transcript = await reader({
+          provider: poolName,
+          sessionId: usage.sessionId,
+          cwd: resolve(targetDir),
+          startedAt: new Date(startedAt).toISOString(),
+          endedAt: new Date(endedAt).toISOString(),
+          home: transcriptHome,
+        });
+        const exact = transcript?.confidence === 'exact' || transcript?.confidence === 'window';
+        const hasTokens = transcript?.tokens && typeof transcript.tokens === 'object'
+          && Object.values(transcript.tokens).some((value) => finiteNonNegative(value) != null);
+        if (exact && hasTokens) {
+          const attach = usageLib.attachTranscriptUsage;
+          if (typeof attach === 'function') {
+            usage = await attach(usage, transcript) ?? usage;
+          } else {
+            // Compatibility bridge for a partially integrated checkout. The
+            // subscription worker's attachTranscriptUsage supersedes this
+            // branch once its richer v2 API is present.
+            usage = usageLib.estimateInvocationUsage({
+              taskText,
+              outputText: output,
+              connector,
+              model: transcript.model ?? selectedModel,
+              subscription: connector.subscription ?? null,
+              reportedUsage: {
+                ...transcript.tokens,
+                model: transcript.model ?? selectedModel,
+                sessionId: transcript.sessionId ?? usage.sessionId,
+                tokenSource: 'transcript-summed',
+              },
+            });
+          }
+          usage.sessionId = usageSessionId(usage, transcript, opts.conversation);
+        }
+      } catch {
+        // A provider-specific transcript store is optional and may be pruned;
+        // preserve the live estimate when it cannot be read.
+      }
+    }
+  }
+
+  // Subscription accounting is deliberately a separate block from API-rate
+  // pricing. The subscription worker owns the formulas and calibration ledger;
+  // this call only supplies the attempt facts it needs.
+  const subscriptionConfig = opts.subscription ?? connector.subscription ?? null;
+  let subscription = null;
+  const subscriptionCost = typeof subscriptionCostModule?.subscriptionCost === 'function'
+    ? subscriptionCostModule.subscriptionCost
+    : typeof subscriptionCostModule === 'function' ? subscriptionCostModule : null;
+  if (subscriptionCost && poolName) {
+    try {
+      const result = await subscriptionCost({
+        pool: poolName,
+        poolName,
+        subscription: subscriptionConfig,
+        api: usage.api ?? null,
+        apiUsd: usageApiUsd(usage),
+        start: startSnapshot,
+        end: endSnapshot,
+        startSnapshot,
+        endSnapshot,
+        home,
+        runId: opts.runId ?? null,
+        attemptId: opts.attemptId ?? null,
+        now: new Date(endedAt).toISOString(),
+      });
+      subscription = result?.subscription ?? result ?? null;
+    } catch {
+      subscription = null;
+    }
+  }
+  subscription ??= fallbackSubscription({
+    poolName,
+    subscription: subscriptionConfig,
+    start: startSnapshot,
+    end: endSnapshot,
+    quota: quotaForAttempt,
+  });
+  if (subscription) {
+    subscription = {
+      ...subscription,
+      pool: subscription.pool ?? poolName,
+      snapshots: subscription.snapshots ?? snapshotsFor(startSnapshot, endSnapshot),
+    };
+    usage.subscription = subscription;
+  }
+  const apiUsd = usageApiUsd(usage);
+  if (subscription?.basis === 'observed:meter-delta' && apiUsd != null
+    && typeof subscriptionCostModule?.appendCalibration === 'function' && poolName) {
+    try {
+      await subscriptionCostModule.appendCalibration(poolName, {
+        at: new Date(endedAt).toISOString(),
+        apiUsd,
+        deltaPct: subscription.deltaPct,
+        window: subscription.window ?? null,
+        runId: opts.runId ?? null,
+        attemptId: opts.attemptId ?? null,
+      }, { home });
+    } catch { /* calibration is best effort; the attempt record is durable */ }
+  }
 
   // Gate order matters:
   //   timeout / spawn failure -> fail (nothing to trust)

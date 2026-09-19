@@ -597,9 +597,9 @@ test('watch records structured Claude usage before text parsing', async () => {
     const verdict = await watchOnce(connector, 'Implement and verify the change.', ctx.dir, ctx.paths);
     assert.equal(verdict.ok, true, verdict.why);
     assert.equal(verdict.meta.usage.tokenSource, 'provider-reported');
-    assert.equal(verdict.meta.usage.costSource, 'provider-billed');
+    assert.equal(verdict.meta.usage.costSource, 'local-rate-card');
     assert.equal(verdict.meta.usage.sessionId, 'session-claude-1');
-    assert.equal(verdict.meta.usage.cost.estimatedUsd, 0.61388);
+    assert.equal(verdict.meta.usage.cost.estimatedUsd, 0.0002365);
     assert.equal(verdict.meta.usage.tokens.totalKnown, 20);
   } finally {
     ctx.cleanup();

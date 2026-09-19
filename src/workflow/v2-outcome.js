@@ -1,6 +1,7 @@
 import { scheduleV2Actions } from './v2-scheduler.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
+import { aggregateAttemptUsage } from './rollup.js';
 
 export const V2_GAP_SCHEMA_VERSION = 'bullswarm.workflow.gaps.v2';
 export const V2_RESULT_SCHEMA_VERSION = 'bullswarm.workflow.result.v2';
@@ -124,7 +125,7 @@ function validateResultUsageBytes(value, name) {
 
 function validateResultAction(value, name) {
   resultObject(value, name);
-  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes', 'routeWhy', 'routeCandidates']), name);
+  exactFields(value, new Set(['id', 'purpose', 'status', 'outputFile', 'artifactIds', 'failure', 'reasoning', 'kind', 'bytes', 'routeWhy', 'routeCandidates', 'usage']), name);
   resultString(value.id, `${name}.id`);
   resultString(value.purpose, `${name}.purpose`);
   if (!ACTION_STATUSES.has(value.status)) resultFail(`${name}.status is invalid`);
@@ -138,6 +139,7 @@ function validateResultAction(value, name) {
   // could state a work nature carry neither the field nor a null.
   if (value.kind !== undefined && value.kind !== null) resultString(value.kind, `${name}.kind`);
   validateResultBytes(value.bytes, `${name}.bytes`);
+  if (value.usage !== undefined && value.usage !== null) validateUsageAggregate(value.usage, `${name}.usage`);
 }
 
 function validateGaps(value, result) {
@@ -318,13 +320,70 @@ function aggregateAttemptBytes(state) {
 }
 
 function resultUsage(state) {
-  const usage = clone(state.usage);
+  // Keep only the stable legacy envelope fields here.  Durable state may gain
+  // v2 counters for its own incremental ledger, but result.usage owns those
+  // counters under `totals`/`steps`; copying them beside the envelope would
+  // violate its exact public shape and duplicate partial totals.
+  const usageState = state.usage && typeof state.usage === 'object' ? state.usage : {};
+  const usage = {
+    total: usageState.total ?? 0,
+    byPool: clone(usageState.byPool) ?? {},
+  };
   usage.bytes = usage.bytes == null ? aggregateAttemptBytes(state) : {
     taskFiles: usage.bytes.taskFiles ?? null,
     dependencyInputs: usage.bytes.dependencyInputs ?? null,
     outputs: usage.bytes.outputs ?? null,
   };
+  const attempts = allAttemptRecords(state);
+  const totals = aggregateAttemptUsage(attempts);
+  const steps = {};
+  for (const action of state.program?.actions ?? []) {
+    steps[action.id] = aggregateAttemptUsage(attempts.filter((attempt) => attempt?.actionId === action.id));
+  }
+  usage.totals = totals;
+  usage.steps = steps;
   return usage;
+}
+
+function validateUsageAggregate(value, name) {
+  resultObject(value, name);
+  exactFields(value, new Set([
+    'attempts', 'minutes', 'tokens', 'cacheRead', 'cacheWrite', 'reasoning',
+    'apiUsd', 'apiKnownSubtotalUsd', 'subscriptionUsd', 'subscriptionKnownSubtotalUsd',
+    'measuredAttempts', 'pricedAttempts', 'subscriptionPricedAttempts',
+    'tokenSource', 'subscriptionBasis', 'subscriptionDeltaPct',
+    'subscriptionWindow', 'subscriptionWindows',
+  ]), name);
+  for (const field of [
+    'minutes', 'tokens', 'cacheRead', 'cacheWrite', 'reasoning',
+    'apiUsd', 'apiKnownSubtotalUsd', 'subscriptionUsd', 'subscriptionKnownSubtotalUsd',
+  ]) {
+    if (value[field] !== null && (typeof value[field] !== 'number' || !Number.isFinite(value[field]))) {
+      resultFail(`${name}.${field} must be null or a finite number`);
+    }
+  }
+  for (const field of ['attempts', 'measuredAttempts', 'pricedAttempts', 'subscriptionPricedAttempts']) {
+    if (!Number.isInteger(value[field]) || value[field] < 0) resultFail(`${name}.${field} must be a non-negative integer`);
+  }
+  if (value.subscriptionDeltaPct !== undefined && value.subscriptionDeltaPct !== null && (typeof value.subscriptionDeltaPct !== 'number' || !Number.isFinite(value.subscriptionDeltaPct))) {
+    resultFail(`${name}.subscriptionDeltaPct must be null or a finite number`);
+  }
+  if (value.subscriptionWindow !== undefined && value.subscriptionWindow !== null && typeof value.subscriptionWindow !== 'string') {
+    resultFail(`${name}.subscriptionWindow must be null or a string`);
+  }
+  if (value.subscriptionWindows !== undefined) {
+    resultObject(value.subscriptionWindows, `${name}.subscriptionWindows`);
+    for (const [window, delta] of Object.entries(value.subscriptionWindows)) {
+      if (!window || typeof delta !== 'number' || !Number.isFinite(delta)) resultFail(`${name}.subscriptionWindows is invalid`);
+    }
+  }
+  if (typeof value.tokenSource !== 'string' || !['provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown'].includes(value.tokenSource)) {
+    resultFail(`${name}.tokenSource is invalid`);
+  }
+  if (typeof value.subscriptionBasis !== 'string' || ![
+    'observed:meter-delta', 'calibrated:usd-per-pct',
+    'unknown:no-price', 'unknown:no-meter', 'unknown:no-cost',
+  ].includes(value.subscriptionBasis)) resultFail(`${name}.subscriptionBasis is invalid`);
 }
 
 function currentEvidence(ledger, requirement) {
@@ -466,6 +525,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     actions: state.program.actions.map((definition) => {
       const runtime = state.actions.find((action) => action.id === definition.id);
       const attempt = state.attempts?.findLast((entry) => entry.actionId === definition.id);
+      const actionUsage = aggregateAttemptUsage(allAttemptRecords(state)
+        .filter((entry) => entry?.actionId === definition.id));
       return {
         id: definition.id,
         purpose: definition.purpose,
@@ -481,6 +542,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
         // durable action; `kind` is what a reader needs to know WHY.
         kind: definition.kind ?? null,
         bytes: lastAttemptBytes(state, definition.id),
+        usage: actionUsage,
         routeWhy: attempt?.routeWhy ?? null,
         routeCandidates: clone(attempt?.routeCandidates ?? null),
         ...(program ? { failure: publicFailure(runtime?.lastFailure) } : {}),
@@ -579,7 +641,9 @@ function fitResultSummary(summary) {
   });
   const requirementsAt = (limit) => summary.requirements.map((requirement) => ({
     ...requirement,
-    why: firstLine(requirement.why, limit),
+    // The open-requirement reason is the caller's definition of unfinished
+    // work, so retain a useful sentence even in the smallest handback.
+    why: firstLine(requirement.why, requirement.status === 'passed' ? limit : Math.max(limit, 120)),
   }));
   const concernsAt = (limit, count) => ({
     count: summary.concerns.count,
@@ -587,10 +651,19 @@ function fitResultSummary(summary) {
   });
   const handbackAt = (limit, count) => {
     const { unfinished, unreadSteering } = summary.handback;
+    const selected = [];
+    for (const entry of unfinished) {
+      if (selected.length < count || entry.retryAfter) selected.push(entry);
+    }
     return {
       ...summary.handback,
-      unfinished: unfinished.slice(0, count).map((entry) => dropNullFields({ ...entry, why: firstLine(entry.why, limit) })),
-      ...(unfinished.length > count ? { unfinishedOmitted: unfinished.length - count } : {}),
+      unfinished: selected.map((entry) => dropNullFields({
+        ...entry,
+        // A retry deadline without its cause is not an actionable handback.
+        // Preserve the paused-pool explanation even in the smallest summary.
+        why: firstLine(entry.why, entry.retryAfter ? Math.max(limit, 200) : limit),
+      })),
+      ...(unfinished.length > selected.length ? { unfinishedOmitted: unfinished.length - selected.length } : {}),
       unreadSteering: unreadSteering.map((entry) => ({ ...entry, message: firstLine(entry.message, Math.max(limit, 80)) ?? '' })),
     };
   };
@@ -768,7 +841,7 @@ export function validateV2ResultEnvelope(result) {
   if (new Set(result.requirements.map((entry) => entry.id)).size !== result.requirements.length) resultFail('requirement ids must be unique');
   if (new Set(result.actions.map((entry) => entry.id)).size !== result.actions.length) resultFail('action ids must be unique');
   resultObject(result.usage, 'usage');
-  exactFields(result.usage, new Set(['total', 'byPool', 'bytes']), 'usage');
+  exactFields(result.usage, new Set(['total', 'byPool', 'bytes', 'steps', 'totals']), 'usage');
   validateResultUsageBytes(result.usage.bytes, 'usage.bytes');
   if (!Number.isFinite(result.usage.total) || result.usage.total < 0) resultFail('usage.total must be non-negative');
   resultObject(result.usage.byPool, 'usage.byPool');
@@ -776,6 +849,14 @@ export function validateV2ResultEnvelope(result) {
     resultString(pool, 'usage.byPool key');
     if (!Number.isFinite(total) || total < 0) resultFail(`usage.byPool.${pool} must be non-negative`);
   }
+  if (result.usage.steps !== undefined) {
+    resultObject(result.usage.steps, 'usage.steps');
+    for (const [actionId, aggregate] of Object.entries(result.usage.steps)) {
+      resultString(actionId, 'usage.steps key');
+      validateUsageAggregate(aggregate, `usage.steps.${actionId}`);
+    }
+  }
+  if (result.usage.totals !== undefined) validateUsageAggregate(result.usage.totals, 'usage.totals');
   if (result.verified && result.requirements.some((requirement) => requirement.mandatory && requirement.status !== 'passed')) resultFail('verified result has an unresolved mandatory requirement');
   const liveActions = result.actions.filter((action) => action.status !== 'removed');
   if (program && result.status === 'completed' && (!liveActions.length || liveActions.some((action) => action.status !== 'succeeded'))) resultFail('completed program must have successful actions');

@@ -41,6 +41,7 @@ These are the non-negotiable rules the rest of the tool is built on. Everything 
 | [Getting started](/guide/getting-started) | Install, verify readiness, and read your first verdict |
 | [Concepts](/guide/concepts) | Pools, lanes, surplus, windows, verdicts, quarantine |
 | [Run one task](/guide/run) | Every `run` option, and what each verdict means |
+| [Cost and usage](/guide/cost) | How token sources, API rates, subscription measurements, and money glyphs work |
 | [Routing](/guide/routing) | The order in which a pool is picked, with the numbers |
 | [Workflows](/guide/workflows) | Authoring the program that `workflow goal` executes |
 
@@ -51,3 +52,4 @@ For the CLI surface itself, [CLI reference](/reference/cli) lists every verb and
 - [Getting started](/guide/getting-started) — install Bullswarm and complete one run.
 - [Concepts](/guide/concepts) — the vocabulary every other page assumes.
 - [Run one task](/guide/run) — the full `bullswarm run` surface.
+- [Cost and usage](/guide/cost) — the basis behind every token and dollar field.

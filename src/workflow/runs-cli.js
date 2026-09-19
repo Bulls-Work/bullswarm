@@ -28,6 +28,7 @@ import { readGoalProject } from './goal.js';
 import { projectName } from '../lib/project.js';
 import { isTerminalWorkflowStatus } from './status.js';
 import { deserializeV2ResultEnvelope, formatV2HandbackLines, summarizeV2Result } from './v2-outcome.js';
+import { aggregateAttemptUsage } from './rollup.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 
@@ -363,6 +364,19 @@ function runsResult(idToken, opts) {
   catch (error) { return err(`V2 result is invalid for ${resolved.shortId ?? runId}: ${error.message}`); }
   if (stable.runId !== runId || stable.shortId !== state.shortId || stable.intentId !== state.intentId) {
     return err(`V2 result does not match durable state for ${resolved.shortId ?? runId}`);
+  }
+  // Old durable envelopes predate cost rollups. Keep them byte-identical on
+  // disk, but expose the same totals current envelopes carry when read.
+  const historicalAttempts = [
+    ...(state?.preflight?.scout?.attempts ?? []),
+    ...(state?.planner?.attempts ?? []),
+    ...(state?.attempts ?? []),
+  ];
+  if (stable.usage?.totals === undefined && historicalAttempts.length) {
+    stable = {
+      ...stable,
+      usage: { ...stable.usage, totals: aggregateAttemptUsage(historicalAttempts) },
+    };
   }
   if (opts.summary) {
     jsonOut(summarizeV2Result(stable, state, { runDir }), { ...opts, json: true });

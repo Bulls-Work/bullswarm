@@ -38,6 +38,34 @@ import {
 } from './lib/assignments.js';
 import { attachForecast, forecastRecord, inflightPenaltyFrom } from './lib/forecast.js';
 import { probeFreeModel, shouldProbeFreeModel } from './lib/probe.js';
+import * as usageBasis from './lib/usage-basis.js';
+
+// The subscription worker owns the canonical formatter. Keep a tiny
+// compatibility fallback for this action's pre-integration checkout so the
+// CLI can still print a clearly-basis-labelled pair while that module is being
+// integrated.
+const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
+  const api = usage.api ?? { usd: usage.cost?.estimatedUsd ?? null, basis: usage.cost?.basis ?? null };
+  const subscription = usage.subscription ?? null;
+  const apiUsd = Number(api.usd);
+  const apiText = Number.isFinite(apiUsd)
+    ? (usage.tokenSource === 'provider-reported' ? `$${apiUsd.toFixed(2)} api`
+      : usage.tokenSource === 'transcript-summed' ? `≈ $${apiUsd.toFixed(2)} api summed`
+        : usage.tokenSource === 'estimated:utf8-bytes/4' ? `~ $${apiUsd.toFixed(2)} api estimated`
+          : '· api unknown')
+    : '· api unknown';
+  if (!subscription) return `${apiText} · sub unknown`;
+  const usd = Number(subscription.usd);
+  const basis = String(subscription.basis ?? 'unknown:no-cost');
+  if (!Number.isFinite(usd)) {
+    const reason = basis === 'unknown:no-price' ? 'no plan price'
+      : basis === 'unknown:no-meter' ? 'no meter/calibration' : 'no API cost';
+    return `${apiText} · sub unknown (${reason})`;
+  }
+  const glyph = basis === 'observed:meter-delta' ? '' : basis === 'calibrated:usd-per-pct' ? '≈ ' : '~ ';
+  const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
+  return `${apiText} · ${pct}${glyph}$${usd.toFixed(2)} sub`.replace(/\s+/g, ' ').trim();
+});
 
 export function getBullswarmDir() {
   const h = process.env.BULLSWARM_HOME?.trim();
@@ -525,6 +553,11 @@ async function cmdRun(opts) {
       // Lets a usage-limit verdict fall back to this pool's cached 5h meter
       // reset when the provider's message named no reset time of its own.
       bullswarmDir: getBullswarmDir(),
+      poolName: connector.name,
+      runId: null,
+      attemptId: ledgerEntry?.id ?? `run-${stamp}`,
+      startedAt,
+      subscription: runtimeConnector.subscription ?? null,
       onActivity: (event) => heartbeat.activity(event),
       onAgentEvent: () => heartbeat.event(),
       onSpawn: (pid) => {
@@ -665,8 +698,8 @@ function emit(verdict, opts) {
     const usage = verdict.meta?.usage;
     if (usage) {
       const t = usage.tokens ?? {};
-      console.log(`usage: read=${t.standardRead ?? '?'} cache-read=${t.cacheRead ?? '?'} cache-write=${t.cacheWrite ?? '?'} output=${t.output ?? '?'} tokens (${usage.tokenSource})`);
-      console.log(`cost: ${usage.cost?.estimatedUsd == null ? 'unknown' : `~$${usage.cost.estimatedUsd}`} · quota: ${usage.normalizedQuota?.estimatedPercent == null ? 'unknown' : `~${usage.normalizedQuota.estimatedPercent}%`}`);
+      console.log(`usage: read=${t.standardRead ?? '?'} cache-read=${t.cacheRead ?? '?'} cache-write=${t.cacheWrite ?? '?'} output=${t.output ?? '?'} reasoning=${t.reasoning ?? '?'} tokens (${usage.tokenSource})`);
+      console.log(`cost: ${formatMoneyPair(usage)}`);
     }
   }
 }

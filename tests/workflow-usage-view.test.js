@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   METER_COLORS, severityColor, meterBar, paceWord, poolWindows, untilText,
-  poolSummaryLines, loadUsage, parseMouse,
+  poolSummaryLines, loadUsage, parseMouse, formatUsageMoney, usageMoneyPair,
 } from '../src/workflow/usage-view.js';
 import { registerAssignment } from '../src/lib/assignments.js';
 
@@ -415,4 +415,25 @@ test('parseMouse ignores what is not a click', () => {
   assert.equal(parseMouse(null), null);
   assert.equal(parseMouse('\x1b[<1;4;4M'), null, 'the middle button is not a page action');
   assert.equal(parseMouse('\x1b[<32;4;4M'), null, 'a drag is not a click');
+});
+
+test('usage money rows use the shared API/subscription pair and mark estimates', () => {
+  const result = JSON.parse(readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'));
+  const observed = formatUsageMoney({
+    api: { usd: result.total_cost_usd },
+    tokenSource: 'provider-reported',
+    subscription: { usd: 0.10349075975359343, deltaPct: 1.5, window: 'weekly', basis: 'observed:meter-delta' },
+  });
+  assert.equal(observed, '$0.61 api · 1.5% wk $0.10 sub');
+  assert.equal(usageMoneyPair({
+    api: { usd: result.total_cost_usd },
+    tokenSource: 'provider-reported',
+    subscription: { usd: 0.10349075975359343, deltaPct: 1.5, window: 'weekly', basis: 'observed:meter-delta' },
+  }), observed);
+
+  const estimated = formatUsageMoney({
+    api: { usd: 1.23 }, tokenSource: 'estimated:utf8-bytes/4', subscription: null,
+  });
+  assert.equal(estimated, '~ $1.23 api estimated · sub unknown (no meter/calibration)');
+  assert.doesNotMatch(estimated, /\$1\.23 api(?! estimated)/, 'an estimate never renders as a bare API amount');
 });

@@ -30,7 +30,7 @@ import { loadState } from '../lib/state.js';
 import { readMeterHistoryDays } from '../meters/registry.js';
 import { listTasks } from '../lib/tasks.js';
 import { attemptOutputSeries } from './v2-state.js';
-import { formatUsageBasis } from '../lib/usage-basis.js';
+import { formatMoneyPair } from '../lib/usage-basis.js';
 // N1: a missing measurement never becomes a confident zero. Number(null) is
 // 0 and Number.isFinite(0) is true, so every reading below goes through this.
 import { finiteOrNull } from '../lib/num.js';
@@ -267,11 +267,11 @@ function compactUsage(usage) {
   if (!usage) return 'usage pending';
   const tokens = usage.tokens ?? {};
   const tokenText = `tokens read=${tokens.standardRead ?? '?'} cache-read=${tokens.cacheRead ?? '?'} cache-write=${tokens.cacheWrite ?? '?'} output=${tokens.output ?? '?'}`;
-  const cost = usage.cost?.estimatedUsd != null
-    ? `cost ${usageBasisText(usage.cost.estimatedUsd, usage.tokenSource)}`
-    : usage.cost?.knownSubtotalUsd != null
-      ? `cost ≥${usageBasisText(usage.cost.knownSubtotalUsd, usage.tokenSource)} (partial)`
-      : 'cost unknown';
+  const cost = formatMoneyPair({
+    api: usage.api ?? { usd: usage.cost?.estimatedUsd ?? null, tokenSource: usage.tokenSource },
+    subscription: usage.subscription,
+    tokenSource: usage.tokenSource,
+  });
   const quota = usage.normalizedQuota?.estimatedPercent == null
     ? usage.normalizedQuota?.knownSubtotalPercent != null
       ? `quota≥${usage.normalizedQuota.knownSubtotalPercent}% (partial)` : 'quota=?'
@@ -541,7 +541,7 @@ function dashboardRunLines(rows, selected, narrow, width) {
     const name = workflowRunLabel(row);
     const phase = legacy ? 'legacy' : humanPhaseName(row.phase ?? 'starting');
     const economics = legacy ? null : runEconomics(row, [], Date.now());
-    const spend = economics ? moneyText(economics.apiEquivalentUsd, economics.tokenSource) : null;
+    const spend = economics ? moneyText(economics) : null;
     const spendLabel = spend ?? (legacy ? null : 'cost unknown');
     if (narrow) {
       const inner = Math.max(1, width - 4);
@@ -1487,7 +1487,9 @@ function todayLicenceRows(model, today, nowMs) {
   const ensure = (name) => {
     if (!name) return null;
     if (!byName.has(name)) byName.set(name, {
-      name, workflowMinutes: null, runMinutes: null, apiUsd: null, tokenSource: null,
+      name, workflowMinutes: null, runMinutes: null, apiUsd: null,
+      subscriptionUsd: null, subscriptionBasis: null, subscriptionDeltaPct: null,
+      subscriptionWindow: null, tokenSource: null,
       worked: false, ratePerMinute: null, usedPct: null,
     });
     return byName.get(name);
@@ -1505,6 +1507,15 @@ function todayLicenceRows(model, today, nowMs) {
       addMinutes(row, 'workflowMinutes', entry?.minutes);
       const cost = finiteOrNull(entry?.costUsd);
       if (cost != null) row.apiUsd = (row.apiUsd ?? 0) + cost;
+      const subscription = finiteOrNull(entry?.subscriptionUsd);
+      if (subscription != null) row.subscriptionUsd = (row.subscriptionUsd ?? 0) + subscription;
+      const deltaPct = finiteOrNull(entry?.subscriptionDeltaPct);
+      if (deltaPct != null) row.subscriptionDeltaPct = (row.subscriptionDeltaPct ?? 0) + deltaPct;
+      if (entry?.subscriptionWindow) {
+        row.subscriptionWindow = row.subscriptionWindow == null || row.subscriptionWindow === entry.subscriptionWindow
+          ? entry.subscriptionWindow : null;
+      }
+      if (entry?.subscriptionBasis) row.subscriptionBasis = worstSubscriptionBasis(row.subscriptionBasis, entry.subscriptionBasis);
       row.tokenSource = worstTokenSource(row.tokenSource, tokenSourceOf(entry?.tokenSource, cost));
     }
   }
@@ -1556,12 +1567,13 @@ function todayTableRow(row, width, { header = false } = {}) {
   const specs = desktop
     ? { wf: 6, wfPct: 4, run: 7, api: 17, gaps: [4, 3, 3, 0] }
     : { wf: 6, wfPct: 4, run: 6, api: 12, gaps: [3, 3, 3, 0] };
-  const labels = ['wf min', 'wf % (est.)', 'run min', 'API≈'];
+  const labels = ['wf min', 'wf % (est.)', 'run min', 'API · sub'];
   const values = header ? labels : [
     todayMinutesNumberText(row?.workflowMinutes) ?? blank(),
     row?.workflowPct == null ? blank() : `${row.workflowPct.toFixed(1)}%`,
     todayMinutesNumberText(row?.runMinutes) ?? blank(),
-    row?.apiUsd == null && !row?.tokenSource ? blank() : compactUsageBasisText(row?.apiUsd, row?.tokenSource, specs.api),
+    row?.apiUsd == null && row?.subscriptionUsd == null && !row?.tokenSource ? blank()
+      : compactUsageBasisText({ apiUsd: row?.apiUsd, subscriptionUsd: row?.subscriptionUsd, tokenSource: row?.tokenSource, subscriptionBasis: row?.subscriptionBasis }, specs.api),
   ];
   const widths = [specs.wf, specs.wfPct, specs.run, specs.api];
   let line = header ? 'pool'.padEnd(nameWidth) : todayPoolName(row?.name, nameWidth).padEnd(nameWidth);
@@ -2155,6 +2167,13 @@ const TOKEN_SOURCE_RANK = Object.freeze({
   'transcript-summed': 2,
   'provider-reported': 3,
 });
+const SUBSCRIPTION_BASIS_RANK = Object.freeze({
+  'unknown:no-price': 0,
+  'unknown:no-meter': 1,
+  'unknown:no-cost': 2,
+  'calibrated:usd-per-pct': 3,
+  'observed:meter-delta': 4,
+});
 
 function tokenSourceOf(value, cost = null) {
   if (Object.hasOwn(TOKEN_SOURCE_RANK, value)) return value;
@@ -2167,12 +2186,24 @@ function worstTokenSource(current, candidate) {
   return TOKEN_SOURCE_RANK[next] < TOKEN_SOURCE_RANK[current] ? next : current;
 }
 
+function subscriptionBasisOf(value) {
+  return Object.hasOwn(SUBSCRIPTION_BASIS_RANK, value) ? value : 'unknown:no-meter';
+}
+
+function worstSubscriptionBasis(current, candidate) {
+  const next = subscriptionBasisOf(candidate);
+  if (current == null) return next;
+  return SUBSCRIPTION_BASIS_RANK[next] < SUBSCRIPTION_BASIS_RANK[current] ? next : current;
+}
+
 function usageBasisText(value, tokenSource) {
-  return formatUsageBasis({ tokenSource: tokenSourceOf(tokenSource, value), costUsd: value });
+  return formatMoneyPair({ api: { usd: value, tokenSource: tokenSourceOf(tokenSource, value) } });
 }
 
 function compactUsageBasisText(value, tokenSource, width = 20) {
-  const text = usageBasisText(value, tokenSource);
+  const text = value && typeof value === 'object'
+    ? moneyText(value)
+    : usageBasisText(value, tokenSource);
   if (text === 'cost unknown' || visibleLength(text) <= width) return text;
   return text
     .replace(' estimated', ' est')
@@ -2188,8 +2219,25 @@ function compactUsageBasisText(value, tokenSource, width = 20) {
  * recorded is null, and the caller paints a blank with the reason.
  */
 function moneyText(value, tokenSource) {
-  const text = usageBasisText(value, tokenSource);
-  return text === 'cost unknown' ? text : text;
+  if (value && typeof value === 'object') {
+    if (value.api || Object.hasOwn(value, 'apiUsd') || Object.hasOwn(value, 'apiEquivalentUsd')) {
+      return formatMoneyPair({
+        api: value.api ?? { usd: value.apiUsd ?? value.apiEquivalentUsd ?? null, tokenSource: value.tokenSource },
+        subscription: value.subscription ?? {
+          usd: value.subscriptionUsd ?? null,
+          deltaPct: value.subscriptionDeltaPct ?? null,
+          window: value.subscriptionWindow ?? null,
+          basis: value.subscriptionBasis ?? 'unknown:no-meter',
+        },
+        tokenSource: value.tokenSource,
+      });
+    }
+    return formatMoneyPair(value);
+  }
+  return formatMoneyPair({
+    api: { usd: value, tokenSource: tokenSourceOf(tokenSource, value) },
+    subscription: null,
+  });
 }
 
 /** A percentage, to one decimal, or null when there is nothing to show. */
@@ -2568,12 +2616,24 @@ function planStripParts(row, { runId = null } = {}) {
  * Money is the sum of the API-equivalent estimates the attempts recorded.
  */
 function runEconomics(row, pools = [], nowMs = Date.now()) {
-  const attempts = row?.state?.attempts ?? [];
+  // A run's economics cover every durable attempt, including optional scout
+  // and planner turns.  Rollups and result envelopes use this same set; the
+  // Run page must not silently omit their API/subscription usage.
+  const attempts = [
+    ...(row?.state?.preflight?.scout?.attempts ?? []),
+    ...(row?.state?.planner?.attempts ?? []),
+    ...(row?.state?.attempts ?? []),
+  ];
   const byPool = new Map();
-  let apiEquivalentUsd = null;
+  let apiKnownSubtotalUsd = null;
+  let subscriptionKnownSubtotalUsd = null;
   let priced = 0;
+  let subscriptionPriced = 0;
   let measuredAttempts = 0;
   let tokenSource = null;
+  let subscriptionBasis = null;
+  let subscriptionDeltaPct = null;
+  let subscriptionWindow = null;
   for (const attempt of attempts) {
     const name = attempt?.pool ?? null;
     const startedMs = Date.parse(attempt?.startedAt ?? '');
@@ -2584,10 +2644,17 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
         ? Math.max(0, (Number.isFinite(finishedMs) ? finishedMs : nowMs) - startedMs) / 60_000
         : null;
     if (name && minutes != null) byPool.set(name, (byPool.get(name) ?? 0) + minutes);
-    const cost = finiteOrNull(attempt?.usage?.cost?.estimatedUsd);
+    const cost = finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
+    const subscription = finiteOrNull(attempt?.usage?.subscription?.usd);
+    const deltaPct = finiteOrNull(attempt?.usage?.subscription?.deltaPct);
     const source = tokenSourceOf(attempt?.usage?.tokenSource, cost);
+    const basis = attempt?.usage?.subscription?.basis ?? 'unknown:no-meter';
     tokenSource = worstTokenSource(tokenSource, source);
-    if (cost != null) { apiEquivalentUsd = (apiEquivalentUsd ?? 0) + cost; priced += 1; }
+    subscriptionBasis = worstSubscriptionBasis(subscriptionBasis, basis);
+    if (deltaPct != null) subscriptionDeltaPct = (subscriptionDeltaPct ?? 0) + deltaPct;
+    subscriptionWindow ??= attempt?.usage?.subscription?.window ?? null;
+    if (cost != null) { apiKnownSubtotalUsd = (apiKnownSubtotalUsd ?? 0) + cost; priced += 1; }
+    if (subscription != null) { subscriptionKnownSubtotalUsd = (subscriptionKnownSubtotalUsd ?? 0) + subscription; subscriptionPriced += 1; }
     if (cost != null && (source === 'provider-reported' || source === 'transcript-summed')) measuredAttempts += 1;
   }
   const rows = [...byPool.entries()].map(([name, minutes]) => {
@@ -2604,9 +2671,20 @@ function runEconomics(row, pools = [], nowMs = Date.now()) {
   }).sort((a, b) => b.minutes - a.minutes);
   return {
     pools: rows,
-    apiEquivalentUsd,
+    apiEquivalentUsd: priced === attempts.length && attempts.length ? apiKnownSubtotalUsd : null,
+    apiUsd: priced === attempts.length && attempts.length ? apiKnownSubtotalUsd : null,
+    apiKnownSubtotalUsd,
+    subscriptionUsd: subscriptionPriced === attempts.length && attempts.length ? subscriptionKnownSubtotalUsd : null,
+    subscriptionKnownSubtotalUsd,
+    subscription: {
+      usd: subscriptionPriced === attempts.length && attempts.length ? subscriptionKnownSubtotalUsd : null,
+      deltaPct: subscriptionDeltaPct,
+      window: subscriptionWindow,
+      basis: subscriptionBasis ?? 'unknown:no-meter',
+    },
     tokenSource: tokenSource ?? 'unknown',
     pricedAttempts: priced,
+    subscriptionPricedAttempts: subscriptionPriced,
     measuredAttempts,
     attempts: attempts.length,
   };
@@ -2997,7 +3075,7 @@ function summaryBand(body, model, opts) {
   const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
   const runs = keys.workflows ?? 0;
   const spent = projects?.totals?.apiEquivalentUsd ?? null;
-  const money = moneyText(spent, keys.tokenSource);
+  const money = moneyText({ ...keys, apiUsd: spent });
   const share = runs ? shareText(verified / runs) : null;
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
@@ -3021,7 +3099,7 @@ function summaryBand(body, model, opts) {
     pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
   }
   body.push('');
-  const sentence = money && money !== 'cost unknown'
+  const sentence = money && !money.includes('api unknown')
     ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${money} of API-equivalent work`
     : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
   body.push(cut(` ${tint(sentence, 'purple')}`, width));
@@ -3071,7 +3149,7 @@ function activeRunLines(model, opts, body, title = 'running') {
       (sum, pool) => (pool.sharePct == null ? sum : (sum ?? 0) + pool.sharePct),
       null,
     );
-    const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
+    const money = moneyText(economics);
     const cost = `${tint(draw == null ? blank() : formatDashboardValue(draw, 'percent'), 'purple')} · ${tint(money ?? blank(), 'purple')}`;
 
     const live = (run.state?.actions ?? []).filter((action) => action.status === 'running');
@@ -3178,7 +3256,7 @@ function homeDetails(model, opts, body) {
   for (const record of recent) {
     const ok = record.verified === true ? okMark() : record.status === 'completed' ? pendingMark() : failMark();
     const cost = recordCostInfo(record);
-    const money = moneyText(cost.value, cost.tokenSource);
+    const money = moneyText(cost);
     body.row(compactRow([
       { text: ` ${ok}`, width: 2 },
       { text: strong(record.shortId ?? record.runId), width: 7 },
@@ -3221,6 +3299,7 @@ function daysWithTasks(days, tasks) {
 
 /** The API-equivalent estimate a rollup record carries, over its pools. */
 function recordCost(record) {
+  if (record?.usage && Object.hasOwn(record.usage, 'apiUsd')) return finiteOrNull(record.usage.apiUsd);
   const direct = finiteOrNull(record?.apiEquivalentUsd ?? record?.costUsd);
   if (direct != null) return direct;
   let total = null;
@@ -3233,12 +3312,30 @@ function recordCost(record) {
 
 function recordCostInfo(record) {
   const value = recordCost(record);
+  const usage = record?.usage ?? {};
+  const subscription = {
+    // A partial subtotal is evidence that some attempts were priced, not a
+    // complete subscription amount.  Keep it out of the pair's dollar slot;
+    // the strict `subscriptionUsd` field is the only value that may render
+    // as a measured/calibrated subscription cost.
+    usd: finiteOrNull(usage.subscriptionUsd),
+    deltaPct: finiteOrNull(usage.deltaPct),
+    window: usage.window ?? null,
+    basis: usage.subscriptionBasis ?? 'unknown:no-meter',
+  };
   let tokenSource = Object.hasOwn(TOKEN_SOURCE_RANK, record?.tokenSource) ? record.tokenSource : null;
   for (const entry of Object.values(record?.pools ?? {})) {
     const cost = finiteOrNull(entry?.costUsd);
     tokenSource = worstTokenSource(tokenSource, tokenSourceOf(entry?.tokenSource, cost));
   }
-  return { value, tokenSource: tokenSource ?? tokenSourceOf(null, value) };
+  return {
+    value,
+    apiUsd: value,
+    tokenSource: tokenSource ?? tokenSourceOf(null, value),
+    subscription,
+    subscriptionUsd: subscription.usd,
+    subscriptionBasis: subscription.basis,
+  };
 }
 
 /** Runs: the list, the filter, the agent integration and the commands. */
@@ -3743,7 +3840,7 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
 
 /** The `so far` cell: the steps, the time, the spend and what is not measured. */
 function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
-  const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
+  const money = moneyText(economics);
   const elapsed = durationText(stateStartedAt(panel.state), stateFinishedAt(panel.state));
   const label = (name, value) => `${name.padEnd(9)}${value}`;
   return [
@@ -3831,7 +3928,7 @@ function runPage(model, opts, body) {
     // under it, then what is live — and leaves the timeline the rest.
     body.push(rule('licence this run used', null, width));
     for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
-    const money = moneyText(economics.apiEquivalentUsd, economics.tokenSource);
+    const money = moneyText(economics);
     body.push(cut(` so far ${tint(money, 'purple')} · ${economics.measuredAttempts} of ${economics.attempts} attempts measured · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
     body.push('');
     body.push(rule('live', null, width));
@@ -3984,8 +4081,8 @@ function stepPage(model, opts, body) {
   body.push('');
   body.push(rule('budget', null, width));
   const pool = runEconomics(model.row, model.pools, nowMs).pools.find((entry) => entry.name === agent.pool) ?? null;
-  const attemptCost = finiteOrNull(attempt?.usage?.cost?.estimatedUsd);
-  const money = moneyText(attemptCost, attempt?.usage?.tokenSource);
+  const attemptCost = finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
+  const money = moneyText(attempt?.usage ?? { apiUsd: attemptCost, tokenSource: attempt?.usage?.tokenSource });
   if (pool?.usedPct == null) {
     // Requirement 8: no page draws an empty track for missing data. An
     // unmetered pool is a line of words here, the same words the Run page

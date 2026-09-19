@@ -23,9 +23,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ROLLUP_SCHEMA_VERSION, appendRollupIndex, bullswarmDirOfRun, legacyRollupRecord, readLegacyRunFacts,
+  ROLLUP_SCHEMA_VERSION, aggregateAttemptUsage, appendRollupIndex, bullswarmDirOfRun, legacyRollupRecord, readLegacyRunFacts,
   readRollup, readRollupIndex, readRollups, rollupIndexPath, rollupRecord, writeLegacyRollup, writeRunRollup,
 } from '../src/workflow/rollup.js';
+
+const CLAUDE_RESULT = JSON.parse(
+  readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'),
+);
+const GROK_ROWS = readFileSync(new URL('./fixtures/transcripts/grok-unified.jsonl', import.meta.url), 'utf8')
+  .trim().split('\n').map((line) => JSON.parse(line));
+const GROK_INFERENCE = GROK_ROWS.findLast((entry) => entry.msg === 'shell.turn.inference_done');
+const GROK_MODEL = GROK_ROWS.find((entry) => entry.msg === 'model changed')?.ctx?.model ?? 'grok-4.6';
 
 function home() {
   const dir = mkdtempSync(join(tmpdir(), 'bs-rollup-'));
@@ -215,6 +223,76 @@ test('rollup keeps cache totals and the worst token basis for each pool', () => 
   assert.equal(record.pools['claude-code'].cacheRead, 23);
   assert.equal(record.pools['claude-code'].cacheWrite, 12);
   assert.equal(record.pools['claude-code'].tokenSource, 'transcript-summed');
+});
+
+test('v2 rollup aggregates real provider records with strict API/subscription totals', () => {
+  const claude = {
+    id: 'claude-1', actionId: 'build', pool: 'claude-code:acme', model: 'claude-fable-5', wallSec: 60,
+    usage: {
+      model: 'claude-fable-5', sessionId: CLAUDE_RESULT.session_id,
+      tokens: {
+        standardRead: CLAUDE_RESULT.usage.input_tokens,
+        cacheRead: CLAUDE_RESULT.usage.cache_read_input_tokens,
+        cacheWrite5m: CLAUDE_RESULT.usage.cache_creation.ephemeral_5m_input_tokens,
+        cacheWrite1h: CLAUDE_RESULT.usage.cache_creation.ephemeral_1h_input_tokens,
+        cacheWrite: CLAUDE_RESULT.usage.cache_creation.ephemeral_5m_input_tokens
+          + CLAUDE_RESULT.usage.cache_creation.ephemeral_1h_input_tokens,
+        output: CLAUDE_RESULT.usage.output_tokens - CLAUDE_RESULT.usage.output_tokens_details.thinking_tokens,
+        reasoning: CLAUDE_RESULT.usage.output_tokens_details.thinking_tokens,
+        totalKnown: 30431,
+      },
+      tokenSource: 'provider-reported',
+      api: { usd: CLAUDE_RESULT.total_cost_usd },
+      subscription: {
+        pool: 'claude-code:acme', window: 'weekly', deltaPct: 1.5,
+        usd: 0.10349075975359343, basis: 'observed:meter-delta',
+      },
+    },
+  };
+  const grok = {
+    id: 'grok-1', actionId: 'prove', pool: 'grok', model: GROK_MODEL,
+    wallSec: 120,
+    usage: {
+      model: GROK_MODEL, sessionId: GROK_INFERENCE.ctx.sid,
+      tokens: {
+        standardRead: GROK_INFERENCE.ctx.prompt_tokens - GROK_INFERENCE.ctx.cached_prompt_tokens,
+        cacheRead: GROK_INFERENCE.ctx.cached_prompt_tokens,
+        cacheWrite5m: null, cacheWrite1h: null, cacheWrite: null,
+        output: GROK_INFERENCE.ctx.completion_tokens - GROK_INFERENCE.ctx.reasoning_tokens,
+        reasoning: GROK_INFERENCE.ctx.reasoning_tokens,
+        totalKnown: 396405,
+      },
+      tokenSource: 'transcript-summed',
+      api: { usd: null },
+      subscription: { pool: 'grok', window: 'weekly', usd: null, basis: 'unknown:no-meter' },
+    },
+  };
+  const aggregate = aggregateAttemptUsage([claude, grok]);
+  assert.equal(aggregate.attempts, 2);
+  assert.equal(aggregate.minutes, 3);
+  assert.equal(aggregate.tokens, 426836);
+  assert.equal(aggregate.cacheRead, 187904);
+  assert.equal(aggregate.cacheWrite, 30253);
+  assert.equal(aggregate.reasoning, 338);
+  assert.equal(aggregate.apiUsd, null, 'one unpriced attempt keeps the whole API amount unknown');
+  assert.equal(aggregate.apiKnownSubtotalUsd, CLAUDE_RESULT.total_cost_usd);
+  assert.equal(aggregate.subscriptionUsd, null, 'one missing meter keeps the whole subscription amount unknown');
+  assert.equal(aggregate.subscriptionKnownSubtotalUsd, 0.103491);
+  assert.equal(aggregate.measuredAttempts, 2);
+  assert.equal(aggregate.pricedAttempts, 1);
+  assert.equal(aggregate.subscriptionPricedAttempts, 1);
+  assert.equal(aggregate.tokenSource, 'transcript-summed');
+  assert.equal(aggregate.subscriptionBasis, 'unknown:no-meter');
+
+  const state = stateFixture({ attempts: [claude, grok] });
+  const record = rollupRecord(state, null);
+  assert.equal(record.usage.apiUsd, null);
+  assert.equal(record.usage.apiKnownSubtotalUsd, CLAUDE_RESULT.total_cost_usd);
+  assert.equal(record.usage.subscriptionUsd, null);
+  assert.equal(record.pools['claude-code:acme'].apiUsd, CLAUDE_RESULT.total_cost_usd);
+  assert.equal(record.pools['claude-code:acme'].subscriptionUsd, 0.103491);
+  assert.equal(record.pools.grok.apiUsd, null);
+  assert.equal(record.pools.grok.subscriptionUsd, null);
 });
 
 // --- writeRunRollup / readRollup ---------------------------------------

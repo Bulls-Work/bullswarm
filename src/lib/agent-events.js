@@ -44,7 +44,7 @@ function outputText(value, max = 1_000_000) {
 }
 
 const NUMERIC_USAGE_FIELDS = new Set([
-  'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'output', 'costUsd',
+  'standardRead', 'cacheRead', 'cacheWrite', 'cacheWrite5m', 'cacheWrite1h', 'output', 'reasoning', 'costUsd',
 ]);
 
 function usageScalar(value, field) {
@@ -71,6 +71,17 @@ function mergeUsageField(target, field, value, mode) {
     // latest value for sum/max rules because a session id/model is identity,
     // not a quantity to add or compare.
     target[field] = normalized;
+  }
+}
+
+function applyInclusiveUsage(target, inclusive) {
+  if (!inclusive || typeof inclusive !== 'object' || Array.isArray(inclusive)) return;
+  for (const [field, components] of Object.entries(inclusive)) {
+    if (!Number.isFinite(target[field]) || !Array.isArray(components)) continue;
+    const included = components.reduce((sum, component) => (
+      sum + (Number.isFinite(target[component]) ? target[component] : 0)
+    ), 0);
+    target[field] = Math.max(0, target[field] - included);
   }
 }
 
@@ -242,6 +253,11 @@ export function createAgentEventDecoder(eventStream, { onEvent, onProgress } = {
           }
         }
       }
+      // Some providers report inclusive counters (for example Codex reports
+      // cached input inside input_tokens and reasoning inside output_tokens).
+      // Apply connector-declared subtraction only after all usage rules have
+      // been merged, and floor each exclusive class at zero.
+      for (const usageRule of usageRules) applyInclusiveUsage(result, usageRule.inclusive);
       return result;
     },
   };

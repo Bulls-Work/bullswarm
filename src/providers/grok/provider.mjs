@@ -7,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { retryAfterMsFromHeaders } from '../../meters/framework.js';
+import { readTranscriptUsage as readGrokTranscriptUsage } from '../../lib/transcripts/grok.js';
 
 export const name = 'grok';
 export const displayName = 'Grok';
@@ -211,4 +212,8 @@ export async function fetchGrokUsage({ pool = 'grok', env, home } = {}) {
 export async function readUsage(pool, ctx = {}) {
   const poolName = typeof pool === 'string' ? pool : pool?.name;
   return fetchGrokUsage({ pool: poolName ?? 'grok', env: ctx.env, home: ctx.home });
+}
+
+export function readTranscriptUsage(args = {}) {
+  return readGrokTranscriptUsage(args);
 }

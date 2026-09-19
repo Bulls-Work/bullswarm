@@ -17,7 +17,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appendRollupIndex, readRollups, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
@@ -43,9 +43,9 @@ function localAt(year, month, day, hour = 12) {
 
 function record({
   runId, startedAt, finishedAt, status = 'completed', verified = false,
-  wall = null, agent = null, project = 'bullswarm', pools = {}, models = {}, legacy = false,
+  wall = null, agent = null, project = 'bullswarm', pools = {}, models = {}, legacy = false, usage,
 }) {
-  return {
+  const value = {
     schemaVersion: ROLLUP_SCHEMA_VERSION,
     runId,
     shortId: runId.slice(-6),
@@ -62,6 +62,8 @@ function record({
     models,
     legacy,
   };
+  if (usage !== undefined) value.usage = usage;
+  return value;
 }
 
 function indexOf(records) {
@@ -94,6 +96,13 @@ function assertNoNaN(value, path = '$') {
 
 const NOW = localAt(2026, 9, 16, 15);
 const DAY = (n, hour = 12) => localAt(2026, 9, 16 - n, hour);
+
+const CLAUDE_RESULT = JSON.parse(
+  readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'),
+);
+const GROK_ROWS = readFileSync(new URL('./fixtures/transcripts/grok-unified.jsonl', import.meta.url), 'utf8')
+  .trim().split('\n').map((line) => JSON.parse(line));
+const GROK_INFERENCE = GROK_ROWS.findLast((entry) => entry.msg === 'shell.turn.inference_done');
 
 function corpus() {
   return [
@@ -593,4 +602,80 @@ test('Stats models carry usage basis and measured attempt counts through every a
     assert.equal(trend.tokenSource, tokenSource);
     assert.equal(trend.buckets.at(-1).tokenSource, tokenSource);
   }
+});
+
+test('Stats carries strict v2 API/subscription amounts and named partial subtotals', () => {
+  const claudeApiUsd = CLAUDE_RESULT.total_cost_usd;
+  const claudeSubscriptionUsd = 0.10349075975359343;
+  const claudeTokens = {
+    standardRead: CLAUDE_RESULT.usage.input_tokens,
+    cacheRead: CLAUDE_RESULT.usage.cache_read_input_tokens,
+    cacheWrite5m: CLAUDE_RESULT.usage.cache_creation.ephemeral_5m_input_tokens,
+    cacheWrite1h: CLAUDE_RESULT.usage.cache_creation.ephemeral_1h_input_tokens,
+    cacheWrite: CLAUDE_RESULT.usage.cache_creation.ephemeral_5m_input_tokens
+      + CLAUDE_RESULT.usage.cache_creation.ephemeral_1h_input_tokens,
+    output: CLAUDE_RESULT.usage.output_tokens - CLAUDE_RESULT.usage.output_tokens_details.thinking_tokens,
+    reasoning: CLAUDE_RESULT.usage.output_tokens_details.thinking_tokens,
+    totalKnown: 30431,
+  };
+  const v2Fields = {
+    attempts: 1, minutes: 1, tokens: claudeTokens.totalKnown,
+    cacheRead: claudeTokens.cacheRead, cacheWrite: claudeTokens.cacheWrite,
+    reasoning: claudeTokens.reasoning, apiUsd: claudeApiUsd,
+    apiKnownSubtotalUsd: claudeApiUsd, subscriptionUsd: claudeSubscriptionUsd,
+    subscriptionKnownSubtotalUsd: claudeSubscriptionUsd, measuredAttempts: 1,
+    pricedAttempts: 1, subscriptionPricedAttempts: 1,
+    tokenSource: 'provider-reported', subscriptionBasis: 'observed:meter-delta',
+  };
+  const unknownFields = {
+    attempts: 1, minutes: 2, tokens: GROK_INFERENCE.ctx.prompt_tokens,
+    cacheRead: GROK_INFERENCE.ctx.cached_prompt_tokens, cacheWrite: null,
+    reasoning: GROK_INFERENCE.ctx.reasoning_tokens, apiUsd: null,
+    apiKnownSubtotalUsd: null, subscriptionUsd: null, subscriptionKnownSubtotalUsd: null,
+    measuredAttempts: 1, pricedAttempts: 0, subscriptionPricedAttempts: 0,
+    tokenSource: 'transcript-summed', subscriptionBasis: 'unknown:no-meter',
+  };
+  const rollups = indexOf([
+    record({
+      runId: 'wf-v2-claude', startedAt: DAY(0, 8), finishedAt: DAY(0, 9),
+      pools: { 'claude-code:acme': { ...v2Fields, costUsd: claudeApiUsd } },
+      models: { 'claude-fable-5': { attempts: 1, minutes: 1 } },
+      usage: { ...v2Fields },
+    }),
+    record({
+      runId: 'wf-v2-grok', startedAt: DAY(0, 9), finishedAt: DAY(0, 10),
+      pools: { grok: { ...unknownFields, costUsd: null } },
+      models: { 'grok-4.6': { attempts: 1, minutes: 2 } },
+      usage: { ...unknownFields },
+    }),
+  ]);
+  const overview = overviewModel(rollups, POOLS, { period: '7d', now: NOW });
+  assert.equal(overview.keys.apiUsd, null, 'a partial v2 period has no strict API total');
+  assert.equal(overview.keys.apiKnownSubtotalUsd, claudeApiUsd);
+  assert.equal(overview.keys.subscriptionUsd, null, 'a partial v2 period has no strict subscription total');
+  assert.equal(overview.keys.subscriptionKnownSubtotalUsd, 0.103491);
+  assert.equal(overview.keys.tokenSource, 'transcript-summed');
+  assert.equal(overview.keys.subscriptionBasis, 'unknown:no-meter');
+
+  const pools = poolsModel(rollups, [], { period: '7d', now: NOW });
+  const claude = pools.rows.find((row) => row.name === 'claude-code:acme');
+  const grok = pools.rows.find((row) => row.name === 'grok');
+  assert.equal(claude.apiUsd, claudeApiUsd);
+  assert.equal(claude.subscriptionUsd, 0.103491);
+  assert.equal(grok.apiUsd, null);
+  assert.equal(grok.subscriptionUsd, null);
+  assert.equal(pools.totals.apiUsd, null);
+  assert.equal(pools.totals.apiKnownSubtotalUsd, claudeApiUsd);
+  assert.equal(pools.totals.subscriptionUsd, null);
+  assert.equal(pools.totals.subscriptionKnownSubtotalUsd, 0.103491);
+
+  const trend = trendModel(rollups, { metric: 'spend', period: '7d', now: NOW });
+  assert.equal(trend.apiUsd, null);
+  assert.equal(trend.apiKnownSubtotalUsd, claudeApiUsd);
+  assert.equal(trend.subscriptionUsd, null);
+  assert.equal(trend.subscriptionKnownSubtotalUsd, 0.103491);
+  assert.equal(trend.buckets.at(-1).apiUsd, null);
+  assert.equal(trend.buckets.at(-1).apiKnownSubtotalUsd, claudeApiUsd);
+  assert.equal(trend.buckets.at(-1).subscriptionUsd, null);
+  assert.equal(trend.buckets.at(-1).subscriptionKnownSubtotalUsd, 0.103491);
 });

@@ -996,6 +996,61 @@ The command writes `<runDir>/rollup.json` and
 paths), and is safe to run again: an already indexed run is counted as
 `present` rather than duplicated.
 
+### reprice
+
+Recalculate terminal V2 attempt usage against the current dated rate cards and
+the provider transcript hooks. The default is a dry run; use `--apply` only
+after reviewing the rows it would change.
+
+```bash
+# Inspect every terminal attempt without writing run files or calibration.
+bullswarm workflow reprice --json
+bullswarm workflow reprice --all --json
+
+# Reprice only attempts started on or after a date for one exact pool, then persist.
+bullswarm workflow reprice --since 2026-09-18 --pool claude-code:acme --apply
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--apply` | atomically rewrite changed `state.json` files, regenerate `result.json`, and refresh rollup/index records | dry run; no run or calibration writes |
+| `--all` | scan all retained attempts; cannot be combined with `--since` | last 30 days |
+| `--since <date>` | include attempts whose `startedAt` is on or after this date, inclusively | all terminal attempts |
+| `--pool <name>` | exact pool-name filter | all pools |
+| `--json` | stream one JSON object per attempt and finish with a summary object | human rows plus an attempt-count and elapsed-time summary |
+
+Only terminal V2 runs are scanned; ongoing and legacy runs are skipped. A
+The command indexes each provider store once from bounded file heads and tails,
+then reads only matched transcripts in full. A provider-reported attempt keeps
+its measured tokens and is repriced. Other
+attempts call the provider transcript hook: an exact or time-window match is
+`transcript-summed`, while an absent or ambiguous match becomes `unknown` with
+null token totals and API cost. Historical repricing reads calibration but never
+appends a sample.
+
+The human table columns are `run`, `action`, `try`, `pool`, `match`, `tokens`,
+`api`, and `subscription`; `-` represents null. With `--json`, the result is:
+
+```ts
+{
+  action: "reprice",
+  apply: boolean,
+  filters: { since: string|null, pool: string|null },
+  scannedRuns: number,
+  scannedAttempts: number,
+  matched: number,
+  ambiguous: number,
+  missing: number,
+  changedRuns: number,
+  rows: Array<{
+    runId, shortId, actionId, attemptId, ordinal, pool,
+    confidence, tokenSource, totalKnown, apiUsd,
+    subscriptionUsd, subscriptionBasis
+  }>,
+  failures: Array<{runId:string,error:string}>
+}
+```
+
 ### capabilities
 
 Report the workflow engine, current routing policy, and live pool/model/meter state.
@@ -1176,6 +1231,16 @@ bullswarm workflow runs result ab12cd --json
 |---|---|---|
 | `--json` | print the full versioned result document as JSON | human-readable result summary |
 | `--summary` | print the compact JSON status-loop envelope; implies `--json` | full result envelope |
+
+The full JSON `usage` object retains `total`, `byPool`, and `bytes`, and adds
+`steps[actionId]` plus `totals`. Each aggregate contains `attempts`, `minutes`,
+`tokens`, `cacheRead`, `cacheWrite`, `apiUsd`, `apiKnownSubtotalUsd`,
+`subscriptionUsd`, `subscriptionKnownSubtotalUsd`, `measuredAttempts`,
+`pricedAttempts`, `subscriptionPricedAttempts`, `tokenSource`, and
+`subscriptionBasis`. An action may carry the same aggregate as `action.usage`.
+The complete per-attempt v2 record is exposed by `workflow action show`; null
+means that a value is unknown, while the explicitly named subtotal fields hold
+partial sums.
 
 Read-only.
 

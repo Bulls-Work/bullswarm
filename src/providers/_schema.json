@@ -78,12 +78,19 @@
         "fields": {
           "standardRead": "provider input-token path",
           "cacheRead": "provider cached-input path",
+          "cacheWrite": "provider aggregate or single cache-write path",
           "cacheWrite5m": "provider 5-minute cache-write path",
           "cacheWrite1h": "provider 1-hour cache-write path",
           "output": "provider output-token path",
+          "reasoning": "provider reasoning/thinking-token path",
           "costUsd": "provider final cost path",
           "sessionId": "provider session-id path",
           "model": "provider model-id path"
+        },
+        "inclusive": {
+          "$comment": "Optional. Each parent counter includes the listed component counters; the decoder subtracts them and floors at zero.",
+          "standardRead": ["cacheRead"],
+          "output": ["reasoning"]
         }
       }
     ],
@@ -193,6 +200,7 @@
     "$comment-skipModels": "Optional connector-owned regexes. A selected model matching one gets no level appended (source 'skipped-model'), for CLIs whose flag is only valid on some models."
   },
   "$comment-reasoning": "Optional prose companion. Say which command's output the block was read from, and mark anything the CLI does not actually print as UNVERIFIED — never invent an accepted value.",
+  "$comment-readTranscriptUsage": "Optional provider.mjs hook: readTranscriptUsage({ provider, sessionId = null, cwd = null, startedAt = null, endedAt = null, home }) returns provider-summed token classes and its confidence; see docs/reference/providers.md.",
   "subscription": {
     "plan": null,
     "monthlyPriceUsd": null,

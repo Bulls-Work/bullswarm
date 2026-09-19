@@ -834,6 +834,11 @@ export async function dispatchV2Action({
         onAgentEvent,
         onAgentProgress,
         bullswarmDir,
+        poolName: pool.name,
+        runId: runId ?? runIdFromPaths(files),
+        attemptId: `${action.id}-${ordinal}`,
+        startedAt,
+        subscription: pool.subscription ?? connector.subscription ?? null,
       });
       // Capture before releasing the in-flight ledger entry or invoking the
       // worker-exit callback. Either can let a sibling begin editing this
@@ -906,6 +911,14 @@ export async function dispatchV2Action({
         ? { stalled: true, partialOutput: files.outFile, silentSec: attemptSilenceSec }
         : {}),
     });
+    // The provider's own session id (when its stream/transcript reports one)
+    // is the durable lookup key. Conversation-capable connectors already have
+    // a generated session record; update that record in place so reprice can
+    // resolve the same provider session without guessing by time window.
+    const measuredSessionId = verdict.meta?.usage?.sessionId ?? null;
+    if (measuredSessionId && record.session) {
+      record.session.sessionId = measuredSessionId;
+    }
     // A schema-invalid answer still completed a real provider turn. Resume
     // that same physical conversation for the bounded correction instead of
     // opening a second session and losing the model's immediate context.
