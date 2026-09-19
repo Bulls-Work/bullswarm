@@ -426,7 +426,7 @@ test('columnBars floors $2.93 to eighths under an evenly spaced $3 axis', () => 
     assert.match(rows[0], /┤ ▅▅▅/);
     assert.match(rows.at(-1), /┼day/);
     assert.equal(rows.filter((line) => line.includes('≈\$')).length, 6);
-    assert.equal(rows.filter((line) => line.includes('≈\$')).at(-1), '≈$0.00 ┤ ███');
+    assert.equal(rows.filter((line) => line.includes('≈\$')).at(-1), '≈$0.000┤ ███');
     assert.equal(chart.meta.columns[0].eighths, 93);
     assert.equal(chart.meta.columns[0].height, chart.meta.chartRows);
     assert.equal(chart.meta.axisTop, 3);
@@ -604,7 +604,7 @@ test('columnBars applies the dashboard money precision to fractions of a cent', 
     width: 40, mark: '≈', colors: false,
   });
   const valueRow = visible(chart[chart.meta.valueRow - 1]);
-  assert.match(valueRow, /≈\$0\.00/, 'money is consistently rounded to cents');
+  assert.match(valueRow, /≈\$0\.004/, 'money keeps sub-cent magnitude');
 });
 
 test('heatRow paints a cell per value, an empty marker for null', () => {

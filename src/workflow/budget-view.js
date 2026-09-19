@@ -1,5 +1,6 @@
 import { cut } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
+import { formatMoney } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;]*m/g;
 const COMMAND = 'bullswarm strategy set-subscription <pool> --monthly-usd <amount>';
@@ -175,8 +176,7 @@ function planLine(row, ansi) {
     const origin = subscription?.origin === 'detected'
       ? `detected ${subscription.detectedPlan ?? row.detectedPlan ?? row.planType ?? 'plan'}`
       : 'declared';
-    const amount = Number.isInteger(price) ? price : price.toFixed(2);
-    return paint(`plan · $${amount}/mo ${origin}`, METER_COLORS.dim, ansi);
+    return paint(`plan · ${formatMoney(price)}/mo ${origin}`, METER_COLORS.dim, ansi);
   }
   if (row?.detectedPlan) return paint(`plan ${row.detectedPlan} · price unknown`, METER_COLORS.dim, ansi);
   return null;

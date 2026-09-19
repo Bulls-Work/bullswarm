@@ -2,6 +2,7 @@ import { updateState } from './lib/state.js';
 import {
   STRATEGY_TIERS, setModelDisabled, setModelTierSelection, clearTierAssignment,
 } from './lib/strategy.js';
+import { formatMoney } from './lib/usage-basis.js';
 import { glyphs, spinnerGlyph } from './lib/glyphs.js';
 
 const ESC = '\x1b';
@@ -240,7 +241,7 @@ function recommendationReason(candidate) {
   const input = external.pricing?.inputUsdPerMillion;
   const output = external.pricing?.outputUsdPerMillion;
   const price = Number.isFinite(Number(input)) && Number.isFinite(Number(output))
-    ? `$${input}/$${output} per 1M input/output tokens` : null;
+    ? `${formatMoney(input)}/${formatMoney(output)} per 1M input/output tokens` : null;
   return [...qualityParts, price].filter(Boolean).join(' · ') || 'listed in the Bullswarm benchmark datapack';
 }
 

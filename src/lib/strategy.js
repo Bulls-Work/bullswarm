@@ -11,6 +11,7 @@ import { pacingWindowFor } from '../meters/framework.js';
 // The canonical lane/effort tables. Imported, never restated: see
 // TIER_CONTEXTS below for the tier -> lane derivation they feed.
 import { DEFAULT_EFFORT_BY_LANE, KIND_DEFAULTS } from '../workflow/action-validator.js';
+import { formatMoney } from './usage-basis.js';
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
@@ -349,7 +350,7 @@ export function formatRungEvidence(evidence) {
   const parts = [];
   // Display rounding only — the row keeps the datapack's own number.
   if (evidence.blended != null) parts.push(`blended ${Math.round(evidence.blended * 1000) / 1000}`);
-  if (evidence.costPerTask != null) parts.push(`$${Math.round(evidence.costPerTask * 100) / 100}/task`);
+  if (evidence.costPerTask != null) parts.push(`${formatMoney(evidence.costPerTask)}/task`);
   if (evidence.tokensPerTask != null) {
     const tokens = Number(evidence.tokensPerTask);
     parts.push(`${tokens >= 1000 ? `${Math.round(tokens / 100) / 10}k` : Math.round(tokens)} tok/task`);

@@ -38,6 +38,7 @@ export function formatUsageMoney(usage = null) {
         : null
     ),
     tokenSource: value.tokenSource ?? null,
+    tokens: value.tokens ?? null,
   });
 }
 

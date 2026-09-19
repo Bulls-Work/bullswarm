@@ -33,6 +33,7 @@
 // returned line — the same base as parseMouse()'s coordinates — so the shell
 // maps it onto its `{ x1, x2 }` hit regions without arithmetic.
 
+import { formatMoney } from '../lib/usage-basis.js';
 import { asciiGlyphsPreferred } from '../lib/glyphs.js';
 import { METER_COLORS } from './usage-view.js';
 
@@ -169,7 +170,7 @@ const isHex = (value) => typeof value === 'string' && HEX.test(value);
 export function formatDashboardValue(value, kind) {
   const number = reading(value);
   if (number == null) return null;
-  if (kind === 'money') return `$${number.toFixed(2)}`;
+  if (kind === 'money') return formatMoney(number);
   if (kind === 'rate') {
     if (number === 0) return '0%/min';
     return `${Number(number.toPrecision(3))}%/min`;

@@ -37,7 +37,7 @@ test('Budget is a clean per-window list with a bold pool heading and dim reset l
   assert.match(result.lines[4], /^  resets 2d18h · fast −19pp$/);
   assert.match(result.lines[5], /^mo\s+.*79\.0%$/);
   assert.match(result.lines[6], /^  resets 11d · on track \+4pp$/);
-  assert.equal(result.lines[7], 'plan · $200/mo detected max 20x');
+  assert.equal(result.lines[7], 'plan · $200.00/mo detected max 20x');
   assert.equal(result.lines.join('\n').match(/by bullswarm|other tools|room|so far|biggest|Basis:|attempts measured/g), null);
   assert.ok(result.lines.every((line) => visible(line) <= 120));
 });
