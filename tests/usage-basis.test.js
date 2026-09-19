@@ -84,4 +84,15 @@ test('shared money pair distinguishes observed and calibrated subscription dolla
     api: { usd: null },
     subscription: { usd: null, basis: 'unknown:no-cost' },
   }), 'api unknown · sub unknown (no API cost)');
+  assert.equal(formatMoneyPair({
+    api: { usd: 0.001, tokenSource: 'provider-reported' },
+    subscription: {
+      usd: null, deltaPct: 1.25, window: 'weekly',
+      basis: 'observed:meter-ledger',
+    },
+  }), '$0.001 api · 1.25% wk sub unknown (observed:meter-ledger; no plan price)');
+  assert.equal(formatMoneyPair({
+    api: { usd: null },
+    subscription: { usd: null, resolutionPct: 1, basis: 'unknown:below-resolution' },
+  }), 'api unknown · sub unknown (below 1% meter resolution)');
 });

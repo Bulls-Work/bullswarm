@@ -74,10 +74,15 @@ const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
       ? (String(subscription.pool ?? '').toLowerCase() === 'codex'
         ? 'declare a price: bullswarm strategy set-subscription codex --monthly-usd <amount>'
         : 'no plan price')
-      : basis === 'unknown:no-meter' ? 'no meter/calibration' : 'no API cost';
-    return `${apiText} · sub unknown (${reason})`;
+      : basis === 'unknown:no-meter' ? 'no meter/calibration'
+        : basis === 'unknown:below-resolution' ? 'below meter resolution'
+          : basis === 'observed:meter-ledger' || basis === 'observed:meter-delta'
+            ? `${basis}; no plan price` : 'no API cost';
+    const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
+    return `${apiText} · ${pct}sub unknown (${reason})`.replace(/\s+/g, ' ').trim();
   }
-  const glyph = basis === 'observed:meter-delta' ? '' : basis === 'calibrated:usd-per-pct' ? '≈ ' : '~ ';
+  const glyph = basis === 'observed:meter-delta' || basis === 'observed:meter-ledger'
+    ? '' : basis === 'calibrated:usd-per-pct' ? '≈ ' : '~ ';
   const pct = subscription.deltaPct == null ? '' : `${subscription.deltaPct}% ${subscription.window === 'weekly' ? 'wk' : subscription.window ?? ''} `;
   return `${apiText} · ${pct}${glyph}${formatMoney(usd, usage.tokens)} sub`.replace(/\s+/g, ' ').trim();
 });

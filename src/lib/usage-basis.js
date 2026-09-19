@@ -101,10 +101,26 @@ function subscriptionLabel(subscription, tokens = null) {
   }
   if (basis === 'unknown:no-cost') return 'sub unknown (no API cost)';
   if (basis === 'unknown:no-meter') return 'sub unknown (no meter/calibration)';
+  if (basis === 'unknown:below-resolution') {
+    const resolution = Number(subscription.resolutionPct);
+    return Number.isFinite(resolution)
+      ? `sub unknown (below ${resolution}% meter resolution)`
+      : 'sub unknown (below meter resolution)';
+  }
   const amount = formatMoney(subscription.usd, subscription.tokens ?? tokens);
   const pct = Number(subscription.deltaPct);
   const label = windowLabel(subscription.window);
-  if (amount === '-') return basis.startsWith('unknown:') ? 'sub unknown (no meter/calibration)' : 'sub unknown';
+  if (amount === '-') {
+    if (basis === 'observed:meter-ledger') {
+      const quota = Number.isFinite(pct) && label ? `${pct}% ${label} ` : '';
+      return `${quota}sub unknown (observed:meter-ledger; no plan price)`;
+    }
+    if (basis === 'observed:meter-delta') {
+      const quota = Number.isFinite(pct) && label ? `${pct}% ${label} ` : '';
+      return `${quota}sub unknown (observed:meter-delta; no plan price)`;
+    }
+    return basis.startsWith('unknown:') ? 'sub unknown (no meter/calibration)' : 'sub unknown';
+  }
   const prefix = basis === 'calibrated:usd-per-pct' ? '≈ ' : '';
   const quota = Number.isFinite(pct) && label ? `${pct}% ${label} ` : '';
   return `${quota}${prefix}${amount} sub`;

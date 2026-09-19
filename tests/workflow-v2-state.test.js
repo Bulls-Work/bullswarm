@@ -29,6 +29,8 @@ test('creates intent-only V2 goal and empty durable state', () => {
   assert.deepEqual(state.planner, { status: 'pending', turns: 0, lastDecision: null, session: null, attempts: [], awaiting: null });
   assert.deepEqual(state.events, { sequence: 0, last: null });
   assert.deepEqual(state.preflight, { scout: { status: 'pending', startedAt: null, finishedAt: null, outputFile: null, attempts: [], lastFailure: null } });
+  assert.equal(state.usage.subscriptionUsd, null);
+  assert.deepEqual(state.usage.subscriptionLedgerByPool, {});
   assert.equal(state.ledger.requirements['result-versioned'].status, 'pending');
 });
 

@@ -295,6 +295,37 @@ test('v2 rollup aggregates real provider records with strict API/subscription to
   assert.equal(record.pools.grok.subscriptionUsd, null);
 });
 
+test('ledger subscription basis and conserved shares survive the run rollup', () => {
+  const aggregate = aggregateAttemptUsage([
+    {
+      id: 'a1', pool: 'codex', wallSec: 60,
+      usage: {
+        tokenSource: 'provider-reported', tokens: { totalKnown: 1 },
+        api: { usd: 0.001 },
+        subscription: {
+          window: 'weekly', deltaPct: 0.4, usd: null,
+          basis: 'observed:meter-ledger',
+        },
+      },
+    },
+    {
+      id: 'a2', pool: 'codex', wallSec: 60,
+      usage: {
+        tokenSource: 'provider-reported', tokens: { totalKnown: 1 },
+        api: { usd: 0.002 },
+        subscription: {
+          window: 'weekly', deltaPct: 0.6, usd: null,
+          basis: 'observed:meter-ledger',
+        },
+      },
+    },
+  ]);
+  assert.equal(aggregate.subscriptionDeltaPct, 1);
+  assert.equal(aggregate.subscriptionWindow, 'weekly');
+  assert.equal(aggregate.subscriptionBasis, 'observed:meter-ledger');
+  assert.equal(aggregate.subscriptionUsd, null);
+});
+
 // --- writeRunRollup / readRollup ---------------------------------------
 
 test('writeRunRollup writes rollup.json and appends the index, and readRollup reads it back', () => {

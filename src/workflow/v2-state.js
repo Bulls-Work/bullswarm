@@ -362,10 +362,24 @@ export function createV2DurableState(goalDocument, { runId, shortId } = {}) {
     // Non-blocking authoring advice recorded when a program is accepted, so
     // `runs show` can list what the launch already printed.
     advisories: [],
-    // Cost rollups are optional additions to this legacy state counter. The
-    // durable attempt.usage record is authoritative; an integrator may opt
-    // the state-level counters in by adding the v2 keys here.
-    usage: { total: 0, byPool: {} },
+    // Attempt records remain authoritative. These counters make their strict
+    // API/subscription totals and the conserved meter ledger available to live
+    // views without rescanning every attempt on each refresh.
+    usage: {
+      total: 0,
+      byPool: {},
+      apiUsd: null,
+      apiKnownSubtotalUsd: null,
+      subscriptionUsd: null,
+      subscriptionKnownSubtotalUsd: null,
+      measuredAttempts: 0,
+      pricedAttempts: 0,
+      subscriptionPricedAttempts: 0,
+      attempts: 0,
+      apiMissingAttempts: 0,
+      subscriptionMissingAttempts: 0,
+      subscriptionLedgerByPool: {},
+    },
     events: { sequence: 0, last: null },
     ledger,
   });
@@ -850,8 +864,9 @@ const USAGE_TOKEN_SOURCES = new Set([
   'provider-reported', 'transcript-summed', 'estimated:utf8-bytes/4', 'unknown',
 ]);
 const USAGE_SUBSCRIPTION_BASES = new Set([
-  'observed:meter-delta', 'calibrated:usd-per-pct',
+  'observed:meter-delta', 'observed:meter-ledger', 'calibrated:usd-per-pct',
   'unknown:no-price', 'unknown:no-meter', 'unknown:no-cost',
+  'unknown:below-resolution',
 ]);
 
 function nullableFiniteNumber(value, name) {
@@ -912,7 +927,7 @@ function validateUsageV2(usage, at) {
       if (usage.subscription[field] !== undefined && usage.subscription[field] !== null
         && typeof usage.subscription[field] !== 'string') fail(`${at}.subscription.${field} must be null or a string`);
     }
-    for (const field of ['deltaPct', 'usd', 'monthlyPriceUsd', 'windowDays']) {
+    for (const field of ['deltaPct', 'usd', 'monthlyPriceUsd', 'windowDays', 'resolutionPct', 'conservedDeltaPct']) {
       nullableFiniteNumber(usage.subscription[field], `${at}.subscription.${field}`);
     }
     if (usage.subscription.basis !== undefined && usage.subscription.basis !== null
@@ -1020,6 +1035,7 @@ function validateState(state) {
     'subscriptionKnownSubtotalUsd', 'measuredAttempts', 'pricedAttempts',
     'subscriptionPricedAttempts', 'attempts', 'apiMissingAttempts',
     'subscriptionMissingAttempts', 'tokenSource', 'subscriptionBasis',
+    'subscriptionLedgerByPool',
   ]), 'state.usage');
   if (typeof state.usage.total !== 'number' || !Number.isFinite(state.usage.total) || state.usage.total < 0) fail('state.usage.total must be a non-negative finite number');
   validatePoolUsage(state.usage.byPool, 'state.usage.byPool');
@@ -1032,6 +1048,19 @@ function validateState(state) {
   }
   if (state.usage.tokenSource !== undefined && !USAGE_TOKEN_SOURCES.has(state.usage.tokenSource)) fail('state.usage.tokenSource is invalid');
   if (state.usage.subscriptionBasis !== undefined && !USAGE_SUBSCRIPTION_BASES.has(state.usage.subscriptionBasis)) fail('state.usage.subscriptionBasis is invalid');
+  if (state.usage.subscriptionLedgerByPool !== undefined) {
+    object(state.usage.subscriptionLedgerByPool, 'state.usage.subscriptionLedgerByPool');
+    for (const [pool, ledger] of Object.entries(state.usage.subscriptionLedgerByPool)) {
+      requiredString(pool, 'state.usage.subscriptionLedgerByPool key');
+      object(ledger, `state.usage.subscriptionLedgerByPool.${pool}`);
+      noUnknown(ledger, new Set(['observedPct', 'assignedPct', 'unassignedPct', 'basis']), `state.usage.subscriptionLedgerByPool.${pool}`);
+      for (const field of ['observedPct', 'assignedPct', 'unassignedPct']) {
+        nullableFiniteNumber(ledger[field], `state.usage.subscriptionLedgerByPool.${pool}.${field}`);
+        if (ledger[field] != null && ledger[field] < 0) fail(`state.usage.subscriptionLedgerByPool.${pool}.${field} must be non-negative`);
+      }
+      if (!USAGE_SUBSCRIPTION_BASES.has(ledger.basis)) fail(`state.usage.subscriptionLedgerByPool.${pool}.basis is invalid`);
+    }
+  }
   validateEvents(state.events);
   return state;
 }

@@ -39,6 +39,7 @@ import { deliverSteering, peekSteering, readSteering } from './steering.js';
 import { enforcesOwnership, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { buildWorkspaceReport, captureWorkspaceStatus } from './workspace-report.js';
 import { acquireKernelLease, processIdentity, liveWorker, stopWorker } from './v2-process.js';
+import { meterLedgerAttribution } from '../lib/subscription-cost.js';
 
 const TERMINAL = new Set(['completed', 'partial', 'cancelled', 'failed']);
 const ACTIVE_RUNS = new Set();
@@ -501,9 +502,11 @@ const TOKEN_SOURCE_ORDER = new Map([
 const SUBSCRIPTION_BASIS_ORDER = new Map([
   ['unknown:no-price', 0],
   ['unknown:no-meter', 1],
-  ['unknown:no-cost', 2],
-  ['calibrated:usd-per-pct', 3],
-  ['observed:meter-delta', 4],
+  ['unknown:below-resolution', 2],
+  ['unknown:no-cost', 3],
+  ['calibrated:usd-per-pct', 4],
+  ['observed:meter-delta', 5],
+  ['observed:meter-ledger', 6],
 ]);
 
 function worstBasis(current, next, order) {
@@ -512,7 +515,7 @@ function worstBasis(current, next, order) {
   return order.get(next) < order.get(current) ? next : current;
 }
 
-function addUsage(state, attempt) {
+export function addUsage(state, attempt) {
   state.usage ??= { total: 0, byPool: {} };
   state.usage.byPool ??= {};
   const usage = attempt?.usage ?? null;
@@ -533,15 +536,15 @@ function addUsage(state, attempt) {
     || Object.hasOwn(state.usage, 'subscriptionUsd')
     || Object.hasOwn(state.usage, 'apiKnownSubtotalUsd');
   if (tracksCosts) {
-    const apiUsd = Number(usage?.api?.usd ?? usage?.cost?.estimatedUsd);
-    const subscriptionUsd = Number(usage?.subscription?.usd);
-    if (Number.isFinite(apiUsd) && apiUsd >= 0) {
+    const apiUsd = finiteNonNegative(usage?.api?.usd ?? usage?.cost?.estimatedUsd);
+    const subscriptionUsd = finiteNonNegative(usage?.subscription?.usd);
+    if (apiUsd != null) {
       state.usage.apiKnownSubtotalUsd = Number(state.usage.apiKnownSubtotalUsd ?? 0) + apiUsd;
       state.usage.pricedAttempts = Number(state.usage.pricedAttempts ?? 0) + 1;
     } else {
       state.usage.apiMissingAttempts = Number(state.usage.apiMissingAttempts ?? 0) + 1;
     }
-    if (Number.isFinite(subscriptionUsd) && subscriptionUsd >= 0) {
+    if (subscriptionUsd != null) {
       state.usage.subscriptionKnownSubtotalUsd = Number(state.usage.subscriptionKnownSubtotalUsd ?? 0) + subscriptionUsd;
       state.usage.subscriptionPricedAttempts = Number(state.usage.subscriptionPricedAttempts ?? 0) + 1;
     } else {
@@ -558,16 +561,215 @@ function addUsage(state, attempt) {
       state.usage.tokenSource,
       usage?.tokenSource,
       TOKEN_SOURCE_ORDER,
-    );
+    ) ?? 'unknown';
     state.usage.subscriptionBasis = worstBasis(
       state.usage.subscriptionBasis,
       usage?.subscription?.basis,
       SUBSCRIPTION_BASIS_ORDER,
-    );
+    ) ?? 'unknown:no-meter';
+  }
+  // A widened v2 state may opt into the conserved subscription ledger. Keep
+  // this incremental path deliberately small: finish-time reconciliation
+  // replaces it with the authoritative observed/assigned/unassigned totals.
+  if (Object.hasOwn(state.usage, 'subscriptionLedgerByPool')) {
+    state.usage.subscriptionLedgerByPool ??= {};
+    const pool = attempt?.pool ?? 'unknown';
+    const subscription = usage?.subscription;
+    const deltaPct = finiteNonNegative(subscription?.deltaPct);
+    if (subscription && deltaPct != null) {
+      const current = state.usage.subscriptionLedgerByPool[pool] ?? {
+        observedPct: 0, assignedPct: 0, unassignedPct: 0,
+        basis: subscription.basis ?? 'unknown:no-meter',
+      };
+      current.assignedPct = Number(current.assignedPct ?? 0) + deltaPct;
+      current.basis = worstBasis(current.basis, subscription.basis, SUBSCRIPTION_BASIS_ORDER);
+      state.usage.subscriptionLedgerByPool[pool] = current;
+    }
   }
   state.budget.agents += 1;
   const wall = Number(attempt?.wallSec ?? 0);
   if (Number.isFinite(wall) && wall > 0) state.budget.seconds += wall;
+}
+
+function finiteNonNegative(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function attemptApiUsd(attempt) {
+  return finiteNonNegative(
+    attempt?.usage?.api?.usd
+      ?? attempt?.usage?.cost?.estimatedUsd
+      ?? attempt?.usage?.apiUsd,
+  );
+}
+
+function attemptIntervals(attempt) {
+  const attribution = attempt?.usage?.subscription?.attribution;
+  const subscription = attempt?.usage?.subscription;
+  const intervals = attribution?.intervals
+    ?? attribution?.ledgerIntervals
+    ?? subscription?.ledgerIntervals
+    ?? subscription?.attribution?.intervals;
+  return Array.isArray(intervals) ? intervals : [];
+}
+
+function intervalKey(interval) {
+  return [
+    interval?.pool ?? '', interval?.window ?? '', interval?.from ?? '',
+    interval?.at ?? interval?.to ?? interval?.captured_at ?? '',
+    interval?.row ?? interval?.index ?? '', interval?.deltaPct ?? '',
+    interval?.reason ?? '',
+  ].join('|');
+}
+
+function unionIntervals(attempts) {
+  const unique = new Map();
+  for (const attempt of attempts) {
+    for (const interval of attemptIntervals(attempt)) {
+      if (!interval || typeof interval !== 'object') continue;
+      unique.set(intervalKey(interval), interval);
+    }
+  }
+  return [...unique.values()].sort((a, b) => {
+    const left = Date.parse(a?.at ?? a?.to ?? a?.captured_at ?? '') || 0;
+    const right = Date.parse(b?.at ?? b?.to ?? b?.captured_at ?? '') || 0;
+    return left - right;
+  });
+}
+
+function positiveIntervalTotal(intervals) {
+  return intervals.reduce((total, interval) => {
+    const delta = finiteNonNegative(interval?.deltaPct ?? interval?.delta_pct);
+    return delta != null && !interval?.reason ? total + delta : total;
+  }, 0);
+}
+
+/**
+ * Reconcile subscription meter attribution after all durable attempts exist.
+ *
+ * Watch-time accounting is intentionally best effort because concurrent
+ * attempts may not yet be visible to the worker. At the durable finish point
+ * the complete same-pool set is known, so re-run the pure ledger allocator
+ * over the union of their intervals. Every positive observed interval is
+ * either shared among active attempts or retained as an unassigned delta.
+ */
+export function reconcileSubscriptionLedger(state) {
+  const attempts = Array.isArray(state?.attempts) ? state.attempts : [];
+  const byPool = new Map();
+  for (const attempt of attempts) {
+    const subscription = attempt?.usage?.subscription;
+    if (!subscription || !attempt?.pool) continue;
+    const pool = String(attempt.pool);
+    const list = byPool.get(pool) ?? [];
+    list.push(attempt);
+    byPool.set(pool, list);
+  }
+
+  const totals = {};
+  for (const [pool, poolAttempts] of byPool) {
+    const intervals = unionIntervals(poolAttempts);
+    if (!intervals.length) continue;
+    const allocatorAttempts = poolAttempts.map((attempt) => ({
+      id: attempt.id,
+      attemptId: attempt.id,
+      pool,
+      startedAt: attempt.startedAt ?? null,
+      finishedAt: attempt.finishedAt ?? null,
+      apiUsd: attemptApiUsd(attempt),
+      api: { usd: attemptApiUsd(attempt) },
+    }));
+    const observedPct = positiveIntervalTotal(intervals);
+    let assignedPct = 0;
+    for (const attempt of poolAttempts) {
+      const usage = attempt.usage ??= {};
+      const subscription = usage.subscription ??= {};
+      const result = meterLedgerAttribution({
+        intervals,
+        attempts: allocatorAttempts,
+        attempt: allocatorAttempts.find((entry) => entry.id === attempt.id),
+        attemptId: attempt.id,
+        startedAt: attempt.startedAt,
+        finishedAt: attempt.finishedAt,
+        apiUsd: attemptApiUsd(attempt),
+        api: usage.api ?? { usd: attemptApiUsd(attempt) },
+        window: subscription.window ?? null,
+      });
+      if (!result) continue;
+      const previousDelta = finiteNonNegative(subscription.deltaPct);
+      const previousUsd = finiteNonNegative(subscription.usd);
+      const nextDelta = result.deltaPct;
+      // Preserve a known plan-price conversion when watch-time accounting
+      // already produced one, scaling it to the reconciled quota share.
+      const nextUsd = previousUsd != null && previousDelta != null && previousDelta > 0
+        && nextDelta != null
+        ? previousUsd * nextDelta / previousDelta
+        : previousUsd;
+      Object.assign(subscription, {
+        deltaPct: nextDelta,
+        conservedDeltaPct: result.conservedDeltaPct ?? null,
+        resolutionPct: result.resolutionPct ?? subscription.resolutionPct ?? null,
+        basis: result.basis ?? subscription.basis ?? null,
+        ledgerRows: result.ledgerRows ?? [],
+        ledgerIntervals: result.ledgerIntervals ?? [],
+        ...(nextUsd != null ? { usd: Math.round(nextUsd * 1e8) / 1e8 } : {}),
+        attribution: {
+          ...(subscription.attribution && typeof subscription.attribution === 'object' ? subscription.attribution : {}),
+          attemptId: attempt.id,
+          intervals,
+          ledgerRows: result.ledgerRows ?? [],
+          deltaPct: nextDelta,
+          conservedDeltaPct: result.conservedDeltaPct ?? null,
+          resolutionPct: result.resolutionPct ?? null,
+          basis: result.basis ?? null,
+          reconciled: true,
+        },
+      });
+      usage.normalizedQuota = {
+        ...(usage.normalizedQuota && typeof usage.normalizedQuota === 'object' ? usage.normalizedQuota : {}),
+        estimatedPercent: nextDelta,
+        deltaPct: nextDelta,
+        window: subscription.window ?? null,
+        basis: result.basis ?? subscription.basis ?? null,
+        resolutionPct: result.resolutionPct ?? null,
+      };
+      assignedPct += nextDelta ?? 0;
+    }
+    const unassignedPct = Math.max(0, Math.round((observedPct - assignedPct) * 1e8) / 1e8);
+    totals[pool] = {
+      observedPct: Math.round(observedPct * 1e8) / 1e8,
+      assignedPct: Math.round(assignedPct * 1e8) / 1e8,
+      unassignedPct,
+      basis: poolAttempts.some((attempt) => attempt.usage?.subscription?.basis === 'observed:meter-ledger')
+        ? 'observed:meter-ledger' : 'unknown:below-resolution',
+    };
+  }
+
+  state.usage ??= { total: 0, byPool: {} };
+  state.usage.subscriptionLedgerByPool = totals;
+  if (Object.hasOwn(state.usage, 'subscriptionUsd') || Object.hasOwn(state.usage, 'subscriptionKnownSubtotalUsd')) {
+    let knownSubtotal = 0;
+    let priced = 0;
+    let missing = 0;
+    let basis = null;
+    for (const attempt of attempts) {
+      const subscription = attempt?.usage?.subscription;
+      const usd = finiteNonNegative(subscription?.usd);
+      if (usd == null) missing += 1;
+      else {
+        knownSubtotal += usd;
+        priced += 1;
+      }
+      basis = worstBasis(basis, subscription?.basis, SUBSCRIPTION_BASIS_ORDER);
+    }
+    state.usage.subscriptionKnownSubtotalUsd = priced ? knownSubtotal : null;
+    state.usage.subscriptionPricedAttempts = priced;
+    state.usage.subscriptionMissingAttempts = missing;
+    state.usage.subscriptionUsd = missing ? null : (priced ? knownSubtotal : null);
+    state.usage.subscriptionBasis = basis ?? 'unknown:no-meter';
+  }
+  return totals;
 }
 
 function actionState(state, id) { return state.actions.find((entry) => entry.id === id); }
@@ -1523,6 +1725,7 @@ async function runV2Kernel({
       handoffBlock,
       resumeHandoff: durablePriorHandoff,
       runDir,
+      ledgerAttempts: state.attempts,
       onAttempt: (stage, record, verdict) => {
         if (stage === 'started') {
           const ordinal = baseAttemptOrdinal + record.ordinal;
@@ -1733,6 +1936,10 @@ async function runV2Kernel({
     // the signal itself just stopped, the answer is: resume from it.
     if (interrupted) return pauseInterrupted();
     const finishedAt = now();
+    // All worker attempts are durable by this point. Reconcile overlapping
+    // subscription meter intervals before publishing the result and rollup so
+    // each pool's shares conserve the observed run delta.
+    reconcileSubscriptionLedger(state);
     // Guidance nobody acted on no longer holds a run open: the result lists
     // it, and the caller decides whether it still matters.
     const unreadSteering = peekSteering(state, runDir);

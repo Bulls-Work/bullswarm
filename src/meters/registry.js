@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   MeterCache, paceSnapshot, FRESH_MS, STALE_MS, WINDOW_MS,
-  normalizePacingWindow,
+  normalizePacingWindow, meterResolutionPct, monotonicIntervalDelta,
 } from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
 import { migratePoolNameHome } from '../lib/state.js';
@@ -251,7 +251,10 @@ export async function getMeterReading(pool, opts = {}) {
     try { cache.clearHold(pool); } catch { /* a later live read can retry cleanup */ }
     // The cache keeps only the latest reading; the spend model needs the
     // series, so every LIVE reading is also appended to the history log.
-    appendMeterHistory(pool, snapshot, { dir: cache.dir });
+    appendMeterHistory(pool, snapshot, {
+      dir: cache.dir,
+      source: force ? 'forced' : 'live',
+    });
     return { snapshot, source: 'live', ...paceSnapshot(snapshot, nowMs) };
   } catch (err) {
     const hold = holdForError(err, nowMs);
@@ -500,9 +503,20 @@ export function meterHistoryPath(pool, dir = metersDir()) {
  * window it actually reported. A snapshot with no readable window produces
  * null — an empty line would only pad the log.
  */
-export function meterHistoryEntry(snapshot) {
+export function meterHistoryEntry(snapshot, opts = {}) {
   if (!snapshot?.captured_at) return null;
-  const entry = { captured_at: snapshot.captured_at };
+  const providerAt = snapshot.provider_at ?? snapshot.provider_timestamp
+    ?? snapshot.providerAt ?? snapshot.captured_at;
+  const entry = {
+    captured_at: snapshot.captured_at,
+    provider_at: providerAt,
+    providerAt,
+    source: typeof opts.source === 'string' && opts.source.trim()
+      ? opts.source.trim()
+      : (typeof snapshot.source === 'string' && snapshot.source.trim()
+        ? snapshot.source.trim() : 'live'),
+  };
+  let hasWindow = false;
   for (const [key, source] of HISTORY_WINDOWS) {
     const window = snapshot[source];
     const raw = window?.utilization;
@@ -511,9 +525,68 @@ export function meterHistoryEntry(snapshot) {
     if (raw == null || raw === '' || typeof raw === 'boolean') continue;
     const utilization = Number(raw);
     if (!Number.isFinite(utilization)) continue;
-    entry[key] = { utilization, resets_at: window.resets_at ?? null };
+    hasWindow = true;
+    const resolutionPct = meterResolutionPct({
+      pool: opts.pool ?? snapshot.pool,
+      window,
+      value: utilization,
+      snapshot,
+    });
+    entry[key] = {
+      // Keep the original fields consumed by src/lib/spend.js and older
+      // history files, while adding explicit ledger vocabulary for new code.
+      utilization,
+      used_pct: utilization,
+      usedPct: utilization,
+      resets_at: window.resets_at ?? null,
+      resetsAt: window.resets_at ?? null,
+      window: key,
+      resolution_pct: resolutionPct,
+      resolutionPct,
+    };
   }
-  return Object.keys(entry).length > 1 ? entry : null;
+  return hasWindow ? entry : null;
+}
+
+function historyWindowValue(entry, key) {
+  const value = entry?.[key];
+  if (!value || typeof value !== 'object') return null;
+  const usedPct = Number(value.used_pct ?? value.usedPct ?? value.utilization);
+  if (!Number.isFinite(usedPct)) return null;
+  return {
+    usedPct,
+    resetsAt: value.resets_at ?? value.resetsAt ?? null,
+  };
+}
+
+function annotateIntervals(entry, previous, pool = null) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const deltas = {};
+  for (const [key] of HISTORY_WINDOWS) {
+    const current = historyWindowValue(entry, key);
+    if (!current) continue;
+    const prior = historyWindowValue(previous, key);
+    const delta = monotonicIntervalDelta(prior, current);
+    const resolutionPct = Number(entry[key]?.resolution_pct
+      ?? entry[key]?.resolutionPct);
+    const resolution = Number.isFinite(resolutionPct) && resolutionPct > 0
+      ? resolutionPct
+      : meterResolutionPct({ pool, window: entry[key], value: current.usedPct });
+    entry[key].resolution_pct = resolution;
+    entry[key].resolutionPct = resolution;
+    entry[key].delta_pct = delta.deltaPct;
+    entry[key].deltaPct = delta.deltaPct;
+    entry[key].delta_reason = delta.reason;
+    deltas[key] = {
+      deltaPct: delta.deltaPct,
+      resolutionPct: resolution,
+      reason: delta.reason,
+      from: previous?.captured_at ?? null,
+      to: entry.captured_at ?? null,
+    };
+  }
+  entry.deltas = deltas;
+  return entry;
 }
 
 /**
@@ -522,7 +595,7 @@ export function meterHistoryEntry(snapshot) {
  * snapshot, duplicate capture time, or an I/O failure).
  */
 export function appendMeterHistory(pool, snapshot, opts = {}) {
-  const entry = meterHistoryEntry(snapshot);
+  const entry = meterHistoryEntry(snapshot, { ...opts, pool });
   if (!entry) return null;
   const path = meterHistoryPath(pool, opts.dir ?? metersDir());
   const line = JSON.stringify(entry);
@@ -533,6 +606,8 @@ export function appendMeterHistory(pool, snapshot, opts = {}) {
     // The same snapshot can be handed to us twice (a cached reading re-put by
     // a caller); a repeated capture time is not a second observation.
     if (lines.length && capturedAtOf(lines[lines.length - 1]) === entry.captured_at) return null;
+    const previous = latestHistoryEntry(lines, entry.captured_at);
+    annotateIntervals(entry, previous, pool);
     if (lines.length + 1 > HISTORY_REWRITE_AT) {
       writeFileSync(path, `${[...lines, line].slice(-MAX_HISTORY_LINES).join('\n')}\n`);
     } else {
@@ -551,6 +626,22 @@ function capturedAtOf(line) {
   } catch {
     return null;
   }
+}
+
+function latestHistoryEntry(lines, beforeCapturedAt = null) {
+  const beforeMs = beforeCapturedAt == null ? Infinity : Date.parse(beforeCapturedAt);
+  let latest = null;
+  let latestMs = -Infinity;
+  for (const line of lines) {
+    try {
+      const value = JSON.parse(line);
+      const at = Date.parse(value?.captured_at ?? '');
+      if (!Number.isFinite(at) || at >= beforeMs || at < latestMs) continue;
+      latest = value;
+      latestMs = at;
+    } catch { /* torn rows are skipped */ }
+  }
+  return latest;
 }
 
 /**
@@ -591,8 +682,61 @@ export function readMeterHistory(pool, opts = {}) {
     out.push({ ...entry, capturedAtMs });
   }
   out.sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+  let previous = null;
+  for (const entry of out) {
+    // Older rows predate the ledger metadata. Enrich them in memory so a
+    // caller can replay the complete series without rewriting user files.
+    if (entry.source == null) entry.source = 'legacy';
+    if (entry.provider_at == null) entry.provider_at = entry.captured_at;
+    if (entry.providerAt == null) entry.providerAt = entry.provider_at;
+    annotateIntervals(entry, previous, pool);
+    previous = entry;
+  }
   return out;
 }
+
+/**
+ * Turn retained readings into consecutive, monotonic meter intervals. Missing
+ * windows simply have no interval; a reset/decrease is represented with a
+ * null delta and reason rather than a negative spend observation. Zero deltas
+ * remain measurable rows and carry the meter resolution so callers can label
+ * them as below-resolution instead of treating them as exact zero spend.
+ */
+export function meterHistoryIntervals(pool, opts = {}) {
+  const history = readMeterHistory(pool, opts);
+  const intervals = [];
+  for (let i = 1; i < history.length; i += 1) {
+    const previous = history[i - 1];
+    const current = history[i];
+    for (const [window] of HISTORY_WINDOWS) {
+      const from = historyWindowValue(previous, window);
+      const to = historyWindowValue(current, window);
+      if (!from || !to) continue;
+      const delta = monotonicIntervalDelta(from, to);
+      const resolutionPct = Number(to.resolution_pct ?? to.resolutionPct)
+        || meterResolutionPct({ pool, window: to, value: to.usedPct });
+      intervals.push({
+        pool,
+        window,
+        from: previous.captured_at,
+        at: current.captured_at,
+        providerAt: current.provider_at ?? current.captured_at,
+        source: current.source ?? 'legacy',
+        fromUsedPct: from.usedPct,
+        usedPct: to.usedPct,
+        resetsAt: to.resetsAt ?? null,
+        deltaPct: delta.deltaPct,
+        resolutionPct,
+        reason: delta.reason,
+        row: i,
+      });
+    }
+  }
+  return intervals;
+}
+
+export const readMeterHistoryIntervals = meterHistoryIntervals;
+export const meterLedgerIntervals = meterHistoryIntervals;
 
 function historyDayKeyFor(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return historyDayKey(value);

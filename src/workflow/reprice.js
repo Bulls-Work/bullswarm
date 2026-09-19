@@ -36,9 +36,11 @@ const TOKEN_SOURCES = new Set([
 const SUBSCRIPTION_RANK = {
   'unknown:no-price': 0,
   'unknown:no-meter': 1,
-  'unknown:no-cost': 2,
-  'calibrated:usd-per-pct': 3,
-  'observed:meter-delta': 4,
+  'unknown:below-resolution': 2,
+  'unknown:no-cost': 3,
+  'calibrated:usd-per-pct': 4,
+  'observed:meter-delta': 5,
+  'observed:meter-ledger': 6,
 };
 
 function clone(value) {

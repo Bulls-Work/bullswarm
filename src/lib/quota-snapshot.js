@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { MeterCache } from '../meters/framework.js';
+import { meterResolutionPct } from '../meters/framework.js';
+import { readMeterHistory } from '../meters/registry.js';
 import { loadProviders } from './providers.js';
 
 function finite(value) {
@@ -103,7 +105,7 @@ export function snapshotPool(poolName, { home = null, now = Date.now() } = {}) {
     ?? text(snapshot.planName)
     ?? text(snapshot.planType)
     ?? null;
-  return {
+  const result = {
     at: capturedAt,
     window,
     usedPct,
@@ -112,6 +114,53 @@ export function snapshotPool(poolName, { home = null, now = Date.now() } = {}) {
     ...(detectedPlan ? { plan: detectedPlan } : {}),
     source: 'cache',
   };
+  // Keep the documented compact enumerable shape stable for older callers,
+  // while exposing ledger metadata to attribution code. Non-enumerable fields
+  // also keep persisted/replayed attempt snapshots backward compatible.
+  const resolutionPct = meterResolutionPct({
+    pool: poolName,
+    window: reading,
+    value: usedPct,
+    snapshot,
+  });
+  let historyCursor = {
+    at: capturedAt,
+    window,
+    index: null,
+    source: 'cache',
+    providerAt: capturedAt,
+  };
+  try {
+    const history = readMeterHistory(poolName, { dir: join(root, 'meters') });
+    const index = history.findIndex((entry) => entry.captured_at === capturedAt);
+    if (index >= 0) {
+      const entry = history[index];
+      historyCursor = {
+        at: capturedAt,
+        window,
+        index,
+        source: entry.source ?? 'legacy',
+        providerAt: entry.provider_at ?? capturedAt,
+      };
+    }
+  } catch { /* metadata is best effort; the cached reading remains valid */ }
+  Object.defineProperties(result, {
+    // Once a matching ledger row exists these are ordinary enumerable fields
+    // for JSON consumers. A cache-only read keeps the pre-ledger enumerable
+    // shape used by older callers and still exposes the markers directly.
+    resolutionPct: {
+      value: resolutionPct,
+      enumerable: Number.isInteger(historyCursor.index) && historyCursor.index >= 0,
+    },
+    historyCursor: {
+      value: historyCursor,
+      enumerable: Number.isInteger(historyCursor.index) && historyCursor.index >= 0,
+    },
+    // Snake-case aliases match the JSONL history vocabulary.
+    resolution_pct: { value: resolutionPct, enumerable: false },
+    history_cursor: { value: historyCursor, enumerable: false },
+  });
+  return result;
 }
 
 /**

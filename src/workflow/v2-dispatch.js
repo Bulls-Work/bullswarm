@@ -555,6 +555,7 @@ export async function dispatchV2Action({
   onAgentEvent = null,
   onAgentProgress = null,
   evidence = null,
+  ledgerAttempts = [],
   dependencies = {},
   resumeAttempt = null,
   resumeHandoff = null,
@@ -839,6 +840,9 @@ export async function dispatchV2Action({
         attemptId: `${action.id}-${ordinal}`,
         startedAt,
         subscription: pool.subscription ?? connector.subscription ?? null,
+        attempts: (Array.isArray(ledgerAttempts) ? ledgerAttempts : [])
+          .filter((attempt) => attempt?.id !== `${action.id}-${ordinal}`
+            && (!attempt?.pool || attempt.pool === pool.name)),
       });
       // Capture before releasing the in-flight ledger entry or invoking the
       // worker-exit callback. Either can let a sibling begin editing this

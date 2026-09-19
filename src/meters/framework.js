@@ -206,6 +206,100 @@ export const WINDOW_KEYS = {
 };
 
 /**
+ * Provider meter precision observed by the live readers.  The provider APIs
+ * return JSON numbers, so notation such as `19.0` is lost by the time it
+ * reaches the cache; keep the known provider quantisation here rather than
+ * guessing that a parsed integer was an integer-percent meter.
+ */
+export const METER_RESOLUTION_PCT = Object.freeze({
+  codex: 1,
+  'claude-code': 0.1,
+  grok: 0.1,
+});
+
+function providerNameOf(pool) {
+  if (typeof pool !== 'string') return null;
+  return pool.trim().toLowerCase().split(':', 1)[0] || null;
+}
+
+function decimalResolution(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const text = String(value).toLowerCase();
+  if (text.includes('e-')) {
+    const exponent = Number(text.split('e-')[1]);
+    return Number.isFinite(exponent) ? 10 ** -exponent : null;
+  }
+  const dot = text.indexOf('.');
+  if (dot < 0) return 1;
+  return 10 ** -(text.length - dot - 1);
+}
+
+/**
+ * Resolve the observed percentage-point resolution for one meter window.
+ * Explicit metadata wins, then the provider evidence, then the precision
+ * visible in the numeric reading.  Unknown precision is conservatively one
+ * percentage point (the historical integer-meter default).
+ */
+export function meterResolutionPct({ pool = null, window = null, value = null, snapshot = null } = {}) {
+  const windowName = typeof window === 'string'
+    ? window
+    : window?.name ?? window?.key ?? null;
+  const metadata = window && typeof window === 'object'
+    ? (window.resolution_pct ?? window.resolutionPct ?? window.resolution)
+    : null;
+  const snapshotMetadata = snapshot && typeof snapshot === 'object'
+    ? (typeof snapshot.resolution_pct === 'object'
+      ? snapshot.resolution_pct?.[windowName ?? '']
+      : snapshot.resolution_pct
+        ?? snapshot.resolutionPct)
+    : null;
+  const explicit = Number(metadata ?? snapshotMetadata);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const provider = providerNameOf(pool ?? snapshot?.pool);
+  if (provider && Number.isFinite(METER_RESOLUTION_PCT[provider])) {
+    return METER_RESOLUTION_PCT[provider];
+  }
+  return decimalResolution(value) ?? 1;
+}
+
+function resetIdentity(value) {
+  if (value == null || value === '') return null;
+  const parsed = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (!Number.isFinite(parsed)) return String(value);
+  return new Date(Math.floor(parsed / 1000) * 1000).toISOString();
+}
+
+/**
+ * Compare consecutive readings from the same window without turning a reset,
+ * missing poll, or counter decrease into spend.  The result is deliberately
+ * small so it can be persisted in every history row and reused by ledger
+ * attribution code.
+ */
+export function monotonicIntervalDelta(previous, current) {
+  if (!previous || !current) return { deltaPct: null, reason: 'missing-reading' };
+  const previousUsed = Number(previous.usedPct ?? previous.utilization);
+  const currentUsed = Number(current.usedPct ?? current.utilization);
+  if (!Number.isFinite(previousUsed) || !Number.isFinite(currentUsed)) {
+    return { deltaPct: null, reason: 'missing-reading' };
+  }
+  const previousReset = resetIdentity(previous.resetsAt ?? previous.resets_at);
+  const currentReset = resetIdentity(current.resetsAt ?? current.resets_at);
+  if (previousReset !== currentReset
+    && (previousReset != null || currentReset != null)) {
+    return { deltaPct: null, reason: 'reset-between-readings' };
+  }
+  if (currentUsed < previousUsed) return { deltaPct: null, reason: 'counter-decreased' };
+  return {
+    deltaPct: Math.round((currentUsed - previousUsed) * 1e8) / 1e8,
+    reason: null,
+  };
+}
+
+// Names used by callers that describe the same operation in ledger terms.
+export const meterIntervalDelta = monotonicIntervalDelta;
+export const monotonicDelta = monotonicIntervalDelta;
+
+/**
  * Forecast one window: where utilization lands once the work already running
  * (and, optionally, the assignment being routed) finishes at the measured
  * spend rate.
