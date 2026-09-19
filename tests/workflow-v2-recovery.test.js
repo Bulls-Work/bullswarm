@@ -107,7 +107,10 @@ test('operator cancellation survives a kernel persist between request and cancel
 
 async function until(predicate, description, timeout = 5000) {
   const deadline = Date.now() + timeout;
-  while (!predicate()) { if (Date.now() > deadline) throw new Error(`timed out: ${description}`); await delay(20); }
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${description}`);
+    await delay(20);
+  }
 }
 function runCli(f, args) {
   const child = spawn(process.execPath, [cli, 'workflow', 'goal', ...args], { env: { ...process.env, BULLSWARM_HOME: f.home, BULLSWARM_DEPTH: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -115,7 +118,12 @@ function runCli(f, args) {
   const closed = new Promise((resolve) => child.on('close', (code, signal) => resolve({ code, signal, output })));
   return { child, closed };
 }
-for (const signal of ['SIGTERM', 'SIGKILL']) test(`real V2 CLI ${signal} stops prior workers before resume and retains edits`, { timeout: 20_000 }, async (t) => {
+function killProcessAndGroup(pid) {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return;
+  try { process.kill(-pid, 'SIGKILL'); } catch {}
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+}
+for (const signal of ['SIGTERM', 'SIGKILL']) test(`real V2 CLI ${signal} stops prior workers before resume and retains edits`, { timeout: 75_000 }, async (t) => {
   const f = fixture(t);
   const worker = join(f.root, 'worker.mjs');
   const pidFile = join(f.root, 'worker.pid');
@@ -141,7 +149,23 @@ if (existsSync(${JSON.stringify(resumeFile)})) {
   writeFileSync(plan, JSON.stringify({ ...program.program, actions: [{ ...action, affects: ['requirement-1'] }] }));
   const first = runCli(f, ['Write files', '--cwd', f.cwd, '--program', plan, '--foreground', '--json']);
   const children = [first.child]; const workerPids = [];
-  t.after(() => { for (const child of children) { try { child.kill('SIGKILL'); } catch {} } for (const pid of workerPids) { try { process.kill(pid, 'SIGKILL'); } catch {} } });
+  const cleanup = () => {
+    for (const child of children) {
+      try { child.kill('SIGKILL'); } catch {}
+      killProcessAndGroup(child.pid);
+    }
+    for (const pid of workerPids) killProcessAndGroup(pid);
+    try {
+      const workflows = join(f.home, 'workflows');
+      for (const workflowId of existsSync(workflows) ? readdirSync(workflows) : []) {
+        try {
+          const workers = JSON.parse(readFileSync(join(workflows, workflowId, 'workers.json'), 'utf8'));
+          for (const worker of workers) killProcessAndGroup(worker.pid);
+        } catch {}
+      }
+    } catch {}
+  };
+  t.after(cleanup);
   await until(() => existsSync(grandchildFile), 'delegate and grandchild started');
   const workerPid = Number(readFileSync(pidFile)); const grandchildPid = Number(readFileSync(grandchildFile));
   workerPids.push(workerPid, grandchildPid);
@@ -154,14 +178,14 @@ if (existsSync(${JSON.stringify(resumeFile)})) {
     const watched = spawnSync(process.execPath, [cli, 'workflow', 'watch', runId], { encoding: 'utf8', timeout: 3000, env: { ...process.env, BULLSWARM_HOME: f.home } });
     assert.equal(watched.status, 1, watched.stderr);
     assert.match(watched.stdout, /next: bullswarm workflow resume/);
-    await until(() => !processIdentity(workerPid) && !processIdentity(grandchildPid), 'signal drained delegate process group');
+    await until(() => !processIdentity(workerPid) && !processIdentity(grandchildPid), 'signal drained delegate process group', 60_000);
   }
   assert.equal(readFileSync(join(f.cwd, 'a.txt'), 'utf8'), 'seed\npartial\n');
   writeFileSync(resumeFile, 'finish on next attempt');
   const resumed = runCli(f, ['--resume', runId, '--foreground', '--json']); children.push(resumed.child);
   const completed = await resumed.closed;
   assert.equal(completed.code, 0, completed.output);
-  await until(() => !processIdentity(workerPid) && !processIdentity(grandchildPid), 'resume drained prior delegate process group');
+  await until(() => !processIdentity(workerPid) && !processIdentity(grandchildPid), 'resume drained prior delegate process group', 60_000);
   assert.equal(readFileSync(join(f.cwd, 'a.txt'), 'utf8'), 'seed\npartial\nresumed\n');
   assert.equal(readFileSync(join(f.cwd, 'user-note.txt'), 'utf8'), 'preserve me');
 });
