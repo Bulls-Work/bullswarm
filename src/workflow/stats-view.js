@@ -2,7 +2,7 @@
 // stats-model; this module chooses model-owned values for the four tabs and
 // turns them into the shared surface's input shape.
 
-import { formatDashboardValue, periodToggle, seriesColor, seriesColors } from './dash-kit.js';
+import { formatDashboardValue, periodToggle, seriesColors } from './dash-kit.js';
 import {
   formatHoverLabel,
   renderColumnChart,
@@ -98,6 +98,33 @@ function normalizePeriod(value) {
 }
 function rowName(row) {
   return String(row?.name ?? row?.id ?? row?.label ?? 'unknown');
+}
+function colorName(name) {
+  const value = String(name ?? '');
+  return value === 'model cost unavailable' ? 'unallocated' : value;
+}
+function panelRowName(row) {
+  if (!row || row.id === '__more__' || /^\+\d+ more$/.test(String(row.label ?? ''))) return null;
+  const name = String(row.fullLabel ?? row.label ?? row.id ?? '').trim();
+  return name || null;
+}
+function panelColorNames(panels) {
+  return [...new Set((Array.isArray(panels) ? panels : [])
+    .flatMap((panelInput) => Array.isArray(panelInput?.rows) ? panelInput.rows : [])
+    .map(panelRowName)
+    .filter(Boolean)
+    .map(colorName))];
+}
+function colorPanels(panels, colors) {
+  return (Array.isArray(panels) ? panels : []).map((panelInput) => ({
+    ...panelInput,
+    rows: (Array.isArray(panelInput?.rows) ? panelInput.rows : []).map((row) => {
+      const name = panelRowName(row);
+      if (!name) return row;
+      const color = colors?.get(colorName(name));
+      return color ? { ...row, color } : row;
+    }),
+  }));
 }
 function rowsOf(candidate) {
   if (Array.isArray(candidate)) return candidate.filter((row) => row && typeof row === 'object');
@@ -217,7 +244,7 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
     return {
       id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: raw, total,
       share: shareFor(row, raw, total, shareField ? row?.[shareField] : null),
-      color: seriesColor(rowName(row)), valueText: text,
+      valueText: text,
       missingReason: missingReason ?? reasonFor(field, row),
     };
   });
@@ -256,7 +283,7 @@ function licenceRows(table) {
   return rowsOf(table).map((row) => {
     const used = finite(row?.live?.usedPct);
     const reset = row?.live?.resetsAt ? `reset ${String(row.live.resetsAt).slice(0, 10)}` : null;
-    return { id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: used, valueText: used == null ? null : `${used}%${reset ? ` · ${reset}` : ''}`, color: seriesColor(rowName(row)), missingReason: 'meter unavailable' };
+    return { id: rowName(row), label: rowName(row), fullLabel: rowName(row), value: used, valueText: used == null ? null : `${used}%${reset ? ` · ${reset}` : ''}`, missingReason: 'meter unavailable' };
   });
 }
 function modelCostRows(table) {
@@ -324,7 +351,7 @@ function normalizedTrend(info, table, tab) {
   const trend = info.trend ?? (tab === 'model' ? dailyTrendFromRows(table, 'minutes', 'minutes') : null) ?? (tab === 'project' ? dailyTrendFromRows(table, 'runs', 'runs') : null);
   return trend && Array.isArray(trend.buckets) ? trend : { metric: info.metric, buckets: [], total: null };
 }
-function chartInput(info, table, tab, stackBy, width, period) {
+function chartInput(info, table, tab, stackBy, width, period, extraColorNames = []) {
   const trend = normalizedTrend(info, table, tab);
   const sourceBuckets = trend.buckets.map((bucket) => {
     const tokenSource = bucket.tokenSource ?? trend.tokenSource ?? null;
@@ -354,8 +381,11 @@ function chartInput(info, table, tab, stackBy, width, period) {
     names.push('unallocated');
     valuesByName.set('unallocated', fallback);
   }
-  const colorNames = names.map((name) => name === 'model cost unavailable' ? 'unallocated' : name);
-  const colors = seriesColors(colorNames);
+  // Chart identities lead the allocation; visible panel-only identities are
+  // appended so they can never displace a hue already used by the chart.
+  const colorNames = names.map(colorName);
+  const panelColors = Array.isArray(extraColorNames) ? extraColorNames.map(colorName) : [];
+  const colors = seriesColors([...colorNames, ...panelColors]);
   const series = names.map((name, index) => ({ id: name, label: name, values: valuesByName.get(name), color: colors.get(colorNames[index]), tokenSource: trend.tokenSource ?? null }));
   const title = tab === 'spending'
     ? info.modelCostMeasured ? 'Spend per day · API-equivalent · model' : stackBy === 'model' ? 'Worker-minutes per day · model cost is not measured' : 'Spend per day · API-equivalent · pool'
@@ -432,8 +462,8 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
 }
 function legendItems(names, colors = null) {
   return names.map((name) => {
-    const colorName = name === 'model cost unavailable' ? 'unallocated' : name;
-    return { id: name, label: name, fullLabel: name, color: colors?.get(colorName) ?? seriesColor(colorName) };
+    const resolvedName = colorName(name);
+    return { id: name, label: name, fullLabel: name, color: colors?.get(resolvedName) };
   });
 }
 function actionForRegion(region) {
@@ -464,12 +494,16 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   const info = trendFor(stats, activeTab, stackBy);
   const desktop = cols >= 80;
   const chartWidth = desktop ? Math.max(1, Math.floor((cols - 2) / 2)) : cols;
-  const chartData = chartInput(info, activeTab === 'spending' || activeTab === 'pool' ? poolTable : activeTab === 'model' ? modelTable : projectTable, activeTab, stackBy, chartWidth, activePeriod);
   const summary = { title: `Summary · ${activePeriod}`, items: summaryItems(overview, outcomes, poolTable, projectTable), width: cols };
   const panels = panelSet({ tab: activeTab, stackBy, period: activePeriod, poolTable, modelTable, projectTable, outcomes, basis });
+  const chartTable = activeTab === 'spending' || activeTab === 'pool' ? poolTable : activeTab === 'model' ? modelTable : projectTable;
+  // One map feeds the chart, legend, and every visible panel row in this
+  // render. The placeholder +N more row is deliberately not a name.
+  const chartData = chartInput(info, chartTable, activeTab, stackBy, chartWidth, activePeriod, panelColorNames(panels));
+  const coloredPanels = colorPanels(panels, chartData.colors);
   const surfacePanels = desktop
-    ? desktopPanelColumns(panels, Math.max(1, cols - 2 - chartWidth), activeTab, activePeriod)
-    : panels;
+    ? desktopPanelColumns(coloredPanels, Math.max(1, cols - 2 - chartWidth), activeTab, activePeriod)
+    : coloredPanels;
   const panelHeight = surfacePanels.reduce((most, panelInput) => Math.max(most, panelInput.lines?.length ?? 0), 0);
   const surfaceChart = desktop ? addDesktopDivider(chartData.chart, chartWidth, panelHeight) : chartData.chart;
   const legendDrawn = renderLegend({ items: legendItems(chartData.names, chartData.colors), width: cols, colors: true });
