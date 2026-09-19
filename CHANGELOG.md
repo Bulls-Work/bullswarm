@@ -1,18 +1,6 @@
 # bullswarm changelog
 
-## 0.33.1 — say what a number is, or say you do not know
-
-- budget: the page is the pool meters and nothing else. Every window a pool
-  reports gets its own row — a background-coloured bar whose fill says pace,
-  a white tick for how much of the window has elapsed, the used share right-
-  aligned in one column down the whole page, and a dim line under it with the
-  reset and the pace in percentage points. The `by bullswarm`, `other tools`,
-  `room for N more medium runs`, `so far ≈ $N` and `biggest` lines are gone:
-  the cost audit of 2026-09-18 traced every one of them to worker minutes
-  multiplied by a fitted rate, which produced 129% of a whole window for grok,
-  and to the byte-estimate money the same audit found 250 to 1,471 times too
-  low. Spend by run lives on Home and Stats. Credits stay with the window they
-  meter, and a pool that reports credits but no monthly window keeps them.
+## 0.33.2 — one way to draw a chart, and every bar answers
 
 - stats: every Stats page now uses one shared set of panels, charts, legends,
   summary cards, and hover regions; the old page-specific chart drawing is gone.
@@ -31,6 +19,27 @@
   `grok` at 6% and `command-code` at 1% all painted nothing, which reads as a
   pool that was never used. The sliver is one cell in the geometry too, so it
   answers on hover like any other bar, and a true zero is still empty.
+- stats: the two-column layout keeps its colour. At 80 columns and up the page
+  composes the dated chart on the left and the panel grid on the right, and
+  both composition steps padded their cells through the helper that strips the
+  colour codes, so every bar came out grey while the legend beside it stayed
+  coloured — a chart titled "by pool" painted all five pools identically.
+- stats: no two series in one chart share a hue. Colours were hashed per name,
+  which put `claude-code:acme` and `codex` on the same blue.
+
+## 0.33.1 — say what a number is, or say you do not know
+
+- budget: the page is the pool meters and nothing else. Every window a pool
+  reports gets its own row — a background-coloured bar whose fill says pace,
+  a white tick for how much of the window has elapsed, the used share right-
+  aligned in one column down the whole page, and a dim line under it with the
+  reset and the pace in percentage points. The `by bullswarm`, `other tools`,
+  `room for N more medium runs`, `so far ≈ $N` and `biggest` lines are gone:
+  the cost audit of 2026-09-18 traced every one of them to worker minutes
+  multiplied by a fitted rate, which produced 129% of a whole window for grok,
+  and to the byte-estimate money the same audit found 250 to 1,471 times too
+  low. Spend by run lives on Home and Stats. Credits stay with the window they
+  meter, and a pool that reports credits but no monthly window keeps them.
 - accounts: two homes holding the same Anthropic login are now discovered as
   one pool. Discovery deduplicated on the access-token string, but signing one
   account in twice mints two unrelated tokens, so `~/.claude` and a
