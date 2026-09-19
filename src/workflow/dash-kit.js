@@ -125,6 +125,19 @@ const HEX = /^#[0-9a-f]{6}$/i;
 /** The columns a styled line really occupies. */
 const visibleLength = (text) => String(text ?? '').replace(SGR, '').length;
 
+/**
+ * Clip a styled cell to its visible width, then pad the cell back to that
+ * width. `cut()` owns the clipping/reset policy; this wrapper is the shared
+ * compositor primitive so callers never fall back to String#length when a
+ * cell carries SGR sequences.
+ */
+function padVisible(text, width) {
+  const cols = colsOf(width, 0);
+  if (cols <= 0) return '';
+  const clipped = cut(text, cols);
+  return `${clipped}${' '.repeat(Math.max(0, cols - visibleLength(clipped)))}`;
+}
+
 /** A width as a whole number of columns; anything unusable falls back. */
 function colsOf(width, fallback) {
   const value = Number(width);
@@ -288,10 +301,7 @@ export function columns(cells, { width = 120, gap = 2 } = {}) {
     return [head, ...rows];
   });
   const height = blocks.reduce((most, block) => Math.max(most, block.length), 0);
-  const pad = (text, own) => {
-    const clipped = cut(text, own);
-    return `${clipped}${' '.repeat(Math.max(0, own - visibleLength(clipped)))}`;
-  };
+  const pad = (text, own) => padVisible(text, own);
   const lines = [];
   for (let row = 0; row < height; row += 1) {
     const line = blocks

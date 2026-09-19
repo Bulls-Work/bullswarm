@@ -238,6 +238,16 @@ test('the legend keeps the full untouched name for compact panel labels', () => 
   assert.doesNotMatch(legend.lines.join('\n'), /Legend.*wati$/);
 });
 
+test('a legend assigns distinct hues to colliding series names when colors are implicit', () => {
+  const legend = renderLegend({
+    width: 120,
+    items: [{ id: 'claude-code:wati' }, { id: 'codex' }],
+  });
+  const colours = [...legend.lines.join('\n').matchAll(/\x1b\[38;2;([^m]+)m/g)].map((match) => match[1]);
+  assert.equal(colours.length, 2);
+  assert.equal(new Set(colours).size, colours.length);
+});
+
 test('panel hit regions cover the complete drawn track, including zero-filled values', () => {
   const panel = renderPanel({
     title: 'Pool spend', width: 55, labelWidth: 14, barWidth: 6, unit: 'usd', colors: false,

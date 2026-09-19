@@ -709,6 +709,20 @@ test('columns cuts a row too wide for its column and pads a short one', () => {
   assert.equal(visible(band[0]).slice(14), 'x', 'the short column is padded so the next starts on its column');
 });
 
+test('columns clips a coloured run by visible width and resets before the next cell', () => {
+  const source = '\x1b[38;2;191;108;105m▓▓▓▓▓▓\x1b[0m';
+  const band = columns([
+    { width: 4, rows: [source] },
+    { width: 5, rows: ['plain'] },
+  ], { width: 10, gap: 1 });
+  const line = band[0];
+  assert.equal(visibleLength(line), 10);
+  assert.match(line, /^\x1b\[38;2;191;108;105m▓▓▓…\x1b\[0m /);
+  assert.equal(visible(line).slice(5), 'plain');
+  assert.equal(line.slice(line.indexOf('plain') - 1, line.indexOf('plain')), ' ');
+  assert.ok(line.indexOf('\x1b[0m') < line.indexOf('plain'), 'the clipped run is reset before the following cell');
+});
+
 test('columns drops a cell it cannot give a column to, and survives nothing', () => {
   const tight = columns(CELLS, { width: 3, gap: 2 });
   assert.equal(tight.meta.columns.length, 1, 'cells that cannot fit are dropped from the right');

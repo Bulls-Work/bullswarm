@@ -100,6 +100,52 @@ test('the Spending toggle changes both the chart metric and visible grid basis',
   assert.ok(modelSlices.every((region) => region.action.payload.label !== 'model cost unavailable'));
 });
 
+test('desktop composition keeps chart and panel bar colours, bounds both layouts, and separates series hues', () => {
+  const pools = [
+    { name: 'a', runs: 3, attempts: 3, minutes: 3, apiEquivalentUsd: 3, minutesShare: 0.75 },
+    { name: 'b', runs: 1, attempts: 1, minutes: 1, apiEquivalentUsd: 1, minutesShare: 0.25 },
+  ];
+  const projects = [{ name: 'p1', runs: 3, minutes: 3 }, { name: 'p2', runs: 1, minutes: 1 }];
+  const stats = {
+    overview: { keys: { workflows: 4, totalWorkerMinutes: 4, apiEquivalentUsd: 4, activeDays: 2 }, breakdown: { pools, models: pools, projects } },
+    pools: { rows: pools, totals: { runs: 4, attempts: 4, minutes: 4, apiEquivalentUsd: 4 } },
+    models: {
+      rows: pools,
+      totals: { runs: 4, attempts: 4, minutes: 4 },
+      trend: {
+        metric: 'minutes',
+        buckets: [
+          { key: '2026-09-13', value: 3, segments: [{ name: 'claude-code:wati', value: 2 }, { name: 'codex', value: 1 }] },
+          { key: '2026-09-14', value: 1, segments: [{ name: 'claude-code:wati', value: 1 }] },
+        ],
+      },
+    },
+    projects: { rows: projects, totals: { runs: 4, minutes: 4 } },
+    spendPerDay: {
+      metric: 'spend',
+      buckets: [
+        { key: '2026-09-13', value: 3, segments: [{ name: 'claude-code:wati', value: 2 }, { name: 'codex', value: 1 }] },
+        { key: '2026-09-14', value: 1, segments: [{ name: 'claude-code:wati', value: 1 }] },
+      ],
+    },
+  };
+  const colours = (line) => [...String(line).matchAll(/\x1b\[38;2;([^m]+)m/g)].map((match) => match[1]);
+  const desktop = statsLines(stats, { width: 120, tab: 'spending', stackBy: 'model', ansi: true });
+  const chartLine = desktop.lines.find((line) => /┤.*[▁▂▃▄▅▆▇█#]/.test(line));
+  const panelLine = desktop.lines.find((line) => /[▓▒░▏]/.test(line));
+  assert.ok(chartLine && colours(chartLine).length > 0, 'the composed chart line retains SGR colour');
+  assert.ok(panelLine && colours(panelLine).length > 0, 'the composed panel bar line retains SGR colour');
+  const legendLine = desktop.lines.find((line) => line.startsWith('Legend'));
+  assert.ok(legendLine);
+  const legendColours = colours(legendLine);
+  assert.equal(new Set(legendColours).size, legendColours.length, 'one chart assigns every legend series a distinct hue');
+
+  for (const width of [55, 120]) {
+    const view = statsLines(stats, { width, tab: 'spending', stackBy: 'model', ansi: true });
+    assert.ok(view.lines.every((line) => visible(line).length <= width), `${String(width)}-column line overrun`);
+  }
+});
+
 test('the four panel slots remain titled at narrow width and are capped at six rows', () => {
   const view = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false });
   const lines = view.lines.map(visible);
