@@ -140,6 +140,27 @@ function windowLabel(window) {
   return String(window?.key ?? window?.label ?? 'window');
 }
 
+function refusalStatus(row, nowMs = Date.now()) {
+  const marker = row?.quotaRefusal;
+  if (row?.meterSource !== 'quota-refusal' && !marker) return null;
+  const raw = row?.quotaRefusedAt
+    ?? marker?.refusedAt
+    ?? marker?.refused_at
+    ?? null;
+  const refusedAt = Date.parse(raw ?? '');
+  let age = 'recently';
+  if (Number.isFinite(refusedAt)) {
+    const minutes = Math.max(0, Math.floor((nowMs - refusedAt) / 60_000));
+    if (minutes < 1) age = 'just now';
+    else if (minutes < 60) age = `${minutes}m ago`;
+    else {
+      const hours = Math.floor(minutes / 60);
+      age = hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+    }
+  }
+  return `blocked · refused ${age}`;
+}
+
 function resetLine(window, ansi) {
   const reset = resetDuration(window);
   const base = paint(reset ? `  resets ${reset}` : '  reset time unavailable', METER_COLORS.dim, ansi);
@@ -208,7 +229,7 @@ function windowLines(row, metrics, ansi) {
   return lines;
 }
 
-export function budgetLines(budget, { width = 120, ansi = true } = {}) {
+export function budgetLines(budget, { width = 120, ansi = true, nowMs = Date.now() } = {}) {
   const cols = columns(width);
   const rows = rowsOf(budget);
   const regions = [];
@@ -218,7 +239,9 @@ export function budgetLines(budget, { width = 120, ansi = true } = {}) {
   const metrics = windowMetrics(rows, cols);
   for (const [index, row] of rows.entries()) {
     const name = String(row?.name ?? 'pool');
-    lines.push(cut(ansi ? `${BOLD}${name}${RESET}` : name, cols));
+    const status = refusalStatus(row, nowMs);
+    const heading = status ? `${name} · ${status}` : name;
+    lines.push(cut(ansi ? `${BOLD}${heading}${RESET}` : heading, cols));
     lines.push(...windowLines(row, metrics, ansi).map((line) => cut(line, cols)));
     const plan = planLine(row, ansi);
     if (plan) lines.push(cut(plan, cols));

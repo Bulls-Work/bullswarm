@@ -31,7 +31,7 @@ import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
-import { getMeterReading } from '../meters/registry.js';
+import { getMeterReading, refreshMeterAfterQuota } from '../meters/registry.js';
 import { loadProviders, transcriptReaderFor } from './providers.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -787,6 +787,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         text: quotaFailure.context ?? quotaFailure.line ?? '',
         pool: connector.name ?? null,
         bullswarmDir: opts.bullswarmDir ?? null,
+        now: endedAt,
       })
     : null;
 
@@ -900,6 +901,26 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     }
   }
 
+  // A quota verdict invalidates the cache even when it was technically fresh:
+  // the provider just refused this attempt, so routing must not trust the
+  // low percentage that happened to be captured before it. Force one meter
+  // read now; when that read is unavailable, registry.js persists a truthful
+  // 100% quota-refusal marker for the shortest window instead.
+  let meterRefresh = null;
+  if (verdict.failureKind === 'quota' && poolName && home) {
+    const meterReader = opts.meterReader ?? opts.readMeter ?? opts.reader;
+    meterRefresh = await refreshMeterAfterQuota(poolName, {
+      bullswarmDir: home,
+      reader: meterReader,
+      providers: opts.providers,
+      connector,
+      subscription: subscriptionConfig,
+      nowMs: endedAt,
+      resetAtMs: quotaDeadline?.source === 'message' ? quotaDeadline.until : null,
+      reason: quotaFailure?.line ?? quotaFailure?.signature ?? verdict.why,
+    });
+  }
+
   const usableDespite =
     !verdict.ok &&
     typeof opts.outputValidator !== 'function' &&
@@ -934,6 +955,13 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     pick: { pool: connector.name, model: selectedModel, command: connector.spawn.cmd },
     contentUsableDespiteExit: usableDespite,
     ...(structured ? { structured } : {}),
+    ...(meterRefresh ? {
+      meterRefresh: {
+        source: meterRefresh.source,
+        quotaRefusal: meterRefresh.quotaRefusal ?? null,
+        capturedAt: meterRefresh.snapshot?.captured_at ?? null,
+      },
+    } : {}),
     meta: {
       pool: connector.name,
       exitCode: obs.exitCode,

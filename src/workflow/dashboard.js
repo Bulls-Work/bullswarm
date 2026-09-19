@@ -4182,7 +4182,7 @@ function budgetPage(model, opts, body) {
     if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
     return ` Budget · this week${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
   }
-  pushView(body, budgetLines(model.budget, { width, ansi: meterAnsi() }));
+  pushView(body, budgetLines(model.budget, { width, ansi: meterAnsi(), nowMs: opts.nowMs }));
   if (opts.budgetPool) body.push(dimText(` selected pool · ${opts.budgetPool}`, width));
   return ` Budget · ${model.budget.days ?? 7} days to ${model.budget.timeZone ?? 'local'}${sampled}${opts.budgetPool ? ` · ${opts.budgetPool}` : ''}`;
 }

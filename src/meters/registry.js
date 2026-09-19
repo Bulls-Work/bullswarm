@@ -3,7 +3,10 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { MeterCache, paceSnapshot, FRESH_MS, STALE_MS } from './framework.js';
+import {
+  MeterCache, paceSnapshot, FRESH_MS, STALE_MS, WINDOW_MS,
+  normalizePacingWindow,
+} from './framework.js';
 import { loadProviders, providerFor } from '../lib/providers.js';
 import { migratePoolNameHome } from '../lib/state.js';
 
@@ -99,11 +102,53 @@ function decorateError(error, hold, holdUntil) {
   return error;
 }
 
+/**
+ * A cached snapshot can be synthetic: when a provider refuses an attempt and
+ * its meter endpoint is unavailable, the refusal itself is the strongest
+ * evidence we have. Keep that marker on the snapshot so every process that
+ * reads the cache (routing, pools, and the dashboard) sees the same fact.
+ */
+function quotaRefusalOf(snapshot) {
+  const marker = snapshot?.quota_refusal;
+  if (!marker || typeof marker !== 'object') return null;
+  const refusedAt = typeof marker.refused_at === 'string' ? marker.refused_at : null;
+  const resetsAt = typeof marker.resets_at === 'string' ? marker.resets_at : null;
+  const window = typeof marker.window === 'string' ? marker.window : null;
+  if (!refusedAt && !resetsAt && !window) return null;
+  return {
+    source: 'quota-refusal',
+    refusedAt,
+    resetsAt,
+    window,
+    reason: typeof marker.reason === 'string' ? marker.reason : null,
+  };
+}
+
+function readingWithMarker(result, snapshot = result?.snapshot) {
+  const marker = quotaRefusalOf(snapshot);
+  return marker ? { ...result, source: 'quota-refusal', quotaRefusal: marker } : result;
+}
+
+/** Read only a persisted quota-refusal marker; never contacts a provider. */
+export function cachedQuotaRefusal(pool, { bullswarmDir = METERS_DIR(), nowMs = Date.now() } = {}) {
+  migratePoolNameHome(bullswarmDir);
+  const cache = new MeterCache(join(bullswarmDir, 'meters'));
+  const snapshot = cache.get(pool);
+  const marker = quotaRefusalOf(snapshot);
+  if (!marker) return null;
+  return {
+    snapshot,
+    source: 'quota-refusal',
+    quotaRefusal: marker,
+    ...paceSnapshot(snapshot, nowMs),
+  };
+}
+
 function staleResult(cached, nowMs, error, holdUntil, reason) {
   const capturedMs = Date.parse(cached?.captured_at);
   const ageMs = Number.isFinite(capturedMs) ? nowMs - capturedMs : null;
   const meterError = reason ?? meterErrorText(error);
-  return {
+  return readingWithMarker({
     snapshot: cached,
     source: 'stale',
     error,
@@ -111,7 +156,7 @@ function staleResult(cached, nowMs, error, holdUntil, reason) {
     holdUntil,
     ageMs,
     ...paceSnapshot(cached, nowMs),
-  };
+  }, cached);
 }
 
 /**
@@ -156,12 +201,13 @@ export async function getMeterReading(pool, opts = {}) {
   }
 
   if (!force && cached && nowMs - Date.parse(cached.captured_at) <= FRESH_MS) {
-    return { snapshot: cached, source: 'cache', ...paceSnapshot(cached, nowMs) };
+    return readingWithMarker({ snapshot: cached, source: 'cache', ...paceSnapshot(cached, nowMs) }, cached);
   }
 
   const reader = opts.reader ?? readerFor(pool, {
     bullswarmDir: opts.bullswarmDir,
     providers: opts.providers,
+    subscription: opts.subscription,
     subscriptions: opts.subscriptions,
   });
   if (!reader) {
@@ -173,20 +219,34 @@ export async function getMeterReading(pool, opts = {}) {
     // handled by config.js; signal that here.
     if (cached) {
       const ageMs = nowMs - Date.parse(cached.captured_at);
-      if (Number.isFinite(ageMs) && ageMs <= STALE_MS) {
-        return {
+      // A quota-refusal marker is an explicit routing wall, not an ordinary
+      // stale measurement. Keep it visible until a successful live read below
+      // 100% replaces it, even when the provider has been unreachable longer
+      // than STALE_MS.
+      if (quotaRefusalOf(cached) || (Number.isFinite(ageMs) && ageMs <= STALE_MS)) {
+        return readingWithMarker({
           snapshot: cached,
           source: ageMs <= FRESH_MS ? 'cache' : 'stale',
           ageMs,
           ...paceSnapshot(cached, nowMs),
-        };
+        }, cached);
       }
     }
     return { snapshot: null, source: 'none', pacing: null, burstGate: false, windows: {} };
   }
 
   try {
-    const snapshot = await reader();
+    const rawSnapshot = await reader();
+    // A provider reader is authoritative. If a test adapter or an older
+    // provider returns the cache object by reference, do not let the
+    // synthetic refusal metadata survive a successful live read.
+    const snapshot = rawSnapshot && typeof rawSnapshot === 'object'
+      ? { ...rawSnapshot }
+      : rawSnapshot;
+    if (snapshot && typeof snapshot === 'object' && quotaRefusalOf(snapshot)) {
+      delete snapshot.quota_refusal;
+      if (snapshot.source === 'quota-refusal') delete snapshot.source;
+    }
     cache.put(pool, snapshot);
     try { cache.clearHold(pool); } catch { /* a later live read can retry cleanup */ }
     // The cache keeps only the latest reading; the spend model needs the
@@ -200,12 +260,161 @@ export async function getMeterReading(pool, opts = {}) {
     decorateError(err, hold, holdUntil);
     if (cached) {
       const ageMs = nowMs - Date.parse(cached.captured_at);
-      if (ageMs <= STALE_MS || nowMs < holdUntil) {
+      if (quotaRefusalOf(cached) || ageMs <= STALE_MS || nowMs < holdUntil) {
         return staleResult(cached, nowMs, err, holdUntil, hold.reason);
       }
     }
     throw err;
   }
+}
+
+// --- quota refusal refresh -------------------------------------------------
+
+const QUOTA_WINDOWS = Object.freeze({
+  five_hour: { name: '5h', pacing: null, ms: WINDOW_MS['5h'] },
+  seven_day: { name: 'weekly', pacing: 'weekly', ms: WINDOW_MS.weekly },
+  monthly: { name: 'monthly', pacing: 'monthly', ms: null },
+});
+
+function finiteMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function windowDeclaredByConnector(connector, subscription) {
+  const raw = connector?.meter?.window;
+  const values = typeof raw === 'string' ? raw.toLowerCase().split(/[+,_\s]+/) : [];
+  if (values.includes('5h') || values.includes('five_hour') || values.includes('five-hour')) return 'five_hour';
+  if (values.includes('weekly') || values.includes('7d') || values.includes('seven_day')) return 'seven_day';
+  if (values.includes('monthly') || values.includes('mo')) return 'monthly';
+  const pacing = normalizePacingWindow(subscription?.quotaWindow ?? connector?.subscription?.quotaWindow);
+  return pacing === 'monthly' ? 'monthly' : pacing === 'weekly' ? 'seven_day' : null;
+}
+
+function windowHasData(snapshot, key) {
+  const window = snapshot?.[key];
+  if (!window || typeof window !== 'object') return false;
+  return Number.isFinite(Number(window.utilization)) || finiteMs(window.resets_at) != null;
+}
+
+function quotaWindowFor(snapshot, connector, subscription) {
+  // The provider snapshot is the most concrete declaration. A present 5h
+  // field with actual usage/reset data wins. Normalized weekly-only provider
+  // snapshots still carry a null-shaped five_hour field, which is not a real
+  // shorter quota and must not turn a weekly refusal into a fictitious 5h wall.
+  if (windowHasData(snapshot, 'five_hour')) return 'five_hour';
+  const declared = windowDeclaredByConnector(connector, subscription);
+  if (declared) return declared;
+  if (windowHasData(snapshot, 'seven_day')) return 'seven_day';
+  if (windowHasData(snapshot, 'monthly')) return 'monthly';
+  return 'seven_day';
+}
+
+function addCalendarMonth(ms) {
+  const date = new Date(ms);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + 1);
+  const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, last));
+  return date.getTime();
+}
+
+function nextResetForWindow(windowKey, prior, nowMs) {
+  const info = QUOTA_WINDOWS[windowKey] ?? QUOTA_WINDOWS.seven_day;
+  let reset = finiteMs(prior?.[windowKey]?.resets_at);
+  if (reset != null) {
+    for (let count = 0; count < 2400 && reset <= nowMs; count += 1) {
+      reset = windowKey === 'monthly' ? addCalendarMonth(reset) : reset + info.ms;
+    }
+    if (reset > nowMs) return reset;
+  }
+  if (windowKey === 'monthly') return addCalendarMonth(nowMs);
+  return nowMs + info.ms;
+}
+
+function quotaRefusalSnapshot(pool, {
+  cached, connector, subscription, nowMs, resetAtMs, reason,
+} = {}) {
+  const windowKey = quotaWindowFor(cached, connector, subscription);
+  const info = QUOTA_WINDOWS[windowKey] ?? QUOTA_WINDOWS.seven_day;
+  const namedReset = finiteMs(resetAtMs);
+  const resetsAtMs = namedReset != null && namedReset > nowMs
+    ? namedReset
+    : nextResetForWindow(windowKey, cached, nowMs);
+  const resetsAt = new Date(resetsAtMs).toISOString();
+  const refusedAt = new Date(nowMs).toISOString();
+  const snapshot = cached && typeof cached === 'object' ? { ...cached } : {};
+  snapshot.pool ??= pool;
+  snapshot.captured_at = refusedAt;
+  snapshot.source = 'quota-refusal';
+  snapshot.quota_refusal = {
+    source: 'quota-refusal',
+    refused_at: refusedAt,
+    resets_at: resetsAt,
+    window: info.name,
+    reason: reason ? String(reason).slice(0, 300) : null,
+  };
+  snapshot[windowKey] = {
+    ...(snapshot[windowKey] && typeof snapshot[windowKey] === 'object' ? snapshot[windowKey] : {}),
+    utilization: 100,
+    resets_at: resetsAt,
+    source: 'quota-refusal',
+  };
+  return { snapshot, marker: quotaRefusalOf(snapshot), windowKey };
+}
+
+/**
+ * Refresh a pool immediately after a quota refusal. The forced read bypasses
+ * FRESH_MS. A live reading wins and naturally replaces any prior marker; when
+ * the reader is absent or fails, the refusal is persisted as a synthetic 100%
+ * reading for the shortest available window so stale low usage cannot route
+ * another attempt back to the refused pool.
+ */
+export async function refreshMeterAfterQuota(pool, opts = {}) {
+  const nowMs = finiteMs(opts.nowMs) ?? Date.now();
+  const reader = opts.reader ?? opts.meterReader ?? opts.readMeter;
+  let reading = null;
+  try {
+    reading = await getMeterReading(pool, {
+      ...opts,
+      reader,
+      force: true,
+      nowMs,
+    });
+  } catch {
+    reading = null;
+  }
+  if (reading?.source === 'live') return reading;
+
+  const home = opts.bullswarmDir ?? opts.home ?? METERS_DIR();
+  migratePoolNameHome(home);
+  const cache = new MeterCache(join(home, 'meters'));
+  const cached = cache.get(pool);
+  const marker = quotaRefusalSnapshot(pool, {
+    cached,
+    connector: opts.connector ?? null,
+    subscription: opts.subscription ?? null,
+    nowMs,
+    resetAtMs: opts.resetAtMs ?? opts.resetsAt ?? null,
+    reason: opts.reason ?? opts.message ?? null,
+  });
+  cache.put(pool, marker.snapshot);
+  // A quota refusal is an authoritative routing wall. The normal meter hold
+  // only controls when a provider is retried, so do not let it relabel this
+  // synthetic snapshot as a generic stale HTTP error.
+  try { cache.clearHold(pool); } catch { /* best effort */ }
+  return {
+    snapshot: marker.snapshot,
+    source: 'quota-refusal',
+    quotaRefusal: marker.marker,
+    ...paceSnapshot(marker.snapshot, nowMs),
+  };
 }
 
 /** Best-effort reading for all pools that have readers; never throws. */
