@@ -161,6 +161,7 @@ test('run records a task ledger entry with project and lifecycle fields', () => 
     assert.equal(entry.pool, 'echo');
     assert.equal(entry.model, 'echo-local');
     assert.equal(entry.project, 'bullswarm');
+    assert.equal(entry.cwd, REPO);
     assert.equal(entry.ok, true);
     assert.equal(entry.reason, null);
     assert.match(entry.taskFile, /\/runs\/task-/);

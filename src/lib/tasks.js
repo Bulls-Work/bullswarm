@@ -7,11 +7,14 @@
 //     released.
 // This module normalizes both into the small row shape UI code needs. It is a
 // display reader: missing/torn files and older records produce null fields,
-// never an exception or a made-up duration.
+// never an exception or a made-up duration. A missing project is recoverable
+// only when the old record also preserved its cwd; records with no cwd stay
+// anonymous.
 
 import { join } from 'node:path';
 import { readJsonSafe } from './fsjson.js';
 import { listAssignments } from './assignments.js';
+import { projectName } from './project.js';
 
 const TASK_KIND = 'run';
 
@@ -59,7 +62,10 @@ function durationMs(entry, startedAt, endedAt) {
 }
 
 function projectOf(entry) {
-  return nullableString(entry?.project ?? entry?.projectName);
+  const recorded = nullableString(entry?.project) ?? nullableString(entry?.projectName);
+  if (recorded) return recorded;
+  const cwd = nullableString(entry?.cwd);
+  return cwd ? projectName(cwd) : null;
 }
 
 function taskRow(record) {

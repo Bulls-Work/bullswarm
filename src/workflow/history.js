@@ -108,8 +108,15 @@ function emptyDay(date) {
 
 /** A finished `bullswarm run` row is kept distinct from workflow history. */
 function taskHistoryRow(task) {
+  const recorded = typeof task?.project === 'string' && task.project.trim()
+    ? task.project.trim()
+    : typeof task?.projectName === 'string' && task.projectName.trim()
+      ? task.projectName.trim()
+      : null;
+  const cwd = typeof task?.cwd === 'string' && task.cwd.trim() ? task.cwd.trim() : null;
   return {
     ...task,
+    project: recorded ?? (cwd ? projectName(cwd) : null),
     kind: 'task',
     source: 'run',
   };

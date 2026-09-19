@@ -153,7 +153,7 @@ function round(value, places = 2) {
  *                               runId/actionId/attempt/expectedMinutes/
  *                               expectedSource/workerPid/startedAt/id and the
  *                               optional single-task identity fields
- *                               project/taskFile/outFile
+ *                               project/cwd/taskFile/outFile
  * @returns {object} the stored record
  */
 export function registerAssignment(bullswarmDir, fields = {}) {
@@ -188,6 +188,7 @@ export function registerAssignment(bullswarmDir, fields = {}) {
     // these null, preserving their existing shape semantically while allowing
     // old ledger files to remain readable.
     project: fields.project ?? null,
+    cwd: fields.cwd ?? null,
     taskFile: fields.taskFile ?? null,
     outFile: fields.outFile ?? null,
     expectedMinutes,
@@ -229,6 +230,7 @@ export function updateAssignment(bullswarmDir, id, patch = {}) {
   if ('expectedMinutes' in patch) next.expectedMinutes = nullableNumber(patch.expectedMinutes);
   if ('expectedSource' in patch) next.expectedSource = patch.expectedSource ?? null;
   if ('project' in patch) next.project = patch.project ?? null;
+  if ('cwd' in patch) next.cwd = patch.cwd ?? null;
   if ('taskFile' in patch) next.taskFile = patch.taskFile ?? null;
   if ('outFile' in patch) next.outFile = patch.outFile ?? null;
   return writeRecord(dir, next);
