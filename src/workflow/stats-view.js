@@ -2,7 +2,7 @@
 // stats-model; this module chooses model-owned values for the four tabs and
 // turns them into the shared surface's input shape.
 
-import { formatDashboardValue, periodToggle, seriesColor } from './dash-kit.js';
+import { formatDashboardValue, periodToggle, seriesColor, seriesColors } from './dash-kit.js';
 import {
   formatHoverLabel,
   renderColumnChart,
@@ -30,6 +30,46 @@ const TAB_ALIASES = Object.freeze({ overview: 'spending', trends: 'spending', po
 export const STATS_TABS = Object.freeze(TABS.map((tab) => tab.id));
 
 const visible = (value) => String(value ?? '').replace(SGR, '');
+const RESET = '\x1b[0m';
+
+/**
+ * Clip a line by terminal cells without discarding its SGR sequences. The
+ * divider and the panel grid are composed after their children render, so a
+ * plain String#slice here would either move the divider or leave a colour run
+ * open. This deliberately has no ellipsis: the desktop frame historically
+ * clipped at the column edge and its geometry must not move.
+ */
+function clipVisible(value, width) {
+  const text = String(value ?? '');
+  const number = Number(width);
+  const cols = Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
+  if (cols <= 0) return '';
+  if (visible(text).length <= cols) return text;
+  let out = '';
+  let used = 0;
+  for (let index = 0; index < text.length && used < cols;) {
+    if (text[index] === '\x1b') {
+      const match = text.slice(index).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
+      if (match) {
+        out += match[0];
+        index += match[0].length;
+        continue;
+      }
+    }
+    out += text[index];
+    index += 1;
+    used += 1;
+  }
+  return `${out}${text.includes('\x1b') ? RESET : ''}`;
+}
+
+function padVisible(value, width) {
+  const number = Number(width);
+  const cols = Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
+  if (cols <= 0) return '';
+  const clipped = clipVisible(value, cols);
+  return `${clipped}${' '.repeat(Math.max(0, cols - visible(clipped).length))}`;
+}
 function finite(value) {
   if (value == null || value === '' || typeof value === 'boolean') return null;
   const number = Number(value);
@@ -42,7 +82,7 @@ function widthOf(width, fallback = 55) {
 function fit(value, width) {
   const text = String(value ?? '');
   const cols = widthOf(width);
-  return visible(text).length <= cols ? text : visible(text).slice(0, cols);
+  return visible(text).length <= cols ? text : clipVisible(text, cols);
 }
 function object(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -236,7 +276,10 @@ function desktopPanelColumns(panels, rightWidth, tab, period) {
     const second = draw(bottom);
     const offset = first.lines.length + 1;
     return {
-      lines: [...first.lines, '', ...second.lines],
+      // Keep each pre-rendered cell bounded before the outer grid joins it.
+      // This is the panel-side sibling of the chart divider's visible-width
+      // composition and retains the bar SGR codes while doing so.
+      lines: [...first.lines.map((line) => padVisible(line, width)), '', ...second.lines.map((line) => padVisible(line, width))],
       regions: [
         ...(first.regions ?? []),
         ...(second.regions ?? []).map((region) => ({ ...region, row: region.row + offset })),
@@ -253,9 +296,9 @@ function desktopPanelColumns(panels, rightWidth, tab, period) {
 
 function addDesktopDivider(chart, leftWidth, bodyHeight) {
   const lines = Array.from({ length: Math.max(bodyHeight, chart.lines.length) }, (_, index) => {
-    const source = visible(chart.lines[index] ?? '');
-    const padded = `${source}${' '.repeat(Math.max(0, leftWidth - source.length))}`.slice(0, leftWidth);
-    return `${padded.slice(0, Math.max(0, leftWidth - 1))}│`;
+    const bodyWidth = Math.max(0, leftWidth - 1);
+    const padded = padVisible(chart.lines[index] ?? '', bodyWidth);
+    return `${padded}│`;
   });
   return { ...chart, lines, regions: chart.regions ?? [] };
 }
@@ -311,7 +354,9 @@ function chartInput(info, table, tab, stackBy, width, period) {
     names.push('unallocated');
     valuesByName.set('unallocated', fallback);
   }
-  const series = names.map((name) => ({ id: name, label: name, values: valuesByName.get(name), color: name === 'model cost unavailable' ? seriesColor('unallocated') : seriesColor(name), tokenSource: trend.tokenSource ?? null }));
+  const colorNames = names.map((name) => name === 'model cost unavailable' ? 'unallocated' : name);
+  const colors = seriesColors(colorNames);
+  const series = names.map((name, index) => ({ id: name, label: name, values: valuesByName.get(name), color: colors.get(colorNames[index]), tokenSource: trend.tokenSource ?? null }));
   const title = tab === 'spending'
     ? info.modelCostMeasured ? 'Spend per day · API-equivalent · model' : stackBy === 'model' ? 'Worker-minutes per day · model cost is not measured' : 'Spend per day · API-equivalent · pool'
     : tab === 'pool' ? 'Spend per day · API-equivalent · pool' : tab === 'model' ? 'Worker-minutes per day · model' : 'Runs per day · project';
@@ -332,7 +377,7 @@ function chartInput(info, table, tab, stackBy, width, period) {
       };
     }
   }
-  return { chart, trend, names, placeholder };
+  return { chart, trend, names, colors, placeholder };
 }
 function summaryItems(overview, outcomes, poolTable, projectTable) {
   const keys = object(overview?.keys) ?? {};
@@ -385,8 +430,11 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
     panel('Project runs', projectRuns, tab, 'runs', period, 'runs', null, 'project'), panel('Project worker-minutes', projectMinutes, tab, 'minutes', period, 'minutes', null, 'project'), panel('Project API-equivalent', projectSpend, tab, 'spend', period, 'usd', null, 'project'), panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count'),
   ];
 }
-function legendItems(names) {
-  return names.map((name) => ({ id: name, label: name, fullLabel: name, color: name === 'model cost unavailable' ? seriesColor('unallocated') : seriesColor(name) }));
+function legendItems(names, colors = null) {
+  return names.map((name) => {
+    const colorName = name === 'model cost unavailable' ? 'unallocated' : name;
+    return { id: name, label: name, fullLabel: name, color: colors?.get(colorName) ?? seriesColor(colorName) };
+  });
 }
 function actionForRegion(region) {
   const payload = region.payload ?? {};
@@ -424,7 +472,7 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
     : panels;
   const panelHeight = surfacePanels.reduce((most, panelInput) => Math.max(most, panelInput.lines?.length ?? 0), 0);
   const surfaceChart = desktop ? addDesktopDivider(chartData.chart, chartWidth, panelHeight) : chartData.chart;
-  const legendDrawn = renderLegend({ items: legendItems(chartData.names), width: cols, colors: true });
+  const legendDrawn = renderLegend({ items: legendItems(chartData.names, chartData.colors), width: cols, colors: true });
   const legend = { ...legendDrawn, lines: legendDrawn.lines.map((line, index) => index === 0 ? `Legend  ${line}` : line) };
   const notes = [];
   const trend = chartData.trend;
