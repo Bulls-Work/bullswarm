@@ -423,6 +423,12 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
   const elapsedPct = finite(pool?.elapsedPct);
   const rate = rateBlock(pool);
   const sampledAt = capturedAtOf([pool]);
+  const quotaRefusal = pool?.quotaRefusal
+    ?? (pool?.meterSource === 'quota-refusal' ? pool?.meterSnapshot?.quota_refusal ?? null : null);
+  const quotaRefusedAt = pool?.quotaRefusedAt
+    ?? quotaRefusal?.refusedAt
+    ?? quotaRefusal?.refused_at
+    ?? null;
   const reportedWindows = poolWindows(pool, at);
   const modelWindows = modelWindowsOf(pool, at);
   const orderedWindows = [];
@@ -621,6 +627,13 @@ export function poolBudget(pool, { rollups = [], prices = null, period = 'week',
     from: range.from,
     to: range.to,
     meterSource: pool?.meterSource ?? 'none',
+    quotaRefusal,
+    quotaRefusedAt,
+    quotaRefusalResetsAt: pool?.quotaRefusalResetsAt
+      ?? quotaRefusal?.resetsAt
+      ?? quotaRefusal?.resets_at
+      ?? null,
+    quotaRefusalWindow: pool?.quotaRefusalWindow ?? quotaRefusal?.window ?? null,
     sampledAt,
     sampleAgeText: sampleAgeText(sampledAt, at),
     windows,

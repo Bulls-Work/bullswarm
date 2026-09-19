@@ -109,6 +109,26 @@ export function parseArgs(argv) {
 /** The bracketed meter source shown by `bullswarm pools`. */
 export function meterSourceLabel(pool, nowMs = Date.now()) {
   const source = pool?.meterSource ?? 'none';
+  if (source === 'quota-refusal' || pool?.quotaRefusal) {
+    const refusedAt = Date.parse(
+      pool?.quotaRefusedAt
+        ?? pool?.quotaRefusal?.refusedAt
+        ?? pool?.quotaRefusal?.refused_at
+        ?? '',
+    );
+    const ageMs = Number.isFinite(refusedAt) ? Math.max(0, nowMs - refusedAt) : null;
+    let age = 'recently';
+    if (ageMs != null) {
+      const minutes = Math.floor(ageMs / 60_000);
+      if (minutes < 1) age = 'just now';
+      else if (minutes < 60) age = `${minutes}m ago`;
+      else {
+        const hours = Math.floor(minutes / 60);
+        age = hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+      }
+    }
+    return `blocked · refused ${age}`;
+  }
   if (source === 'stale' && pool?.meterError) {
     const holdUntil = Number(pool.meterHoldUntil);
     const remainingMs = holdUntil - nowMs;

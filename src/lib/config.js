@@ -31,6 +31,7 @@ import {
   FIVE_HOUR_NEAR_LIMIT_PCT, pacingWindowFor, pickPacingWindow, declaredResetPacing,
 } from '../meters/framework.js';
 import { loadProviders } from './providers.js';
+import { cachedQuotaRefusal } from '../meters/registry.js';
 import { isFreeModel } from './usage.js';
 import {
   configuredModel, disabledModelsForPool, resolveDispatchModel, selectedModelsForTier,
@@ -159,6 +160,13 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       fiveHourResetsAt: null,
       nearFiveHourLimit: false,
       meterSnapshot: null,
+      // A provider refusal can be stronger than the last readable meter. The
+      // marker is persisted in that snapshot and projected here so every view
+      // can say why the pool is blocked and when the next read may clear it.
+      quotaRefusal: null,
+      quotaRefusedAt: null,
+      quotaRefusalResetsAt: null,
+      quotaRefusalWindow: null,
       // A failed reader is still useful context when the snapshot is stale;
       // the CLI and Mod surface these without serializing an Error object.
       meterError: null,
@@ -177,15 +185,31 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
   }
 
   for (const p of pools) {
-    if (!p.enabled || isQuarantined(p, now)) continue;
+    if (!p.enabled) continue;
     const ps = state.pools[p.name] ?? {};
-
-    const reading = readings[p.name];
+    const paused = isQuarantined(p, now);
+    // Quota failures quarantine a pool, so the live poll list deliberately
+    // omits it. Still project its persisted refusal marker into `pools` and
+    // Budget without contacting the provider; otherwise the page would erase
+    // the very 100% wall that caused the quarantine.
+    const quotaPaused = paused && (
+      ps.quarantine?.kind === 'quota'
+      || /quota|usage limit|rate limit/i.test(String(ps.quarantine?.reason ?? ''))
+    );
+    const reading = readings[p.name]
+      ?? (quotaPaused ? cachedQuotaRefusal(p.name, { bullswarmDir, nowMs: now }) : null);
+    if (paused && !reading) continue;
     if (reading) {
       p.meterError = typeof reading.meterError === 'string' && reading.meterError
         ? reading.meterError
         : shortMeterError(reading.error);
       p.meterHoldUntil = Number.isFinite(reading.holdUntil) ? reading.holdUntil : null;
+      p.quotaRefusal = reading.quotaRefusal ?? reading.snapshot?.quota_refusal ?? null;
+      if (p.quotaRefusal && typeof p.quotaRefusal === 'object') {
+        p.quotaRefusedAt = p.quotaRefusal.refusedAt ?? p.quotaRefusal.refused_at ?? null;
+        p.quotaRefusalResetsAt = p.quotaRefusal.resetsAt ?? p.quotaRefusal.resets_at ?? null;
+        p.quotaRefusalWindow = p.quotaRefusal.window ?? null;
+      }
     }
     // The 5h gate is independent of the pacing window: a reading may carry a
     // 5h utilization with no weekly/monthly window to pace by, and routing
@@ -195,6 +219,7 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       p.fiveHourUsedPct = fiveHour.usedPct;
       p.fiveHourResetsAt = fiveHour.resetsAt;
       p.nearFiveHourLimit = fiveHour.nearLimit;
+      p.burstGate = reading.burstGate === true;
     }
     const paced = pacedReading(reading, p.pacingWindow)
       // Provider usage with no provider reset: the operator-declared reset
@@ -213,8 +238,25 @@ export function buildPools(bullswarmDir, now = Date.now(), readings = {}, opts =
       p.pace = paced.pacing.surplus; // surplus = elapsed − used
       p.paceResetsAt = paced.pacing.resetsAt;
       p.pacingWindow = paced.window;
-      p.burstGate = reading.burstGate === true;
       p.meterSnapshot = reading.snapshot ?? null;
+    } else if (reading?.source === 'quota-refusal') {
+      // A five-hour-only provider has no pacing score, but its synthetic 100%
+      // gate is still authoritative. Keep the refusal source and snapshot so
+      // the Budget page and `bullswarm pools` do not fall back to a stale
+      // declared percentage or call this pool unmetered.
+      p.meterSource = 'quota-refusal';
+      p.meterSnapshot = reading.snapshot ?? null;
+      p.burstGate = reading.burstGate === true;
+      if (p.quotaRefusalWindow === 'weekly' || p.quotaRefusalWindow === 'monthly') {
+        const selected = p.quotaRefusalWindow === 'monthly'
+          ? reading.snapshot?.monthly
+          : reading.snapshot?.seven_day;
+        p.usedPct = finiteOrNull(selected?.utilization) ?? 100;
+        p.pacingWindow = p.quotaRefusalWindow;
+        p.elapsedPct = null;
+        p.pace = -100;
+        p.paceResetsAt = selected?.resets_at ?? p.quotaRefusalResetsAt;
+      }
     } else {
       // Declared / unmetered fallback
       const meter = { ...(p.connector.meter ?? {}), ...(ps.meter ?? {}) };

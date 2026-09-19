@@ -271,6 +271,18 @@ function paceText(pool) {
   return `${pace >= 0 ? '+' : '−'}${Math.abs(pace).toFixed(1)}`;
 }
 
+function quotaRefusalText(pool, nowMs = Date.now()) {
+  if (pool?.meterSource !== 'quota-refusal' && !pool?.quotaRefusal) return null;
+  const raw = pool?.quotaRefusedAt
+    ?? pool?.quotaRefusal?.refusedAt
+    ?? pool?.quotaRefusal?.refused_at
+    ?? null;
+  const at = Date.parse(raw ?? '');
+  if (!Number.isFinite(at)) return 'blocked · refused recently';
+  const minutes = Math.max(0, Math.floor((nowMs - at) / 60_000));
+  return minutes < 1 ? 'blocked · refused just now' : `blocked · refused ${minutes}m ago`;
+}
+
 /**
  * One compact row per enabled pool — the rows the Home and Run pages end
  * with: display name, a 10-cell bar, used/elapsed, the signed pace coloured
@@ -286,8 +298,11 @@ export function poolSummaryLines(pools, assignments = [], { width = 120, ansi = 
       const name = String(pool.name).padEnd(NAME_WIDTH).slice(0, NAME_WIDTH);
       const used = pool.usedPct == null ? '  —' : `${String(Math.round(pool.usedPct)).padStart(3)}%`;
       const elapsed = pool.elapsedPct == null ? '' : `/${String(Math.round(pool.elapsedPct)).padStart(2)}%`;
+      const refused = quotaRefusalText(pool);
       const state = pool.quarantine
         ? { word: 'quarantined', color: METER_COLORS.red }
+        : refused
+          ? { word: refused, color: METER_COLORS.red }
         : { word: paceText(pool), color: severityColor(pool.usedPct) };
       const running = busy
         .filter((entry) => entry?.pool === pool.name)
