@@ -62,6 +62,17 @@ function normalizeWindow(value) {
   return name === '5h' || name === 'weekly' || name === 'monthly' ? name : null;
 }
 
+// Meter-history intervals use the provider-facing `five_hour` key while
+// subscription records use the compact `5h` name. Keep the comparison
+// canonical without changing the durable interval value we received.
+function ledgerWindow(value) {
+  const name = text(value)?.toLowerCase();
+  if (name === '5h' || name === 'five_hour' || name === 'five-hour') return '5h';
+  if (name === 'weekly' || name === 'seven_day' || name === 'seven-day') return 'weekly';
+  if (name === 'monthly') return 'monthly';
+  return null;
+}
+
 function previousUtcMonth(resetMs) {
   const reset = new Date(resetMs);
   const year = reset.getUTCFullYear();
@@ -441,7 +452,22 @@ export function meterLedgerAttribution({
     : [...poolAttempts, current];
   const ownStart = attemptStartedAt(current);
   const ownEnd = attemptFinishedAt(current);
+  const resolvedWindow = normalizeWindow(window);
+  const callerPassedWindow = window !== null && window !== undefined;
   const usable = source.filter((interval) => {
+    const intervalWindowValue = interval?.window;
+    const intervalHasWindow = intervalWindowValue !== null
+      && intervalWindowValue !== undefined
+      && String(intervalWindowValue).trim() !== '';
+    const intervalWindow = ledgerWindow(intervalWindowValue);
+    // A caller that resolved a window must never consume a row from another
+    // meter window. Conversely, a legacy interval with no window metadata is
+    // usable only when the caller also left the window unresolved.
+    if (callerPassedWindow) {
+      if (resolvedWindow == null || !intervalHasWindow || intervalWindow !== resolvedWindow) return false;
+    } else if (intervalHasWindow) {
+      return false;
+    }
     const at = intervalAt(interval);
     if (at == null) return false;
     if (ownStart != null && at < ownStart) return false;
@@ -463,6 +489,7 @@ export function meterLedgerAttribution({
     if (delta === 0) {
       hadZero = true;
       rows.push({
+        window: interval.window ?? resolvedWindow ?? null,
         at: interval.at ?? interval.to ?? interval.captured_at ?? null,
         from: interval.from ?? interval.fromAt ?? null,
         row: interval.row ?? interval.index ?? null,
@@ -495,6 +522,7 @@ export function meterLedgerAttribution({
     deltaPct = roundPct(deltaPct + share);
     conservedDeltaPct = roundPct(conservedDeltaPct + delta);
     rows.push({
+      window: interval.window ?? resolvedWindow ?? null,
       at: interval.at ?? interval.to ?? interval.captured_at ?? null,
       from: interval.from ?? interval.fromAt ?? null,
       row: interval.row ?? interval.index ?? null,

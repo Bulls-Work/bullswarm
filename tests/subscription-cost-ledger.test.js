@@ -6,9 +6,10 @@ import {
   readCalibration,
   subscriptionCost,
 } from '../src/lib/subscription-cost.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { meterHistoryIntervals } from '../src/meters/registry.js';
 
 const attempts = [
   {
@@ -41,8 +42,38 @@ const attempts = [
   },
 ];
 
-function interval(at, deltaPct, resolutionPct = 1, reason = null) {
-  return { at, deltaPct, resolutionPct, reason };
+function interval(at, deltaPct, resolutionPct = 1, reason = null, window = 'weekly') {
+  return { at, deltaPct, resolutionPct, reason, window };
+}
+
+function historyIntervals(home, pool, lines) {
+  const meters = join(home, 'meters');
+  const history = join(meters, 'history');
+  mkdirSync(history, { recursive: true });
+  writeFileSync(join(history, `${pool}.jsonl`), `${lines.join('\n')}\n`);
+  return meterHistoryIntervals(pool, { dir: meters });
+}
+
+function observedRealRow({ pool, lines, startedAt, finishedAt, window = 'weekly' }) {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-real-ledger-'));
+  try {
+    const ledgerIntervals = historyIntervals(home, pool, lines);
+    const result = subscriptionCost({
+      pool,
+      subscription: { monthlyPriceUsd: 200, quotaWindow: window },
+      ledgerIntervals,
+      attempts: [{
+        id: 'real-row-attempt', startedAt, finishedAt, api: { usd: 1 },
+      }],
+      attemptId: 'real-row-attempt',
+      startedAt,
+      finishedAt,
+      apiUsd: 1,
+    });
+    return { result, ledgerIntervals };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 
 test('shares the real Codex whole-percent ledger by API dollars and conserves it', () => {
@@ -68,6 +99,7 @@ test('shares the real Codex whole-percent ledger by API dollars and conserves it
   assert.equal(total[0].basis, 'observed:meter-ledger');
   assert.equal(total[0].resolutionPct, 1);
   assert.equal(total[0].ledgerRows.length, 3);
+  assert.deepEqual(total[0].ledgerRows.map((row) => row.window), ['weekly', 'weekly', 'weekly']);
 });
 
 test('decimal meter deltas retain 0.1-point resolution', () => {
@@ -128,10 +160,76 @@ test('reset/decrease intervals are ignored without negative or double-counted sp
     ],
     attempts: [{ id: 'a', startedAt: '2026-09-19T17:59:00Z', finishedAt: '2026-09-19T18:04:00Z', api: { usd: 1 } }],
     attemptId: 'a', startedAt: '2026-09-19T17:59:00Z', finishedAt: '2026-09-19T18:04:00Z', apiUsd: 1,
+    window: 'weekly',
   });
   assert.equal(result.deltaPct, 3);
   assert.equal(result.conservedDeltaPct, 3);
   assert.equal(result.ledgerRows.length, 2);
+});
+
+test('real Claude ledger rows charge only the requested weekly window', () => {
+  const { result, ledgerIntervals } = observedRealRow({
+    pool: 'claude-code',
+    lines: [
+      '{"captured_at":"2026-09-18T07:08:10.267Z","five_hour":{"utilization":16,"resets_at":"2026-09-18T07:40:00.327667+00:00"},"weekly":{"utilization":65,"resets_at":"2026-09-21T12:00:00.327687+00:00"}}',
+      '{"captured_at":"2026-09-18T07:13:12.856Z","five_hour":{"utilization":17,"resets_at":"2026-09-18T07:40:00.838439+00:00"},"weekly":{"utilization":66,"resets_at":"2026-09-21T12:00:00.838459+00:00"}}',
+    ],
+    startedAt: '2026-09-18T07:12:00.000Z',
+    finishedAt: '2026-09-18T07:14:00.000Z',
+  });
+  assert.equal(ledgerIntervals.length, 2);
+  assert.equal(result.deltaPct, 1);
+  assert.equal(result.usd, 0.459958932238193);
+  assert.deepEqual(result.ledgerRows.map((row) => row.window), ['weekly']);
+});
+
+test('real Claude Acme ledger rows exclude the four-point five-hour jump', () => {
+  const { result, ledgerIntervals } = observedRealRow({
+    pool: 'claude-code:acme',
+    lines: [
+      '{"captured_at":"2026-09-18T10:12:26.977Z","five_hour":{"utilization":65,"resets_at":"2026-09-18T11:00:00.157370+00:00"},"weekly":{"utilization":84,"resets_at":"2026-09-18T18:00:00.157389+00:00"}}',
+      '{"captured_at":"2026-09-18T10:17:29.792Z","five_hour":{"utilization":69,"resets_at":"2026-09-18T11:00:00.994068+00:00"},"weekly":{"utilization":85,"resets_at":"2026-09-18T18:00:00.994091+00:00"}}',
+    ],
+    startedAt: '2026-09-18T10:16:00.000Z',
+    finishedAt: '2026-09-18T10:18:00.000Z',
+  });
+  assert.equal(ledgerIntervals.length, 2);
+  assert.equal(result.deltaPct, 1);
+  assert.equal(result.usd, 0.459958932238193);
+  assert.deepEqual(result.ledgerRows.map((row) => row.window), ['weekly']);
+});
+
+test('real Command Code mixed-window row keeps the full-precision weekly delta', () => {
+  const { result, ledgerIntervals } = observedRealRow({
+    pool: 'command-code',
+    lines: [
+      '{"captured_at":"2026-09-19T17:53:39.331Z","five_hour":{"utilization":0,"resets_at":null},"weekly":{"utilization":2.012636,"resets_at":"2026-09-24T04:26:47.022Z"},"monthly":{"utilization":1,"resets_at":"2026-10-17T03:06:55.000Z"}}',
+      '{"captured_at":"2026-09-19T17:58:42.526Z","five_hour":{"utilization":0.148115,"resets_at":"2026-09-19T22:58:10.902Z"},"weekly":{"utilization":2.0718820000000004,"resets_at":"2026-09-24T04:26:47.022Z"},"monthly":{"utilization":1.0428571428571427,"resets_at":"2026-10-17T03:06:55.000Z"}}',
+    ],
+    startedAt: '2026-09-19T17:57:00.000Z',
+    finishedAt: '2026-09-19T17:59:00.000Z',
+  });
+  assert.equal(ledgerIntervals.length, 3);
+  assert.deepEqual(ledgerIntervals.map((row) => row.window), ['five_hour', 'weekly', 'monthly']);
+  assert.equal(result.deltaPct, 0.059246);
+  assert.equal(result.usd, 0.027250726899383983);
+  assert.deepEqual(result.ledgerRows.map((row) => row.window), ['weekly']);
+});
+
+test('single-window Codex history keeps its weekly attribution unchanged', () => {
+  const { result, ledgerIntervals } = observedRealRow({
+    pool: 'codex',
+    lines: [
+      '{"captured_at":"2026-09-18T18:23:41.948Z","weekly":{"utilization":69,"resets_at":"2026-09-20T02:18:33.000Z"}}',
+      '{"captured_at":"2026-09-18T18:28:46.575Z","weekly":{"utilization":70,"resets_at":"2026-09-20T02:18:33.000Z"}}',
+    ],
+    startedAt: '2026-09-18T18:27:00.000Z',
+    finishedAt: '2026-09-18T18:29:00.000Z',
+  });
+  assert.deepEqual(ledgerIntervals.map((row) => row.window), ['weekly']);
+  assert.equal(result.deltaPct, 1);
+  assert.equal(result.usd, 0.459958932238193);
+  assert.deepEqual(result.ledgerRows.map((row) => row.window), ['weekly']);
 });
 
 test('calibration rejects below-resolution and non-observed samples', () => {

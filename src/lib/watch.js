@@ -133,6 +133,14 @@ function epochMs(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function ledgerWindow(value) {
+  const name = typeof value === 'string' ? value.trim().toLowerCase() : null;
+  if (name === '5h' || name === 'five_hour' || name === 'five-hour') return '5h';
+  if (name === 'weekly' || name === 'seven_day' || name === 'seven-day') return 'weekly';
+  if (name === 'monthly') return 'monthly';
+  return null;
+}
+
 /**
  * Read only the ledger rows observed between the start and end cursors. The
  * cursor indexes are preferred because a meter interval may begin before the
@@ -141,7 +149,7 @@ function epochMs(value) {
  */
 function attemptLedgerIntervals({
   opts, poolName, home, startSnapshot, endSnapshot, startCursor, endCursor,
-  startedAt, endedAt,
+  startedAt, endedAt, window = null,
 }) {
   const reader = opts.meterHistoryIntervals ?? meterHistoryIntervals;
   if (typeof reader !== 'function' || !poolName) return null;
@@ -149,13 +157,27 @@ function attemptLedgerIntervals({
   try {
     const rows = reader(poolName, {
       dir: opts.meterHistoryDir ?? opts.historyDir ?? opts.ledgerDir ?? join(home, 'meters'),
+      window,
     });
     if (!Array.isArray(rows)) return null;
+    const callerPassedWindow = window !== null && window !== undefined;
+    const resolvedWindow = ledgerWindow(window);
     const startIndex = Number.isInteger(startCursor?.index) ? startCursor.index : null;
     const endIndex = Number.isInteger(endCursor?.index) ? endCursor.index : null;
     const startMs = epochMs(startSnapshot?.at ?? startCursor?.at ?? startedAt);
     const endMs = epochMs(endSnapshot?.at ?? endCursor?.at ?? endedAt);
     return rows.filter((row) => {
+      const rowWindowValue = row?.window;
+      const rowHasWindow = rowWindowValue !== null
+        && rowWindowValue !== undefined
+        && String(rowWindowValue).trim() !== '';
+      if (callerPassedWindow) {
+        if (resolvedWindow == null || !rowHasWindow || ledgerWindow(rowWindowValue) !== resolvedWindow) {
+          return false;
+        }
+      } else if (rowHasWindow) {
+        return false;
+      }
       const rowIndex = Number.isInteger(row?.row) ? row.row : null;
       if (startIndex != null && endIndex != null && rowIndex != null) {
         return rowIndex > startIndex && rowIndex <= endIndex;
@@ -706,6 +728,12 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     }
   }
   const endCursor = cursorFor(endSnapshot, new Date(endedAt).toISOString());
+  const subscriptionConfig = opts.subscription ?? connector.subscription ?? null;
+  const resolvedLedgerWindow = ledgerWindow(subscriptionConfig?.window)
+    ?? ledgerWindow(subscriptionConfig?.quotaWindow)
+    ?? ledgerWindow(endSnapshot?.window)
+    ?? ledgerWindow(startSnapshot?.window)
+    ?? null;
   const ledgerIntervals = attemptLedgerIntervals({
     opts,
     poolName,
@@ -716,6 +744,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     endCursor,
     startedAt,
     endedAt,
+    window: resolvedLedgerWindow,
   });
   const wallSec = Math.round((endedAt - startedAt) / 100) / 10;
 
@@ -793,7 +822,6 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // Subscription accounting is deliberately a separate block from API-rate
   // pricing. The subscription worker owns the formulas and calibration ledger;
   // this call only supplies the attempt facts it needs.
-  const subscriptionConfig = opts.subscription ?? connector.subscription ?? null;
   let subscription = null;
   const subscriptionCost = typeof subscriptionCostModule?.subscriptionCost === 'function'
     ? subscriptionCostModule.subscriptionCost
@@ -861,6 +889,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
           historyCursor: { start: startCursor, end: endCursor },
           attemptId: opts.attemptId ?? null,
           runId: opts.runId ?? null,
+          window: subscription.window ?? resolvedLedgerWindow ?? null,
           intervals: Array.isArray(ledgerIntervals) ? ledgerIntervals : [],
           ledgerRows: Array.isArray(subscription.ledgerRows) ? subscription.ledgerRows : [],
           deltaPct: subscription.deltaPct ?? null,
