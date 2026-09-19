@@ -29,6 +29,7 @@
 
 import { dayKey } from './history.js';
 import { isDeliveredWorkflowStatus } from './status.js';
+import { projectName } from '../lib/project.js';
 
 /** The period toggle, in the order the toggle shows them. */
 export const PERIODS = Object.freeze(['7d', '30d', 'all']);
@@ -355,8 +356,18 @@ function recordWorkerMinutes(record) {
 }
 
 function recordProject(record) {
-  const name = record?.project;
-  return typeof name === 'string' && name.trim() ? name.trim() : 'unknown';
+  const name = record?.project ?? record?.projectName;
+  if (typeof name === 'string' && name.trim()) return name.trim();
+  // The Stats rollup corpus also contains older workflow records whose cwd is
+  // an implementation detail, not a single-task identity. Only the legacy
+  // `bullswarm run` shapes get this compatibility fallback; an unrelated
+  // workflow row with no recorded project remains the honest `unknown` row.
+  const isTask = record?.kind === 'run' || record?.kind === 'task' || record?.source === 'run'
+    || (record?.source == null && record?.picked != null && record?.outFile != null);
+  if (!isTask) return 'unknown';
+  const cwd = typeof record?.cwd === 'string' && record.cwd.trim() ? record.cwd.trim() : null;
+  const derived = cwd ? projectName(cwd) : null;
+  return derived || 'unknown';
 }
 
 // Which pool a whole-run count belongs to, when a stacked bar counts runs and

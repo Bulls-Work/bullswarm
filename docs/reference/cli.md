@@ -201,13 +201,13 @@ A real dispatch (not `--dry-run`) writes two durable records, which is what make
 a single task visible on the dashboard alongside workflow runs:
 
 - While it runs, an **assignment** in `~/.bullswarm/assignments/` with
-  `source: "run"`, plus `project`, `taskFile`, `outFile` and `startedAt`. This
+  `source: "run"`, plus `project`, `cwd`, `taskFile`, `outFile` and `startedAt`. This
   is the row the `Runs` page shows in its `active` block and the Claude mod
   shows on its pane.
 - When it finishes, a **decision-log entry** in `state.json` with
   `kind: "run"`. Alongside the pool, model, verdict and route it always
   recorded, the entry now carries `lane`, `taskFile` and `outFile`, plus `id`,
-  `project`, `startedAt`, `endedAt` and `durationMs`. Those are the fields the
+  `project`, `cwd`, `startedAt`, `endedAt` and `durationMs`. Those are the fields the
   `Runs` history day table and its task detail read; an entry written before
   them shows `—` for what it does not have rather than a guess.
 
