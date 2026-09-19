@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "bullswarm.workflow.program.v2",
+  "defaults": {
+    "effort": "medium",
+    "reasoning": "high"
+  },
+  "actions": [
+    {
+      "id": "meter-ledger",
+      "kind": "implement",
+      "purpose": "Persist provider meter history with precision metadata and concurrent-attribution inputs",
+      "dependsOn": [],
+      "affects": [
+        "requirement-1",
+        "requirement-3"
+      ],
+      "ownedFiles": [
+        "src/meters/framework.js",
+        "src/meters/registry.js",
+        "src/lib/quota-snapshot.js",
+        "tests/meter-ledger.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-meter-ledger, extend the live meter history path to retain provider timestamps, window identity, observed resolution, and monotonic interval deltas. Preserve cache/hold behavior and add deterministic fixture tests for whole-percent readings, resets, stale starts, and missing windows. Do not edit files outside this territory. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    },
+    {
+      "id": "subscription-ledger",
+      "kind": "implement",
+      "purpose": "Attribute quota deltas from the continuous meter ledger",
+      "dependsOn": [
+        "meter-ledger"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "src/lib/subscription-cost.js",
+        "tests/subscription-cost-ledger.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-meter-ledger, add ledger-based subscription attribution to subscription-cost.js. Share each positive meter interval among concurrent attempts by api.usd, preserve unknown/null semantics, add observed:meter-ledger and below-resolution handling, and append calibration only for positive conserved ledger deltas. Keep legacy per-attempt behavior for non-overlapping providers. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    },
+    {
+      "id": "watch-ledger-wiring",
+      "kind": "implement",
+      "purpose": "Capture ledger cursors and attach conserved subscription attribution to every attempt",
+      "dependsOn": [
+        "meter-ledger",
+        "subscription-ledger"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "src/lib/watch.js",
+        "tests/attempt-usage-ledger.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-meter-ledger, update watchOnce so start/end history cursors bracket the delegate, the finished attempt receives the ledger attribution envelope, and the existing transcript/API pricing path remains unchanged. Exercise overlapping attempts and a stale-cache case through the production watch seam. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    },
+    {
+      "id": "runtime-ledger-rollup",
+      "kind": "implement",
+      "purpose": "Persist and aggregate ledger attribution through V2 attempt and run state",
+      "dependsOn": [
+        "watch-ledger-wiring",
+        "subscription-ledger"
+      ],
+      "affects": [
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [
+        "src/workflow/v2-runtime.js",
+        "tests/workflow-runtime-ledger.test.js"
+      ],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-meter-ledger, preserve the full subscription attribution envelope in normalizeAttempt, extend basis ordering, reconcile same-pool concurrent attempts at the durable finish path, and aggregate conserved quota plus unassigned deltas in addUsage. Keep cost.estimatedUsd and normalizedQuota compatibility aliases. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    },
+    {
+      "id": "integrate-ledger",
+      "kind": "integration",
+      "purpose": "Reconcile the ledger implementation and run the complete acceptance suite",
+      "dependsOn": [
+        "meter-ledger",
+        "subscription-ledger",
+        "watch-ledger-wiring",
+        "runtime-ledger-rollup"
+      ],
+      "affects": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4"
+      ],
+      "ownedFiles": [],
+      "evidenceFor": [],
+      "prompt": "In /home/dev/Repo/bullswork/bullswarm-meter-ledger, read every dependency report, resolve shared-file requests, preserve pre-existing work, run the focused ledger tests and npm test, and exercise a copied-home seven-attempt overlap fixture. Verify that the run total equals the sum of attributed meter intervals and that unknown remains null. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    },
+    {
+      "id": "verify-ledger",
+      "kind": "adversarial-acceptance",
+      "purpose": "Independently try to break precision, concurrency, reset, and conservation guarantees",
+      "dependsOn": [
+        "integrate-ledger"
+      ],
+      "affects": [],
+      "ownedFiles": [],
+      "evidenceFor": [
+        "requirement-1",
+        "requirement-2",
+        "requirement-3",
+        "requirement-4"
+      ],
+      "prompt": "Inspect the actual implementation in /home/dev/Repo/bullswork/bullswarm-meter-ledger. Use fixture histories with integer and decimal meters, unchanged rounded readings, a reset, missing polls, overlapping attempts with unequal api.usd, and an attempt that starts after an already-observed increment. Confirm conservation, bounded error metadata, correct basis labels, compatibility aliases, and null unknowns. Do not modify files. Never read or write the live ~/.bullswarm; if you need a home, copy it (cp -Rp ~/.bullswarm /tmp/bsw-ledger-<your-action-id>) and DELETE the copy when you finish (rm -rf). Real data only: quote the real meter history rows and attempt records you rely on. The meter precision study and its evidence are in docs/design/cost-0.34.0/meter-precision-study.md; read it first."
+    }
+  ]
+}
