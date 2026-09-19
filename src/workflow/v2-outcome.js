@@ -381,8 +381,9 @@ function validateUsageAggregate(value, name) {
     resultFail(`${name}.tokenSource is invalid`);
   }
   if (typeof value.subscriptionBasis !== 'string' || ![
-    'observed:meter-delta', 'calibrated:usd-per-pct',
+    'observed:meter-delta', 'observed:meter-ledger', 'calibrated:usd-per-pct',
     'unknown:no-price', 'unknown:no-meter', 'unknown:no-cost',
+    'unknown:below-resolution',
   ].includes(value.subscriptionBasis)) resultFail(`${name}.subscriptionBasis is invalid`);
 }
 

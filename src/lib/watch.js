@@ -22,7 +22,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
 import * as usageLib from './usage.js';
@@ -31,7 +31,7 @@ import { captureLimits, createAttemptStreamSink } from './attempt-stream.js';
 import { ERROR_SHAPED_LINE, findQuotaFailure, quotaQuarantineUntil } from './quota.js';
 import { findUpstreamAuthFailure } from './auth-signatures.js';
 import { appliedReasoningLevel, reasoningArgs, reasoningRecord } from './reasoning.js';
-import { getMeterReading } from '../meters/registry.js';
+import { getMeterReading, meterHistoryIntervals } from '../meters/registry.js';
 import { loadProviders, transcriptReaderFor } from './providers.js';
 
 const BULLSWARM_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -95,7 +95,17 @@ async function safeSnapshot(snapshotPool, poolName, home, now, source = 'cache')
   try {
     const snapshot = await snapshotPool(poolName, { home, now });
     if (!snapshot || typeof snapshot !== 'object') return snapshot;
-    return { ...snapshot, source: source ?? snapshot.source ?? 'cache' };
+    // snapshotPool keeps cursor/precision markers non-enumerable for legacy
+    // cache-only reads. Preserve them explicitly when crossing this seam;
+    // otherwise the ledger cannot bracket the delegate even though the
+    // production snapshot reader found the row.
+    return {
+      ...snapshot,
+      ...(snapshot.historyCursor ? { historyCursor: snapshot.historyCursor } : {}),
+      ...(snapshot.history_cursor ? { history_cursor: snapshot.history_cursor } : {}),
+      ...(snapshot.resolutionPct != null ? { resolutionPct: snapshot.resolutionPct } : {}),
+      source: source ?? snapshot.source ?? 'cache',
+    };
   } catch {
     return null;
   }
@@ -108,6 +118,54 @@ function snapshotDelta(quota, start, end) {
 
 function snapshotsFor(start, end) {
   return { start: start ?? null, end: end ?? null };
+}
+
+function cursorFor(snapshot, fallbackAt = null) {
+  const cursor = snapshot?.historyCursor ?? snapshot?.history_cursor;
+  if (cursor && typeof cursor === 'object') return { ...cursor };
+  const at = snapshot?.at ?? fallbackAt;
+  return at ? { at, window: snapshot?.window ?? null, index: null, source: snapshot?.source ?? null } : null;
+}
+
+function epochMs(value) {
+  if (value == null) return null;
+  const parsed = value instanceof Date ? value.getTime() : typeof value === 'number' ? value : Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Read only the ledger rows observed between the start and end cursors. The
+ * cursor indexes are preferred because a meter interval may begin before the
+ * delegate starts but be observed during it; timestamps are the fallback for
+ * cache/history fixtures that predate cursor metadata.
+ */
+function attemptLedgerIntervals({
+  opts, poolName, home, startSnapshot, endSnapshot, startCursor, endCursor,
+  startedAt, endedAt,
+}) {
+  const reader = opts.meterHistoryIntervals ?? meterHistoryIntervals;
+  if (typeof reader !== 'function' || !poolName) return null;
+  if (!home && !opts.meterHistoryDir && !opts.historyDir && !opts.ledgerDir) return null;
+  try {
+    const rows = reader(poolName, {
+      dir: opts.meterHistoryDir ?? opts.historyDir ?? opts.ledgerDir ?? join(home, 'meters'),
+    });
+    if (!Array.isArray(rows)) return null;
+    const startIndex = Number.isInteger(startCursor?.index) ? startCursor.index : null;
+    const endIndex = Number.isInteger(endCursor?.index) ? endCursor.index : null;
+    const startMs = epochMs(startSnapshot?.at ?? startCursor?.at ?? startedAt);
+    const endMs = epochMs(endSnapshot?.at ?? endCursor?.at ?? endedAt);
+    return rows.filter((row) => {
+      const rowIndex = Number.isInteger(row?.row) ? row.row : null;
+      if (startIndex != null && endIndex != null && rowIndex != null) {
+        return rowIndex > startIndex && rowIndex <= endIndex;
+      }
+      const at = epochMs(row?.at ?? row?.captured_at ?? row?.to);
+      return at != null && (startMs == null || at >= startMs) && (endMs == null || at <= endMs);
+    });
+  } catch {
+    return null;
+  }
 }
 
 function fallbackSubscription({ poolName, subscription, start, end, quota }) {
@@ -621,6 +679,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       }
     } catch { /* retain the stale cache, which yields no observed delta */ }
   }
+  const startCursor = cursorFor(startSnapshot, new Date(startedAt).toISOString());
   const obs = await runDelegate(connector, paths.taskFile, targetDir, {
     ...opts,
     streamFile: opts.streamFile ?? paths.streamFile,
@@ -646,6 +705,18 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       endSnapshot = null;
     }
   }
+  const endCursor = cursorFor(endSnapshot, new Date(endedAt).toISOString());
+  const ledgerIntervals = attemptLedgerIntervals({
+    opts,
+    poolName,
+    home,
+    startSnapshot,
+    endSnapshot,
+    startCursor,
+    endCursor,
+    startedAt,
+    endedAt,
+  });
   const wallSec = Math.round((endedAt - startedAt) / 100) / 10;
 
   const output = extractOutput(connector, obs);
@@ -729,6 +800,18 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
     : typeof subscriptionCostModule === 'function' ? subscriptionCostModule : null;
   if (subscriptionCost && poolName) {
     try {
+      const suppliedAttempts = (Array.isArray(opts.attempts ?? opts.activeAttempts)
+        ? (opts.attempts ?? opts.activeAttempts)
+        : []).filter((attempt) => !attempt?.pool || attempt.pool === poolName);
+      const ledgerAttempt = {
+        id: opts.attemptId ?? null,
+        attemptId: opts.attemptId ?? null,
+        pool: poolName,
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: new Date(endedAt).toISOString(),
+        apiUsd: usageApiUsd(usage),
+        api: usage.api ?? null,
+      };
       const result = await subscriptionCost({
         pool: {
           name: poolName,
@@ -742,6 +825,13 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
         end: endSnapshot,
         startSnapshot,
         endSnapshot,
+        ledgerIntervals,
+        meterIntervals: ledgerIntervals,
+        attempts: suppliedAttempts,
+        activeAttempts: suppliedAttempts,
+        ledgerAttempt,
+        startedAt: ledgerAttempt.startedAt,
+        finishedAt: ledgerAttempt.finishedAt,
         home,
         runId: opts.runId ?? null,
         attemptId: opts.attemptId ?? null,
@@ -764,11 +854,44 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
       ...subscription,
       pool: subscription.pool ?? poolName,
       snapshots: subscription.snapshots ?? snapshotsFor(startSnapshot, endSnapshot),
+      ...(startCursor || endCursor || ledgerIntervals ? {
+        attribution: {
+          startCursor,
+          endCursor,
+          historyCursor: { start: startCursor, end: endCursor },
+          attemptId: opts.attemptId ?? null,
+          runId: opts.runId ?? null,
+          intervals: Array.isArray(ledgerIntervals) ? ledgerIntervals : [],
+          ledgerRows: Array.isArray(subscription.ledgerRows) ? subscription.ledgerRows : [],
+          deltaPct: subscription.deltaPct ?? null,
+          conservedDeltaPct: subscription.conservedDeltaPct ?? null,
+          resolutionPct: subscription.resolutionPct ?? null,
+          basis: subscription.basis ?? null,
+        },
+      } : {}),
     };
     usage.subscription = subscription;
+    usage.normalizedQuota = {
+      ...(usage.normalizedQuota && typeof usage.normalizedQuota === 'object' ? usage.normalizedQuota : {}),
+      estimatedPercent: subscription.deltaPct ?? null,
+      deltaPct: subscription.deltaPct ?? null,
+      window: subscription.window ?? null,
+      basis: subscription.basis ?? 'unknown:no-meter',
+      ...(subscription.resolutionPct != null ? { resolutionPct: subscription.resolutionPct } : {}),
+    };
   }
   const apiUsd = usageApiUsd(usage);
-  if (subscription?.basis === 'observed:meter-delta' && apiUsd != null
+  if (subscription?.basis === 'observed:meter-ledger' && apiUsd != null
+    && typeof subscriptionCostModule?.appendCalibrationFromResult === 'function' && poolName) {
+    try {
+      await subscriptionCostModule.appendCalibrationFromResult(poolName, subscription, {
+        home,
+        apiUsd,
+        runId: opts.runId ?? null,
+        attemptId: opts.attemptId ?? null,
+      });
+    } catch { /* calibration is best effort; the attempt record is durable */ }
+  } else if (subscription?.basis === 'observed:meter-delta' && apiUsd != null
     && typeof subscriptionCostModule?.appendCalibration === 'function' && poolName) {
     try {
       await subscriptionCostModule.appendCalibration(poolName, {

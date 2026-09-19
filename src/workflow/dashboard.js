@@ -2170,9 +2170,11 @@ const TOKEN_SOURCE_RANK = Object.freeze({
 const SUBSCRIPTION_BASIS_RANK = Object.freeze({
   'unknown:no-price': 0,
   'unknown:no-meter': 1,
-  'unknown:no-cost': 2,
-  'calibrated:usd-per-pct': 3,
-  'observed:meter-delta': 4,
+  'unknown:below-resolution': 2,
+  'unknown:no-cost': 3,
+  'calibrated:usd-per-pct': 4,
+  'observed:meter-delta': 5,
+  'observed:meter-ledger': 6,
 });
 
 function tokenSourceOf(value, cost = null) {
@@ -3319,8 +3321,8 @@ function recordCostInfo(record) {
     // the strict `subscriptionUsd` field is the only value that may render
     // as a measured/calibrated subscription cost.
     usd: finiteOrNull(usage.subscriptionUsd),
-    deltaPct: finiteOrNull(usage.deltaPct),
-    window: usage.window ?? null,
+    deltaPct: finiteOrNull(usage.subscriptionDeltaPct ?? usage.deltaPct),
+    window: usage.subscriptionWindow ?? usage.window ?? null,
     basis: usage.subscriptionBasis ?? 'unknown:no-meter',
   };
   let tokenSource = Object.hasOwn(TOKEN_SOURCE_RANK, record?.tokenSource) ? record.tokenSource : null;

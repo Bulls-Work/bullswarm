@@ -143,6 +143,26 @@ test('literal empty output from a free pool is a provider failure, not semantic 
   ), 'semantic');
 });
 
+test('dispatch passes durable same-pool attempts to watch without duplicating the current attempt', async () => {
+  let observed = null;
+  const h = harness([
+    ({ opts }) => { observed = opts.attempts; return good; },
+  ]);
+  await dispatchV2Action({
+    action, taskText: 'do it', targetDir: '/tmp', paths,
+    pools: [connector('codex')], bullswarmDir: '/tmp/bullswarm-ledger-dispatch',
+    ledgerAttempts: [
+      { id: 'prior-1', pool: 'codex', usage: { api: { usd: 1 } } },
+      { id: 'other-1', pool: 'grok', usage: { api: { usd: 2 } } },
+      { id: 'do-work-1', pool: 'codex', usage: null },
+    ],
+    dependencies: h.dependencies,
+  });
+  assert.deepEqual(observed, [
+    { id: 'prior-1', pool: 'codex', usage: { api: { usd: 1 } } },
+  ]);
+});
+
 test('a free pool derives its silence clock from the trusted rung median', async () => {
   let observedSilence = null;
   const h = harness([
