@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- budget: the page is the pool meters and nothing else. Every window a pool
+  reports gets its own row — a background-coloured bar whose fill says pace,
+  a white tick for how much of the window has elapsed, the used share right-
+  aligned in one column down the whole page, and a dim line under it with the
+  reset and the pace in percentage points. The `by bullswarm`, `other tools`,
+  `room for N more medium runs`, `so far ≈ $N` and `biggest` lines are gone:
+  the cost audit of 2026-09-18 traced every one of them to worker minutes
+  multiplied by a fitted rate, which produced 129% of a whole window for grok,
+  and to the byte-estimate money the same audit found 250 to 1,471 times too
+  low. Spend by run lives on Home and Stats. Credits stay with the window they
+  meter, and a pool that reports credits but no monthly window keeps them.
+
 - stats: every Stats page now uses one shared set of panels, charts, legends,
   summary cards, and hover regions; the old page-specific chart drawing is gone.
 - stats: Spending puts its dated chart on the left and four real-data breakdowns
