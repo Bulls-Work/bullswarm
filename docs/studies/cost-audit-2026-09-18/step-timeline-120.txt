@@ -1,0 +1,40 @@
+bullswarm Step · attempt 1 · source S1 (Claude JSONL)                                                                   
+capture-order mini-map  ●────────H──A──╋──P────────✓                                                                    
+offsets S1: +0.0s  +48.5s  +50.9s  +52.2s  +54.2s  +56.0s  +81.2s                                                       
+TURN 0 · parent                                                                                                         
+  agent  Hi! What would you like to work on? · tokens 2 in / 73 out (S1 line 11)                                        
+TURN 1 · parent                                                                                                         
+  human  /statusline · branch: main · model: Opus 5                                                                     
+  agent  I'll launch the statusline-setup agent with your requested format.                                             
+  TOOL   Agent · Configure status line · status: dispatched                                                             
+         subagent: statusline-setup                                                                                     
+         tokens 2 in / 219 out (S1 line 18)                                                                             
+  result dispatch acknowledged at +54.2s                                                                                
+  parent background / waiting at +56.0s                                                                                 
+SUBAGENT GROUP · child of TURN 1                                                                                        
+  statusline-setup · parallel=true · completed                                                                          
+  usage 23,676 tok · 2 tools · 25.495s (S1 line 27)                                                                     
+  result preview: status line already fully set up; no file change                                                      
+TURN STATS  elapsed — · tokens — · tool result bytes — · eventAt —                                                      
+DEGRADED    parent link and per-turn usage are captured in source only                                                  
+TOOL CARD   name/args/result/error appear after the proposed capture extension                                          
+FOOTER      select turn · open detail · Esc back · output artifact remains separate                                     
+CAPTURE     existing: seq at source providerType kind status summary                                                    
+CAPTURE     proposed: eventId model eventAt turnId turnPhase parentEventId                                              
+CAPTURE     tool: name callId arguments resultPreview resultBytes resultTruncated isError                               
+CAPTURE     usage: input output cacheRead cacheWrite cumulative                                                         
+FALLBACK    missing time → capture order; missing turn → flat stream                                                    
+FALLBACK    missing tool data → plain activity row; missing usage → tokens —                                            
+FALLBACK    truncation marker → head + tail notice; never infer idle                                                    
+source S1  /home/dev/.claude-acme/projects/                                                                       
+source S1  -home-dev-Repo-bullswarm/                                                                              
+source S1  af411e34-f6b3-4ca0-be25-7d8be6e024fe.jsonl                                                                   
+source S1 window: lines 11-28                                                                                           
+stream-file search returned 0                                                                                           
+frame requested by task-step-timeline-study                                                                             
+selection target: parent turn or subagent group                                                                         
+unknown fields remain visibly unknown                                                                                   
+event order: source timestamps are shown when available                                                                 
+parent wait: not counted as idle without a child interval                                                               
+result size: unavailable until resultBytes is persisted                                                                 
+end of captured source window                                                                                           
