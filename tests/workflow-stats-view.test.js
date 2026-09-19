@@ -146,6 +146,41 @@ test('desktop composition keeps chart and panel bar colours, bounds both layouts
   }
 });
 
+test('one Stats render shares chart hues with panel rows and keeps visible panel names distinct', () => {
+  const pools = [
+    { name: 'codex', runs: 3, attempts: 3, minutes: 3, apiEquivalentUsd: 3 },
+    { name: 'claude-code:acme', runs: 2, attempts: 2, minutes: 2, apiEquivalentUsd: 2 },
+    { name: 'pool-only', runs: 1, attempts: 1, minutes: 1, apiEquivalentUsd: 1 },
+  ];
+  const buckets = [
+    { key: '2026-09-13', label: '2026-09-13', value: 3, segments: [{ name: 'codex', value: 2 }, { name: 'claude-code:acme', value: 1 }] },
+    { key: '2026-09-14', label: '2026-09-14', value: 3, segments: [{ name: 'codex', value: 1 }, { name: 'claude-code:acme', value: 2 }] },
+  ];
+  const stats = {
+    overview: { keys: { workflows: 6, totalWorkerMinutes: 6, apiEquivalentUsd: 6, activeDays: 2 }, breakdown: { pools, models: [], projects: [] } },
+    pools: { rows: pools, totals: { runs: 6, attempts: 6, minutes: 6, apiEquivalentUsd: 6 } },
+    models: { rows: [], totals: {} },
+    projects: { rows: [], totals: {} },
+    spendPerDay: { metric: 'spend', buckets },
+  };
+  const colour = (line) => line.match(/\x1b\[38;2;([^m]+)m/)?.[1] ?? null;
+  const view = statsLines(stats, { width: 55, tab: 'spending', stackBy: 'pool', ansi: true });
+  const codex = view.lines.find((line) => visible(line).startsWith('codex '));
+  const acme = view.lines.find((line) => visible(line).startsWith('acme '));
+  const extra = view.lines.find((line) => visible(line).startsWith('pool-only '));
+  assert.ok(codex && acme && extra, 'all visible pool rows are rendered');
+  const legendStart = view.lines.findIndex((line) => visible(line).startsWith('Legend'));
+  assert.ok(legendStart >= 0, 'the legend is rendered');
+  const legend = view.lines.slice(legendStart).join('\n');
+  const legendColour = (name) => legend.match(new RegExp(`\\x1b\\[38;2;([^m]+)m(?:●|#)\\x1b\\[[0-9;]*m ${name}(?:\\x1b|\\s|$)`))?.[1] ?? null;
+  const codexColour = colour(codex);
+  const acmeColour = colour(acme);
+  const extraColour = colour(extra);
+  assert.equal(codexColour, legendColour('codex'));
+  assert.equal(acmeColour, legendColour('claude-code:acme'));
+  assert.equal(new Set([codexColour, acmeColour, extraColour]).size, 3, 'panel rows have pairwise distinct hues');
+});
+
 test('the four panel slots remain titled at narrow width and are capped at six rows', () => {
   const view = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false });
   const lines = view.lines.map(visible);

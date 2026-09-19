@@ -739,11 +739,11 @@ export function renderStackedColumnChart({
   const heading = fit(rule(title ?? '', null, cols), cols);
   if (!labels.length) return { lines: [heading, lineWithReason('—', 'no measured data', cols)], regions: [] };
   const names = sourceSeries.map((entry) => entry.id ?? entry.label ?? entry.name ?? null);
-  const generatedColors = seriesColors(names);
+  const generatedColors = sourceSeries.some((entry) => !entry.color) ? seriesColors(names) : null;
   const painterSeries = sourceSeries.map((entry, index) => ({
     name: names[index],
     values: entry.values,
-    color: entry.color ?? generatedColors.get(names[index]) ?? seriesColor(names[index] ?? ''),
+    color: entry.color ?? generatedColors?.get(names[index]) ?? seriesColor(names[index] ?? ''),
   }));
   if (!painterSeries.some((entry) => entry.values.some((value) => finite(value) != null))) {
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
@@ -810,7 +810,9 @@ export function renderLegend({ items, width, activeSeries = null, colors = true 
   const cols = widthOf(width, 55);
   const list = (Array.isArray(items) ? items : []).filter(Boolean);
   if (!list.length) return { lines: [fit('Legend — no measured series', cols)], regions: [] };
-  const generatedColors = seriesColors(list.map((item) => item.id ?? item.label ?? ''));
+  const generatedColors = list.some((item) => !item.color)
+    ? seriesColors(list.map((item) => item.id ?? item.label ?? ''))
+    : null;
   const tokens = list.map((item) => {
     const id = item.id ?? item.label ?? '';
     // Legends are the resolver for compact panel labels: always paint the
@@ -819,7 +821,7 @@ export function renderLegend({ items, width, activeSeries = null, colors = true 
     const fullLabel = String(item.fullLabel ?? item.id ?? item.label ?? '');
     const label = shortenLabel(fullLabel, { full: true });
     const marker = colors
-      ? colourMarker(asciiGlyphsPreferred() ? '#' : '●', item.color ?? generatedColors.get(id) ?? seriesColor(id), true)
+      ? colourMarker(asciiGlyphsPreferred() ? '#' : '●', item.color ?? generatedColors?.get(id) ?? seriesColor(id), true)
       : '#';
     const plain = `${marker} ${label}`;
     const text = colors && String(id) === String(activeSeries) ? `${BOLD}${plain}${NO_BOLD}` : plain;
