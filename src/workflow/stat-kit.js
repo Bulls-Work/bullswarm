@@ -365,6 +365,27 @@ function panelMetrics({ rows, width, unit, labelKind, labelWidth = null, barWidt
 }
 
 /**
+ * Resolve a panel's labels to unique text at a given column width, using the
+ * escalation the renderer has always used: a plain cut, then a middle cut for
+ * the names that collided, then a uniquifier.  The grid measurer and the
+ * renderer must ask the same question — a collision the renderer can resolve
+ * is not a reason to take a bar away.
+ */
+function resolveLabels(shortLabels, fullLabels, labelCols) {
+  let labels = shortLabels.map((label) => cut(label, labelCols));
+  let usedMiddleCut = false;
+  if (duplicateLabels(labels)) {
+    const collisions = collisionIndexes(labels);
+    labels = labels.map((label, index) => collisions.has(index)
+      ? middleCut(fullLabels[index], labelCols)
+      : label);
+    usedMiddleCut = collisions.size > 0;
+  }
+  if (duplicateLabels(labels)) labels = uniqueLabels(labels, fullLabels, labelCols);
+  return { labels, usedMiddleCut, resolved: !duplicateLabels(labels) };
+}
+
+/**
  * Measure one geometry for a desktop two-by-two panel grid.
  *
  * The returned label width is a grid-wide column.  Bars are an all-or-none
@@ -386,9 +407,13 @@ export function measurePanelGridLayout(panels, widths, { gap = 2 } = {}) {
   const valueGap = Math.max(1, Math.trunc(Number(gap)) || 2);
   const barFits = cells.every((cell, index) => {
     const width = widthOf(Array.isArray(widths) ? widths[index] : widths, 55);
-    const labels = cell.shortLabels.map((label) => cut(label, desiredLabel));
+    // Two names that collide at this width are only fatal when the renderer
+    // cannot pull them apart.  Testing the raw cut instead meant one repeated
+    // project name switched every bar off, in all four panels, at every
+    // desktop width — including 200 columns, where everything fits twice over.
+    const { resolved } = resolveLabels(cell.shortLabels, cell.fullLabels, desiredLabel);
     return desiredLabel + valueGap + desiredBar + cell.measuredSuffixLongest <= width
-      && !duplicateLabels(labels);
+      && resolved;
   });
 
   const barWidth = barFits ? desiredBar : 0;
@@ -478,15 +503,9 @@ export function renderPanel({
       suffixCols = Math.max(1, cols - rowGaps - labelCols);
       barsDroppedForCollision = true;
     }
-    displayLabels = shortLabels.map((label) => cut(label, labelCols));
-    if (duplicateLabels(displayLabels)) {
-      const collisions = collisionIndexes(displayLabels);
-      displayLabels = displayLabels.map((label, index) => collisions.has(index)
-        ? middleCut(fullLabels[index], labelCols)
-        : label);
-      usedMiddleCut = collisions.size > 0;
-    }
-    if (duplicateLabels(displayLabels)) displayLabels = uniqueLabels(displayLabels, fullLabels, labelCols);
+    const resolvedLabels = resolveLabels(shortLabels, fullLabels, labelCols);
+    displayLabels = resolvedLabels.labels;
+    usedMiddleCut = resolvedLabels.usedMiddleCut;
   }
   const padRight = (text, width) => {
     const source = String(text ?? '');

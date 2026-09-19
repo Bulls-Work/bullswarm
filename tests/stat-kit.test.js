@@ -383,3 +383,41 @@ test('stacked slices keep the measured bucket value when a series-wide source is
   assert.ok(slices.every((region) => region.payload.tokenSource === 'estimated:utf8-bytes/4'));
   assert.ok(slices.every((region) => !formatHoverLabel({ ...region.payload, kind: 'slice' }).includes('value unavailable')));
 });
+
+
+test('a resolvable label collision in one panel does not disarm the bars in all four', () => {
+  // Found on real data: two projects both shortened to "repo", and that single
+  // repeat switched every bar off in every panel at every desktop width — 200
+  // columns included, where a 48-column cell fits the label, the bar and the
+  // value twice over. The renderer resolves such a collision itself, so the
+  // measurer must ask the same question rather than fail on the raw cut.
+  const pools = [
+    { label: 'codex', value: 0.3, total: 7.11, share: 0.043 },
+    { label: 'claude-code', value: 3, total: 7.11, share: 0.422 },
+    { label: 'command-code', value: 0.07, total: 7.11, share: 0.01 },
+  ];
+  const projects = [
+    { label: 'system', value: 20, total: 60, share: 0.333 },
+    { label: 'repo', value: 2, total: 60, share: 0.033 },
+    { label: 'e2e-repo', value: 1, total: 60, share: 0.017 },
+  ];
+  const panel = (title, rows, unit, labelKind = null) => ({ title, rows, unit, labelKind, labelWidth: null, barWidth: 6 });
+  const panels = [
+    panel('Pool spend', pools, 'usd'),
+    panel('Pool worker-minutes', pools, 'minutes'),
+    // A project label drops everything before the last dash, so `e2e-repo`
+    // and `repo` arrive at the measurer as the same string.
+    panel('Project runs', projects, 'runs', 'project'),
+    panel('Outcome', [{ label: 'Verified', value: 31, valueText: '31 verified' }], 'runs'),
+  ];
+  const wide = measurePanelGridLayout(panels, [49, 48, 49, 48]);
+  assert.equal(wide.barWidth, 6, 'a 48-column cell has room for label, bar and value');
+  assert.ok(wide.barEnabled);
+  // And the colliding names are still pulled apart in the drawn panel.
+  const drawn = renderPanel({ ...panels[2], width: 49, colors: false, layout: wide });
+  assert.equal(shortenLabel('e2e-repo', { kind: 'project' }), 'repo');
+  const labels = drawn.lines.slice(1).map((line) => visible(line).slice(0, wide.labelWidth).trim());
+  assert.equal(new Set(labels).size, labels.length, labels.join(' | '));
+  assert.ok(drawn.lines.slice(1).every((line) => /[\u2593\u2592\u2591\u2588\u258f#]/.test(visible(line))),
+    'every row keeps its bar');
+});
