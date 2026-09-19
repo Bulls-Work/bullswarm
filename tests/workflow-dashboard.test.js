@@ -3036,7 +3036,17 @@ test('an explicitly recorded "estimatedUsd: null" stays blank and is never count
   } finally { cleanup(); }
 });
 
-test('Home paints in under 50 ms with 293 run directories present', () => {
+const HOME_PAINT_CALIBRATION_ITERATIONS = 50_000_000;
+function calibrateHomePaintBudget() {
+  let checksum = 0;
+  const start = process.hrtime.bigint();
+  for (let index = 0; index < HOME_PAINT_CALIBRATION_ITERATIONS; index += 1) checksum = (checksum + index) | 0;
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(Number.isInteger(checksum), 'calibration loop completed');
+  return elapsedMs;
+}
+
+test('Home paints within a calibrated budget with 293 run directories present', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-perf-'));
   try {
     // The corpus this machine actually has: 293 run directories, each with a
@@ -3084,15 +3094,21 @@ test('Home paints in under 50 ms with 293 run directories present', () => {
     );
     const frame = paint();
     assert.ok(frame.lines.length > 0, 'Home painted nothing');
-    // The best of five: this suite runs its files in parallel, so a single
-    // wall-clock sample measures the machine's load as much as the paint.
-    let best = Infinity;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    // Calibrate once on this machine while it has the same scheduler/load as
+    // the paint. The budget is relative to a fixed pure-JS loop, not an idle
+    // host's wall-clock speed; the absolute cap still rejects an unusable UI.
+    const calibrationMs = calibrateHomePaintBudget();
+    const samples = [];
+    for (let attempt = 0; attempt < 7; attempt += 1) {
       const start = process.hrtime.bigint();
       paint();
-      best = Math.min(best, Number(process.hrtime.bigint() - start) / 1e6);
+      samples.push(Number(process.hrtime.bigint() - start) / 1e6);
     }
-    assert.ok(best < 50, `Home took ${best.toFixed(1)}ms with 293 run directories`);
+    samples.sort((left, right) => left - right);
+    const median = samples[Math.floor(samples.length / 2)];
+    const calibratedBudgetMs = calibrationMs * 0.5;
+    assert.ok(median < 250, `Home took ${median.toFixed(1)}ms with 293 run directories (absolute cap)`);
+    assert.ok(median < calibratedBudgetMs, `Home took ${median.toFixed(1)}ms; calibrated budget was ${calibratedBudgetMs.toFixed(1)}ms (calibration ${calibrationMs.toFixed(1)}ms)`);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
