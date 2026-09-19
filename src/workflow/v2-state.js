@@ -53,6 +53,7 @@ const ATTEMPT_FIELDS = new Set([
   'outputBytes', 'streamFile', 'diffFile', 'changedFileCount', 'lastResponse', 'handoff',
   'notes', 'outputSamples',
   'outputTruncated', 'outputSource',
+  'cwd', 'project',
   // The provider conversation this attempt ran in, when the connector supports
   // resuming one (src/workflow/v2-dispatch.js `sessionFor`): which pool and
   // model the session belongs to, the provider's own session id, how many
@@ -94,6 +95,7 @@ const PLANNER_ATTEMPT_FIELDS = new Set([
   'taskFile', 'outputFile', 'failureKind', 'why', 'usage', 'continued',
   'lastActivityAt', 'lastEventAt', 'outputBytesObserved', 'lastAgentEvent', 'wallSec',
   'outputTruncated', 'outputSource',
+  'cwd', 'project',
 ]);
 const PRESENTATION_STAGE_FIELDS = new Set([
   'id', 'label', 'revision', 'actionIds', 'startedAt', 'completedAt',
@@ -411,7 +413,7 @@ function validatePlanner(planner) {
     nonNegativeInteger(attempt.turn, `state.planner.attempts[${index}].turn`);
     if (attempt.ordinal < 1 || attempt.turn < 1) fail(`state.planner.attempts[${index}] ordinal and turn must be positive`);
     if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.planner.attempts[${index}].status is invalid`);
-    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.planner.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'cwd', 'project']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.planner.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.planner.attempts[${index}].${field}`);
     if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.planner.attempts[${index}].usage must be null or an object`);
     if (attempt.reasoning !== undefined && attempt.reasoning !== null && !isObject(attempt.reasoning)) fail(`state.planner.attempts[${index}].reasoning must be null or an object`);
@@ -497,7 +499,7 @@ function validatePreflight(preflight) {
     noUnknown(attempt, PLANNER_ATTEMPT_FIELDS, `state.preflight.scout.attempts[${index}]`);
     if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.preflight.scout.attempts[${index}].status is invalid`);
     for (const field of ['ordinal', 'turn']) if (attempt[field] !== undefined) nonNegativeInteger(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
-    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'cwd', 'project']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.preflight.scout.attempts[${index}].${field}`);
     if (attempt.usage !== undefined && attempt.usage !== null && !isObject(attempt.usage)) fail(`state.preflight.scout.attempts[${index}].usage must be null or an object`);
     if (attempt.wallSec !== undefined && attempt.wallSec !== null && (!Number.isFinite(attempt.wallSec) || attempt.wallSec < 0)) fail(`state.preflight.scout.attempts[${index}].wallSec must be null or a non-negative finite number`);
@@ -791,7 +793,7 @@ function validateAttempts(attempts, program) {
     if (!programIds.has(actionId)) fail(`state.attempts[${index}] references unknown program action ${actionId}`);
     nonNegativeInteger(attempt.ordinal, `state.attempts[${index}].ordinal`);
     if (!ATTEMPT_STATUSES.has(attempt.status)) fail(`state.attempts[${index}].status is invalid`);
-    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'streamFile', 'diffFile', 'lastResponse']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
+    for (const field of ['pool', 'model', 'taskFile', 'outputFile', 'failureKind', 'why', 'streamFile', 'diffFile', 'lastResponse', 'cwd', 'project']) if (attempt[field] !== undefined) nullableString(attempt[field], `state.attempts[${index}].${field}`);
     for (const field of ['startedAt', 'finishedAt', 'lastActivityAt', 'lastEventAt']) if (attempt[field] !== undefined) timestamp(attempt[field], `state.attempts[${index}].${field}`);
     if (attempt.failure !== undefined && attempt.failure !== null && !isObject(attempt.failure)) fail(`state.attempts[${index}].failure must be null or an object`);
     for (const field of ['routing', 'reasoning']) if (attempt[field] !== undefined && attempt[field] !== null && !isObject(attempt[field])) fail(`state.attempts[${index}].${field} must be null or an object`);

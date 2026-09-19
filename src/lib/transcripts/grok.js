@@ -66,6 +66,7 @@ function blankRecord(confidence = 'none') {
     tokens: blankTokens(),
     model: null,
     sessionId: null,
+    cwd: null,
     file: null,
     firstAt: null,
     lastAt: null,
@@ -204,7 +205,9 @@ function parseLog(filePath, {
 export function buildTranscriptIndex({ home = homedir() } = {}) {
   const entries = logFiles(home).map((filePath) => {
     const edge = transcriptEdges(filePath);
-    return { file: filePath, sessionId: null, cwd: null, ...edgeTimes(edge, 'ts') };
+    const cwd = edge.head.find((row) => typeof row.ctx?.cwd === 'string' && row.ctx.cwd)?.ctx.cwd ?? null;
+    const sessionId = edge.head.find((row) => typeof row.sid === 'string' && row.sid)?.sid ?? null;
+    return { file: filePath, sessionId, cwd, ...edgeTimes(edge, 'ts') };
   });
   return { provider: 'grok', home, entries, rowsByFile: new Map() };
 }
@@ -236,7 +239,10 @@ export function readTranscriptUsage({
   const wantedId = typeof sessionId === 'string' && sessionId ? sessionId : null;
   const indexed = index?.provider === 'grok' ? index : null;
   const files = indexed
-    ? indexed.entries.filter((entry) => overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
+    // Grok's unified log is one file containing many session ids. Keep the
+    // file for an exact id and let the parsed rows select that session below;
+    // the index's representative cwd is only a fast hint for window scans.
+    ? indexed.entries.filter((entry) => wantedId || overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
     : logFiles(home);
   const candidates = [];
   for (const filePath of files) {
@@ -260,7 +266,8 @@ export function readTranscriptUsage({
     }
     for (const id of ids) {
       const parsed = parseLog(filePath, { sessionId: id, startedAt: null, endedAt: null, rows });
-      if (parsed.cwd !== cwd || !overlaps(parsed, startedAt, endedAt)) continue;
+      if ((typeof cwd === 'string' && cwd !== '' && parsed.cwd !== cwd)
+        || !overlaps(parsed, startedAt, endedAt)) continue;
       candidates.push({ filePath, parsed });
     }
   }
@@ -277,6 +284,7 @@ export function readTranscriptUsage({
     tokens: chosen.tokens,
     model: chosen.model,
     sessionId: chosen.sessionId,
+    cwd: chosen.cwd,
     file: chosen.file,
     firstAt: chosen.firstAt,
     lastAt: chosen.lastAt,

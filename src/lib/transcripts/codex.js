@@ -74,6 +74,7 @@ function blankRecord(confidence = 'none') {
     tokens: blankTokens(),
     model: null,
     sessionId: null,
+    cwd: null,
     file: null,
     firstAt: null,
     lastAt: null,
@@ -173,7 +174,7 @@ function walkRollouts(root) {
 export function buildTranscriptIndex({ home = homedir() } = {}) {
   const entries = walkRollouts(join(codexRoot(home), 'sessions')).map((filePath) => {
     const edge = transcriptEdges(filePath);
-    const rows = [...edge.head, ...edge.tail];
+    const rows = edge.head;
     const meta = rows.find((row) => row.type === 'session_meta')?.payload ?? {};
     const context = [...rows].reverse().find((row) => row.type === 'turn_context')?.payload ?? {};
     return {
@@ -267,7 +268,7 @@ function parseRollout(filePath, {
 }
 
 function cwdMatches(parsed, cwd) {
-  return typeof cwd === 'string' && cwd !== '' && parsed.cwd === cwd;
+  return typeof cwd !== 'string' || cwd === '' || parsed.cwd === cwd;
 }
 
 function overlaps(parsed, startedAt, endedAt) {
@@ -311,6 +312,7 @@ export function parseCodexStdout(input, { file = null, confidence = 'exact' } = 
     tokens,
     model: null,
     sessionId,
+    cwd: null,
     file,
     firstAt: at,
     lastAt: at,
@@ -337,7 +339,8 @@ export function readTranscriptUsage({
   const files = indexed
     ? indexed.filter((entry) => wantedId
       ? entry.sessionId === wantedId
-      : entry.cwd === cwd && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
+      : (typeof cwd !== 'string' || cwd === '' || entry.cwd === cwd)
+        && overlapsIndex(entry, startedAt, endedAt)).map((entry) => entry.file)
     : walkRollouts(join(codexRoot(home), 'sessions'));
   const candidates = [];
   for (const filePath of files) {
@@ -364,6 +367,7 @@ export function readTranscriptUsage({
     tokens: chosen.tokens,
     model: chosen.model,
     sessionId: chosen.sessionId,
+    cwd: chosen.cwd,
     file: chosen.file,
     firstAt: chosen.firstAt,
     lastAt: chosen.lastAt,

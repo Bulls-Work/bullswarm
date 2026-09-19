@@ -344,10 +344,11 @@ function requirementTotals(state, result) {
  *
  * @param {object} state   the V2 durable state
  * @param {object|null} result  the stable result envelope, when one exists
- * @param {{project?: string|null, now?: number}} [options]
+ * @param {{project?: string|null, cwd?: string|null, now?: number}} [options]
  */
-export function rollupRecord(state, result, { project = null, now = Date.now() } = {}) {
+export function rollupRecord(state, result, { project = null, cwd, now = Date.now() } = {}) {
   const lifecycle = state?.lifecycle ?? {};
+  const recordedCwd = cwd !== undefined ? cwd : (state?.intent?.cwd ?? null);
   const startedAtMs = parseIso(lifecycle.startedAt);
   const finishedAt = lifecycle.finishedAt ?? result?.finishedAt ?? isoOf(now);
   const finishedAtMs = parseIso(finishedAt);
@@ -378,7 +379,7 @@ export function rollupRecord(state, result, { project = null, now = Date.now() }
     shortId: state?.shortId ?? result?.shortId ?? null,
     project: project ?? null,
     goal: state?.intent?.goal ?? result?.goal ?? null,
-    cwd: state?.intent?.cwd ?? null,
+    cwd: recordedCwd,
     startedAt: lifecycle.startedAt ?? null,
     finishedAt: finishedAt ?? null,
     status: result?.status ?? lifecycle.status ?? null,
@@ -482,12 +483,12 @@ export function appendRollupIndex(bullswarmDir, record) {
  * The project is whatever the run recorded at goal time; a run that predates
  * that recording resolves it from its cwd instead.
  */
-export function writeRunRollup(runDir, state, result, { now = Date.now(), project } = {}) {
-  const cwd = state?.intent?.cwd ?? null;
+export function writeRunRollup(runDir, state, result, { now = Date.now(), project, cwd } = {}) {
+  const recordedCwd = cwd !== undefined ? cwd : (state?.intent?.cwd ?? null);
   const resolvedProject = project !== undefined
     ? project
-    : (readGoalProject(runDir)?.name ?? (cwd ? projectName(cwd) : null));
-  const record = rollupRecord(state, result, { project: resolvedProject, now });
+    : (readGoalProject(runDir)?.name ?? (recordedCwd ? projectName(recordedCwd) : null));
+  const record = rollupRecord(state, result, { project: resolvedProject, cwd: recordedCwd, now });
   writeJsonAtomic(rollupPath(runDir), record);
   appendRollupIndex(bullswarmDirOfRun(runDir), record);
   return record;
