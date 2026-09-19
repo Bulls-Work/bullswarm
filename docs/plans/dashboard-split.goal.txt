@@ -1,0 +1,5 @@
+Bullswarm: finish the dashboard page split so every page has its own module, with rendered output byte-identical and npm test green after each move.
+
+1. The Home page moves out of src/workflow/dashboard.js into src/workflow/home-model.js and src/workflow/home-view.js following the existing Budget and Stats model/view split, byte-identical at 55, 120 and 200 columns.
+2. The Runs page moves into src/workflow/runs-view.js, byte-identical, preserving the Home/Runs shared active-run line identity.
+3. The Run page moves into src/workflow/run-model.js and src/workflow/run-view.js, byte-identical including hit regions, and what remains in dashboard.js is the shell: navigation, layout, key dispatch and shared helpers.
