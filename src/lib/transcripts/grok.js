@@ -83,8 +83,15 @@ function requestTokens(ctx = {}) {
   const standardRead = prompt === null || cacheRead === null
     ? null
     : Math.max(0, prompt - cacheRead);
-  const output = finite(ctx.completion_tokens);
   const reasoning = finite(ctx.reasoning_tokens);
+  // Grok's completion counter is inclusive of its reasoning counter. Keep
+  // the canonical classes exclusive so usage.js does not charge reasoning
+  // twice (the provider's total is completion_tokens, not completion plus
+  // reasoning).
+  const completion = finite(ctx.completion_tokens);
+  const output = completion == null || reasoning == null
+    ? completion
+    : Math.max(0, completion - reasoning);
   return {
     standardRead,
     cacheRead,

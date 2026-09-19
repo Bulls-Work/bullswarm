@@ -98,12 +98,19 @@ export function snapshotPool(poolName, { home = null, now = Date.now() } = {}) {
   const nowMs = timeMs(now);
   const ageMs = Number.isFinite(nowMs) ? nowMs - capturedMs : null;
   if (ageMs == null) return null;
+  const detectedPlan = text(snapshot.plan_name)
+    ?? text(snapshot.plan_type)
+    ?? text(snapshot.planName)
+    ?? text(snapshot.planType)
+    ?? null;
   return {
     at: capturedAt,
     window,
     usedPct,
     resetsAt: text(reading.resets_at) ?? null,
     ageMs,
+    ...(detectedPlan ? { plan: detectedPlan } : {}),
+    source: 'cache',
   };
 }
 

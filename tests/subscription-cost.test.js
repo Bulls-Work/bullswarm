@@ -89,6 +89,49 @@ test('observed, calibrated, and unknown decision tree keeps null distinct from z
   }
 });
 
+test('detected meter plans resolve a published table price', () => {
+  const start = {
+    at: '2026-09-19T12:00:00Z', window: 'weekly', usedPct: 10,
+    resetsAt: '2026-09-20T00:00:00Z', source: 'forced',
+  };
+  const end = {
+    at: '2026-09-19T12:00:30Z', window: 'weekly', usedPct: 10.5,
+    resetsAt: '2026-09-20T00:00:00Z', source: 'cache',
+  };
+  const cost = subscriptionCost({
+    pool: { name: 'claude-code', meterSnapshot: { plan: 'max 20x' } },
+    subscription: { monthlyPriceUsd: null, quotaWindow: 'weekly' },
+    apiUsd: 0.1,
+    startSnapshot: start,
+    endSnapshot: end,
+  });
+  assert.equal(cost.monthlyPriceUsd, 200);
+  assert.equal(cost.basis, 'observed:meter-delta');
+  assert.equal(cost.deltaPct, 0.5);
+  assert.equal(cost.snapshots.start.source, 'forced');
+  assert.equal(cost.snapshots.end.source, 'cache');
+});
+
+test('an unlisted detected plan remains unknown rather than inferred', () => {
+  const cost = subscriptionCost({
+    pool: { name: 'codex', meterSnapshot: { plan: 'prolite' } },
+    subscription: { monthlyPriceUsd: null, quotaWindow: 'weekly' },
+    apiUsd: 0.1,
+    startSnapshot: {
+      at: '2026-09-19T12:00:00Z', window: 'weekly', usedPct: 10,
+      resetsAt: '2026-09-20T00:00:00Z', source: 'forced',
+    },
+    endSnapshot: {
+      at: '2026-09-19T12:00:30Z', window: 'weekly', usedPct: 10.5,
+      resetsAt: '2026-09-20T00:00:00Z', source: 'cache',
+    },
+  });
+  assert.equal(cost.monthlyPriceUsd, null);
+  assert.equal(cost.deltaPct, 0.5);
+  assert.equal(cost.usd, null);
+  assert.equal(cost.basis, 'unknown:no-price');
+});
+
 test('ledger append caps to newest 500 samples and writes atomically', () => {
   const dir = home();
   try {

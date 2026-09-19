@@ -37,7 +37,15 @@ function apiLabel(api, tokenSource = null) {
 function subscriptionLabel(subscription) {
   if (!subscription || typeof subscription !== 'object') return 'sub unknown (no meter/calibration)';
   const basis = String(subscription.basis ?? '');
-  if (basis === 'unknown:no-price') return 'sub unknown (no plan price)';
+  if (basis === 'unknown:no-price') {
+    // Codex exposes an internal `prolite` meter plan that is not named by an
+    // official public price page. Keep the amount unknown, but make the
+    // operator's one supported declaration path actionable in every surface.
+    if (String(subscription.pool ?? '').toLowerCase() === 'codex') {
+      return 'sub unknown (declare a price: bullswarm strategy set-subscription codex --monthly-usd <amount>)';
+    }
+    return 'sub unknown (no plan price)';
+  }
   if (basis === 'unknown:no-cost') return 'sub unknown (no API cost)';
   if (basis === 'unknown:no-meter') return 'sub unknown (no meter/calibration)';
   const amount = money(subscription.usd);

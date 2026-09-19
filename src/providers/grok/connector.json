@@ -159,10 +159,16 @@
       "pricing": {
         "inputUsdPerMillion": 2,
         "cacheReadUsdPerMillion": 0.5,
-        "outputUsdPerMillion": 6
+        "outputUsdPerMillion": 6,
+        "longContext": {
+          "thresholdTokens": 200000,
+          "inputUsdPerMillion": 4,
+          "cacheReadUsdPerMillion": 1,
+          "outputUsdPerMillion": 12
+        }
       },
       "pricingSource": "https://docs.x.ai/developers/models/grok-4.6",
-      "pricingUpdatedAt": "2026-08-27"
+      "pricingUpdatedAt": "2026-09-20"
     },
     {
       "match": "^grok-4\\.5$",

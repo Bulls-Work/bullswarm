@@ -19,6 +19,7 @@ test('snapshotPool selects the declared quota window and returns meter age', () 
       captured_at: '2026-09-19T12:00:00.000Z',
       five_hour: { utilization: 30, resets_at: '2026-09-19T17:00:00.000Z' },
       seven_day: { utilization: 12.5, resets_at: '2026-09-20T00:00:00.000Z' },
+      plan_type: 'prolite',
     }));
     const snapshot = snapshotPool('fixture', {
       home: dir, now: Date.parse('2026-09-19T12:00:30.000Z'),
@@ -26,6 +27,7 @@ test('snapshotPool selects the declared quota window and returns meter age', () 
     assert.deepEqual(snapshot, {
       at: '2026-09-19T12:00:00.000Z', window: 'weekly', usedPct: 12.5,
       resetsAt: '2026-09-20T00:00:00.000Z', ageMs: 30_000,
+      plan: 'prolite', source: 'cache',
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

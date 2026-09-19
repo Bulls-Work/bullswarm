@@ -136,6 +136,54 @@ test('wires provider usage, observed meter delta, and one calibration sample', a
   }
 });
 
+test('forces a stale start meter before spawning and records both sources', async () => {
+  const home = fixtureHome();
+  const meterPath = join(home, 'meters', 'wiring-pool.json');
+  try {
+    writeFileSync(meterPath, JSON.stringify({
+      captured_at: new Date(Date.now() - 120_000).toISOString(),
+      pool: 'wiring-pool',
+      five_hour: { utilization: null, resets_at: null },
+      seven_day: { utilization: 39, resets_at: '2099-01-08T00:00:00.000Z' },
+      monthly: null,
+    }));
+    let forcedCalls = 0;
+    const verdict = await watchOnce(
+      connector(home),
+      'Implement and verify the requested change.',
+      home,
+      paths(home),
+      {
+        bullswarmDir: home,
+        poolName: 'wiring-pool',
+        runId: 'wf-wiring-abcdef',
+        attemptId: 'wire-stale-start',
+        subscription: { quotaWindow: 'weekly', monthlyPriceUsd: 30 },
+        getMeterReading: async (_pool, options) => {
+          assert.equal(options.force, true);
+          forcedCalls += 1;
+          writeFileSync(meterPath, JSON.stringify({
+            captured_at: new Date().toISOString(),
+            pool: 'wiring-pool',
+            five_hour: { utilization: null, resets_at: null },
+            seven_day: { utilization: 40, resets_at: '2099-01-08T00:00:00.000Z' },
+            monthly: null,
+          }));
+          return { source: 'live' };
+        },
+        outputValidator: () => ({ ok: true }),
+      },
+    );
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(forcedCalls, 1);
+    assert.equal(verdict.meta.usage.subscription.basis, 'observed:meter-delta');
+    assert.equal(verdict.meta.usage.subscription.snapshots.start.source, 'forced');
+    assert.equal(verdict.meta.usage.subscription.snapshots.end.source, 'cache');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('missing meter preserves API usage but leaves subscription dollars unknown', async () => {
   const home = fixtureHome({ meter: false });
   try {

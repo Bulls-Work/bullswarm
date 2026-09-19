@@ -58,7 +58,10 @@ const formatMoneyPair = usageBasis.formatMoneyPair ?? ((usage = {}) => {
   const usd = Number(subscription.usd);
   const basis = String(subscription.basis ?? 'unknown:no-cost');
   if (!Number.isFinite(usd)) {
-    const reason = basis === 'unknown:no-price' ? 'no plan price'
+    const reason = basis === 'unknown:no-price'
+      ? (String(subscription.pool ?? '').toLowerCase() === 'codex'
+        ? 'declare a price: bullswarm strategy set-subscription codex --monthly-usd <amount>'
+        : 'no plan price')
       : basis === 'unknown:no-meter' ? 'no meter/calibration' : 'no API cost';
     return `${apiText} · sub unknown (${reason})`;
   }

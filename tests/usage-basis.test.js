@@ -47,6 +47,10 @@ test('shared money pair distinguishes observed and calibrated subscription dolla
   }), 'api unknown · sub unknown (no plan price)');
   assert.equal(formatMoneyPair({
     api: { usd: null },
+    subscription: { pool: 'codex', usd: null, basis: 'unknown:no-price' },
+  }), 'api unknown · sub unknown (declare a price: bullswarm strategy set-subscription codex --monthly-usd <amount>)');
+  assert.equal(formatMoneyPair({
+    api: { usd: null },
     subscription: { usd: null, basis: 'unknown:no-meter' },
   }), 'api unknown · sub unknown (no meter/calibration)');
   assert.equal(formatMoneyPair({

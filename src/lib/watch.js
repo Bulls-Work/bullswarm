@@ -90,10 +90,12 @@ function decoderUsageForEstimate(connector, reportedUsage) {
   return reportedUsage;
 }
 
-async function safeSnapshot(snapshotPool, poolName, home, now) {
+async function safeSnapshot(snapshotPool, poolName, home, now, source = 'cache') {
   if (typeof snapshotPool !== 'function' || !poolName || !home) return null;
   try {
-    return await snapshotPool(poolName, { home, now });
+    const snapshot = await snapshotPool(poolName, { home, now });
+    if (!snapshot || typeof snapshot !== 'object') return snapshot;
+    return { ...snapshot, source: source ?? snapshot.source ?? 'cache' };
   } catch {
     return null;
   }
@@ -587,6 +589,7 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const quota = opts.quotaSnapshot ?? loadedAccounting.quota;
   const subscriptionCostModule = opts.subscriptionCost ?? loadedAccounting.subscription;
   const snapshotPool = opts.snapshotPool ?? quota?.snapshotPool;
+  const meterReading = opts.getMeterReading ?? getMeterReading;
   const deltaBetween = opts.deltaBetween ?? quota?.deltaBetween;
   // Keep the delta helper on the same object shape as the contract module so
   // the fallback formatter and injected focused tests follow one path.
@@ -605,22 +608,43 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   // This is intentionally immediately before the child spawn. A meter cache
   // is a shared provider observation, so taking it earlier would charge work
   // that happened before this attempt.
-  const startSnapshot = await safeSnapshot(snapshotPool, poolName, home, startedAt);
+  let startSnapshot = await safeSnapshot(snapshotPool, poolName, home, startedAt, 'cache');
+  // MeterCache is shared state, and a start reading older than the delta
+  // guard would make a real attempt look unmeasurable. Refresh once before
+  // spawning, then re-read through the same compact snapshot helper so the
+  // recorded source distinguishes the forced provider read from a cache hit.
+  if (startSnapshot?.ageMs != null && startSnapshot.ageMs > 60_000 && home && poolName) {
+    try {
+      const refreshed = await meterReading(poolName, { bullswarmDir: home, force: true });
+      if (refreshed?.source === 'live' || refreshed?.source === 'forced') {
+        startSnapshot = await safeSnapshot(snapshotPool, poolName, home, Date.now(), 'forced');
+      }
+    } catch { /* retain the stale cache, which yields no observed delta */ }
+  }
   const obs = await runDelegate(connector, paths.taskFile, targetDir, {
     ...opts,
     streamFile: opts.streamFile ?? paths.streamFile,
     stdoutFile: opts.stdoutFile ?? paths.stdoutFile,
   });
   const endedAt = Date.now();
-  let endSnapshot = await safeSnapshot(snapshotPool, poolName, home, endedAt);
+  let endSnapshot = await safeSnapshot(snapshotPool, poolName, home, endedAt, 'cache');
   // A stale end cache is not an observation of the attempt's end. One forced
   // provider read is allowed by the contract; a failed read deliberately
   // leaves the result unknown rather than fabricating a delta.
   if (endSnapshot?.ageMs != null && endSnapshot.ageMs > 60_000 && home && poolName) {
     try {
-      await getMeterReading(poolName, { bullswarmDir: home, force: true });
-    } catch { /* retain the stale cache, which yields no observed delta */ }
-    endSnapshot = await safeSnapshot(snapshotPool, poolName, home, Date.now());
+      const refreshed = await meterReading(poolName, { bullswarmDir: home, force: true });
+      if (refreshed?.source === 'live' || refreshed?.source === 'forced') {
+        endSnapshot = await safeSnapshot(snapshotPool, poolName, home, Date.now(), 'forced');
+      } else {
+        endSnapshot = null;
+      }
+    } catch {
+      // A stale end reading is not an observation of this attempt. Drop it
+      // after a failed refresh so a coincidentally unchanged counter cannot
+      // become a fabricated observed zero.
+      endSnapshot = null;
+    }
   }
   const wallSec = Math.round((endedAt - startedAt) / 100) / 10;
 
@@ -706,7 +730,10 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   if (subscriptionCost && poolName) {
     try {
       const result = await subscriptionCost({
-        pool: poolName,
+        pool: {
+          name: poolName,
+          meterSnapshot: endSnapshot ?? startSnapshot,
+        },
         poolName,
         subscription: subscriptionConfig,
         api: usage.api ?? null,

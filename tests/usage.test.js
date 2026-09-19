@@ -161,6 +161,40 @@ test('positive unpriced classes make API total unknown instead of zero', () => {
   assert.equal(usage.api.basis, 'rate-card:partial');
 });
 
+test('Grok long-context requests use the published 200K+ tier', () => {
+  const usage = estimateInvocationUsage({
+    connector: {
+      modelProfiles: [{
+        id: 'grok-4.6',
+        pricing: {
+          inputUsdPerMillion: 2,
+          cacheReadUsdPerMillion: 0.5,
+          outputUsdPerMillion: 6,
+          longContext: {
+            thresholdTokens: 200000,
+            inputUsdPerMillion: 4,
+            cacheReadUsdPerMillion: 1,
+            outputUsdPerMillion: 12,
+          },
+        },
+      }],
+    },
+    model: 'grok-4.6',
+    reportedUsage: {
+      standardRead: 200000,
+      cacheRead: 0,
+      output: 100,
+      requests: [{
+        contextTier: 'long',
+        tokens: { standardRead: 200000, cacheRead: 0, output: 100, reasoning: null },
+      }],
+    },
+  });
+  assert.equal(usage.api.breakdown.standardReadUsd, 0.8);
+  assert.equal(usage.api.breakdown.outputUsd, 0.0012);
+  assert.equal(usage.api.usd, 0.8012);
+});
+
 test('transcript attachment upgrades source and reprices the same canonical record', () => {
   const initial = estimateInvocationUsage({
     connector, model: 'fixture-pro', taskText: 'estimate', outputText: 'estimate',

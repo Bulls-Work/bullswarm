@@ -63,7 +63,7 @@ test('first-class provider validation reports usage and cache-write warnings wit
   const home = mkdtempSync(join(tmpdir(), 'bullswarm-provider-usage-rules-'));
   try {
     const expected = {
-      codex: { usageWarning: false, pricingWarning: true },
+      codex: { usageWarning: false, pricingWarning: false },
       grok: { usageWarning: true, pricingWarning: true },
       'claude-code': { usageWarning: false, pricingWarning: false },
       echo: { usageWarning: false, pricingWarning: true },

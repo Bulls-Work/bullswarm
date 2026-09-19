@@ -241,12 +241,18 @@ function snapshotValue(value) {
     usedPct,
     resetsAt: text(value.resetsAt) ?? null,
     window: normalizeWindow(value.window),
+    ...(text(value.source) ? { source: text(value.source) } : {}),
   };
 }
 
 function publicSnapshot(value) {
   if (!value) return null;
-  return { at: value.at, usedPct: value.usedPct, resetsAt: value.resetsAt };
+  return {
+    at: value.at,
+    usedPct: value.usedPct,
+    resetsAt: value.resetsAt,
+    ...(text(value.source) ? { source: value.source } : {}),
+  };
 }
 
 function meterDelta(start, end) {
@@ -279,30 +285,42 @@ function detectedPlanOf(subscription, pool) {
   return subscription?.plan
     ?? subscription?.planName
     ?? subscription?.plan_name
+    ?? subscription?.detectedPlan
+    ?? pool?.plan
+    ?? pool?.planName
+    ?? pool?.plan_name
+    ?? pool?.plan_type
     ?? pool?.meterSnapshot?.plan_name
     ?? pool?.meterSnapshot?.plan_type
+    ?? pool?.meterSnapshot?.plan
+    ?? pool?.meterSnapshot?.planName
     ?? null;
 }
 
 function resolvePlanPrice({ pool = null, subscription = null, monthlyPriceUsd = undefined,
   subscriptions = {}, priceFile = null } = {}) {
   if (monthlyPriceUsd !== undefined) return nonNegative(monthlyPriceUsd);
+  const detected = detectedPlanOf(subscription, pool);
   const declaredValue = subscription?.monthlyPriceUsd ?? pool?.subscription?.monthlyPriceUsd
     ?? pool?.connector?.subscription?.monthlyPriceUsd;
   const declared = nonNegative(declaredValue);
-  if (declared != null
-    || Object.hasOwn(subscription ?? {}, 'monthlyPriceUsd')
+  const hasDeclaredMonthly = Object.hasOwn(subscription ?? {}, 'monthlyPriceUsd')
     || Object.hasOwn(pool?.subscription ?? {}, 'monthlyPriceUsd')
-    || Object.hasOwn(pool?.connector?.subscription ?? {}, 'monthlyPriceUsd')) return declared;
+    || Object.hasOwn(pool?.connector?.subscription ?? {}, 'monthlyPriceUsd');
+  if (declared != null) return declared;
   const name = poolNameOf(pool) ?? text(subscription?.pool);
   if (name) {
     const direct = priceFor(name, { subscriptions, file: priceFile });
     if (direct?.monthlyPriceUsd != null) return direct.monthlyPriceUsd;
   }
+  // A connector's packaged `monthlyPriceUsd: null` is a placeholder, not a
+  // declaration that suppresses a provider-reported plan. Preserve explicit
+  // null-as-unknown for calls without a detected plan, while allowing a meter
+  // plan such as Codex's `prolite` to resolve through the published table.
+  if (hasDeclaredMonthly && !detected) return null;
   const provider = text(subscription?.provider)
     ?? text(pool?.provider)
     ?? (name ? name.split(':', 1)[0] : null);
-  const detected = detectedPlanOf(subscription, pool);
   return provider && detected ? planPriceFor(provider, detected, { file: priceFile })?.monthlyPriceUsd ?? null : null;
 }
 
