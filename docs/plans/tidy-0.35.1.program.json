@@ -1,0 +1,302 @@
+{
+ "schemaVersion": "bullswarm.workflow.program.v2",
+ "actions": [
+  {
+   "id": "design",
+   "kind": "implement",
+   "purpose": "Design record and hand-drawn frames for every page the tidy-up touches",
+   "dependsOn": [],
+   "affects": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "docs/design/tidy-0.35.1/README.md",
+    "docs/design/tidy-0.35.1/frames/home-55.txt",
+    "docs/design/tidy-0.35.1/frames/home-120.txt",
+    "docs/design/tidy-0.35.1/frames/home-200.txt",
+    "docs/design/tidy-0.35.1/frames/run-55.txt",
+    "docs/design/tidy-0.35.1/frames/run-120.txt",
+    "docs/design/tidy-0.35.1/frames/run-200.txt",
+    "docs/design/tidy-0.35.1/frames/step-overview-55.txt",
+    "docs/design/tidy-0.35.1/frames/step-overview-120.txt",
+    "docs/design/tidy-0.35.1/frames/step-overview-200.txt",
+    "docs/design/tidy-0.35.1/frames/step-detail-55.txt",
+    "docs/design/tidy-0.35.1/frames/step-detail-120.txt",
+    "docs/design/tidy-0.35.1/frames/step-detail-200.txt",
+    "docs/design/tidy-0.35.1/frames/task-55.txt",
+    "docs/design/tidy-0.35.1/frames/task-120.txt",
+    "docs/design/tidy-0.35.1/frames/task-200.txt"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/README.md plus fifteen hand-drawn frames /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/<page>-<width>.txt for page in home, run, step-overview, step-detail, task and width 55, 120, 200 (no line wider than the width). Study first, read-only: src/workflow/home-model.js, home-view.js, run-model.js, run-view.js, step-model.js, step-view.js, rollup.js (how `minutes.wall` is computed near line 391 and who reads `minutes`), stats-model.js (medianWallMinutes, maxWallMinutes), the task page in dashboard.js (search 'task \u00b7'), docs/design/step-page-0.35.0/README.md, and the real records in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 (workflows/*/state.json, runs/, history/runs.jsonl) \u2014 use real run names and real numbers from the snapshot in the frames. The README must fix, precisely enough that five writers can build in parallel without talking: (a) the active-minutes definition and the exact field names `minutes.active` and `minutes.span` on the run record and per phase, how a still-running attempt counts, and which readers switch; (b) the Home card layout: fields, ordering rule, 3-across at 120/200 and stacked at 55, and the plain-words licence line format; (c) the Run page phase boxes (wrapping rule, glyphs, done/total) and the timeline row format with pool \u00b7 model \u00b7 effort; (d) the Step page block order (header, task, activity, result, cost), the toggle key and its footer hint, the turn-grouping rule mapping real normalized event kinds (RESPONSE, COMMAND, tool events, errors) to the one-line summary, and the expand key; (e) the task\u2192step adapter: which task record fields map to which step model fields and what is marked unavailable. Quote the current section names being merged. Do not edit any source file.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "active-minutes",
+   "kind": "implement",
+   "purpose": "Active minutes replace wall span in rollups, Stats and reprice",
+   "dependsOn": [
+    "design"
+   ],
+   "affects": [
+    "requirement-1",
+    "requirement-7"
+   ],
+   "ownedFiles": [
+    "src/workflow/rollup.js",
+    "src/workflow/stats-model.js",
+    "src/workflow/reprice.js",
+    "tests/workflow-rollup.test.js",
+    "tests/workflow-stats-model.test.js",
+    "tests/workflow-reprice.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 1 in the model layer, exactly as /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/README.md section (a) names it. In src/workflow/rollup.js compute `minutes.active` as the union of attempt intervals (merge overlapping [startedAt, finishedAt-or-now] ranges, sum) and `minutes.span` as the old first-start-to-last-finish; per-phase durations the same way over the phase's attempts; keep worker-minutes unchanged. In src/workflow/stats-model.js the median/longest duration panels read `minutes.active` and say so in their labels. In src/workflow/reprice.js recompute stored `minutes` for terminal runs in both dry-run (report counts) and --apply. Tests on real fixtures: build one from a snapshot run that idled between phases (g6d6q2 in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows, 37h span with long gaps) and assert active < span with the exact expected numbers computed from its attempt timestamps. Run `node --test tests/workflow-rollup.test.js tests/workflow-stats-model.test.js tests/workflow-reprice.test.js` and quote the summary.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "home",
+   "kind": "implement",
+   "purpose": "Home: three top-run cards and a plain-words licence block",
+   "dependsOn": [
+    "design"
+   ],
+   "affects": [
+    "requirement-2"
+   ],
+   "ownedFiles": [
+    "src/workflow/home-model.js",
+    "src/workflow/home-view.js",
+    "tests/workflow-home-model.test.js",
+    "tests/workflow-home-view.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 2 as drawn in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/home-55.txt, home-120.txt, home-200.txt and specified in README section (b). Model: pick today's top three runs (active first, then most recently finished), expose per card name, project, status and verdict, `minutes.active` (fall back to `minutes.wall` when a record predates the field, labelled as span), steps done/total, money pair via formatMoneyPair from src/lib/usage-basis.js. View: cards 3-across at \u2265120 columns, stacked at 55, hit regions so Enter/click opens the run; licence block one line per pool in plain words; running and budget sections unchanged; the full run list removed from Home. Render with the real snapshot (/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351) at 55/120/200 in a test and assert no line exceeds the width. Run `node --test tests/workflow-home-model.test.js tests/workflow-home-view.test.js` and quote the summary. If dashboard.js needs a change (e.g. removing the list hit regions), write it as a Shared-file request with the diff.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "run-page",
+   "kind": "implement",
+   "purpose": "Run page: compact phase boxes, timeline rows with model and effort, active durations",
+   "dependsOn": [
+    "design"
+   ],
+   "affects": [
+    "requirement-3",
+    "requirement-1"
+   ],
+   "ownedFiles": [
+    "src/workflow/run-model.js",
+    "src/workflow/run-view.js",
+    "tests/workflow-run-model.test.js",
+    "tests/workflow-run-view.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 3 as drawn in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/run-55.txt, run-120.txt, run-200.txt and README section (c). Replace the per-phase headers with per-step rows by boxes that wrap across the width (one per phase: name, done/total, status glyph; Enter/click on a box opens its first step). Timeline rows show pool \u00b7 model \u00b7 effort from the attempt record; each attempt row shows its own attempt duration, and the phase header duration is that phase's active minutes (read `minutes.active` from the rollup; when absent compute the union locally from attempt timestamps and never show the idle-inflated span as the duration). The run header duration is `minutes.active`. Render the real running and finished runs from /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 at 55/120/200 in tests and assert no line exceeds the width. Run `node --test tests/workflow-run-model.test.js tests/workflow-run-view.test.js` and quote the summary.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "step-page",
+   "kind": "implement",
+   "purpose": "Step page: five blocks, overview/detail toggle, turn-based activity",
+   "dependsOn": [
+    "design"
+   ],
+   "affects": [
+    "requirement-4"
+   ],
+   "ownedFiles": [
+    "src/workflow/step-model.js",
+    "src/workflow/step-view.js",
+    "tests/workflow-step-model.test.js",
+    "tests/workflow-step-view.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 4 as drawn in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/step-overview-*.txt and step-detail-*.txt and README section (d). Model: group the normalized event stream into turns (each RESPONSE event closes a turn; the events between two responses are summarised by real kind counts: commands, files read, edits, errors), expose `view: 'overview'|'detail'`, `expandedTurn`, and the merged blocks task (prompt + task), result (output + artifacts + outcome/verification) and cost (money pair + tokens + budget). View: overview default with the turn rows and one-line summaries, Enter expands a turn's atomic events in place; detail is today's capture-order log with filters plus every technical field and full paths; the toggle key and footer hint exactly as the README names them; header carries pool \u00b7 model \u00b7 effort and the active duration. Keep every degradation state from 0.35.0 (stream unavailable, pending usage, unknown money as dash). Use the real stream files in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows/*/stream-*.jsonl as fixtures. Render running, finished and failed steps at 55/120/200 in both views in tests and assert widths. Run `node --test tests/workflow-step-model.test.js tests/workflow-step-view.test.js` and quote the summary. Any key-binding change in dashboard.js goes in a Shared-file request with the diff.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "task-page",
+   "kind": "implement",
+   "purpose": "A single bullswarm run task renders through the step model and view",
+   "dependsOn": [
+    "step-page"
+   ],
+   "affects": [
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "src/workflow/dashboard.js",
+    "src/workflow/task-step.js",
+    "tests/workflow-task-step.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: requirement 5 per README section (e). Create src/workflow/task-step.js: an adapter that turns a single-run task record (/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/runs/*.json plus its task-*.md, out-*.md and stream file when one exists) into the step model input that src/workflow/step-model.js (already rebuilt by the step-page writer \u2014 read its exported shape first) consumes; fields a task cannot supply are marked unavailable, never faked. In src/workflow/dashboard.js route the task page to step-view through the adapter and delete the old thin 'task / artifacts' renderer and its tests' expectations only inside your owned files; the step-page writer may also have asked for dashboard.js key-binding changes in its report \u2014 apply them if that report exists in the run directory, otherwise leave them to the integrator. Test with the real task records in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/runs at 55/120/200. Run `node --test tests/workflow-task-step.test.js tests/workflow-dashboard.test.js` and quote the summary.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "docs",
+   "kind": "implement",
+   "purpose": "Guides and changelog for 0.35.1",
+   "dependsOn": [
+    "design"
+   ],
+   "affects": [
+    "requirement-7"
+   ],
+   "ownedFiles": [
+    "docs/guide/observing.md",
+    "docs/guide/cost.md",
+    "CHANGELOG.md"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: docs/guide/observing.md describes the Home cards, the Run phase boxes and timeline columns, the Step page blocks, the overview/detail toggle and turn expansion, and the single-task page being the step page, using the key names and block names from /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/README.md; docs/guide/cost.md explains active minutes vs span and that reprice recomputes them; CHANGELOG.md gains `## 0.35.1 \u2014 <one-line theme>` above `## 0.35.0` with one bullet per requirement 1\u20135, in the existing bullet style. Describe only what the design record commits to; do not invent behaviour. Run `node --test tests/help.test.js` if it exists and quote the summary.",
+   "lane": "build",
+   "effort": "medium",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "step-json",
+   "kind": "implement",
+   "purpose": "action show --json carries the rebuilt step model so the Claude mod and the dashboard share one contract",
+   "dependsOn": [
+    "step-page"
+   ],
+   "affects": [
+    "requirement-4",
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "src/workflow/cli.js",
+    "tests/workflow-action-show.test.js"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: `bullswarm workflow action show <run> <step> --json` (src/workflow/cli.js near line 1848) adds a `step` object that is the output of the rebuilt src/workflow/step-model.js for that action (read its exported shape first; the step-page writer has finished): header, task, activity with turns and their one-line summaries and the atomic events, result, cost, degradation states \u2014 additive, every existing field stays byte-identical. The same applies to a single task when a task id is given, through src/workflow/task-step.js if it exists by then (the task-page writer may still be running; if the adapter is not there, document the gap under Contract deviations and leave a TODO-free hook). Do not print the new object in the human text output. New test file tests/workflow-action-show.test.js runs the command against the real snapshot /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 (read-only) for one finished and one running step and asserts the `step` object matches step-model's output and that the previous fields are unchanged. Run `node --test tests/workflow-action-show.test.js` and quote the summary."
+  },
+  {
+   "id": "mod-step",
+   "kind": "implement",
+   "purpose": "The Claude mod's pane shows the same step blocks and turn-based activity as the dashboard",
+   "dependsOn": [
+    "design",
+    "step-json"
+   ],
+   "affects": [
+    "requirement-4",
+    "requirement-5"
+   ],
+   "ownedFiles": [
+    "mods/bullswarm/hooks/pane.tsx",
+    "mods/bullswarm/hooks/runs.ts",
+    "mods/bullswarm/hooks/step.ts",
+    "mods/bullswarm/README.md"
+   ],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Outcome: the step view inside the Claude mod pane (mods/bullswarm/hooks/pane.tsx, the block starting at `Step \u00b7 ` near line 366) renders the same five blocks as the dashboard Step page in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/README.md section (d) \u2014 header, task, activity, result, cost \u2014 from the `step` object that `bullswarm workflow action show <run> <step> --json` now returns (the step-json writer's report in this run directory names the shape; register.ts already calls that command near line 263 and 388, do not edit register.ts: if it must change, write the diff as a Shared-file request). Activity is turn-based by default (response row, one-line action summary, next response) and a `detail` button in the pane's bottom row switches to the atomic log, matching the dashboard's toggle name from the README; keep the pane read-only with no edit/install action and keep the meter colours. Put the pure shaping (JSON \u2192 pane rows) in a new mods/bullswarm/hooks/step.ts so pane.tsx only lays rows out; move nothing else. A single `bullswarm run` task opens the same view when the JSON carries a `step` object for it. Update mods/bullswarm/README.md where it describes the pane's Step view and bottom row. Typecheck with `npx --yes -p typescript@5 tsc -p /home/dev/Repo/bullswork/bullswarm-0.35.1/mods/bullswarm/tsconfig.json` and quote its output (must be clean); there is no runtime test harness for the mod, so also paste one rendered pane row set for a real step from /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 produced by calling your step.ts shaping function with the real JSON in a small node script (delete the script afterwards)."
+  },
+  {
+   "id": "digest",
+   "kind": "digest",
+   "purpose": "Condense the writer reports for the integrator",
+   "dependsOn": [
+    "design",
+    "active-minutes",
+    "home",
+    "run-page",
+    "step-page",
+    "task-page",
+    "docs",
+    "step-json",
+    "mod-step"
+   ],
+   "affects": [],
+   "ownedFiles": [],
+   "evidenceFor": [],
+   "prompt": "Keep every 'Shared-file requests' and 'Contract deviations' section verbatim with their diffs, and every quoted test summary.",
+   "lane": "analyze",
+   "effort": "low",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "integrate",
+   "kind": "integration",
+   "purpose": "Apply shared-file requests, render the real frames, make npm test green",
+   "dependsOn": [
+    "digest"
+   ],
+   "affects": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5",
+    "requirement-6",
+    "requirement-7"
+   ],
+   "ownedFiles": [],
+   "evidenceFor": [],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. You are the only writer now; no territory limit. Read the digest. Apply every Shared-file request (mostly src/workflow/dashboard.js key bindings and hit regions), reconcile the writers where they disagree with /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/README.md, then render the REAL frames required by requirement 6 from the snapshot /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 (read-only; copy if any code path writes) at 55, 120 and 200 columns and save them as /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/real-<page>-<state>-<width>.txt for home, run-running, run-finished, step-overview-{running,finished,failed}, step-detail-{running,finished,failed}, task; assert no line exceeds its width and fix the code, not the frame, when one does. Check `bullswarm workflow reprice` (dry run against the copy) reports recomputed minutes. Run `npm test` and quote the summary; if only the three known load-sensitive tests fail, run each alone and quote those results too. Commit nothing; leave the tree for verification. Also run the mod typecheck `npx --yes -p typescript@5 tsc -p /home/dev/Repo/bullswork/bullswarm-0.35.1/mods/bullswarm/tsconfig.json` and `node --test tests/workflow-action-show.test.js`, and quote both.",
+   "lane": "build",
+   "effort": "high",
+   "inputs": [],
+   "produces": []
+  },
+  {
+   "id": "verify",
+   "kind": "adversarial-acceptance",
+   "purpose": "Independent evidence for requirements 1\u20137",
+   "dependsOn": [
+    "design",
+    "active-minutes",
+    "home",
+    "run-page",
+    "step-page",
+    "task-page",
+    "docs",
+    "integrate",
+    "step-json",
+    "mod-step"
+   ],
+   "affects": [],
+   "ownedFiles": [],
+   "evidenceFor": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5",
+    "requirement-6",
+    "requirement-7"
+   ],
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1 from the released v0.35.0; dashboard pages live in src/workflow/{home,run,runs,step}-model.js / -view.js, the router and remaining pages in src/workflow/dashboard.js, run rollups in src/workflow/rollup.js, Stats in src/workflow/stats-model.js). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, and put any change you need elsewhere under a 'Shared-file requests' heading in your report, with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB) and point BULLSWARM_HOME at the copy; delete the copy when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1.goal.txt first. Use real data only: never invent a figure, a fixture or a frame; unknown money is a dash. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail` lines), 'Shared-file requests', 'Contract deviations'. Judge requirements 1\u20137 from the artifacts, inspecting only; try to break it. For 1 pick run g6d6q2 in /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351, compute the union of its attempt intervals yourself from state.json timestamps and compare with `minutes.active` and the durations the Run page prints; confirm three accept attempts no longer share one duration; confirm Stats labels say active. For 2\u20135 render every page yourself at 55/120/200 from the snapshot and compare with /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/frames/real-*; drive the toggle and expand keys through the dashboard key handler in a test harness; confirm the single task page and a workflow step page share the same renderer. For 4 pick one real stream and check the turn summaries' counts against the raw events. For 6 measure every real frame's line widths. For 7 read the two guides against the code and run `npm test`, quoting the summary and, for any failing load-sensitive test, its result when run alone. For the Claude mod (mods/bullswarm): run `npx --yes -p typescript@5 tsc -p /home/dev/Repo/bullswork/bullswarm-0.35.1/mods/bullswarm/tsconfig.json` and quote it; confirm `bullswarm workflow action show <run> <step> --json` on the snapshot returns a `step` object equal to step-model's output for that step and that mods/bullswarm/hooks/step.ts shapes the same five blocks and turn rows from it; report under requirement 4 and 5.",
+   "lane": "analyze",
+   "effort": "high",
+   "inputs": [],
+   "produces": []
+  }
+ ]
+}
