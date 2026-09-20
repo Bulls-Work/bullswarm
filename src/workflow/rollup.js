@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { atomicWriteFileSync, readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 import { projectName } from '../lib/project.js';
 import { readGoalProject } from './goal.js';
+import { isTerminalWorkflowStatus } from './status.js';
 
 export const ROLLUP_SCHEMA_VERSION = 'bullswarm.workflow.rollup.v1';
 
@@ -54,6 +55,8 @@ function finiteNumber(value) {
 }
 
 function parseIso(value) {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value !== 'string' || !value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
@@ -237,6 +240,83 @@ export function aggregateAttemptUsage(attempts) {
   return finalizeUsageAggregate(aggregate);
 }
 
+/**
+ * Measure the time the supplied attempts were actually overlapping.
+ *
+ * A worker's wall clock is intentionally not used here: it is a separate
+ * worker-minutes measure and may include provider-side accounting that the
+ * attempt timestamps cannot prove.  Every interval must have a valid start;
+ * a terminal interval must also have a recorded finish.  One bad endpoint
+ * makes the union unknown instead of quietly under-counting the run.
+ *
+ * Running attempts are open through `now`.  `span` is withheld until the
+ * caller says the record is terminal, because an open run has no proved last
+ * finish yet.
+ */
+export function intervalMinutes(attempts, { now = Date.now(), terminal = false } = {}) {
+  const list = Array.isArray(attempts) ? attempts.filter((attempt) => attempt && typeof attempt === 'object') : [];
+  if (!list.length) return { active: null, span: null };
+  const endNow = parseIso(now);
+  const intervals = [];
+  let unknown = false;
+  let firstStart = null;
+  let lastFinish = null;
+
+  for (const attempt of list) {
+    const started = parseIso(attempt.startedAt);
+    const recordedFinish = parseIso(attempt.finishedAt ?? attempt.endedAt);
+    if (started == null) {
+      unknown = true;
+      continue;
+    }
+    if (firstStart == null || started < firstStart) firstStart = started;
+    const finish = recordedFinish ?? (!terminal ? endNow : null);
+    if (finish == null || finish < started) {
+      unknown = true;
+      continue;
+    }
+    if (recordedFinish != null && (lastFinish == null || recordedFinish > lastFinish)) lastFinish = recordedFinish;
+    intervals.push([started, finish]);
+  }
+
+  if (unknown || !intervals.length) return { active: null, span: null };
+  intervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  const merged = [];
+  for (const interval of intervals) {
+    const previous = merged.at(-1);
+    if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+    else merged.push([...interval]);
+  }
+  const activeMs = merged.reduce((total, [started, finished]) => total + finished - started, 0);
+  const spanMs = terminal && firstStart != null && lastFinish != null && lastFinish >= firstStart
+    ? lastFinish - firstStart : null;
+  return {
+    active: round(activeMs / MINUTE_MS, 2),
+    span: spanMs == null ? null : round(spanMs / MINUTE_MS, 2),
+  };
+}
+
+function terminalStateOf(state, result) {
+  if (state?.lifecycle?.finishedAt || result?.finishedAt) return true;
+  return isTerminalWorkflowStatus(state?.lifecycle?.status)
+    || isTerminalWorkflowStatus(result?.status);
+}
+
+function phaseRecords(state, attempts, { now, terminal }) {
+  const stages = Array.isArray(state?.presentation?.stages) ? state.presentation.stages : [];
+  return stages.map((stage, index) => {
+    const actionIds = Array.isArray(stage?.actionIds) ? stage.actionIds.filter((id) => typeof id === 'string') : [];
+    const phaseAttempts = attempts.filter((attempt) => actionIds.includes(attempt?.actionId));
+    return {
+      ...stage,
+      id: stage?.id ?? `phase-${index + 1}`,
+      name: stage?.name ?? stage?.label ?? `phase-${index + 1}`,
+      actionIds,
+      minutes: intervalMinutes(phaseAttempts, { now, terminal }),
+    };
+  });
+}
+
 // A time bound may be an ISO string, a Date, epoch milliseconds, or a
 // relative duration ('7d', '24h') measured back from `now` — the same
 // vocabulary `workflow runs --since` already accepts.
@@ -369,6 +449,11 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
   const ledgerAttempts = hasCanonicalUsage ? attempts : (state?.attempts ?? attempts);
   const { pools, models, canonical } = attemptTotals(ledgerAttempts);
   const usage = aggregateAttemptUsage(attempts);
+  const terminal = terminalStateOf(state, result);
+  const minutes = intervalMinutes(attempts, { now, terminal });
+  const phases = phaseRecords(state, attempts, { now, terminal });
+  const lifecycleWallMinutes = startedAtMs != null && finishedAtMs != null
+    ? round((finishedAtMs - startedAtMs) / MINUTE_MS, 2) : null;
   // Keep the legacy token ledger alongside the richer v2 aggregate. The
   // explicit cost/coverage fields are authoritative for all new views.
   usage.total = state?.usage?.total ?? (usage.tokens ?? 0);
@@ -387,10 +472,22 @@ export function rollupRecord(state, result, { project = null, cwd, now = Date.no
     status: result?.status ?? lifecycle.status ?? null,
     verified: result?.verified === true,
     requirements: requirementTotals(state, result),
+    steps: {
+      done: (state?.actions ?? []).filter((action) => action?.status === 'succeeded').length,
+      total: Array.isArray(state?.actions) ? state.actions.length : null,
+    },
     minutes: {
-      wall: startedAtMs != null && finishedAtMs != null ? round((finishedAtMs - startedAtMs) / MINUTE_MS, 2) : null,
+      active: minutes.active,
+      span: minutes.span,
+      // Keep the pre-0.35 field as a compatibility alias for older readers.
+      // New duration readers must use `active`; `span` is the explicit wall
+      // fact retained for secondary display only. The old alias follows the
+      // attempt span when it is provable, and otherwise keeps the lifecycle
+      // value for pre-0.35-shaped fixtures that have no attempt timestamps.
+      wall: minutes.span ?? lifecycleWallMinutes,
       agent: agentSeconds != null && agentSeconds >= 0 ? round(agentSeconds / 60, 2) : null,
     },
+    phases,
     pools,
     models,
     usage: canonical ? usage : {
@@ -581,12 +678,13 @@ export function readLegacyRunFacts(runDir, { runId = null, shortId = null, proje
  * the facts a reader resolved and reads nothing itself.
  *
  * `requirements` is 0 passed of 0 recorded — a legacy run left no ledger, and
- * a fabricated total would read as requirements that failed. `minutes.wall` is
- * the interval between the two times the run itself recorded, and only when
- * both came from the same one: a file time says when a file was last written,
- * which is not the moment the run stopped, so subtracting it from a recorded
- * start would report a duration the run never had. `pools` and `models` are
- * empty: no attempt was ever measured for this run.
+ * a fabricated total would read as requirements that failed. `minutes.span`
+ * (and its pre-0.35 `minutes.wall` alias) is the interval between the two times
+ * the run itself recorded, and only when both came from the same one: a file
+ * time says when a file was last written, which is not the moment the run
+ * stopped, so subtracting it from a recorded start would report a duration the
+ * run never had. `minutes.active` stays unknown because no attempt was ever
+ * measured for this run. `pools` and `models` are empty.
  */
 export function legacyRollupRecord(facts = {}) {
   const startedAt = isoFrom(facts.startedAt);
@@ -609,7 +707,9 @@ export function legacyRollupRecord(facts = {}) {
     status: facts.status ?? null,
     verified: false,
     requirements: { passed: 0, total: 0 },
-    minutes: { wall: wallMinutes, agent: null },
+    // Legacy runs have no attempt clocks, so active minutes are unknown. Their
+    // recorded report/state interval remains an honest secondary span.
+    minutes: { active: null, span: wallMinutes, wall: wallMinutes, agent: null },
     pools: {},
     models: {},
     legacy: true,

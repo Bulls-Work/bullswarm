@@ -36,8 +36,6 @@ import {
 } from './home-model.js';
 import {
   homePage,
-  taskIdText,
-  taskPoolModelText,
 } from './home-view.js';
 import {
   dashboardRunLines,
@@ -67,6 +65,7 @@ import { finiteOrNull } from '../lib/num.js';
 // are about to change are the same program's.
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
+import { taskStepModel } from './task-step.js';
 import { renderStepPage } from './step-view.js';
 
 const ESC = '\x1b[';
@@ -1479,33 +1478,6 @@ function planAttemptMeta(attempt, width) {
   return '';
 }
 
-function taskPage(model, opts, body) {
-  const { width } = opts;
-  const task = model.task;
-  if (!task) {
-    body.push(dimText(' no task selected', width));
-    return ' task';
-  }
-  const result = task.ok === true ? 'ok' : task.ok === false
-    ? String(task.reason ?? 'failed').replace(/\s+/g, ' ')
-    : 'result unavailable';
-  const reason = task.reason == null ? (task.ok === true ? 'none recorded' : 'not recorded')
-    : String(task.reason).replace(/\s+/g, ' ');
-  const duration = task.durationMs == null ? 'duration unavailable' : formatDashboardValue(task.durationMs / 60_000, 'minutes') ?? 'duration unavailable';
-  body.push(rule('task', null, width));
-  body.push(cut(` lane    ${task.lane ?? blank()}`, width));
-  body.push(cut(` pool    ${taskPoolModelText(task)}`, width));
-  body.push(cut(` project ${task.project ?? blank()}`, width));
-  body.push(cut(` result  ${result}`, width));
-  body.push(cut(` time    ${duration} · ${task.endedAt ?? task.startedAt ?? blank()}`, width));
-  body.push('');
-  body.push(rule('artifacts', null, width));
-  body.push(dimText(cut(` task:   ${task.taskFile ?? blank()}`, width), width));
-  body.push(dimText(cut(` output: ${task.outFile ?? task.outputFile ?? blank()}`, width), width));
-  body.push(dimText(cut(` reason:  ${reason}`, width), width));
-  return ` task · ${taskIdText(task)} · ${result}`;
-}
-
 /** Budget: every pool's licence meter, its money and what still fits. */
 function budgetPage(model, opts, body) {
   const { width } = opts;
@@ -1882,27 +1854,42 @@ export function renderDashboardPage(model, options = {}) {
   else if (page === 'history') header = runsPage(model, opts, body);
   else if (page === 'fleet') header = fleetPage(model, opts, body);
   else if (page === 'help') header = helpPage(model, opts, body);
-  else if (page === 'step') {
-    const stepPanel = workflowPanelModel(model.row, {
-      phaseIndex: opts.phaseIndex,
-      agentIndex: opts.agentIndex,
-    });
-    const stepActionId = stepPanel.selectedAgent?.action?.id
-      ?? stepPanel.selectedPhase?.actions?.[0]?.id
-      ?? null;
-    const step = stepPageModel(model, {
-      phaseIndex: opts.phaseIndex,
-      agentIndex: opts.agentIndex,
-      actionId: stepActionId,
-      nowMs: opts.nowMs,
-      selectedEventIndex: opts.stepSelectedEventIndex,
-      attemptOrdinal: opts.stepAttemptOrdinal,
-      activityFilter: opts.stepFilter,
-      follow: opts.stepFollow,
-    });
-    header = renderStepPage(step, { ...opts, bodyHeight }, body);
+  else if (page === 'step' || page === 'task') {
+    if (page === 'task') {
+      const taskStep = taskStepModel(model.task, {
+        runsDir: model.taskRoot ?? model.taskRunsDir ?? null,
+        nowMs: opts.nowMs,
+        view: opts.stepView,
+        expandedTurn: opts.stepExpandedTurn,
+        selectedEventIndex: opts.stepSelectedEventIndex,
+        attemptOrdinal: opts.stepAttemptOrdinal,
+        activityFilter: opts.stepFilter,
+        follow: opts.stepFollow,
+      });
+      header = renderStepPage(taskStep, { ...opts, bodyHeight }, body);
+    } else {
+      const stepPanel = workflowPanelModel(model.row, {
+        phaseIndex: opts.phaseIndex,
+        agentIndex: opts.agentIndex,
+      });
+      const stepActionId = stepPanel.selectedAgent?.action?.id
+        ?? stepPanel.selectedPhase?.actions?.[0]?.id
+        ?? null;
+      const step = stepPageModel(model, {
+        phaseIndex: opts.phaseIndex,
+        agentIndex: opts.agentIndex,
+        actionId: stepActionId,
+        nowMs: opts.nowMs,
+        selectedEventIndex: opts.stepSelectedEventIndex,
+        attemptOrdinal: opts.stepAttemptOrdinal,
+        activityFilter: opts.stepFilter,
+        follow: opts.stepFollow,
+        view: opts.stepView,
+        expandedTurn: opts.stepExpandedTurn,
+      });
+      header = renderStepPage(step, { ...opts, bodyHeight }, body);
+    }
   }
-  else if (page === 'task') header = taskPage(model, { ...opts, bodyHeight }, body);
   else header = runPage(model, { ...opts, bodyHeight }, body);
 
   const frame = frameBuilder();
@@ -1961,13 +1948,15 @@ function tileSparklines(rollups, nowMs) {
 export function dashboardModel(row, {
   runs = null, usage = null, integration = null, installResult = null, nowMs = Date.now(),
   rollups = null, days = null, prices = null, period = '7d', budgetPeriod = 'week',
-  metric = 'runs', meterHistory = null, tasks = null, task = null,
+  metric = 'runs', meterHistory = null, tasks = null, task = null, taskRoot = null, taskRunsDir = null,
 } = {}) {
   const pools = usage?.pools ?? [];
   const records = rollups ?? [];
   const model = {
     row: row ?? null,
     task: task ?? null,
+    taskRoot: taskRoot ?? taskRunsDir ?? null,
+    taskRunsDir: taskRunsDir ?? taskRoot ?? null,
     nowMs,
     runs: runs ?? (row && row.legacy !== true ? [row] : []),
     pools,
@@ -2201,6 +2190,9 @@ export async function runDashboard(bullswarmDir, {
     // immutable; these values drive selection, detail, filters, and section
     // navigation while the reader is on the Step page.
     stepDetail: false,
+    stepView: 'overview',
+    stepExpandedTurn: null,
+    stepTurnIndex: null,
     stepSection: 'activity',
     stepSelectedEventIndex: null,
     stepAttemptOrdinal: null,
@@ -2370,6 +2362,9 @@ export async function runDashboard(bullswarmDir, {
     timelineSelection: ui.timelineSelection,
     confirmCancel: ui.confirmCancel,
     stepDetail: ui.stepDetail,
+    stepView: ui.stepView,
+    stepExpandedTurn: ui.stepExpandedTurn,
+    stepTurnIndex: ui.stepTurnIndex,
     stepSection: ui.stepSection,
     stepSelectedEventIndex: ui.stepSelectedEventIndex,
     stepAttemptOrdinal: ui.stepAttemptOrdinal,
@@ -2403,6 +2398,7 @@ export async function runDashboard(bullswarmDir, {
       runs: activeRuns,
       tasks,
       task,
+      taskRunsDir: join(bullswarmDir, 'runs'),
       usage, integration, installResult, rollups, days, prices,
       period: ui.period, metric: ui.metric, meterHistory,
     });
@@ -2421,6 +2417,7 @@ export async function runDashboard(bullswarmDir, {
       try {
         const frame = renderDashboardPage(dashboardModel(null, {
           runs: activeRuns, tasks, usage, integration, rollups, days, prices,
+          taskRunsDir: join(bullswarmDir, 'runs'),
           meterHistory,
         }), { ...pageOptions(), page: 'home', message });
         regions = frame.regions;
@@ -2574,6 +2571,9 @@ export async function runDashboard(bullswarmDir, {
     ui.focus = 2;
     ui.detailScroll = 0;
     ui.stepDetail = false;
+    ui.stepView = 'overview';
+    ui.stepExpandedTurn = null;
+    ui.stepTurnIndex = null;
     ui.stepSection = 'activity';
     ui.stepSelectedEventIndex = null;
     ui.stepAttemptOrdinal = null;
@@ -2594,6 +2594,15 @@ export async function runDashboard(bullswarmDir, {
     ui.page = 'task';
     ui.focus = 0;
     bodyScroll = 0;
+    ui.stepDetail = false;
+    ui.stepView = 'overview';
+    ui.stepExpandedTurn = null;
+    ui.stepTurnIndex = null;
+    ui.stepSection = 'activity';
+    ui.stepSelectedEventIndex = null;
+    ui.stepAttemptOrdinal = null;
+    ui.stepFollow = true;
+    ui.stepFilter = 'all';
     message = null;
     return paint();
   };
@@ -2633,7 +2642,7 @@ export async function runDashboard(bullswarmDir, {
     }
     if (ui.page === 'step') {
       ui.page = 'run';
-      ui.focus = 1;
+      ui.focus = 0;
       ui.detailScroll = 0;
       return paint();
     }
@@ -3143,9 +3152,11 @@ export async function runDashboard(bullswarmDir, {
           ui.controlSelected = true;
         } else message = 'This workflow has no autonomous Workflow Planner.';
       } else {
-        ui.focus = 1;
-        ui.followActiveAgent = true;
-        ui.detailScroll = 0;
+        const row = detailRow(bullswarmDir, selectedRunId);
+        const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+        const action = model.selectedPhase?.actions?.[0] ?? null;
+        if (action) return openStep(action.id);
+        message = 'No step belongs to this phase yet.';
       }
       return paint();
     }
@@ -3209,11 +3220,12 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('stats', key)) return openPage('stats');
     if (keyPressed('history', key)) return openPage('history');
     if (keyPressed('fleet', key)) return openPage('fleet');
-    // `p` and Tab are global dashboard bindings elsewhere, but on Step they
+    // `p` and Tab are global dashboard bindings elsewhere, but on Step/task they
     // are the page's prompt and section navigation. Handle them before the
     // period/sub-tab dispatch below; the remaining Step keys are handled in
     // the fuller branch after Home/End have had their normal precedence.
-    if (ui.page === 'step' && (key === 'p' || key === '\t' || key === '\x1b[Z')) {
+    const stepLikePage = ui.page === 'step' || ui.page === 'task';
+    if (stepLikePage && (key === 'p' || key === '\t' || key === '\x1b[Z')) {
       if (key === 'p') ui.stepSection = 'prompt';
       else {
         const at = STEP_SECTIONS.indexOf(ui.stepSection);
@@ -3233,21 +3245,37 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('cycleWorkflow', key)) return switchWorkflow(1);
     if (keyPressed('top', key)) { bodyScroll = 0; ui.detailScroll = 0; return paint(); }
     if (keyPressed('end', key)) return scrollToEnd();
-    // Step owns a small, page-local reader: arrows select captured events or
+    // Step/task owns a small, page-local reader: arrows select captured events
     // retry attempts, Enter opens the selected event, Tab cycles sections,
     // Space follows the stream, and e/t choose the evidence filters. Keep it
     // before the dashboard-wide p/o/t bindings so those keys cannot steal a
     // Step interaction; q, Home, End and ? have already been handled above.
-    if (ui.page === 'step') {
-      const row = detailRow(bullswarmDir, selectedRunId);
-      const step = stepPageModel(row, {
-        phaseIndex: ui.phaseIndex,
-        agentIndex: ui.agentIndex,
-        selectedEventIndex: ui.stepSelectedEventIndex,
-        attemptOrdinal: ui.stepAttemptOrdinal,
-        activityFilter: ui.stepFilter,
-        follow: ui.stepFollow,
-      });
+    if (stepLikePage) {
+      const taskRecord = ui.page === 'task'
+        ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
+          .find((entry) => (entry.id ?? entry.taskFile) === selectedTaskId) ?? null
+        : null;
+      const row = ui.page === 'step' ? detailRow(bullswarmDir, selectedRunId) : null;
+      const step = ui.page === 'task'
+        ? taskStepModel(taskRecord, {
+          nowMs: Date.now(),
+          view: ui.stepView,
+          expandedTurn: ui.stepExpandedTurn,
+          selectedEventIndex: ui.stepSelectedEventIndex,
+          attemptOrdinal: ui.stepAttemptOrdinal,
+          activityFilter: ui.stepFilter,
+          follow: ui.stepFollow,
+        })
+        : stepPageModel(row, {
+          phaseIndex: ui.phaseIndex,
+          agentIndex: ui.agentIndex,
+          selectedEventIndex: ui.stepSelectedEventIndex,
+          attemptOrdinal: ui.stepAttemptOrdinal,
+          activityFilter: ui.stepFilter,
+          follow: ui.stepFollow,
+          view: ui.stepView,
+          expandedTurn: ui.stepExpandedTurn,
+        });
       const activityIndices = step.activity?.visibleEventIndices ?? [];
       const attempts = step.attemptHistory ?? [];
       const moveSelection = (delta) => {
@@ -3258,6 +3286,17 @@ export async function runDashboard(bullswarmDir, {
           ui.stepAttemptOrdinal = attempts[next]?.ordinal ?? null;
           ui.stepFollow = false;
           ui.stepDetail = false;
+          return;
+        }
+        const turns = step.activity?.turns ?? [];
+        if (ui.stepView === 'overview' && turns.length) {
+          const current = Number.isInteger(ui.stepTurnIndex)
+            ? ui.stepTurnIndex
+            : Number.isInteger(step.activity?.expandedTurn) ? step.activity.expandedTurn : (delta > 0 ? -1 : turns.length);
+          const next = clamp(current + delta, 0, turns.length - 1);
+          ui.stepTurnIndex = next;
+          ui.stepSelectedEventIndex = turns[next]?.responseIndex ?? null;
+          ui.stepFollow = false;
           return;
         }
         if (!activityIndices.length) return;
@@ -3278,7 +3317,23 @@ export async function runDashboard(bullswarmDir, {
         return paint();
       }
       if (key === '\r' || key === '\n') {
-        if (ui.stepSection === 'activity' && step.activity?.selectedEvent != null) ui.stepDetail = !ui.stepDetail;
+        if (ui.stepSection === 'activity' && ui.stepView === 'overview' && step.activity?.turns?.length) {
+          const target = Number.isInteger(ui.stepTurnIndex)
+            ? ui.stepTurnIndex
+            : Number.isInteger(step.activity?.expandedTurn) ? step.activity.expandedTurn : 0;
+          ui.stepTurnIndex = target;
+          ui.stepExpandedTurn = ui.stepExpandedTurn === target ? null : target;
+          ui.stepSelectedEventIndex = step.activity.turns[target]?.responseIndex ?? ui.stepSelectedEventIndex;
+          ui.stepFollow = false;
+        } else if (ui.stepSection === 'activity' && step.activity?.selectedEvent != null) {
+          ui.stepDetail = !ui.stepDetail;
+        }
+        return paint();
+      }
+      if (key === 'v' || key === 'V') {
+        ui.stepView = ui.stepView === 'detail' ? 'overview' : 'detail';
+        ui.stepDetail = false;
+        ui.stepExpandedTurn = null;
         return paint();
       }
       if (key === ' ') {
@@ -3292,6 +3347,10 @@ export async function runDashboard(bullswarmDir, {
       if (key === 'e') { ui.stepFilter = ui.stepFilter === 'errors' ? 'all' : 'errors'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
       if (key === 't') { ui.stepFilter = ui.stepFilter === 'tools' ? 'all' : 'tools'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
       if (keyPressed('out', key) || key === '\x7f' || key === '\b') {
+        if (ui.stepExpandedTurn != null) {
+          ui.stepExpandedTurn = null;
+          return paint();
+        }
         if (ui.stepDetail) { ui.stepDetail = false; return paint(); }
         return moveOut();
       }

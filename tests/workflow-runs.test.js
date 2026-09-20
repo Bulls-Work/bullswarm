@@ -40,6 +40,12 @@ import {
 import { isDeliveredWorkflowStatus, isTerminalWorkflowStatus } from '../src/workflow/status.js';
 import { deserializeV2DurableState } from '../src/workflow/v2-state.js';
 import { deserializeV2ResultEnvelope } from '../src/workflow/v2-outcome.js';
+import { rollupRecord } from '../src/workflow/rollup.js';
+import { historyLines } from '../src/workflow/history-view.js';
+
+const REAL_G6D6Q2 = JSON.parse(
+  readFileSync(new URL('./fixtures/workflows/g6d6q2-state.json', import.meta.url), 'utf8'),
+);
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const BIN = join(REPO, 'bin', 'bullswarm.js');
@@ -783,4 +789,28 @@ test('I13: reindex --force rewrites rollups that already exist', () => {
     assert.notEqual(JSON.parse(readFileSync(rollupPath, 'utf8')).project, 'stale-name');
     assert.equal(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8').trim().split('\n').length, 1);
   } finally { cleanup(); }
+});
+
+// --- R1: the Runs table shows active minutes, never the idle-inflated span --
+//
+// The real g6d6q2 record proves both numbers: its 19 attempt intervals union
+// to 360.65 minutes of at-least-one-agent-working time, while the first start
+// to the last finish spans 2234.93 minutes because the run restarted a day
+// later. The Runs table must print 6h01m, and a record too old to carry the
+// active union keeps only its span, which the row has to say out loud.
+test('the Runs table prints a real history row\u2019s active minutes, not its span', () => {
+  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  assert.equal(record.minutes.active, 360.65);
+  assert.equal(record.minutes.span, 2234.93);
+  const day = (row) => historyLines([{ date: '2026-09-19', runs: 1, finished: 1, rows: [row] }], { width: 200, ansi: false });
+  const row = day(record).lines.filter((line) => line.includes('g6d6q2'));
+  assert.equal(row.length, 1, 'the real run paints exactly one row');
+  assert.match(row[0], /6h01m/);
+  assert.doesNotMatch(row[0], /37h15m/);
+
+  // A record written before 0.35 kept only the wall alias, which this release
+  // made equal to the span. The value stays visible and is labelled `span`.
+  const stored = { ...record, minutes: { wall: record.minutes.wall, agent: record.minutes.agent } };
+  const old = day(stored).lines.filter((line) => line.includes('g6d6q2'));
+  assert.match(old[0], /span 37h15m/);
 });

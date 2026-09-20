@@ -1,0 +1,30 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ Step cli · run clifx · FAILED · not verified · 1–27…
+Build the cli fixture
+failed · not verified
+opencode2 · kaihk-3/gpt-5.6-luna · medium
+active 2.73m
+
+── task · prompt + task first lines ───────────────────
+ sample task for step-model lorem ips
+ Purpose: build the evidence-honest Step model from
+ durable records.
+ Use real copied-home fixtures and preserve unknown
+ values.
+ task path retained; first lines shown · [Enter expand]
+
+── activity · overview · response turns · 0 events ────
+ filters [all] · all · errors · tools · following
+ event stream unavailable.
+ turns, tools, and event timing cannot be reconstructe…
+
+── result · output + artifacts + outcome/verification ─
+ execution FAILED · workflow partial · verified false
+ attempt history 2 attempts
+ output:
+  The model was shaped from the durable attempt
+  records.
+  Unknown stream fields remain explicitly unavailable.
+  
+ task: /home/dev/project-a/
+ [ back ] [ ● 1.clifx ] [Top] [End] [?.Help] 

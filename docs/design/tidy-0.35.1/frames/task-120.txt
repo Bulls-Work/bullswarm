@@ -1,0 +1,20 @@
+Task adapter · a58fb95e-6f73-4f3a-88d5-8a063155fb3c · project project-a
+succeeded · verification unavailable · codex · gpt-5.6-luna · effort — · active 23.60m
+
+── task · prompt + task first lines ───────────────────────────────────────
+sample ea. consequat: /home/dev/project-b (release-0.34.0-plus)
+sample ea enim veniam enim eiusmod laboris ea nostrud amet 0.34.0 in elit fugiat cillum.
+samples e exercitationdolor labore: [Enter expand]
+
+── activity · overview · unavailable ──────────────────────────────────────
+The task ledger has no stream pointer. No response, command, file, or error
+events are manufactured from task prose. [v detail]
+
+── result · output + artifacts + outcome/verification ─────────────────────
+execution succeeded · `ok: true` · independent verification unavailable
+output: /home/dev/.bullswarm/runs/out-1789855478392-pvtzl.md
+task: /home/dev/.bullswarm/runs/task-1789855478392-pvtzl.md
+
+── cost · money pair + tokens + budget ────────────────────────────────────
+API — · subscription — · tokens — · budget —
+[v detail] [Enter expand turn] [↑↓ select] [Space follow] [Esc back]

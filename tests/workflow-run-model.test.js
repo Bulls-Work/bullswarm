@@ -7,12 +7,17 @@ import {
   planLevels,
   planMoreParts,
   planProgress,
+  planStageBoxParts,
+  planStageName,
   planStageActions,
   planStageHeader,
   planStageLabel,
   planStages,
   planStripParts,
   runEconomics,
+  runDurationFacts,
+  phaseDurationFacts,
+  attemptDurationText,
   stepTally,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
@@ -94,4 +99,34 @@ test('Run model keeps economics nullable and shapes stage/detail helpers without
   assert.ok(planAttemptDetail(row.state.attempts[0], 80).length <= 80);
   assert.ok(fittedParts([{ text: 'abcdef' }], 3)[0].text.length <= 3);
   assert.match(planMoreParts(2, 20)[0].text, /\+2 more/);
+});
+
+test('Run model unions overlapping attempt clocks and keeps phase boxes phase-only', () => {
+  const row = {
+    state: {
+      attempts: [
+        { id: 'a1', actionId: 'a', status: 'succeeded', startedAt: '2026-09-20T00:00:00.000Z', finishedAt: '2026-09-20T00:10:00.000Z' },
+        { id: 'b1', actionId: 'b', status: 'succeeded', startedAt: '2026-09-20T00:05:00.000Z', finishedAt: '2026-09-20T00:07:00.000Z' },
+        { id: 'c1', actionId: 'c', status: 'succeeded', startedAt: '2026-09-20T01:00:00.000Z', finishedAt: '2026-09-20T01:04:00.000Z' },
+      ],
+    },
+  };
+  const duration = runDurationFacts(row, { nowMs: NOW });
+  assert.equal(duration.activeMinutes, 14);
+  assert.equal(duration.spanMinutes, 64);
+  assert.equal(attemptDurationText(row.state.attempts[1], { nowMs: NOW }), '2m00s');
+  const live = runDurationFacts({ state: { attempts: [{ actionId: 'live', status: 'running', startedAt: '2026-09-20T11:50:00.000Z', finishedAt: null }] } }, { nowMs: NOW });
+  assert.equal(live.activeMinutes, 10);
+  assert.equal(live.spanMinutes, null);
+  assert.equal(runDurationFacts({ state: { attempts: [
+    { actionId: 'good', status: 'succeeded', startedAt: '2026-09-20T00:00:00.000Z', finishedAt: '2026-09-20T00:01:00.000Z' },
+    { actionId: 'unknown', status: 'succeeded', startedAt: '2026-09-20T00:02:00.000Z' },
+  ] } }, { nowMs: NOW }).activeMinutes, null);
+
+  const stage = { id: 'phase-a', label: 'Phase 1 · audit', actionIds: ['a'], actions: [{ id: 'a', status: 'succeeded' }] };
+  assert.equal(phaseDurationFacts(row, stage, { nowMs: NOW }).activeMinutes, 10);
+  assert.equal(planStageName(stage, 0), 'audit');
+  const box = planStageBoxParts(stage, 0, { runId: 'wf-box' });
+  assert.match(box[0].text, /audit 1\/1/);
+  assert.equal(box[0].action.actionId, 'a');
 });

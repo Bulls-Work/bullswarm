@@ -23,9 +23,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  ROLLUP_SCHEMA_VERSION, aggregateAttemptUsage, appendRollupIndex, bullswarmDirOfRun, legacyRollupRecord, readLegacyRunFacts,
+  ROLLUP_SCHEMA_VERSION, aggregateAttemptUsage, appendRollupIndex, bullswarmDirOfRun, intervalMinutes, legacyRollupRecord, readLegacyRunFacts,
   readRollup, readRollupIndex, readRollups, rollupIndexPath, rollupRecord, writeLegacyRollup, writeRunRollup,
 } from '../src/workflow/rollup.js';
+
+const REAL_G6D6Q2 = JSON.parse(
+  readFileSync(new URL('./fixtures/workflows/g6d6q2-state.json', import.meta.url), 'utf8'),
+);
 
 const CLAUDE_RESULT = JSON.parse(
   readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'),
@@ -113,6 +117,28 @@ test('R1: the record carries every field the dashboard reads, measured from stat
   });
   assert.deepEqual(record.models['claude-opus-5'], { attempts: 1, minutes: 14.62 });
   assert.deepEqual(record.models['gpt-5.6-luna'], { attempts: 1, minutes: 6.39 });
+});
+
+test('R1: active minutes union real g6d6q2 attempt intervals and retain the idle span', () => {
+  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  assert.equal(record.minutes.active, 360.65);
+  assert.equal(record.minutes.span, 2234.93);
+  assert.equal(record.minutes.active < record.minutes.span, true);
+  assert.equal(record.minutes.wall, 2234.93, 'legacy wall alias follows the proved attempt span');
+  assert.deepEqual(record.phases.map((phase) => phase.minutes.active), [
+    9, 20.58, 23.86, 36.97, 20.41, 34.57, 8.31, 19.24, 16, 28.9, 18.67, 124.16,
+  ]);
+  assert.equal(record.phases.at(-1).name, 'Phase 12 · accept');
+  assert.equal(record.phases.at(-1).minutes.span, 2086.84);
+});
+
+test('R1: missing interval endpoints stay unknown, while a live interval closes at render time', () => {
+  assert.deepEqual(intervalMinutes([{ startedAt: '2026-09-20T00:00:00.000Z' }], {
+    now: Date.parse('2026-09-20T00:02:00.000Z'), terminal: false,
+  }), { active: 2, span: null });
+  assert.deepEqual(intervalMinutes([{ startedAt: '2026-09-20T00:00:00.000Z' }], {
+    now: Date.parse('2026-09-20T00:02:00.000Z'), terminal: true,
+  }), { active: null, span: null });
 });
 
 test('R1: rollupRecord touches no filesystem and no wall clock', () => {
@@ -584,7 +610,7 @@ test('R3: a legacy record carries identity and times, and neither cost nor pool 
     runId: 'wf-legacy-report', shortId: 'legacy', project: 'project-a', goal: 'smoke-two-step', cwd: null,
     startedAt: '2026-08-22T07:51:08.084Z', finishedAt: '2026-08-22T07:54:08.084Z', status: 'completed',
     verified: false, requirements: { passed: 0, total: 0 },
-    minutes: { wall: 3, agent: null }, pools: {}, models: {}, legacy: true, timeSource: 'report',
+    minutes: { active: null, span: 3, wall: 3, agent: null }, pools: {}, models: {}, legacy: true, timeSource: 'report',
   });
   // A second call with the same facts is the same record, or the index would
   // take a new line every time (R4).

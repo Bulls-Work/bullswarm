@@ -1,5 +1,23 @@
 # bullswarm changelog
 
+## 0.35.1 — a calmer dashboard with honest active time
+
+- durations: Home, Runs, Run, Step, and Stats use the union-based
+  `minutes.active` duration; `minutes.span` remains secondary, worker-minutes
+  still sum attempt clocks, and `workflow reprice` corrects stored terminal
+  minute fields.
+- home: today leads with up to three active-or-most-recent run cards, while the
+  licence block uses one plain-word `pool · worker-minutes · weekly share · API
+  · subscription` row per pool and keeps Running and Budget visible.
+- run: the plan is compact phase boxes with status glyphs and `done/total`, and
+  timeline rows carry the recorded pool, model, effort, and attempt duration.
+- step: the page has Header, Task, Activity, Result, and Cost blocks; overview
+  is the default, `v` switches to capture-order detail, and `Enter` expands a
+  selected response's real atomic events without inventing event kinds.
+- tasks: a single `bullswarm run` task uses the same Step model and view through
+  an adapter, preserving recorded fields and leaving unavailable effort,
+  verification, usage, money, and activity unavailable.
+
 ## 0.35.0 — the Step page tells the whole story
 
 - step: the Step page leads with identity and verdict, the selected attempt,

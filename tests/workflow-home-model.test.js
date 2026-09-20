@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   measuredTaskMinutes,
   poolRatePerMinute,
+  runMinutesInfo,
+  runStepCounts,
+  todayTopRuns,
   recordCost,
   recordCostInfo,
   taskIdentity,
@@ -83,4 +86,35 @@ test('Home model preserves API cost precedence and usage basis', () => {
   });
   assert.equal(recordCost({ pools: { codex: { costUsd: 0.5 } } }), 0.5);
   assert.equal(recordCost({ pools: { codex: { costUsd: null } } }), null);
+});
+
+test('Home model orders active runs before newest finished and never promotes wall span to active time', () => {
+  const active = {
+    runId: 'wf-active', ongoing: true, status: 'running', project: 'p',
+    state: {
+      lifecycle: { startedAt: '2026-09-20T10:00:00.000Z' },
+      actions: [{ id: 'one', status: 'running' }],
+      attempts: [{ id: 'attempt-1', actionId: 'one', startedAt: '2026-09-20T10:00:00.000Z' }],
+    },
+    goal: 'live goal',
+  };
+  const older = {
+    runId: 'wf-older', finishedAt: '2026-09-20T09:00:00.000Z', status: 'completed',
+    requirements: { passed: 1, total: 1 }, minutes: { wall: 4 }, goal: 'older goal',
+  };
+  const newer = {
+    runId: 'wf-newer', finishedAt: '2026-09-20T11:00:00.000Z', status: 'completed',
+    requirements: { passed: 2, total: 2 }, minutes: { active: 3, span: 5 }, goal: 'newer goal',
+  };
+  const cards = todayTopRuns({ runs: [active], rollups: [older, newer] }, NOW, { limit: 3 });
+  assert.deepEqual(cards.map((card) => card.id), ['wf-active', 'wf-newer', 'wf-older']);
+  assert.equal(cards[1].minutes.label, 'active');
+  assert.equal(cards[2].minutes.label, 'active');
+  assert.equal(cards[2].minutes.active, null);
+  assert.equal(cards[2].minutes.span, 4);
+  assert.deepEqual(cards[0].steps, { done: 0, total: 1 });
+  assert.deepEqual(runMinutesInfo({ minutes: { wall: 2 } }), {
+    active: null, span: 2, label: 'active', intervals: [],
+  });
+  assert.deepEqual(runStepCounts({ requirements: { passed: 3, total: 4 } }), { done: 3, total: 4 });
 });

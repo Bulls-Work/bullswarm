@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ● euqrni · running · 3 of 5 steps · 1 running
+ sample goal for euqrni minim labore magna eiusmod
+ quis labore elit aute culpa enim dolore laborum…
+ 1h33m active · since 04:05 HKT · 4 attempts
+
+ plan  ✓✓✓▶○  4 integrate running · then verify
+
+── live · integrate · codex · 2m19s ───────────────────
+ gpt-5.6-sol · high · 4 turns · 28 events
+ ▶ 4  05:37  sample response for integrate-1 deserunt
+            minim exercitation labore sed non fugiat…
+            7 commands
+ Enter → the step page · following ●
+
+── spend · 3 of 4 attempts measured ───────────────────
+ API rate  at least $1.77  1 running
+ plans     —   0 with a meter reading
+
+── timeline · 5 phases · 4 attempts ───────────────────
+── Preflight
+ 04:05  ● goal accepted · goal.json
+── ✓ 1 · home-extraction
+ 04:05 → 04:34 · 28m25s · 1/1
+ 04:05  ✓ home-extraction · codex                28m25s
+── ✓ 2 · runs-extraction
+ 04:34 → 05:04 · 30m32s · 1/1
+ 04:34  ✓ runs-extraction · codex                30m32s
+── ✓ 3 · run-extraction
+ 05:04 → 05:36 · 31m52s · 1/1
+ 05:04  ✓ run-extraction · codex                 31m52s
+── ▶ 4 · integrate
+ 05:36 → now · 2m19s · 0/1
+ 05:36  ▶ integrate · codex · running             2m19s
+── ○ 5 · verify
+ — → — · — · 0/1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ] [ ● 1.euqrni ]  Enter open · p plan · ? help

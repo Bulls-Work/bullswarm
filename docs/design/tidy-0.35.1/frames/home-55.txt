@@ -1,0 +1,26 @@
+Home · Today · 19 Sep
+top 3 runs · active first
+┌─ sample goal for rensha ─────────┐
+│ project-b · done · verified      │
+│ active 58.61m · steps 9/9        │
+│ API — · subscription —           │
+└──────────────────────────────────┘
+┌─ sample goal for euqrni ─────────┐
+│ project-a · done · verified      │
+│ active 115.92m · steps 5/5       │
+│ API $9.760 · subscription —      │
+└──────────────────────────────────┘
+┌─ sample goal for rw3dhi ─────────┐
+│ project-a · done · not verified  │
+│ active 98.02m · steps 7/7        │
+│ API $16.156 · subscription —     │
+└──────────────────────────────────┘
+licence · pool · worker-minutes
+         weekly share · API · subscription
+codex · 992.59 · — · — · —
+claude-code:acme · 58.43 · — · — · —
+grok · 76.18 · — · $21.174 · —
+claude-code · 171.30 · — · $89.113 · —
+running · none captured in snapshot
+budget · unchanged · weekly share —
+[120/200 cards] [Runs has full list]

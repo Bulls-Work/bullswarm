@@ -9,6 +9,29 @@ Bullswarm keeps two different answers beside an attempt: what the provider's
 tokens cost at a dated API rate card, and what share of the pool's subscription
 window the attempt consumed. They are related evidence, not the same invoice.
 
+## Active minutes and span
+
+Durations in the dashboard use the run or phase's `minutes.active` value. It is
+the union of all attempt intervals: sort the intervals, merge overlapping or
+touching work, and count each minute once. A running attempt contributes only
+through the current render time, and an interval with a missing or invalid end
+point stays unknown rather than becoming zero. The same union is computed per
+phase.
+
+`minutes.span` is the secondary wall-span fact from the first attempt start to
+the last recorded attempt finish. It is not substituted for active time in
+Home or Runs rows, the Run header, phase headers, timeline phase durations, or
+Stats median/longest duration fields. The Run header may show span explicitly
+as a secondary value. A timeline attempt row shows that attempt's own duration,
+while `worker-minutes` remains the sum of all individual attempt clocks, so
+overlapping workers still count separately there.
+
+`workflow reprice` recomputes both stored minute fields for terminal historical
+runs as it refreshes their pricing data. Use `--apply` when the dry-run rows
+are the changes you want persisted; unknown endpoints remain unknown. This
+corrects older records that counted idle gaps without changing worker-minute
+aggregates.
+
 ## The three token sources
 
 Every attempt labels its token classes with one of these sources, in descending

@@ -291,8 +291,8 @@ function outcomeRows(outcomes) {
     { id: 'status', label: 'Status', value: statuses.length ? statusTotal : null, valueText: statusText, missingReason: 'status not recorded' },
     { id: 'verified', label: 'Verified', value: finite(outcomes.verified), valueText: finite(outcomes.verified) == null ? null : `${outcomes.verified} verified`, share: outcomes.verifiedShare, total: outcomes.verifiedTotal, missingReason: 'verification not recorded' },
     { id: 'requirements', label: 'Requirements', value: finite(outcomes.requirementsPassed), valueText: finite(outcomes.requirementsPassed) != null && finite(outcomes.requirementsTotal) != null ? `${outcomes.requirementsPassed}/${outcomes.requirementsTotal} passed` : null, share: outcomes.requirementsShare, total: outcomes.requirementsTotal, missingReason: 'requirements not recorded' },
-    { id: 'median-wall', label: 'Median wall', value: finite(outcomes.medianWallMinutes), unit: 'minutes', valueText: finite(outcomes.medianWallMinutes) == null ? null : `${minuteText(outcomes.medianWallMinutes)} median`, missingReason: 'wall duration not recorded' },
-    { id: 'max-wall', label: 'Longest wall', value: finite(outcomes.maxWallMinutes), unit: 'minutes', valueText: finite(outcomes.maxWallMinutes) == null ? null : `${minuteText(outcomes.maxWallMinutes)} maximum`, missingReason: 'wall duration not recorded' },
+    { id: 'median-active', label: 'Median active', value: finite(outcomes.medianActiveMinutes), unit: 'minutes', valueText: finite(outcomes.medianActiveMinutes) == null ? null : `${minuteText(outcomes.medianActiveMinutes)} median`, missingReason: 'active duration not recorded' },
+    { id: 'max-active', label: 'Longest active', value: finite(outcomes.maxActiveMinutes), unit: 'minutes', valueText: finite(outcomes.maxActiveMinutes) == null ? null : `${minuteText(outcomes.maxActiveMinutes)} maximum active`, missingReason: 'active duration not recorded' },
   ];
 }
 function licenceRows(table) {

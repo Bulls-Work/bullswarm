@@ -10,6 +10,14 @@ import type {
 
 type Raw = Record<string, unknown>
 
+/** The rich, serializable Step model appended by `action show --json`. */
+export type ParsedBullswarmStep = BullswarmStep & {
+  /** The JSON `step` object; kept separate from the legacy compact projection. */
+  page: Raw | null
+  /** Action-scoped durable events, retained for callers that need raw context. */
+  events: readonly Raw[]
+}
+
 export type BullswarmAssignmentRecord = BullswarmAssignment & {
   id?: string
   startedAt?: string
@@ -241,7 +249,7 @@ const eventText = (v: unknown): string | null => {
 }
 
 /** Reads `bullswarm workflow action show <run> <step> --json` into one step. */
-export function parseStep(stdout: string, readAt: number): BullswarmStep {
+export function parseStep(stdout: string, readAt: number): ParsedBullswarmStep {
   const doc = JSON.parse(stdout) as Raw
   const rec = (doc.actionRecord ?? {}) as Raw
   const rawAttempts = Array.isArray(doc.attempts) ? (doc.attempts as Raw[]) : []
@@ -267,6 +275,12 @@ export function parseStep(stdout: string, readAt: number): BullswarmStep {
       }
     : null
   const failure = rec.lastFailure
+  const page = doc.step && typeof doc.step === 'object' && !Array.isArray(doc.step)
+    ? (doc.step as Raw)
+    : null
+  const events = Array.isArray(doc.events)
+    ? (doc.events as unknown[]).filter((event): event is Raw => Boolean(event && typeof event === 'object' && !Array.isArray(event)))
+    : []
   return {
     id: str(rec.id) ?? '',
     purpose: str(rec.purpose) ?? '',
@@ -283,5 +297,7 @@ export function parseStep(stdout: string, readAt: number): BullswarmStep {
           : null,
     attempt,
     readAt,
+    page,
+    events,
   }
 }

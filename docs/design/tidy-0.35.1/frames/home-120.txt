@@ -1,0 +1,16 @@
+Home · Today · 19 Sep · 3 top runs (active first; none active)
+┌─ sample goal for rensha ───┐  ┌─ sample goal for euqrni ───┐  ┌─ sample goal for rw3dhi ──┐
+│ project-b · done/verified  │  │ project-a · done/verified  │  │ project-a · done           │
+│ active 58.61m · 9/9        │  │ active 115.92m · 5/5       │  │ active 98.02m · 7/7        │
+│ API — · sub —              │  │ API $9.760 · sub —         │  │ API $16.156 · sub —       │
+└────────────────────────────┘  └───────────────────────────┘  └───────────────────────────┘
+
+licence · pool · worker-minutes · weekly share · API · subscription
+codex · 992.59 · — · — · —
+claude-code:acme · 58.43 · — · — · —
+grok · 76.18 · — · $21.174 · —
+claude-code · 171.30 · — · $89.113 · —
+
+running · none captured in snapshot
+budget · unchanged · no weekly meter share recorded
+[v details] [Runs full list]

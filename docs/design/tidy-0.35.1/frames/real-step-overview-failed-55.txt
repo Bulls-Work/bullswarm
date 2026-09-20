@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ step-view · va7k9a · failed · verified
+ sample purpose for va7k9a non occaecat minim aliquip
+ consectetur
+ codex · gpt-5.6-luna · medium · 7m04s · 02:39→02:46
+
+── result · verified by the workflow 6/6 ──────────────
+ failed  runner stopped before the attempt reached a
+         durable terminal state
+ no report was written for this step
+ changed src/dir-01/file-003.js
+         1 file changed, 145 insertions(+), 151 deleti…
+         src/dir-01/file-269.js
+         … 1 more paths
+ files       wf-mu8ni8o4-f9baaf/ task · out · stream ·…
+
+── activity · overview · detail · 2 turns · 17 cmds ───
+  1  02:39  sample response for step-view-1 aute sit
+            duis enim dolor dolore velit duis do…
+            1 command
+  2  02:39  sample response for step-view-1 amet duis
+            voluptate culpa quis exercitation aliquip…
+            16 commands
+
+── task · implement · build ───────────────────────────
+ sample prompt for va7k9a nostrud eiusmod magna eiusmod
+ esse aliquip commodo sint duis adipiscing mollit enim
+ dolor commodo aliqua velit aliquip nisi in lorem…
+ owns   file-269.js · file-003.js · file-270.test.js
+ after  step-model
+
+── cost ───────────────────────────────────────────────
+ API rate   —       no-rate-card
+ codex plan —       no API cost · $100/mo weekly
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ]  Enter turn · v detail · t filter · ? help

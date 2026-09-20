@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✗ step-view · va7k9a · failed · verified by the workflow (6/6 requirements) · attempt 1 of 1
+ sample purpose for va7k9a non occaecat minim aliquip consectetur
+ codex · gpt-5.6-luna · medium effort · reasoning max                            7m04s · 02:39 → 02:46 HKT · 20 Sep 2026
+ route  expiring soon: codex resets in 7h39m, surplus 9.9 over 4.6% of the week left → urgency 215 · picked over comman…
+
+── activity · overview · detail · 2 turns · 17 cmds · 0 edits · 0 err ─────── │ ── result · failed · verified 6/6 ──────
+  1  02:39  sample response for step-view-1 aute sit duis enim dolor dolore   │  failed   runner stopped before the
+            velit duis do deserunt eiusmod reprehenderit amet… · 1 command    │           attempt reached a durable
+  2  02:39  sample response for step-view-1 amet duis voluptate culpa quis    │  no report was written for this step
+            exercitation aliquip ex ut consequat commodo magna… · 16 commands │  changed  src/dir-01/file-003.js
+                                                                              │           1 file changed, 145 insertion…
+                                                                              │           src/dir-01/file-269.js
+                                                                              │           … 1 more paths
+                                                                              │  files    tests/fixtures/home-351/workfl
+                                                                              │           task · out · stream (36 event…
+                                                                              │
+                                                                              │ ── task · implement · build lane ───────
+                                                                              │  sample prompt for va7k9a nostrud
+                                                                              │  eiusmod magna eiusmod esse aliquip
+                                                                              │  commodo sint duis adipiscing mollit…
+                                                                              │  owns    file-269.js · file-003.js ·
+                                                                              │          file-270.test.js
+                                                                              │  after   step-model
+                                                                              │  affects requirement 3 · requirement 4 ·
+                                                                              │          requirement 6
+                                                                              │  Enter on task: full text 2.3 KB · kern…
+                                                                              │
+                                                                              │ ── cost ────────────────────────────────
+                                                                              │  API rate    —       no-rate-card
+                                                                              │  codex plan  —       no API cost to pri…
+                                                                              │              $100/mo · weekly window
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ] [ ● 1.va7k9a ]   Enter expand turn · Esc close · v detail (every turn in full) · t filter · f follow · ? help

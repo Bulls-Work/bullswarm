@@ -92,3 +92,23 @@ test('Run view preserves timeline segments and step hit regions through the extr
   markStepRows(body, body.lines, panel, row.runId);
   assert.ok(body.regions.some((region) => region.action?.kind === 'step'));
 });
+
+test('Run view paints phase-only boxes and attempt routing metadata', () => {
+  const row = rowFixture();
+  row.state.attempts[0].status = 'succeeded';
+  row.state.attempts[0].finishedAt = '2026-09-20T11:59:30.000Z';
+  row.state.attempts[0].effort = 'high';
+  row.state.attempts[0].routing = { effort: 'high' };
+  for (const width of [55, 120, 200]) {
+    const lines = planDagLines(row, { width, nowMs: NOW }).map((line) => line.parts.map((part) => part.text).join(''));
+    assert.ok(lines.length > 0);
+    assert.ok(lines.every((line) => visible(line).length <= width));
+    assert.ok(lines.every((line) => !line.includes('codex') && !line.includes('gpt-test')));
+  }
+  const firstBox = planDagLines(row, { width: 55 })[0].parts.find((part) => part.action);
+  assert.equal(firstBox.action.actionId, 'audit');
+  const timeline = workflowTimelineLines(workflowPanelModel(row), 120, 0, { goalPreview: false, nowMs: NOW });
+  const text = timeline.lines.map((line) => line.text ?? line).join('\n');
+  assert.match(text, /codex · gpt-test · high · 1m30s/);
+  assert.match(text, /phase active/);
+});

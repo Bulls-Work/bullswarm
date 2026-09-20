@@ -119,6 +119,15 @@ function parseIso(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+// New rollups carry the union duration explicitly. Historical terminal rows
+// are corrected by `workflow reprice`; an absent value stays unknown here
+// rather than silently displaying the old wall span as active work.
+function activeMinutesOf(record) {
+  const minutes = record?.minutes;
+  if (!minutes || typeof minutes !== 'object') return null;
+  return finite(minutes.active);
+}
+
 // Local-calendar arithmetic through Date, whose zone is the same system zone
 // history.js resolves through Intl — so a bucket boundary and a dayKey() can
 // never disagree. Adding days through setDate() survives a DST change that
@@ -430,7 +439,7 @@ function newRow(name) {
     v2Money: false,
     workflowsCompleted: 0,
     verified: 0,
-    wallMinutes: [],
+    activeMinutes: [],
   };
 }
 
@@ -495,8 +504,8 @@ function countRun(row, record) {
   row.runs += 1;
   if (isDeliveredWorkflowStatus(record?.status)) row.workflowsCompleted += 1;
   if (record?.verified === true) row.verified += 1;
-  const wall = finite(record?.minutes?.wall);
-  if (wall != null) row.wallMinutes.push(wall);
+  const active = activeMinutesOf(record);
+  if (active != null) row.activeMinutes.push(active);
 }
 
 /**
@@ -546,7 +555,10 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
     runs: row.runs,
     attempts: row.attempts,
     minutes: round(row.minutes, 2),
-    medianWallMinutes: round(median(row.wallMinutes), 2),
+    medianActiveMinutes: round(median(row.activeMinutes), 2),
+    // Compatibility alias for older views; both values are active minutes.
+    medianWallMinutes: round(median(row.activeMinutes), 2),
+    durationBasis: 'active minutes',
     apiUsd: row.v2Money && row.attempts > 0 && row.pricedAttempts === row.attempts
       ? round(row.apiKnownSubtotalUsd, 6) : row.v2Money ? null : round(row.apiKnownSubtotalUsd, 6),
     apiKnownSubtotalUsd: round(row.apiKnownSubtotalUsd, 6),
@@ -1060,7 +1072,7 @@ export function poolsModel(rollups, pools, { period = '7d', now = Date.now() } =
     mostUsed: merged.find((row) => row.attempts > 0)?.name ?? null,
     notes: [],
   };
-  model.nulls = nullPaths({ rows: merged.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianWallMinutes: row.medianWallMinutes })) });
+  model.nulls = nullPaths({ rows: merged.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianActiveMinutes: row.medianActiveMinutes })) });
   return model;
 }
 
@@ -1087,7 +1099,7 @@ export function modelsModel(rollups, { period = '7d', now = Date.now() } = {}) {
     mostUsed: rows.find((row) => row.attempts > 0)?.name ?? null,
     notes: ['no per-model money: the rollup record measures cost per pool, not per model'],
   };
-  model.nulls = nullPaths({ rows: rows.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianWallMinutes: row.medianWallMinutes })) });
+  model.nulls = nullPaths({ rows: rows.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianActiveMinutes: row.medianActiveMinutes })) });
   return model;
 }
 
@@ -1109,7 +1121,7 @@ export function projectsModel(rollups, { period = '7d', now = Date.now() } = {})
       ? ['"unknown" is the runs that recorded no project — legacy runs and runs started before project identity shipped']
       : [],
   };
-  model.nulls = nullPaths({ rows: rows.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianWallMinutes: row.medianWallMinutes })) });
+  model.nulls = nullPaths({ rows: rows.map((row) => ({ name: row.name, apiEquivalentUsd: row.apiEquivalentUsd, medianActiveMinutes: row.medianActiveMinutes })) });
   return model;
 }
 
@@ -1280,7 +1292,7 @@ function keyValues(records) {
   const pools = finishRows(buildRows(records, 'pool'), { rankBy: 'attempts' });
   const models = finishRows(buildRows(records, 'model'), { rankBy: 'attempts' });
   const projects = finishRows(buildRows(records, 'project'), { rankBy: 'runs' });
-  const wall = records.map((record) => finite(record?.minutes?.wall)).filter((value) => value != null);
+  const active = records.map(activeMinutesOf).filter((value) => value != null);
   let agent = null;
   for (const record of records) agent = add(agent, finite(record?.minutes?.agent));
   const days = new Set(records.map((record) => dayKeyOf(record.finishedAt) ?? dayKeyOf(record.startedAt)).filter(Boolean));
@@ -1317,9 +1329,13 @@ function keyValues(records) {
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),
     favouriteModel: top(models, 'attempts'),
-    // S3. The median run's wall clock, over the runs that recorded one.
-    medianRunMinutes: round(median(wall), 2),
-    longestRunMinutes: wall.length ? round(Math.max(...wall), 2) : null,
+    // S3. The median and longest active durations, over the runs that
+    // recorded a provable interval union.
+    medianRunMinutes: round(median(active), 2),
+    longestRunMinutes: active.length ? round(Math.max(...active), 2) : null,
+    medianActiveMinutes: round(median(active), 2),
+    longestActiveMinutes: active.length ? round(Math.max(...active), 2) : null,
+    durationBasis: 'active minutes',
     totalAgentMinutes: round(agent, 2),
     totalWorkerMinutes: round(records.reduce((sum, record) => add(sum, recordWorkerMinutes(record)), null), 2),
     apiEquivalentUsd: v2Money
@@ -1341,11 +1357,11 @@ function keyValues(records) {
 }
 
 /**
- * The honest fourth Spending/Project panel: outcomes and wall-clock duration.
+ * The honest fourth Spending/Project panel: outcomes and active duration.
  *
  * Rollups do not carry a lane field, so this aggregate deliberately stays on
  * the fields the records actually persist: status, verified,
- * requirements.{passed,total}, and minutes.wall.  Counts remain counts even
+ * requirements.{passed,total}, and minutes.active. Counts remain counts even
  * when no money or duration was measured; a share of an empty set is null.
  */
 export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {}) {
@@ -1355,7 +1371,7 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
   let verified = 0;
   let requirementsPassed = null;
   let requirementsTotal = null;
-  const wall = [];
+  const active = [];
   for (const record of records) {
     const status = typeof record?.status === 'string' && record.status.trim()
       ? record.status.trim().toLowerCase()
@@ -1364,8 +1380,8 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     if (record?.verified === true) verified += 1;
     requirementsPassed = add(requirementsPassed, finite(record?.requirements?.passed));
     requirementsTotal = add(requirementsTotal, finite(record?.requirements?.total));
-    const duration = finite(record?.minutes?.wall);
-    if (duration != null) wall.push(duration);
+    const duration = activeMinutesOf(record);
+    if (duration != null) active.push(duration);
   }
   const model = {
     period: range.period,
@@ -1378,8 +1394,13 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     requirementsPassed,
     requirementsTotal,
     requirementsShare: share(requirementsPassed, requirementsTotal),
-    medianWallMinutes: round(median(wall), 2),
-    maxWallMinutes: wall.length ? round(Math.max(...wall), 2) : null,
+    medianActiveMinutes: round(median(active), 2),
+    maxActiveMinutes: active.length ? round(Math.max(...active), 2) : null,
+    // Compatibility aliases for the pre-0.35 view. They carry active values,
+    // never the old wall span.
+    medianWallMinutes: round(median(active), 2),
+    maxWallMinutes: active.length ? round(Math.max(...active), 2) : null,
+    durationBasis: 'active minutes',
   };
   model.nulls = nullPaths(model);
   return model;

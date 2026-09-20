@@ -1,0 +1,21 @@
+Home · Today · 19 Sep · top 3 (active first; no active run in snapshot)
+
+┌─ sample goal for rensha ──────┐  ┌─ sample goal for euqrni ──────┐  ┌─ sample goal for rw3dhi ──────┐
+│ project project-b             │  │ project project-a             │  │ project project-a             │
+│ completed · verified          │  │ completed · verified           │  │ completed · not verified       │
+│ active 58.61m · span 58.64m  │  │ active 115.92m · span 116.00m │  │ active 98.02m · span 99.11m   │
+│ steps 9/9 · API — · sub —    │  │ steps 5/5 · API $9.760 · sub — │  │ steps 7/7 · API $16.156 · sub —│
+└───────────────────────────────┘  └───────────────────────────────┘  └───────────────────────────────┘
+
+licence · pool · worker-minutes · weekly share · API · subscription
+codex · 992.59 · — · — · —
+claude-code:acme · 58.43 · — · — · —
+grok · 76.18 · — · $21.174 · —
+claude-code · 171.30 · — · $89.113 · —
+
+running
+  none captured in the real 19 Sep snapshot
+budget
+  worker minutes are unchanged; no meter supplied a weekly share
+
+The full run list is on Runs. Unknown money stays —.

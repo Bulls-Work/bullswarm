@@ -204,23 +204,28 @@ function recordCostInfo(run) {
   return costInfo(total, tokenSource);
 }
 
-function durationMinutes(run) {
-  if (!run || typeof run !== 'object') return null;
+// Rows show `minutes.active`, the union of the run's attempt intervals. A
+// record written before 0.35 keeps only the `wall` alias, which this release
+// redefined as the run's span; that fallback keeps its number but says `span`,
+// because a span is never passed off as active time (docs/guide/cost.md).
+function durationFacts(run) {
+  if (!run || typeof run !== 'object') return { minutes: null, span: false };
   const direct = [
-    run.durationMinutes,
-    run.minutes?.wall,
-    run.wallMinutes,
-    run.duration,
+    { value: run.durationMinutes, span: false },
+    { value: run.minutes?.active, span: false },
+    { value: run.minutes?.wall, span: true },
+    { value: run.wallMinutes, span: true },
+    { value: run.duration, span: false },
   ];
-  for (const value of direct) {
+  for (const { value, span } of direct) {
     if (typeof value === 'string' && /[a-z]/i.test(value)) continue;
     const number = finite(value);
-    if (number != null) return number;
+    if (number != null) return { minutes: number, span };
   }
   const seconds = finite(run.wallSec ?? run.durationSec ?? run.attempt?.wallSec);
-  if (seconds != null) return seconds / 60;
+  if (seconds != null) return { minutes: seconds / 60, span: false };
   const durationMs = finite(run.durationMs);
-  return durationMs == null ? null : durationMs / 60_000;
+  return { minutes: durationMs == null ? null : durationMs / 60_000, span: false };
 }
 
 function minutesText(minutes) {
@@ -233,8 +238,9 @@ function minutesText(minutes) {
 function durationText(run) {
   if (typeof run?.duration === 'string' && /[a-z]/i.test(run.duration.trim())) return run.duration.trim();
   if (typeof run?.durationText === 'string' && run.durationText.trim()) return run.durationText.trim();
-  const minutes = durationMinutes(run);
-  return minutes == null ? 'duration unavailable' : minutesText(minutes);
+  const { minutes, span } = durationFacts(run);
+  if (minutes == null) return 'duration unavailable';
+  return span ? `span ${minutesText(minutes)}` : minutesText(minutes);
 }
 
 function displayedDuration(run) {
@@ -485,6 +491,7 @@ function runRow(run, width, ansi, { durationWidth = null } = {}) {
   // it whole when the wider duration cell consumes the last elastic cells;
   // the goal remains available on desktop and in the day header.
   const summary = phone && isLegacy(run) ? 'legacy · read-only' : rowSummary(run);
+  const summaryFloor = phone && isLegacy(run) ? visible(summary).length : 1;
   // A live run has a start but no result time; never let its start clock read
   // as a finished timestamp. A stopped run may expose its last file write,
   // which is the only honest time available for that row.
@@ -516,7 +523,7 @@ function runRow(run, width, ansi, { durationWidth = null } = {}) {
       { text: tint(mark, markRole(mark, run), ansi), width: 1, gap: 0 },
       { text: bold(id, ansi), width: 6, gap: 1 },
       { text: project(run), width: projectWidth, gap: 2 },
-      { text: summary, grow: true, min: 1, gap: desktop ? 2 : 1 },
+      { text: summary, grow: true, min: summaryFloor, gap: desktop ? 2 : 1 },
       ...rightFields,
       { text: ' ', width: 1, gap: 0 },
     ], { width: cols, gap: 1 }),

@@ -40,6 +40,7 @@ import { peekSteering, queueSteering } from './steering.js';
 import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { cmdReprice } from './reprice.js';
+import { stepPageModel } from './step-model.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -1811,6 +1812,12 @@ function v2ActionJson(resolved, state, actionId) {
   const action = state.program?.actions?.find((entry) => entry.id === actionId);
   if (!action) throw new Error(`run "${resolved.shortId ?? resolved.runId}" has no action "${actionId}"`);
   const actionState = state.actions?.find((entry) => entry.id === actionId) ?? null;
+  const step = stepPageModel({
+    runId: resolved.runId,
+    shortId: resolved.shortId ?? state.shortId ?? null,
+    runDir: resolved.runDir,
+    state,
+  }, { actionId });
   return {
     action: 'show-action',
     runId: resolved.runId,
@@ -1840,6 +1847,7 @@ function v2ActionJson(resolved, state, actionId) {
     attempts: (state.attempts ?? []).filter((attempt) => attempt.actionId === actionId),
     events: readEvents(resolved.runDir).filter((event) =>
       event.payload?.actionId === actionId || event.payload?.parentId === actionId),
+    step,
   };
 }
 

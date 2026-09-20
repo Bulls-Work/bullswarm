@@ -1,0 +1,22 @@
+Task adapter · a58fb95e
+project-a · succeeded · verification —
+codex · gpt-5.6-luna · effort — · active 23.60m
+
+── task · prompt + task first lines ─────────
+sample ea. consequat:
+/home/dev/project-b
+sample id sunt dolore ullamco in nostrud elit 0.34.0…
+samples e exercitationdolor labore…
+[Enter expand]
+
+── activity · overview ─────────────────────
+event stream unavailable · task record has no
+stream pointer
+no response, command, edit, or error rows inferred
+
+── result · output + artifacts + outcome ────
+execution succeeded · independent
+verification unavailable
+output out-1789855478392-pvtzl.md · retained
+API — · subscription — · tokens — · budget —
+[v detail] [Enter expand turn] [↑↓ select] [Esc back]

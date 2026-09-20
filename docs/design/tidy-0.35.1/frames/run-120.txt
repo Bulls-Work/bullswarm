@@ -1,0 +1,13 @@
+Run euqrni · project-a · completed · verified · active 115.92m
+secondary span 116.00m · 5 phases · 5/5 actions
+[✓ home-extraction 1/1] [✓ runs-extraction 1/1] [✓ run-extraction 1/1]
+[✓ integrate 1/1] [✓ verify 1/1]
+
+timeline · each row keeps pool · model · effort · own attempt duration
+✓ home-extraction · phase active 28.42m · codex · gpt-5.6-luna · low · 28m25s
+✓ runs-extraction · phase active 30.54m · codex · gpt-5.6-luna · low · 30m32s
+✓ run-extraction · phase active 31.86m · codex · gpt-5.6-luna · low · 31m52s
+✓ integrate · phase active 4.64m · codex · gpt-5.6-sol · high · 4m38s
+✓ verify · phase active 20.45m · claude-code · claude-opus-5 · high · 20m27s
+
+No per-step rows occur in the plan block. [↑↓ select] [Enter step] [Runs]

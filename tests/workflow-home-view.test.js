@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import {
   activeRunLines,
   homePage,
@@ -9,6 +10,8 @@ import {
   todayTaskLine,
   todayWorkflowLine,
 } from '../src/workflow/home-view.js';
+import { readRollups } from '../src/workflow/rollup.js';
+import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
@@ -100,4 +103,45 @@ test('Home view renders a measured live step bar and active section without over
   activeRunLines(emptyModel(), { width: 55, narrow: true, nowMs: NOW }, body);
   assert.ok(body.lines.some((line) => visible(line).includes('running')));
   assert.ok(body.lines.every((line) => visible(line).length <= 55));
+});
+
+test('Home real snapshot paints the top cards and licence words at 55/120/200', () => {
+  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
+  const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+  const model = {
+    runs: [], assignments: [], pools: [],
+    rollups: readRollups(snapshot), days: [],
+    tasks: { inflight: [], finished: [] }, budget: null, stats: null,
+  };
+  for (const width of [55, 120, 200]) {
+    const body = bodyBuilder();
+    homePage(model, { width, narrow: width < 100, nowMs, period: '7d' }, body);
+    assert.ok(body.lines.length > 0, `${width}: Home rendered no lines`);
+    assert.ok(body.lines.every((line) => visible(line).length <= width), `${width}: line overflow`);
+    const text = body.lines.map(visible).join('\n');
+    assert.match(text, /Home · Today/);
+    assert.match(text, /licence · pool · worker-minutes/);
+    assert.doesNotMatch(text, /wf % \(est\.\)|run min|API · sub\s*$/m);
+    if (width >= 120) {
+      const cardRow = body.lines.map(visible).find((line) => line.includes('┐  ┌'));
+      assert.ok(cardRow, `${width}: top cards did not flow side by side`);
+    }
+  }
+});
+
+test('Home card hit regions cover each run for Enter and click navigation', () => {
+  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
+  const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+  const model = dashboardModel(null, {
+    rollups: readRollups(snapshot), nowMs, usage: { pools: [], assignments: [] }, days: [],
+  });
+  const frame = renderDashboardPage(model, { page: 'home', width: 120, height: 60, nowMs });
+  assert.equal(frame.runRows.length, 3);
+  assert.deepEqual(frame.runRows.map((row) => row.runId), [
+    'wf-mu8vxemr-38a46a', 'wf-mu8thu2e-27c504', 'wf-mu8radyf-bb49cc',
+  ]);
+  assert.equal(frame.cursorAction?.kind, 'run');
+  assert.ok(frame.regions.some((region) => region.action?.kind === 'run'));
 });

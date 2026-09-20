@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ bullswarm · home
+Home · Today · 20 Sep 2026 · top 3 runs (active first)
+┌─ sample goal for rensha nostrud lorem nostrud mollit l…─┐  ── licences · today ───────────────────────────────────────
+│ project-b · completed · verified                        │   pool              agent min   API $  unpriced
+│ 58m37s active of 58m38s · steps 9/9                     │   claude-code           171.3  ≈89.11         0
+│ API at least $9.52 · 6 unmeasured · subscription —      │   claude-code:acme       58.4  ≈24.71         1
+└─────────────────────────────────────────────────────────┘   codex                 964.5  ≈36.30        25
+┌─ sample goal for euqrni minim labore magna eiusmod qui…─┐   command-code              —       —         —
+│ project-a · completed · verified                        │   grok                   76.2  ≈21.17         0
+│ 1h55m · steps 5/5                                       │   ≈ ~ estimates (~ is rougher) · — not measured
+│ API ≈ $9.76 · subscription —                            │
+└─────────────────────────────────────────────────────────┘
+┌─ sample goal for rw3dhi lorem sed sint ipsum lorem lab…─┐
+│ project-a · completed · not verified                    │
+│ 1h38m active of 1h39m · steps 7/7                       │
+│ API ≈ $16.16 · subscription —                           │
+└─────────────────────────────────────────────────────────┘
+
+── running ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ nothing running right now
+
+── budget · this week ──────────────────────────────────────────────────────────────────────────────────────────────────
+ no pool reported a licence meter · bullswarm doctor checks the meters
+
+── last 7 days ────────────────────────────────────────────────────────────────── Last 7 days · Last 30 days · All time
+ spent per day                                                by pool · share of agent minutes
+ ~$200 ┤                                                      codex            ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░  75%
+       │                                                      claude-code      ▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   8%
+       │                                           ████       grok             ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6%
+       │                                           ████       claude-code:acme ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6%
+       │                                           ████       +1 more
+       │                                           ████
+       │                             ▆▆▆▆          ████       by model · share of agent minutes
+ ~$100 ┤                             ████          ████       gpt-5.6-luna     ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░  68%
+       │                             ████          ████       claude-opus-5    ▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  13%
+       │                             ████          ████       gpt-5.6-sol      ▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   7%
+       │                             ████          ████       grok-4.6         ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6%
+       │                             ████          ████       +1 more
+       │                             ████   ▂▂▂▂   ████
+       │                             ████   ████   ████       by project · runs
+    $0 ┼─────────────────────────────────────────────────     project-a        ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░   10
+          Mon    Tue    Wed    Thu    Fri    Sat    Sun       project-b        ▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░    4
+ ~ bars leave 66 unpriced attempts out                        project-c        ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
+
+ Workflows: 15 · verified 10 (67%)        Favourite pool: codex                   Spent: at least $299.87 api · 66 unme…
+ Busiest project: project-a (10)          Favourite model: gpt-5.6-luna           Median run: 1h45m
+
+ Your 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work
+
+── recent ───────────────────────────────────────────────────────────────────────────────────────────────── history › ──
+ ✓ rensha   project-b · sample goal for rensha nostrud lorem…  59m · at least $9.52 api · 6 unmeasured · s…   13h47m ago
+ ✓ euqrni   project-a · sample goal for euqrni minim labore …  1h56m · ≈ $9.76 api summed · sub unknown (n…   13h58m ago
+ ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sin…  1h38m · ≈ $16.16 api summed · sub unknown (…   15h17m ago
+ ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id…  6h01m · at least $86.79 api · 4 unmeasured …   15h20m ago
+ ✓ va7k9a   project-a · sample goal for va7k9a proident fugi…  2h46m · at least $15.27 api · 6 unmeasured …   15h56m ago
+
+
+
+ [ ?.help ] [ quit ]

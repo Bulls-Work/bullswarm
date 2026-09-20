@@ -546,7 +546,8 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
       if (width === 120) {
         assert.match(text, /running · 5h00m elapsed · no result yet/);
         assert.match(text, /interrupted · no result recorded/);
-        assert.match(text, /legacy · read-only · smoke-two-step\s+2m\s+09:02/, 'the legacy row shows its measured duration and finish time');
+        // A pre-0.35 record carries only its span, and the row says so.
+        assert.match(text, /legacy · read-only · smoke-two-step\s+span 2m\s+09:02/, 'the legacy row shows its measured duration and finish time');
       }
     }
     // A goal long enough to fill the row leaves the identity and fixed

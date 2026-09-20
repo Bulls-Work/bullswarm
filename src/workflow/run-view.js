@@ -10,7 +10,7 @@ import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { v2RunnerLiveness } from './short-id.js';
 import { presentationStageStatus } from './v2-presentation.js';
-import { absentLine, columns, cut, progressBar, rule } from './dash-kit.js';
+import { absentLine, cut, progressBar, rule } from './dash-kit.js';
 import {
   about,
   actionRoleLabel,
@@ -36,7 +36,6 @@ import {
   SIDEBAR_WIDTH,
   selectLine,
   stateFinishedAt,
-  stateStartedAt,
   stateStatus,
   statusIcon,
   TERMINAL_ACTIONS,
@@ -50,13 +49,14 @@ import {
   wrapLines,
 } from './dashboard.js';
 import {
-  planStageHeader,
+  planStageBoxParts,
+  planStageName,
+  activeMinutesText,
+  attemptDurationText,
+  phaseDurationFacts,
+  runDurationFacts,
   planProgress,
-  planPhaseActionParts,
-  planStageActions,
   planStages,
-  planMoreParts,
-  fittedParts,
   stepTally,
 } from './run-model.js';
 
@@ -69,15 +69,16 @@ function runFrame(row, {
   detailScroll = 0, message = null, confirmCancel = false,
   controlSelected = false, orchestratorDetail = false, orchestratorVerbose = false,
   workflowVerbose = false, mobileTimeline = true, timelineSelection = null,
-  spinnerFrame = 0, bodyHeight: pageBodyHeight = null,
+  spinnerFrame = 0, bodyHeight: pageBodyHeight = null, nowMs = Date.now(),
 } = {}) {
   width = Math.max(20, Number(width) || 120);
   height = Math.max(18, Number(height) || 36);
   const narrow = width < 100;
-  const model = workflowPanelModel(row, { phaseIndex, agentIndex });
+  const model = workflowPanelModel(row, { phaseIndex, agentIndex, nowMs });
   const state = model.state;
   const status = row?.status ?? stateStatus(state) ?? 'starting';
-  const elapsed = durationText(stateStartedAt(state), stateFinishedAt(state));
+  const duration = runDurationFacts(row, { nowMs });
+  const elapsed = activeMinutesText(duration.activeMinutes);
   const phaseComplete = model.selectedPhase.completed;
   const phaseTotal = model.selectedPhase.total;
   const attempts = state.attempts ?? [];
@@ -122,7 +123,7 @@ function runFrame(row, {
     const selected = index === model.agentIndex;
     const tokens = tokenText(agent.attempt?.usage);
     const reasoning = reasoningText(agent.attempt) || reasoningText(agent.active);
-    const age = durationText(agent.attempt?.startedAt ?? agent.active?.startedAt, agent.attempt?.finishedAt);
+    const age = attemptDurationText(agent.attempt ?? agent.active, { nowMs });
     agentLines.push(selectLine(
       `${icon} ${agent.action.id} · ${agent.pool} · ${agent.model}${reasoning ? ` · ${reasoning}` : ''} · #${attempt}${tokens ? ` · ${tokens}` : ''}${age !== 'time pending' ? ` · ${age}` : ''}`,
       selected, focus === 1, width,
@@ -188,7 +189,7 @@ function runFrame(row, {
         : timelineSelection > 0 ? model.phases[timelineSelection - 1]?.label : null;
       body = renderWorkflowOverviewPanel(
         model, width, bodyHeight, spinnerFrame, detailScroll,
-        selectedTimelineSegment,
+        selectedTimelineSegment, nowMs,
       );
     } else if (focus === 0) {
       body = renderPanel(phaseTitle, visiblePhases, width, bodyHeight);
@@ -225,7 +226,7 @@ function runFrame(row, {
         controlSelected
         ? renderPanel(`Workflow Planner · ${model.orchestrator.status}`, orchestrationLines.slice(0, contentHeight), rightWidth, bodyHeight)
         : focus === 0
-          ? renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, detailScroll)
+          ? renderWorkflowOverviewPanel(model, rightWidth, bodyHeight, spinnerFrame, detailScroll, null, nowMs)
           : renderPanel(detailTitle, compactAgentPreviewLines(model, Math.max(20, rightWidth - 4), spinnerFrame), rightWidth, bodyHeight),
        );
   } else {
@@ -240,10 +241,10 @@ function runFrame(row, {
   };
 }
 
-function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0, selectedTimelineSegment = null) {
+function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0, selectedTimelineSegment = null, nowMs = Date.now()) {
   const inner = Math.max(1, width - 2);
-  const timeline = workflowTimelineLines(model, inner, spinnerFrame);
-  const live = workflowLiveLines(model, inner, spinnerFrame);
+  const timeline = workflowTimelineLines(model, inner, spinnerFrame, { nowMs });
+  const live = workflowLiveLines(model, inner, spinnerFrame, nowMs);
   const next = workflowNextLines(model, inner);
   const contentRows = Math.max(3, height - 4); // outer border + two section dividers
   const nextRows = Math.min(next.length, 2);
@@ -350,9 +351,15 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
   for (const event of orderedEvents) {
     const name = event.segment ?? 'Workflow';
     const firstAt = event.startedAt ?? event.at;
-    if (!segments.has(name)) segments.set(name, { name, events: [], first: firstAt, last: event.at });
+    if (!segments.has(name)) segments.set(name, {
+      name, events: [], first: firstAt, last: event.at,
+      activeMinutes: event.activeMinutes ?? event.phaseActiveMinutes ?? null,
+    });
     const segment = segments.get(name);
     segment.events.push(event);
+    if (segment.activeMinutes == null && (event.activeMinutes ?? event.phaseActiveMinutes) != null) {
+      segment.activeMinutes = event.activeMinutes ?? event.phaseActiveMinutes;
+    }
     if (Date.parse(firstAt) < Date.parse(segment.first)) segment.first = firstAt;
     if (Date.parse(event.at) > Date.parse(segment.last)) segment.last = event.at;
   }
@@ -367,7 +374,9 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
       const currentSegment = currentTimelineSegment(model);
       const running = !workflowFinishedAt && (segment.name === currentSegment
         || (model.dependencyGroups && model.phases.some((phase) => phase.label === segment.name && phase.status === 'active')));
-      const elapsed = running ? 'running' : durationText(segment.first, segmentFinishedAt);
+      const elapsed = running
+        ? (segment.activeMinutes == null ? 'running' : activeMinutesText(segment.activeMinutes))
+        : segment.activeMinutes == null ? durationText(segment.first, segmentFinishedAt) : activeMinutesText(segment.activeMinutes);
       const displayName = timelineSegmentDisplayName(segment.name, model);
       const header = openedSegments.has(segment.name)
         ? continuationHeader(displayName, elapsed, width)
@@ -384,11 +393,11 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
 }
 
 function timelineSegmentDisplayName(name, model) {
-  const phaseIndex = model.phases.findIndex((phase) => phase.label === name);
-  return phaseIndex >= 0 && !model.dependencyGroups ? `Phase ${phaseIndex + 1} · ${name}` : name;
+  const text = String(name ?? '');
+  return text.replace(/^Follow-up \d+: /, '').replace(/^Phase \d+\s*·\s*/, '') || text;
 }
 
-function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true } = {}) {
+function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now() } = {}) {
   const { state } = model;
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
@@ -464,27 +473,62 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     );
   }
   const stageById = new Map(model.stages.map((stage) => [stage.id, stage]));
+  const stageAttempts = new Map(model.stages.map((stage) => [stage.id,
+    (state.attempts ?? model.row?.attempts ?? []).filter((attempt) => (stage.actionIds ?? []).includes(attempt.actionId))]));
   if (model.dependencyGroups) {
     for (const stage of model.stages) {
-      add(stage.startedAt, '├─ started', '', null, stage.label);
-
+      const duration = phaseDurationFacts(model.row, stage, { nowMs });
+      // A phase's durable attempt rows are the timeline milestones. Only show
+      // a standalone start marker when the phase has no attempt record yet.
+      if (!(stageAttempts.get(stage.id) ?? []).length) {
+        add(stage.startedAt, '├─ started', '', null, stage.label, null, { activeMinutes: duration.activeMinutes });
+      }
     }
   }
   for (const event of model.events) {
     if (!model.dependencyGroups && event.type === 'presentation.stage_started') {
-      add(event.committedAt, '├─ started', '', null, event.payload.label);
+      const stage = stageById.get(event.payload?.stageId);
+      const duration = stage ? phaseDurationFacts(model.row, stage, { nowMs }) : null;
+      add(event.committedAt, '├─ started', '', null, event.payload.label, null, { activeMinutes: duration?.activeMinutes ?? null });
     }
     if (event.type === 'action.finished' || event.type === 'evidence.recorded') {
       const actionId = event.payload?.actionId;
       const runtime = state.actions.find((action) => action.id === actionId);
       const stage = model.stages.find((item) => item.actionIds.includes(actionId));
       const status = runtime?.status === 'succeeded' ? glyphs().ok : runtime?.status === 'blocked' ? glyphs().blocked : '×';
-      add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work');
+      // Attempt rows below carry the pool/model/effort and their own clock;
+      // avoid drawing an older action-only duplicate when one exists.
+      if ((stage && (stageAttempts.get(stage.id) ?? []).some((attempt) => attempt.actionId === actionId))) continue;
+      const duration = stage ? phaseDurationFacts(model.row, stage, { nowMs }) : null;
+      add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work', null, { activeMinutes: duration?.activeMinutes ?? null });
     }
     if (!model.dependencyGroups && event.type === 'presentation.stage_completed') {
       const stage = stageById.get(event.payload?.stageId);
       const ok = event.payload?.status === 'completed';
-      add(event.committedAt, `└─${ok ? glyphs().ok : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label);
+      const duration = stage ? phaseDurationFacts(model.row, stage, { nowMs }) : null;
+      add(event.committedAt, `└─${ok ? glyphs().ok : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label, null, { activeMinutes: duration?.activeMinutes ?? null });
+    }
+  }
+  // One row per durable attempt. A retry is intentionally visible as another
+  // row even when it belongs to the same phase/action.
+  for (const stage of model.stages) {
+    const attempts = stageAttempts.get(stage.id) ?? [];
+    if (!attempts.length) continue;
+    const duration = phaseDurationFacts(model.row, stage, { nowMs });
+    for (const attempt of attempts) {
+      const pool = attempt.pool ?? '—';
+      const modelName = attempt.model ?? '—';
+      const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
+      const metadata = `${pool} · ${modelName} · ${effort} · ${attemptDurationText(attempt, { nowMs })}`;
+      add(
+        attempt.finishedAt ?? attempt.startedAt,
+        `${statusIcon(attempt.status, spinnerFrame)} ${planStageName(stage, model.stages.indexOf(stage))}`,
+        '',
+        [`phase active ${activeMinutesText(duration.activeMinutes)}`, metadata],
+        stage.label,
+        attempt.startedAt,
+        { activeMinutes: duration.activeMinutes },
+      );
     }
   }
   // A worker that is still running has no durable finish event yet, so the
@@ -496,6 +540,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     for (const runtime of state.actions) {
       if (runtime.status !== 'running' || !runtime.startedAt) continue;
       const stage = model.stages.find((item) => item.actionIds.includes(runtime.id));
+      if (stage && (stageAttempts.get(stage.id) ?? []).some((attempt) => attempt.actionId === runtime.id)) continue;
       add(runtime.startedAt, `│  ├─${statusIcon('running', spinnerFrame)} ${runtime.id}`, durationText(runtime.startedAt), null, stage?.label ?? 'Work', null, { live: true });
     }
   }
@@ -507,12 +552,16 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     const at = [stage.completedAt, ...model.events.filter((event) =>
       ['action.finished', 'evidence.recorded'].includes(event.type) && stage.actionIds.includes(event.payload?.actionId))
       .map((event) => event.committedAt)].filter(Boolean).sort().at(-1);
-    add(at, `└─${progress.successful ? glyphs().ok : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label);
+    if (!(stageAttempts.get(stage.id) ?? []).length) {
+      const duration = phaseDurationFacts(model.row, stage, { nowMs });
+      add(at, `└─${progress.successful ? glyphs().ok : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label, null, { activeMinutes: duration.activeMinutes });
+    }
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
     const finalSegment = model.stages.findLast((stage) => stage.startedAt)?.label ?? 'Workflow';
-    add(state.lifecycle.finishedAt, `${status === 'completed' ? glyphs().ok : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, durationText(state.lifecycle.startedAt, state.lifecycle.finishedAt), null, finalSegment);
+    const runDuration = runDurationFacts(model.row, { nowMs });
+    add(state.lifecycle.finishedAt, `${status === 'completed' ? glyphs().ok : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, activeMinutesText(runDuration.activeMinutes), null, finalSegment, null, { activeMinutes: runDuration.activeMinutes });
   }
   return groupedTimeline(rows, model, width, state.lifecycle.finishedAt);
 }
@@ -557,7 +606,7 @@ function currentTimelineSegment(model) {
         : 'Workflow');
 }
 
-function workflowLiveLines(model, width, spinnerFrame) {
+function workflowLiveLines(model, width, spinnerFrame, nowMs = Date.now()) {
   const { state, orchestrator } = model;
   const runningAttempts = state.attempts.filter((attempt) => attempt.status === 'running');
   const lines = [];
@@ -576,7 +625,7 @@ function workflowLiveLines(model, width, spinnerFrame) {
   }
   for (const attempt of runningAttempts) {
     const reasoning = reasoningText(attempt);
-    lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''}`, durationText(attempt.startedAt), width));
+    lines.push(alignRight(`${statusIcon('running', spinnerFrame)} ${attempt.actionId} · ${attempt.pool ?? 'unassigned'} · ${attempt.model ?? 'connector model'}${reasoning ? ` · ${reasoning}` : ''}`, attemptDurationText(attempt, { nowMs }), width));
     const event = attempt.lastAgentEvent;
     lines.push(event
       ? `   ${glyphs().detail} ${friendlyActionKind(event.kind ?? event.providerType)}${event.summary ? ` · ${friendlyActionSummary(event)}` : ''}`
@@ -786,62 +835,37 @@ function planDagLines(row, {
 } = {}) {
   const { stages } = planStages(row);
   if (!stages.length) return [];
-  const headers = stages.map((stage, index) => planStageHeader(stage, index));
-  const actionLimit = Number.isFinite(Number(maxRows)) && Number(maxRows) >= 1
-    ? Math.max(1, Math.trunc(Number(maxRows)) - 1) : null;
-  const displayed = stages.map((stage) => planStageActions(stage, actionLimit));
-  const rowsFor = (stage, index, cellWidth) => [
-    headers[index],
-    ...displayed[index].actions.map((action) => planPhaseActionParts(action, {
-      width: cellWidth, row, runId, assignments, nowMs, selectedId,
-    })),
-    ...(displayed[index].omitted ? [planMoreParts(displayed[index].omitted, cellWidth)] : []),
-  ];
-  if (width < 120) {
-    const out = [];
-    stages.forEach((stage, index) => {
-      out.push({ parts: [{ text: rule(headers[index], null, width) }] });
-      for (const action of displayed[index].actions) {
-        out.push({ parts: planPhaseActionParts(action, {
-          width: Math.max(1, width - 1), row, runId, assignments, nowMs, selectedId,
-        }).map((part, at) => at === 0 ? { ...part, text: ` ${part.text}` } : part) });
-      }
-      if (displayed[index].omitted) out.push({ parts: [{ text: ` ${dimText(`+${displayed[index].omitted} more`, width - 1)}` }] });
-    });
-    return out;
-  }
-
-  // `columns` is used only for its width calculation. Its fit policy retains
-  // one cell per phase at desktop widths, while the parts below keep only the
-  // step name clickable and the pool/model dim.
-  // The body gives every plan row one leading margin, so reserve it before
-  // asking the kit to divide the desktop band.
-  const sizing = columns(stages.map((stage, index) => ({ rows: rowsFor(stage, index, 1) })), { width: Math.max(1, width - 1), gap: 2 });
-  const columnsMeta = sizing.meta?.columns ?? [];
-  if (columnsMeta.length !== stages.length) {
-    // A pathological plan with more phases than cells still gets every phase
-    // in the readable stacked form rather than silently dropping a column.
-    return planDagLines(row, { width: 119, runId, assignments, nowMs, pools, selectedId, maxRows });
-  }
-  const height = displayed.reduce((most, stage) => Math.max(most, 1 + stage.actions.length + (stage.omitted ? 1 : 0)), 1);
+  // The plan is intentionally phase-only. A box is one clickable unit whose
+  // action points at that phase's first step; the full attempt chronology is
+  // rendered by the timeline below it.
+  const boxes = stages.map((stage, index) => {
+    const parts = planStageBoxParts(stage, index, { runId, selectedId });
+    return { parts, text: parts.map((part) => part.text).join(''), width: visibleLength(parts.map((part) => part.text).join('')) };
+  });
+  const limit = Math.max(1, Number(width) || 1);
+  // Phones stack boxes so a phase name never gets squeezed into a misleading
+  // ellipsis. Desktop widths keep a stable three-column rhythm at 120 and let
+  // all phases flow together on the 200-column design frame.
+  const maxBoxes = limit < 80 ? 1 : limit < 180 ? 3 : boxes.length;
   const out = [];
-  for (let rowIndex = 0; rowIndex < height; rowIndex += 1) {
-    const parts = [];
-    columnsMeta.forEach((column, index) => {
-      if (index) parts.push({ text: rowIndex === 0 ? '──' : '  ' });
-      const cellParts = rowIndex === 0
-        ? [{ text: headers[index] }]
-        : (displayed[index].actions[rowIndex - 1]
-          ? planPhaseActionParts(displayed[index].actions[rowIndex - 1], {
-            width: column.width, row, runId, assignments, nowMs, selectedId,
-          })
-          : displayed[index].omitted && rowIndex === displayed[index].actions.length + 1
-            ? planMoreParts(displayed[index].omitted, column.width)
-          : [{ text: '' }]);
-      parts.push(...fittedParts(cellParts, column.width));
-    });
-    out.push({ parts: [{ text: ' ' }, ...parts] });
+  let line = [];
+  let used = 0;
+  const flush = () => {
+    if (!line.length) return;
+    out.push({ parts: line.flatMap((box, index) => [
+      ...(index ? [{ text: ' ' }] : []),
+      ...box.parts,
+    ]) });
+    line = [];
+    used = 0;
+  };
+  for (const box of boxes) {
+    const gap = line.length ? 1 : 0;
+    if (line.length >= maxBoxes || (line.length && used + gap + box.width > limit)) flush();
+    line.push(box);
+    used += (line.length > 1 ? 1 : 0) + box.width;
   }
+  flush();
   return out;
 }
 
@@ -853,8 +877,8 @@ function planDagLines(row, {
  * `bullswarm workflow tui <id> --overview`, untouched; this is the page's own
  * reading of the same lines.
  */
-function flatTimelineLines(panel, { width, rows, scroll = 0, selectedSegment = null, spinnerFrame = 0 } = {}) {
-  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false });
+function flatTimelineLines(panel, { width, rows, scroll = 0, selectedSegment = null, spinnerFrame = 0, nowMs = Date.now() } = {}) {
+  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false, nowMs });
   const room = Math.max(1, Number(rows) || 1);
   const selectedHeader = selectedSegment
     ? timeline.lines.findIndex((line) => line?.header && line.segment === selectedSegment)
@@ -954,7 +978,7 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
   }
   const rows = [...dead];
   for (const attempt of running.slice(0, limit)) {
-    const elapsed = durationText(attempt.startedAt);
+    const elapsed = attemptDurationText(attempt, { nowMs });
     const spark = outputSparkline(attempt, panel.row?.runDir, 8);
     const total = spark ? ` · output ${spark}` : '';
     const action = `${runningMark()} ${attempt.actionId}`;
@@ -979,7 +1003,7 @@ function runLiveRows(panel, { width, nowMs, limit = 3 }) {
 /** The `so far` cell: the steps, the time, the spend and what is not measured. */
 function runSoFarRows(row, panel, progress, economics, { width, nowMs }) {
   const money = moneyText(economics);
-  const elapsed = durationText(stateStartedAt(panel.state), stateFinishedAt(panel.state));
+  const elapsed = activeMinutesText(runDurationFacts(panel.row, { nowMs }).activeMinutes);
   const label = (name, value) => `${name.padEnd(9)}${value}`;
   return [
     label('steps', stepTally(row)),
@@ -1013,17 +1037,20 @@ function runBlankReasons(economics, progress) {
 function runPage(model, opts, body) {
   const { width, bodyHeight, nowMs, narrow, spinnerFrame } = opts;
   const row = model.row;
-  const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex });
+  const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex, nowMs });
   const state = panel.state;
   const status = row?.status ?? stateStatus(state) ?? 'starting';
   const shortId = state.shortId ?? row?.shortId ?? row?.runId ?? '------';
   const done = (state.actions ?? []).filter((action) => action.status === 'succeeded').length;
   const total = (state.actions ?? []).length;
-  const elapsed = durationText(stateStartedAt(state), stateFinishedAt(state));
+  const runDuration = runDurationFacts(row, { nowMs });
+  const elapsed = activeMinutesText(runDuration.activeMinutes);
+  const activeLabel = ` · active ${elapsed}`;
+  const spanLabel = runDuration.spanMinutes == null ? '' : ` · secondary span ${activeMinutesText(runDuration.spanMinutes)}`;
   const terminalLabel = stateFinishedAt(state)
     ? ` · ${status === 'completed' ? 'done' : status}${isProgramWorkflow(state) && status === 'completed' ? hasPassingRequirementEvidence(state) ? ' · evidence passed' : ' · unverified' : ''}`
     : '';
-  const header = truncate(` ${shortId} ${status}${elapsed && elapsed !== 'time pending' ? ` · ${elapsed}` : ''} · ${done}/${total} actions${terminalLabel}`, width);
+  const header = truncate(` ${shortId} ${status}${activeLabel}${spanLabel} · ${done}/${total} actions${terminalLabel}`, width);
 
   // The planner and technical views keep the panels they always drew: the
   // prototype has no frame for either and both are opened deliberately.
@@ -1067,7 +1094,7 @@ function runPage(model, opts, body) {
     body.push(rule('licence this run used', null, width));
     for (const line of runBudgetRows(economics, { width: width - 2 })) body.push(` ${cut(line, width - 1)}`);
     const money = moneyText(economics);
-    body.push(cut(` so far ${tint(money, 'purple')} · ${economics.measuredAttempts} of ${economics.attempts} attempts measured · ${stepTally(row)} · ${durationText(stateStartedAt(state), stateFinishedAt(state))}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
+    body.push(cut(` so far ${tint(money, 'purple')} · ${economics.measuredAttempts} of ${economics.attempts} attempts measured · ${stepTally(row)} · ${activeMinutesText(runDuration.activeMinutes)}${progress.eta ? ` · ETA ${progress.eta}` : ` · ETA ${blank()}`}`, width));
     body.push('');
     body.push(rule('live', null, width));
     for (const line of runLiveRows(panel, { width: width - 2, nowMs, limit: 2 })) body.push(` ${cut(line, width - 1)}`);
@@ -1096,7 +1123,7 @@ function runPage(model, opts, body) {
   const rows = Math.max(3, Math.max(6, Number(bodyHeight) || 24) - used - 1);
   if (opts.focus === 1) {
     const phase = panel.selectedPhase;
-    body.push(rule(`${phase.label} · ${phase.completed}/${phase.total} complete`, null, width));
+    body.push(rule(`${phase.label} · ${phase.completed}/${phase.total} complete · active ${activeMinutesText(phase.activeMinutes)}`, null, width));
     if (!panel.agents.length) {
       const blocked = phase.blockedActions ?? [];
       for (const entry of blocked) {
@@ -1133,7 +1160,7 @@ function runPage(model, opts, body) {
     if (left >= 4) {
       body.push('');
       const tail = flatTimelineLines(panel, {
-        width: width - 1, rows: left - 1, scroll: opts.detailScroll ?? 0, spinnerFrame,
+        width: width - 1, rows: left - 1, scroll: opts.detailScroll ?? 0, spinnerFrame, nowMs,
       });
       body.push(rule('timeline', `${tail.milestones} milestone${tail.milestones === 1 ? '' : 's'}`, width));
       const from = body.lines.length;
@@ -1156,7 +1183,7 @@ function runPage(model, opts, body) {
       ? (opts.timelineSelection === 0 ? 'Preflight' : panel.phases[opts.timelineSelection - 1]?.label ?? null)
       : opts.phaseIndex != null ? panel.phases[panel.phaseIndex]?.label ?? null : null;
     const lines = flatTimelineLines(panel, {
-      width: width - 1, rows: rows - 1, scroll: opts.detailScroll ?? 0, selectedSegment, spinnerFrame,
+      width: width - 1, rows: rows - 1, scroll: opts.detailScroll ?? 0, selectedSegment, spinnerFrame, nowMs,
     });
     body.push(rule('timeline', `${lines.milestones} milestone${lines.milestones === 1 ? '' : 's'}`, width));
     const from = body.lines.length;

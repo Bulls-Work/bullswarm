@@ -28,7 +28,7 @@ function fixture({ emptyModels = false } = {}) {
   return {
     overview: {
       keys: { workflows: 59, activeDays: 6, totalWorkerMinutes: 7018.74, apiEquivalentUsd: 7.032817, tokenSource: 'estimated:utf8-bytes/4', medianRunMinutes: 54.49 },
-      outcomes: { statusCounts: { completed: 53, partial: 2, cancelled: 4 }, verified: 30, verifiedTotal: 59, verifiedShare: 30 / 59, requirementsPassed: 235, requirementsTotal: 301, requirementsShare: 235 / 301, medianWallMinutes: 54.49, maxWallMinutes: 542.69 },
+      outcomes: { statusCounts: { completed: 53, partial: 2, cancelled: 4 }, verified: 30, verifiedTotal: 59, verifiedShare: 30 / 59, requirementsPassed: 235, requirementsTotal: 301, requirementsShare: 235 / 301, medianActiveMinutes: 54.49, maxActiveMinutes: 542.69 },
       breakdown: { pools, models, projects: [{ name: 'project-c', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }] },
     },
     spendPerDay: { metric: 'spend', segmentBasis: 'the recorded API-equivalent estimate per pool', buckets, total: 7.032817 },
@@ -266,8 +266,8 @@ test('stack slices and outcome duration rows use measured values and matching un
   // stacked width each panel gets its own full-width geometry and exposes the
   // measured outcome rows for the same hover assertions.
   const stacked = statsLines(fixture(), { ...base, width: 55 });
-  const median = stacked.regions.find((region) => region.action.payload?.label === 'Median wall');
-  const longest = stacked.regions.find((region) => region.action.payload?.label === 'Longest wall');
+  const median = stacked.regions.find((region) => region.action.payload?.label === 'Median active');
+  const longest = stacked.regions.find((region) => region.action.payload?.label === 'Longest active');
   assert.ok(median && longest);
   assert.equal(median.action.payload.unit, 'minutes');
   assert.equal(longest.action.payload.unit, 'minutes');

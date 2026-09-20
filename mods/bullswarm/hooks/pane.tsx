@@ -14,7 +14,8 @@ import type {
 } from '../types'
 import type { OverviewLine } from './overview'
 import { METER_AMBER, METER_GREEN, METER_RED, meterBar, poolRows, severityColor } from './pool-rows'
-import { ageOf, durationOf, glyphOf, stepsOf, timingOf } from './runs'
+import { ageOf, glyphOf, timingOf } from './runs'
+import { shapeStep, type StepMode, type StepPaneRow } from './step'
 
 export type PaneUi = Pick<ElementTable<'terminal' | 'desktop'>, 'Box' | 'Text' | 'Button'>
 
@@ -27,6 +28,9 @@ export type PaneModel = {
   action: BullswarmAction | null
   /** That step as `action show` reports it, when read. */
   step: BullswarmStep | null
+  /** Pane-local mode/turn state; the host may persist and update these. */
+  stepMode?: StepMode
+  expandedStepTurn?: number | null
   /** The head of the step's task file, one entry per line. */
   promptPreview: readonly string[]
   /** The tail of that action's output file, when read. */
@@ -59,6 +63,9 @@ export type PaneScroll = {
 export type PaneActions = {
   select: (shortId: string) => void
   openAction: (actionId: string) => void
+  /** Optional until the host wires the pane's v/Enter controls to state. */
+  toggleStep?: () => void
+  expandStepTurn?: (turnIndex: number) => void
   /** Moves the overview's window to its top or bottom. */
   scrollTo: (where: 'start' | 'end') => void
   /** Opens the pools page: every meter window and the model per tier. */
@@ -140,16 +147,6 @@ export function wrapText(text: string, width: number): string[] {
     out.push(line)
   }
   return out
-}
-
-/** `6m12s` between two timestamps, or since the first. */
-const spanOf = (from: string | null, to: string | null, nowMs: number): string => {
-  if (!from) return ''
-  const ms = (to ? Date.parse(to) : nowMs) - Date.parse(from)
-  if (!Number.isFinite(ms) || ms < 0) return ''
-  const sec = Math.round(ms / 1000)
-  const m = Math.floor(sec / 60)
-  return m ? `${String(m)}m${String(sec % 60).padStart(2, '0')}s` : `${String(sec)}s`
 }
 
 /** The action id a frame line names, when it is one of the run's actions. */
@@ -301,7 +298,7 @@ export function paneView(
     return frame(header, compact ? [...noteRows, ...pageRows] : pageRows, footer)
   }
 
-  if (!run) {
+  if (!run && !model.step) {
     const task = standaloneTask(model.assignments)
     const elapsed = task
       ? timingOf(task) || ageOf((task as AssignmentRecord).startedAt ?? null, model.nowMs) || 'unknown'
@@ -331,82 +328,80 @@ export function paneView(
     }
   }
 
-  if (model.action) {
-    // The step view, laid out as the TUI's agent panel: status line, pool and
-    // attempt line, the step, its route and times, the prompt head, usage,
-    // activity, the outcome tail, and the artifacts.
-    const a = model.action
+  if (model.action || model.step) {
+    // The Step model is shaped without UI concerns. This branch only maps
+    // rows to the Claude engine's Text/Button elements.
+    const page = model.step
+    const a = model.action ?? {
+      id: page?.id ?? 'task',
+      status: page?.status ?? 'unknown',
+      attempts: page?.attempt ? 1 : 0,
+      startedAt: page?.attempt?.startedAt ?? null,
+      finishedAt: page?.attempt?.finishedAt ?? null,
+      outputFile: page?.outputFile ?? null,
+      lastFailure: page?.lastFailure ?? null,
+      latest: null,
+    }
     const st = model.step
     const at = st?.attempt ?? null
     const g = glyphOf(at?.status ?? a.status)
-    const live = stepsOf(run, model.assignments).find(s => s.actionId === a.id) ?? null
-    const pool = nameOf(at?.pool ?? live?.pool ?? a.latest?.pool ?? null)
-    const modelName = shortModel(at?.model ?? live?.model ?? a.latest?.model ?? null)
-    const reasoning = at?.reasoning ? ` · ${at.reasoning}` : ''
-    const rows: RenderElement[] = []
-    if (!st && !model.error) rows.push(dim('reading', 'reading the step…'))
-    rows.push(
-      <Text key="status" wrap="truncate-end">
-        <Text color={g.color}>{g.glyph}</Text>
-        <Text> {at?.status ?? a.status}</Text>
-        <Text dimColor>{modelName ? ` · ${modelName}${reasoning}` : ''}</Text>
-      </Text>,
-      dim(
-        'where',
-        [
-          pool || 'not dispatched yet',
-          `attempt ${String(at?.ordinal ?? a.attempts ?? 1)}`,
-          st?.effort ? `effort ${st.effort}` : '',
-          at?.reasoning ? `reasoning ${at.reasoning}` : '',
+    const shaped = shapeStep(st ?? page, {
+      mode: model.stepMode,
+      expandedTurn: model.expandedStepTurn,
+      promptPreview: model.promptPreview,
+      outputTail: model.outputTail,
+    })
+    const rowText = (entry: StepPaneRow): RenderElement[] => {
+      const color = entry.tone === 'good' ? 'green' : entry.tone === 'bad' ? 'red' : entry.tone === 'running' ? 'cyan' : undefined
+      const lines = wrapText(entry.text, width)
+      if (entry.kind === 'section') return lines.map((line, index) => <Text key={`${entry.key}-${String(index)}`} bold color={color}>{line}</Text>)
+      if (entry.kind === 'response' && entry.expandable) {
+        const [first, ...rest] = lines
+        return [
+          <Button
+            key={entry.key}
+            plain
+            hotkey={entry.turnIndex === 0 ? 'enter' : undefined}
+            label={first ?? entry.text}
+            onPress={() => entry.turnIndex === undefined ? undefined : actions.expandStepTurn?.(entry.turnIndex)}
+          />,
+          ...rest.map((line, index) => <Text key={`${entry.key}-continuation-${String(index)}`} dimColor>{line}</Text>),
         ]
-          .filter(Boolean)
-          .join(' · '),
-      ),
-      blank('b1'),
-      plain('step', `Step · ${a.id} · ${st?.kind ?? st?.lane ?? 'step'}`),
-    )
-    if (st?.purpose) rows.push(...wrapText(st.purpose, width - 2).map((l, k) => dim(`purpose${String(k)}`, `  ${l}`)))
-    if (at?.routeReason) rows.push(...wrapText(`Route: ${at.routeReason}`, width).map((l, k) => plain(`route${String(k)}`, l)))
-    const started = at?.startedAt ?? a.startedAt
-    if (started) rows.push(plain('started', `Started: ${started}`))
-    if (at?.finishedAt) rows.push(plain('finished', `Finished: ${at.finishedAt} · ${spanOf(started, at.finishedAt, model.nowMs)}`))
-    else if (started) rows.push(plain('elapsed', `Elapsed: ${spanOf(started, null, model.nowMs)}${live && timingOf(live) ? ` · ${timingOf(live)} of the estimate` : ''}`))
-    if (at?.lastActivityAt) rows.push(plain('activity-at', `Last activity: ${at.lastActivityAt}${at.outputBytes !== null ? ` · ${String(at.outputBytes)} bytes` : ''}`))
-    const failure = a.lastFailure ?? (at?.status === 'failed' ? at.why : null)
-    if (failure) rows.push(...wrapText(`Failure: ${failure}`, width).map((l, k) => plain(`failure${String(k)}`, l, 'red')))
-    else if (at?.why) rows.push(...wrapText(`Verdict: ${at.why}`, width).map((l, k) => plain(`why${String(k)}`, l, 'green')))
-    rows.push(blank('b2'), plain('prompt', `Prompt${model.promptPreview.length ? ` · ${String(model.promptPreview.length)} lines shown` : ''}`))
-    if (model.promptPreview.length)
-      for (const [k, line] of model.promptPreview.entries())
-        rows.push(...wrapText(line, width - 2).map((l, kk) => dim(`p${String(k)}-${String(kk)}`, `  ${l}`)))
-    else rows.push(dim('p-none', '  unavailable'))
-    rows.push(blank('b3'), dim('usage', at?.usage ?? 'usage pending'), blank('b4'), plain('act', 'Activity'))
-    rows.push(dim('act-1', at?.lastEvent ? `· ${at.lastEvent}` : '· waiting for semantic action events'))
-    if (model.outputTail) {
-      rows.push(blank('b5'), plain('outcome', 'Outcome'))
-      rows.push(...wrapText(model.outputTail, width - 2).map((l, k) => dim(`o${String(k)}`, `  ${l}`)))
+      }
+      return lines.map((line, index) => <Text key={`${entry.key}-${String(index)}`} dimColor={entry.tone === 'dim'} color={color}>{line}</Text>)
     }
-    rows.push(blank('b6'), plain('arts', 'Artifacts:'))
-    rows.push(dim('task', `task: ${at?.taskFile ?? '—'}`))
-    rows.push(dim('out', `output: ${st?.outputFile ?? at?.outputFile ?? a.outputFile ?? '—'}`))
+    const rows: RenderElement[] = shaped.rows.flatMap(rowText)
 
     const header: RenderElement[] = [
       <Text key="h0" wrap="truncate-end">
         <Text color={g.color} bold>
           {g.glyph} {a.id}
         </Text>
-        <Text dimColor> · run {run.shortId}</Text>
+        <Text dimColor> · {run ? `run ${run.shortId}` : 'single task'}</Text>
       </Text>,
     ]
     if (!compact) header.push(nav)
     if (model.error) header.push(plain('err', model.error, 'red'))
     // The hint sits whole above the nav, as the usage page's note does.
-    const hint = wrapText(`bullswarm workflow action show ${run.shortId} ${a.id}`, width)
+    const hint = wrapText(run ? `bullswarm workflow action show ${run.shortId} ${a.id}` : 'bullswarm run task · read-only Step view', width)
+    const stepModeButton = (
+      <Button
+        key="step-mode"
+        hotkey="v"
+        label={shaped.toggleLabel}
+        onPress={() => actions.toggleStep?.()}
+      />
+    )
+    const stepModeFooter = <Box key="step-mode-footer" flexDirection="row" gap={1}>{stepModeButton}<Text dimColor>{shaped.mode === 'overview' ? '[Enter expand turn]' : '[capture order]'}</Text></Box>
     const footer: RenderElement[] = compact
-      ? [switcher]
-      : [...hint.map((l, k) => dim(`f${String(k)}`, l)), switcher]
+      ? [stepModeFooter, switcher]
+      : [...hint.map((l, k) => dim(`f${String(k)}`, l)), stepModeFooter, switcher]
     return frame(header, rows, footer)
   }
+
+  // The only path below is the ordinary run overview. The explicit guard
+  // keeps the standalone-task branch above type-safe when the host has no run.
+  if (!run) return { tree: <Text dimColor>No run selected.</Text>, scroll: null }
 
   const age = ageOf(run.startedAt, model.nowMs)
   const read = model.readAt ? ageOf(new Date(model.readAt).toISOString(), model.nowMs) : ''

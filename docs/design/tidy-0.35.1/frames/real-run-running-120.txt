@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ ● euqrni · running · 3 of 5 steps done · 1 running (integrate) · 1 waiting (verify)      1h33m active · since 04:05 HKT
+ sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris…
+ 4 attempts  codex 4                                                             project project-a · /home/dev/project-a
+
+── plan · phase 4 of 5 ─────────────────────────────────────────────────────────────────────────────────────────────────
+ [✓ 1 home-extraction] → [✓ 2 runs-extraction] → [✓ 3 run-extraction] → [▶ 4 integrate 0/1] → [○ 5 verify]
+
+── live · integrate · codex · gpt-5.6… │ ── spend · 3 of 4 attempts measured ───────────────────────────────────────────
+ ▶ 4  05:37  sample response for       │  API rate   at least $1.77    codex $1.77
+            integrate-1 … · 7 commands │  plans      —                 0 attempts with a meter reading · 4 without
+ Enter → the step page · following ●   │
+
+── timeline · 5 phases · 4 attempts · Enter on a step opens it ─────────────────────────────────────────────────────────
+── Preflight ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 04:05  ● goal accepted · goal.json
+── ✓ 1 · home-extraction ────────────────────────────────────────────────────────────────── 04:05 → 04:34 · 28m25s · 1/1
+ 04:05  ✓ home-extraction · codex · gpt-5.6-luna · low                                                            28m25s
+── ✓ 2 · runs-extraction ────────────────────────────────────────────────────────────────── 04:34 → 05:04 · 30m32s · 1/1
+ 04:34  ✓ runs-extraction · codex · gpt-5.6-luna · low                                                            30m32s
+── ✓ 3 · run-extraction ─────────────────────────────────────────────────────────────────── 05:04 → 05:36 · 31m52s · 1/1
+ 05:04  ✓ run-extraction · codex · gpt-5.6-luna · low                                                             31m52s
+── ▶ 4 · integrate ─────────────────────────────────────────────────────────────────────────── 05:36 → now · 2m19s · 0/1
+ 05:36  ▶ integrate · codex · gpt-5.6-sol · high · running                                                         2m19s
+── ○ 5 · verify ──────────────────────────────────────────────────────────────────────────────────────── — → — · — · 0/1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ] [ ● 1.euqrni ]  Enter open step · p plan boxes · Space follow · ? help

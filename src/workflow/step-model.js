@@ -6,7 +6,7 @@
 // duration, usage, cost, or verification from prose.
 
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 
 // These imports are the extraction seam used by dashboard.js. They are used
 // only for compatibility fields; the rich model below does its own shaping.
@@ -32,6 +32,7 @@ const COMPLETE_STATUSES = new Set([
 ]);
 const SUCCESS_STATUSES = new Set(['succeeded', 'success', 'completed', 'complete', 'done']);
 const FILTERS = new Set(['all', 'turns', 'tools', 'errors']);
+const VIEWS = new Set(['overview', 'detail']);
 const TOKEN_FIELDS = [
   'standardRead', 'cacheRead', 'cacheWrite5m', 'cacheWrite1h', 'cacheWrite',
   'output', 'reasoning',
@@ -74,8 +75,16 @@ function resolveExistingPath(candidate, runDir) {
   if (typeof candidate !== 'string' || !candidate.trim()) return null;
   const value = candidate.trim();
   if (runDir) {
-    const local = join(runDir, basename(value));
-    if (existsSync(local)) return local;
+    const relativeCandidate = isAbsolute(value) ? null : relative(runDir, join(runDir, value));
+    const local = relativeCandidate && !relativeCandidate.startsWith('..') && !isAbsolute(relativeCandidate)
+      ? join(runDir, relativeCandidate)
+      : null;
+    if (local && existsSync(local)) return local;
+    // Copied-home state often retains an absolute path from the source home;
+    // the same basename is the safe local artifact when it was copied beside
+    // state.json.
+    const basenameLocal = join(runDir, basename(value));
+    if (existsSync(basenameLocal)) return basenameLocal;
     // A copied-home inspection must not follow the absolute path retained in
     // state.json back into the live home. Only accept an absolute candidate
     // after proving it is inside this run directory.
@@ -89,7 +98,14 @@ function resolveExistingPath(candidate, runDir) {
 function retainedPath(candidate, runDir) {
   const resolved = resolveExistingPath(candidate, runDir);
   if (resolved) return resolved;
-  if (runDir && typeof candidate === 'string' && candidate.trim()) return join(runDir, basename(candidate.trim()));
+  if (runDir && typeof candidate === 'string' && candidate.trim()) {
+    const value = candidate.trim();
+    const relativeCandidate = isAbsolute(value) ? null : relative(runDir, join(runDir, value));
+    if (relativeCandidate && !relativeCandidate.startsWith('..') && !isAbsolute(relativeCandidate)) {
+      return join(runDir, relativeCandidate);
+    }
+    return join(runDir, basename(value));
+  }
   return textOrNull(candidate);
 }
 
@@ -118,9 +134,88 @@ function durationMs(startedAt, finishedAt, nowMs = Date.now()) {
 }
 
 function durationFromAttempt(attempt, nowMs) {
+  const explicit = finiteMs(attempt?.durationMs);
+  if (explicit != null) return explicit;
   const wall = finiteOrNull(attempt?.wallSec);
   if (wall != null && wall >= 0) return wall * 1000;
-  return durationMs(attempt?.startedAt, attempt?.finishedAt, nowMs);
+  const status = String(attempt?.status ?? '').toLowerCase();
+  const open = ['started', 'start', 'running', 'in_progress', 'in-progress'].includes(status);
+  const finishedAt = textOrNull(attempt?.finishedAt) ?? textOrNull(attempt?.endedAt);
+  if (finishedAt == null && !open) return null;
+  return durationMs(attempt?.startedAt, finishedAt, nowMs);
+}
+
+function attemptInterval(attempt, nowMs) {
+  const start = dateMs(attempt?.startedAt);
+  if (start == null) return { unknown: true };
+  const recordedEnd = dateMs(attempt?.finishedAt) ?? dateMs(attempt?.endedAt);
+  let end = recordedEnd;
+  const open = end == null
+    && ['started', 'start', 'running', 'in_progress', 'in-progress'].includes(String(attempt?.status ?? '').toLowerCase());
+  if (open) {
+    end = Number.isFinite(nowMs) ? nowMs : Date.now();
+  }
+  if (end == null) {
+    const wall = finiteOrNull(attempt?.wallSec);
+    if (wall != null && wall >= 0) end = start + wall * 1000;
+  }
+  if (end == null || end < start) return { unknown: true };
+  return { start, end, open, spanKnown: recordedEnd != null };
+}
+
+/** Return the active union and wall span for one action's attempts. */
+export function actionDurationFacts(attempts = [], nowMs = Date.now()) {
+  const records = attempts.map((attempt) => attemptInterval(attempt, nowMs));
+  const unknown = records.some((record) => record?.unknown === true);
+  const intervals = records.filter((record) => Number.isFinite(record?.start) && Number.isFinite(record?.end))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (unknown) {
+    const measured = intervals.length === 0
+      ? attempts.map((attempt) => durationFromAttempt(attempt, nowMs)).filter((value) => value != null)
+      : [];
+    return {
+      activeMs: measured.length ? measured.reduce((total, value) => total + value, 0) : null,
+      spanMs: null,
+      startMs: intervals[0]?.start ?? null,
+      endMs: intervals.at(-1)?.end ?? null,
+      open: intervals.some((interval) => interval.open),
+      spanKnown: false,
+      unknown: true,
+      intervals,
+    };
+  }
+  if (!intervals.length) {
+    const measured = attempts.map((attempt) => durationFromAttempt(attempt, nowMs)).filter((value) => value != null);
+    return {
+      activeMs: measured.length ? measured.reduce((total, value) => total + value, 0) : null,
+      spanMs: null,
+      startMs: null,
+      endMs: null,
+      open: false,
+      spanKnown: false,
+      unknown: false,
+      intervals: [],
+    };
+  }
+  const merged = [];
+  for (const interval of intervals) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+    else merged.push({ ...interval });
+  }
+  return {
+    activeMs: merged.reduce((total, interval) => total + interval.end - interval.start, 0),
+    // A live attempt has an active clock but no proved terminal wall span.
+    spanMs: intervals.some((interval) => interval.open) || intervals.some((interval) => !interval.spanKnown)
+      ? null
+      : intervals.at(-1).end - intervals[0].start,
+    startMs: intervals[0].start,
+    endMs: intervals.at(-1).end,
+    open: intervals.some((interval) => interval.open),
+    spanKnown: intervals.every((interval) => interval.spanKnown),
+    unknown: false,
+    intervals,
+  };
 }
 
 function pathCandidates(attempt, runDir, actionId, ordinal) {
@@ -170,6 +265,24 @@ function normalizeEvent(raw, index) {
   event.kind = textOrNull(raw.kind);
   event.status = textOrNull(raw.status);
   event.summary = raw.summary == null ? null : String(raw.summary);
+  // Optional provider-neutral fields are copied only when the source record
+  // actually carries them. Aliases keep additive stream-contract revisions
+  // readable without guessing from summaries.
+  const optional = (name, ...aliases) => {
+    const source = [name, ...aliases].find((key) => hasOwn(raw, key));
+    if (source != null) event[name] = raw[source];
+  };
+  optional('eventId', 'eventID', 'id');
+  optional('turnId', 'turnID');
+  optional('toolCallId', 'tool_call_id');
+  optional('toolName', 'tool');
+  optional('arguments', 'args');
+  optional('result');
+  optional('providerAt', 'providerTimestamp', 'provider_at');
+  if (hasOwn(raw, 'durationMs') || hasOwn(raw, 'duration')) event.durationMs = finiteMs(raw.durationMs ?? raw.duration);
+  optional('usage');
+  optional('parentId', 'parentID');
+  optional('subagentId', 'subagentID');
   return event;
 }
 
@@ -248,7 +361,39 @@ function isComplete(event) {
   return COMPLETE_STATUSES.has(status) || /\.completed$|_completed$|^complete|^result$/.test(String(event?.providerType ?? '').toLowerCase());
 }
 
-/** Pair only events carrying the same stable tool-call identifier. */
+// Connectors capture the same operation under their own kind strings: codex
+// emits item kinds (`command_execution`, `file_change`, `web_search`),
+// claude-code emits the raw tool name (`Bash`, `Read`, `Write`, `Edit`,
+// `Glob`, `Grep`, `ToolSearch`, ...) and `tool` for every tool_result, and
+// grok emits its own tool names (`read_file`, `run_terminal_command`, `grep`,
+// `list_dir`, ...). Normalising the real kinds into the three operation
+// categories the page shows keeps the summary honest for every provider, and
+// it is matched case-insensitively because a kind is raw capture text.
+const TOOL_KIND_CATEGORIES = new Map(Object.entries({
+  command: ['bash', 'run_terminal_command', 'command_execution', 'shell', 'exec'],
+  read: ['read', 'read_file', 'glob', 'grep', 'search', 'file_read', 'list_dir'],
+  edit: ['write', 'edit', 'multiedit', 'notebookedit', 'file_change', 'apply_patch', 'write_file', 'edit_file'],
+}).flatMap(([category, kinds]) => kinds.map((kind) => [kind, category])));
+
+// A provider that reports a tool result as its own event names it `tool`
+// (claude-code's tool_result). A result answers a call, so it is never an
+// operation of its own.
+const TOOL_RESULT_KINDS = new Set(['tool']);
+
+function toolKindCategory(event) {
+  const kind = String(event?.kind ?? '').trim().toLowerCase();
+  return TOOL_KIND_CATEGORIES.get(kind) ?? null;
+}
+
+/**
+ * Pair each started event with its completion: a stable tool-call identifier
+ * is the strongest key, a provider that records none (Codex streams each
+ * command as `item.started` / `item.completed` with no id) is paired
+ * positionally within the same kind, in capture order, and a result captured
+ * under its own kind (`tool`) is paired with the call it answers, whatever
+ * that call's kind is. One real operation is one pair, so a summary that
+ * counts pairs never counts a command twice.
+ */
 export function pairActivityEvents(events = []) {
   const indexedEvents = events.map((event, index) => (
     event && event.index != null ? event : { ...event, index }
@@ -256,6 +401,28 @@ export function pairActivityEvents(events = []) {
   const starts = new Map();
   const used = new Set();
   const pairs = [];
+  const pairOf = (start, complete, id) => {
+    const providerDuration = finiteMs(complete?.durationMs) ?? finiteMs(start?.durationMs);
+    const capturedDuration = providerDuration == null
+      ? (() => {
+        const a = dateMs(start?.providerAt ?? start?.at);
+        const b = dateMs(complete?.providerAt ?? complete?.at);
+        return a != null && b != null && b >= a ? b - a : null;
+      })()
+      : null;
+    return {
+      id,
+      toolCallId: validId(start?.toolCallId) ?? validId(complete?.toolCallId),
+      startIndex: start.index,
+      completeIndex: complete.index,
+      durationMs: providerDuration ?? capturedDuration,
+      durationSource: providerDuration != null
+        ? 'provider'
+        : capturedDuration != null && (start?.providerAt != null || complete?.providerAt != null)
+          ? 'provider-time'
+          : capturedDuration != null ? 'capture-order' : null,
+    };
+  };
   for (const event of indexedEvents) {
     const id = validId(event?.toolCallId);
     if (!id) continue;
@@ -270,29 +437,49 @@ export function pairActivityEvents(events = []) {
     const startIndex = queue.find((candidate) => !used.has(candidate));
     if (startIndex == null) continue;
     used.add(startIndex);
+    used.add(event.index);
     const start = indexedEvents.find((candidate) => candidate.index === startIndex);
-    const providerDuration = finiteMs(event.durationMs) ?? finiteMs(start?.durationMs);
-    const capturedDuration = providerDuration == null
-      ? (() => {
-        const a = dateMs(start?.providerAt ?? start?.at);
-        const b = dateMs(event.providerAt ?? event.at);
-        return a != null && b != null && b >= a ? b - a : null;
-      })()
-      : null;
-    pairs.push({
-      id: `tool:${id}:${startIndex}`,
-      toolCallId: id,
-      startIndex,
-      completeIndex: event.index,
-      durationMs: providerDuration ?? capturedDuration,
-      durationSource: providerDuration != null
-        ? 'provider'
-        : capturedDuration != null && (start?.providerAt != null || event.providerAt != null)
-          ? 'provider-time'
-          : capturedDuration != null ? 'capture-order' : null,
-    });
+    pairs.push(pairOf(start, event, `tool:${id}:${startIndex}`));
   }
-  return pairs;
+  // A complete event only pairs with an unnamed start of its own kind; an
+  // event that carried an id keeps whatever the id path decided for it.
+  const openByKind = new Map();
+  for (const event of indexedEvents) {
+    if (used.has(event.index) || validId(event?.toolCallId)) continue;
+    const kind = String(event?.kind ?? '').toLowerCase();
+    if (!kind) continue;
+    const queue = openByKind.get(kind) ?? [];
+    if (isStart(event) && !isComplete(event)) {
+      queue.push(event);
+      openByKind.set(kind, queue);
+      continue;
+    }
+    if (!isComplete(event)) continue;
+    const start = queue.find((candidate) => !used.has(candidate.index));
+    if (start == null) continue;
+    used.add(start.index);
+    used.add(event.index);
+    pairs.push(pairOf(start, event, `position:${kind}:${start.index}`));
+  }
+  // A result captured under its own kind (claude-code records every tool_result
+  // as `tool` while the call carries the tool's name) pairs with the earliest
+  // open call, so the call keeps its place and the result is never counted as
+  // an operation. A result whose call was never captured still counts once, on
+  // its own, rather than disappearing.
+  const openCalls = indexedEvents.filter((event) => (
+    !used.has(event.index) && isStart(event) && !isComplete(event)
+  ));
+  for (const event of indexedEvents) {
+    if (used.has(event.index) || validId(event?.toolCallId)) continue;
+    const kind = String(event?.kind ?? '').toLowerCase();
+    if (!TOOL_RESULT_KINDS.has(kind) || !isComplete(event)) continue;
+    const start = openCalls.find((candidate) => !used.has(candidate.index));
+    if (!start) continue;
+    used.add(start.index);
+    used.add(event.index);
+    pairs.push(pairOf(start, event, `result:${start.index}`));
+  }
+  return pairs.sort((a, b) => a.startIndex - b.startIndex);
 }
 
 function eventHasToolDetails(event) {
@@ -325,6 +512,132 @@ function eventIsError(event) {
     || providerType.includes('error');
 }
 
+/** A response is the only durable boundary we use for a human turn. */
+function eventIsResponse(event) {
+  const kind = String(event?.kind ?? '').toLowerCase();
+  const providerType = String(event?.providerType ?? '').toLowerCase();
+  return kind === 'response'
+    || kind === 'assistant_response'
+    || providerType === 'response'
+    || providerType.endsWith('.response')
+    || providerType.endsWith('.response.completed')
+    || providerType === 'turn.completed';
+}
+
+// A provider's own end-of-run records: the final result envelope and a usage
+// report. They are stream metadata, never a tool call, so they are the only
+// captured events a summary counts as nothing.
+const ENVELOPE_KINDS = new Set(['result', 'usage']);
+
+/**
+ * The summary line counts real operations, not raw captures: the started and
+ * completed events of one command are one command. `pairActivityEvents`
+ * supplies the pairs, and an event whose partner was never captured still
+ * counts once on its own. A pair counts in the window that holds its start,
+ * so a command whose completion lands after the next response is still one
+ * command and no two turns count it twice. Each unit is classed by the real
+ * kind the connector captured, normalised across providers; a tool call the
+ * table does not know is counted under `other tools` rather than dropped, so a
+ * turn can never report nothing while its stream holds tool events. Errors stay
+ * event-based: an event with an error status is an error, whatever it paired
+ * with.
+ */
+function eventKindSummary(events = [], pairs = null) {
+  const summary = {
+    commands: 0,
+    filesRead: 0,
+    edits: 0,
+    otherTools: 0,
+    errors: 0,
+    total: 0,
+  };
+  const relevant = pairs ?? pairActivityEvents(events);
+  const paired = new Set();
+  const units = [];
+  for (const pair of relevant) {
+    paired.add(pair.startIndex);
+    paired.add(pair.completeIndex);
+    const start = events.find((event) => event?.index === pair.startIndex);
+    if (start) units.push(start);
+  }
+  for (const event of events) {
+    if (event && typeof event === 'object' && !paired.has(event.index)
+      && !eventIsResponse(event) && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())) {
+      units.push(event);
+    }
+  }
+  for (const event of units) {
+    summary.total += 1;
+    const category = toolKindCategory(event);
+    if (category === 'command') summary.commands += 1;
+    else if (category === 'read') summary.filesRead += 1;
+    else if (category === 'edit') summary.edits += 1;
+    else summary.otherTools += 1;
+  }
+  for (const event of events) {
+    if (eventIsError(event)) summary.errors += 1;
+  }
+  summary.text = `${summary.commands} commands · ${summary.filesRead} files read · ${summary.edits} edits · ${summary.errors} errors`;
+  if (summary.otherTools > 0) summary.text += ` · ${summary.otherTools} other tools`;
+  return summary;
+}
+
+/**
+ * Group a capture-order stream into the product's human turn projection.
+ * Every response gets a row. Events after that response, up to the next
+ * response, remain atomic and are counted only by their normalized kind.
+ * `pairs` is the stream-wide pairing when the caller already computed one,
+ * so a summary counts a command whose completion crossed a response once.
+ */
+export function groupActivityTurns(events = [], { pairs = null } = {}) {
+  const turns = [];
+  const prelude = [];
+  let current = null;
+  for (const event of events) {
+    if (eventIsResponse(event)) {
+      current = {
+        index: turns.length,
+        id: validId(event.turnId) ?? `turn-${turns.length + 1}`,
+        response: event,
+        eventIndices: [event.index],
+        atomicEvents: [],
+      };
+      turns.push(current);
+      continue;
+    }
+    if (!current) {
+      prelude.push(event);
+      continue;
+    }
+    current.atomicEvents.push(event);
+    current.eventIndices.push(event.index);
+  }
+  const pairedEvents = pairs ?? pairActivityEvents(events);
+  for (const turn of turns) {
+    turn.summary = eventKindSummary(turn.atomicEvents, pairedEvents);
+    turn.summaryText = turn.summary.text;
+    turn.responseIndex = turn.response?.index ?? null;
+    turn.expanded = false;
+  }
+  return { turns, prelude, responseCount: turns.length };
+}
+
+function sameLocalDay(value, nowMs) {
+  const at = dateMs(value);
+  if (at == null) return false;
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const left = new Date(at);
+  const right = new Date(now);
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
+}
+
+function localDateKey(value) {
+  const date = new Date(Number.isFinite(value) ? value : Date.now());
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function normalizeFilter(value) {
   const filter = String(value ?? 'all').toLowerCase();
   return FILTERS.has(filter) ? filter : 'all';
@@ -335,7 +648,7 @@ function visibleEventIndices(events, filter) {
     .filter((event) => {
       if (filter === 'errors') return eventIsError(event);
       if (filter === 'tools') return eventIsTool(event);
-      if (filter === 'turns') return validId(event?.turnId) != null;
+      if (filter === 'turns') return eventIsResponse(event) || validId(event?.turnId) != null;
       return true;
     })
     .map((event) => event.index);
@@ -407,6 +720,9 @@ function activityModel(parsed, {
   filter = 'all',
   follow = true,
   selectedIndex = null,
+  nowMs = Date.now(),
+  view = 'overview',
+  expandedTurn = null,
 } = {}) {
   const normalizedFilter = normalizeFilter(filter);
   const events = parsed.events ?? [];
@@ -417,16 +733,54 @@ function activityModel(parsed, {
   const pairs = pairActivityEvents(events);
   const filterCounts = {
     all: events.length,
-    turns: events.filter((event) => validId(event.turnId) != null).length,
+    turns: events.filter((event) => eventIsResponse(event) || validId(event.turnId) != null).length,
     tools: events.filter(eventIsTool).length,
     errors: events.filter(eventIsError).length,
   };
   const minimap = minimapFor(events, selected, visible);
-  const turns = [...new Set(events.map((event) => validId(event.turnId)).filter(Boolean))]
-    .map((turnId) => ({
-      id: turnId,
-      eventIndices: events.filter((event) => event.turnId === turnId).map((event) => event.index),
-    }));
+  const grouped = groupActivityTurns(events, { pairs });
+  const parsedExpanded = expandedTurn == null || expandedTurn === '' ? null : Number(expandedTurn);
+  const selectedTurn = Number.isInteger(parsedExpanded) && parsedExpanded >= 0 && parsedExpanded < grouped.turns.length
+    ? parsedExpanded
+    : grouped.turns.findIndex((turn) => turn.id === String(expandedTurn)) >= 0
+      ? grouped.turns.findIndex((turn) => turn.id === String(expandedTurn))
+      : null;
+  for (const turn of grouped.turns) turn.expanded = turn.index === selectedTurn;
+  const todayEvents = events.filter((event) => sameLocalDay(event.at, nowMs));
+  const todayVisible = visibleEventIndices(todayEvents, normalizedFilter);
+  const todayEventByIndex = new Map(todayEvents.map((event) => [event.index, event]));
+  const visibleDetailEvents = todayVisible
+    .map((index) => todayEventByIndex.get(index))
+    .filter(Boolean);
+  const overviewRows = [];
+  if (grouped.prelude.length) {
+    const preludeSummary = eventKindSummary(grouped.prelude, pairs);
+    overviewRows.push({ type: 'summary', turnIndex: null, prelude: true, summary: preludeSummary });
+  }
+  for (const turn of grouped.turns) {
+    const matches = normalizedFilter === 'all'
+      || normalizedFilter === 'turns'
+      ? true
+      : eventIsError(turn.response) || turn.atomicEvents.some((event) => (
+        normalizedFilter === 'errors' ? eventIsError(event) : eventIsTool(event)
+      ));
+    if (!matches) continue;
+    overviewRows.push({ type: 'response', turnIndex: turn.index, turn, event: turn.response });
+    if (turn.expanded) {
+      for (const event of turn.atomicEvents) {
+        if (normalizedFilter !== 'all' && normalizedFilter !== 'turns') {
+          if (normalizedFilter === 'errors' && !eventIsError(event)) continue;
+          if (normalizedFilter === 'tools' && !eventIsTool(event)) continue;
+        }
+        overviewRows.push({ type: 'event', turnIndex: turn.index, turn, event });
+      }
+    }
+    // The summary is a fact about the turn, so it counts the turn's atomic
+    // events whatever lens the filter puts on the rows: narrowing the log to
+    // tool or error events must never report a turn that captured work as
+    // empty.
+    overviewRows.push({ type: 'summary', turnIndex: turn.index, turn, summary: turn.summary });
+  }
   const detail = selectedEventDetail(events, selected, pairs);
   return {
     path: parsed.path,
@@ -442,7 +796,6 @@ function activityModel(parsed, {
     visibleEvents: visible.map((index) => events.find((event) => event.index === index)).filter(Boolean),
     visibleEventIndices: visible,
     pairs,
-    turns,
     minimap,
     minimapBuckets: minimap.buckets,
     filter: normalizedFilter,
@@ -454,6 +807,16 @@ function activityModel(parsed, {
     selectedIndex: selected,
     selectedEvent: detail.event,
     selectedEventDetail: detail,
+    view: VIEWS.has(view) ? view : 'overview',
+    expandedTurn: selectedTurn,
+    turns: grouped.turns,
+    turnSummaries: grouped.turns.map((turn) => turn.summary),
+    prelude: grouped.prelude,
+    responseCount: grouped.responseCount,
+    overviewRows,
+    todayEvents,
+    visibleDetailEvents,
+    detailCaptureDate: localDateKey(nowMs),
   };
 }
 
@@ -636,7 +999,7 @@ function attemptRecord(raw, action, { runDir = null, nowMs = Date.now() } = {}) 
   const streamPath = resolveAttemptStreamPath(raw, { runDir, actionId, ordinal });
   const parsed = parseAttemptStream(resolveExistingPath(streamPath, runDir) ?? (streamPath?.endsWith('.jsonl') ? streamPath : null));
   const start = textOrNull(raw?.startedAt);
-  const finish = textOrNull(raw?.finishedAt);
+  const finish = textOrNull(raw?.finishedAt) ?? textOrNull(raw?.endedAt);
   const duration = durationFromAttempt(raw, nowMs);
   const outputFile = retainedPath(raw?.outputFile ?? raw?.outFile, runDir);
   const taskFile = retainedPath(raw?.taskFile, runDir);
@@ -794,6 +1157,8 @@ export function stepPageModel(input, {
   filter = null,
   follow = true,
   followTail = null,
+  view = 'overview',
+  expandedTurn = null,
 } = {}) {
   const normalizedInput = normalizeRowInput(input);
   const row = normalizedInput.row;
@@ -843,12 +1208,22 @@ export function stepPageModel(input, {
       filter: filter ?? activityFilter,
       follow: followState,
       selectedIndex: selectedEventIndex,
+      nowMs,
+      view,
+      expandedTurn,
     })
-    : activityModel(parseAttemptStream(null));
+    : activityModel(parseAttemptStream(null), { nowMs, view, expandedTurn });
   const selectedUsage = selected?.usageModel ?? normalizeAttemptUsage(null);
   const totalUsage = aggregateAttemptUsage(enrichedAttempts);
   const route = routeModel(selected ?? active, action);
   const resultPath = resultRecord.path ?? retainedPath(state.lifecycle?.resultFile, runDir);
+  const durationFacts = actionDurationFacts(rawAttempts, nowMs);
+  const activeDurationMs = durationFacts.activeMs
+    ?? (!durationFacts.unknown ? selected?.durationMs : null);
+  const selectedHasFinish = dateMs(selected?.finishedAt) ?? dateMs(selected?.endedAt);
+  const spanDurationMs = durationFacts.spanMs
+    ?? (!durationFacts.unknown && durationFacts.intervals.length === 0 && selectedHasFinish != null
+      ? selected?.durationMs : null);
   const outcome = {
     available: Boolean(result || output.available || verdict.execution.terminal),
     resultAvailable: Boolean(result),
@@ -862,6 +1237,41 @@ export function stepPageModel(input, {
     reason: verdict.verification.reason,
     requirements,
     output,
+  };
+  const taskBlock = {
+    available: prompt.available || Boolean(action.purpose || action.prompt),
+    prompt: textOrNull(action.prompt) ?? textOrNull(state.intent?.goal),
+    task: prompt,
+    lines: prompt.lines,
+    firstLines: prompt.lines,
+    promptLines: prompt.lines,
+    taskLines: prompt.lines,
+    path: taskFile,
+    expanded: false,
+  };
+  const resultBlock = {
+    available: outcome.available,
+    output: outcome.output,
+    artifacts: artifactModel({ runDir, taskFile, outputFile: outFile, streamFile: activity.path, resultFile: resultPath }),
+    outcome: {
+      execution: verdict.execution,
+      workflow: verdict.workflow,
+      verification: verdict.verification,
+      requirements,
+      reason: outcome.reason,
+      resultAvailable: outcome.resultAvailable,
+    },
+    result: outcome.result,
+    resultPath: outcome.resultPath,
+  };
+  const moneyDisplay = totalUsage.display;
+  const costBlock = {
+    moneyPair: totalUsage,
+    money: moneyDisplay,
+    tokens: totalUsage.tokens,
+    tokenSource: totalUsage.tokenSource,
+    budget: clone(input?.budget ?? row?.budget ?? state?.budget ?? null),
+    pending: Boolean(selected?.usagePending),
   };
   const bytes = finiteOrNull(selected?.outputBytesObserved ?? active?.outputBytesObserved ?? outputRecord?.bytes);
   const live = verdict.executionStatus === 'running' ? 'live' : 'recorded';
@@ -892,7 +1302,6 @@ export function stepPageModel(input, {
     pacingWindow: textOrNull(poolRecord?.pacingWindow ?? connector?.meter?.window),
     available: Boolean(poolRecord),
   };
-  const moneyDisplay = totalUsage.display;
   const turnsCaptured = activity.turns.length > 0;
   const toolDetailsCaptured = activity.events.some(eventHasToolDetails);
   const availability = {
@@ -933,6 +1342,25 @@ export function stepPageModel(input, {
     verified: verdict.verified,
     verificationVerdict: verdict.verified,
     verificationReason: verdict.verification.reason,
+    project: textOrNull(row.project ?? state.project ?? state.intent?.project),
+  };
+  const header = {
+    identity,
+    pool: textOrNull(selected?.pool ?? active?.pool),
+    model: textOrNull(selected?.model ?? active?.model),
+    effort: textOrNull(selected?.effort ?? selected?.routing?.effort ?? route.effort),
+    duration: {
+      activeMs: activeDurationMs,
+      spanMs: spanDurationMs,
+      activeMinutes: activeDurationMs == null ? null : activeDurationMs / 60_000,
+      spanMinutes: spanDurationMs == null ? null : spanDurationMs / 60_000,
+      active: activeDurationMs == null ? null : activeDurationMs / 60_000,
+      span: spanDurationMs == null ? null : spanDurationMs / 60_000,
+    },
+    activeDurationMs,
+    spanDurationMs,
+    activeDuration: activeDurationMs,
+    spanDuration: spanDurationMs,
   };
   const model = {
     identity,
@@ -952,12 +1380,43 @@ export function stepPageModel(input, {
     attemptTokens: selectedUsage.tokens,
     totalTokens: totalUsage.tokens,
     activity,
+    view: VIEWS.has(view) ? view : 'overview',
+    expandedTurn: activity.expandedTurn,
+    turns: activity.turns,
+    turnSummaries: activity.turnSummaries,
+    overviewRows: activity.overviewRows,
+    header,
+    durationFacts,
+    sectionOrder: ['header', 'task', 'activity', 'result', 'cost'],
+    blocks: [
+      { key: 'header', ...header },
+      { key: 'task', ...taskBlock },
+      { key: 'activity', ...activity },
+      { key: 'result', ...resultBlock },
+      { key: 'cost', ...costBlock },
+    ],
+    activeDurationMs,
+    spanDurationMs,
+    activeMinutes: activeDurationMs == null ? null : activeDurationMs / 60_000,
+    spanMinutes: spanDurationMs == null ? null : spanDurationMs / 60_000,
+    duration: header.duration,
+    minutes: { active: activeDurationMs == null ? null : activeDurationMs / 60_000, span: spanDurationMs == null ? null : spanDurationMs / 60_000 },
     selectedEvent: activity.selectedEvent,
     selectedEventDetail: activity.selectedEventDetail,
     // Keep the extraction renderer's arrays at the historical keys while
     // exposing rich objects for the Step feature view.
     outcome: output.lines,
     outcomeModel: outcome,
+    task: taskBlock,
+    taskBlock,
+    taskModel: taskBlock,
+    resultBlock,
+    resultView: resultBlock,
+    resultModel: resultBlock,
+    cost: costBlock,
+    costBlock,
+    costModel: costBlock,
+    activityModel: activity,
     result: outcome.result,
     resultEnvelope: outcome.result,
     resultPath: outcome.resultPath,
@@ -1007,8 +1466,118 @@ export function stepPageModel(input, {
 export const stepModel = stepPageModel;
 export const buildStepModel = stepPageModel;
 
+/**
+ * Adapt a normalized single-task ledger row to the same Step projection.
+ *
+ * The ledger intentionally has no workflow result, verification, usage, or
+ * stream fields. The adapter therefore supplies only the durable task facts;
+ * it never manufactures an envelope, event, verdict, or effort value.
+ */
+export function taskStepModel(task, { nowMs = Date.now(), view = 'overview', expandedTurn = null, ...options } = {}) {
+  const record = task && typeof task === 'object' ? task : {};
+  const taskFile = textOrNull(record.taskFile);
+  const outputFile = textOrNull(record.outFile ?? record.outputFile);
+  const id = textOrNull(record.id) ?? (taskFile ? basename(taskFile) : 'task');
+  const status = record.ok === true ? 'succeeded'
+    : record.ok === false ? 'failed'
+      : record.startedAt && !record.endedAt ? 'running' : 'unknown';
+  const action = {
+    id,
+    status,
+    attempts: 1,
+    purpose: null,
+    startedAt: textOrNull(record.startedAt),
+    finishedAt: textOrNull(record.endedAt ?? record.finishedAt),
+    outputFile,
+  };
+  const attempt = {
+    id: `${id}-1`,
+    actionId: id,
+    ordinal: 1,
+    status,
+    pool: textOrNull(record.pool),
+    model: textOrNull(record.model),
+    startedAt: textOrNull(record.startedAt),
+    finishedAt: textOrNull(record.endedAt ?? record.finishedAt),
+    durationMs: finiteMs(record.durationMs),
+    taskFile,
+    outputFile,
+    streamFile: null,
+    routing: { lane: textOrNull(record.lane), effort: null },
+    usage: null,
+  };
+  // A standalone task row has no persisted stream pointer. Keep the adapter
+  // from asking the workflow naming convention for a synthetic stream path.
+  const runDir = null;
+  const state = {
+    runId: `task:${id}`,
+    shortId: id.slice(0, 6),
+    workflow: null,
+    project: record.project ?? null,
+    intent: {},
+    lifecycle: {
+      status: status === 'succeeded' ? 'completed' : status === 'failed' ? 'failed' : status,
+      startedAt: attempt.startedAt,
+      finishedAt: attempt.finishedAt,
+      resultFile: null,
+    },
+    planner: { status: 'completed', attempts: [], turns: 0 },
+    program: { actions: [action] },
+    actions: [action],
+    attempts: [attempt],
+    presentation: { stages: [{ id: 'task', label: 'Task', actionIds: [id], startedAt: attempt.startedAt, completedAt: attempt.finishedAt }] },
+    outputs: outputFile ? { [id]: { outFile: outputFile } } : {},
+    ledger: { requirements: {} },
+  };
+  const row = {
+    runId: state.runId,
+    shortId: state.shortId,
+    runDir,
+    project: record.project ?? null,
+    state,
+  };
+  const model = stepPageModel({ row, pools: [] }, {
+    actionId: id,
+    nowMs,
+    view,
+    expandedTurn,
+    ...options,
+  });
+  model.taskRecord = clone(record);
+  model.taskResult = textOrNull(record.reason);
+  model.identity.project = record.project ?? null;
+  // A ledger task has no workflow result envelope; `unknown` from the generic
+  // state shim is normalized back to an unavailable workflow fact.
+  model.identity.workflowStatus = null;
+  model.verdict.workflow = { ...model.verdict.workflow, status: null };
+  model.verdict.workflowStatus = null;
+  model.workflow = { ...model.workflow, status: null };
+  model.cost = model.costBlock;
+  // A task reason is a result fact, not an independent verification verdict.
+  model.resultBlock = {
+    ...model.resultBlock,
+    taskReason: model.taskResult,
+    outcome: {
+      ...model.resultBlock.outcome,
+      reason: model.taskResult,
+      workflow: { ...model.resultBlock.outcome.workflow, status: null },
+    },
+  };
+  model.resultView = model.resultBlock;
+  model.outcomeModel = {
+    ...model.outcomeModel,
+    reason: model.taskResult,
+    workflow: { ...model.outcomeModel.workflow, status: null },
+  };
+  return model;
+}
+
 export {
   activityModel,
+  eventIsResponse,
+  eventKindSummary,
+  eventIsError,
+  eventIsTool,
   minimapFor,
   normalizeTokens,
 };

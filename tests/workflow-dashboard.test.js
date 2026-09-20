@@ -206,13 +206,17 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     const screen = renderWorkflowTui(row, { width: 120, height: 42 });
     assert.doesNotMatch(screen, /\[Workflow Planner\] plan created/);
     assert.match(screen, /── plan .*phase 2 of 2 · 1\/2 steps/);
+    assert.match(screen, /\[✓ Implementation 1\/1\] \[▶ Evidence 0\/1\]/);
     assert.match(screen, /● Goal accepted/);
-    assert.match(screen, /── Phase 1 · Implementation/);
+    assert.match(screen, /── Implementation ─/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
     assert.match(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
-    assert.match(screen, /── Phase 2 · Evidence/);
+    assert.match(segmentRows(screen, 'Implementation').join('\n'), /phase active 0\.05m/);
+    assert.match(screen, /── Evidence ─/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
-    assert.match(plain(screen), /check-result · relay:b · gpt-5\.6-luna/);
+    assert.match(plain(screen), /▶ check-result · relay:b · /);
+    // The timeline row carries the attempt's own pool · model · effort · clock.
+    assert.match(plain(screen), /relay:b · gpt-5\.6-luna · — · \d+m\d+s/);
     assert.equal(workflowPanelModel(row).phases[0].name, 'r1-implementation');
     // The Run page draws no panel border at any width: flat rules only. The
     // timeline's own ├─/│ tree glyphs are content, not a frame, so the test
@@ -313,9 +317,10 @@ test('a run ID passed to the dashboard opens that run on the Run page', async (t
     const runPage = lastFrame(session.output);
     assert.match(frameHeader(runPage), /^ v2n456 completed · .* · 0\/0 actions · done/);
     assert.match(plain(runPage), /── timeline ─/);
-    session.press('\r'); // the run page opens its agents
-    session.press(ESC_KEY);
-    assert.match(frameHeader(lastFrame(session.output)), /^ v2n456 completed/);
+    // The plan is phase boxes, and this run dispatched no action, so Enter has
+    // no step to open and says so instead of inventing one.
+    session.press('\r');
+    assert.match(plain(lastFrame(session.output)), /No step belongs to this phase yet/);
     session.press(ESC_KEY); // and out to Home
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
     session.press('r'); // where r lists every run
@@ -572,11 +577,15 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
   try {
     addV2HistoricalRun(home);
 
-    // Desktop: the run page -> its agents -> the planner -> technical planner.
+    // Desktop: the run page keeps its planner drilldown, Enter opens the Step,
+    // and Escape walks the drilldown back out one page at a time.
     const desktop = shellSession(home, { columns: 120, rows: 30, token: 'abc234' });
-    assert.match(desktop.press('\r'), /Implementation · 0\/1 complete/);
-    assert.match(desktop.press('o'), /Workflow Planner · overview/);
-    assert.match(desktop.press('v'), /Workflow Planner · technical details/);
+    assert.match(plain(desktop.press('o')), /Workflow Planner · overview/);
+    assert.match(plain(desktop.press('v')), /Workflow Planner · technical details/);
+    desktop.press(ESC_KEY); // the planner pane closes, the Run page stays
+    assert.match(frameHeader(desktop.press('\r')), /Step audit-files · run abc234/);
+    desktop.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(desktop.output)), /abc234 running/);
     assert.equal(await desktop.quit(), 0);
 
     // Mobile: the run page opens on the timeline, t exposes the phases.
@@ -709,7 +718,10 @@ test('dashboard rows expose the running action and its live attempt', () => {
     assert.equal(row.phase, 'Implementation');
     assert.equal(row.activeAgents[0].model, 'relay/gpt-5.6-luna');
     const tui = renderWorkflowTui(row, { width: 120, height: 40 });
-    assert.match(plain(tui), /audit-files · opencode2 · relay\/gpt-5\.6-luna/);
+    // The live band names the running action, and the timeline row carries the
+    // attempt's own pool · model · effort · clock.
+    assert.match(plain(tui), /▶ audit-files · opencode2 · /);
+    assert.match(plain(tui), /opencode2 · relay\/gpt-5\.6-luna · — · /);
     assert.match(tui, /npm test/);
   } finally { cleanup(); }
 });
@@ -767,9 +779,10 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · runs · all/);
     // The project derives from the run's goal.json cwd (requirement 3), so the
     // temp fixture home names the row, not `unknown project`.
-    // The widest visible duration in this day is six cells, so the elastic
-    // goal gives back one cell to keep `5m` and `12h34m` whole.
-    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Audit…/);
+    // The record predates the active union, so the row keeps its recorded
+    // span and says so; the elastic goal gives back the cells that label and
+    // the duration take.
+    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Aud… span 5m/);
     assert.match(plain(session.output.text), /── timeline ─/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
@@ -854,7 +867,7 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     const plannerText = lastFrame(session.output);
     session.press(ESC_KEY); // and back out to the timeline
     session.press('\u001b[B');
-    session.press('\u001b[C'); // the selected phase opens its agents
+    session.press('\u001b[C'); // the selected phase opens its first step
     const agentsText = lastFrame(session.output);
     session.press(ESC_KEY);
     session.press('t');
@@ -863,7 +876,7 @@ test('narrow interactive TUI opens on the timeline and t toggles the phase brows
     assert.match(plain(timelineText), /── timeline ─/);
     assert.match(preflightText, /\x1b\[7m── Preflight/);
     assert.match(plannerText, /Workflow Planner · overview/);
-    assert.match(agentsText, /Implementation · 1\/1 complete/);
+    assert.match(agentsText, /Step audit-files · run abc234/);
     const visibleWidths = paintedRows(timelineText).map((line) => plain(line).length);
     assert.ok(visibleWidths.every((lineWidth) => lineWidth <= 80 - 1), 'mobile frames reserve the terminal wrap column');
     assert.match(plain(phasesText), /── phases · 2/);
@@ -1342,27 +1355,34 @@ test('the nav records a hit region for every button, today row, chart bar and st
       const painted = plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2);
       assert.match(painted, /^\[ .+ \]$/, `${painted} is not a whole button`);
     }
-    // Every step row the timeline prints opens that step, and so does every
-    // glyph of the plan strip above it.
+    // Every phase box in the plan is one clickable unit pointing at that
+    // phase's first step; the compact plan is phase-only, and the timeline
+    // below it is the chronology rather than a row of per-step links.
     const steps = runFrame.regions.filter((region) => region.action.kind === 'step');
-    assert.ok(steps.length >= 3, `expected the plan strip and the timeline rows to be clickable: ${steps.length}`);
-    assert.ok(new Set(steps.map((region) => region.action.actionId)).has('scan'));
-    assert.ok(new Set(steps.map((region) => region.action.actionId)).has('build-alpha'));
+    assert.ok(steps.length >= 2, `expected a clickable box per phase: ${steps.length}`);
+    for (const region of steps) {
+      assert.match(
+        plain(runFrame.lines[region.y - 1]).slice(region.x1 - 1, region.x2),
+        /^\[[✓▶○×·] .+ \d+\/\d+\]$/,
+      );
+    }
+    assert.deepEqual(
+      [...new Set(steps.map((region) => region.action.actionId))].sort(),
+      ['build-alpha-evidence', 'scan'],
+    );
 
-    // Home: the today band owns workflow/task rows; the remaining breakdown
-    // bars, recent rows and live steps keep their own hit regions.
+    // Home: the today band owns workflow/task rows, and the running section's
+    // plan strip and live step bars keep their own hit regions. The retired
+    // period-breakdown band took its spent-per-day trend chart, Stats tiles
+    // and period buttons off the page with it.
     const homeFrame = renderDashboardPage(model, {
       page: 'home', width: 100, height: 40, rows, allRows: rows, selectedRunId: 'wf-alpha',
     });
     const kinds = (frame, kind) => frame.regions.filter((region) => region.action.kind === kind);
-    // The removed today tiles no longer create trend regions; the retained
-    // spent-per-day column still opens the spend chart.
-    assert.deepEqual(
-      [...new Set(kinds(homeFrame, 'trend').map((region) => region.action.metric))],
-      ['spend'],
-    );
-    assert.ok(kinds(homeFrame, 'tab').length >= 1, 'the licence tile and the bars open a Stats tab');
-    assert.deepEqual(kinds(homeFrame, 'period').map((region) => region.action.period), ['7d', '30d', 'all']);
+    assert.equal(kinds(homeFrame, 'trend').length, 0, 'Home no longer paints the spend trend band');
+    assert.equal(kinds(homeFrame, 'period').length, 0, 'Home no longer paints the period choices');
+    assert.ok(kinds(homeFrame, 'page').some((region) => region.action.page === 'budget' && region.action.pool === 'relay'),
+      'the budget row opens Budget for its pool');
     const runRows = kinds(homeFrame, 'run').filter((region) => region.y !== homeFrame.lines.length);
     assert.ok(runRows.some((region) => region.action.runId === 'wf-alpha'));
     assert.ok(kinds(homeFrame, 'step').length >= 2, 'the per-run glyph strip is clickable');
@@ -1505,26 +1525,24 @@ test('Shift+Tab re-enters the sibling run at the page it was left on', async () 
   const { home, cleanup } = shellFixture();
   try {
     const session = shellSession(home, { token: 'wf-alpha' });
-    session.press('\r'); // run -> agents
-    session.press('\r'); // agents -> the selected step
+    session.press('\r'); // run -> its selected step
     const atStep = lastFrame(session.output);
-    assert.match(frameHeader(atStep), /build-alpha · run aaa111/);
+    assert.match(frameHeader(atStep), /Step scan · run aaa111/);
 
-    // 0.33.0 gives Tab the sub-tabs; Shift+Tab is the key that still cycles
-    // workflows, and it cycles, so two presses come back here.
+    // Shift+Tab is the key that cycles workflows, and it cycles, so two
+    // presses come back here.
     const sibling = session.press(`${ESC_KEY}[Z`);
     assert.ok(sibling.length, 'Shift+Tab repainted the screen');
-    // same page, the sibling workflow's own agent, marked current in the nav
-    assert.match(frameHeader(sibling), /build-beta · run bbb222/);
+    // same page, the sibling workflow's own step, marked current in the nav
+    assert.match(frameHeader(sibling), /Step scan · run bbb222/);
     const buttons = navButtons(sibling);
     assert.equal(buttons[0], 'back', 'the sibling is entered at the same depth');
     assert.ok(buttons.includes('● bbb222'), `the sibling is the current run: ${buttons.join(' ')}`);
     assert.ok(!buttons.includes('● aaa111'));
-    assert.doesNotMatch(sibling, /build-alpha/);
 
     // and cycling on comes back the same way, still on the step page
     const back = session.press(`${ESC_KEY}[Z`);
-    assert.match(frameHeader(back), /build-alpha · run aaa111/);
+    assert.match(frameHeader(back), /Step scan · run aaa111/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -1535,19 +1553,14 @@ test('Enter walks in and Esc walks out one page at a time', async () => {
     const session = shellSession(home, { token: 'wf-alpha' });
     assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
 
-    session.press('\r'); // run -> its agents
-    session.press('\r'); // agents -> the selected step
-    assert.match(frameHeader(lastFrame(session.output)), /build-alpha · run aaa111/);
+    session.press('\r'); // run -> its selected step
+    assert.match(frameHeader(lastFrame(session.output)), /Step scan · run aaa111/);
     assert.equal(navButtons(lastFrame(session.output))[0], 'back');
 
-    const run = session.press(ESC_KEY); // step -> the run's agents
+    const run = session.press(ESC_KEY); // step -> the run
     assert.match(frameHeader(run), / aaa111 running/);
     assert.ok(!navButtons(run).includes('back'), 'the step page was left behind');
     assert.doesNotMatch(run, /bullswarm · home/);
-
-    const timeline = session.press(ESC_KEY); // agents -> the run's timeline
-    assert.match(frameHeader(timeline), / aaa111 running/);
-    assert.doesNotMatch(timeline, /bullswarm · home/);
 
     const list = session.press(ESC_KEY); // run -> home
     assert.match(frameHeader(list), /^ bullswarm · home/);
@@ -1560,33 +1573,42 @@ test('Step keyboard controls select, filter, follow, open detail, and jump secti
   const { home, cleanup } = shellFixture();
   try {
     const dir = join(home, 'workflows', 'wf-alpha');
-    writeFileSync(join(dir, 'stream-build-alpha-attempt-1.jsonl'), [
+    // The run page opens its phase's first step, so the stream belongs to the
+    // scan attempt.
+    writeFileSync(join(dir, 'stream-scan-attempt-1.jsonl'), [
       { seq: 1, at: '2026-08-29T00:02:01.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'started work' },
       { seq: 2, at: '2026-08-29T00:02:02.000Z', source: 'codex', providerType: 'item.started', kind: 'command_execution', status: 'running', summary: 'run tests', eventId: 'evt-2', toolCallId: 'call-1', toolName: 'shell', arguments: { command: 'npm test' } },
       { seq: 3, at: '2026-08-29T00:02:03.000Z', source: 'codex', providerType: 'item.completed', kind: 'command_execution', status: 'failed', summary: 'test failed', eventId: 'evt-3', toolCallId: 'call-1', toolName: 'shell', result: 'exit 1', durationMs: 1000 },
     ].map((event) => JSON.stringify(event)).join('\n'));
     const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 26 });
-    session.press('\r');
-    session.press('\r');
-    assert.match(frameHeader(lastFrame(session.output)), /build-alpha · run aaa111/);
+    session.press('\r'); // the run page opens the phase's first step
+    assert.match(frameHeader(lastFrame(session.output)), /Step scan · run aaa111/);
 
     assert.match(plain(session.press(' ')), /paused/);
     assert.match(plain(session.press('t')), /\[tools\]/);
     assert.match(plain(session.press('e')), /\[errors\]/);
-    session.press('\u001b[A');
-    session.press('\u001b[B');
-    const detail = plain(session.press('\r'));
-    assert.match(detail, /selected event/i);
-    assert.match(detail, /tool shell|result exit 1/);
-    const closed = plain(session.press(ESC_KEY));
-    assert.match(closed, /activity · capture order/);
+    session.press('e'); // and back to all, so the turn is listed again
+    // Overview is the default; Enter expands the selected turn in place and
+    // Esc collapses it without leaving the page.
+    assert.match(plain(lastFrame(session.output)), /1 commands · 0 files read · 0 edits · 1 errors/);
+    const expanded = plain(session.press('\r'));
+    assert.match(expanded, /expanded turn 1/);
+    assert.match(expanded, /COMMAND · (?:running|completed|failed)/);
+    const collapsed = plain(session.press(ESC_KEY));
+    assert.match(collapsed, /activity · overview/);
+    assert.doesNotMatch(collapsed, /expanded turn/);
+    // v switches the activity block to the capture-order log and back.
+    assert.match(plain(session.press('v')), /activity · today's capture-order log/);
+    assert.match(plain(lastFrame(session.output)), /\[v overview\]/);
+    assert.match(plain(session.press('v')), /\[v detail\]/);
 
-    assert.match(plain(session.press('a')), /attempt history/);
-    assert.match(plain(session.press('o')), /outcome and verification/);
+    // The section jumps land in the merged blocks of the five-block order.
+    session.press('o');
+    assert.match(plain(lastFrame(session.output)), /result · output \+ artifacts \+ outcome\/verification/);
     session.press('p');
-    assert.match(plain(lastFrame(session.output)), /prompt preview/);
+    assert.match(plain(lastFrame(session.output)), /task · prompt \+ task first lines/);
     session.press('\t');
-    assert.match(plain(lastFrame(session.output)), /activity · capture order/);
+    assert.match(plain(lastFrame(session.output)), /activity · overview/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -1743,9 +1765,10 @@ test('program dashboard projects saved categories into dependency levels with ov
   assert.deepEqual(model.phases.map((phase) => phase.status), ['active', 'active']);
   for (const width of [60, 120]) {
     const screen = renderWorkflowTui(row, { width, height: 40 });
-    assert.match(screen, /Phase 1/);
-    assert.match(screen, /Phase 2/);
-    // The phases are the program's dependency groups, never keyword-inferred.
+    // The phases are the program's dependency groups, never keyword-inferred
+    // and never the saved stage label.
+    assert.match(screen, /Parallel work/);
+    assert.match(screen, /next/);
     assert.doesNotMatch(screen, /Documentation/);
     assert.match(plain(renderWorkflowTui(row, { width, height: 40, mobileTimeline: false })), /── phases · 2/);
   }
@@ -1812,13 +1835,18 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     const running = renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 0 });
     const evidence = segmentRows(running, 'Evidence').map(normalizeRow);
     assert.equal(evidence[0], 'HH:MM ├─ started');
-    assert.match(evidence[1], /^HH:MM │ ├─⠋ check-result 1m0[5-9]s$/, evidence.join('\n'));
+    // The live attempt is one row of three lines: the phase it belongs to, the
+    // phase's active minutes, then its own pool · model · effort · clock.
+    assert.equal(evidence[1], 'HH:MM ⠋ Evidence');
+    assert.match(evidence[2], /^phase active 1\.0\dm$/);
+    assert.match(evidence[3], /^relay:b · gpt-5\.6-luna · — · 1m0[5-9]s$/, evidence.join('\n'));
     // the spinner animates with the frame counter like the Live pane
-    assert.match(segmentRows(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 3 }), 'Evidence').join('\n'), /├─⠸ check-result/);
-    // a live row is not a durable milestone
-    assert.equal(/── timeline ─+ (\d+) milestones? ──/.exec(running)[1], milestones);
-    // the level header still reads running rather than a finished duration
-    assert.equal(timelineSegments(running).find((segment) => segment.label === 'Evidence').elapsed, 'running');
+    assert.match(segmentRows(renderWorkflowTui(row, { width: 120, height: 30, spinnerFrame: 3 }), 'Evidence').join('\n'), /⠸ Evidence/);
+    // The running attempt is a durable attempt row, so it adds one milestone;
+    // the spinner and its own clock are what make it visibly live.
+    assert.equal(Number(/── timeline ─+ (\d+) milestones? ──/.exec(running)[1]), Number(milestones) + 1);
+    // the level header counts the phase's active minutes, not a wall span
+    assert.match(timelineSegments(running).find((segment) => segment.label === 'Evidence').elapsed, /^1\.0\dm$/);
 
     // the agent pane leads with the elapsed time; token usage only exists once the attempt finishes
     const agents = renderWorkflowTui(row, { width: 130, height: 22, focus: 1, spinnerFrame: 0 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -1836,8 +1864,8 @@ test('V2 timeline lists a running worker under its level with a spinner and live
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const done = renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 120, height: 30 });
     const doneRows = segmentRows(done, 'Evidence').map(normalizeRow);
-    assert.equal(doneRows.filter((line) => line.includes('check-result')).length, 1, doneRows.join('\n'));
-    assert.match(doneRows.join('\n'), /├─✓ check-result 1m0[5-9]s/);
+    assert.equal(doneRows.filter((line) => line.startsWith('HH:MM ✓ Evidence')).length, 1, doneRows.join('\n'));
+    assert.match(doneRows.join('\n'), /relay:b · gpt-5\.6-luna · — · 1m0[5-9]s/);
     assert.match(renderWorkflowTui(dashboardRows(home, { all: true })[0], { width: 130, height: 22, focus: 1, phaseIndex: 1 }).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), /#1 · 1\.2k tok · 1m0[5-9]s/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
@@ -1884,19 +1912,18 @@ test('V2 attempt rows and the agent pane show the applied reasoning level next t
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const live = renderWorkflowTui(row, { width: 120, height: 30 });
-    // The live row shows the level the running worker is actually thinking at.
-    assert.match(plain(live), /check-result · relay:b · gpt-5\.6-luna · high/);
-    // Phase 1 holds the finished attempt; its own override reads next to the model.
+    // The live band names the running worker and its own clock; the timeline
+    // row under it carries the attempt's pool · model · effort · clock.
+    assert.match(plain(live), /▶ check-result · relay:b · /);
+    assert.match(plain(live), /relay:b · gpt-5\.6-luna · — · /);
+    // Phase 1 holds the finished attempt; its applied reasoning level reads
+    // next to the model on the attempt row.
     const phaseOne = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(plain(phaseOne), /implement-result · relay · gpt-5\.6-luna · max · #1/);
-    // The drilled-in agent pane states it as a labelled field beside effort.
+    // The Step header states the pool · model · effort route the attempt was
+    // dispatched with; the reasoning level is the Run page's attempt row.
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
-    assert.match(agentPane, /succeeded · gpt-5\.6-luna · reasoning max/);
-    // The V2 tier lives under attempt.routing; both fields read correctly.
-    assert.match(agentPane, /relay · attempt 1 · effort low · reasoning max/);
-    // Narrow mode keeps the same fact on the single full-width agent pane.
-    const narrow = plain(renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 1, agentIndex: 0 }));
-    assert.match(narrow, /gpt-5\.6-luna · max/);
+    assert.match(agentPane, /relay · gpt-5\.6-luna · low/);
     // The durable record is what observation reads, so JSON carries it too.
     assert.deepEqual(
       dashboardJson(home, { token: 'v2r234' }).state.attempts.map((attempt) => attempt.reasoning.applied),
@@ -1934,13 +1961,18 @@ test('attempts without a reasoning record mark the Step field unavailable', () =
     writeFileSync(join(dir, 'state.json'), JSON.stringify(state));
     const row = dashboardRows(home)[0];
     const live = renderWorkflowTui(row, { width: 120, height: 30 });
-    assert.match(plain(live), /implement-result · relay · gpt-5\.6-luna/);
-    assert.doesNotMatch(live, /gpt-5\.6-luna · /);
+    assert.match(plain(live), /▶ implement-result · /);
+    // The attempt row keeps the pool · model · effort · clock; with no
+    // reasoning record there is no level to print beside the model.
+    assert.match(plain(live), /relay · gpt-5\.6-luna · — · /);
+    assert.doesNotMatch(plain(live), /gpt-5\.6-luna · (?:minimal|low|medium|high|xhigh|max)\b/);
     const pane = renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 1 });
     assert.match(pane, /implement-result · relay · gpt-5\.6-luna · #1/);
     const agentPane = plain(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 0, focus: 2, agentIndex: 0 }));
-    assert.match(agentPane, /relay · attempt 1 · effort auto/);
-    assert.match(agentPane, /reasoning —/);
+    // An attempt with no applied effort and no reasoning record keeps dashes
+    // where the level would be, and never the word `reasoning`.
+    assert.match(agentPane, /relay · gpt-5\.6-luna · —/);
+    assert.doesNotMatch(agentPane, /reasoning (?:minimal|low|medium|high|xhigh|max)/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -2147,15 +2179,17 @@ test('a dependency level whose action never dispatched names the dependency that
     assert.match(agents, /⊘ harden-core · never dispatched · blocked by verify-core/);
     assert.doesNotMatch(agents, /Not started yet/);
 
+    // Drilling into the blocked action opens its Step page, which reports the
+    // execution it recorded; the phase pane above names the dependency.
     const detail = plain(renderWorkflowTui(row, { width: 120, height: 30, phaseIndex: 2, focus: 2 }));
-    assert.match(detail, /⊘ harden-core · work · never dispatched/);
-    assert.match(detail, /blocked by verify-core/);
+    assert.match(detail, /Step harden-core · run blk234 · BLOCKED/);
+    assert.match(detail, /execution BLOCKED · workflow partial/);
 
     // The timeline marks the same action with ⊘, never with the ✓ a finished
     // action carries or the × a dispatched failure carries.
     const timeline = timelinePaneRows(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 2 }));
     assert.match(timeline.join('\n'), /├─⊘ harden-core/);
-    assert.match(timeline.join('\n'), /├─× verify-core/);
+    assert.match(timeline.join('\n'), /✗ verify-core/);
   } finally { run.cleanup(); }
 });
 
@@ -2164,22 +2198,27 @@ test('the timeline opens one segment header per phase change instead of prefixin
   try {
     const screen = renderWorkflowTui(run.row(), { width: 120, height: 44 });
     const pane = timelinePaneRows(screen);
-
     // One header per phase change, in chronological order, none repeated
     // between two events of the same phase.
     assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
-    assert.equal(pane.filter((line) => /^─{2,}\s+Phase 1 · Discovery\s/.test(line)).length, 1);
+    assert.equal(pane.filter((line) => /^─{2,}\s+Discovery\s/.test(line)).length, 1);
 
-    // The event lines themselves no longer name their phase.
+    // The event lines themselves never name their phase as a prefix.
     assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
     assert.deepEqual(pane.filter((line) => /\[(Discovery|Implementation|Preflight):? ?[^\]]*\]/.test(line)), []);
 
-    // Glyphs, action names, timestamps and right-aligned durations survive.
-    // (timestamps render in the local zone, so only their shape is asserted)
+    // Glyphs, the phase a row belongs to, timestamps, the phase's active
+    // minutes, each attempt's own clock and the right-aligned completion
+    // survive. (timestamps render in the local zone, so only their shape is
+    // asserted)
     assert.deepEqual(segmentRows(screen, 'Discovery').map(normalizeRow), [
       'HH:MM ├─ started',
-      'HH:MM │ ├─✓ discover-a 1m00s',
-      'HH:MM │ ├─✓ discover-b 1m10s',
+      'HH:MM ✓ Discovery',
+      'phase active 1.17m',
+      'relay · gpt-5.6-luna · — · 1m00s',
+      'HH:MM ✓ Discovery',
+      'phase active 1.17m',
+      'relay · gpt-5.6-luna · — · 1m10s',
       'HH:MM └─✓ completed 2/2',
     ]);
 
@@ -2187,11 +2226,12 @@ test('the timeline opens one segment header per phase change instead of prefixin
     // reports no completion.
     const implementation = segmentRows(screen, 'Implementation').join('\n');
     assert.match(implementation, /├─ started/);
-    assert.match(implementation, /├─✓ implement-a\s+1m00s/);
-    assert.match(implementation, /├─.\simplement-b/);
+    assert.match(implementation, /✓ Implementation/);
+    assert.match(implementation, /⠋ Implementation/);
     assert.deepEqual(segmentRows(screen, 'Implementation').filter((line) => line.includes('completed')), []);
-    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
-    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Discovery').elapsed, '2m10s');
+    // A live phase reports its active minutes, not the word `running`.
+    assert.match(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, /^\d+(\.\d+)?m$/);
+    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Discovery').elapsed, '1.17m');
 
     // Every blank separator inside the timeline introduces a segment header.
     pane.forEach((line, index) => {
@@ -2247,21 +2287,22 @@ test('parallel dependency levels stay grouped in declared level order', () => {
     const screen = renderWorkflowTui(row, { width: 120, height: 40 });
     assert.deepEqual(segmentLabels(screen), ['Preflight', 'Parallel work', 'Parallel analysis']);
     assert.deepEqual(segmentRows(screen, 'Parallel work').map(normalizeRow), [
-      'HH:MM ├─ started',
-      'HH:MM │ ├─✓ implement-a 1m00s',
-      'HH:MM │ ├─✓ implement-b 30s',
-      'HH:MM └─✓ completed 2/2',
+      'HH:MM ✓ Parallel work',
+      'phase active 1.50m',
+      'relay · gpt-5.6-luna · — · 1m00s',
+      'HH:MM ✓ Parallel work',
+      'phase active 1.50m',
+      'relay · gpt-5.6-luna · — · 30s',
     ]);
-    assert.deepEqual(segmentRows(screen, 'Parallel analysis').map(normalizeRow).slice(0, 4), [
-      'HH:MM ├─ started',
-      'HH:MM │ ├─✓ verify-a 30s',
-      'HH:MM │ ├─✓ verify-b 30s',
-      'HH:MM └─✓ completed 2/2',
+    assert.deepEqual(segmentRows(screen, 'Parallel analysis').map(normalizeRow).slice(0, 3), [
+      'HH:MM ✓ Parallel analysis',
+      'phase active 1.00m',
+      'relay · gpt-5.6-luna · — · 30s',
     ]);
     // Phase 2 opened while phase 1 was still running: the clock column proves
     // the rows were reordered by declared phase, not by time.
     const clock = (label, index) => segmentRows(screen, label)[index].slice(0, 5);
-    assert.ok(clock('Parallel work', 2) > clock('Parallel analysis', 0),
+    assert.ok(clock('Parallel work', 3) > clock('Parallel analysis', 0),
       `level 1's second worker should postdate level 2's start:\n${timelinePaneRows(screen).join('\n')}`);
     // A program's phases are its dependency groups: no keyword phase prefix.
     assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
@@ -2273,9 +2314,12 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
   try {
     const row = run.row();
     // With room for every row the phase is introduced once and never continued.
+    // The plan band above the timeline takes rows, so even a tall viewport
+    // opens mid-phase and re-announces the phase it scrolls into.
     const tall = renderWorkflowTui(row, { width: 100, height: 60 });
-    assert.deepEqual(segmentLabels(tall), ['Preflight', 'Implementation']);
-    assert.deepEqual(timelinePaneRows(tall).filter((line) => line.includes('continued')), []);
+    assert.deepEqual(segmentLabels(tall), ['Implementation · continued']);
+    assert.match(timelinePaneRows(tall)[0], /↑ \d+ earlier timeline rows/);
+    assert.match(timelinePaneRows(tall)[1], /^─{2,}\s+Implementation · continued\s+─{2,}/);
 
     const short = renderWorkflowTui(row, { width: 100, height: 40 });
     const pane = timelinePaneRows(short);
@@ -2284,7 +2328,7 @@ test('a timeline viewport that starts mid-segment re-emits a continuation header
     // The scrolled-into segment is re-announced before its first visible event,
     // and the first visible event is a timestamped milestone, never an orphaned
     // detail row.
-    assert.match(pane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+    assert.match(pane[marker + 1], /^─{2,}\s+Implementation · continued\s+─{2,}/);
     assert.match(pane[marker + 2], /^\d{2}:\d{2}\s/);
     assert.deepEqual(segmentLabels(short), ['Implementation · continued']);
     assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
@@ -2297,19 +2341,22 @@ test('the timeline auto-follows the newest event until the viewer scrolls back',
     const row = run.row();
     const following = renderWorkflowTui(row, { width: 100, height: 40 });
     const pane = timelinePaneRows(following);
-    // Auto-follow ends on the newest event — the running worker — and never
-    // claims there is anything newer below the viewport.
-    assert.match(pane.filter((line) => line.trim()).at(-1), /work-tail/);
+    // Auto-follow ends on the newest event — the running worker's phase row and
+    // its clock — and never claims there is anything newer below the viewport.
+    const painted = pane.filter((line) => line.trim());
+    assert.match(painted.at(-1), /relay · gpt-5\.6-luna · — · /);
+    assert.match(painted.at(-2), /phase active \d+(\.\d+)?m/);
+    assert.match(painted.at(-3), /⠋ Implementation/);
     assert.deepEqual(pane.filter((line) => line.includes('newer timeline rows')), []);
     assert.match(frameHeader(following), /^ lng234 /);
 
     // Scrolling back holds older rows in place and says how much is newer.
     const scrolled = timelinePaneRows(renderWorkflowTui(row, { width: 100, height: 40, detailScroll: 4 }));
     assert.match(scrolled.at(-1), /↓ 4 newer timeline rows/);
-    assert.deepEqual(scrolled.filter((line) => line.includes('work-tail')), []);
+    assert.deepEqual(scrolled.filter((line) => line.includes('⠋')), []);
     assert.match(scrolled[0], /↑ \d+ earlier timeline rows/);
     // The continuation header travels with the scrolled viewport too.
-    assert.match(scrolled[1], /^─{2,}\s+Phase 1 · Implementation · continued\s+─{2,}/);
+    assert.match(scrolled[1], /^─{2,}\s+Implementation · continued\s+─{2,}/);
   } finally { run.cleanup(); }
 });
 
@@ -2322,8 +2369,12 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     const screen = renderWorkflowTui(row, { width: 60, height: 60 });
     assert.deepEqual(segmentLabels(screen), ['Preflight', 'Discovery', 'Implementation']);
     assert.deepEqual(timelinePaneRows(screen).filter((line) => line.includes('[Phase:')), []);
-    assert.match(segmentRows(screen, 'Discovery').join('\n'), /├─✓ discover-a/);
-    assert.equal(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, 'running');
+    // The attempt rows carry the phase they belong to, the phase's active
+    // minutes and each attempt's own clock; a live phase reports its active
+    // minutes rather than the word `running`.
+    assert.match(segmentRows(screen, 'Discovery').join('\n'), /✓ Discovery/);
+    assert.match(segmentRows(screen, 'Discovery').join('\n'), /relay · gpt-5\.6-luna · — · 1m00s/);
+    assert.match(timelineSegments(screen).find((segment) => segment.label === 'Implementation').elapsed, /^\d+(\.\d+)?m$/);
 
     // Headers obey the narrow width like every other row, on every narrow pane
     // the viewer can open.
@@ -2344,7 +2395,7 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     const narrowPane = timelinePaneRows(scrolled);
     const marker = narrowPane.findIndex((line) => line.includes('earlier timeline'));
     assert.ok(marker >= 0, `expected a scrolled narrow viewport:\n${narrowPane.join('\n')}`);
-    assert.match(narrowPane[marker + 1], /^─{2,}\s+Phase 1 · Implementation · continue/);
+    assert.match(narrowPane[marker + 1], /^─{2,}\s+Implementation · continue/);
     assert.deepEqual(overflow(scrolled, 60), []);
   } finally { run.cleanup(); long.cleanup(); }
 });
@@ -2355,18 +2406,18 @@ test('a narrow terminal wraps the agent detail pane to its full width, not the s
     const row = dashboardRows(home)[0];
     const contentWidths = (screen) => plain(screen).split('\n').map((line) => line.trimEnd().length);
     const narrow = renderWorkflowTui(row, { width: 60, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 });
-    // The step and the pool it ran on are both named, each on its own row of
-    // the label/value table the page now is.
-    assert.match(plain(narrow), /audit-files · run abc234/);
-    assert.match(plain(narrow), /Pool {6}planner-agent/);
+    // The step and the pool it ran on are both named: the identity in the Step
+    // header, the route on the line under it.
+    assert.match(plain(narrow), /Step audit-files · run abc234/);
+    assert.match(plain(narrow), /planner-agent · planner-v1/);
     const widest = Math.max(...contentWidths(narrow));
     // 60 columns minus the 34-column sidebar minus padding is 22: the width the
     // detail used to wrap at even though the narrow pane spans the whole screen.
     assert.ok(widest > 22, `narrow detail still wraps at ${widest} columns`);
     assert.ok(widest <= 60, `narrow detail overflows the frame: ${widest} columns`);
     const wide = plain(renderWorkflowTui(row, { width: 120, height: 26, phaseIndex: 0, focus: 2, agentIndex: 0 }));
-    assert.match(wide, /audit-files · run abc234/);
-    assert.match(wide, /Pool {6}planner-agent/);
+    assert.match(wide, /Step audit-files · run abc234/);
+    assert.match(wide, /planner-agent · planner-v1/);
     // And no panel border survives on either: the page is flat rules now.
     for (const line of `${wide}\n${plain(narrow)}`.split('\n')) {
       assert.ok(!/^[┌│└]/.test(line) || !/[┐│┘]$/.test(line.trimEnd()),
@@ -2406,21 +2457,24 @@ test('the Budget page draws every window of every pool and no untrustworthy figu
   assert.match(plain(frame.lines.at(-1)), /\[ quit \]/);
 });
 
-test('Home labels provider, transcript, estimated and unknown usage bases', () => {
+test('Home marks provider, transcript, estimated and unknown usage bases', () => {
   const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
+  // The money pair is strict: a provider-reported figure is bare, a summed one
+  // carries ≈, an estimate carries ~, and a figure with no source is a dash.
   const cases = [
-    ['provider-reported', /\$1\.23 api/],
-    ['transcript-summed', /≈ \$1\.23 api summed/],
-    ['estimated:utf8-bytes\/4', /~ \$1\.23 api estimated/],
-    ['unknown', /api unknown/],
+    ['provider-reported', 1.23, /\$1\.23/],
+    ['transcript-summed', 1.23, /≈ \$1\.23/],
+    ['estimated:utf8-bytes\/4', 1.23, /~ \$1\.23/],
+    // No figure at all: the money pair is a dash rather than a zero or a guess.
+    ['unknown', null, /API — · subscription —/],
   ];
-  for (const [tokenSource, expected] of cases) {
+  for (const [tokenSource, costUsd, expected] of cases) {
     const record = {
       schemaVersion: 'bullswarm.workflow.rollup.v1',
       runId: `wf-basis-${tokenSource}`, shortId: 'basis1', project: 'bullswarm', goal: 'basis labels',
       startedAt: '2026-09-18T10:00:00.000Z', finishedAt: '2026-09-18T11:00:00.000Z',
       status: 'completed', verified: true, minutes: { wall: 1, agent: 1 },
-      pools: { relay: { attempts: 1, minutes: 1, costUsd: 1.23, tokenSource } },
+      pools: { relay: { attempts: 1, minutes: 1, costUsd, tokenSource } },
       models: { model: { attempts: 1, minutes: 1 } }, legacy: false,
     };
     const model = dashboardModel(record, {
@@ -2431,20 +2485,8 @@ test('Home labels provider, transcript, estimated and unknown usage bases', () =
     });
     const text = plain(renderDashboardPage(model, { page: 'home', width: 120, height: 60, nowMs }).lines.join('\n'));
     assert.match(text, expected, tokenSource);
-    if (tokenSource === 'unknown') assert.doesNotMatch(text, /\$ ?1\.23/, tokenSource);
+    if (costUsd == null) assert.doesNotMatch(text, /\$ ?1\.23/, tokenSource);
   }
-});
-
-test('Home keeps all three period choices on their own clickable row at 55 columns', () => {
-  const model = dashboardModel(null, { usage: usageFixture(), rollups: rollupFixture() });
-  const frame = renderDashboardPage(model, { page: 'home', width: 55, height: 100, period: '7d' });
-  const lines = frame.lines.map(plain);
-  const toggleRow = lines.findIndex((line) => line.includes('Last 7 days') && line.includes('All time'));
-  assert.ok(toggleRow >= 0, lines.join('\n'));
-  assert.ok(lines[toggleRow - 1].startsWith('── last 7 days '), lines.join('\n'));
-  assert.deepEqual(frame.regions
-    .filter((region) => region.y === toggleRow + 1 && region.action.kind === 'period')
-    .map((region) => region.action.period), ['7d', '30d', 'all']);
 });
 
 test('Pool keeps the retained meter-history model separate from its rollup panels', () => {
@@ -2605,11 +2647,11 @@ test('a mouse click runs the same action its key does, and the wheel moves the w
     assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
     clickOn(session, '1.aaa111');
     assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
-    // `build-alpha ` with its trailing space: the plan band also names
-    // `build-alpha-evidence`, and a bare prefix would click that instead.
-    clickOn(session, 'build-alpha ');
+    // The plan is one clickable box per phase, and the box opens that phase's
+    // first step — the same move Enter makes on the Run page.
+    clickOn(session, '[▶ Implementation 1/2]');
     const step = lastFrame(session.output);
-    assert.match(frameHeader(step), /build-alpha · run aaa111/);
+    assert.match(frameHeader(step), /Step scan · run aaa111/);
     assert.equal(navButtons(step)[0], 'back');
     clickOn(session, '[ back ]');
     assert.match(frameHeader(lastFrame(session.output)), / aaa111 running/);
@@ -2773,9 +2815,8 @@ test('every key in the table reaches its page or its action', async () => {
     assert.match(screen(), /no run 9 in flight/);
 
     // Esc and the left arrow both walk out, step -> run -> home.
-    session.press('\r');
-    session.press('\r');
-    assert.match(header(), /build-beta · run bbb222/);
+    session.press('\r'); // run -> the phase's first step
+    assert.match(header(), /Step scan · run bbb222/);
     session.press('\x1b[D');
     assert.match(header(), / bbb222 running/);
     session.press(ESC_KEY);
@@ -2812,8 +2853,10 @@ test('every key in the table reaches its page or its action', async () => {
     session.press('p');
     assert.match(screen(), /Period · Last 7 days/);
 
-    // The movement keys walk the body window, and Home/End jump it.
-    session.press('h'); // a page long enough to scroll
+    // The movement keys walk the body window, and Home/End jump it. Home
+    // itself is short now (cards, licence, running, budget), so Help is the
+    // page long enough to scroll.
+    session.press('?');
     const top = header();
     session.press('\x1b[B');
     session.press('j');
@@ -2930,17 +2973,12 @@ test('every clickable atom runs the same action its key runs', async () => {
     session.press('2');
     assert.equal(header(), byClick);
 
-    // A Home today pool row opens Budget for that pool; the old spend tile is
-    // gone, so the row's page action is the comparable keyboard destination.
+    // A Home licence row opens Budget for that pool — the row's own page
+    // action, and the only money destination Home has left now that the period
+    // band and its spend tiles are gone.
     session.press(ESC_KEY);
-    clickOn(session, '$0.42');
+    clickOn(session, 'relay · ');
     assert.match(header(), /^ Budget · /);
-
-    // The period toggle is the same move p makes.
-    session.press(ESC_KEY);
-    clickOn(session, 'Last 30 days');
-    const afterClick = plain(lastFrame(session.output));
-    assert.match(afterClick, /Last 30 days/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -3037,9 +3075,14 @@ test('the Step page writes an unmetered pool in words, never a dotted track', ()
       for (const line of lines) {
         assert.ok(!/·{6,}/.test(line), `${width} kept a dotted track: ${line}`);
       }
-      const budget = lines.findIndex((line) => /^── budget ─/.test(line));
-      assert.ok(budget >= 0, lines.join('\n'));
-      assert.match(lines[budget + 1], /free model · no licence meter/, `${width}: ${lines[budget + 1]}`);
+      const cost = lines.findIndex((line) => /^── cost · money pair \+ tokens \+ budget ─/.test(line));
+      assert.ok(cost >= 0, lines.join('\n'));
+      // An unmetered, unpriced pool stays dashes in the cost block: no dotted
+      // track and no manufactured zero.
+      const costBlock = lines.slice(cost, cost + 4).join('\n');
+      assert.match(costBlock, /API — · subscription —/, `${width}: ${costBlock}`);
+      assert.match(costBlock, /budget —/, `${width}: ${costBlock}`);
+      assert.doesNotMatch(costBlock, /\$0\.00/, `${width}: ${costBlock}`);
     }
   } finally { cleanup(); }
 });
@@ -3104,7 +3147,7 @@ test('an explicitly recorded "estimatedUsd: null" stays blank and is never count
       assert.doesNotMatch(text, /\$0\.00/, `${page} manufactured a zero from a null estimate`);
       assert.doesNotMatch(text, /attempts priced/, `${page} counted a null estimate as priced`);
       if (page === 'run') assert.match(text, /cost unknown/);
-      else assert.match(text, /API — unknown · subscription — unknown/);
+      else assert.match(text, /API — · subscription —/, `${page} manufactured a money figure from a null estimate`);
       // A null ratePerMinute is a blank share, never 0.00%.
       assert.doesNotMatch(text, /≈ 0\.00% of its/, `${page} claimed a zero licence share`);
     }
@@ -3281,29 +3324,25 @@ function fidelityModel() {
 
 const FIDELITY_SIZES = [[120, 40], [55, 26], [200, 50]];
 
-test('phone Home keeps four named pools, separate breakdown rows and whole percentages', () => {
+test('phone Home keeps one plain licence row per pool that worked today', () => {
   const f = fidelityModel();
   try {
     const names = ['claude-code:acme', 'claude-code', 'codex', 'grok'];
     f.model.budget.rows = names.map((name, index) => ({ name, usedPct: 70 - index, elapsedPct: 60 }));
-    for (const key of ['pools', 'models', 'projects']) {
-      f.model.stats.overview.breakdown[key] = names.map((name) => ({ name, minutesShare: 0.24 }));
-    }
-    f.model.stats.overview.today.apiEquivalentUsd = null;
     for (const width of [55, 60]) {
       const text = plain(renderDashboardPage(f.model, { page: 'home', width, height: 150 }).lines.join('\n'));
-      const budget = text.split('budget · this week')[1].split('last 7 days')[0];
-      for (const name of names) assert.ok(budget.includes(name), budget);
-      assert.match(text, /licence spent today · measured worker minutes/);
-      const lines = text.split('\n');
-      for (const heading of ['by pool', 'by model', 'by project']) {
-        const at = lines.findIndex((line) => line.trim() === heading);
-        assert.ok(at > 0);
-        for (const row of lines.slice(at + 1, at + 4)) assert.match(row.trim(), /24%$/);
-      }
-      for (const label of ['Busiest project', 'Favourite model', 'Median run']) {
-        assert.ok(lines.some((line) => line.startsWith(` ${label}:`)), text);
-      }
+      // The licence block is one row of five plain-word slots per pool that
+      // worked today, with the measured worker-minutes and no abbreviation.
+      const licence = text.split('licence · pool · worker-minutes')[1].split('── running')[0];
+      assert.match(licence, /relay · 40\.00 · — · ~\$0\.42 · —/, licence);
+      assert.doesNotMatch(licence, /wf % \(est\.\)|run min/, 'the licence row uses no abbreviations');
+      assert.doesNotMatch(licence, /more metered pool|codex/, licence);
+      // Every metered pool is still named, with its whole percent, in the
+      // budget block below it.
+      const budget = text.split('budget · this week')[1];
+      for (const name of names) assert.ok(budget.includes(name), `${name} missing at ${width}`);
+      assert.match(budget, /70% on track/, `${width}: the pool percent is whole`);
+      for (const line of text.split('\n')) assert.ok([...line].length <= width, line);
     }
   } finally { f.cleanup(); }
 });
@@ -3352,48 +3391,6 @@ test('no page paints past the width or comes up blank at 120x40, 55x26 and 200x5
   } finally { f.cleanup(); }
 });
 
-test("Home's 7-day breakdown is four columns on one band at 120 and 200, and one column at 55", () => {
-  const f = fidelityModel();
-  try {
-    const bandOf = (width) => {
-      const frame = renderDashboardPage(f.model, {
-        page: 'home', width, height: 90, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
-      });
-      const lines = paintedRows(frame.lines.join('\n')).map(plain);
-      const head = lines.findIndex((line) => /spent per day/.test(line));
-      assert.ok(head >= 0, `no breakdown band at ${width} columns:\n${lines.join('\n')}`);
-      return { lines, head };
-    };
-    // 120 and 200: the four headings share one row, in the prototype's order.
-    for (const width of [120, 200]) {
-      const { lines, head } = bandOf(width);
-      assert.match(lines[head], /spent per day.*by pool.*by model.*by project/,
-        `the four columns did not share a row at ${width}`);
-      // And the bars under them are proportional to the percentage beside them.
-      const pool = lines.slice(head + 1, head + 5).find((line) => /\d+%$/.test(line.trim()));
-      const share = Number(/(\d+)%$/.exec(pool.trim())[1]);
-      // The percent sits right-aligned in a four-cell field, so one or more
-      // blanks separate the track from it.
-      const bar = /([▇█]+)[░\s]*\s\d+%$/.exec(pool.trim());
-      const track = /([▇█]+)([░]*)\s+\d+%$/.exec(pool.trim());
-      assert.ok(bar, `no bar beside the percentage at ${width}: ${pool}`);
-      const filled = track[1].length;
-      const cells = filled + track[2].length;
-      assert.ok(Math.abs(filled / cells - share / 100) <= 0.12,
-        `the bar is ${filled}/${cells} cells for ${share}% at ${width}: ${pool}`);
-      const percentEnds = lines.slice(head + 1, head + 5).filter((line) => /\d+%\s*$/.test(line)).map((line) => line.replace(/\s+$/, '').length);
-      assert.ok(percentEnds.length >= 2 && new Set(percentEnds).size === 1, `percents end on one column at ${width}: ${percentEnds.join(',')}`);
-    }
-    // 55: the same four sections, one under the other.
-    const narrow = bandOf(55);
-    assert.doesNotMatch(narrow.lines[narrow.head], /by pool/, 'the phone kept four columns on one row');
-    for (const heading of ['by pool', 'by model', 'by project']) {
-      assert.ok(narrow.lines.slice(narrow.head).some((line) => line.trim().startsWith(heading)),
-        `the phone lost the ${heading} column`);
-    }
-  } finally { f.cleanup(); }
-});
-
 test('Home today band and every live step keep their rows readable on a phone', () => {
   const f = fidelityModel();
   try {
@@ -3406,23 +3403,21 @@ test('Home today band and every live step keep their rows readable on a phone', 
       page: 'home', width: 54, height: 120, rows: f.rows, allRows: f.rows,
     });
     const lines = paintedRows(frame.lines.join('\n')).map(plain);
-    const today = lines.slice(lines.findIndex((line) => /^today ·/.test(line)),
+    const today = lines.slice(lines.findIndex((line) => /^Home · Today/.test(line)),
       lines.findIndex((line) => /── running/.test(line))).filter((line) => line.trim());
-    assert.ok(today.some((line) => /finished today|workflow finished/.test(line)), today.join('\n'));
-    assert.ok(today.some((line) => /licence spent today/.test(line)), today.join('\n'));
-    assert.ok(today.some((line) => /wf min/.test(line)), today.join('\n'));
+    // The cards stack one per row at 54 columns, and the licence block keeps
+    // its five plain-word slots on the phone.
+    assert.equal(today.filter((line) => /^┌─ /.test(line)).length, 3, today.join('\n'));
+    assert.ok(today.some((line) => /· completed · verified/.test(line)), today.join('\n'));
+    assert.ok(today.some((line) => /^licence · pool · worker-minutes/.test(line)), today.join('\n'));
     for (const id of ['first-live-action', 'second-live-action']) {
       const row = lines.find((line) => line.includes(id));
       assert.ok(row, `missing ${id}`);
-      assert.match(row, /░{4,}.*\/—/, `missing indeterminate bar: ${row}`);
+      assert.match(row, /░{4,}/, `missing indeterminate bar: ${row}`);
     }
-    let inTodayLicenceTable = false;
     for (const line of lines) {
-      if (/licence spent today/.test(line)) inTodayLicenceTable = true;
-      if (/wf % =/.test(line)) inTodayLicenceTable = false;
       assert.ok([...line].length <= 54, line);
       // Every inline API-equivalent figure carries its usage-basis marker.
-      if (inTodayLicenceTable) continue;
       for (const match of line.matchAll(/\$/g)) {
         assert.match(line.slice(Math.max(0, match.index - 2), match.index), /[≈~]/, line);
       }
@@ -3490,12 +3485,18 @@ test('Run and Step draw no box-drawing panel at any of the three widths', () => 
       page: 'step', width: 120, height: 40, rows: f.rows, allRows: f.rows, selectedRunId: 'wf-alpha',
       focus: 2, phaseIndex: 0, agentIndex: 0,
     }).lines.join('\n'));
-    for (const field of ['Status', 'Pool', 'Purpose', 'Time']) {
-      assert.match(step, new RegExp(`^ ${field}\\s{2,}\\S`, 'm'), `Step lost its ${field} row`);
+    // The five blocks in their fixed order, and the header's own lines for the
+    // route and the purpose.
+    for (const section of [
+      'task · prompt + task first lines',
+      'activity · overview · response turns',
+      'result · output + artifacts + outcome/verification',
+      'cost · money pair + tokens + budget',
+    ]) {
+      assert.match(step, new RegExp(`── ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} `), `Step lost its ${section} block`);
     }
-    for (const section of ['budget', 'task · first lines', 'output', 'artifacts']) {
-      assert.match(step, new RegExp(`── ${section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} ─`), `Step lost its ${section} section`);
-    }
+    assert.match(step, /^ succeeded · — · opencode2 · luna · —$/m, 'Step lost its pool · model · effort route');
+    assert.match(step, /^ purpose Scan the viewer$/m, 'Step lost the action purpose');
   } finally { f.cleanup(); }
 });
 
@@ -3548,7 +3549,7 @@ test('`workflow tui --overview` keeps the two shapes the Claude mod pane parses'
 // Desktop plans now use presentation-stage columns. A fan remains grouped by
 // its dependency phases, but connectors only join neighbouring phase headers;
 // no step-to-step branch drawing survives in the plan strip.
-test('the plan columns keep fan steps grouped without step connectors', () => {
+test('the plan keeps a fan grouped into its dependency phases without step connectors', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-fan-'));
   try {
     const startedAt = '2026-09-17T06:46:00.000Z';
@@ -3582,8 +3583,6 @@ test('the plan columns keep fan steps grouped without step connectors', () => {
     state.runner = { pid: process.pid, lastHeartbeatAt: new Date().toISOString() };
     const dir = join(home, 'workflows', 'wf-fan');
     mkdirSync(dir, { recursive: true });
-    // Durable action events give each dependency level its own phase, the
-    // way a real run does; the plan reads its levels from those phases.
     appendEvent(dir, state, 'action.started', { actionId: 'design-map' });
     appendEvent(dir, state, 'action.finished', { actionId: 'design-map', status: 'succeeded' });
     for (const id of ['stream-persist', 'handoff-preamble']) appendEvent(dir, state, 'action.started', { actionId: id });
@@ -3595,24 +3594,23 @@ test('the plan columns keep fan steps grouped without step connectors', () => {
     const model = dashboardModel(rows[0], { runs: rows, usage: usageFixture() });
     const frame = renderDashboardPage(model, { page: 'run', width: 120, height: 40, rows, allRows: rows, selectedRunId: 'wf-fan' });
     const text = frame.lines.map(plain);
-    const top = text.find((line) => line.includes('stream-persist'));
-    const bottom = text.find((line) => line.includes('handoff-preamble'));
-    assert.ok(top && bottom, 'both branches of the fan are drawn');
-    assert.doesNotMatch(text.join('\n'), /┴/, 'no ┴ hangs over a branch that never connects');
     const licenceAt = text.findIndex((line) => line.includes('── licence this run used'));
     const plan = text.slice(0, licenceAt).join('\n');
-    assert.match(plan, /Phase 1/);
-    assert.match(plan, /Phase 2/);
-    assert.match(plan, /Phase 3/);
-    assert.match(plan, /design-map/);
-    assert.match(plan, /stream-persist/);
-    assert.match(plan, /handoff-preamble/);
-    assert.match(plan, /integrate/);
+    // One compact box per dependency group, each with its status glyph, name
+    // and done/total. The fan's two branches are one phase, so the plan never
+    // draws a step-to-step branch connector.
+    assert.match(plan, /\[✓ design-map 1\/1\]/);
+    assert.match(plan, /\[✓ Parallel work 2\/2\]/);
+    assert.match(plan, /\[▶ integrate 0\/1\]/);
+    assert.match(plan, /\[○ verify 0\/1\]/);
     assert.doesNotMatch(plan, /┬|└|├|┘|┴/);
+    // The full chronology below keeps one segment per phase, the shared one
+    // included.
+    assert.deepEqual(segmentLabels(frame.lines.join('\n')).slice(0, 4), ['Preflight', 'design-map', 'Parallel work', 'integrate']);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test('the Run plan groups presentation phases into desktop columns and a narrow stack', () => {
+test('the Run plan draws one box per phase, flowing across the width and stacking narrow', () => {
   const home = mkdtempSync(join(tmpdir(), 'bs-plan-phases-'));
   try {
     const startedAt = '2026-09-18T08:00:00.000Z';
@@ -3654,30 +3652,31 @@ test('the Run plan groups presentation phases into desktop columns and a narrow 
       usage: { assignments: [{ runId: 'wf-phases', actionId: 'p3-run', expectedMinutes: 12, startedAt }] },
     }));
     const plan = desktop.split('── licence this run used')[0];
-    assert.match(plan, /Phase 1/);
-    assert.match(plan, /Phase 3/);
-    assert.match(plan, /Phase 7/);
-    const runningRows = plan.split('\n').filter((line) => line.includes('p3-run'));
-    assert.equal(runningRows.length, 1, 'the running step has no subtitle row');
-    assert.match(runningRows[0], /p3-run/);
-    assert.match(runningRows[0], /9m\/12m/);
-    // A desktop connector is only present on the header row; step rows carry
-    // no branch joints between neighbouring phases.
-    const header = plan.split('\n').find((line) => line.includes('Phase 1'));
-    assert.ok(header.includes('──'), header);
-    assert.doesNotMatch(runningRows[0], /┬|└|├|┘/);
+    // One box per phase, in phase order, each with a glyph, a name and
+    // done/total. Boxes wrap between whole boxes.
+    assert.deepEqual(
+      [...plan.matchAll(/\[([✓▶○×·]) ([^\]]+?) (\d+\/\d+)\]/g)].map((match) => `${match[1]} ${match[2]} ${match[3]}`),
+      ['✓ p1 1/1', '✓ p2 1/1', '▶ Parallel work 1/2', '○ p4 0/1', '○ p5 0/1', '○ p6 0/1', '○ p7 0/1'],
+    );
+    // No per-step rows and no branch connectors survive in the compact plan.
+    assert.doesNotMatch(plan, /p3-run|p3-done|┬|└|├|┘/, plan);
+    // The running worker is named by the live band, which carries its clock.
+    assert.match(desktop, /▶ p3-run · codex · /);
 
     const narrow = plain(renderWorkflowTui(row, {
       width: 55, height: 100, nowMs,
       usage: { assignments: [{ runId: 'wf-phases', actionId: 'p3-run', expectedMinutes: 12, startedAt }] },
     }));
-    assert.match(narrow, /── Phase 1/);
-    assert.match(narrow, /── Phase 3/);
-    assert.match(narrow, /── Phase 7/);
+    // At 55 columns the boxes stack one per row, in the same order, and the
+    // live band still names the running worker.
     const narrowPlan = narrow.split('── licence this run used')[0];
-    const narrowRunning = narrowPlan.split('\n').filter((line) => line.includes('p3-run'));
-    assert.equal(narrowRunning.length, 1);
-    assert.match(narrowRunning[0], /9m\/12m/);
+    const narrowBoxes = [...narrowPlan.matchAll(/\[([✓▶○×·]) ([^\]]+?) (\d+\/\d+)\]/g)];
+    assert.deepEqual(narrowBoxes.map((match) => match[1]), ['✓', '✓', '▶', '○', '○', '○', '○']);
+    for (const match of narrowBoxes) {
+      assert.equal(plain(narrowPlan.split('\n').find((line) => line.includes(match[0])) ?? '').includes('] ['), false,
+        `two boxes shared a row at 55: ${match[0]}`);
+    }
+    assert.match(narrow, /▶ p3-run · codex · /);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -3698,12 +3697,14 @@ test('Home today lists only pools that worked today', () => {
   ], assignments: [], rungs: [] };
   const model = dashboardModel(null, { usage, rollups, nowMs });
   const text = plain(renderDashboardPage(model, { page: 'home', width: 120, height: 70, nowMs }).lines.join('\n'));
-  const block = text.split('licence spent today')[1].split('running')[0];
-  assert.match(block, /worked-low/);
+  // The licence block counts the pools with measured work today; the metered
+  // pools that did nothing keep their meters in the budget block below it.
+  const block = text.split('licence · pool · worker-minutes')[1].split('── running')[0];
+  assert.match(block, /worked-low · 4\.00/);
   assert.doesNotMatch(block, /idle-high|idle-mid/);
 });
 
-test('Home today matches the approved 55/120 band with workflows, a task and four pools', () => {
+test('Home today matches the approved 55/120 cards with a licence row per pool', () => {
   const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
   const workflows = [
     {
@@ -3746,32 +3747,35 @@ test('Home today matches the approved 55/120 band with workflows, a task and fou
   for (const width of [55, 120]) {
     const frame = renderDashboardPage(model, { page: 'home', width, height: 40, nowMs });
     const lines = frame.lines.map(plain);
-    const start = lines.findIndex((line) => line.startsWith('today ·'));
+    const start = lines.findIndex((line) => line.startsWith('Home · Today'));
     const end = lines.findIndex((line, index) => index > start && line.startsWith('── running'));
     assert.ok(start >= 0 && end > start, `${width}: today band missing`);
     const band = lines.slice(start, end).filter((line) => line.trim());
-    for (const line of band) assert.equal(line.length, width, `${width}: unpadded band line: ${line}`);
 
-    assert.match(band.join('\n'), /3 workflows(?: finished)?/);
-    assert.match(band.join('\n'), /1 task(?: finished)?/);
-    assert.match(band.join('\n'), /1 verified/);
-    assert.equal(band.filter((line) => /^✓ today[1-3]\s/.test(line)).length, 3);
-    assert.equal(band.filter((line) => /⚙ task1/.test(line)).length, 1);
-    assert.match(band.join('\n'), /wf % \(est\.\)/);
-    assert.match(band.join('\n'), /API≈/);
-    for (const pool of ['acme', 'codex', 'grok', 'opencode']) assert.match(band.join('\n'), new RegExp(`\\b${pool}\\b`));
-    assert.match(band.join('\n'), /opencode\s+634\.6\s+—\s+—\s+api unknown/);
-    assert.match(band.join('\n'), /wf % = pool window points drawn by workflows today/);
-    assert.match(band.join('\n'), /— = not measured/);
-    assert.match(band.join('\n'), /API≈(?: basis:|:)/);
-    assert.match(band.join('\n'), /live window used% .*Budget/);
+    // Three cards, most recently finished first, each with project · status ·
+    // verdict, active minutes, steps and the strict money pair. A finished
+    // task is not a card: its row lives on Runs.
+    // Three boxes: side by side at 120, stacked at 55.
+    assert.equal((band.join('\n').match(/┌─ /g) ?? []).length, 3, band.join('\n'));
+    assert.match(band.join('\n'), /project-a · completed · verified/);
+    // The middle card's second column is clipped at 120, so only its own
+    // fields are asserted whole.
+    assert.match(band.join('\n'), /bullswarm · completed · not verifi/);
+    assert.match(band.join('\n'), /API — · subscription —/);
+    assert.match(band.join('\n'), /API ~ \$0\.16 · subscription —/);
+    assert.doesNotMatch(band.join('\n'), /task1/);
 
-    const rightPart = (line) => line.includes('│') ? line.slice(line.indexOf('│') + 2) : line;
-    const acme = band.map(rightPart).find((line) => line.includes('acme'));
-    const codex = band.map(rightPart).find((line) => line.includes('codex'));
-    assert.ok(acme && codex);
-    assert.equal(acme.indexOf('.'), codex.indexOf('.'), `${width}: workflow minutes are not right-aligned`);
-    assert.equal(acme.indexOf('$'), codex.indexOf('$'), `${width}: API estimates are not right-aligned`);
+    // The licence block is one row of five plain-word slots per pool that
+    // worked today, in the order the pools are named.
+    // At 55 columns the five-slot header wraps over two rows; the slots are
+    // the same five words at both widths.
+    for (const slot of ['licence · pool · worker-minutes', 'weekly share · API · subscription']) {
+      assert.ok(band.join('\n').replace(/\s+/g, ' ').includes(slot), `${width}: the licence header lost ${slot}`);
+    }
+    assert.match(band.join('\n'), /acme · 84\.00 · 2\.9% · ~\$0\.16 · —/);
+    assert.match(band.join('\n'), /codex · 161\.80 · 2\.1% · ~\$0\.03 · —/);
+    assert.match(band.join('\n'), /grok · 26\.00 · 4\.3% · ~\$0\.01 · —/);
+    assert.match(band.join('\n'), /opencode · 634\.60 · — · — · —/);
     if (width === 120) {
       assert.match(band.join('\n'), /First today goal/);
       assert.match(band.join('\n'), /Second today goal/);
@@ -3800,16 +3804,22 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
     }));
     const session = shellSession(home, { columns: 80, rows: 30 });
     const homeText = plain(lastFrame(session.output));
-    assert.match(homeText, /0 workflows · 1 task · 0 verified/);
+    // Home leads with the finished task's own card and keeps the live task in
+    // its running band.
+    assert.match(homeText, /Home · Today · \d+ Sep · top 1 runs/);
     assert.match(homeText, /live-task/);
     const runs = session.press('r');
     assert.match(plain(runs), /finished-task/);
     assert.match(plain(runs), /short failure/);
     assert.ok(runs.includes('⚙'), 'task glyph is distinct from workflow glyph');
+    assert.match(plain(runs), /0 runs · 1 task/, 'the day header counts the task apart from the workflows');
     const task = session.press('\r');
-    assert.match(frameHeader(task), /task · (?:live-task|finished-task)/);
-    assert.match(plain(task), /task:\s+\/tmp\/task-/);
-    assert.match(plain(task), /reason:/);
+    // Enter opens the task through the same Step model and view: the five
+    // blocks, the header and the same keys.
+    assert.match(frameHeader(task), /Step (?:live-task|finished-task)/);
+    assert.match(plain(task), /task · prompt \+ task first lines/);
+    assert.match(plain(task), /result · output \+ artifacts \+ outcome\/verification/);
+    assert.match(plain(task), /\[v detail\]/);
     const back = session.press(ESC_KEY);
     assert.match(frameHeader(back), /^ bullswarm · runs ·/);
     assert.equal(await session.quit(), 0);
@@ -3819,26 +3829,24 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
 test('Enter on a Home today workflow row opens that run', async () => {
   const { home, cleanup } = shellFixture();
   try {
-    const now = Date.now();
-    writeV2Run(home, {
-      runId: 'wf-home-today', shortId: 'today1', goal: 'Today run goal', status: 'completed',
-      startedAt: new Date(now - 120_000).toISOString(), finishedAt: new Date(now - 60_000).toISOString(),
-    });
     const session = shellSession(home, { columns: 55, rows: 30 });
     const before = plain(lastFrame(session.output));
-    assert.match(before, /today1/);
-    // The fixture also has an older finished workflow today; move the Home
-    // cursor onto the second today row before drilling in.
-    session.press('\x1b[B');
-    session.press('\x1b[B');
+    // The Today band is the three cards; the cursor starts on the first one
+    // and Enter opens that run on the Run page.
+    assert.match(before, /Home · Today · \d+ Sep · top 3 runs/);
+    assert.match(before, /unified-shell/);
     const run = session.press('\r');
-    assert.match(frameHeader(run), /today1/);
-    assert.match(frameHeader(run), /completed/);
+    assert.match(frameHeader(run), /^ (?:aaa111|bbb222|zzz999) /);
+    assert.match(frameHeader(run), /running|completed/);
+    // Esc comes back to Home with the band intact.
+    session.press(ESC_KEY);
+    assert.match(frameHeader(lastFrame(session.output)), /^ bullswarm · home/);
+    assert.match(plain(lastFrame(session.output)), /Home · Today · \d+ Sep · top 3 runs/);
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
 
-test('Run and Step draw durable output sparklines and never cut a pool identity', () => {
+test('Run draws durable output sparklines and neither page cuts a pool identity', () => {
   const { home, cleanup } = shellFixture();
   try {
     const dir = join(home, 'workflows', 'wf-alpha');
@@ -3856,12 +3864,19 @@ test('Run and Step draw durable output sparklines and never cut a pool identity'
       .findIndex((agent) => agent.status === 'running');
     for (const width of [55, 120]) {
       const run = plain(renderDashboardPage(model, { page: 'run', width, height: 50, selectedRunId: 'wf-alpha' }).lines.join('\n'));
-      assert.match(run, /▁▅█ 2 KB/);
+      // The live band draws the durable output sparkline beside the clock; the
+      // three-column band clips its tail on the desktop, so only its start is
+      // asserted there.
+      assert.match(run, width === 55 ? /▁▅█ 2 KB/ : /· output ▁/);
       assert.doesNotMatch(run, /openc…/, `${width}: pool was cut in the plan/live rows`);
       const step = plain(renderDashboardPage(model, {
         page: 'step', width, height: 50, selectedRunId: 'wf-alpha', phaseIndex: activePhase, agentIndex: activeAgent,
       }).lines.join('\n'));
-      assert.match(step, /output .*2 KB/);
+      // The Step page keeps the full pool identity too; its result block is
+      // about the output content, which this attempt never wrote.
+      assert.match(step, /opencode-very-long-pool-name/);
+      assert.doesNotMatch(step, /openc…/, `${width}: pool was cut on the Step page`);
+      assert.match(step, /output unavailable/);
     }
   } finally { cleanup(); }
 });
@@ -3897,8 +3912,10 @@ test('a task with no recorded id is listed and counted once, not once per source
   assert.ok(header, 'the day header is missing');
   assert.match(header, /\b1 task\b/);
 
+  // Home's cards are runs, so the same task is not painted there as well; it
+  // is never counted twice there either.
   const home = renderDashboardPage(model, { page: 'home', width: 120, height: 40, nowMs });
   const homeLines = home.lines.map(plain);
-  assert.equal(homeLines.filter((line) => /⚙ task\b/.test(line)).length, 1);
-  assert.match(homeLines.join('\n'), /\b1 task\b/);
+  assert.equal(homeLines.filter((line) => /⚙ task\b/.test(line)).length, 0, homeLines.join('\n'));
+  assert.doesNotMatch(homeLines.join('\n'), /\d task\b/);
 });

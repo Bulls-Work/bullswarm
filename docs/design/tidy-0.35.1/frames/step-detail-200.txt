@@ -1,0 +1,29 @@
+Step step-model · run va7k9a · succeeded · verified · codex · gpt-5.6-luna · medium
+active 49.11m · detail mode · all fields when captured                         [v overview]
+
+── task · prompt + task first lines ─────────────────────────────────────────────────────────────────────────
+sample task for step-model-1 laboris
+sample purpose for va7k9a aute commodo proident ullamco cupidatat magna
+
+── activity · today's capture-order log · all · 325 events · 15 responses ──────────────────────────────────
+seq 1 · at 2026-09-19T17:50:31.709Z · source stdout · provider item.completed · kind response · status completed
+  eventId — · turnId — · toolCallId — · provider timestamp — · duration — · usage — · parent/subagent —
+  summary: sample velit sed cupidatat quis est sit adipiscing pariatur, sint ipsum sed est consequat amet…
+seq 2 · at 2026-09-19T17:50:35.490Z · source stdout · provider item.started · kind command_execution · running
+seq 3 · at 2026-09-19T17:50:35.491Z · source stdout · provider item.completed · kind command_execution · completed
+  arguments — · result — · duration — · usage — · parent/subagent —
+15 responses · 240 commands · 70 edits · 0 errors · filters [all] [errors] [tools]
+capture-order warning: optional identifiers are absent in this real stream
+
+── result · output + artifacts + outcome/verification ───────────────────────────────────────────────────────
+execution succeeded · workflow completed · independently verified · 6/6 requirements
+
+── cost · money pair + tokens + budget ─────────────────────────────────────────────────────────────────────
+API $0.959928 (rate-card:complete) · subscription — (unknown:no-meter)
+tokens 35,971,504 known · budget —
+task: /home/dev/.bullswarm/workflows/wf-mu8ni8o4-f9baaf/task-step-model-attempt-1.md
+output: /home/dev/.bullswarm/workflows/wf-mu8ni8o4-f9baaf/out-step-model-attempt-1.md
+stream: /home/dev/.bullswarm/workflows/wf-mu8ni8o4-f9baaf/stream-step-model-attempt-1.jsonl
+result: /home/dev/.bullswarm/workflows/wf-mu8ni8o4-f9baaf/result.json
+run: /home/dev/.bullswarm/workflows/wf-mu8ni8o4-f9baaf
+[↑↓ select] [Enter expand] [Space follow] [e errors] [t tools] [v overview]

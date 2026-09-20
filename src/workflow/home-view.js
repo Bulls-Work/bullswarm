@@ -22,10 +22,12 @@ import {
 import {
   measuredTaskMinutes,
   recordCostInfo,
+  recordMoneyPair,
   todayDateLabel,
   todayLicenceRows,
   todayMinutesNumberText,
   todayMinutesText,
+  todayTopRuns,
   todayRows,
 } from './home-model.js';
 import {
@@ -77,10 +79,10 @@ function todayWorkflowLine(record, width) {
   const glyph = record?.status === 'failed' ? glyphs().fail : glyphs().ok;
   const id = String(record?.shortId ?? record?.runId ?? '------');
   const project = cut(String(record?.project ?? 'unknown'), 10).padEnd(10);
-  const minutes = todayMinutesText(record?.minutes?.wall) ?? blank();
-  const verdict = record?.verified === true ? 'verified' : 'unverified';
-  const line = `${glyph} ${id.padEnd(6)}  ${project}  ${minutes.padStart(6)}  ${verdict}`;
-  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
+  const minutes = todayMinutesText(record?.minutes?.active) ?? blank();
+  const verdict = record?.verified === true ? 'verified' : record?.verified === false ? 'not verified' : blank();
+  const line = `${glyph} ${id.padEnd(6)}  ${project}  active ${minutes.padStart(6)}  ${verdict}`;
+  return todayPadded(line, width);
 }
 
 function todayTaskLine(task, width) {
@@ -118,7 +120,7 @@ function todayTableRow(row, width, { header = false } = {}) {
   const specs = desktop
     ? { wf: 6, wfPct: 4, run: 7, api: 17, gaps: [4, 3, 3, 0] }
     : { wf: 6, wfPct: 4, run: 6, api: 12, gaps: [3, 3, 3, 0] };
-  const labels = ['wf min', 'wf % (est.)', 'run min', 'API · sub'];
+  const labels = ['worker-minutes', 'weekly share', 'API', 'subscription'];
   const values = header ? labels : [
     todayMinutesNumberText(row?.workflowMinutes) ?? blank(),
     row?.workflowPct == null ? blank() : `${row.workflowPct.toFixed(1)}%`,
@@ -138,7 +140,7 @@ function todayTableRow(row, width, { header = false } = {}) {
     line += String(value ?? '').padStart(widths[index]);
     line += ' '.repeat(specs.gaps[index]);
   });
-  return `${line}${' '.repeat(Math.max(0, width - visibleLength(line)))}`;
+  return todayPadded(line, width);
 }
 
 function todayBareRule(width) {
@@ -152,23 +154,144 @@ function todayPadded(value, width) {
 
 function todayLicenceFootnotes(nowMs, width, desktop = false) {
   const date = dayKey(nowMs) ?? 'today';
-  return desktop
+  return (desktop
     ? [
-      'wf % = pool window points drawn by workflows today',
-      '— = not measured · API≈ basis: provider-reported · transcript-summed · estimated',
-      'cost unknown means no usage measurement exists',
-      'live window used% is on Budget, not in this table',
-    ].map((line) => todayPadded(line, width))
+      'weekly share is measured worker-minutes against the pool window',
+      '— means the real snapshot supplied no measurement',
+      'API and subscription amounts keep their provider/estimate basis',
+      'live window used share is on Budget',
+    ]
     : [
-      'wf % = pool window points drawn by workflows today',
-      '— = not measured · API≈: provider-reported · transcript-summed · estimated',
-      `cost unknown · audit ${date}`,
-      'live window used% lives on Budget, not here',
-    ].map((line) => todayPadded(line, width));
+      'weekly share is measured worker-minutes against the pool window',
+      '— means the real snapshot supplied no measurement',
+      `money audit for ${date} uses recorded values only`,
+      'live window used share is on Budget',
+    ]).map((line) => todayPadded(line, width));
+}
+
+function cardStatusText(status) {
+  const value = String(status ?? '').replaceAll('_', ' ');
+  if (value === 'completed') return 'completed';
+  if (value === '—') return '—';
+  return value || '—';
+}
+
+function cardMoneySlot(raw, value) {
+  const text = String(raw ?? '');
+  if (!text || text.startsWith('api unknown') || text.startsWith('sub unknown')) return blank();
+  const amount = value?.usd == null ? null : formatMoney(value.usd, value.tokens ?? null);
+  if (amount == null || amount === '-') return blank();
+  const prefix = text.startsWith('≈ ') ? '≈ ' : text.startsWith('~ ') ? '~ ' : '';
+  return `${prefix}${amount}`;
+}
+
+function cardLines(card, width, { task = false } = {}) {
+  const inner = Math.max(1, width - 2);
+  const goal = cut(String(card.name ?? 'run'), Math.max(1, inner - 3));
+  const project = cut(String(card.project ?? blank()), Math.max(1, inner - 9));
+  const status = cardStatusText(card.status);
+  const verdict = String(card.verdict ?? '—');
+  const minuteValue = card.minutes?.active == null ? blank() : `${Number(card.minutes.active).toFixed(2)}m`;
+  const minuteLabel = 'active';
+  const steps = card.steps?.done != null && card.steps?.total != null
+    ? `${card.steps.done}/${card.steps.total}` : '—';
+  const money = card.money ?? recordMoneyPair(card.record ?? {});
+  const [apiRaw = '', subRaw = ''] = String(money.text ?? '').split(' · ');
+  const api = cardMoneySlot(apiRaw, { ...money.api, tokens: money.tokens });
+  const subscription = cardMoneySlot(subRaw, { ...money.subscription, tokens: money.tokens });
+  const content = [
+    task ? ` ${project} · task · ${status}` : ` ${project} · ${status} · ${verdict}`,
+    ` ${minuteLabel} ${minuteValue} · steps ${steps}`,
+    ` API ${api} · subscription ${subscription}`,
+  ];
+  if (width >= 56 && card.minutes?.span != null) {
+    content[1] += ` · span ${Number(card.minutes.span).toFixed(2)}m`;
+  }
+  const title = cut(goal, Math.max(1, inner - 3));
+  return [
+    `┌─ ${title}${'─'.repeat(Math.max(0, width - 4 - visibleLength(title)))}┐`,
+    ...content.map((line) => `│${cut(line, inner).padEnd(inner)}│`),
+    `└${'─'.repeat(Math.max(0, width - 2))}┘`,
+  ].map((line) => `${line.slice(0, width)}${' '.repeat(Math.max(0, width - visibleLength(line)))}`);
+}
+
+function taskCardModel(task) {
+  const minutes = measuredTaskMinutes(task);
+  const record = {
+    usage: task?.usage ?? null,
+    apiEquivalentUsd: task?.apiUsd ?? task?.costUsd ?? null,
+    tokenSource: task?.tokenSource ?? null,
+  };
+  return {
+    record,
+    id: task?.id ?? task?.taskFile ?? null,
+    name: String(task?.goal ?? task?.lane ?? task?.id ?? task?.taskFile ?? 'task')
+      .split(/\r?\n/).find((line) => line.trim())?.trim() ?? 'task',
+    project: task?.project ?? '—',
+    status: task?.ok === false ? 'failed' : task?.endedAt || task?.finishedAt ? 'completed' : 'running',
+    verdict: '—',
+    minutes: { active: minutes, span: minutes, label: 'active' },
+    steps: { done: task?.endedAt || task?.finishedAt ? 1 : 0, total: 1 },
+    money: recordMoneyPair(record),
+    active: !task?.endedAt && !task?.finishedAt,
+  };
+}
+
+function cardParts(cards, width) {
+  const gap = '  ';
+  const cardWidth = Math.max(1, Math.floor((width - gap.length * 2) / 3));
+  const widths = [cardWidth, cardWidth, Math.max(1, width - cardWidth * 2 - gap.length * 2)];
+  const rendered = cards.map((card, index) => cardLines(card, widths[index] ?? cardWidth, { task: card.task }));
+  const lines = Math.max(...rendered.map((entry) => entry.length), 0);
+  const out = [];
+  for (let row = 0; row < lines; row += 1) {
+    const parts = [];
+    rendered.forEach((entry, index) => {
+      const text = entry[row] ?? ' '.repeat(widths[index]);
+      const action = cards[index].task
+        ? { kind: 'task', taskId: cards[index].id }
+        : { kind: 'run', runId: cards[index].record?.runId ?? cards[index].id };
+      parts.push({ text, action });
+      if (index < rendered.length - 1) parts.push({ text: gap });
+    });
+    const joined = parts.reduce((sum, part) => sum + visibleLength(part.text), 0);
+    if (joined < width) parts.push({ text: ' '.repeat(width - joined) });
+    out.push(parts);
+  }
+  return out;
+}
+
+function licenceMoney(value, tokenSource = null) {
+  if (value == null) return blank();
+  const formatted = formatMoney(value);
+  if (formatted === '-') return blank();
+  return tokenSource === 'transcript-summed' ? `≈${formatted}`
+    : tokenSource === 'estimated:utf8-bytes/4' ? `~${formatted}` : formatted;
+}
+
+function licenceLine(row, width) {
+  const worker = row?.workerMinutes == null ? blank() : Number(row.workerMinutes).toFixed(2);
+  const share = row?.weeklyShare == null ? blank() : `${Number(row.weeklyShare).toFixed(1)}%`;
+  const api = licenceMoney(row?.apiUsd, row?.tokenSource);
+  const subscription = licenceMoney(row?.subscriptionUsd);
+  return todayPadded(`${todayPoolName(row?.name, Math.max(1, width))} · ${worker} · ${share} · ${api} · ${subscription}`, width);
+}
+
+function licenceBlock(model, today, { width, narrow, nowMs }, body) {
+  const rows = todayLicenceRows(model, today, nowMs);
+  if (narrow) {
+    body.push(todayPadded('licence · pool · worker-minutes', width));
+    body.push(todayPadded('         weekly share · API · subscription', width));
+  } else {
+    body.push(todayPadded('licence · pool · worker-minutes · weekly share · API · subscription', width));
+  }
+  if (!rows.length) body.push(todayPadded('none measured in the real snapshot', width));
+  for (const row of rows) body.row(licenceLine(row, width), { kind: 'page', page: 'budget', pool: row.name });
+  return rows;
 }
 
 /** The approved Home today band: finished work on the left, licence draw right. */
-function homeTodayBand(model, opts, body) {
+function legacyHomeTodayBand(model, opts, body) {
   const { width, narrow, nowMs } = opts;
   const today = todayRows(model, nowMs);
   const workflowCount = today.workflows.length;
@@ -260,6 +383,66 @@ function homeTodayBand(model, opts, body) {
     ? { kind: 'task', taskId: selectedTask }
     : selectedRun ? { kind: 'run', runId: selectedRun } : null;
   return { workflowCount, taskCount, verified };
+}
+
+/** Home's today block: three cards, followed by a plain-words licence block. */
+function homeTodayBand(model, opts, body) {
+  const width = Number(opts.width) || 120;
+  const narrow = opts.narrow ?? width < 100;
+  const nowMs = opts.nowMs ?? Date.now();
+  const today = todayRows(model, nowMs);
+  const cards = todayTopRuns(model, nowMs, { limit: 3 });
+  const used = new Set(cards.map((card) => card.id));
+  // Standalone `bullswarm run` records fill an unused card slot only when
+  // fewer than three workflows are available. The real snapshot has seven
+  // workflows, so it remains workflow-only while a task-only home is useful.
+  for (const task of today.tasks) {
+    if (cards.length >= 3) break;
+    const id = task?.id ?? task?.taskFile;
+    if (!id || used.has(id)) continue;
+    const card = taskCardModel(task);
+    card.task = true;
+    cards.push(card);
+    used.add(id);
+  }
+  const date = todayDateLabel(today.date, { year: !narrow });
+  body.push(todayPadded(`Home · Today · ${date} · top ${cards.length} runs (active first)`, width));
+  if (!cards.length) body.push(todayPadded('no runs captured in the real snapshot', width));
+  else if (narrow) {
+    for (const card of cards) {
+      for (const line of cardLines(card, width, { task: card.task })) {
+        body.row(line, { kind: card.task ? 'task' : 'run', ...(card.task
+          ? { taskId: card.id } : { runId: card.record?.runId ?? card.id }) });
+      }
+    }
+  } else {
+    for (const parts of cardParts(cards, width)) body.parts(parts);
+  }
+  body.push('');
+  licenceBlock(model, today, opts, body);
+  const uniqueRows = (kind, key) => {
+    const seen = new Set();
+    return body.regions
+      .filter((region) => region.action?.kind === kind)
+      .map((region) => ({ [key]: region.action[key], y: region.y }))
+      .filter((row) => {
+        if (row[key] == null || seen.has(row[key])) return false;
+        seen.add(row[key]);
+        return true;
+      });
+  };
+  body.runRows = uniqueRows('run', 'runId');
+  body.taskRows = uniqueRows('task', 'taskId');
+  body.cursorAction = body.runRows[0]
+    ? { kind: 'run', runId: body.runRows[0].runId }
+    : body.taskRows[0] ? { kind: 'task', taskId: body.taskRows[0].taskId } : null;
+  const result = {
+    workflowCount: today.workflows.length,
+    taskCount: today.tasks.length,
+    verified: today.workflows.filter((record) => record.verified === true).length,
+  };
+  Object.defineProperty(result, 'cards', { value: cards, enumerable: false });
+  return result;
 }
 
 function percentText(value, digits = 0) {
@@ -526,9 +709,16 @@ function summaryBand(body, model, opts) {
 }
 
 function homePage(model, opts, body) {
-  homeTodayBand(model, opts, body);
-  activeRunLines(model, opts, body);
-  return homeDetails(model, opts, body);
+  const normalized = {
+    ...opts,
+    width: Number(opts.width) || 120,
+    narrow: opts.narrow ?? (Number(opts.width) || 120) < 100,
+    nowMs: opts.nowMs ?? Date.now(),
+  };
+  homeTodayBand(model, normalized, body);
+  activeRunLines(model, normalized, body);
+  budgetWeekLines(body, model, normalized);
+  return ' bullswarm · home';
 }
 
 function activeRunLines(model, opts, body, title = 'running') {
@@ -537,7 +727,9 @@ function activeRunLines(model, opts, body, title = 'running') {
   body.push('');
   body.push(rule(title, null, width));
   if (!model.runs.length && !tasks.length) {
-    body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
+    body.push(dimText(title === 'running'
+      ? ' none captured in the real snapshot'
+      : ' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
   }
   const unratedPools = new Set();
   model.runs.forEach((run, index) => {
@@ -620,72 +812,20 @@ function activeRunLines(model, opts, body, title = 'running') {
 }
 
 function homeDetails(model, opts, body) {
-  const { width, narrow, nowMs } = opts;
-  budgetWeekLines(body, model, { width, narrow, nowMs });
-
-  const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
-  body.push('');
-  const toggle = periodToggle(PERIOD_ITEMS, { active: period.id, width: narrow ? width - 2 : Math.max(10, width - 24) });
-  if (narrow) {
-    body.push(rule(period.label.toLowerCase(), null, width));
-    body.kit({ text: ` ${toggle.text}`, regions: toggle.regions.map((region) => ({ ...region, x: region.x + 1 })) });
-  } else {
-    const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
-    body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
-  }
-  if (narrow) {
-    for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
-      const base = body.lines.length;
-      const rows = cell.rows;
-      for (const line of rows) body.push(` ${cut(line, width - 1)}`);
-      if (cell.action) {
-        for (let row = base + 1; row <= body.lines.length; row += 1) {
-          body.regions.push({ x1: 1, x2: width, y: row, action: cell.action });
-        }
-      }
-    }
-  } else {
-    const gap = 2;
-    const inner = Math.max(4, width - 1 - gap * 3);
-    const cellWidth = Math.floor(inner / 4);
-    pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
-  }
-  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis · share is measured worker-minutes · click a column for its Stats tab', width));
-
-  summaryBand(body, model, opts);
-
-  body.push('');
-  body.push(rule('recent', 'history ›', width));
-  const recent = [...(model.rollups ?? [])]
-    .sort((a, b) => String(b.finishedAt ?? b.startedAt ?? '').localeCompare(String(a.finishedAt ?? a.startedAt ?? '')))
-    .slice(0, narrow ? 3 : 5);
-  if (!recent.length) {
-    body.push(dimText(' no run has been rolled up yet · bullswarm workflow reindex backfills them', width));
-  }
-  for (const record of recent) {
-    const ok = record.verified === true ? tint(glyphs().ok, 'green') : record.status === 'completed' ? dimText(glyphs().pending, 2) : tint(glyphs().fail, 'red');
-    const cost = recordCostInfo(record);
-    const money = moneyText(cost);
-    body.row(compactRow([
-      { text: ` ${ok}`, width: 2 },
-      { text: strong(record.shortId ?? record.runId), width: 7 },
-      {
-        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34)),
-        grow: true,
-        min: 6,
-        gap: 2,
-      },
-      { text: `${minutesText(record.minutes?.wall) ?? blank()} · ${money ?? blank()}`, width: 16, align: 'right', gap: 2 },
-      { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
-    ], { width }), { kind: 'run', runId: record.runId });
-  }
-  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · click tiles for charts', width));
+  budgetWeekLines(body, model, { width: opts.width, narrow: opts.narrow, nowMs: opts.nowMs });
   return ' bullswarm · home';
 }
 
 export {
   homePage,
   homeTodayBand,
+  cardStatusText,
+  cardMoneySlot,
+  cardLines,
+  taskCardModel,
+  cardParts,
+  licenceLine,
+  licenceBlock,
   homeDetails,
   todayGoalLine,
   todayWorkflowLine,

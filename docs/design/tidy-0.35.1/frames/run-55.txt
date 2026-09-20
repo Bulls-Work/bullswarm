@@ -1,0 +1,21 @@
+Run euqrni · project-a
+completed · verified · steps 5/5
+active 115.92m · span 116.00m
+plan · compact phase boxes
+[✓ home-extraction 1/1]
+[✓ runs-extraction 1/1]
+[✓ run-extraction 1/1]
+[✓ integrate 1/1]
+[✓ verify 1/1]
+timeline · phase active · attempt clock
+✓ home-extraction · 28.42m
+  codex · gpt-5.6-luna · low · 28m25s
+✓ runs-extraction · 30.54m
+  codex · gpt-5.6-luna · low · 30m32s
+✓ run-extraction · 31.86m
+  codex · gpt-5.6-luna · low · 31m52s
+✓ integrate · 4.64m
+  codex · gpt-5.6-sol · high · 4m38s
+✓ verify · 20.45m
+  claude-code · claude-opus-5 · high · 20m27s
+[v details] [Enter step] [Runs]

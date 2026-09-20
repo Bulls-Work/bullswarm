@@ -20,11 +20,15 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendRollupIndex, readRollups, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
+import { appendRollupIndex, readRollups, rollupRecord, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
 import {
   PERIODS, TREND_METRICS, periodRange, overviewModel, outcomesModel, trendModel,
   poolsModel, modelsModel, projectsModel,
 } from '../src/workflow/stats-model.js';
+
+const REAL_G6D6Q2 = JSON.parse(
+  readFileSync(new URL('./fixtures/workflows/g6d6q2-state.json', import.meta.url), 'utf8'),
+);
 
 const homes = [];
 function home() {
@@ -43,7 +47,7 @@ function localAt(year, month, day, hour = 12) {
 
 function record({
   runId, startedAt, finishedAt, status = 'completed', verified = false,
-  wall = null, agent = null, project = 'bullswarm', pools = {}, models = {}, legacy = false, usage,
+  wall = null, active = wall, span = wall, agent = null, project = 'bullswarm', pools = {}, models = {}, legacy = false, usage,
 }) {
   const value = {
     schemaVersion: ROLLUP_SCHEMA_VERSION,
@@ -57,7 +61,11 @@ function record({
     status,
     verified,
     requirements: { passed: verified ? 1 : 0, total: 1 },
-    minutes: { wall, agent },
+    minutes: {
+      ...(active === undefined ? {} : { active }),
+      ...(span === undefined ? {} : { span }),
+      wall, agent,
+    },
     pools,
     models,
     legacy,
@@ -293,7 +301,7 @@ test('overviewModel: the key-value block is a real median and a measured total',
   assert.equal(model.keys.favouritePool.name, 'claude-code');
   assert.equal(model.keys.favouriteModel.name, 'claude-opus-5');
   assert.equal(model.keys.busiestProject.name, 'bullswarm');
-  // S3: wall minutes are 100, 1, 2, 3 (the legacy run recorded none). Sorted
+  // S3: active minutes are 100, 1, 2, 3 (the legacy run recorded none). Sorted
   // that is 1, 2, 3, 100 — a median of 2.5, where the MEAN is 26.5.
   assert.equal(model.keys.medianRunMinutes, 2.5);
   assert.equal(model.keys.longestRunMinutes, 100);
@@ -311,7 +319,7 @@ test('overviewModel: a legacy record is a run and nothing more — no NaN, no ze
   assertNoNaN(model);
 });
 
-test('outcomesModel aggregates status, verification, requirements and wall duration without inventing values', () => {
+test('outcomesModel aggregates status, verification, requirements and active duration without inventing values', () => {
   const model = outcomesModel(indexOf(corpus()), { period: '7d', now: NOW });
   assert.deepEqual(model.statusCounts, { completed: 3, failed: 1 });
   assert.equal(model.verified, 2);
@@ -339,6 +347,28 @@ test('outcomesModel keeps an empty period measurable for counts but null for sha
   assert.equal(model.maxWallMinutes, null);
   assert.ok(model.nulls.includes('verifiedShare'));
   assertNoNaN(model);
+});
+
+test('active duration wins over the retained wall span in every Stats duration aggregate', () => {
+  // This is the real g6d6q2 snapshot fixture used by the rollup test. Its
+  // active union is 360.65m while the retained lifecycle wall alias is
+  // 2234.94m.
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const rollups = indexOf([real]);
+  const statsNow = Date.parse(real.finishedAt) + 60_000;
+  const overview = overviewModel(rollups, [], { period: 'all', now: statsNow });
+  assert.equal(overview.keys.medianActiveMinutes, 360.65);
+  assert.equal(overview.keys.longestActiveMinutes, 360.65);
+  assert.equal(overview.keys.medianRunMinutes, 360.65);
+  assert.equal(overview.keys.longestRunMinutes, 360.65);
+  assert.equal(overview.keys.durationBasis, 'active minutes');
+
+  const outcomes = outcomesModel(rollups, { period: 'all', now: statsNow });
+  assert.equal(outcomes.medianActiveMinutes, 360.65);
+  assert.equal(outcomes.maxActiveMinutes, 360.65);
+  assert.equal(outcomes.medianWallMinutes, 360.65);
+  assert.equal(outcomes.maxWallMinutes, 360.65);
+  assert.equal(outcomes.durationBasis, 'active minutes');
 });
 
 // ---------------------------------------------------------------- trendModel
@@ -461,8 +491,8 @@ test('poolsModel: a pool only in history keeps its row, with no live meter', () 
   assert.equal(grok.enabled, null);
 });
 
-test('poolsModel: median wall minutes is a real median, not a mean (S3)', () => {
-  // Wall minutes 1, 2, 3, 100 on one pool: median 2.5, mean 26.5.
+test('poolsModel: median active minutes is a real median, not a mean (S3)', () => {
+  // Active minutes 1, 2, 3, 100 on one pool: median 2.5, mean 26.5.
   const rows = [1, 2, 3, 100].map((wall, index) => record({
     runId: `wf-m${index}`, startedAt: DAY(1, 8), finishedAt: DAY(1, 9), wall,
     pools: { 'claude-code': { attempts: 1, minutes: wall, costUsd: null, tokens: null } },

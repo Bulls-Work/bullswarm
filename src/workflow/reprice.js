@@ -16,7 +16,7 @@ import { indexedTranscriptReader, readTranscriptUsage as defaultReadTranscriptUs
 import { subscriptionCost } from '../lib/subscription-cost.js';
 import { readJsonSafe, writeJsonAtomic } from '../lib/fsjson.js';
 import { formatMoney } from '../lib/usage-basis.js';
-import { aggregateAttemptUsage, writeRunRollup } from './rollup.js';
+import { aggregateAttemptUsage, readRollup, rollupRecord, writeRunRollup } from './rollup.js';
 import { createV2ResultEnvelope } from './v2-outcome.js';
 import { listRuns } from './short-id.js';
 import { isTerminalWorkflowStatus } from './status.js';
@@ -480,6 +480,31 @@ function eligible(entry, { sinceMs, pool }) {
   return started != null && started >= sinceMs;
 }
 
+function minuteSnapshot(record) {
+  return {
+    minutes: record?.minutes && typeof record.minutes === 'object'
+      ? {
+        active: record.minutes.active ?? null,
+        span: record.minutes.span ?? null,
+        wall: record.minutes.wall ?? null,
+        agent: record.minutes.agent ?? null,
+      }
+      : null,
+    phases: Array.isArray(record?.phases)
+      ? record.phases.map((phase) => ({
+        id: phase?.id ?? null,
+        actionIds: Array.isArray(phase?.actionIds) ? phase.actionIds : [],
+        active: phase?.minutes?.active ?? null,
+        span: phase?.minutes?.span ?? null,
+      }))
+      : null,
+  };
+}
+
+function minutesNeedRefresh(existing, next) {
+  return JSON.stringify(minuteSnapshot(existing)) !== JSON.stringify(minuteSnapshot(next));
+}
+
 function money(value, tokens = null) {
   return formatMoney(nonNegative(value), tokens);
 }
@@ -566,6 +591,12 @@ export function repriceRuns({
     ambiguous: 0,
     missing: 0,
     changedRuns: 0,
+    // Duration migration is reported separately from usage rewrites. A dry
+    // run can therefore say how many terminal rollups need active/span fields
+    // without pretending that it wrote them.
+    minutesRecomputed: 0,
+    minutesChanged: 0,
+    minutesApplied: 0,
     changedTasks: 0,
     changedProjects: 0,
     rows: [],
@@ -622,29 +653,46 @@ export function repriceRuns({
       // No in-memory mutation has happened yet, so the run remains untouched.
       continue;
     }
-    if (!apply || !runRows.length) continue;
+
+    // Duration migration is run-level, not attempt-level. A pool/date filter
+    // only limits it to runs that have at least one selected attempt; an
+    // unfiltered invocation repairs every terminal run it scans.
+    const recomputeMinutes = (sinceMs == null && !pool) || runRows.length > 0;
+    const existingResult = readJsonSafe(join(run.runDir, 'result.json'), null);
+    const existingRollup = readRollup(run.runDir);
+    const finishedAt = existingResult?.finishedAt ?? state.lifecycle?.finishedAt;
+    const nextRollup = recomputeMinutes
+      ? rollupRecord(state, existingResult, { now: timeMs(finishedAt) ?? Date.now() })
+      : null;
+    const minutesChanged = nextRollup != null && minutesNeedRefresh(existingRollup, nextRollup);
+    if (recomputeMinutes) report.minutesRecomputed += 1;
+    if (minutesChanged) report.minutesChanged += 1;
+
+    if (!apply) continue;
     for (const { entry, usage, candidate } of runRows) {
       entry.attempt.usage = clone(usage);
       if (candidate.cwd && !entry.attempt.cwd) entry.attempt.cwd = candidate.cwd;
       if (candidate.projectChanged) entry.attempt.project = candidate.project;
     }
-    if (JSON.stringify(state) === original) continue;
+    const stateChanged = JSON.stringify(state) !== original;
+    if (!stateChanged && !minutesChanged) continue;
     try {
-      state.usage = stateUsage(state);
-      const existingResult = readJsonSafe(join(run.runDir, 'result.json'), null);
-      const finishedAt = existingResult?.finishedAt ?? state.lifecycle?.finishedAt;
-      const result = existingResult && isTerminalWorkflowStatus(state.lifecycle?.status)
-        ? refreshExistingResult(existingResult, state)
-        : createV2ResultEnvelope({
-          ...state,
-          usage: { total: state.usage.total, byPool: state.usage.byPool },
-        }, { finishedAt });
-      // A copied home can retain an absolute resultFile from the source home.
-      // Never follow that path: reprice writes only inside the run directory it
-      // is currently operating on.
-      const resultPath = join(run.runDir, 'result.json');
-      writeJsonAtomic(join(run.runDir, 'state.json'), state);
-      writeJsonAtomic(resultPath, result);
+      let result = existingResult;
+      if (stateChanged) {
+        state.usage = stateUsage(state);
+        result = existingResult && isTerminalWorkflowStatus(state.lifecycle?.status)
+          ? refreshExistingResult(existingResult, state)
+          : createV2ResultEnvelope({
+            ...state,
+            usage: { total: state.usage.total, byPool: state.usage.byPool },
+          }, { finishedAt });
+        // A copied home can retain an absolute resultFile from the source home.
+        // Never follow that path: reprice writes only inside the run directory it
+        // is currently operating on.
+        const resultPath = join(run.runDir, 'result.json');
+        writeJsonAtomic(join(run.runDir, 'state.json'), state);
+        writeJsonAtomic(resultPath, result);
+      }
       // The normal finish path and `workflow reindex` both use these exact
       // primitives; reprice deliberately does not duplicate index logic.
       writeRunRollup(run.runDir, state, result, {
@@ -652,7 +700,8 @@ export function repriceRuns({
         cwd: runRows.find(({ candidate }) => candidate.cwd)?.candidate.cwd,
         project: runRows.find(({ candidate }) => candidate.projectChanged)?.candidate.project,
       });
-      report.changedRuns += 1;
+      if (stateChanged || minutesChanged) report.changedRuns += 1;
+      if (minutesChanged) report.minutesApplied += 1;
     } catch (error) {
       report.failures.push({ runId: run.runId, error: error.message });
     }
@@ -774,7 +823,7 @@ export function cmdReprice(args = [], {
   } else {
     log(table(report.rows));
     log(REPRICE_RETENTION_CAVEAT);
-    log(`✓ reprice: ${report.rows.length} record${report.rows.length === 1 ? '' : 's'}, ${report.changedRuns} run${report.changedRuns === 1 ? '' : 's'} changed, ${report.changedProjects} project${report.changedProjects === 1 ? '' : 's'} backfilled, ${(report.elapsedMs / 1000).toFixed(1)}s elapsed`);
+    log(`✓ reprice: ${report.rows.length} record${report.rows.length === 1 ? '' : 's'}, ${report.changedRuns} run${report.changedRuns === 1 ? '' : 's'} changed, ${report.minutesChanged} duration record${report.minutesChanged === 1 ? '' : 's'} stale (${report.minutesRecomputed} recomputed), ${report.changedProjects} project${report.changedProjects === 1 ? '' : 's'} backfilled, ${(report.elapsedMs / 1000).toFixed(1)}s elapsed`);
     for (const failure of report.failures) error(`✗ ${failure.runId}: ${failure.error}`);
   }
   return report.failures.length ? 1 : 0;

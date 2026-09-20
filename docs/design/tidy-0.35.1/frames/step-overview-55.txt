@@ -1,0 +1,30 @@
+Step study · qvh8e2
+completed · not verified
+codex · gpt-5.6-sol · high · active 14.07m
+
+── task · first lines ───────────────────────
+sample task for study dolor sit
+samples: culpa cupidatat sed sed nostrud enim amet,
+sample qui non amet non elit est incididunt pariatur
+[Enter expand] [v detail]
+
+── activity · overview · 96 events ───────────
+R1  sample id sed amet amet est lorem deserunt…
+    2 commands · 0 files read · 0 edits · 0 errors
+R2  sample est et excepteur; pariatur sit proident…
+    20 commands · 0 files read · 0 edits · 0 errors
+R3  sample ad aliquip pariatur mollit; tempor nisi ad…
+    60 commands · 0 files read · 0 edits · 0 errors
+R4  sample o dolore ullamco nulla aliqua mollit…
+    4 commands · 0 files read · 0 edits · 0 errors
+R5  sample commodo; culpa consectetur sit sunt minim…
+    4 commands · 0 files read · 0 edits · 0 errors
+R6  sample do nulla sit cupidatatdolor occaecat…
+
+── result · output/artifacts/outcome ─────────
+output out-study-attempt-1.md · artifacts retained
+execution succeeded · workflow completed
+verified false
+API $3.837 · subscription —
+tokens 6,095,515 · budget —
+[v detail] [Enter expand turn] [e errors] [t tools]

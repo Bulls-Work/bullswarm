@@ -1,0 +1,46 @@
+{
+  "runId": "wf-mu6mv62z-cdcd5d",
+  "shortId": "g6d6q2",
+  "lifecycle": {
+    "status": "completed",
+    "startedAt": "2026-09-18T07:24:43.431Z",
+    "finishedAt": "2026-09-19T20:39:39.885Z"
+  },
+  "attempts": [
+    { "id": "docs-1", "actionId": "docs", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T07:24:43.689Z", "finishedAt": "2026-09-18T07:33:43.482Z" },
+    { "id": "launcher-dock-1", "actionId": "launcher-dock", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T07:33:43.877Z", "finishedAt": "2026-09-18T07:50:05.323Z" },
+    { "id": "list-panel-1", "actionId": "list-panel", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T07:33:43.987Z", "finishedAt": "2026-09-18T07:54:18.719Z" },
+    { "id": "thread-1", "actionId": "thread", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T07:33:44.115Z", "finishedAt": "2026-09-18T07:52:46.804Z" },
+    { "id": "wire-1", "actionId": "wire", "ordinal": 1, "status": "succeeded", "pool": "claude-code:acme", "model": "claude-opus-5", "startedAt": "2026-09-18T07:54:19.043Z", "finishedAt": "2026-09-18T08:18:10.435Z" },
+    { "id": "e2e-1", "actionId": "e2e", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T08:18:10.750Z", "finishedAt": "2026-09-18T08:55:08.939Z" },
+    { "id": "integrate-1", "actionId": "integrate", "ordinal": 1, "status": "cancelled", "pool": "claude-code:acme", "model": "claude-opus-5", "startedAt": "2026-09-18T08:55:10.077Z", "finishedAt": "2026-09-18T08:55:40.673Z" },
+    { "id": "fix-browser-1", "actionId": "fix-browser", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T08:58:20.134Z", "finishedAt": "2026-09-18T09:18:44.853Z" },
+    { "id": "integrate-2", "actionId": "integrate", "ordinal": 2, "status": "succeeded", "pool": "claude-code:acme", "model": "claude-opus-5", "startedAt": "2026-09-18T09:18:45.171Z", "finishedAt": "2026-09-18T09:52:48.917Z" },
+    { "id": "accept-1", "actionId": "accept", "ordinal": 1, "status": "succeeded", "pool": "grok", "model": "grok-4.6", "startedAt": "2026-09-18T09:52:49.287Z", "finishedAt": "2026-09-18T10:21:20.295Z" },
+    { "id": "fix-clock-1", "actionId": "fix-clock", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-18T10:22:34.628Z", "finishedAt": "2026-09-18T10:30:53.408Z" },
+    { "id": "accept-2", "actionId": "accept", "ordinal": 2, "status": "succeeded", "pool": "grok", "model": "grok-4.6", "startedAt": "2026-09-18T10:30:53.751Z", "finishedAt": "2026-09-18T10:57:03.051Z" },
+    { "id": "fix-drag-1", "actionId": "fix-drag", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-19T18:05:58.918Z", "finishedAt": "2026-09-19T18:25:13.276Z" },
+    { "id": "ship-drag-1", "actionId": "ship-drag", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-sol", "startedAt": "2026-09-19T18:25:14.743Z", "finishedAt": "2026-09-19T18:41:14.511Z" },
+    { "id": "accept-3", "actionId": "accept", "ordinal": 3, "status": "interrupted", "pool": "claude-code", "model": "claude-opus-5", "startedAt": "2026-09-19T18:41:15.085Z", "finishedAt": "2026-09-19T18:47:51.799Z" },
+    { "id": "accept-4", "actionId": "accept", "ordinal": 4, "status": "succeeded", "pool": "claude-code", "model": "claude-opus-5", "startedAt": "2026-09-19T18:47:52.189Z", "finishedAt": "2026-09-19T19:22:23.251Z" },
+    { "id": "fix-height-1", "actionId": "fix-height", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-luna", "startedAt": "2026-09-19T19:23:42.982Z", "finishedAt": "2026-09-19T19:52:36.699Z" },
+    { "id": "ship-height-1", "actionId": "ship-height", "ordinal": 1, "status": "succeeded", "pool": "codex", "model": "gpt-5.6-sol", "startedAt": "2026-09-19T19:52:38.107Z", "finishedAt": "2026-09-19T20:11:18.072Z" },
+    { "id": "accept-5", "actionId": "accept", "ordinal": 5, "status": "succeeded", "pool": "claude-code", "model": "claude-opus-5", "startedAt": "2026-09-19T20:11:18.478Z", "finishedAt": "2026-09-19T20:39:39.767Z" }
+  ],
+  "presentation": {
+    "stages": [
+      { "id": "live-level-1-46b42b42", "label": "Phase 1 · docs", "actionIds": ["docs"], "startedAt": "2026-09-18T07:24:43.480Z", "completedAt": "2026-09-18T07:33:43.536Z" },
+      { "id": "live-level-2-e0f6b576", "label": "Phase 2 · Parallel work", "actionIds": ["launcher-dock", "list-panel", "thread"], "startedAt": "2026-09-18T07:33:43.547Z", "completedAt": "2026-09-18T07:54:18.764Z" },
+      { "id": "live-level-3-9b2abfc2", "label": "Phase 3 · wire", "actionIds": ["wire"], "startedAt": "2026-09-18T07:54:18.772Z", "completedAt": "2026-09-18T08:18:10.486Z" },
+      { "id": "live-level-4-6d8749c4", "label": "Phase 4 · e2e", "actionIds": ["e2e"], "startedAt": "2026-09-18T08:18:10.497Z", "completedAt": "2026-09-18T08:55:08.979Z" },
+      { "id": "live-level-5-8ff4c70a", "label": "Phase 5 · fix-browser", "actionIds": ["fix-browser"], "startedAt": "2026-09-18T08:58:19.967Z", "completedAt": "2026-09-18T09:18:44.892Z" },
+      { "id": "live-level-6-ad9b338a", "label": "Phase 6 · integrate", "actionIds": ["integrate"], "startedAt": "2026-09-18T09:18:44.899Z", "completedAt": "2026-09-18T09:52:48.968Z" },
+      { "id": "live-level-7-defeceb2", "label": "Phase 7 · fix-clock", "actionIds": ["fix-clock"], "startedAt": "2026-09-18T10:22:34.452Z", "completedAt": "2026-09-18T10:30:53.455Z" },
+      { "id": "live-level-8-a0d8fd60", "label": "Phase 8 · fix-drag", "actionIds": ["fix-drag"], "startedAt": "2026-09-19T18:05:58.681Z", "completedAt": "2026-09-19T18:25:13.522Z" },
+      { "id": "live-level-9-4bc31ae6", "label": "Phase 9 · ship-drag", "actionIds": ["ship-drag"], "startedAt": "2026-09-19T18:25:13.537Z", "completedAt": "2026-09-19T18:41:14.680Z" },
+      { "id": "live-level-10-819c39c1", "label": "Phase 10 · fix-height", "actionIds": ["fix-height"], "startedAt": "2026-09-19T19:23:42.723Z", "completedAt": "2026-09-19T19:52:36.861Z" },
+      { "id": "live-level-11-4bf3dae0", "label": "Phase 11 · ship-height", "actionIds": ["ship-height"], "startedAt": "2026-09-19T19:52:36.878Z", "completedAt": "2026-09-19T20:11:18.136Z" },
+      { "id": "live-level-12-c125d039", "label": "Phase 12 · accept", "actionIds": ["accept"], "startedAt": "2026-09-19T20:11:18.151Z", "completedAt": "2026-09-19T20:39:39.868Z" }
+    ]
+  }
+}

@@ -27,7 +27,7 @@ import {
   worstTokenSource,
 } from './dashboard.js';
 
-function workflowPanelModel(row, { phaseIndex = null, agentIndex = null } = {}) {
+function workflowPanelModel(row, { phaseIndex = null, agentIndex = null, nowMs = Date.now() } = {}) {
   const state = row.state;
   const actionDefinitions = new Map((state.program?.actions ?? []).map((action) => [action.id, action]));
   const actionStates = new Map((state.actions ?? []).map((action) => [action.id, action]));
@@ -38,16 +38,18 @@ function workflowPanelModel(row, { phaseIndex = null, agentIndex = null } = {}) 
   const phases = stages.map((stage) => {
     const progress = presentationStageStatus(stage, state.actions);
     const actionEntries = stage.actionIds.map((id) => ({ ...actionDefinitions.get(id), ...actionStates.get(id) }));
+    const duration = phaseDurationFacts(row, stage, { nowMs });
     const active = actionEntries.some((action) => action.status === 'running');
     const failed = actionEntries.some((action) => ['failed', 'blocked', 'cancelled'].includes(action.status));
     return {
       name: stage.id, label: stage.label,
       status: active ? 'active' : stage.completedAt ? (failed ? 'failed' : 'completed') : stage.startedAt ? 'waiting' : 'pending',
       actions: actionEntries, completed: progress.completed, total: progress.total,
+      activeMinutes: duration.activeMinutes, spanMinutes: duration.spanMinutes,
       blockedActions: actionEntries.filter((action) => action.status === 'blocked').map((action) => ({ id: action.id, kind: 'action', blockedBy: action.dependsOn ?? [] })),
     };
   });
-  if (!phases.length) phases.push({ name: 'planning', label: 'Planning', status: state.planner.status === 'running' ? 'active' : 'pending', actions: [], completed: 0, total: 0, blockedActions: [] });
+  if (!phases.length) phases.push({ name: 'planning', label: 'Planning', status: state.planner.status === 'running' ? 'active' : 'pending', actions: [], completed: 0, total: 0, activeMinutes: null, spanMinutes: null, blockedActions: [] });
   const selectedPhase = phases[selectedPhaseIndex] ?? phases[0];
   const agents = [];
   for (const action of selectedPhase.actions) {
@@ -110,6 +112,159 @@ function planLevels(row) {
 }
 
 const DONE_STATUS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'skipped']);
+
+function parsedMs(value) {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const ms = Date.parse(value ?? '');
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Resolve the intervals that actually had a worker attached to this run.
+ * Missing endpoints stay unknown; a running attempt ends at the projection
+ * clock, never at the run's lifecycle finish (which can include idle time).
+ */
+function attemptIntervals(attempts, { nowMs = Date.now() } = {}) {
+  const out = [];
+  for (const attempt of (Array.isArray(attempts) ? attempts : [])) {
+    const start = parsedMs(attempt?.startedAt);
+    if (start == null) {
+      if (attempt && typeof attempt === 'object') out.push({ unknown: true, attempt });
+      continue;
+    }
+    let end = parsedMs(attempt?.finishedAt ?? attempt?.endedAt);
+    const open = end == null && attempt?.status === 'running';
+    if (open) end = Number.isFinite(nowMs) ? nowMs : Date.now();
+    if (end == null || end < start) {
+      out.push({ unknown: true, attempt });
+      continue;
+    }
+    out.push({ start, end, attempt, open });
+  }
+  return out;
+}
+
+/** Union interval facts for active minutes and the secondary wall span. */
+function unionIntervals(intervals) {
+  const unknown = (Array.isArray(intervals) ? intervals : []).some((entry) => entry?.unknown === true);
+  const list = (Array.isArray(intervals) ? intervals : [])
+    .filter((entry) => Number.isFinite(entry?.start) && Number.isFinite(entry?.end) && entry.end >= entry.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (unknown || !list.length) return { activeMinutes: null, spanMinutes: null, startMs: null, endMs: null, open: false, unknown };
+  const merged = [];
+  for (const interval of list) {
+    const previous = merged.at(-1);
+    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+    else merged.push({ start: interval.start, end: interval.end });
+  }
+  const activeMs = merged.reduce((total, interval) => total + interval.end - interval.start, 0);
+  const startMs = list[0].start;
+  const endMs = list.at(-1).end;
+  const open = list.some((interval) => interval.open === true);
+  return {
+    activeMinutes: activeMs / 60_000,
+    spanMinutes: open ? null : (endMs - startMs) / 60_000,
+    startMs,
+    endMs,
+    open,
+    unknown: false,
+  };
+}
+
+function storedMinutes(source, key) {
+  const candidates = [
+    source?.minutes?.[key],
+    source?.minutes?.[key === 'active' ? 'activeMinutes' : 'spanMinutes'],
+    source?.[`${key}Minutes`],
+  ];
+  for (const value of candidates) {
+    const number = finiteOrNull(value);
+    if (number != null && number >= 0) return number;
+  }
+  return null;
+}
+
+function allRunAttempts(row) {
+  return [
+    ...(row?.state?.preflight?.scout?.attempts ?? []),
+    ...(row?.state?.planner?.attempts ?? []),
+    ...(row?.state?.attempts ?? row?.attempts ?? []),
+  ];
+}
+
+const TERMINAL_LIFECYCLE_STATUS = new Set(['completed', 'partial', 'cancelled', 'failed', 'interrupted']);
+
+function runIsTerminal(row) {
+  const state = row?.state ?? row;
+  if (Boolean(state?.lifecycle?.finishedAt ?? row?.finishedAt)) return true;
+  const status = String(state?.lifecycle?.status ?? row?.status ?? '').toLowerCase();
+  if (status) return TERMINAL_LIFECYCLE_STATUS.has(status);
+  const attempts = allRunAttempts(row);
+  return attempts.length > 0 && attempts.every((attempt) => attempt?.status && attempt.status !== 'running');
+}
+
+function runDurationFacts(row, { nowMs = Date.now() } = {}) {
+  const rollup = row?.minutes
+    ? row
+    : (row?.rollup ?? row?.report?.rollup ?? row?.report ?? row?.state?.rollup ?? row?.state ?? {});
+  const intervals = attemptIntervals(allRunAttempts(row), { nowMs });
+  const union = unionIntervals(intervals);
+  const activeMinutes = union.open ? union.activeMinutes : storedMinutes(rollup, 'active') ?? union.activeMinutes;
+  const spanMinutes = !runIsTerminal(row) || union.open ? null : storedMinutes(rollup, 'span') ?? union.spanMinutes;
+  return { ...union, activeMinutes, spanMinutes, intervals };
+}
+
+function phaseAttempts(row, stage) {
+  const ids = new Set(stage?.actionIds ?? stage?.actions?.map((action) => action.id) ?? []);
+  const attempts = row?.state?.attempts ?? row?.attempts ?? stage?.attempts ?? [];
+  return attempts.filter((attempt) => ids.has(attempt?.actionId));
+}
+
+function phaseDurationFacts(row, stage, { nowMs = Date.now() } = {}) {
+  const intervals = attemptIntervals(phaseAttempts(row, stage), { nowMs });
+  const union = unionIntervals(intervals);
+  const phaseSources = [row?.minutes?.phases, row?.phases, row?.rollup?.phases, row?.report?.phases];
+  const phaseRollup = phaseSources.find((source) => Array.isArray(source))
+    ?.find((entry) => entry?.id === stage?.id || entry?.label === stage?.label)
+    ?? phaseSources.find((source) => source && !Array.isArray(source))?.[stage?.id]
+    ?? phaseSources.find((source) => source && !Array.isArray(source))?.[stage?.label];
+  const activeStored = storedMinutes(stage, 'active') ?? storedMinutes(phaseRollup, 'active');
+  const spanStored = storedMinutes(stage, 'span') ?? storedMinutes(phaseRollup, 'span');
+  const activeMinutes = union.open ? union.activeMinutes : activeStored ?? union.activeMinutes;
+  const phaseActions = stage?.actions?.length
+    ? stage.actions
+    : (row?.state?.actions ?? []).filter((action) => (stage?.actionIds ?? []).includes(action?.id));
+  const phaseTerminal = Boolean(stage?.completedAt)
+    || (phaseActions.length > 0 && phaseActions.every((action) => DONE_STATUS.has(action?.status)));
+  const spanMinutes = !phaseTerminal || union.open ? null : spanStored ?? union.spanMinutes;
+  return { ...union, activeMinutes, spanMinutes, intervals };
+}
+
+function activeMinutesText(value) {
+  const number = finiteOrNull(value);
+  if (number == null) return '—';
+  return `${number.toFixed(2)}m`;
+}
+
+function durationClockText(minutes) {
+  const number = finiteOrNull(minutes);
+  if (number == null) return 'time pending';
+  const seconds = Math.max(0, Math.round(number * 60));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+function attemptDurationMinutes(attempt, { nowMs = Date.now() } = {}) {
+  const intervals = attemptIntervals([attempt], { nowMs });
+  if (intervals.length) return (intervals[0].end - intervals[0].start) / 60_000;
+  const wallSec = finiteOrNull(attempt?.wallSec);
+  return wallSec != null && wallSec >= 0 ? wallSec / 60 : null;
+}
+
+function attemptDurationText(attempt, options = {}) {
+  return durationClockText(attemptDurationMinutes(attempt, options));
+}
 
 /** `phase 2 of 4 · 5/8 steps`, plus the ETA when every remainder is measured. */
 function planProgress(row, { assignments = [], nowMs = Date.now() } = {}) {
@@ -329,6 +484,15 @@ function planStageLabel(stage, index) {
     : `Phase ${index + 1} · ${label || 'starting'}`;
 }
 
+/** The compact box uses the authored phase name, without the graph prefix. */
+function planStageName(stage, index) {
+  const label = planStageLabel(stage, index)
+    .replace(/^Follow-up \d+: /, '')
+    .replace(/^Phase \d+\s*·\s*/, '')
+    .trim();
+  return label || `phase-${index + 1}`;
+}
+
 function planStageHeader(stage, index) {
   const actions = stage.actions ?? [];
   const progress = presentationStageStatus(stage, actions);
@@ -338,6 +502,32 @@ function planStageHeader(stage, index) {
     : failed ? glyphs().fail
       : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
   return `${planStageLabel(stage, index)} · ${progress.completed}/${progress.total} ${status}`;
+}
+
+/**
+ * One whole-phase plan box. The action is attached to the full text so both a
+ * mouse click and the dashboard's selected-row Enter open the phase's first
+ * step; no individual step names leak into the compact plan.
+ */
+function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {}) {
+  const actions = stage?.actions ?? [];
+  const progress = presentationStageStatus(stage, actions);
+  const running = actions.some((action) => action.status === 'running');
+  const failed = actions.some((action) => ['failed', 'blocked', 'cancelled'].includes(action.status));
+  const status = running ? glyphs().started
+    : failed ? glyphs().fail
+      : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
+  const first = actions[0];
+  const selected = first?.id && first.id === selectedId;
+  const text = `[${status} ${planStageName(stage, index)} ${progress.completed}/${progress.total}]`;
+  return [{
+    text: selected ? `\x1b[7m${text}\x1b[0m` : text,
+    ...(first ? { action: { kind: 'step', actionId: first.id, ...(runId ? { runId } : {}) } } : {}),
+  }];
+}
+
+function planStageBoxText(stage, index) {
+  return planStageBoxParts(stage, index)[0]?.text ?? '';
 }
 
 function planStageActions(stage, limit = null) {
@@ -467,10 +657,20 @@ export {
   planProgress,
   planStripParts,
   runEconomics,
+  attemptIntervals,
+  unionIntervals,
+  runDurationFacts,
+  phaseDurationFacts,
+  activeMinutesText,
+  attemptDurationMinutes,
+  attemptDurationText,
   planAttemptDetail,
   planStages,
   planStageLabel,
+  planStageName,
   planStageHeader,
+  planStageBoxParts,
+  planStageBoxText,
   planStageActions,
   planMoreParts,
   phaseActionGlyph,

@@ -12,7 +12,7 @@ process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
 
 const fixtureDir = fileURLToPath(new URL('./fixtures/step-model/', import.meta.url));
-const frameDir = fileURLToPath(new URL('../docs/design/step-page-0.35.0/frames/', import.meta.url));
+const frameDir = '/tmp/bullswarm-step-frames-0.35.1';
 const fixedNow = Date.parse('2026-09-19T18:10:00.000Z');
 
 function stateFor({ actionId, actionStatus, lifecycleStatus, attempts, resultFile = null }) {
@@ -114,38 +114,43 @@ function plain(value) {
   return String(value ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
-test('nine Step frames stay width-bounded and are saved for design diffing', () => {
+test('running, finished, and failed Step frames stay width-bounded in both views', () => {
   const models = makeModels();
   mkdirSync(frameDir, { recursive: true });
   for (const [state, model] of Object.entries(models)) {
-    for (const width of [55, 120, 200]) {
-      const lines = renderDashboardFrame(model, width);
+    for (const view of ['overview', 'detail']) for (const width of [55, 120, 200]) {
+      const lines = renderDashboardFrame(model, width, { stepView: view });
       for (const line of lines) assert.ok([...plain(line)].length <= width, `${state}-${width}: ${plain(line)}`);
-      writeFileSync(join(frameDir, `rendered-${state}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
+      const direct = render(model, width, { stepView: view });
+      assert.match(direct.map(plain).join('\n'), view === 'overview' ? /\[v detail\]/ : /\[v overview\]/);
+      writeFileSync(join(frameDir, `rendered-${state}-${view}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
     }
   }
 });
 
-test('running activity exposes capture order, minimap, selection, follow, and filters', () => {
+test('running activity exposes turn overview, selection, follow, and filters', () => {
   const base = makeModels().running;
   const model = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 3, follow: false, activityFilter: 'tools' });
   const selected = render(model, 120, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
   const text = selected.map(plain).join('\n');
   assert.match(text, /events/);
-  assert.match(text, /capture order/);
+  assert.match(text, /overview/);
   assert.match(text, /paused/);
   assert.match(text, /\[tools\]/);
-  assert.match(text, />\d{2}:\d{2} COMMAND/);
+  assert.match(text, /2 commands · 0 files read · 0 edits · 0 errors/);
   const detailModel = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 6, follow: false });
   const detail = render(detailModel, 55, { stepDetail: true, stepSelectedEventIndex: 6, stepFollow: false });
-  assert.match(detail.map(plain).join('\n'), /selected event|event detail/i);
-  assert.match(detail.map(plain).join('\n'), /not captured: tool identity, timing, usage/i);
+  assert.match(detail.map(plain).join('\n'), /today's capture-order|seq 7/i);
+  assert.match(detail.map(plain).join('\n'), /eventId|toolCallId|duration/i);
+
+  const expanded = render(stepPageModel(base.modelInput, { nowMs: fixedNow, expandedTurn: 0 }), 120);
+  assert.match(expanded.map(plain).join('\n'), /COMMAND · running|COMMAND · completed/);
 });
 
-test('money is rendered once and pool labels come from connector evidence', () => {
+test('money is rendered once and the header carries pool, model, and effort', () => {
   const running = render(makeModels().running, 120).map(plain).join('\n');
   assert.equal((running.match(/API — pending · subscription — pending/g) ?? []).length, 1);
-  assert.match(running, /codex · paid model · reader licence meter · weekly/);
+  assert.match(running, /codex · gpt-5\.6-luna · medium/);
   assert.doesNotMatch(running, /compatibility ·/);
   assert.doesNotMatch(running, /UNAVAILABLE|level unavailable/);
 });
@@ -158,10 +163,9 @@ test('historical and failed frames state unavailable fields and preserve money b
   assert.match(historical, /estimated/);
   assert.match(historical, /~ \$0\.00/);
   const retry = render(failed, 120).map(plain).join('\n');
-  assert.match(retry, /attempt history/);
-  assert.match(retry, /1 INTERRUPTED/);
-  assert.match(retry, /2 INTERRUPTED/);
-  assert.match(retry, /API — unknown/);
+  assert.match(retry, /attempt history|2 attempts/);
+  assert.match(retry, /attempt history 2 attempts/);
+  assert.match(retry, /API —/);
   assert.doesNotMatch(retry, /\$0\.00/);
   assert.match(retry, /tool identity|event stream unavailable/i);
 });

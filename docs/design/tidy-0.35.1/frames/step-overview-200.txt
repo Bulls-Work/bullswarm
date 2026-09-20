@@ -1,0 +1,29 @@
+Step study · run qvh8e2 · completed · not verified · codex · gpt-5.6-sol · high
+active 14.07m · overview (default)                                      [v detail]
+
+── task · prompt + task first lines ──────────────────────────────────────────────────────────────────────────
+sample task for study dolor sit
+samples: culpa cupidatat sed sed nostrud enim amet, labore est sed quis, sed anim qui adipiscing deserunt
+task path retained; first lines shown · [Enter expand]
+
+── activity · turn overview · 96 events (6 responses, 90 commands) ───────────────────────────────────────────
+R1  sample ex non esse amet sit sed exercitation occaecat ipsum pariatur dolor…
+    2 commands · 0 files read · 0 edits · 0 errors
+R2  sample laborum ad a cupidatat proident ipsum; proident est deserunt pariatur…
+    20 commands · 0 files read · 0 edits · 0 errors
+R3  sample ut laborum deserunt minim adipiscing; deserunt proident veniam quis in non deserunt…
+    60 commands · 0 files read · 0 edits · 0 errors
+R4  sample a cillum veniam officia sed velit labore veniam…
+    4 commands · 0 files read · 0 edits · 0 errors
+R5  sample dolore velit ut deserunt; irure consectetur est reprehenderit velit…
+    4 commands · 0 files read · 0 edits · 0 errors
+R6  # sample do nulla sit cupidatatdolor occaecat
+
+── result · output + artifacts + outcome/verification ───────────────────────────────────────────────────────
+output out-study-attempt-1.md · stream stream-study-attempt-1.jsonl · result envelope retained
+execution succeeded · workflow completed · independent verification false
+
+── cost · money pair + token classes + budget ───────────────────────────────────────────────────────────────
+API $3.836969 (rate-card:complete) · subscription — (unknown:no-meter)
+tokens 6,095,515 known · budget —
+[Enter expand turn] [↑↓ select] [Space follow] [e errors] [t tools] [v detail]

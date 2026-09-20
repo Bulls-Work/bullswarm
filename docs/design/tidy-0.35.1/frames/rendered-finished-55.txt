@@ -1,0 +1,30 @@
+ Home  Runs  Budget  Stats  Fleet
+ ✓ Step step-view · run stefx · SUCCEEDED · VERIFIED ·…
+Build the step-view fixture
+succeeded · verified
+codex · gpt-5.6-luna · medium
+active 39.35m
+
+── task · prompt + task first lines ───────────────────
+ sample task for step-model lorem ips
+ Purpose: build the evidence-honest Step model from
+ durable records.
+ Use real copied-home fixtures and preserve unknown
+ values.
+ task path retained; first lines shown · [Enter expand]
+
+── activity · overview · response turns · 0 events ────
+ filters [all] · all · errors · tools · following
+ event stream unavailable.
+ turns, tools, and event timing cannot be reconstructe…
+
+── result · output + artifacts + outcome/verification ─
+ execution SUCCEEDED · workflow completed · verified t…
+ output:
+  The model was shaped from the durable attempt
+  records.
+  Unknown stream fields remain explicitly unavailable.
+  
+ task: /home/dev/project-a/
+ task: tests/fixtures/step-model/task.md
+ [ back ] [ ● 1.stefx ] [Top] [End] [?.Help] 

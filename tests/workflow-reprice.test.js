@@ -224,6 +224,9 @@ test('dry-run is byte-identical and reports a transcript-summed real fixture', (
     assert.equal(report.apply, false);
     assert.equal(report.scannedRuns, 1);
     assert.equal(report.scannedAttempts, 1);
+    assert.equal(report.minutesRecomputed, 1);
+    assert.equal(report.minutesChanged, 1);
+    assert.equal(report.minutesApplied, 0);
     assert.equal(report.matched, 1);
     assert.equal(report.rows[0].tokenSource, 'transcript-summed');
     assert.equal(report.rows[0].totalKnown, 21089);
@@ -245,6 +248,9 @@ test('--apply rewrites usage, result totals, rollup, and history through shared 
       readTranscriptUsage: () => capturedCodexUsage(),
     });
     assert.equal(report.changedRuns, 1);
+    assert.equal(report.minutesRecomputed, 1);
+    assert.equal(report.minutesChanged, 1);
+    assert.equal(report.minutesApplied, 1);
     const state = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8'));
     const attempt = state.attempts[0];
     assert.equal(attempt.usage.tokenSource, 'transcript-summed');
@@ -256,6 +262,9 @@ test('--apply rewrites usage, result totals, rollup, and history through shared 
     assert.equal(result.usage.totals.tokenSource, 'transcript-summed');
     assert.equal(result.usage.totals.apiUsd, 0.002994);
     assert.equal(existsSync(join(runDir, 'rollup.json')), true);
+    const rollup = JSON.parse(readFileSync(join(runDir, 'rollup.json'), 'utf8'));
+    assert.equal(rollup.minutes.active, 0.21);
+    assert.equal(rollup.minutes.span, 0.21);
     assert.equal(existsSync(join(home, 'history', 'runs.jsonl')), true);
     assert.equal(JSON.parse(readFileSync(join(home, 'history', 'runs.jsonl'), 'utf8')).runId, 'wf-mtsz2t1c-763f7c');
   } finally { cleanup(); }

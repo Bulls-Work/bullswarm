@@ -1,0 +1,21 @@
+Task adapter · a58fb95e-6f73-4f3a-88d5-8a063155fb3c · project-a · analyze
+succeeded (`ok: true`) · verification unavailable · codex · gpt-5.6-luna · effort — · active 23.60m
+
+── task · prompt + task first lines ─────────────────────────────────────────────────────────────────────────
+sample ea. consequat: /home/dev/project-b (est pariatur, dolore release-0.34.0-plus)
+sample ea enim veniam enim eiusmod laboris ea nostrud amet 0.34.0 in elit fugiat cillum.
+samples e exercitationdolor labore: [Enter expand]
+
+── activity · overview · unavailable ─────────────────────────────────────────────────────────────────────────
+This normalized task record has no stream pointer. No response, command, file-read, edit, or error event
+is inferred from prose. `v` still switches to detail; detail reports the same unavailable activity.
+
+── result · output + artifacts + outcome/verification ───────────────────────────────────────────────────────
+execution succeeded · independent verification unavailable · reason none recorded
+task: /home/dev/.bullswarm/runs/task-1789855478392-pvtzl.md
+output: /home/dev/.bullswarm/runs/out-1789855478392-pvtzl.md
+first output line: sample ea `0.34.0` (`e768c46`) qui; velit amet mollit mollit ex `0.34.1`.
+
+── cost · money pair + token classes + budget ─────────────────────────────────────────────────────────────
+API — · subscription — · tokens — · budget —
+[v detail] [Enter expand turn] [↑↓ select] [Space follow] [Esc back]

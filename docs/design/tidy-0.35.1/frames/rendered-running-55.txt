@@ -1,0 +1,30 @@
+ Home  Runs  Budget  Stats  Fleet
+ ⠋ Step step-view · run stefx · RUNNING · 1–27/45
+Build the step-view fixture
+running · —
+codex · gpt-5.6-luna · medium
+active 409.9m
+
+── task · prompt + task first lines ───────────────────
+ sample task for step-model lorem ips
+ Purpose: build the evidence-honest Step model from
+ durable records.
+ Use real copied-home fixtures and preserve unknown
+ values.
+ task path retained; first lines shown · [Enter expand]
+
+── activity · overview · response turns · 7 events ────
+ filters [all] · all · errors · tools · following
+R1  sample dolor qui excepteur amet non sit adipiscing
+R1  proident, enim minim non sed exercitation aliqua
+R1  sed consequat est mollit est mollit.
+    4 commands · 0 files read · 0 edits · 0 errors
+R2  sample e enim proident a exercitation,
+R2  adipiscingdolor duis velit.
+    1 commands · 0 files read · 0 edits · 0 errors
+
+── result · output + artifacts + outcome/verification ─
+ execution RUNNING · workflow running · verified —
+ output:
+  The model was shaped from the durable attempt
+ [ back ] [ ● 1.stefx ] [Top] [End] [?.Help] 

@@ -1,26 +1,17 @@
-// The Step page renderer.
-//
-// step-model.js is deliberately the only place that reads workflow records,
-// streams, outputs, and result envelopes. This module receives that
-// width-independent projection and paints it into the dashboard's flat frame.
-// A missing value is written as an explicit unavailable state; prose in an
-// event summary is never promoted to a tool, turn, cost, or provider field.
+// The width-independent Step projection is built in step-model.js. This
+// renderer deliberately only consumes that projection: missing fields stay
+// visible as dashes and event prose is never promoted into technical facts.
 
-import { glyphs } from '../lib/glyphs.js';
 import { formatMoneyPair } from '../lib/usage-basis.js';
 import { cut, rule } from './dash-kit.js';
 import {
   actionRoleLabel,
   blank,
-  clockText,
-  formatBytes,
   statusIcon,
-  truncate,
   visibleLength,
   wrapLines,
 } from './dashboard.js';
 
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const STATUS_WORDS = Object.freeze({
   running: 'RUNNING',
   succeeded: 'SUCCEEDED',
@@ -32,401 +23,277 @@ const STATUS_WORDS = Object.freeze({
   cancelled: 'CANCELLED',
   canceled: 'CANCELLED',
   pending: 'PENDING',
+  queued: 'QUEUED',
+  unknown: 'UNKNOWN',
 });
-const SECTION_ORDER = Object.freeze(['activity', 'attempts', 'outcome', 'prompt']);
 
-function plain(value) {
-  return String(value ?? '').replace(ANSI, '');
-}
-
-function text(value, fallback = null) {
+function text(value, fallback = '—') {
   if (value == null) return fallback;
   const result = String(value).trim();
   return result || fallback;
 }
 
 function number(value) {
-  if (value == null || value === '' || (typeof value === 'string' && value.trim() === '') || typeof value === 'boolean') return null;
+  if (value == null || value === '' || typeof value === 'boolean') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 function count(value) {
-  const n = number(value);
-  return n == null ? null : n.toLocaleString('en-US');
-}
-
-function statusWord(value) {
-  const raw = String(value ?? '').toLowerCase();
-  return STATUS_WORDS[raw] ?? (raw ? raw.toUpperCase() : 'UNKNOWN');
+  const parsed = number(value);
+  return parsed == null ? '—' : parsed.toLocaleString('en-US');
 }
 
 function fit(value, width) {
-  return cut(String(value ?? ''), Math.max(1, width));
+  return cut(String(value ?? ''), Math.max(1, Number(width) || 1));
 }
 
-function wrapped(body, prefix, value, width, rows = Infinity) {
-  const available = Math.max(1, width - visibleLength(prefix));
-  const lines = wrapLines([String(value ?? '')], available);
-  for (const line of lines.slice(0, rows)) body.push(fit(`${prefix}${line}`, width));
-  if (lines.length > rows) body.push(fit(`${prefix}… ${lines.length - rows} more lines`, width));
-  return lines.length;
-}
-
-function timeText(value) {
-  if (!value) return null;
-  try { return clockText(value); } catch { return null; }
-}
-
-function duration(value) {
-  const ms = number(value);
-  if (ms == null) return null;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
-}
-
-function eventTime(value, precise = false) {
-  const parsed = Date.parse(String(value ?? ''));
-  if (!Number.isFinite(parsed)) return '--:--';
-  const date = new Date(parsed);
-  const base = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  if (!precise) return base;
-  return `${base}:${String(date.getSeconds()).padStart(2, '0')}.${String(date.getMilliseconds()).padStart(3, '0')}`;
-}
-
-function eventMark(event) {
-  const status = String(event?.status ?? '').toLowerCase();
-  if (['completed', 'complete', 'succeeded', 'success', 'done'].includes(status)) return glyphs().ok;
-  if (['failed', 'failure', 'error', 'interrupted', 'cancelled', 'canceled'].includes(status)) return glyphs().fail;
-  if (['running', 'started', 'start', 'in_progress', 'in-progress'].includes(status)) return glyphs().started;
-  return '·';
+function statusWord(value) {
+  const raw = String(value ?? 'unknown').toLowerCase();
+  return STATUS_WORDS[raw] ?? (raw ? raw.toUpperCase() : 'UNKNOWN');
 }
 
 function eventKind(event) {
   const kind = text(event?.kind, 'event');
-  if (kind === 'command_execution') return 'COMMAND';
-  return kind.toUpperCase();
+  return kind === 'command_execution' ? 'COMMAND' : kind.toUpperCase();
 }
 
-function eventSummary(event) {
-  return text(event?.summary, 'summary unavailable');
+function eventStatus(event) {
+  return String(event?.status ?? '—').toLowerCase();
 }
 
-function streamUnavailable(activity) {
-  if (!activity?.available) return activity?.reason || 'event stream unavailable';
-  if (activity.plainText) return 'plain stdout capture has no structured events';
-  return null;
+function duration(ms) {
+  const value = number(ms);
+  if (value == null) return '—';
+  const seconds = Math.max(0, Math.round(value / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 }
 
-function moneyLine(pair, { pending = false } = {}) {
-  const value = pair && typeof pair === 'object' ? pair : {};
-  // formatMoneyPair is the one source of truth for amount/basis formatting.
-  // The Step page changes only field labels and maps unknown words to the
-  // design's honest dash; it never substitutes a zero or bare dollar.
+function activeDuration(step) {
+  const value = number(step?.activeDurationMs ?? step?.header?.duration?.activeMs);
+  if (value == null) return '—';
+  const minutes = value / 60_000;
+  return `${Number(minutes.toFixed(2))}m`;
+}
+
+function summaryText(event) {
+  const value = event?.summary == null ? '' : String(event.summary).replace(/\s+/g, ' ').trim();
+  return value || 'summary unavailable';
+}
+
+function add(body, value, width) {
+  body.push(fit(value, width));
+}
+
+function addWrapped(body, prefix, value, width, maxRows = Infinity) {
+  const head = String(prefix ?? '');
+  const room = Math.max(1, Number(width) - visibleLength(head));
+  const lines = wrapLines([String(value ?? '')], room);
+  const shown = lines.length ? lines : [''];
+  shown.slice(0, maxRows).forEach((line) => add(body, `${head}${line}`, width));
+  if (shown.length > maxRows) add(body, `${head}… ${shown.length - maxRows} more lines`, width);
+  return shown.length;
+}
+
+function moneyPairLine(step) {
+  const pair = step?.cost?.moneyPair ?? step?.moneyPair ?? {};
+  const pending = Boolean(step?.cost?.pending ?? step?.availability?.usagePending);
   const rendered = formatMoneyPair({
-    api: value.api,
-    subscription: value.subscription,
-    tokenSource: value.tokenSource,
+    api: pair.api,
+    subscription: pair.subscription,
+    tokenSource: pair.tokenSource,
+    tokens: pair.tokens,
   });
-  const [apiRaw = 'api unknown', subscriptionRaw = 'sub unknown'] = rendered.split(' · ');
+  const values = rendered.split(' · ');
+  const apiRaw = values[0] ?? 'api unknown';
+  const subRaw = values[1] ?? 'sub unknown';
   const api = apiRaw.startsWith('api unknown')
-    ? `API ${blank()} ${pending ? 'pending' : 'unknown'}`
+    ? `API ${blank()}${pending ? ' pending' : ''}`
     : `API ${apiRaw}`;
-  const subscription = subscriptionRaw.startsWith('sub unknown')
-    ? `subscription ${blank()} ${pending ? 'pending' : 'unknown'}`
-    : `subscription ${subscriptionRaw}`;
-  return `${api} · ${subscription}`;
+  const sub = subRaw.startsWith('sub unknown')
+    ? `subscription ${blank()}${pending ? ' pending' : ''}`
+    : `subscription ${subRaw}`;
+  return `${api} · ${sub}`;
 }
 
-function tokenLine(tokens, source, { pending = false } = {}) {
-  const total = count(tokens?.totalKnown);
-  if (total == null) return `Tokens ${blank()} ${pending ? 'pending' : 'unknown'}`;
+function tokenLine(step) {
+  const cost = step?.cost ?? step?.costBlock ?? {};
+  const tokens = cost.tokens ?? step?.tokens ?? {};
+  const total = tokens.totalKnown;
+  const source = cost.tokenSource ?? step?.moneyPair?.tokenSource;
+  const pending = Boolean(cost.pending ?? step?.availability?.usagePending);
+  if (number(total) == null) return `tokens ${blank()}${pending ? ' pending' : ''}`;
   const estimated = String(source ?? '').startsWith('estimated:') || source === 'mixed';
-  const prefix = estimated ? '~' : '';
-  const basis = source && source !== 'unknown' ? ` · ${source}` : '';
-  return `Tokens ${prefix}${total}${basis}`;
+  return `tokens ${estimated ? '~' : ''}${count(total)}${source && source !== 'unknown' ? ` · ${source}` : ''}`;
 }
 
-function tokenClassLine(tokens) {
+function tokenClasses(step) {
+  const tokens = step?.cost?.tokens ?? step?.tokens ?? {};
   const fields = [
-    ['read', tokens?.standardRead],
-    ['cache read', tokens?.cacheRead],
-    ['cache write', (number(tokens?.cacheWrite5m) ?? number(tokens?.cacheWrite1h) ?? number(tokens?.cacheWrite))],
-    ['output', tokens?.output],
-    ['reasoning', tokens?.reasoning],
+    ['read', tokens.standardRead],
+    ['cache read', tokens.cacheRead],
+    ['cache write', number(tokens.cacheWrite5m) ?? number(tokens.cacheWrite1h) ?? number(tokens.cacheWrite)],
+    ['output', tokens.output],
+    ['reasoning', tokens.reasoning],
   ];
-  const rendered = fields.map(([label, value]) => `${label} ${value == null ? blank() : count(value)}`);
-  return rendered.some((entry) => !entry.endsWith(blank())) ? rendered.join(' · ') : null;
+  const values = fields.filter(([, value]) => number(value) != null)
+    .map(([label, value]) => `${label} ${count(value)}`);
+  return values.length ? values.join(' · ') : null;
 }
 
-function poolMeterLine(step) {
-  const profile = step.poolProfile ?? {};
-  const name = text(profile.name, text(step.selectedAttempt?.pool, 'pool unavailable'));
-  const modelClass = profile.freeModel === true
-    ? 'free model'
-    : profile.freeModel === false ? 'paid model' : `model class ${blank()}`;
-  const meter = profile.meterType === 'none'
-    ? 'no licence meter'
-    : profile.meterType ? `${profile.meterType} licence meter` : `licence meter ${blank()}`;
-  const window = profile.pacingWindow ? ` · ${profile.pacingWindow}` : '';
-  return `${name} · ${modelClass} · ${meter}${window}`;
+function budgetLine(step) {
+  const budget = step?.cost?.budget ?? step?.costBlock?.budget;
+  if (budget == null) return `budget ${blank()}`;
+  if (typeof budget === 'string' || typeof budget === 'number') return `budget ${budget}`;
+  const values = [
+    budget.remaining ?? budget.remainingUsd ?? budget.remainingMinutes,
+    budget.limit ?? budget.budget ?? budget.expectedMinutes,
+  ].filter((value) => value != null);
+  return `budget ${values.length ? values.join('/') : blank()}`;
 }
 
-function routeText(step) {
-  const route = step.route ?? {};
-  const attemptRoute = step.selectedAttempt?.routing ?? {};
-  const lane = text(route.lane, text(attemptRoute.lane, null));
-  const effort = text(route.effort, text(attemptRoute.effort, null));
-  const reason = text(route.reason, text(route.explanation, text(attemptRoute.reason, text(attemptRoute.why, null))));
-  const candidate = Array.isArray(route.candidates) ? route.candidates[0] : null;
-  const forecast = route.forecast && typeof route.forecast === 'object' ? route.forecast : {};
-  const candidateText = candidate
-    ? `candidate ${text(candidate.pool, 'pool unavailable')}${text(candidate.model, null) ? `/${candidate.model}` : ''}`
-    : null;
-  const forecastText = [
-    forecast.urgency ?? candidate?.urgency,
-    forecast.forecastPacingPct ?? candidate?.forecastPacingPct,
-  ].filter((value) => number(value) != null).map((value, index) => index === 0 ? `urgency ${value}` : `forecast ${value}%`);
-  const surplus = number(candidate?.effectiveSurplus ?? candidate?.pace);
-  const pieces = [
-    [lane, effort].filter(Boolean).join('/'),
-    reason,
-    candidateText,
-    surplus == null ? null : `surplus ${surplus}`,
-    ...forecastText,
-  ].filter(Boolean);
-  return pieces.length ? pieces.join(' · ') : null;
-}
-
-function minimap(activity, width) {
-  const buckets = activity?.minimap?.buckets ?? [];
-  if (!buckets.length) return null;
-  const glyphsForBucket = buckets.map((bucket) => {
-    if (bucket.errors > 0) return '×';
-    if (bucket.visibleCount === 0) return '·';
-    if (bucket.kinds.includes('command_execution') || bucket.kinds.includes('tool')) return '▆';
-    return '▂';
-  }).join('');
-  return fit(glyphsForBucket, Math.max(4, Math.min(width, 32)));
-}
-
-function filterLabel(activity) {
-  const selected = activity?.filter ?? 'all';
-  return ['all', 'turns', 'tools', 'errors']
-    .map((value) => value === selected ? `[${value}]` : value)
-    .join(' · ');
-}
-
-function activityLines(step, width, { detailOpen = false } = {}) {
-  const activity = step.activity ?? {};
+function headerLines(step, width, view = 'overview') {
+  const identity = step?.identity ?? {};
+  const attempt = step?.selectedAttempt ?? {};
+  const pool = text(step?.header?.pool ?? attempt.pool);
+  const model = text(step?.header?.model ?? attempt.model);
+  const effort = text(step?.header?.effort ?? attempt.effort ?? step?.route?.effort);
+  const verified = identity.verified == null ? '—' : identity.verified ? 'verified' : 'not verified';
+  const purpose = text(identity.purpose, text(step?.action?.purpose, actionRoleLabel(step?.action ?? {})));
   const lines = [];
-  const unavailable = streamUnavailable(activity);
-  if (unavailable) {
-    lines.push(` ${unavailable}.`);
-    lines.push(' turns, tools, and event timing cannot be reconstructed.');
-    return lines.map((line) => fit(line, width));
-  }
-  const map = minimap(activity, width - 12);
-  const turns = activity.turns?.length ? `${activity.turns.length} turns` : 'turns not captured';
-  const follow = activity.follow ? 'following' : 'paused';
-  lines.push(` ${map ?? '—'}  ${activity.events?.length ?? 0} events · ${turns} · ${follow}`);
-  lines.push(` filters ${filterLabel(activity)} · capture order${activity.parseErrors ? ` · ${activity.parseErrors} malformed ignored` : ''}`);
-  if (detailOpen) return lines.map((line) => fit(line, width));
-  const events = activity.visibleEvents ?? [];
-  if (!events.length) {
-    lines.push(` ${activity.filter === 'all' ? 'no captured events' : `no ${activity.filter} events captured`}`);
-    return lines.map((line) => fit(line, width));
-  }
-  const compact = width < 70;
-  for (const event of events) {
-    const selected = Number(event.index) === Number(activity.selectedIndex);
-    const prefix = selected ? '>' : ' ';
-    const at = eventTime(event.at, width >= 150);
-    const head = `${prefix}${at} ${eventKind(event).padEnd(compact ? 9 : 12)} ${eventMark(event)} `;
-    const suffix = event.durationMs != null ? ` · ${duration(event.durationMs)}` : '';
-    pushLine(lines, `${head}${eventSummary(event)}${suffix}`, width);
-  }
-  return lines.map((line) => fit(line, width));
-}
-
-function pushLine(lines, value, width) {
-  lines.push(fit(value, width));
-}
-
-function selectedDetailLines(step, width) {
-  const detail = step.selectedEventDetail ?? step.activity?.selectedEventDetail;
-  const lines = [];
-  if (!detail?.available || !detail.event) {
-    const attempt = step.selectedAttempt;
-    if (attempt && (attempt.failureReason || attempt.status === 'failed' || attempt.status === 'interrupted')) {
-      lines.push(` attempt ${attempt.ordinal ?? '?'} · ${statusWord(attempt.status).toLowerCase()} · ${text(attempt.pool, 'pool unavailable')}`);
-      lines.push(` failure ${text(attempt.failureReason, 'provider failure unavailable')}`);
-      lines.push(` not captured: structured provider payload, tool identity, final event`);
-      return lines.map((line) => fit(line, width));
-    }
-    lines.push(' selected event detail unavailable.');
-    lines.push(' No event is selected in the captured stream.');
-    return lines.map((line) => fit(line, width));
-  }
-  const event = detail.event;
-  lines.push(` ${eventKind(event)} · ${String(event.status ?? 'status unavailable').toLowerCase()} · source ${event.source ?? 'unavailable'}`);
-  lines.push(` captured ${eventTime(event.at, width >= 150)}`);
-  if (event.durationMs != null) lines.push(` duration ${duration(event.durationMs)}`);
-  if (event.toolName != null) lines.push(` tool ${text(event.toolName)}`);
-  if (event.arguments != null) lines.push(` arguments ${typeof event.arguments === 'string' ? event.arguments : JSON.stringify(event.arguments)}`);
-  if (event.result != null) lines.push(` result ${typeof event.result === 'string' ? event.result : JSON.stringify(event.result)}`);
-  if (event.usage != null) lines.push(` usage ${typeof event.usage === 'string' ? event.usage : JSON.stringify(event.usage)}`);
-  if (detail.captured?.length) lines.push(` captured: ${detail.captured.join(', ')}`);
-  if (detail.unavailable?.length) {
-    const missing = new Set(detail.unavailable);
-    const groups = [];
-    if (['event id', 'turn id', 'tool call id', 'tool', 'arguments', 'result', 'parent', 'subagent'].some((field) => missing.has(field))) groups.push('tool identity');
-    if (['provider time', 'duration'].some((field) => missing.has(field))) groups.push('timing');
-    if (missing.has('usage')) groups.push('usage');
-    lines.push(` not captured: ${groups.length ? groups.join(', ') : detail.unavailable.join(', ')}`);
-  }
-  if (!detail.captured?.length && !detail.unavailable?.length) lines.push(' No structured event fields were captured.');
-  return lines.map((line) => fit(line, width));
-}
-
-function attemptLine(attempt, selected, width) {
-  const pool = text(attempt?.pool, 'pool unavailable');
-  const model = text(attempt?.model, 'model unavailable');
-  const output = number(attempt?.outputBytesObserved ?? attempt?.outputBytes);
-  const tokens = attempt?.tokens?.totalKnown != null ? `~${count(attempt.tokens.totalKnown)} tokens` : 'usage pending';
-  const elapsed = duration(attempt?.durationMs);
-  const failure = text(attempt?.failureReason, null);
-  const tail = [elapsed, output == null ? null : formatBytes(output), tokens, failure].filter(Boolean).join(' · ');
-  return fit(`${selected ? '>' : ' '}${attempt?.ordinal ?? '?'} ${statusWord(attempt?.status)} · ${pool} · ${model}${tail ? ` · ${tail}` : ''}`, width);
-}
-
-function attemptLines(step, width) {
-  const attempts = step.attemptHistory ?? step.attempts ?? [];
-  if (!attempts.length) return [' no attempt record captured.'];
-  return attempts.map((attempt) => attemptLine(attempt, attempt.id === step.selectedAttempt?.id, width));
-}
-
-function outcomeLines(step, width) {
-  const lines = [];
-  const verdict = step.verdict ?? {};
-  const execution = verdict.execution ?? step.execution ?? {};
-  const workflow = verdict.workflow ?? step.workflow ?? {};
-  const verification = verdict.verification ?? step.verification ?? {};
-  const status = verification.verdict == null ? `${blank()} unavailable` : verification.verdict ? 'VERIFIED' : 'not verified';
-  lines.push(` ${verification.verdict === true ? glyphs().ok : verification.verdict === false ? glyphs().fail : '·'} workflow ${status}`);
-  lines.push(` ${execution.succeeded ? glyphs().ok : execution.terminal ? glyphs().fail : glyphs().ongoing} action execution ${statusWord(execution.status)}`);
-  lines.push(` workflow status ${workflow.status ?? 'unavailable'} · execution and verification are separate`);
-  const result = step.outcomeModel ?? {};
-  if (result.resultAvailable) lines.push(' Durable result and action output recorded.');
-  else if (result.available) lines.push(' Durable result envelope unavailable; captured output is shown below.');
-  else lines.push(' Durable outcome unavailable.');
-  const requirements = verification.requirements ?? result.requirements ?? [];
-  if (requirements.length) {
-    const passed = requirements.filter((entry) => entry.status === 'passed').length;
-    lines.push(` requirement evidence ${passed}/${requirements.length} recorded`);
-  } else lines.push(' requirement evidence unavailable.');
-  return lines.map((line) => fit(line, width));
-}
-
-function promptLines(step, width) {
-  const prompt = step.promptModel ?? { lines: step.prompt ?? [], available: false };
-  const lines = [];
-  if (!prompt.available) lines.push(' prompt unavailable; no task file was captured.');
-  else for (const line of prompt.lines ?? []) lines.push(` ${line}`);
-  return lines.map((line) => fit(line, width));
-}
-
-function artifactLines(step, width) {
-  const artifacts = step.artifacts?.paths ?? step.artifacts ?? {};
-  const rows = [
-    ['task', artifacts.task],
-    ['output', artifacts.output],
-    ['stream', artifacts.stream],
-    ['result', artifacts.result],
-  ];
-  return rows.map(([name, value]) => fit(` ${name.padEnd(7)}${value ?? `${blank()} unavailable`}`, width));
-}
-
-function joinColumns(left, right, width) {
-  const leftWidth = Math.max(20, Math.floor((width - 3) * 0.56));
-  const rightWidth = Math.max(1, width - leftWidth - 3);
-  const rows = [];
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const a = fit(left[index] ?? '', leftWidth);
-    const b = fit(right[index] ?? '', rightWidth);
-    rows.push(fit(`${a}${' '.repeat(Math.max(1, leftWidth - visibleLength(a) + 2))}${b}`, width));
-  }
-  return rows;
-}
-
-function addField(lines, label, value, width) {
-  const prefix = ` ${String(label).padEnd(9)} `;
-  const available = Math.max(1, width - visibleLength(prefix));
-  for (const line of wrapLines([String(value ?? '— unavailable')], available).slice(0, 3)) {
-    lines.push(fit(`${prefix}${line}`, width));
-  }
-}
-
-function summary(step, width, spinnerFrame) {
-  const identity = step.identity ?? {};
-  const attempt = step.selectedAttempt ?? {};
-  const status = String(identity.status ?? 'unknown').toLowerCase();
-  const icon = statusIcon(status, spinnerFrame);
-  const attempts = step.attemptHistory?.length ?? 0;
-  const ordinal = attempt.ordinal ?? attempt.attemptNumber ?? 1;
-  const verified = identity.verified == null ? blank() : identity.verified ? 'VERIFIED' : 'NOT VERIFIED';
-  const actionId = text(identity.actionId, text(step.action?.id, 'step'));
-  const shortId = text(identity.shortId, text(step.shortId, '------'));
-  const lines = [];
-  const purpose = text(identity.purpose, text(step.action?.purpose, actionRoleLabel(step.action ?? {})));
-  const reasoning = text(step.reasoning, text(attempt.reasoning?.level, null));
-  const pool = text(attempt.pool, 'pool unavailable');
-  const model = text(attempt.model, 'model unavailable');
-  const effort = text(attempt.effort, step.route?.effort ?? 'auto');
-  const route = routeText(step) ?? 'route unavailable';
-  const started = timeText(attempt.startedAt ?? step.startedAt);
-  const elapsed = duration(attempt.durationMs);
-  const time = started ? `started ${started}${elapsed ? ` · elapsed ${elapsed}` : ''}` : 'timestamps unavailable';
-  const money = moneyLine(step.moneyPair, { pending: step.availability?.usagePending });
-  const tokens = tokenLine(step.tokens, step.moneyPair?.tokenSource, { pending: step.availability?.usagePending });
   if (width < 70) {
-    lines.push(` ${purpose}`);
-    lines.push(` Pool      ${pool} · ${model} · reasoning ${reasoning ?? blank()}${elapsed ? ` · ${elapsed}` : ''}`);
-    lines.push(` Route ${route}`);
-    lines.push(` Money ${money}`);
-    lines.push(` ${tokens} · output ${outputByteValue(step) == null ? blank() : formatBytes(outputByteValue(step))}`);
-    return lines.map((line) => fit(line, width));
+    addWrapped(lines, '', purpose, width, 2);
+    addWrapped(lines, '', `${statusWord(identity.status).toLowerCase()} · ${verified}`, width, 1);
+    addWrapped(lines, '', `${pool} · ${model} · ${effort}`, width, 2);
+    add(lines, `active ${activeDuration(step)}`, width);
+    add(lines, ` [v ${view === 'overview' ? 'detail' : 'overview'}]`, width);
+    return lines;
   }
-  if (width >= 170) {
-    lines.push(` Purpose  ${purpose}`);
-    lines.push(` Pool      ${pool} · attempt ${ordinal} · ${model} · reasoning ${reasoning ?? 'unavailable'} · ${time}${outputByteValue(step) == null ? '' : ` · output ${formatBytes(outputByteValue(step))}`}`);
-    lines.push(` Route    ${route}`);
-    lines.push(` Money    ${money}                                      ${tokens}`);
-    lines.push(` Status   ${statusWord(identity.status)} · workflow ${text(identity.workflowStatus, 'unavailable')} · execution ${statusWord(identity.executionStatus)} · verified ${verified}`);
-    return lines.map((line) => fit(line, width));
-  }
-  // The 120-column contract keeps the old labelled fields discoverable while
-  // compressing them to the same five-row summary as the design frames.
-  lines.push(` Status   ${statusWord(identity.status).toLowerCase()} · ${model} · reasoning ${reasoning ?? blank()} · ${verified}`);
-  lines.push(` Pool      ${pool} · attempt ${ordinal} · effort ${effort}${reasoning ? ` · reasoning ${reasoning}` : ''}${attempts > 1 ? ` · history ${ordinal}/${attempts}` : ''}`);
-  lines.push(` Purpose  ${purpose}`);
-  lines.push(` Route    ${route}`);
-  lines.push(` Time     ${time} · ${money} · ${tokens}`);
-  return lines.map((line) => fit(line, width));
-}
-
-function renderCompactSummary(step, width, spinnerFrame) {
-  const lines = summary(step, width, spinnerFrame);
+  addWrapped(lines, ' ', `${statusWord(identity.status).toLowerCase()} · ${verified} · ${pool} · ${model} · ${effort}`, width, 2);
+  addWrapped(lines, ' purpose ', purpose, width, 2);
+  add(lines, ` active ${activeDuration(step)}${number(step?.spanDurationMs) == null ? '' : ` · span ${duration(step.spanDurationMs)}`}`, width);
+  add(lines, ` [v ${view === 'overview' ? 'detail' : 'overview'}]`, width);
   return lines;
 }
 
-function outputByteValue(step) {
-  const current = number(step.bytes);
-  const samples = step.selectedAttempt?.outputSamples;
-  const last = Array.isArray(samples) && samples.length ? number(samples.at(-1)?.[1]) : null;
-  return last != null && (current == null || last > current) ? last : current;
+function taskLines(step, width) {
+  const block = step?.taskBlock ?? step?.task ?? {};
+  const lines = block.firstLines ?? block.lines ?? step?.prompt ?? [];
+  const body = [];
+  if (!lines.length) {
+    add(body, ` ${block.available ? text(block.prompt) : 'task unavailable; no task file was captured.'}`, width);
+  } else {
+    const limit = width < 70 ? 4 : width < 170 ? 6 : 8;
+    lines.slice(0, limit).forEach((line) => addWrapped(body, ' ', line, width, 2));
+    if (lines.length > limit || block.path) add(body, ' task path retained; first lines shown · [Enter expand]', width);
+  }
+  return body;
+}
+
+function overviewLines(step, width) {
+  const activity = step?.activity ?? {};
+  const body = [];
+  if (!activity.available) {
+    add(body, ` ${activity.reason || 'event stream unavailable'}.`, width);
+    add(body, ' turns, tools, and event timing cannot be reconstructed.', width);
+    return body;
+  }
+  const turns = activity.turns ?? [];
+  if (!turns.length) {
+    add(body, ` no response turns captured · ${activity.events?.length ?? 0} atomic events`, width);
+    return body;
+  }
+  const filter = activity.filter ?? 'all';
+  for (const row of activity.overviewRows ?? []) {
+    if (row.type === 'response') {
+      addWrapped(body, `R${row.turnIndex + 1}  `, summaryText(row.event), width, 3);
+    } else if (row.type === 'event') {
+      const event = row.event;
+      addWrapped(body, '    ', `${eventKind(event)} · ${eventStatus(event)} · ${summaryText(event)}`, width, 3);
+    } else {
+      add(body, `    ${row.summary?.text ?? '0 commands · 0 files read · 0 edits · 0 errors'}`, width);
+    }
+  }
+  if (filter !== 'all' && !body.length) add(body, ` no ${filter} events captured`, width);
+  return body;
+}
+
+function technicalValue(value) {
+  if (value == null) return blank();
+  if (typeof value === 'string') return value.replace(/\s+/g, ' ');
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function detailLines(step, width) {
+  const activity = step?.activity ?? {};
+  const body = [];
+  if (!activity.available) {
+    add(body, ` ${activity.reason || 'event stream unavailable'}.`, width);
+    add(body, ' all technical fields are unavailable without a structured stream.', width);
+    return body;
+  }
+  const events = activity.visibleDetailEvents ?? activity.visibleEvents ?? [];
+  if (!events.length) {
+    add(body, ` no captured events for today · filters ${activity.filter ?? 'all'}`, width);
+    return body;
+  }
+  for (const event of events) {
+    addWrapped(body, '', `seq ${technicalValue(event.seq)} · capture-time ${technicalValue(event.at)}`, width, 3);
+    addWrapped(body, ' ', `source ${technicalValue(event.source)} · provider ${technicalValue(event.providerType)}`, width, 3);
+    addWrapped(body, ' ', `kind ${technicalValue(event.kind)} · status ${technicalValue(event.status)}`, width, 3);
+    addWrapped(body, ' ', `eventId ${technicalValue(event.eventId)} · turnId ${technicalValue(event.turnId)} · toolCallId ${technicalValue(event.toolCallId)}`, width, 4);
+    addWrapped(body, ' ', `provider timestamp ${technicalValue(event.providerAt)} · duration ${technicalValue(event.durationMs)} · usage ${technicalValue(event.usage)}`, width, 4);
+    addWrapped(body, ' ', `arguments ${technicalValue(event.arguments)} · result ${technicalValue(event.result)}`, width, 4);
+    addWrapped(body, ' ', `parent/subagent ${technicalValue(event.parentId)}/${technicalValue(event.subagentId)}`, width, 3);
+    addWrapped(body, ' ', `summary: ${summaryText(event)}`, width, 4);
+  }
+  return body;
+}
+
+function resultLines(step, width, detail) {
+  const body = [];
+  const outcome = step?.resultBlock?.outcome ?? step?.outcomeModel ?? {};
+  const execution = outcome.execution ?? step?.execution ?? {};
+  const workflow = outcome.workflow ?? step?.workflow ?? {};
+  const verification = outcome.verification ?? step?.verification ?? {};
+  const workflowStatus = workflow.status == null || String(workflow.status).toLowerCase() === 'unknown'
+    ? blank()
+    : text(workflow.status);
+  add(body, ` execution ${statusWord(execution.status)} · workflow ${workflowStatus} · verified ${verification.verdict == null ? blank() : verification.verdict ? 'true' : 'false'}`, width);
+  if ((step?.attemptHistory?.length ?? 0) > 1) add(body, ` attempt history ${step.attemptHistory.length} attempts`, width);
+  if (step?.selectedAttempt?.failureReason) addWrapped(body, ' failure ', step.selectedAttempt.failureReason, width, 3);
+  if (step?.taskResult != null) addWrapped(body, ' reason ', step.taskResult, width, 3);
+  const output = step?.resultBlock?.output ?? step?.outcomeModel?.output ?? step?.outputModel ?? {};
+  if (output.available) {
+    add(body, ' output:', width);
+    const limit = width < 70 ? 4 : 8;
+    (output.lines ?? []).slice(0, limit).forEach((line) => addWrapped(body, '  ', line, width, 3));
+  } else add(body, ' output unavailable.', width);
+  const artifacts = step?.resultBlock?.artifacts?.paths ?? step?.artifacts?.paths ?? {};
+  for (const [name, value] of [['task', artifacts.task], ['output', artifacts.output], ['stream', artifacts.stream], ['result', artifacts.result]]) {
+    if (value == null) {
+      if (detail) add(body, ` ${name}: ${blank()} unavailable`, width);
+      continue;
+    }
+    addWrapped(body, ` ${name}: `, value, width, detail ? Infinity : 4);
+  }
+  const requirements = verification.requirements ?? outcome.requirements ?? [];
+  if (requirements.length) {
+    const passed = requirements.filter((entry) => entry.status === 'passed').length;
+    add(body, ` requirement evidence ${passed}/${requirements.length}`, width);
+  } else add(body, ' requirement evidence unavailable.', width);
+  return body;
+}
+
+function costLines(step, width) {
+  const body = [];
+  addWrapped(body, ' ', moneyPairLine(step), width, 3);
+  addWrapped(body, ' ', tokenLine(step), width, 3);
+  const classes = tokenClasses(step);
+  if (classes) addWrapped(body, ' token classes ', classes, width, 3);
+  add(body, ` ${budgetLine(step)}`, width);
+  return body;
 }
 
 function markSection(body, section) {
@@ -435,112 +302,71 @@ function markSection(body, section) {
   body.anchor.step[section] = body.lines.length + 1;
 }
 
-/** Render one Step page into the dashboard frame builder. */
+/** Render the Step page in the required header/task/activity/result/cost order. */
 export function renderStepPage(step, opts = {}, body) {
   const width = Math.max(20, Number(opts.width) || 120);
   const spinnerFrame = Number(opts.spinnerFrame) || 0;
-  const narrow = width < 70;
-  const wide = width >= 170;
   if (!body || typeof body.push !== 'function') return '';
   if (!step?.identity && !step?.agent) {
-    body.push(fit(' no step selected; identity unavailable', width));
-    return truncate(' pending · no step selected', width);
+    add(body, ' no step selected; identity unavailable', width);
+    return ' pending · no step selected';
   }
 
-  const activity = activityLines(step, width, { detailOpen: Boolean(opts.stepDetail) });
-  const detail = selectedDetailLines(step, width);
-  const attempts = attemptLines(step, width);
-  const outcome = outcomeLines(step, width);
-  const prompt = promptLines(step, width);
-  const artifacts = artifactLines(step, width);
-  const selectedSection = SECTION_ORDER.includes(opts.stepSection) ? opts.stepSection : 'activity';
+  const view = opts.stepDetail ? 'detail' : (opts.stepView ?? opts.view ?? step.view ?? 'overview') === 'detail' ? 'detail' : 'overview';
+  const expandedTurn = opts.stepExpandedTurn ?? opts.expandedTurn ?? step.expandedTurn ?? null;
+  const identity = step.identity ?? {};
+  const action = text(identity.actionId, text(step.action?.id, 'step'));
+  const shortId = text(identity.shortId, text(step.shortId, '------'));
+  const status = statusWord(identity.status);
+  const verdict = identity.verified == null ? '' : identity.verified ? ' · VERIFIED' : ' · not verified';
 
-  if (!(step.attemptHistory ?? step.attempts ?? []).length && step.action?.status === 'blocked') {
-    const blockedBy = step.action?.lastFailure?.message ?? step.action?.failure?.message ?? 'a failed dependency';
-    const role = actionRoleLabel(step.action) === 'action' ? 'work' : actionRoleLabel(step.action);
-    body.push(fit(` ${glyphs().blocked} ${step.action.id} · ${role} · never dispatched`, width));
-    body.push(fit(`   blocked by ${blockedBy.replace(/^dependency\s+/i, '').replace(/\s+did not succeed$/i, '')}`, width));
-  }
-
-  for (const line of renderCompactSummary(step, width, spinnerFrame)) body.push(fit(line, width));
+  for (const line of headerLines(step, width, view)) body.push(fit(line, width));
 
   body.push('');
-  body.push(rule('budget', null, width));
-  body.push(fit(` ${poolMeterLine(step)}`, width));
-  const classes = tokenClassLine(step.tokens);
-  if (classes) body.push(fit(` token classes ${classes}`, width));
+  markSection(body, 'task');
+  body.push(rule('task · prompt + task first lines', null, width));
+  for (const line of taskLines(step, width)) body.push(fit(line, width));
 
-  if (narrow) {
-    body.push('');
-    markSection(body, 'activity');
-    body.push(rule(opts.stepDetail ? 'selected event' : 'activity · capture order', opts.stepFollow === false ? 'paused' : 'following', width));
-    const primary = opts.stepDetail ? detail : activity;
-    for (const line of primary) body.push(fit(line, width));
-    body.push('');
-    markSection(body, 'attempts');
-    body.push(rule('attempts', null, width));
-    for (const line of attempts) body.push(fit(line, width));
-  } else if (wide) {
-    body.push('');
-    markSection(body, 'activity');
-    body.push(rule('activity · capture order', opts.stepFollow === false ? 'paused' : 'following', width));
-    for (const line of joinColumns(activity, detail, width)) body.push(fit(line, width));
-    body.push('');
-    markSection(body, 'attempts');
-    body.push(rule('attempt history', null, width));
-    for (const line of attempts) body.push(fit(line, width));
+  body.push('');
+  markSection(body, 'activity');
+  const activity = step.activity ?? {};
+  const filter = activity.filter ?? 'all';
+  const streamNotes = [
+    number(activity.parseErrors) > 0 ? `${activity.parseErrors} malformed ignored` : null,
+    activity.truncated ? `stream truncated${activity.dropped == null ? '' : ` · ${activity.dropped} dropped`}` : null,
+  ].filter(Boolean).join(' · ');
+  if (view === 'overview') {
+    body.push(rule(`activity · overview · response turns · ${activity.events?.length ?? 0} events`, null, width));
+    add(body, ` filters [${filter}] · all · turns · errors · tools · ${activity.follow ? 'following' : 'paused'}${streamNotes ? ` · ${streamNotes}` : ''}`, width);
+    for (const line of overviewLines(step, width)) body.push(fit(line, width));
+    if (expandedTurn != null) add(body, ` expanded turn ${Number(expandedTurn) + 1}`, width);
   } else {
-    body.push('');
-    markSection(body, 'activity');
-    body.push(rule('activity · capture order', opts.stepFollow === false ? 'paused' : 'following', width));
-    for (const line of activity) body.push(fit(line, width));
-    body.push('');
-    body.push(rule('selected event', null, width));
-    for (const line of detail) body.push(fit(line, width));
-    body.push('');
-    markSection(body, 'attempts');
-    body.push(rule('attempt history', null, width));
-    for (const line of attempts) body.push(fit(line, width));
+    body.push(rule(`activity · today's capture-order log · ${filter} · ${activity.todayEvents?.length ?? activity.events?.length ?? 0} events`, null, width));
+    add(body, ` filters [${filter}] · all · turns · errors · tools${streamNotes ? ` · ${streamNotes}` : ''}`, width);
+    for (const line of detailLines(step, width)) body.push(fit(line, width));
+    if (activity.responseCount != null) add(body, ` ${activity.responseCount} responses · ${activity.filterCounts?.tools ?? 0} commands/tools · ${activity.filterCounts?.errors ?? 0} errors`, width);
   }
 
-  // Compatibility labels keep the old prompt/output/artifact contract visible
-  // while the richer sections above add outcome, evidence, and stream detail.
   body.push('');
-  markSection(body, 'outcome');
-  body.push(rule('outcome and verification', null, width));
-  for (const line of outcome) body.push(fit(line, width));
-  body.push('');
-  markSection(body, 'prompt');
-  body.push(rule('prompt preview', null, width));
-  for (const line of prompt) body.push(fit(line, width));
-  body.push('');
-  body.push(rule('task · first lines', null, width));
-  for (const line of prompt.slice(0, narrow ? 4 : 2)) body.push(fit(line, width));
-  if (!prompt.length) body.push(fit(` ${blank()} unavailable`, width));
-  body.push('');
-  body.push(rule('output', step.live === 'live' ? 'live' : 'recorded', width));
-  const output = step.outcomeModel?.output ?? step.outputModel ?? {};
-  if (output.available) {
-    for (const line of (output.lines ?? []).slice(0, narrow ? 6 : 10)) body.push(fit(` ${line}`, width));
-  } else body.push(fit(` ${output.path ? `${blank()} output is empty` : 'output unavailable'}`, width));
-  body.push('');
-  body.push(rule('artifacts', null, width));
-  for (const line of artifacts) body.push(fit(line, width));
+  markSection(body, 'result');
+  // Compatibility anchors map the retired jumps into the merged blocks.
+  body.anchor.step.outcome = body.anchor.step.result;
+  body.anchor.step.prompt = body.anchor.step.task;
+  body.push(rule('result · output + artifacts + outcome/verification', null, width));
+  for (const line of resultLines(step, width, view === 'detail')) body.push(fit(line, width));
 
-  const sectionHint = selectedSection === 'activity'
-    ? '[↑↓ select] [Enter detail] [Space follow] [a attempts] [o outcome] [p prompt]'
-    : `[↑↓ ${selectedSection === 'attempts' ? 'attempt' : 'select'}] [Tab section] [Esc back]`;
-  const action = text(step.identity?.actionId, text(step.action?.id, 'step'));
-  const status = statusWord(step.identity?.status);
-  const verified = step.identity?.verified === true ? ' · VERIFIED' : step.identity?.verified === false ? ' · not verified' : '';
-  body.push(fit(` ${sectionHint}`, width));
-  const bytes = outputByteValue(step);
-  const spark = step.headerSpark
-    ? (width < 70
-      ? ` · output ${bytes == null ? step.headerSpark : formatBytes(bytes)}`
-      : ` · output ${step.headerSpark} ${bytes == null ? '' : formatBytes(bytes)}`)
-    : '';
-  return truncate(` ${statusIcon(step.identity?.status, spinnerFrame)} ${action} · run ${text(step.identity?.shortId, step.shortId ?? '------')} · ${status}${verified}${spark}`, width);
+  body.push('');
+  markSection(body, 'cost');
+  body.push(rule('cost · money pair + tokens + budget', null, width));
+  for (const line of costLines(step, width)) body.push(fit(line, width));
+
+  body.push('');
+  const footer = view === 'overview'
+    ? '[v detail] [Enter expand turn] [↑↓ select] [Space follow] [e errors] [t tools]'
+    : '[↑↓ select] [Enter expand] [Space follow] [e errors] [t tools] [v overview]';
+  add(body, ` ${footer}`, width);
+  const header = `${statusIcon(identity.status, spinnerFrame)} Step ${action} · run ${shortId} · ${status}${verdict}`;
+  return fit(` ${header}`, width);
 }
 
 export const stepPage = renderStepPage;

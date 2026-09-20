@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ bullswarm · home · 1–57/86
+Home · Today · 20 Sep · top 3 runs (active first)
+┌─ sample goal for rensha nostrud lorem nostrud moll…─┐
+│ project-b · completed · verified                    │
+│ 58m37s active of 58m38s · steps 9/9                 │
+│ API at least $9.52 · 6 unmeasured · subscription —  │
+└─────────────────────────────────────────────────────┘
+┌─ sample goal for euqrni minim labore magna eiusmod…─┐
+│ project-a · completed · verified                    │
+│ 1h55m · steps 5/5                                   │
+│ API ≈ $9.76 · subscription —                        │
+└─────────────────────────────────────────────────────┘
+┌─ sample goal for rw3dhi lorem sed sint ipsum lorem…─┐
+│ project-a · completed · not verified                │
+│ 1h38m active of 1h39m · steps 7/7                   │
+│ API ≈ $16.16 · subscription —                       │
+└─────────────────────────────────────────────────────┘
+
+── licences · today ───────────────────────────────────
+ pool              agent min   API $  unpriced
+ claude-code           171.3  ≈89.11         0
+ claude-code:acme       58.4  ≈24.71         1
+ codex                 964.5  ≈36.30        25
+ command-code              —       —         —
+ grok                   76.2  ≈21.17         0
+ ≈ ~ estimates (~ is rougher) · — not measured
+
+── running ────────────────────────────────────────────
+ nothing running right now
+
+── budget · this week ─────────────────────────────────
+ no pool reported a licence meter · bullswarm doctor c…
+
+── last 7 days ────────────────────────────────────────
+ Last 7 days · Last 30 days · All time
+ spent per day
+ ~$200 ┤
+       │
+       │                                     ████
+       │                                     ████
+       │                                     ████
+       │                                     ████
+       │                         ▆▆▆▆        ████
+ ~$100 ┤                         ████        ████
+       │                         ████        ████
+       │                         ████        ████
+       │                         ████        ████
+       │                         ████        ████
+       │                         ████  ▂▂▂▂  ████
+       │                         ████  ████  ████
+    $0 ┼──────────────────────────────────────────
+         Mon   Tue   Wed   Thu   Fri   Sat   Sun
+ ~ bars leave 66 unpriced attempts out
+
+ by pool · share of agent minutes
+ codex            ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░  75%
+ claude-code      ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   8%
+ grok             ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6%
+ [Top] [End] [?.Help]

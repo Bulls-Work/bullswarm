@@ -1,0 +1,46 @@
+Step step-model · va7k9a
+succeeded · verified · codex · gpt-5.6-luna
+medium · active 49.11m
+[v overview]
+
+── task · first lines ───────────────────────
+sample task for step-model-1 laboris
+sample purpose for va7k9a aute commodo proident
+est exercitation minim                  [Enter expand]
+
+── activity · detail · all · 325 events ─────
+seq 1 · at 17:50:31.709Z
+source stdout · provider item.completed
+kind response · status completed
+samples nostrud excepteur nisi sit proident…
+seq 2 · at 17:50:35.490Z
+source stdout · provider item.started
+kind command_execution · status running
+seq 3 · provider item.completed · status completed
+filters [all] [errors] [tools] · capture order
+
+── result · output/artifacts/outcome ─────────
+execution succeeded · workflow completed
+verified true
+requirements 6/6 · output + stream + result retained
+task path
+ /home/dev/.bullswarm/workflows/
+ wf-mu8ni8o4-f9baaf/task-step-model-attempt-1.md
+output path
+ /home/dev/.bullswarm/workflows/
+ wf-mu8ni8o4-f9baaf/out-step-model-attempt-1.md
+stream path
+ /home/dev/.bullswarm/workflows/
+ wf-mu8ni8o4-f9baaf/stream-step-model-attempt-1.jsonl
+result path
+ /home/dev/.bullswarm/workflows/
+ wf-mu8ni8o4-f9baaf/result.json
+run directory
+ /home/dev/.bullswarm/workflows/
+ wf-mu8ni8o4-f9baaf
+
+── cost · money pair + tokens + budget ───────
+API $0.959928 · subscription —
+tokens 35,971,504 · budget —
+
+[↑↓ select] [Enter] [e errors] [t tools] [v]
