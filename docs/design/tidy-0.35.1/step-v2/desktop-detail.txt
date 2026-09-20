@@ -1,0 +1,44 @@
+ Home  Runs  Budget  Stats  Fleet                                                                                                                                                                       
+ ✓ step-model · va7k9a · succeeded · verified by the workflow (6/6 requirements) · attempt 1 of 1                                                                                                       
+ sample purpose for va7k9a aute commodo proident ullamco cupidatat magna                                                                                                                                
+ codex · gpt-5.6-luna · medium effort · reasoning max                                                            49m07s · 01:50 → 02:39 HKT · 20 Sep 2026                                               
+ route  expiring soon: codex resets in 8h28m, surplus 11.8 over 5% of the week left → urgency 236 · picked over command-code, grok                                                                      
+                                                                                                                                                                                                        
+── activity · 15 turns · 120 commands · 35 edits · 0 errors ───────────────────────────────── showing turns · t to change ────────── │ ── result · succeeded · verified 6/6 ────────────────────────────
+  1  01:50  sample response for step-model-1 incididunt id consequat tempor labore qui pariatur mollit laborum eiusmod dolore et et  │  sample report magna exercitation.                               
+            fugiat proident. · 3 commands                                                                                            │  sample duis: incididunt.do: identity/verdict incididunt,        
+▶ 2  01:51  sample e enim proident a exercitation, adipiscingdolor duis velit. duis duis esse incididunt laborum est est amet dolore │  officia commodo, ullamco, v2/legacy ipsum, consequat tempor…    
+            occaecat; sit pariatur minim et quis est incididunt adipiscing, do non est incididunt est mollit stream/cost cupidatat   │  changed  src/dir-01/file-267.js                             
+            sed consectetur eiusmod mollit voluptate id qui labore eiusmod lorem.                                                    │           tests/file-268.test.js                      
+            35 commands · Esc closes                                                                                                 │  files    ~/.bullswarm/workflows/wf-mu8ni8o4-f9baaf/             
+            01:51:12  $ sample -in /non/exercitationdolordolor-1 2>/est/duis || anim; est id -ea…                            12.2s   │           task · out · stream (325 events) · diff                
+            01:51:28  $ sed --eiusmod; sed est fugiat --irure; in -ex /sed/exercitationdolordolor-1 2>&1 | anim               0.0s   │  Enter on result: the full report, 1.3 KB                        
+            01:51:34  $ samples -e '1,260e' sed/sit/exercitation.do; sed est -o '1,280a' non/est/excepteurdolor.ut; …         0.0s   │                                                                  
+            … 32 more commands · Space page down                                                                                     │ ── task · implement · build lane ────────────────────────────────
+  3  02:00  sample response for step-model-1 aliquip quis dolore nostrud commodo culpa et occaecat id veniam labore proident elit    │  sample ex: /home/dev/project-a (non 
+            velit nisi cupidatat minim consequat anim labore adipiscing voluptate consectetur. · 2 edits                             │  deserunt, mollit release-0.35.0, laborum ut sed deserunt 0.34.0 
+  4  02:09  sample response for step-model-1 ea labore sed minim velit esse excepteur labore aute tempor tempor consectetur tempor   │  sint sint: non ullamco dolor aliqua est sit sed non…            
+            voluptate proident, aute aute non qui aliquip commodo nulla qui qui qui deex checks without… · 14 commands · 3 edits     │  owns    file-267.js · file-268.test.js             
+  5  02:11  sample response for step-model-1 laborum sint dolor id ad mollit irure exercitation velit elit officia aliquip id sit    │  after   extract · stream-contract                               
+            aliquip dolor proident elit culpa elit sit tempor dolor incididunt do consectetur. · 3 commands · 4 edits                │  affects requirement 3 · requirement 6                           
+  6  02:14  sample response for step-model-1 tempor nostrud ad mollit anim ullamco dolor consequat officia sint elit ea mollit       │  Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB         
+            excepteur nostrud laborum tempor consequat sit ea excepteur non tempor reprehenderit. · 16 commands · 10 edits           │                                                                  
+  7  02:18  sample response for step-model-1 et nisi magna consequat ut cupidatat dolore officia pariatur cupidatat excepteur duis   │ ── cost ─────────────────────────────────────────────────────────
+            fugiat adipiscing magna deserunt ipsum fugiat ad adipiscing quis lorem cupidatat. · 5 commands · 2 edits                 │  API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep     
+  8  02:20  sample response for step-model-1 exercitation ad dolor ullamco duis ullamco aute incididunt commodo sit consectetur ad   │              35.2M cache read · 713k input · 58k output          
+            non qui sed ipsum ut sit dolor sunt eiusmod id et adipiscing consectetur laboris. · 2 commands · 1 edit                  │              37k reasoning                                       
+  9  02:21  sample response for step-model-1 consequat duis esse aliqua velit qui amet sunt irure esse ut minim elit esse aute non   │  codex plan  —       no meter reading for this attempt           
+            pariatur do culpa eiusmod lorem non in in esse sunt proident laborum consectetur. · 5 commands                           │              $100/mo · weekly window                             
+ 10  02:23  sample response for step-model-1 tempor dolor magna ad irure id voluptate enim commodo quis ad ad cupidatat enim ullamco │  measured from the codex transcript                              
+            mollit cupidatat duis consequat duis velit ut eiusmod lorem exercitation magna. · 12 commands · 3 edits                  │                                                                  
+ 11  02:26  sample response for step-model-1 sit et voluptate ipsum ad do non consequat esse et excepteur proident officia lorem     │                                                                  
+            dolor est nisi esse non adipiscing sunt enim aliqua do incididunt labore cupidatat. · 6 commands · 2 edits               │                                                                  
+ 12  02:31  sample response for step-model-1 aute aliqua esse voluptate reprehenderit culpa officia enim non elit incididunt labore  │                                                                  
+            dolor cillum aute in occaecat aliqua incididunt mollit laboris excepteur mollit. · 1 command                             │                                                                  
+ 13  02:31  sample response for step-model-1 laborum magna cillum esse laboris sunt et labore enim elit nostrud consequat sit ut     │                                                                  
+            aliquip, consectetur, sit commodo nulla. sit veniam sit sint adipiscing laboris. · 7 commands                            │                                                                  
+ 14  02:35  sample response for step-model-1 incididunt nisi aliqua id culpa officia voluptate tempor amet est qui in magna occaecat │                                                                  
+            esse sunt ex eiusmod labore nisi sit veniam elit, qui nisi consectetur aute est design. · 11 commands · 8 edits          │                                                                  
+ 15  02:39  sample report magna exercitation.                                                                                        │                                                                  
+            → the report, shown under result                                                                                         │                                                                  
+ [ back ] [ ● 1.va7k9a ]   Enter expand turn · Esc close · v detail (every event) · t filter · f follow · ? help                                                                                        
