@@ -52,7 +52,8 @@ export const name = 'x';                        // required when provider.mjs ex
 export const displayName = 'X';                 // optional
 export function connectors(ctx) {}              // optional; sync, returns Pool[]
 export async function readUsage(pool, ctx) {}   // optional; returns a Snapshot
-export function readTranscriptUsage({ provider, sessionId = null, cwd = null, startedAt = null, endedAt = null, home }) {}
+export function buildTranscriptIndex({ home }) {}   // optional; bulk repricing hint
+export function readTranscriptUsage({ provider, sessionId = null, cwd = null, startedAt = null, endedAt = null, home, index = null }) {}
 export function doctor(ctx) {}                  // optional; returns a health object
 ```
 
@@ -62,6 +63,7 @@ export function doctor(ctx) {}                  // optional; returns a health ob
 | `displayName` | the label strategy tables print | the provider name |
 | `connectors(ctx)` | synchronous, cheap, no network; returns an array of pools | one pool: the template |
 | `readUsage(pool, ctx)` | async; returns a [snapshot](#the-snapshot); throws an `Error`, with an optional `.code` | the pool falls back to a declared meter, else it is unmetered |
+| `buildTranscriptIndex({ home })` | optional; builds a reusable index for this provider's durable store during bulk repricing | each lookup may scan the provider store directly |
 | `readTranscriptUsage(args)` | optional; sums this provider's durable transcript for one attempt and returns token classes plus `confidence` (`exact`, `window`, `ambiguous`, or `none`) | the attempt falls through to a UTF-8 byte estimate, then `unknown` |
 | `doctor(ctx)` | returns `{ installed: boolean, loggedIn: boolean \| null, hint?: string }` | installed means `bin` is on `PATH`; logged in means any `configDirs` entry exists |
 
@@ -243,6 +245,73 @@ export function readTranscriptUsage({
 `tokens` uses the same classes above plus `totalKnown`; `confidence` is
 `exact`, `window`, `ambiguous`, or `none`. A provider without this hook is
 valid and falls through to `estimated:utf8-bytes/4` or `unknown`.
+
+## Contrib transcript readers
+
+The shipped `opencode` and `command-code` contrib providers implement the
+same hook instead of teaching the accounting core either CLI's storage
+format. Both modules may also export `buildTranscriptIndex({ home })`; bulk
+operations build one bounded index per provider and pass it back to the hook.
+
+### OpenCode
+
+OpenCode's durable store is the SQLite database at
+`~/.local/share/opencode/opencode.db`. The reader opens that database in place
+with Node's `node:sqlite` `readOnly` option; it never copies or writes the
+database. `session` rows provide the directory, model, aggregate token
+columns, and creation/update times. Assistant `message.data` JSON provides
+the exclusive token classes (`tokens.input`, `tokens.cache.read`,
+`tokens.cache.write`, `tokens.output`, and `tokens.reasoning`), model/provider
+identity, `path.cwd`, and message timestamps. `part` rows are used only when
+the matcher needs the first user text or task-file path; they are not needed
+to sum usage.
+
+For a pool owned by this provider (including account-shaped names such as
+`opencode2:kaihk-2`), matching first narrows sessions by exact `cwd` and the
+attempt's inclusive start/end window. If more than one session remains, the
+reader compares the first user part with the task-file path/text. A unique
+match is returned with `confidence: "window"` (or `"exact"` when a session
+ID was recorded); multiple candidates stay `"ambiguous"` with null token
+totals. A missing session stays `"none"`.
+
+### Command Code
+
+Command Code's durable conversation files, when session persistence is
+enabled, are JSONL files under
+`~/.commandcode/projects/<cwd-slug>/<session-id>.jsonl`. Assistant `message`
+lines can carry `usage.inputTokens`, `outputTokens`, `cacheReadTokens`,
+`cacheWriteTokens`, and `costUsd`, together with a model ID. The reader
+normalizes fresh input as
+`inputTokens - cacheReadTokens - cacheWriteTokens`; it does not treat
+`inputTokens` as an additional cache class. `sessions/` hook logs and
+`history.jsonl` are operational history, not authoritative token ledgers.
+
+The shipped Bullswarm connector currently invokes Command Code with
+`--no-session`. Therefore the historical attempts studied for 0.35.2 have
+checkpoint files but no usage-bearing `<session-id>.jsonl` transcript and
+cannot be backfilled from those checkpoints. Future attempts recover only
+when a matching, persisted JSONL transcript actually exists; otherwise the
+reader returns null usage with `reason: "no matching command-code transcript"`
+or, for a matching file with no usage rows,
+`reason: "command-code transcripts record no token usage"`. This is an honest
+absence, not a zero-cost result.
+
+## Provider-owned reader registry
+
+Transcript lookup is provider-owned. Code that has loaded providers must
+resolve the pool with `providerFor(providers, pool)` and obtain the optional
+hook with `transcriptReaderFor(providers, pool)` from `src/lib/providers.js`.
+`src/lib/transcripts/index.js`, the watcher, and `workflow reprice` use this
+registry, so first-class readers and enabled contrib readers follow the same
+path. A provider name is not inferred from a pool prefix in accounting code;
+the loaded provider entry owns the pool (including `name:<suffix>` account
+pools) and its module owns the on-disk format. A provider without a reader is
+supported and falls through to the byte estimate or `unknown` path.
+
+The registry also means a contrib provider must be enabled in
+`~/.bullswarm/providers.json` before its pools and reader are loaded. Enabling
+`opencode` or `command-code` does not make a reader global; it registers only
+that provider's pools and hook.
 
 For each attempt, a connector with `eventStream.format: "jsonl"` leaves a
 bounded `stream-<actionId>-attempt-<n>.jsonl` file: head records, one

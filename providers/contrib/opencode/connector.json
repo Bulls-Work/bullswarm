@@ -13,6 +13,7 @@
   "quotaSignatures": [],
   "outputExtraction": { "strategy": "event-stream" },
   "eventStream": {
+    "$comment-usage": "verified 2026-09-20 against opencode 1.18.31 and tests/fixtures/streams/opencode-hello.jsonl, a real capture of `opencode run --model hetzner/Qwen/Qwen3.6-35B-A3B-FP8 --format json 'Reply with the single word ok.'`: each model step ends with a `step_finish` event whose `part.tokens` carries input/output/reasoning plus cache.read/cache.write. The counters are disjoint — the real session rows in opencode.db prove `total` = input + output + reasoning + cache.read + cache.write (tokens_input 368554 next to tokens_cache_read 1597440 on the same row) — so input is already the fresh class and no cache or reasoning subtraction applies. One step_finish arrives per model request; the rule sums them the same way opencode.db sums its per-message rows into the session totals. `part.cost` is deliberately unmapped: opencode reports 0 for relay models it has no price book for, and that zero is unknown, not free. The snapshot scan from earlier the same day (131 JSONL files, zero stream-*.jsonl) is superseded by this capture; do not treat a missing stream capture as zero usage.",
     "format": "jsonl",
     "args": ["--format", "json"],
     "silenceThresholdSec": 600,
@@ -20,6 +21,10 @@
     "rules": [
       { "rootMatch": { "path": "type", "equals": "tool_use" }, "idPaths": ["part.callID", "part.id"], "kindPaths": ["part.tool"], "summaryPaths": ["part.state.input.command", "part.state.input.file_path", "part.state.input.path", "part.state.title"], "statusPath": "part.state.status" },
       { "rootMatch": { "path": "type", "equals": "text" }, "idPaths": ["part.id"], "kind": "response", "summaryPaths": ["part.text"], "status": "completed" }
+    ],
+    "usage": [
+      { "match": { "path": "sessionID" }, "mode": "last", "fields": { "sessionId": "sessionID" } },
+      { "match": { "path": "type", "equals": "step_finish" }, "mode": "sum", "fields": { "standardRead": "part.tokens.input", "cacheRead": "part.tokens.cache.read", "cacheWrite": "part.tokens.cache.write", "output": "part.tokens.output", "reasoning": "part.tokens.reasoning" } }
     ],
     "output": [
       { "match": { "path": "type", "equals": "text" }, "path": "part.text", "mode": "concat", "separator": "\n" }
@@ -41,6 +46,7 @@
     "levels": ["low", "medium", "high", "xhigh", "max"],
     "defaults": { "high": "high", "medium": "medium", "low": "low" }
   },
+  "$comment-pricing": "No OpenCode relay model profile here has an authoritative public token rate card as of 2026-09-20 (kaihk/* and opencode/union-alpha were checked). Pricing is intentionally omitted so transcript token totals remain unknown-cost rather than being treated as zero; the underlying OpenAI card is not assigned to an unidentified relay.",
   "modelProfiles": [
     { "match": "(?:^|/)claude-fable-", "tier": "high", "qualityRank": 6, "autoRecommend": false },
     { "match": "gpt-5\\.6-sol$", "tier": "high", "qualityRank": 6, "autoRecommend": true },

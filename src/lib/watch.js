@@ -222,7 +222,8 @@ async function resolveTranscriptReader(opts, poolName, home) {
   if (typeof opts.readTranscriptUsage === 'function') return opts.readTranscriptUsage;
   if (!poolName || !home) return null;
   try {
-    const providers = opts.providers ?? loadProviders(home, { packaged: true }).providers;
+    const loaded = opts.providers ?? loadProviders(home, { packaged: true });
+    const providers = Array.isArray(loaded) ? loaded : loaded?.providers;
     return transcriptReaderFor(providers, poolName);
   } catch {
     return null;

@@ -1,0 +1,13 @@
+{"type":"event","event":{"type":"notice","level":"info","message":"[update-notice] update available: v1.58.0 (installing in the background — a restart applies it)"}}
+{"type":"event","event":{"type":"run_start","sessionId":"4cd53a33-80d6-41c1-b64c-5a47b36079f4"}}
+{"type":"event","event":{"type":"turn_start","turnNumber":1}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"gpt-5.6-luna"}}
+{"type":"event","event":{"type":"model_trace","traceId":"eec5f7a33add8ade085763b85c841cdc"}}
+{"type":"event","event":{"type":"text_delta","delta":"ok"}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"ok"}]}}
+{"type":"event","event":{"type":"model_request_end","model":"gpt-5.6-luna","usage":{"inputTokens":21100,"outputTokens":5,"cacheReadTokens":0,"cacheWriteTokens":21097},"stopReason":"stop","effort":"max"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"ok"}]}}
+{"type":"event","event":{"type":"turn_end","turnNumber":1,"hadToolCalls":false,"usage":{"inputTokens":21100,"outputTokens":5,"cacheReadTokens":0,"cacheWriteTokens":21097}}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"ok","stopReason":"end_turn","turnCount":1,"usage":{"inputTokens":21100,"outputTokens":5,"cacheReadTokens":0,"cacheWriteTokens":21097},"systemPromptTokens":null,"nextState":{"sessionId":"4cd53a33-80d6-41c1-b64c-5a47b36079f4","messages":[{"role":"user","content":[{"type":"text","text":"Reply with the single word ok."}],"meta":{"source":"user","createdAt":1789872023816,"messageId":"13a04729-aba8-4017-99f1-9e907247b25a"}},{"role":"assistant","content":[{"type":"text","text":"ok"}],"meta":{"source":"model","createdAt":1789872027343,"messageId":"8ead2356-7056-443a-8b73-7f853c5dbf15"}}],"interrupted":false,"modState":{"workspace":{"cwd":"/private/tmp/bsw-stream-capture","platform":"darwin","branch":null,"gitStatus":null,"recentCommits":[],"additionalDirectories":[]},"compaction":{"tokens":21107,"basis":{"role":"assistant","content":[{"type":"text","text":"ok"}],"meta":{"source":"model","createdAt":1789872027343,"messageId":"8ead2356-7056-443a-8b73-7f853c5dbf15"}}}}}}}}
+{"type":"result","subtype":"success","sessionId":"4cd53a33-80d6-41c1-b64c-5a47b36079f4","stopReason":"end_turn","usage":{"inputTokens":21100,"outputTokens":5,"cacheReadTokens":0,"cacheWriteTokens":21097},"durationMs":4244,"finalText":"ok"}
