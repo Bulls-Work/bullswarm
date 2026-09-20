@@ -188,8 +188,11 @@ function runStepCounts(record) {
   const definitions = Array.isArray(state.program?.actions) ? state.program.actions : [];
   const doneFromActions = actions.filter((action) => action?.status === 'succeeded').length;
   const totalFromActions = Math.max(actions.length, definitions.length);
-  const done = finiteOrNull(record?.steps?.done ?? record?.stepsOk ?? record?.requirements?.passed ?? record?.state?.requirements?.passed);
-  const total = finiteOrNull(record?.steps?.total ?? record?.stepsTotal ?? record?.requirements?.total ?? record?.state?.requirements?.total);
+  // Steps are actions, never requirements: a record that predates the
+  // `steps` rollup field falls back to counting its actions, and a record
+  // with neither shows no count rather than a requirement tally.
+  const done = finiteOrNull(record?.steps?.done ?? record?.stepsOk);
+  const total = finiteOrNull(record?.steps?.total ?? record?.stepsTotal);
   return {
     done: done != null && done >= 0 ? done : totalFromActions ? doneFromActions : null,
     total: total != null && total >= 0 ? total : totalFromActions || null,

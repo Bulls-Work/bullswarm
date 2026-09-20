@@ -116,5 +116,7 @@ test('Home model orders active runs before newest finished and never promotes wa
   assert.deepEqual(runMinutesInfo({ minutes: { wall: 2 } }), {
     active: null, span: 2, label: 'active', intervals: [],
   });
-  assert.deepEqual(runStepCounts({ requirements: { passed: 3, total: 4 } }), { done: 3, total: 4 });
+  // Requirements are not steps: a record with only a requirement tally shows no step count.
+  assert.deepEqual(runStepCounts({ requirements: { passed: 3, total: 4 } }), { done: null, total: null });
+  assert.deepEqual(runStepCounts({ steps: { done: 3, total: 4 }, requirements: { passed: 1, total: 7 } }), { done: 3, total: 4 });
 });
