@@ -10,12 +10,14 @@ import {
   renderWorkflowOverviewPanel,
   runFrame,
   runPage,
+  runSpendLinesV2,
   workflowTimelineLines,
 } from '../src/workflow/run-view.js';
 import {
   attemptRoutingText,
   durationClockText,
   phaseDurationFacts,
+  runSpendFacts,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
 import { readEvents } from '../src/workflow/events.js';
@@ -146,7 +148,7 @@ test('Run view paints numbered phase boxes and v2 attempt routing metadata', () 
   const firstBox = planDagLines(row, { width: 55 })[0].parts.find((part) => part.action);
   assert.equal(firstBox.action.actionId, 'audit');
   const rows = planDagLines(row, { width: 120, nowMs: NOW }).map((line) => visible(line.parts.map((part) => part.text).join('')));
-  assert.deepEqual(rows, ['[✓ 1. audit 1/1] → [▶ 2. report 0/1]']);
+  assert.deepEqual(rows, ['[✓ 1 audit] → [▶ 2 report 0/1]']);
   const timeline = workflowTimelineLines(workflowPanelModel(row), 120, 0, { goalPreview: false, nowMs: NOW });
   const text = timeline.lines.map((line) => line.text ?? line).join('\n');
   // One v2 row per attempt, its own clock on the right and the routing it ran
@@ -209,7 +211,10 @@ test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per a
   assert.equal(durationClockText(duration.activeMinutes), '2h04m');
   assert.ok(spanMinutes > duration.activeMinutes * 10, 'the phase idled for hours between revisions');
   const acceptHeader = headers.find((line) => String(line.segment).endsWith(' · accept') || String(line.segment) === 'accept');
-  assert.match(visible(acceptHeader.text), /^── ✓ 12 · accept .*2h04m · 1\/1 ──$/);
+  // Rule 6 of the run-v2 record: the rule spends its dashes between the phase
+  // name and the facts and ends on the tally — no closing `──`.
+  assert.match(visible(acceptHeader.text), /^── ✓ 12 · accept \S.*2h04m · 1\/1$/);
+  assert.ok(!visible(acceptHeader.text).trimEnd().endsWith('──'), visible(acceptHeader.text));
   assert.doesNotMatch(visible(acceptHeader.text), new RegExp(`${Math.round(spanMinutes)}m`));
 
   // One row per attempt, each carrying its own clock — the same figure the
@@ -247,9 +252,71 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', { skip:
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
     const header = timeline.lines.find((line) => line?.header && (String(line.segment).endsWith(` · ${actionId}`) || String(line.segment) === actionId));
     const duration = phaseDurationFacts(row, panel.stages.find((stage) => (stage.actionIds ?? []).includes(actionId)), { nowMs: NOW });
-    assert.match(visible(header.text), new RegExp(`^── ✓ \\d+ · ${actionId} .*${durationClockText(duration.activeMinutes)} · 1/1 ──$`));
+    assert.match(visible(header.text), new RegExp(`^── ✓ \\d+ · ${actionId} \\S.*${durationClockText(duration.activeMinutes)} · 1/1$`));
   }
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
+});
+
+test('the spend block draws the record\u2019s columns, and the 55-column form stays two short rows', () => {
+  // The run the run-v2 record was drawn from: 26 attempts, 19 measured, 6
+  // estimated (command-code) and 1 still running (command-code), of which 17
+  // recorded a plan amount.
+  const rowsFor = (pool, count, { amount = 0, estimated = false, running = false, plans = 0, planAmount = 0 } = {}) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `${pool}-${index + 1}`, actionId: `${pool}-step`, ordinal: index + 1, pool,
+      status: running ? 'running' : 'succeeded',
+      startedAt: '2026-09-20T10:00:00.000Z',
+      finishedAt: running ? null : '2026-09-20T10:10:00.000Z',
+      usage: running ? null : {
+        api: { usd: index === 0 ? amount : 0 },
+        tokenSource: estimated ? 'estimated:utf8-bytes/4' : 'provider-reported',
+        ...(index < plans ? { subscription: { usd: index === 0 ? planAmount : 0 } } : {}),
+      },
+    }));
+  const record = {
+    state: {
+      attempts: [
+        ...rowsFor('codex', 11, { amount: 11.45, plans: 11, planAmount: 1.99 }),
+        ...rowsFor('claude-code', 5, { amount: 55.56, plans: 5 }),
+        ...rowsFor('claude-code:acme', 2, { amount: 22.55 }),
+        ...rowsFor('grok', 1, { amount: 2.68, plans: 1 }),
+        ...rowsFor('command-code', 6, { amount: 0.01, estimated: true }),
+        ...rowsFor('command-code', 1, { running: true }),
+      ],
+    },
+  };
+  const spend = runSpendFacts(record);
+  assert.equal(spend.coverageText, '19 of 26 attempts measured');
+
+  const wide = runSpendLinesV2(spend, 79, { phone: false });
+  // The amount opens the split on the API row, the pools that do not fit keep
+  // the same column under it, and the run's own counts close the last row.
+  assert.match(wide[1], /^ API rate   at least \$92\.25 {3}claude-code \$55\.56 · acme \$22\.55 · codex \$11\.45$/);
+  assert.equal(wide[1].indexOf('claude-code'), 30);
+  assert.match(wide[2], /^ {30}grok \$2\.68 · command-code ≈\$0\.01 \(6 estimated\)$/);
+  assert.equal(wide[2].indexOf('grok'), 30);
+  // `claude-code:acme` is the qualified name of one pool: the split says
+  // `acme`, the way the record's own row does.
+  assert.doesNotMatch(wide.join('\n'), /claude-code:acme/);
+  assert.match(wide[3], /^ plans      at least \$1\.99 {4}17 attempts with a meter reading · 9 without$/);
+  assert.equal(wide[3].indexOf('17 attempts'), 30);
+  assert.ok(wide.every((line) => visible(line).length <= 79), wide.join('\n'));
+
+  // The 55-column form is the record's two short rows: the amount keeps its
+  // own coverage words, and the meter phrase shortens rather than cutting off.
+  const phone = runSpendLinesV2(spend, 54, { phone: true });
+  assert.equal(phone[1], ' API rate  at least $92.25  6 estimated · 1 running');
+  assert.equal(phone[2], ' plans     at least $1.99   17 with a meter reading');
+  assert.ok(phone.every((line) => visible(line).length <= 54));
+
+  // The real euqrni run: two priced pools share the amount's own row, and the
+  // meter phrase fits whole at this width.
+  const real = realRow(realRuns.euqrni);
+  const realLines = runSpendLinesV2(runSpendFacts(real), 79, { phone: false });
+  assert.match(realLines[1], /^ API rate   \$9\.76 {13}claude-code \$6\.78 · codex \$2\.98$/);
+  assert.equal(realLines[1].indexOf('claude-code'), 30);
+  assert.match(realLines[2], /^ plans      — {17}0 attempts with a meter reading · 5 without$/);
+  assert.equal(realLines[2].indexOf('0 attempts'), 30);
 });
 
 test('the phone plan strip counts real phases, not their steps', { skip: !existsSync(join(realRuns.va7k9a, 'state.json')) }, () => {
@@ -270,17 +337,18 @@ test('plan boxes are numbered, chained with arrows, and never leave a trailing a
   const stages = planDagLines(row, { width: 200, nowMs: NOW });
   assert.equal(stages.length, 1);
   const wide = visible(stages[0].parts.map((part) => part.text).join(''));
-  assert.equal(wide, '[✓ 1. audit 1/1] → [▶ 2. report 0/1]');
+  assert.equal(wide, '[✓ 1 audit] → [▶ 2 report 0/1]');
   assert.ok(!wide.trimEnd().endsWith('→'), wide);
 
   const narrow = planDagLines(row, { width: 55, nowMs: NOW }).map((line) => visible(line.parts.map((part) => part.text).join('')));
-  assert.deepEqual(narrow, ['[✓ 1. audit 1/1]', '[▶ 2. report 0/1]']);
+  assert.deepEqual(narrow, ['[✓ 1 audit]', '[▶ 2 report 0/1]']);
   assert.ok(narrow.every((line) => !line.endsWith('→')));
 
   const real = realRow(realRuns.g6d6q2);
   const wrapped = planDagLines(real, { width: 120, nowMs: NOW }).map((line) => visible(line.parts.map((part) => part.text).join('')));
   assert.ok(wrapped.length > 1, 'the real 12-phase plan wraps at 120 columns');
   assert.ok(wrapped.every((line) => !line.trimEnd().endsWith('→')), wrapped.join('\n'));
-  const numbers = wrapped.join(' ').match(/\[[✓▶○✗] (\d+)\./g).map((match) => Number(match.replace(/\D+/g, '')));
+  const numbers = wrapped.join(' ').match(/\[[✓▶○✗] (\d+) /g).map((match) => Number(match.replace(/\D+/g, '')));
   assert.deepEqual(numbers, Array.from({ length: numbers.length }, (_, index) => index + 1));
+  assert.ok(!wrapped.join(' ').includes('. '), wrapped.join('\n'));
 });

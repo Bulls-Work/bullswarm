@@ -112,7 +112,7 @@ test('Home view renders a measured live step bar and active section without over
   assert.ok(body.lines.every((line) => visible(line).length <= 55));
 });
 
-test('Home real snapshot paints the top cards beside the licence words at 55/120/200', () => {
+test('Home real snapshot flows the top cards by width with the licence words plain', () => {
   const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
@@ -142,19 +142,28 @@ test('Home real snapshot paints the top cards beside the licence words at 55/120
     const cardBottom = band.reduce((last, line, index) => (line.includes('┘') ? index : last), 0);
     const licenceAt = band.findIndex((line) => line.includes('licence · pool · worker-minutes'));
     assert.ok(licenceAt >= 0, `${width}: the licence header is missing`);
-    if (width >= 120) {
+    if (width >= 160) {
       // Owner note (a): the three cards and the licence block share their rows,
       // and a licence row is painted on the same row as a card's own border.
       assert.ok(licenceAt >= cardTops[0] && licenceAt <= cardBottom,
         `${width}: the licence header is not on the cards' rows\n${band.join('\n')}`);
       assert.ok(band.some((line) => /[┌└│]/.test(line) && line.includes('claude-code · 171.30')),
         `${width}: no licence row shares a row with a card\n${band.join('\n')}`);
+      assert.ok(band.some((line) => line.includes('┐  ┌')), `${width}: the top cards did not flow side by side`);
+    } else if (width >= 120) {
+      // 120–159 columns: the cards take the whole width, side by side, and the
+      // licence block reads below them at the same width. Each card is about
+      // (width − 4)/3 wide and a field too long for it ends in `…`.
+      assert.ok(licenceAt > cardBottom, `${width}: the licence block is not below the cards`);
+      assert.equal(cardTops.length, 1, `${width}: the three cards did not share a row\n${band.join('\n')}`);
+      assert.equal((band[cardTops[0]].match(/┌─ /g) ?? []).length, 3, `${width}: ${band[cardTops[0]]}`);
+      const firstBox = band[cardTops[0]].indexOf('┌');
+      const firstClose = band[cardTops[0]].indexOf('┐');
+      assert.equal(firstClose - firstBox + 1, Math.floor((width - 4) / 3), `${width}: card width\n${band[cardTops[0]]}`);
+      assert.match(band.join('\n'), /…/, `${width}: a card field was clipped without an ellipsis`);
     } else {
       assert.ok(licenceAt > cardBottom, `${width}: the phone did not stack the licence block below the cards`);
-    }
-    if (width >= 200) {
-      const cardRow = band.find((line) => line.includes('┐  ┌'));
-      assert.ok(cardRow, `${width}: the top cards did not flow side by side`);
+      assert.equal(cardTops.length, 3, `${width}: the phone stacks one card per row\n${band.join('\n')}`);
     }
   }
 });

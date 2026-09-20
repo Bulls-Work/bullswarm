@@ -140,10 +140,42 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   assert.equal(planStageName({ label: 'Phase 2 · home · active-minutes · run-page · step-page · docs', actions: [
     { id: 'home' }, { id: 'active-minutes' }, { id: 'run-page' }, { id: 'step-page' }, { id: 'docs' },
   ] }, 1), 'five writers');
+  // Rule 2 of the run-v2 record: one step keeps its authored name, and any
+  // level of more than one step is the writer group it is — a two-step level
+  // says `two writers`, not the step names it used to join. The words run to
+  // twelve and the count is printed as digits above that.
+  const writers = (count) => planStageName({ label: 'Phase 7 · tidy-fixes', actions: Array.from({ length: count }, (_, index) => ({ id: `step-${index}` })) }, 6);
+  assert.equal(writers(2), 'two writers');
+  assert.equal(writers(3), 'three writers');
+  assert.equal(writers(12), 'twelve writers');
+  assert.equal(writers(13), '13 writers');
+  assert.equal(planStageName({ label: 'Phase 3 · task-page', actions: [{ id: 'task-page' }] }, 2), 'task-page');
   const box = planStageBoxParts(stage, 0, { runId: 'wf-box' });
-  assert.match(box[0].text, /^\[✓ 1\. audit 1\/1\]$/);
+  assert.match(box[0].text, /^\[✓ 1 audit\]$/);
   assert.equal(box[0].action.actionId, 'a');
-  assert.equal(planStageBoxText(stage, 0).includes('1. audit'), true);
+  assert.equal(planStageBoxText(stage, 0).includes('1 audit'), true);
+});
+
+test('plan boxes print done/total only where the count says something', () => {
+  // The record's own examples: a finished single step and a pending phase keep
+  // the glyph alone; a multi-step phase and a running phase carry the count.
+  const box = (total, completed) => planStageBoxParts({
+    label: 'Phase 12 · step-v2',
+    actionIds: Array.from({ length: total }, (_, index) => `step-${index}`),
+    actions: Array.from({ length: total }, (_, index) => ({ id: `step-${index}`, status: index < completed ? 'succeeded' : 'pending' })),
+  }, 11)[0].text;
+  assert.equal(box(1, 0), '[○ 12 step-v2]', 'a pending single step says 0/1 twice');
+  assert.equal(box(1, 1), '[✓ 12 step-v2]', 'a finished single step says 1/1 twice');
+  assert.equal(box(5, 5), '[✓ 12 five writers 5/5]');
+  assert.equal(box(3, 0), '[○ 12 three writers]', 'a phase that has not started shows no count');
+  assert.equal(box(5, 3), '[○ 12 five writers 3/5]', 'a started multi-step phase keeps its count');
+  const running = planStageBoxParts({
+    label: 'Phase 12 · step-v2', actionIds: ['step-v2'], actions: [{ id: 'step-v2', status: 'running' }],
+  }, 11)[0].text;
+  assert.equal(running, '[▶ 12 step-v2 0/1]');
+  // The box number is the plan's own chain; a trailing period would read as
+  // prose and is gone.
+  assert.doesNotMatch(running, /\d+\./);
 });
 
 test('Run model names each attempt\'s routing on one line, a dash where nothing was recorded', () => {

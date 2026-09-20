@@ -66,6 +66,10 @@ const LICENCE_MIN_WIDTH = 40;
 // A card's own fields need this much before the box clips them; three cards
 // that do not fit beside the licence column stack instead.
 const MIN_CARD_WIDTH = 36;
+// The licence block needs this much room beside it before the cards keep their
+// own column: below it the cards take the whole width and the licence block
+// reads under them, which is what 120–159 columns draws.
+const LICENCE_BESIDE_WIDTH = 160;
 const CARD_GAP = '  ';
 
 function taskIdText(task) {
@@ -480,7 +484,7 @@ function homeTodayBand(model, opts, body) {
   body.push(todayPadded(`Home · Today · ${date} · top ${cards.length} runs (active first)`, width));
   const licenceRows = todayLicenceRows(model, today, nowMs);
   if (!cards.length) body.push(todayPadded('no runs captured in the real snapshot', width));
-  if (width >= 120) {
+  if (width >= LICENCE_BESIDE_WIDTH) {
     // The owner's desktop note: the top three runs and licence usage share the
     // same rows. The licence column takes only the width its own words need,
     // so the cards keep the rest — side by side when three of them fit there,
@@ -497,6 +501,16 @@ function homeTodayBand(model, opts, body) {
       parts.push(licenceLines[row] ?? { text: ' '.repeat(licenceWidth) });
       body.parts(parts);
     }
+  } else if (width >= 120) {
+    // 120–159 columns: the three cards flow across the whole width, each about
+    // (width − 4)/3 wide, and the licence block reads under them at the same
+    // width instead of squeezing the cards into a column beside it. A card's
+    // own fields are cut with `…`, never clipped.
+    if (cards.length) {
+      for (const parts of cardGridLines(cards, width, cardColumnsFor(cards.length, width))) body.parts(parts);
+      body.push('');
+    }
+    licenceBlock(licenceRows, opts, body);
   } else {
     if (cards.length) {
       // The phone stacks one card per row and keeps the licence block under

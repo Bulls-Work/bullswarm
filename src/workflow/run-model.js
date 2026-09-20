@@ -498,27 +498,50 @@ function planStageLabel(stage, index) {
     : `Phase ${index + 1} · ${label || 'starting'}`;
 }
 
-/** The compact box uses the authored phase name, without the graph prefix. */
+const WRITER_COUNT_WORDS = Object.freeze([
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six',
+  'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+]);
+
+/**
+ * The compact name a phase carries in the plan: the authored phase name when
+ * the phase has one step, otherwise the writer group its level is — `two
+ * writers` through `twelve writers`, digits above that. The step names
+ * themselves stay on the phase's own page rather than being folded into the
+ * box; a level of two or three steps is a group like any other.
+ */
 function planStageName(stage, index) {
+  const actions = stage?.actions ?? [];
+  if (actions.length > 1) {
+    return `${WRITER_COUNT_WORDS[actions.length] ?? actions.length} writers`;
+  }
   const label = planStageLabel(stage, index)
     .replace(/^Follow-up \d+: /, '')
     .replace(/^Phase \d+\s*·\s*/, '')
     .trim();
-  // “Parallel work” was an implementation label, not a useful phase name.
-  // Prefer the authored step names: small levels fit as `a · b`, while a
-  // larger writer fan-out gets the compact count used by the design record.
-  const actions = stage?.actions ?? [];
-  if (actions.length > 1) {
-    const names = actions.map((action) => String(action?.id ?? '').trim()).filter(Boolean);
-    // A broad level is a writer group even when an older presentation label
-    // already expanded every action name (for example five actions rendered as
-    // `home · active-minutes · run-page · step-page · docs`). Small groups keep
-    // their authored names because two or three names remain useful in a box.
-    const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-    if (names.length > 3) return `${words[names.length] ?? names.length} writers`;
-    if (!label || /^parallel work$/i.test(label) || names.length <= 3) return names.join(' · ') || `phase-${index + 1}`;
-  }
   return label || `phase-${index + 1}`;
+}
+
+/**
+ * The timeline's phase name: a single-step phase keeps the name it was given,
+ * and a level of more than one step is read out as the steps it holds —
+ * `home · active-minutes · run-page · step-page · docs` — which is how the
+ * run-v2 record's phase rules name their phases. The plan box for the same
+ * level stays the compact `five writers` that the plan row is read at.
+ */
+function planStageStepsName(stage, index) {
+  const names = (stage?.actions ?? [])
+    .map((action) => String(action?.id ?? '').trim())
+    .filter(Boolean);
+  const label = planStageLabel(stage, index)
+    .replace(/^Follow-up \d+: /, '')
+    .replace(/^Phase \d+\s*·\s*/, '')
+    .trim();
+  // `Parallel work` was an implementation label, never a phase name.
+  if (names.length > 1 || !label || /^parallel work$/i.test(label)) {
+    return names.join(' · ') || label || `phase-${index + 1}`;
+  }
+  return label;
 }
 
 function planStageHeader(stage, index) {
@@ -536,7 +559,12 @@ function planStageHeader(stage, index) {
  * One whole-phase plan box. The action is attached to the full text so both a
  * mouse click and the dashboard's selected-row Enter open the phase's first
  * step; no individual step names leak into the compact plan. The box carries
- * the phase's number, the number the plan's arrows chain it with.
+ * the phase's number, the number the plan's arrows chain it with, and the
+ * done/total only where that count says something the glyph does not have
+ * already: a running phase says how much of it is left, and a multi-step phase
+ * that has started says how far it got. `[✓ 4 mod-step]` is a finished single
+ * step and `[○ 13 verify]` is one that has not begun, so neither prints `1/1`
+ * or `0/1` after the name.
  */
 function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {}) {
   const actions = stage?.actions ?? [];
@@ -546,9 +574,11 @@ function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {
   const status = running ? glyphs().started
     : failed ? glyphs().fail
       : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
+  const count = running || (progress.total > 1 && progress.completed > 0)
+    ? ` ${progress.completed}/${progress.total}` : '';
   const first = actions[0];
   const selected = first?.id && first.id === selectedId;
-  const text = `[${status} ${index + 1}. ${planStageName(stage, index)} ${progress.completed}/${progress.total}]`;
+  const text = `[${status} ${index + 1} ${planStageName(stage, index)}${count}]`;
   return [{
     text: selected ? `\x1b[7m${text}\x1b[0m` : text,
     ...(first ? { action: { kind: 'step', actionId: first.id, ...(runId ? { runId } : {}) } } : {}),
@@ -901,7 +931,7 @@ function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
     const active = phaseActions.some((action) => action.status === 'running') || attempts.some((attempt) => attempt.status === 'running');
     const failed = phaseActions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status));
     return {
-      index, id: stage.id, name: planStageName(stage, index), label: stage.label, stage,
+      index, id: stage.id, name: planStageStepsName(stage, index), label: stage.label, stage,
       status: active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending',
       glyph: phaseGlyph(active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending'),
       startedAt, finishedAt, endAt: active ? null : finishedAt,
@@ -938,6 +968,7 @@ export {
   planStages,
   planStageLabel,
   planStageName,
+  planStageStepsName,
   planStageHeader,
   planStageBoxParts,
   planStageBoxText,

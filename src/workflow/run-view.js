@@ -648,7 +648,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     const duration = runClockText(phase.activeMinutes ?? phase.spanMinutes);
     const right = `${start} → ${end} · ${duration} · ${phase.done}/${phase.total}`;
     const name = `${phase.glyph} ${phase.index + 1} · ${phase.name}`;
-    push(phone ? `── ${name}` : rule(name, right, safeWidth), {
+    push(phone ? `── ${name}` : phaseRule(name, right, safeWidth), {
       header: true, segment: phase.label, phaseIndex: phase.index, phase,
     });
     if (phone) push(` ${right}`, { segment: phase.label, phaseIndex: phase.index, span: true });
@@ -689,6 +689,29 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     phases: phases.length,
     attempts: facts.attempts.length,
   };
+}
+
+/**
+ * `── <glyph> <n> · <name> ──── <start> → <end> · <duration> · <done>/<total>`:
+ * the v2 phase rule spends its dashes between the name and the facts and ends
+ * on the tally, so the count is the last thing the row says. Rule 6 of the
+ * run-v2 record draws it that way; `rule()` keeps its closing dashes for the
+ * rules that have a right-hand label to fence off. A phase whose steps are
+ * named at length gives way before its facts do: the count, the clock and the
+ * duration are what the rule is read for.
+ */
+function phaseRule(name, right, width) {
+  const cols = Math.max(1, Number(width) || 1);
+  const label = String(name ?? '');
+  const tail = right == null || `${right}` === '' ? '' : ` ${right}`;
+  const room = cols - 3 - 1 - 2 - visibleLength(tail);
+  if (visibleLength(`── ${label} `) + visibleLength(tail) < cols) {
+    const head = `── ${label} `;
+    return `${head}${'─'.repeat(cols - visibleLength(head) - visibleLength(tail))}${tail}`;
+  }
+  if (room < 1) return cut(`── ${label}${tail}`, cols);
+  const head = `── ${cut(label, room)} `;
+  return `${head}${'─'.repeat(Math.max(2, cols - visibleLength(head) - visibleLength(tail)))}${tail}`;
 }
 
 function segmentHeader(name, elapsed, width) {
@@ -1248,18 +1271,115 @@ function runLiveLinesV2(live, width, { phone = width < 100, runFollow = true, no
   return lines;
 }
 
+// The spend block's two labels are one 10-cell column, and on the desktop the
+// amount opens a second field at a fixed column so the per-pool split starts
+// under the first pool on every continuation row it wraps onto.
+const SPEND_LABEL_WIDTH = 10;
+const SPEND_DETAIL_COLUMN = 30;
+const SPEND_DETAIL_GAP = 3;
+
+/** `╴<label>╴╴<amount>` — the label column the spend block is read down. */
+function spendHead(label, amount, { gap = 1 } = {}) {
+  const text = ` ${String(label).padEnd(SPEND_LABEL_WIDTH)}`;
+  return `${text}${amount == null || amount === '' ? '' : `${' '.repeat(gap)}${amount}`}`;
+}
+
+/**
+ * One row whose second field opens at the detail column: the amount, then the
+ * split or the coverage words it belongs to.
+ */
+function spendDetailRow(head, tail, width) {
+  const opener = head.padEnd(Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP));
+  return cut(`${opener}${tail ?? ''}`, width);
+}
+
+/** A pool's name in the split: the vendor-qualified suffix, as `acme` is. */
+function spendPoolName(name) {
+  const full = String(name ?? '');
+  return full.includes(':') ? full.slice(full.lastIndexOf(':') + 1) : full;
+}
+
+/** `codex $11.45`, or `command-code ≈$0.01` when its subtotal is a sum of estimates. */
+function spendPoolToken(entry) {
+  const amount = formatMoney(entry.apiKnownSubtotalUsd);
+  return `${spendPoolName(entry.pool)} ${entry.estimated > 0 ? `≈${amount}` : amount}`;
+}
+
+/**
+ * The counts that qualify a split, in the phone form's own words: how many of
+ * the run's attempts were estimated and how many recorded nothing at all. A
+ * running attempt is the live block's news, not the split's.
+ */
+function spendSplitCounts(spend) {
+  return [
+    spend.estimated ? `${spend.estimated} estimated` : null,
+    spend.unmeasured ? `${spend.unmeasured} unmeasured` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+/**
+ * The pool split flowed from the detail column: the amount row opens it, the
+ * pools that do not fit continue under it at the same column, and the run's
+ * own counts close the last row in parentheses.
+ */
+function spendSplitRows(head, tokens, counts, width) {
+  const indent = ' '.repeat(SPEND_DETAIL_COLUMN);
+  const opener = head.padEnd(Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP));
+  const units = tokens.map((text, index) => ({ text, gap: index ? ' · ' : '' }));
+  if (counts) units.push({ text: `(${counts})`, gap: ' ' });
+  const rows = [];
+  let text = opener;
+  let fresh = true;
+  for (const unit of units) {
+    if (fresh) text = rows.length ? indent : opener;
+    const gap = fresh ? '' : unit.gap;
+    if (!fresh && visibleLength(text) + gap.length + visibleLength(unit.text) > width) {
+      rows.push(text);
+      text = indent;
+      fresh = true;
+    }
+    text = fresh ? `${text}${unit.text}` : `${text}${gap}${unit.text}`;
+    fresh = false;
+  }
+  rows.push(text);
+  return rows;
+}
+
+/** `<n> attempts with a meter reading · <n> without`, shortened when the row
+ *  cannot hold the whole phrase — the 55-column record reads `<n> with a
+ *  meter reading` rather than a cut-off sentence. */
+function planCoverageText(spend, room) {
+  const short = `${spend.planMeter} with a meter reading`;
+  const full = `${spend.planMeter} attempts with a meter reading · ${spend.planUnmetered} without`;
+  if (visibleLength(full) <= room) return full;
+  return visibleLength(short) <= room ? short : full;
+}
+
 function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
   const lines = [rule(`spend · ${spend.coverageText}`, null, width)];
-  lines.push(cut(` API rate  ${spend.apiText}${spend.suffix ? `  ${spend.suffix}` : ''}`, width));
-  if (!phone && spend.pools.length) {
-    const poolText = spend.pools
-      .filter((entry) => entry.apiKnownSubtotalUsd != null)
-      .map((entry) => `${entry.pool} ${entry.apiKnownSubtotalUsd == null ? '—' : `${entry.estimated > 0 ? '≈ ' : ''}${formatMoney(entry.apiKnownSubtotalUsd)}`}`)
-      .join(' · ');
-    if (poolText) lines.push(cut(`          ${poolText}`, width));
+  const suffix = spend.suffix ? `  ${spend.suffix}` : '';
+  const pools = spend.pools.filter((entry) => entry.apiKnownSubtotalUsd != null);
+  if (phone) {
+    // The phone has one row per fact: the amount with its own coverage words,
+    // then the plan row the width can hold whole.
+    lines.push(cut(`${spendHead('API rate', spend.apiText, { gap: 0 })}${suffix}`, width));
+    const head = spendHead('plans', spend.plansText, { gap: 0 });
+    lines.push(cut(`${head}   ${planCoverageText(spend, Math.max(0, width - visibleLength(head) - 3))}`, width));
+    return lines;
   }
-  const planCoverage = `${spend.planMeter} attempts with a meter reading · ${spend.planUnmetered} without`;
-  lines.push(cut(` plans     ${spend.plansText}   ${planCoverage}`, width));
+  const head = spendHead('API rate', spend.apiText);
+  if (!pools.length) {
+    // Nothing was priced, so there is no split to flow: the row keeps the
+    // amount in the block's own label column and the coverage words after it.
+    lines.push(cut(`${head}${suffix}`, width));
+  } else {
+    for (const row of spendSplitRows(head, pools.map(spendPoolToken), spendSplitCounts(spend), width)) {
+      lines.push(cut(row, width));
+    }
+  }
+  const plansHead = spendHead('plans', spend.plansText);
+  const column = Math.max(SPEND_DETAIL_COLUMN, visibleLength(plansHead) + SPEND_DETAIL_GAP);
+  lines.push(spendDetailRow(plansHead, planCoverageText(spend, Math.max(0, width - column)), width));
   return lines;
 }
 
