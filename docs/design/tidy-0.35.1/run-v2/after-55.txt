@@ -1,0 +1,49 @@
+ Home  Runs  Budget  Stats  Fleet                      
+ ● 8zgqei · running · 18 of 20 steps · 1 running       
+ sample do 0.35.1: o ex aliquip in qui consequat nulla 
+ sit irure deserunt 0.35.0 ea e irure (55 officia)…    
+ 6h02m active of 7h44m · since 07:59 HKT · 26 attempts 
+                                                       
+ plan  ✓✓✓✓✓✓✓✓✓✓✓▶○  12 step-v2 running · then verify 
+                                                       
+── live · step-v2 · command-code · 7m30s ──────────────
+ deepseek-v4.1-flash · max · 13 turns · 151 events     
+ 13  15:43  samples ea non qui cupidatat fugiat (quis  
+            elit, dolore sed fugiat labore, est sed…   
+            20 commands · 17 files read · 4 grep · 2   
+            edits                                      
+ Enter → the step page · following ●                   
+                                                       
+── spend · 19 of 26 attempts measured ─────────────────
+ API rate  at least $92.25  6 estimated · 1 running    
+ plans     at least $1.99   17 with a meter reading    
+                                                       
+── timeline · 13 phases · 26 attempts ─────────────────
+── Preflight                                           
+ 07:59  ● goal accepted · goal.json                    
+── ✓ 1 · design                                        
+ 07:59 → 08:25 · 26m02s · 1/1                          
+ 08:25  ✓ design · codex                         26m02s
+── ✓ 2 · home · active-minutes · run-page · step-page …
+ 08:25 → 09:03 · 38m17s · 5/5                          
+ 08:45  ✓ home · codex                           19m59s
+ 08:47  ✓ active-minutes · codex                 22m26s
+ 08:47  ✓ run-page · codex                       22m28s
+ 08:56  ✓ docs · codex                           11m13s
+ 09:03  ✓ step-page · codex                      38m17s
+phases 3–10 · 5h01m · all ✓ · click to expand          
+── ✓ 11 · turn-boundary                                
+ 14:26 → 14:37 · 11m05s · 1/1                          
+ 14:37  ✓ turn-boundary · command-code           11m05s
+── ▶ 12 · step-v2                                      
+ 15:36 → now · 7m30s · 0/1                             
+ 15:36  ▶ step-v2 · command-code · running        7m30s
+── ○ 13 · verify                                       
+ 6 attempts · 99m03s · 0/1 · waits for step-v2         
+ 10:23  ✓ verify · claude-code                   16m01s
+ 11:26  ✓ verify · claude-code                   16m20s
+ 11:55  ✓ verify · claude-code                   14m03s
+ 12:12  ✓ verify · claude-code                   15m17s
+ 14:25  ✓ verify · claude-code:acme              20m32s
+ 14:54  ✓ verify · claude-code:acme              16m50s
+ [ back ] [ ● 1.8zgqei ]  Enter open · p plan · ? help 

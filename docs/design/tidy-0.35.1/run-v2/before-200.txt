@@ -1,0 +1,50 @@
+ Home  Runs  Budget  Stats  Fleet
+ 8zgqei running · active 362.45m · 18/20 actions
+ sample do 0.35.1: o ex aliquip in qui consequat nulla sit irure deserunt 0.35.0 ea e irure (55 officia), quis qui consectetur sed quis culpa occaecat eiusmod do. nostrud proident ex est in velit
+ (quis in 0.35.2); officia irure lorem ut fugiat duis.
+── plan ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── phase 12 of 13 · 18/20 steps · ETA — ──
+[✓ 1. design 1/1] → [✓ 2. Parallel work 5/5] → [✓ 3. Parallel work 2/2] → [✓ 4. mod-step 1/1] → [✓ 5. digest 1/1] → [✓ 6. integrate 1/1] → [✓ 7. tidy-fixes 1/1] → [✓ 8. kind-map 1/1]
+[✓ 9. Parallel work 3/3] → [✓ 10. integrate-2 1/1] → [✓ 11. turn-boundary 1/1] → [▶ 12. step-v2 0/1] → [○ 13. verify 0/1]
+
+── licence this run used ─────────────────────────────────────────  ── live ─────────────────────────────────────────────────────────  ── so far ───────────────────────────────────────────────────────
+ free model · no licence meter                                       ▶ step-v2 · command-code · 7m30s · output ▁▂▆▆▆███ 7.8 MB          steps    ✓ 18  ▶ 1  ○ 1
+                                                                       ↳ event                                                          time     362.45m · ETA —
+                                                                                                                                        spent    api unknown · sub unknown (no meter/calibration)
+                                                                                                                                        19 of 26 attempts measured
+ — cost unknown: no usage measurement exists
+ — ETA —: verify, step-v2 have no recorded duration yet
+
+── timeline ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 50 milestones ──
+ ↑ 51 earlier timeline rows
+ ── Phase 9 · Parallel work · continued ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 35m55s ──
+ 13:07  ├─ started
+ 13:22  │  ├─✓ home-layout · command-code · deepseek/deepseek-v4.1-flash · medium                                                                                                                 15m21s
+ 13:29  │  ├─✗ run-plan-timeline · command-code · deepseek/deepseek-v4.1-flash · medium                                                                                                           22m34s
+ 13:42  │  ├─✓ stats-fit-data · command-code · deepseek/deepseek-v4.1-flash · medium                                                                                                              35m10s
+ 13:43  │  ├─✓ run-plan-timeline · grok · grok-4.6 · medium                                                                                                                                       13m20s
+ 13:43  └─✓ completed                                                                                                                                                                                3/3
+ ── Phase 10 · integrate-2 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 22m20s ──
+ 13:43  ├─ started
+ 14:05  │  ├─✓ integrate-2 · claude-code · claude-opus-5 · high                                                                                                                                   22m20s
+ 14:05  └─✓ completed                                                                                                                                                                                1/1
+ ── Phase 11 · turn-boundary ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 11m05s ──
+ 14:26  ├─ started
+ 14:37  │  ├─✓ turn-boundary · command-code · deepseek/deepseek-v4.1-flash · medium                                                                                                               11m05s
+ 14:37  └─✓ completed                                                                                                                                                                                1/1
+ ── Phase 12 · step-v2 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 7m30s ──
+ 15:36  ├─ started
+ 15:36  │  ├─⠋ step-v2 · command-code · deepseek/deepseek-v4.1-flash · medium                                                                                                                      7m30s
+ ── Phase 13 · verify ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 99m03s ──
+ 10:23  │  ├─✓ verify · claude-code · claude-opus-5 · high                                                                                                                                        16m01s
+ 11:26  │  ├─✓ verify · claude-code · claude-opus-5 · high                                                                                                                                        16m20s
+ 11:55  │  ├─✓ verify · claude-code · claude-opus-5 · high                                                                                                                                        14m03s
+ 12:12  │  ├─✓ verify · claude-code · claude-opus-5 · high                                                                                                                                        15m17s
+ 14:25  │  ├─✓ verify · claude-code:acme · claude-opus-5 · high                                                                                                                                   20m32s
+ 14:54  │  ├─✓ verify · claude-code:acme · claude-opus-5 · high                                                                                                                                   16m50s
+
+
+
+
+
+
+ [ ● 1.8zgqei ] [ ?.help ] [ quit ] 
