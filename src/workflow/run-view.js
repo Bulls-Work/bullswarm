@@ -1265,12 +1265,17 @@ function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
 
 function runPlanGlyphStrip(row) {
   const { stages } = planStages(row);
-  return stages.flatMap((stage) => (stage.actions ?? []).map((action) => {
-    if (action.status === 'succeeded') return glyphs().ok;
-    if (action.status === 'running') return glyphs().started;
-    if (['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status)) return glyphs().fail;
+  return stages.map((stage) => {
+    const actions = stage.actions ?? [];
+    // The narrow strip is a phase summary, not a second step list. Running
+    // wins over failure so a phase with one retry in flight still reads live;
+    // otherwise a failed/blocked phase is red, a wholly successful phase is
+    // done, and an untouched or mixed phase remains pending.
+    if (actions.some((action) => action.status === 'running')) return glyphs().started;
+    if (actions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status))) return glyphs().fail;
+    if (actions.length > 0 && actions.every((action) => action.status === 'succeeded')) return glyphs().ok;
     return glyphs().pending;
-  })).join('');
+  }).join('');
 }
 
 function runAttemptMixText(header) {

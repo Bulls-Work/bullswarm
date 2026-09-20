@@ -1441,10 +1441,19 @@ function tokenSourceNoun(tokenSource, pool) {
 const TOOL_CATEGORIES = new Set(['command', 'read', 'edit']);
 
 /** The distinct kinds behind a turn's `other tools` count, in capture order. */
-function otherToolKindNames(atomicEvents) {
+function otherToolKindNames(atomicEvents, allPairs = null) {
+  const eventIndexes = new Set((atomicEvents ?? []).map((event) => event?.index));
+  const pairs = allPairs ?? pairActivityEvents(atomicEvents);
+  const pairedCompletions = new Set(pairs
+    .filter((pair) => eventIndexes.has(pair.completeIndex))
+    .map((pair) => pair.completeIndex));
   const names = [];
   for (const event of atomicEvents ?? []) {
-    if (eventIsResponse(event) || ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())) continue;
+    const kind = String(event.kind ?? '').trim().toLowerCase();
+    if (eventIsResponse(event) || ENVELOPE_KINDS.has(kind) || TOOL_RESULT_KINDS.has(kind)) continue;
+    // A completion is already represented by the paired call in the count;
+    // it must not introduce a second, uncategorised display name.
+    if (pairedCompletions.has(event.index)) continue;
     if (TOOL_CATEGORIES.has(toolKindCategory(event))) continue;
     const name = textOrNull(event?.kind);
     if (name && !names.includes(name)) names.push(name);
@@ -1681,7 +1690,7 @@ function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date
     paired.add(pair.completeIndex);
   }
   return turns.map((turn) => {
-    const baseCountsText = turnCountsText(turn.summary, { otherKinds: otherToolKindNames(turn.atomicEvents) });
+    const baseCountsText = turnCountsText(turn.summary, { otherKinds: otherToolKindNames(turn.atomicEvents, pairs) });
     const isLast = turn === last;
     const resultMarked = Boolean(isLast && reportEquality);
     const expanded = expandedTurn != null && turn.index === expandedTurn;

@@ -37,10 +37,12 @@ const normalizeRow = (line) => visible(line).replace(/^\s*\d{2}:\d{2}/, 'HH:MM')
 //   euqrni — finished sequential run of the same shape as 8zgqei's tidy-fixes
 //            tree (one attempt per phase, started / attempt / completed).
 //            8zgqei itself is the live tidy-up workflow, not in this snapshot.
+//   va7k9a — the real Step-page run: six phases, eight steps.
 const realHome = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows';
 const realRuns = {
   g6d6q2: join(realHome, 'wf-mu6mv62z-cdcd5d'),
   euqrni: join(realHome, 'wf-mu8thu2e-27c504'),
+  va7k9a: join(realHome, 'wf-mu8ni8o4-f9baaf'),
 };
 
 const minutesBetween = (from, to) => (Date.parse(to) - Date.parse(from)) / 60_000;
@@ -248,6 +250,19 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', { skip:
     assert.match(visible(header.text), new RegExp(`^── ✓ \\d+ · ${actionId} .*${durationClockText(duration.activeMinutes)} · 1/1 ──$`));
   }
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
+});
+
+test('the phone plan strip counts real phases, not their steps', { skip: !existsSync(join(realRuns.va7k9a, 'state.json')) }, () => {
+  const row = realRow(realRuns.va7k9a);
+  assert.equal(row.state.presentation.stages.length, 6);
+  assert.equal(row.state.actions.length, 8);
+  const body = bodyBuilder();
+  runPage({ row, assignments: [], pools: [] }, {
+    width: 55, bodyHeight: 70, narrow: true, nowMs: NOW, spinnerFrame: 0, focus: 0,
+  }, body);
+  const strip = body.lines.find((line) => visible(line).startsWith(' plan  '));
+  assert.equal(visible(strip), ' plan  ✓✓✓✓✓✓  6 verify done · then —');
+  assert.equal((visible(strip).match(/[✓▶✗○]/g) ?? []).length, 6);
 });
 
 test('plan boxes are numbered, chained with arrows, and never leave a trailing arrow', () => {

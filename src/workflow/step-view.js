@@ -694,7 +694,7 @@ function detailLines(step, presentation, { width, phone, view }) {
 
 // --- the page -------------------------------------------------------------
 
-function footerText(presentation, { phone, view }) {
+export function stepFooterText(presentation, { phone, view }) {
   // The design prints the follow hint whether or not the step is live; with
   // nothing to follow the key simply has nothing to do.
   const follow = ' · f follow';
@@ -783,7 +783,6 @@ export function renderStepPage(step, opts = {}, body) {
   anchor.outcome = anchor.result;
   anchor.prompt = anchor.task;
   anchor.attempts = anchor.result;
-  body.push(fit(` ${footerText(presentation, { phone, view })}`, width));
   return headerLine;
 }
 

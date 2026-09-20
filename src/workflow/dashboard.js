@@ -66,7 +66,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { openSetupTui as openSetupControlCentre } from '../setup.js';
 import { stepPageModel } from './step-model.js';
 import { taskStepModel } from './task-step.js';
-import { renderStepPage } from './step-view.js';
+import { renderStepPage, stepFooterText } from './step-view.js';
 
 const ESC = '\x1b[';
 /** The operating-system-command introducer and its terminator, for OSC 52. */
@@ -1190,7 +1190,7 @@ function pageTabs(page, width) {
  * tail is the phone layout's `[Top] [End] [?.Help]`; the run buttons keep the
  * left and drop from the end when they do not fit.
  */
-function navParts(model, { page, width, selectedRunId }) {
+function navParts(model, { page, width, selectedRunId, stepView = 'overview', stepDetail = false }) {
   const narrow = width < 100;
   const button = (item) => {
     const mark = item.mark ? `${glyphs().ongoing} ` : '';
@@ -1223,6 +1223,30 @@ function navParts(model, { page, width, selectedRunId }) {
       parts.push({ text: button(item), action: item.action });
     });
     parts.push({ text: ` ${cut(hint, available)}` });
+    return parts;
+  }
+  if (page === 'step' || page === 'task') {
+    const selected = page === 'step'
+      ? model.runs.find((run) => run.runId === selectedRunId) ?? model.runs[0] ?? null
+      : null;
+    const items = [{ key: null, label: 'back', action: { kind: 'back' } }];
+    // The phone keeps only its back control and the short hints; the selected
+    // run chip is the desktop context marker, matching the Run page footer.
+    if (!narrow && selected) {
+      items.push({ key: null, label: `1.${selected.shortId ?? '------'}`, mark: true, tight: false, action: { kind: 'run', runId: selected.runId } });
+    }
+    const prefix = items.map((item) => button(item)).join(' ');
+    const view = stepDetail === true ? 'detail' : stepView === 'detail' ? 'detail' : 'overview';
+    const hint = stepFooterText(null, { phone: narrow, view });
+    const available = Math.max(1, width - prefix.length - 2);
+    const parts = [{ text: ' ' }];
+    items.forEach((item) => {
+      parts.push({ text: button(item), action: item.action });
+      parts.push({ text: ' ' });
+    });
+    // Desktop separates the button group from the prose hint by one extra
+    // cell; the phone keeps the compact two-cell gap from the approved frame.
+    parts.push({ text: `${narrow ? ' ' : '  '}${cut(hint, available)}` });
     return parts;
   }
   const back = page === 'step' || page === 'task' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
@@ -1929,7 +1953,13 @@ export function renderDashboardPage(model, options = {}) {
   for (const line of messageLines) frame.push(line);
   drawWindow(frame, notes, windowOf(notes, { height: notes.lines.length }));
   const nav = frameBuilder();
-  nav.parts(navParts(model, { page, width, selectedRunId: opts.selectedRunId ?? model.row?.runId ?? null }));
+  nav.parts(navParts(model, {
+    page,
+    width,
+    selectedRunId: opts.selectedRunId ?? model.row?.runId ?? null,
+    stepView: opts.stepView,
+    stepDetail: opts.stepDetail,
+  }));
   drawWindow(frame, nav, windowOf(nav, { height: 1 }));
 
   const lines = frame.lines.slice(0, height).map((line) => (visibleLength(line) > width ? cut(line, width) : line));

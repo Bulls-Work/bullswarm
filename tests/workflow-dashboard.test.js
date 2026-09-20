@@ -1217,8 +1217,10 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
     assert.match(plain(page('run')).split('\n').at(-1), /Enter open step · p plan boxes · Space follow · \? help/);
     assert.deepEqual(navButtons(page('budget')), ['aaa111', 'bbb222', '?.help', 'quit']);
     assert.deepEqual(navButtons(page('help')), ['aaa111', 'bbb222', '● ?.help', 'quit']);
-    // Step prepends the way back out.
-    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111', 'bbb222', '?.help', 'quit']);
+    // Step keeps only the way out and its selected-run context; its hints are
+    // plain text in the sticky footer rather than extra shell buttons.
+    assert.deepEqual(navButtons(page('step')), ['back', '● aaa111']);
+    assert.match(plain(page('step')).split('\n').at(-1), /Enter expand turn · Esc close · v detail/);
 
     // A narrow footer keeps the selected run and accounts for every other
     // active run; desktop widths still paint every run in Runs-page order.
@@ -1260,10 +1262,13 @@ test('every page paints its tab row, its own sticky header, and a nav that marks
       });
       assert.ok(frame.lines.length <= 30, `${name} painted ${frame.lines.length} rows`);
       // Run and Step end on their own footer (`[ back ] [ ● 1.<id> ]` plus the
-      // page hints); every other page still ends on the shell's quit button.
+      // page hints); a single task keeps only `[ back ]` plus its hints. Every
+      // other page still ends on the shell's quit button.
       assert.match(
         plain(frame.lines.at(-1)),
-        ['run', 'step', 'task'].includes(name) ? /^ \[ back \] \[ [●\s]*1\.\w+ \]/ : /\[ quit \]/,
+        name === 'run' || name === 'step' ? /^ \[ back \] \[ [●\s]*1\.\w+ \]/
+          : name === 'task' ? /^ \[ back \]/
+            : /\[ quit \]/,
         `${name} lost its bottom nav`,
       );
     }

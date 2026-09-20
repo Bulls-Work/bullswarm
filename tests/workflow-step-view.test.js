@@ -123,10 +123,14 @@ test('running, finished, and failed Step frames stay width-bounded in both views
       const lines = renderDashboardFrame(model, width, { stepView: view });
       for (const line of lines) assert.ok([...plain(line)].length <= width, `${state}-${width}: ${plain(line)}`);
       const direct = render(model, width, { stepView: view });
-      // The toggle hint lives in the footer, once, and names the other view;
-      // the phone drops the parenthetical so the hint fits its line.
+      // The shell footer owns the toggle hint once and names the other view;
+      // the direct body no longer spends a scrollable row on it.
       const wider = width >= 120;
-      assert.match(direct.map(plain).join('\n'), view === 'overview'
+      assert.doesNotMatch(direct.map(plain).join('\n'), view === 'overview'
+        ? (wider ? /v detail \(every event\)/ : /v detail/)
+        : (wider ? /v overview \(turns\)/ : /v overview/));
+      const dashboard = renderDashboardFrame(model, width, { stepView: view }).join('\n');
+      assert.match(dashboard, view === 'overview'
         ? (wider ? /v detail \(every event\)/ : /v detail/)
         : (wider ? /v overview \(turns\)/ : /v overview/));
       writeFileSync(join(frameDir, `rendered-${state}-${view}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
