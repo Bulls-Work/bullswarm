@@ -9,9 +9,9 @@
 - home: today leads with up to three active-or-most-recent run cards, while the
   licence block uses one plain-word `pool · worker-minutes · weekly share · API
   · subscription` row per pool and keeps Running and Budget visible.
-- home: from 120 columns the cards sit beside the licence block and share its
-  rows, flowing side by side inside their column at 200 and stacking at 120; at
-  55 they stack full width with the licence block beneath.
+- home: from 120 columns the three cards sit side by side, with the licence
+  block beneath them up to 159 columns and to their right from 160; below 120
+  they stack full width with the licence block beneath.
 - home: the last-7-days band and the five-row recent list are back below
   `budget · this week`, with the `Last 30 days`/`All time` toggle, the spend
   chart, the by-pool/by-model/by-project lists, and the summary lines; the full

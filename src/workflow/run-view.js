@@ -1221,25 +1221,35 @@ function runLivePresentation(model, { nowMs = Date.now(), runFollow = true } = {
 }
 
 function runTurnPreviewLines(live, width, { phone = width < 100 } = {}) {
-  const room = Math.max(8, width - 4);
+  // The Step page's turn-row gutter: mark(1) + number(2) + 2 + HH:MM(5) + 2.
+  const gutter = 12;
+  const indent = ' '.repeat(gutter);
+  const room = Math.max(8, width - gutter);
   const turn = live?.turn;
   if (!turn) {
     const summary = live?.event?.summary ? String(live.event.summary).replace(/\s+/g, ' ').trim() : null;
-    return summary ? [` ↳ ${cut(summary, room)}`] : [];
+    return summary ? [` ↳ ${cut(summary, width - 4)}`] : [];
   }
   const text = String(turn.text ?? 'response summary unavailable').replace(/\s+/g, ' ').trim();
-  const wrapped = wrapLines([text], room).slice(0, 2);
-  const head = `${String(turn.number ?? 1).padStart(2, ' ')}  ${turn.clock ?? '--:--'}  `;
-  const lines = [];
-  if (wrapped.length) {
-    lines.push(` ${head}${wrapped[0]}`);
-    if (wrapped[1]) lines.push(`    ${wrapped[1]}`);
-  } else lines.push(` ${head}response summary unavailable`);
+  const head = ` ${String(turn.number ?? 1).padStart(2, ' ')}  ${turn.clock ?? '--:--'}  `;
   const counts = turn.countsText ?? turnCountsText(turn.summary);
-  if (counts && counts !== 'no tools') {
-    if (phone) lines.push(`    ${counts}`);
-    else lines[lines.length - 1] = cut(`${lines.at(-1)} · ${counts}`, width - 1);
+  const hasCounts = Boolean(counts) && counts !== 'no tools';
+  // Desktop appends ` · <counts>` to the second line and truncates the TEXT to
+  // make room, so the counts always survive; the phone gives them a third row.
+  const tail = hasCounts && !phone ? ` · ${counts}` : '';
+  const all = wrapLines([text], room);
+  const wrapped = all.slice(0, 2);
+  const overflow = all.length > 2;
+  if (wrapped.length) {
+    const last = wrapped.length - 1;
+    const textRoom = room - visibleLength(tail);
+    if (overflow || visibleLength(wrapped[last]) > textRoom) wrapped[last] = cut(`${wrapped[last]}${overflow ? '…' : ''}`, Math.max(1, textRoom));
+    wrapped[last] = `${wrapped[last]}${tail}`;
   }
+  const lines = wrapped.length
+    ? wrapped.map((line, index) => (index === 0 ? `${head}${line}` : `${indent}${line}`))
+    : [`${head}response summary unavailable${tail}`];
+  if (hasCounts && phone) lines.push(`${indent}${counts}`);
   return lines.map((line) => cut(line, width));
 }
 
