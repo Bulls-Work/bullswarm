@@ -646,6 +646,78 @@ export function renderPanel({
 // the room there is, with no second copy of the geometry here.
 const FILL_COLUMNS = Number.MAX_SAFE_INTEGER;
 
+/**
+ * Make a filled chart's bar rows exactly the height its sibling panel owns.
+ *
+ * `columnBars` chooses a nice tick interval and therefore returns a multiple
+ * of that interval, not necessarily the requested number of rows. That is a
+ * useful rule for a standalone chart, but it leaves the axis floating above a
+ * two-column panel grid. Filled charts are the one case where the requested
+ * geometry is authoritative: resample the painted rows to the target, then
+ * move the hit metadata with the same scale. The axis and value rows remain
+ * the renderer's own text, only their position changes.
+ */
+function resizeFilledChart(lines, targetRows) {
+  const meta = lines?.meta;
+  const target = Number.isFinite(Number(targetRows)) ? Math.max(1, Math.trunc(Number(targetRows))) : null;
+  const source = Number.isFinite(Number(meta?.chartRows)) ? Math.max(1, Math.trunc(Number(meta.chartRows))) : null;
+  if (!meta || target == null || source == null || target === source) return lines;
+
+  const bars = lines.slice(0, source);
+  const resizedBars = Array.from({ length: target }, (_, index) => {
+    const sourceIndex = Math.min(source - 1, Math.floor(index * source / target));
+    return bars[sourceIndex] ?? '';
+  });
+  const resized = [...resizedBars, ...lines.slice(source)];
+  const shiftRow = (row) => row == null
+    ? row
+    : Number.isFinite(Number(row)) ? Number(row) + (target - source) : row;
+  const scaleStart = (row) => Math.max(1, Math.min(target,
+    Math.floor(((Math.max(1, Number(row)) - 1) * target) / source) + 1));
+  const scaleEnd = (row) => Math.max(1, Math.min(target,
+    Math.ceil((Math.max(1, Number(row)) * target) / source)));
+  const columns = (Array.isArray(meta.columns) ? meta.columns : []).map((column) => {
+    const segments = (Array.isArray(column.segments) ? column.segments : []).map((segment) => {
+      const rowStart = scaleStart(segment.rowStart);
+      const rowEnd = Math.max(rowStart, scaleEnd(segment.rowEnd));
+      return {
+        ...segment,
+        rowStart,
+        rowEnd,
+        rowRange: [rowStart, rowEnd],
+        columnRange: segment.columnRange,
+        row: [rowStart, rowEnd],
+        rows: { start: rowStart, end: rowEnd },
+        y1: rowStart,
+        y2: rowEnd,
+      };
+    });
+    return {
+      ...column,
+      height: column.height > 0
+        ? Math.max(1, Math.min(target, Math.round(column.height * target / source)))
+        : 0,
+      eighths: column.eighths > 0
+        ? Math.max(1, Math.min(target * 8, Math.round(column.eighths * target / source)))
+        : 0,
+      segments,
+      slices: segments,
+    };
+  });
+  const resizedMeta = {
+    ...meta,
+    chartRows: target,
+    axisRow: shiftRow(meta.axisRow),
+    valueRow: shiftRow(meta.valueRow),
+    cumulativeRow: shiftRow(meta.cumulativeRow),
+    columns,
+    slices: columns.flatMap((column) => column.segments ?? []),
+    sliceGeometry: columns.flatMap((column) => column.segments ?? []),
+  };
+  Object.defineProperty(resized, 'meta', { enumerable: false, value: resizedMeta });
+  return resized;
+}
+
 function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, colors, fill = false) {
   const cols = widthOf(width, 55);
   const col = cols >= 180 ? 12 : cols >= 90 ? 8 : 6;
@@ -755,7 +827,7 @@ function datedValueLine(chart, sums, width, unit, mark) {
 export function renderColumnChart({
   title, buckets, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true, fill = false,
+  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -766,7 +838,8 @@ export function renderColumnChart({
   if (!values.some((value) => value != null)) {
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
-  const chart = columnBars([{ name: 'total', values, color: seriesColor('total') }], labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
+  const rawChart = columnBars([{ name: 'total', values, color: seriesColor('total') }], labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
+  const chart = fill && fitHeight ? resizeFilledChart(rawChart, rowCount ?? height ?? 6) : rawChart;
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;
@@ -829,7 +902,7 @@ function stackSliceRows(column, meta) {
 export function renderStackedColumnChart({
   title, buckets, series, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true, fill = false,
+  tab, metric, period, basis = null, colors = true, fill = false, fitHeight = false,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -850,7 +923,8 @@ export function renderStackedColumnChart({
   if (!painterSeries.some((entry) => entry.values.some((value) => finite(value) != null))) {
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
-  const chart = columnBars(painterSeries, labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
+  const rawChart = columnBars(painterSeries, labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
+  const chart = fill && fitHeight ? resizeFilledChart(rawChart, rowCount ?? height ?? 6) : rawChart;
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;

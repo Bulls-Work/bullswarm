@@ -57,6 +57,7 @@ test('register -> list -> release round-trips one assignment', () => {
       source: 'workflow-v2', runId: 'wf-abc123-4d5e6f', actionId: 'impl-1', attempt: 1,
       expectedMinutes: 3.1, expectedSource: 'caller',
       project: 'bullswarm', taskFile: '/tmp/task.md', outFile: '/tmp/out.md',
+      streamFile: '/tmp/stream.jsonl',
     });
 
     assert.equal(record.kernelPid, process.pid);
@@ -65,6 +66,7 @@ test('register -> list -> release round-trips one assignment', () => {
     assert.equal(record.project, 'bullswarm');
     assert.equal(record.taskFile, '/tmp/task.md');
     assert.equal(record.outFile, '/tmp/out.md');
+    assert.equal(record.streamFile, '/tmp/stream.jsonl');
     assert.match(record.startedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.deepEqual(readdirSync(assignmentsDir(home)), [`${record.id}.json`],
       'exactly one file, and no temp file left behind');

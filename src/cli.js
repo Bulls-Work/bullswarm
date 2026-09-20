@@ -519,6 +519,8 @@ async function cmdRun(opts) {
   const paths = {
     taskFile: join(runDir, `task-${stamp}.md`),
     outFile: join(runDir, `out-${stamp}.md`),
+    streamFile: join(runDir, `stream-${stamp}.jsonl`),
+    stdoutFile: join(runDir, `stdout-${stamp}.log`),
   };
 
   // One resolution per attempt, from the connector that will actually be
@@ -578,6 +580,7 @@ async function cmdRun(opts) {
     cwd: targetDir,
     taskFile: paths.taskFile,
     outFile: paths.outFile,
+    streamFile: paths.streamFile,
     startedAt,
     ...expected,
   }));
@@ -667,6 +670,7 @@ async function cmdRun(opts) {
       usage: verdict.meta?.usage ?? null,
       taskFile: paths.taskFile,
       outFile: paths.outFile,
+      streamFile: paths.streamFile,
       project,
       cwd: targetDir,
       startedAt,

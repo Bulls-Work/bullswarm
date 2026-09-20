@@ -1538,9 +1538,10 @@ export const buildStepModel = stepPageModel;
 /**
  * Adapt a normalized single-task ledger row to the same Step projection.
  *
- * The ledger intentionally has no workflow result, verification, usage, or
- * stream fields. The adapter therefore supplies only the durable task facts;
- * it never manufactures an envelope, event, verdict, or effort value.
+ * The ledger has no workflow result or verification. Stream and usage
+ * fields are copied when the record carries them and left unavailable
+ * when it does not. The adapter never manufactures an envelope, event,
+ * verdict, or effort value.
  */
 export function taskStepModel(task, { nowMs = Date.now(), view = 'overview', expandedTurn = null, ...options } = {}) {
   const record = task && typeof task === 'object' ? task : {};
@@ -1571,12 +1572,13 @@ export function taskStepModel(task, { nowMs = Date.now(), view = 'overview', exp
     durationMs: finiteMs(record.durationMs),
     taskFile,
     outputFile,
-    streamFile: null,
+    streamFile: textOrNull(record.streamFile ?? record.eventStream ?? record.streamPath ?? record.stream),
     routing: { lane: textOrNull(record.lane), effort: null },
     usage: null,
   };
-  // A standalone task row has no persisted stream pointer. Keep the adapter
-  // from asking the workflow naming convention for a synthetic stream path.
+  // Keep the adapter from asking the workflow naming convention for a
+  // synthetic stream path. Records that predate stream persistence stay
+  // streamFile-null and the Step page reports that honestly.
   const runDir = null;
   const state = {
     runId: `task:${id}`,

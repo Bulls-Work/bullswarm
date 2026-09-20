@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
 import {
@@ -17,6 +18,9 @@ import { runDashboard } from '../src/workflow/dashboard.js';
 const REAL_HOME = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
 const REAL_RUNS = join(REAL_HOME, 'runs');
 const NOW = Date.parse('2026-09-20T00:00:00.000Z');
+const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+const BIN = join(REPO, 'bin', 'bullswarm.js');
+const ANSWERING = join(REPO, 'tests', 'fixtures', 'answering-connector.mjs');
 
 function bodyFor() {
   return { lines: [], push(line = '') { this.lines.push(String(line)); } };
@@ -165,6 +169,176 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
   } finally {
     input.press('q');
     await dashboard;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('records that predate stream persistence keep the honest missing-stream reason', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-task-step-predate-'));
+  try {
+    writeFileSync(join(root, 'task.md'), 'Inspect the copied task.\n');
+    writeFileSync(join(root, 'out.md'), 'copied output\n');
+    const record = {
+      id: 'predate-task', lane: 'build', pool: 'codex', model: 'gpt-5.6-luna',
+      taskFile: join(root, 'task.md'), outFile: join(root, 'out.md'),
+      startedAt: '2026-09-19T23:50:00.000Z', endedAt: '2026-09-20T00:00:00.000Z',
+      ok: true,
+    };
+    const model = taskStepModel(record, { runsDir: root, nowMs: NOW });
+    assert.equal(model.activity.available, false);
+    assert.equal(model.activity.reason, 'no event stream path recorded');
+    const body = bodyFor();
+    renderStepPage(model, { width: 120, stepView: 'overview' }, body);
+    assert.match(plain(body.lines.join('\n')), /no event stream path recorded/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a running task with streamFile and a live out-*.md tail renders turns and output', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bullswarm-task-step-live-'));
+  try {
+    writeFileSync(join(root, 'task-live.md'), 'Run the bounded task.\n');
+    writeFileSync(join(root, 'out-live.md'), 'live output tail from the worker\n');
+    writeFileSync(join(root, 'stream-live.jsonl'), [
+      JSON.stringify({ at: '2026-09-19T23:50:10.000Z', kind: 'response', status: 'completed', summary: 'starting the work' }),
+      JSON.stringify({ at: '2026-09-19T23:50:20.000Z', kind: 'command_execution', status: 'completed', summary: 'npm test' }),
+      JSON.stringify({ at: '2026-09-19T23:51:00.000Z', kind: 'response', status: 'completed', summary: 'still running the checks' }),
+    ].join('\n'));
+    const record = {
+      id: 'live-task', lane: 'build', pool: 'codex', model: 'gpt-5.6-luna',
+      taskFile: join(root, 'task-live.md'), outFile: join(root, 'out-live.md'),
+      streamFile: join(root, 'stream-live.jsonl'),
+      startedAt: '2026-09-19T23:50:00.000Z',
+    };
+    const model = taskStepModel(record, { runsDir: root, nowMs: NOW });
+    assert.equal(model.identity.executionStatus, 'running');
+    assert.equal(model.activity.available, true);
+    assert.equal(model.activity.turns.length, 2);
+    assert.equal(model.activity.turns[0].summary.commands, 1);
+    assert.match(model.resultBlock.output.lines.join('\n'), /live output tail from the worker/);
+    const body = bodyFor();
+    renderStepPage(model, { width: 120, stepView: 'overview' }, body);
+    const text = plain(body.lines.join('\n'));
+    assert.match(text, /starting the work/);
+    assert.match(text, /live output tail from the worker/);
+    assert.doesNotMatch(text, /no event stream path recorded/);
+    assert.doesNotMatch(text, /output unavailable/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('real snapshot task records without a stream pointer stay honest', () => {
+  if (!existsSync(join(REAL_HOME, 'state.json'))) return;
+  const state = JSON.parse(readFileSync(join(REAL_HOME, 'state.json'), 'utf8'));
+  const record = (state.decisionLog ?? []).find((entry) => (
+    entry?.kind === 'run' && entry.taskFile && !entry.streamFile
+  ));
+  assert.ok(record, 'snapshot has no pre-stream task record');
+  const model = taskStepModel({
+    ...record,
+    taskFile: join(REAL_RUNS, basename(record.taskFile)),
+    outFile: record.outFile ? join(REAL_RUNS, basename(record.outFile)) : null,
+  }, { nowMs: NOW, runsDir: REAL_RUNS });
+  assert.equal(model.activity.available, false);
+  assert.equal(model.activity.reason, 'no event stream path recorded');
+  const body = bodyFor();
+  renderStepPage(model, { width: 120, stepView: 'overview' }, body);
+  assert.match(plain(body.lines.join('\n')), /no event stream path recorded/);
+});
+
+test('a fake-provider run persists stream-<id>.jsonl beside the task file and the Step page renders its turns', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-task-step-fake-'));
+  try {
+    mkdirSync(join(home, 'connectors'), { recursive: true });
+    writeFileSync(join(home, 'connectors', 'fake-stream.json'), `${JSON.stringify({
+      name: 'fake-stream',
+      bin: 'node',
+      spawn: { cmd: [process.execPath, ANSWERING, '{taskFile}'], cwdMode: 'task-file-dir' },
+      authSignatures: [],
+      quotaSignatures: [],
+      outputExtraction: { strategy: 'event-stream' },
+      eventStream: {
+        format: 'jsonl',
+        args: [],
+        rules: [
+          {
+            rootMatch: { path: 'type', equals: 'item.started' },
+            idPaths: ['item.id'],
+            kindPaths: ['item.type'],
+            kindMap: { agent_message: 'response' },
+            summaryPaths: ['item.command', 'item.text'],
+            status: 'running',
+          },
+          {
+            rootMatch: { path: 'type', equals: 'item.completed' },
+            idPaths: ['item.id'],
+            kindPaths: ['item.type'],
+            kindMap: { agent_message: 'response' },
+            summaryPaths: ['item.command', 'item.text'],
+            status: 'completed',
+          },
+        ],
+        output: [{ match: { path: 'type', equals: 'item.completed' }, path: 'item.text', mode: 'last' }],
+      },
+      meter: { type: 'none' },
+      costRank: 5,
+      lanes: ['analyze', 'build', 'chore'],
+      capabilities: ['strong-analysis', 'code-reading', 'file-editing', 'workflow-planning'],
+      model: 'fake-local',
+      knownModels: ['fake-local'],
+      modelProfiles: [{
+        id: 'fake-local', tier: 'low', qualityRank: 1, free: true,
+        pricing: { inputUsdPerMillion: 0, cacheReadUsdPerMillion: 0, outputUsdPerMillion: 0 },
+        pricingSource: 'local deterministic fixture',
+        pricingUpdatedAt: '2026-08-27',
+      }],
+      flags: { stealth: false, testFixture: true },
+    }, null, 2)}\n`);
+    writeFileSync(join(home, 'state.json'), `${JSON.stringify({
+      version: 1,
+      pools: { 'fake-stream': { enabled: true } },
+      incumbents: {},
+      decisionLog: [],
+      config: { depthLimit: 2, callerName: 'claude-code', testFixturesMigrated: true },
+    }, null, 2)}\n`);
+    const result = spawnSync(process.execPath, [BIN, 'run', '--lane', 'build', '--json', '--no-caller', '--add-dir', REPO, '--prompt', 'persist the event stream'], {
+      env: {
+        ...process.env,
+        BULLSWARM_HOME: home,
+        BULLSWARM_NO_PACKAGED_PROVIDERS: '1',
+        BULLSWARM_FIXTURE_EVENTS: 'jsonl',
+      },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
+    const entry = state.decisionLog.at(-1);
+    assert.equal(entry.kind, 'run');
+    assert.equal(entry.ok, true);
+    assert.match(entry.taskFile, /\/runs\/task-/);
+    assert.match(entry.streamFile, /\/runs\/stream-/);
+    assert.equal(
+      entry.streamFile.replace(/stream-/, 'task-').replace(/\.jsonl$/, '.md'),
+      entry.taskFile,
+    );
+    assert.equal(existsSync(entry.streamFile), true, 'the stream file exists next to the task file');
+    const rows = readFileSync(entry.streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    assert.ok(rows.some((row) => row.kind === 'response'), 'the fake provider recorded response turns');
+    assert.ok(readdirSync(join(home, 'runs')).includes(basename(entry.streamFile)));
+
+    const model = taskStepModel(entry, { runsDir: join(home, 'runs'), nowMs: NOW });
+    assert.equal(model.activity.available, true);
+    assert.ok(model.activity.turns.length >= 1);
+    const body = bodyFor();
+    renderStepPage(model, { width: 120, stepView: 'overview' }, body);
+    const text = plain(body.lines.join('\n'));
+    assert.match(text, /response turns/);
+    assert.doesNotMatch(text, /no event stream path recorded/);
+    assert.doesNotMatch(text, /output unavailable/);
+  } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });

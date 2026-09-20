@@ -22,7 +22,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeContent } from './verify.js';
 import * as usageLib from './usage.js';
@@ -410,6 +410,19 @@ function outputIsTruncated(output, eventTimeline) {
   return Number(eventTimeline?.lastToolSequence ?? 0) > Number(eventTimeline?.lastResponseSequence ?? 0);
 }
 
+/**
+ * Sibling of a `task-<id>.md` file. Workflow attempts and single tasks share
+ * this name: `stream-<id>.jsonl`, `out-<id>.md`, `stdout-<id>.log`. A task
+ * file that does not use the `task-` prefix returns null so a test that
+ * writes a bare `task.md` does not grow extra capture files.
+ */
+export function artifactBesideTask(taskFile, kind, ext) {
+  if (typeof taskFile !== 'string' || !taskFile) return null;
+  const name = basename(taskFile);
+  const trimmed = name.startsWith('task-') ? name.slice(5).replace(/\.[^.]+$/, '') : '';
+  return trimmed ? join(dirname(taskFile), `${kind}-${trimmed}${ext}`) : null;
+}
+
 function resolveAttemptStream(connector, opts = {}) {
   if (opts.attemptStream) return opts.attemptStream;
   const streamFile = opts.streamFile ?? null;
@@ -538,6 +551,20 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
     // routinely contain limit wording that says nothing about OUR quota.
     let responseText = '';
     const attemptStream = resolveAttemptStream(connector, opts);
+    const liveOutFile = opts.outFile ?? null;
+    let lastLiveOutput = null;
+    const persistLiveOutput = () => {
+      if (!liveOutFile) return;
+      const strategy = connector.outputExtraction?.strategy ?? 'stdout';
+      const text = strategy === 'event-stream'
+        ? (eventDecoder?.output() || stdoutCapture.text() || '')
+        : strategy === 'stdout-tail'
+          ? (stdoutCapture.text() || '').split('\n').slice(-80).join('\n')
+          : (stdoutCapture.text() || stderrCapture.text() || '');
+      if (!text || text === lastLiveOutput) return;
+      lastLiveOutput = text;
+      try { writeFileSync(liveOutFile, text); } catch { /* live tail is best-effort */ }
+    };
     const eventDecoder = createAgentEventDecoder(connector.eventStream, {
       onEvent: (event, fullSummary) => {
         eventSequence += 1;
@@ -554,6 +581,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
           providerFailureText ??= typeof event?.summary === 'string' ? event.summary : null;
         }
         attemptStream?.event(event, fullSummary);
+        persistLiveOutput();
         opts.onAgentEvent?.(event, fullSummary);
       },
       onProgress: (event) => {
@@ -641,6 +669,7 @@ export function runDelegate(connector, taskFile, targetDir, opts = {}) {
         if (!eventDecoder) {
           const text = typeof d === 'string' ? d : d.toString();
           attemptStream?.stdout(text, stream);
+          persistLiveOutput();
           opts.onStdoutChunk?.(text, stream);
         }
         stopOnFatalSignature();
@@ -834,8 +863,9 @@ export async function watchOnce(connector, taskText, targetDir, paths, opts = {}
   const startCursor = cursorFor(startSnapshot, new Date(startedAt).toISOString());
   const obs = await runDelegate(connector, paths.taskFile, targetDir, {
     ...opts,
-    streamFile: opts.streamFile ?? paths.streamFile,
+    streamFile: opts.streamFile ?? paths.streamFile ?? artifactBesideTask(paths.taskFile, 'stream', '.jsonl'),
     stdoutFile: opts.stdoutFile ?? paths.stdoutFile,
+    outFile: opts.outFile ?? paths.outFile,
   });
   const endedAt = Date.now();
   let endSnapshot = await safeSnapshot(snapshotPool, poolName, home, endedAt, 'cache');

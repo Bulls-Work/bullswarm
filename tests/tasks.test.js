@@ -51,18 +51,19 @@ test('listTasks returns exact in-flight and finished row shapes, newest first', 
     assert.deepEqual(tasks.inflight, [{
       id: 'live-task', lane: 'build', pool: 'echo', model: 'echo-local', project: 'bullswarm',
       startedAt: '2026-09-18T11:50:00.000Z', taskFile: '/tmp/task-live.md',
-      outFile: '/tmp/out-live.md',
+      outFile: '/tmp/out-live.md', streamFile: null,
     }]);
     assert.deepEqual(tasks.finished, [
       {
         id: 'finished-new', lane: 'build', pool: 'echo', model: 'echo-local', project: 'bullswarm',
         startedAt: '2026-09-18T11:40:00.000Z', taskFile: '/tmp/task-new.md',
-        outFile: '/tmp/out-new.md',
+        outFile: '/tmp/out-new.md', streamFile: null,
         endedAt: '2026-09-18T11:42:05.000Z', ok: true, reason: null, durationMs: 125000,
       },
       {
         id: null, lane: 'chore', pool: 'legacy-pool', model: null, project: null,
-        startedAt: null, taskFile: null, outFile: null, endedAt: '2026-09-18T10:00:00.000Z',
+        startedAt: null, taskFile: null, outFile: null, streamFile: null,
+        endedAt: '2026-09-18T10:00:00.000Z',
         ok: false, reason: 'legacy failure', durationMs: 3000,
       },
     ]);
@@ -76,6 +77,30 @@ test('listTasks keeps only the run source in flight and applies the since bounda
     assert.deepEqual(tasks.finished.map((row) => row.id), ['finished-new']);
     assert.equal(tasks.inflight.length, 1);
     assert.equal(tasks.inflight[0].id, 'live-task');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test('listTasks carries the recorded streamFile on live and finished rows', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-tasks-stream-'));
+  mkdirSync(join(home, 'assignments'), { recursive: true });
+  try {
+    writeFileSync(join(home, 'state.json'), `${JSON.stringify({
+      decisionLog: [{
+        kind: 'run', id: 'finished-stream', lane: 'build', pool: 'codex', model: 'gpt-5.6-luna',
+        startedAt: '2026-09-18T11:40:00.000Z', endedAt: '2026-09-18T11:41:00.000Z',
+        taskFile: '/tmp/task-done.md', outFile: '/tmp/out-done.md',
+        streamFile: '/tmp/stream-done.jsonl', ok: true,
+      }],
+    }, null, 2)}\n`);
+    registerAssignment(home, {
+      id: 'live-stream', pool: 'codex', model: 'gpt-5.6-luna', lane: 'build', source: 'run',
+      taskFile: '/tmp/task-live.md', outFile: '/tmp/out-live.md',
+      streamFile: '/tmp/stream-live.jsonl',
+      startedAt: '2026-09-18T11:50:00.000Z', workerPid: process.pid,
+    });
+    const tasks = listTasks({ home, now: NOW });
+    assert.equal(tasks.inflight[0].streamFile, '/tmp/stream-live.jsonl');
+    assert.equal(tasks.finished[0].streamFile, '/tmp/stream-done.jsonl');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

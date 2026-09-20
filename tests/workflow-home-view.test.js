@@ -18,6 +18,10 @@ import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.j
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
+// A top-run card reads a run's state from under BULLSWARM_HOME, so the file
+// points the model at the supplied read-only snapshot: rendering a real card
+// never probes the live home.
+process.env.BULLSWARM_HOME = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0, 0).getTime();
 const TODAY = new Date(NOW).toISOString();

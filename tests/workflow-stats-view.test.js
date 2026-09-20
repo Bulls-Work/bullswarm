@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { statsLines } from '../src/workflow/stats-view.js';
@@ -500,4 +500,35 @@ test('a record that carries an active union is never labelled as a span', () => 
     .lines.map(visible).join('\n');
   assert.match(text, /Median run[^\n]*6h01m median(?! · span)/);
   assert.doesNotMatch(text, /Durations ·/);
+});
+
+// The owner screenshot's shape is easiest to regress against the actual
+// rollups, rather than a hand-sized fixture: the pool rows are long enough to
+// expose the chart/grid mismatch at both desktop widths.
+const REAL_SNAPSHOT_HOME = process.env.BULLSWARM_STATS_SNAPSHOT_HOME
+  ?? '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+const REAL_SNAPSHOT_NOW = Date.parse('2026-09-20T12:00:00.000Z');
+
+test('real snapshot rollups align every desktop Stats chart with its right column', () => {
+  assert.ok(existsSync(join(REAL_SNAPSHOT_HOME, 'workflows')), `missing real rollup snapshot: ${REAL_SNAPSHOT_HOME}`);
+  const records = readRollups(REAL_SNAPSHOT_HOME, { now: REAL_SNAPSHOT_NOW });
+  assert.ok(records.length > 0, 'the real rollup snapshot is empty');
+  const stats = statsOf(records, { period: 'all', now: REAL_SNAPSHOT_NOW });
+
+  for (const width of [120, 200]) {
+    const leftWidth = Math.floor((width - 2) / 2);
+    for (const tab of ['spending', 'pool', 'model', 'project']) {
+      const view = statsLines(stats, { width, tab, period: 'all', stackBy: 'pool', ansi: false });
+      const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
+      assert.ok(titleRow >= 0, `${tab}/${width}: chart title missing`);
+      const chartLastRow = view.lines.findLastIndex((line, index) => (
+        index >= titleRow && /[┼+]/.test(visible(line).slice(0, leftWidth))
+      ));
+      const legendRow = view.lines.findIndex((line) => visible(line).startsWith('Legend'));
+      assert.ok(chartLastRow > titleRow, `${tab}/${width}: chart axis missing`);
+      assert.ok(legendRow > chartLastRow, `${tab}/${width}: right column/legend boundary missing`);
+      const rightColumnLastRow = legendRow - 1;
+      assert.equal(chartLastRow, rightColumnLastRow, `${tab}/${width}: chart and right column bottoms diverged`);
+    }
+  }
 });

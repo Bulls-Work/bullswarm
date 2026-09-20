@@ -3,7 +3,16 @@
 // Home owns the finished-today/task ledger projection and the per-pool
 // accounting rows. Rendering stays in home-view.js; shared dashboard helpers
 // remain shell-owned so the other pages keep their compatibility contract.
+//
+// A top-run card answers with the same figures the Run page answers with: a
+// rollup written before `minutes.active` and `steps` existed leaves Home with
+// nothing to print, so the card reads the run's own state through the Run
+// page's own duration arithmetic (`runDurationFacts`) rather than measuring a
+// second time and disagreeing.
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { readJsonSafe } from '../lib/fsjson.js';
 import { finiteOrNull } from '../lib/num.js';
 import { dayKey } from './history.js';
 import {
@@ -12,6 +21,8 @@ import {
   worstSubscriptionBasis,
   worstTokenSource,
 } from './dashboard.js';
+import { withV2Cancellation } from './v2-cancellation.js';
+import { runDurationFacts } from './run-model.js';
 import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 
 function taskToday(task, nowMs, { finished = false } = {}) {
@@ -234,6 +245,54 @@ function runStepCounts(record) {
   };
 }
 
+/** `<BULLSWARM_HOME>/workflows/<runId>`, the directory the Run page opens. */
+function runDirectory(record) {
+  if (record?.runDir) return String(record.runDir);
+  if (!record?.runId) return null;
+  const home = process.env.BULLSWARM_HOME?.trim();
+  return join(home && home.length ? home : join(homedir(), '.bullswarm'), 'workflows', String(record.runId));
+}
+
+/**
+ * The active minutes, span and step tally the Run page prints for this run.
+ *
+ * A rollup written before 0.35.1 carries neither `minutes.active` nor `steps`,
+ * and a card that prints `active — · steps —` beside a Run header reading
+ * `active 354.94m · 19/19 actions` is the two pages disagreeing about one run.
+ * So the card reads the same two files the Run page's row reads (state.json,
+ * overlaid with the operator's cancellation intent, plus report.json) and
+ * measures them with the Run page's own union arithmetic.
+ *
+ * `null` when the row already answers for itself, when the run has no
+ * directory on disk (a legacy run, or a home the index outlived), or when the
+ * state is unreadable — the caller keeps whatever the row recorded, dashes
+ * included, rather than turning a missing file into a measurement.
+ */
+function runPageFacts(record, nowMs = Date.now()) {
+  const steps = runStepCounts(record);
+  const storedActive = finiteOrNull(record?.minutes?.active);
+  if (record?.legacy === true || (storedActive != null && steps.done != null && steps.total != null)) return null;
+  const runDir = runDirectory(record);
+  if (!runDir) return null;
+  let state = null;
+  let report = null;
+  try {
+    state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json'), null), runDir);
+    report = readJsonSafe(join(runDir, 'report.json'), null);
+  } catch { return null; }
+  if (!state || typeof state !== 'object') return null;
+  const duration = runDurationFacts({ runId: record?.runId ?? null, runDir, state, report }, { nowMs });
+  return {
+    minutes: {
+      active: duration.activeMinutes,
+      span: duration.spanMinutes,
+      label: 'active',
+      intervals: duration.intervals,
+    },
+    steps: runStepCounts({ ...record, state }),
+  };
+}
+
 function recordMoneyInput(record) {
   const info = recordCostInfo(record);
   const state = recordState(record);
@@ -348,8 +407,11 @@ function todayTopRuns(model, nowMs = Date.now(), { limit = 3 } = {}) {
   active.sort((a, b) => String(b?.startedAt ?? recordState(b)?.lifecycle?.startedAt ?? '').localeCompare(String(a?.startedAt ?? recordState(a)?.lifecycle?.startedAt ?? '')));
   finished.sort(newest);
   return [...active, ...finished].slice(0, Math.max(0, Number(limit) || 0)).map((record) => {
-    const minutes = runMinutesInfo(record, nowMs);
-    const steps = runStepCounts(record);
+    // Only the cards on screen pay for a state read, and only when their own
+    // row cannot answer; the run's own files give the Run page's figures.
+    const page = runPageFacts(record, nowMs);
+    const minutes = page?.minutes ?? runMinutesInfo(record, nowMs);
+    const steps = page?.steps ?? runStepCounts(record);
     return {
       record,
       id: runIdentity(record),

@@ -166,6 +166,12 @@ test('run records a task ledger entry with project and lifecycle fields', () => 
     assert.equal(entry.reason, null);
     assert.match(entry.taskFile, /\/runs\/task-/);
     assert.match(entry.outFile, /\/runs\/out-/);
+    assert.match(entry.streamFile, /\/runs\/stream-/);
+    assert.equal(
+      entry.streamFile.replace(/stream-/, 'task-').replace(/\.jsonl$/, '.md'),
+      entry.taskFile,
+      'stream file uses the same id suffix as the task file',
+    );
     assert.match(entry.startedAt, /^2026-|^20\d\d-/);
     assert.match(entry.endedAt, /^2026-|^20\d\d-/);
     assert.ok(entry.endedAt >= entry.startedAt);

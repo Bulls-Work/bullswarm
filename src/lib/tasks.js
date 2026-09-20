@@ -83,6 +83,9 @@ function taskRow(record) {
     // `outputFile`. Both normalize to `outFile` here so the Runs task pane has
     // one field to render; null when the record predates the field.
     outFile: nullableString(record?.outFile ?? record?.outputFile),
+    // Same spelling as a workflow attempt: the persisted JSONL capture, or
+    // null on records that predate single-task stream persistence.
+    streamFile: nullableString(record?.streamFile ?? record?.eventStream ?? record?.streamPath ?? record?.stream),
   };
 }
 

@@ -153,7 +153,7 @@ function round(value, places = 2) {
  *                               runId/actionId/attempt/expectedMinutes/
  *                               expectedSource/workerPid/startedAt/id and the
  *                               optional single-task identity fields
- *                               project/cwd/taskFile/outFile
+ *                               project/cwd/taskFile/outFile/streamFile
  * @returns {object} the stored record
  */
 export function registerAssignment(bullswarmDir, fields = {}) {
@@ -191,6 +191,7 @@ export function registerAssignment(bullswarmDir, fields = {}) {
     cwd: fields.cwd ?? null,
     taskFile: fields.taskFile ?? null,
     outFile: fields.outFile ?? null,
+    streamFile: fields.streamFile ?? null,
     expectedMinutes,
     expectedSource: fields.expectedSource ?? (expectedMinutes == null ? 'none' : 'caller'),
   };
@@ -233,6 +234,7 @@ export function updateAssignment(bullswarmDir, id, patch = {}) {
   if ('cwd' in patch) next.cwd = patch.cwd ?? null;
   if ('taskFile' in patch) next.taskFile = patch.taskFile ?? null;
   if ('outFile' in patch) next.outFile = patch.outFile ?? null;
+  if ('streamFile' in patch) next.streamFile = patch.streamFile ?? null;
   return writeRecord(dir, next);
 }
 

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { watchOnce, argvWithModel, runDelegate, BoundedCapture } from '../src/lib/watch.js';
+import { artifactBesideTask, watchOnce, argvWithModel, runDelegate, BoundedCapture } from '../src/lib/watch.js';
 import { parseQuotaResetAt } from '../src/lib/quota.js';
 import { resolveReasoningLevel } from '../src/lib/reasoning.js';
 
@@ -1047,6 +1047,79 @@ test('a connector with no eventStream persists a bounded stdout log instead of j
     const body = readFileSync(stdoutFile, 'utf8');
     assert.match(body, /Completed/);
     assert.doesNotMatch(body, /"truncated":true/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('artifactBesideTask names stream/out/stdout from a task- prefix', () => {
+  assert.equal(
+    artifactBesideTask('/tmp/runs/task-1789888532139-4y8sg.md', 'stream', '.jsonl'),
+    '/tmp/runs/stream-1789888532139-4y8sg.jsonl',
+  );
+  assert.equal(artifactBesideTask('/tmp/runs/task.md', 'stream', '.jsonl'), null);
+  assert.equal(artifactBesideTask(null, 'stream', '.jsonl'), null);
+});
+
+function streamedConnector(rows) {
+  return {
+    name: 'fixture-events',
+    spawn: { cmd: [process.execPath, '-e', `for (const row of ${JSON.stringify(rows)}) console.log(JSON.stringify(row))`] },
+    authSignatures: [],
+    outputExtraction: { strategy: 'event-stream' },
+    eventStream: {
+      format: 'jsonl',
+      modelPaths: ['model'],
+      rules: [
+        { rootMatch: { path: 'type', equals: 'tool' }, idPaths: ['id'], kindPaths: ['name'], summaryPaths: ['command'], statusPath: 'status' },
+        { rootMatch: { path: 'type', equals: 'response' }, idPaths: ['id'], kind: 'response', summaryPaths: ['text'], status: 'completed' },
+      ],
+      output: [{ match: { path: 'type', equals: 'response' }, path: 'text', mode: 'last' }],
+    },
+    model: 'fixture-model',
+  };
+}
+
+test('watchOnce derives stream-<id>.jsonl from a task-<id>.md path and writes from the first event', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bullswarm-watch-stream-'));
+  const paths = {
+    taskFile: join(dir, 'task-act-1.md'),
+    outFile: join(dir, 'out-act-1.md'),
+  };
+  const streamFile = join(dir, 'stream-act-1.jsonl');
+  try {
+    const rows = [
+      { type: 'tool', id: 't1', name: 'shell', command: 'npm test', status: 'completed' },
+      { type: 'response', id: 'r1', text: 'Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures.' },
+    ];
+    const verdict = await watchOnce(streamedConnector(rows), 'Do the thing.', dir, paths, { timeoutSec: 60 });
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.equal(verdict.meta.streamFile, streamFile);
+    assert.equal(existsSync(streamFile), true, 'the stream file is created beside the task file');
+    const persisted = readFileSync(streamFile, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    assert.equal(persisted[0].kind, 'shell');
+    assert.equal(persisted[1].kind, 'response');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('watchOnce writes the live out-*.md tail as events arrive', async () => {
+  const ctx = makeCtx();
+  try {
+    const rows = [
+      { type: 'response', id: 'r1', text: 'Completed the requested implementation, updated the affected files, and verified the full local test suite successfully with no remaining failures.' },
+    ];
+    let live = '';
+    const verdict = await watchOnce(streamedConnector(rows), 'Do the thing.', ctx.dir, ctx.paths, {
+      timeoutSec: 60,
+      onAgentEvent: () => {
+        if (existsSync(ctx.paths.outFile)) live = readFileSync(ctx.paths.outFile, 'utf8');
+      },
+    });
+    assert.equal(verdict.ok, true, verdict.why);
+    assert.match(live, /^Completed the requested/);
+    assert.match(readFileSync(ctx.paths.outFile, 'utf8'), /^Completed the requested/);
   } finally {
     ctx.cleanup();
   }

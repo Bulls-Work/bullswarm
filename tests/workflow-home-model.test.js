@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   measuredTaskMinutes,
   medianRunDuration,
@@ -18,12 +20,21 @@ import {
   todayMinutesText,
   todayRows,
 } from '../src/workflow/home-model.js';
+import { readJsonSafe } from '../src/lib/fsjson.js';
+import { withV2Cancellation } from '../src/workflow/v2-cancellation.js';
+import { runDurationFacts } from '../src/workflow/run-model.js';
+import { readRollups } from '../src/workflow/rollup.js';
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0, 0).getTime();
 const TODAY = new Date(NOW).toISOString();
+// The supplied read-only capture of a real home. The top-run cards read a
+// run's state from under BULLSWARM_HOME, so the file points the model at this
+// snapshot: no test here may probe the live home.
+const SNAPSHOT = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+process.env.BULLSWARM_HOME = SNAPSHOT;
 
 test('Home model keeps task identity, dates, durations and nullable figures honest', () => {
   const finished = { id: 'task-1', pool: 'codex', endedAt: TODAY, durationMs: 90_000 };
@@ -180,4 +191,52 @@ test('Home model orders active runs before newest finished and never promotes wa
   // Requirements are not steps: a record with only a requirement tally shows no step count.
   assert.deepEqual(runStepCounts({ requirements: { passed: 3, total: 4 } }), { done: null, total: null });
   assert.deepEqual(runStepCounts({ steps: { done: 3, total: 4 }, requirements: { passed: 1, total: 7 } }), { done: 3, total: 4 });
+});
+
+test('Home model answers a pre-0.35.1 rollup row with the Run page\'s own figures', {
+  skip: !existsSync(join(SNAPSHOT, 'workflows', 'wf-mu6mv62z-cdcd5d', 'state.json')),
+}, () => {
+  // g6d6q2's index row is the owner's defect: the run finished before the
+  // rollup carried `minutes.active` and `steps`, so the card printed
+  // `active — · steps —` beside a Run header that had both.
+  const row = readRollups(SNAPSHOT).find((record) => record.shortId === 'g6d6q2');
+  assert.ok(row, 'the snapshot does not carry the g6d6q2 history row');
+  assert.equal(row.minutes.active, undefined);
+  assert.equal(row.steps, undefined);
+
+  const nowMs = Date.parse(row.finishedAt);
+  const cards = todayTopRuns({ runs: [], rollups: [row], days: [] }, nowMs, { limit: 3 });
+  assert.equal(cards.length, 1);
+  const [card] = cards;
+
+  const runDir = join(SNAPSHOT, 'workflows', row.runId);
+  const state = withV2Cancellation(readJsonSafe(join(runDir, 'state.json'), null), runDir);
+  const duration = runDurationFacts({
+    runId: row.runId, runDir, state, report: readJsonSafe(join(runDir, 'report.json'), null),
+  }, { nowMs });
+  const actions = state.actions ?? [];
+  assert.deepEqual(card.steps, {
+    done: actions.filter((action) => action.status === 'succeeded').length,
+    total: actions.length,
+  });
+  assert.equal(card.minutes.active, duration.activeMinutes);
+  assert.equal(card.minutes.span, duration.spanMinutes);
+  // Not equal to nothing: the run's own measured figures, to the hundredth the
+  // Run header prints.
+  assert.equal(Number(card.minutes.active.toFixed(2)), 360.65);
+  assert.deepEqual(card.steps, { done: 14, total: 14 });
+
+  // A row that already carries the fields answers for itself, whatever the
+  // run's state says.
+  const recorded = todayTopRuns({
+    runs: [], days: [],
+    rollups: [{ ...row, minutes: { active: 1, span: 2 }, steps: { done: 1, total: 2 } }],
+  }, nowMs, { limit: 3 });
+  assert.equal(recorded[0].minutes.active, 1);
+  assert.deepEqual(recorded[0].steps, { done: 1, total: 2 });
+
+  // No state on disk keeps the dash rather than inventing an interval.
+  const gone = todayTopRuns({ runs: [], days: [], rollups: [{ ...row, runId: 'wf-absent' }] }, nowMs, { limit: 3 });
+  assert.equal(gone[0].minutes.active, null);
+  assert.deepEqual(gone[0].steps, { done: null, total: null });
 });

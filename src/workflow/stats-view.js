@@ -498,7 +498,7 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
     metric: info.metric,
     period,
     basis: trend.segmentBasis ?? info.basis ?? null,
-    ...(geometry.fill ? { fill: true } : {}),
+    ...(geometry.fill ? { fill: true, fitHeight: geometry.fit === true } : {}),
   };
   const drawn = (rows) => renderStackedColumnChart({ ...chartArgs, height: rows, rowCount: rows });
   const chart = (info.unit === 'usd' || info.unit === 'minutes' || info.unit === 'runs')
@@ -631,28 +631,12 @@ function panelColumnHeight(panels) {
 /**
  * Draw a chart that fills the rows its panel has.
  *
- * `columnBars` lays a tick every whole row, so asking for N rows can return up
- * to `intervals` more of them. The fit is taken from the first render and the
- * request reduced to whole ticks that stay inside the budget, so the chart
- * fills its panel instead of overhanging the panels beside it with rows of
- * its own. The last render wins either way.
+ * The stat-kit filled-chart path normalizes the bar rows after the shared axis
+ * has chosen its nice tick step. Keep the requested budget here: reducing it
+ * to a whole tick would put the axis back above the panel grid's bottom.
  */
 function chartFilling(render, budget) {
-  let rows = budget;
-  let chart = render(rows);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const meta = chart?.meta?.chart ?? null;
-    const drawn = finite(meta?.chartRows);
-    const step = finite(meta?.tickStep);
-    const top = finite(meta?.axisTop);
-    if (drawn == null || drawn + 2 <= rows) return chart;
-    const intervals = step > 0 && top > 0 ? Math.max(1, Math.round(top / step)) : null;
-    const next = intervals == null ? rows - 1 : intervals * Math.max(1, Math.floor((rows - 2) / intervals));
-    if (!(next >= 1) || next >= rows) return chart;
-    rows = next;
-    chart = render(rows);
-  }
-  return chart;
+  return render(budget);
 }
 
 /** Render the four fixed Stats tabs through the shared stat-kit surface. */
