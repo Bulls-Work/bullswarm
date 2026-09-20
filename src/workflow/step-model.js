@@ -535,6 +535,11 @@ function eventIsError(event) {
 function eventIsResponse(event) {
   const kind = String(event?.kind ?? '').toLowerCase();
   const providerType = String(event?.providerType ?? '').toLowerCase();
+  // Codex closes every turn with a `result` envelope (`turn.completed`, usage
+  // only, no text). It is the boundary marker, never a response of its own:
+  // treating it as one opened an empty "response summary unavailable" turn at
+  // the end of every codex step (seen on the 0.35.1 QA task, 2026-09-20).
+  if (ENVELOPE_KINDS.has(kind)) return false;
   return kind === 'response'
     || kind === 'assistant_response'
     || providerType === 'response'
