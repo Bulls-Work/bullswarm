@@ -29,7 +29,7 @@ const NOW = Date.parse('2026-09-20T12:00:00.000Z');
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (value) => String(value ?? '').replace(ANSI, '');
 // Timestamps render in the local zone, so only their shape is asserted.
-const normalizeRow = (line) => visible(line).replace(/^\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
+const normalizeRow = (line) => visible(line).replace(/^\s*\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
 
 // Two real runs from the read-only snapshot the design frames use:
 //   g6d6q2 — the 14-action contract stream: 12 phases, five `accept` attempts
@@ -123,13 +123,13 @@ test('Run view preserves timeline segments and step hit regions through the extr
 
   const body = bodyBuilder();
   const header = runPage({ row, assignments: [], pools: [] }, { width: 55, bodyHeight: 22, narrow: true, nowMs: NOW, spinnerFrame: 0, focus: 0 }, body);
-  assert.match(header, /^ view01 running/);
+  assert.match(visible(header), /^ ● view01 · running · 1 of 2 steps · 1 running/);
   assert.ok(body.lines.some((line) => visible(line).includes('timeline')));
   markStepRows(body, body.lines, panel, row.runId);
   assert.ok(body.regions.some((region) => region.action?.kind === 'step'));
 });
 
-test('Run view paints numbered phase boxes chained with arrows and attempt routing metadata', () => {
+test('Run view paints numbered phase boxes and v2 attempt routing metadata', () => {
   const row = rowFixture();
   row.state.attempts[0].status = 'succeeded';
   row.state.attempts[0].finishedAt = '2026-09-20T11:59:30.000Z';
@@ -147,10 +147,10 @@ test('Run view paints numbered phase boxes chained with arrows and attempt routi
   assert.deepEqual(rows, ['[✓ 1. audit 1/1] → [▶ 2. report 0/1]']);
   const timeline = workflowTimelineLines(workflowPanelModel(row), 120, 0, { goalPreview: false, nowMs: NOW });
   const text = timeline.lines.map((line) => line.text ?? line).join('\n');
-  // The 0.35.0 tree row: one line per attempt, its own clock on the right and
-  // the routing it ran on beside the step's name. No `phase active` extra row.
-  assert.match(text, /│  ├─✓ report · codex · gpt-test · high\s+1m30s/);
-  assert.doesNotMatch(text, /phase active/);
+  // One v2 row per attempt, its own clock on the right and the routing it ran
+  // on beside the step's name. Phase start/completed filler is gone.
+  assert.match(text, /\d{2}:\d{2}\s+✓ report · codex · gpt-test · high\s+1m30s/);
+  assert.doesNotMatch(text, /phase active|├─ started|└─✓ completed/);
 });
 
 test('the real g6d6q2 and euqrni runs stay inside 55, 120 and 200 columns', { skip: !existsSync(join(realRuns.g6d6q2, 'state.json')) || !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
@@ -188,7 +188,7 @@ test('the real g6d6q2 and euqrni runs stay inside 55, 120 and 200 columns', { sk
   assert.ok(measured['euqrni@200'] > 120 && measured['euqrni@200'] <= 200);
 });
 
-test('the real g6d6q2 run draws the 0.35.0 tree with pool · model · effort per attempt', { skip: !existsSync(join(realRuns.g6d6q2, 'state.json')) }, () => {
+test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per attempt', { skip: !existsSync(join(realRuns.g6d6q2, 'state.json')) }, () => {
   const row = realRow(realRuns.g6d6q2);
   const panel = workflowPanelModel(row);
   const timeline = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW });
@@ -203,10 +203,11 @@ test('the real g6d6q2 run draws the 0.35.0 tree with pool · model · effort per
   const acceptStage = panel.stages.find((stage) => (stage.actionIds ?? []).includes('accept'));
   const duration = phaseDurationFacts(row, acceptStage, { nowMs: NOW });
   const spanMinutes = minutesBetween(accept[0].startedAt, accept.at(-1).finishedAt);
-  assert.equal(durationClockText(duration.activeMinutes), '124m09s');
+  // The clock is h/m/s everywhere, which is why the header below reads 2h04m.
+  assert.equal(durationClockText(duration.activeMinutes), '2h04m');
   assert.ok(spanMinutes > duration.activeMinutes * 10, 'the phase idled for hours between revisions');
   const acceptHeader = headers.find((line) => String(line.segment).endsWith(' · accept') || String(line.segment) === 'accept');
-  assert.match(visible(acceptHeader.text), /^── Phase 12 · accept ─+ 124m09s ──$/);
+  assert.match(visible(acceptHeader.text), /^── ✓ 12 · accept .*2h04m · 1\/1 ──$/);
   assert.doesNotMatch(visible(acceptHeader.text), new RegExp(`${Math.round(spanMinutes)}m`));
 
   // One row per attempt, each carrying its own clock — the same figure the
@@ -214,7 +215,7 @@ test('the real g6d6q2 run draws the 0.35.0 tree with pool · model · effort per
   for (const attempt of accept) {
     assert.ok(glyphFor(attempt.status), `unexpected accept status ${attempt.status}`);
     const own = durationClockText(minutesBetween(attempt.startedAt, attempt.finishedAt));
-    const expected = `HH:MM │ ├─${glyphFor(attempt.status)} accept · ${attemptRoutingText(attempt)} ${own}`;
+    const expected = `HH:MM ${glyphFor(attempt.status)} accept · ${attemptRoutingText(attempt)} ${own}`;
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
   }
   // Distinct clocks, not one shared phase duration: the goal's own complaint
@@ -222,14 +223,14 @@ test('the real g6d6q2 run draws the 0.35.0 tree with pool · model · effort per
   const clocks = accept.map((attempt) => durationClockText(minutesBetween(attempt.startedAt, attempt.finishedAt)));
   assert.deepEqual(clocks, ['28m31s', '26m09s', '6m37s', '34m31s', '28m21s']);
 
-  // The tree opens and closes each phase, and never repeats itself with the
-  // three-line `phase active` entries the owner rejected.
-  assert.ok(lines.includes('HH:MM ├─ started'));
-  assert.ok(lines.includes('HH:MM └─✓ completed 1/1'));
+  // The phase rule carries the tally/duration; filler started/completed rows
+  // and the old phase-active rows must not return.
+  assert.ok(lines.some((line) => line.match(/^↑ phases 3–\d+ ·/)));
+  assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
   assert.deepEqual(lines.filter((line) => line.includes('phase active')), []);
 });
 
-test('the real euqrni run draws one 0.35.0 tree per sequential phase', { skip: !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
+test('the real euqrni run draws one v2 phase rule per sequential phase', { skip: !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
   const row = realRow(realRuns.euqrni);
   const panel = workflowPanelModel(row);
   const timeline = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW });
@@ -240,14 +241,13 @@ test('the real euqrni run draws one 0.35.0 tree per sequential phase', { skip: !
     const attempt = row.state.attempts.find((entry) => entry.actionId === actionId);
     assert.ok(attempt, `missing ${actionId} attempt`);
     const own = durationClockText(minutesBetween(attempt.startedAt, attempt.finishedAt));
-    const expected = `HH:MM │ ├─✓ ${actionId} · ${attemptRoutingText(attempt)} ${own}`;
+    const expected = `HH:MM ✓ ${actionId} · ${attemptRoutingText(attempt)} ${own}`;
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
     const header = timeline.lines.find((line) => line?.header && (String(line.segment).endsWith(` · ${actionId}`) || String(line.segment) === actionId));
     const duration = phaseDurationFacts(row, panel.stages.find((stage) => (stage.actionIds ?? []).includes(actionId)), { nowMs: NOW });
-    assert.match(visible(header.text), new RegExp(`^── Phase \\d+ · ${actionId} ─+ ${durationClockText(duration.activeMinutes)} ──$`));
+    assert.match(visible(header.text), new RegExp(`^── ✓ \\d+ · ${actionId} .*${durationClockText(duration.activeMinutes)} · 1/1 ──$`));
   }
-  assert.ok(lines.includes('HH:MM ├─ started'));
-  assert.ok(lines.includes('HH:MM └─✓ completed 1/1'));
+  assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
 });
 
 test('plan boxes are numbered, chained with arrows, and never leave a trailing arrow', () => {

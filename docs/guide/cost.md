@@ -26,6 +26,16 @@ as a secondary value. A timeline attempt row shows that attempt's own duration,
 while `worker-minutes` remains the sum of all individual attempt clocks, so
 overlapping workers still count separately there.
 
+Every one of those clocks is written the same way: h/m/s, never a raw minute
+count. `30s`, `38m17s`, `2h04m` - so a phase that ran for two hours reads
+`2h04m` on the Run header, on its timeline rule and on the Step page alike.
+
+On the Run page the plan is one box per phase on a wide terminal and one glyph
+strip below 120 columns; `p` opens the boxes over the strip and closes them
+again. The strip and the boxes both count phases, not steps: the step counts
+that used to sit in the plan rule now live in the header
+(`18 of 20 steps done`), beside the run's own active-of-span clock.
+
 `workflow reprice` recomputes both stored minute fields for terminal historical
 runs as it refreshes their pricing data. Use `--apply` when the dry-run rows
 are the changes you want persisted; unknown endpoints remain unknown. This

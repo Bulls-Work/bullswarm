@@ -23,9 +23,13 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   }
   assert.match(frames.get('real-run-running-120.txt').join('\n'), /running/i);
   assert.match(frames.get('real-run-finished-120.txt').join('\n'), /completed/i);
-  assert.match(frames.get('real-step-overview-running-120.txt').join('\n'), /\[v detail\]/);
-  assert.match(frames.get('real-step-detail-failed-120.txt').join('\n'), /\[v overview\]/);
-  assert.match(frames.get('real-task-120.txt').join('\n'), /Step a58fb95e/);
+  // Step v2 moved the toggle out of the header and into the footer hints, and
+  // names what each view holds (step-v2 record, rule 1 and the key list).
+  assert.match(frames.get('real-step-overview-running-120.txt').join('\n'), /v detail \(every event\)/);
+  assert.match(frames.get('real-step-detail-failed-120.txt').join('\n'), /── detail · today's capture-order log/);
+  // A single task renders through the same Step header: identity, short id,
+  // verdict — no `Step ` prefix (requirement 5, step-v2 record rule 1).
+  assert.match(frames.get('real-task-120.txt').join('\n'), /a58fb95e-6f73-4f3a-88d5-8a063155fb3c · a58fb9 · succeeded/);
   // The partly-priced period publishes its recorded subtotal, marked, with the
   // coverage that produced it — never a whole-scope total it does not have.
   assert.match(frames.get('real-stats-spending-200.txt').join('\n'), /≈ \$299\.87 api · 83\/149 priced/);

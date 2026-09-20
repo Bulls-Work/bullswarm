@@ -23,28 +23,31 @@ The pages are arranged as follows.
 | --- | --- |
 | **Home** | Today leads with at most three cards: active runs first, then the most recently finished. Each card shows the run name, project, execution status, independent verdict, active minutes, steps done/total, and the API/subscription money pair. From 120 columns the cards sit left of the plain-word licence block (`pool · worker-minutes · weekly share · API · subscription`, one row per pool) and share its rows; they flow side by side inside that column when three of them fit (200 columns) and stack when they do not (120). At 55 the cards stack full width with the licence block beneath. Below `budget · this week`, `── last 7 days ──` (`Last 30 days`/`All time` cycle with `p`) charts spend per day beside the by-pool/by-model/by-project lists with Workflows/verified, Favourite pool/model, Spent, Median run and Busiest project, and `── recent ── history ›` lists the five newest runs; Running and Budget remain visible. |
 | **Runs** | The full run list lives here. Home's compact cards do not replace the active and history records on Runs. |
-| **Run** | The header shows identity, project, execution status, independent verification, active minutes, and (secondarily) span. The plan is numbered boxes that flow across the width, one per phase (`[✓ 1. design 1/1] → [✓ 2. Parallel work 5/5] → …`), wrapping between whole boxes with no trailing arrow. The timeline is the 0.35.0 tree (`├─ started`, `│  ├─✓ step · pool · model · effort`, `└─✓ completed n/n`); the phase header duration is that phase's active minutes in clock form, and each attempt row keeps its own clock on the right. |
-| **Step** | A workflow step is five blocks, in order: **Header**, **Task**, **Activity**, **Result**, **Cost**. The header carries identity/verdict, `pool · model · effort`, and active duration. Task merges prompt and task first lines; Result merges output, artifacts, and outcome/verification; Cost merges the money pair, token classes/source, and budget basis. |
+| **Run** | The header says `done of total steps`, names running/waiting ids, and shows `active of span` minutes plus the start/finish clock. The plan is phase-only boxes on desktop (named step groups, never `Parallel work`) and a glyph strip on phones; `p` toggles the phone boxes. The live block is the selected running attempt's latest stream turn (or the last finished turn), and the spend block reports known API/plan subtotals with measured, estimated, running, and unmeasured coverage. The timeline has one phase rule with start → end, active duration and done/total, then one `clock · glyph · step · pool · model · effort` row per attempt; filler `started`/`completed` rows, licence bars, `so far`, and ETA rows are gone. |
+| **Step** | One header, then turns, result, task and cost. Line 1 of the header is the verdict (step · run · status · independent verification · attempt), line 2 the purpose, line 3 `pool · model · effort · reasoning` beside one clock, then the route sentence. At 160 columns the activity holds the left column and the result, task and cost cards stack on the right; below that the page stacks result → activity → task → cost. |
 
-The Step activity view is **overview by default**. Press `v` to switch between
-overview and detail; the footer shows `[v detail]` or `[v overview]`. Overview
-groups each `response` event with the atomic events before the next response:
-the summary counts paired tool calls by category (`N commands · M files read ·
-K edits · X other tools · E errors`), mapping each provider's raw tool kinds to
-those categories (codex `command_execution`/`file_change`, Claude Code
-`Bash`/`Read`/`Write`/`Edit`, grok `run_terminal_command`/`read_file`/`grep`);
-a tool that fits no category is still counted under other tools. Select a turn with `↑`/`↓` and press `Enter` to expand
-its atomic events in place; `Esc` collapses it. Detail is the capture-order log
-for the current day, with filters (`e` for errors and `t` for tools), every
-technical field that was captured, and full artifact paths. `Space` keeps the
-selection following the tail.
+The Step activity view is **turns by default**. Press `v` to switch between the
+turn overview and the every-event detail log; the footer hints name the other
+view once (`v detail (every event)` / `v overview (turns)`). A turn is one
+response and the tools that led to it: the row carries its number, the response
+clock, up to two lines of the response, and only the non-zero counts (`35
+commands`, `14 commands · 3 edits`, `no tools`), counting a started/completed
+pair once and mapping each provider's raw tool kinds to those categories (codex
+`command_execution`/`file_change`, Claude Code `Bash`/`Read`/`Write`/`Edit`,
+grok `run_terminal_command`/`read_file`/`grep`); a tool that fits no category is
+still counted, named when it is the only kind. Select a turn with `↑`/`↓` and press `Enter` to expand its
+full response and its tool rows in place; `Esc` collapses it. Detail is the
+capture-order log for the current day, with filters (`t` cycles turns → tools →
+errors → all), every technical field that was captured, and full artifact
+paths. `f` and `Space` keep the selection following the tail.
 
 An individual `bullswarm run` task uses the same Step model and view through a
-task-record adapter. It has the same five blocks, `v` toggle, turn expansion,
-footer hints, and activity controls. The adapter preserves recorded identity,
-project, lane, pool, model, timestamps, status, reason, and task/output paths;
-it does not invent effort, usage, money, verification, a result envelope, or
-an event stream. With no stream pointer it says `event stream unavailable`.
+task-record adapter. It has the same header, blocks, `v` toggle, turn
+expansion, footer hints, and activity controls. The adapter preserves recorded
+identity, project, lane, pool, model, timestamps, status, reason, and
+task/output paths; it does not invent effort, usage, money, verification, a
+result envelope, or an event stream. With no stream pointer it says `no event
+stream path recorded`.
 
 ## The dashboard
 
@@ -69,8 +72,10 @@ bullswarm workflow tui ab12cd
 Every page has a sticky header and a sticky bottom nav. The tab row is five
 tabs — Home, Runs, Budget, Stats, Fleet — and opens the page directly; `Run`
 and `Step` mark `Runs`, and `Help` appears in the row only while it is open.
-The nav keeps run buttons and the narrow-layout `[Top] [End] [?.Help]` tail
-visible. A long body shows its `first–last/total` row window
+The Run page's footer is local: `[ back ] [ ● 1.<shortId> ]` followed by
+`Enter open step · p plan boxes · Space follow · ? help`; other pages keep run
+buttons and the narrow-layout `[Top] [End] [?.Help]` tail visible. A long body
+shows its `first–last/total` row window
 while it scrolls. The dashboard's Help page (`?`) prints the same page and key
 map.
 
@@ -81,7 +86,7 @@ The pages answer different questions:
 | **Home** | What happened today, which top runs are verified, what API-equivalent/licence figures are available, and which workflows are active or recent? |
 | **Runs** | Which workflows are active or in the catalogue, in one `active` block above the History day table? `/` filters and `a` switches active/all; the agents and `run it` blocks moved to Help (`?`). |
 | **Run** | Where is this workflow in its compact phase plan, what is each attempt's pool/model/effort, and what are the current active and span durations? |
-| **Step** | What is this action doing — its five blocks, model and effort, active duration, turn activity, result, cost, and artifact paths? |
+| **Step** | What is this action doing — its header, turn activity, result, task, and cost, with model, effort, and active duration? |
 | **Budget** | What does each pool's quota window report, how much measured worker time is workflows versus rest, what money is measured or labelled, how many median runs fit, and which workflows used the most worker-minutes? |
 | **Stats** | How do runs, spend, worker-minutes, and verification trend over 7 days, 30 days, or all time? Its four tabs are Spending, Pool, Model, and Project. Spending puts the dated chart beside four breakdown panels; `By Pool` / `By Model` changes both the chart stacks and the visible breakdowns. |
 | **Fleet** | Which model and reasoning rung each pool uses by lane or provider, its run record and meter state, and where to open setup for edits. |
@@ -106,7 +111,7 @@ The shared keyboard table is:
 | `1`–`9` | open that run from the nav |
 | `Tab` | cycle the current page's sub-tabs (Stats and Fleet) |
 | `Shift+Tab` | cycle workflows |
-| `p` | cycle the page period (Home and Stats) |
+| `p` | cycle the page period (Home and Stats); on Run, toggle phase boxes |
 | `Esc` / `←` | move out one page, then return to Home |
 | `↑`/`k`, `↓`/`j` | move one line up or down |
 | `Enter` / `→` / `l` | open the selected run, step, tab, or action |
@@ -116,10 +121,14 @@ The shared keyboard table is:
 | `q` | quit the dashboard; workflows keep running |
 
 Page-specific controls include `/` (filter), `a` (active/all), and `i`
-(install) on Runs; `v` to switch the Step between overview and detail; `Enter`
-to expand a selected overview turn and `Esc` to collapse it; `v` on Stats
+(install) on Runs; `v` to switch the Step between its turn overview and the
+every-event detail log; `Enter` to expand a selected turn and `Esc` to collapse
+it; `t` to cycle the Step's activity filter and `f` to follow its tail (which
+otherwise opens Fleet); `v` on Stats
 Spending to switch `By Pool` / `By Model`; and `e` on Fleet to open setup.
-`c` requests a cooperative stop from Run, and `y` confirms it. Mouse reporting
+On Run, `p` toggles the compact plan boxes and `Space` toggles following the
+live stream; `Enter` opens the selected step. `c` requests a cooperative stop
+from Run, and `y` confirms it. Mouse reporting
 is enabled while the dashboard is open: click any tab, tile, bar, run, step,
 date, or control, and use the wheel to scroll the body. The row or button
 under the pointer lights up in reverse video, so you can see what a click
@@ -157,8 +166,8 @@ unknown; the row then carries the lane, the task identity, `pool · model`, `ok`
 or the short failure reason, the measured duration, and the time it ended. Each
 day header counts them separately — `6 runs · 3 tasks` — and `Home`'s today
 band counts tasks alongside workflow runs rather than ignoring them. Press
-`Enter` on a task row to open the same five-block Step page as a workflow
-action, including the shared overview/detail toggle and activity controls.
+`Enter` on a task row to open the same Step page as a workflow action,
+including the shared turn/detail toggle and activity controls.
 
 The task adapter keeps the recorded lane, project, pool, model, timestamps,
 duration, status/reason, and task/output paths. A task has no inferred effort,
@@ -190,69 +199,113 @@ persisted event stream when the connector has one, and otherwise from
 without loading the transcript. An attempt with no samples draws no sparkline
 rather than a flat line.
 
-## The Step page: one action, five evidence blocks
+## The Step page: one header, turns, result, task, cost
 
 Press `Enter` on a workflow action—or on a single-task row—to open the Step
 page. The workflow action and the task record are normalized into the same
-model and view. The page keeps the durable action/attempt records, retained
-task and output files, any captured event stream, and the workflow result
-envelope, but presents them in exactly five blocks:
+model and view. The page says the header once, then draws four blocks:
 
-1. **Header** — action/run identity, execution status, independent verdict,
-   `pool · model · effort`, and the action's `minutes.active` duration.
-2. **Task** — `prompt preview` and `task · first lines` are one block. It shows
-   the first lines with an expand affordance rather than a second task section.
-3. **Activity** — overview or detail mode, follow state, selection, and the
-   `all`, `turns`, `tools`, and `errors` filters.
-4. **Result** — `output`, `artifacts`, and `outcome and verification` are one
-   block. Execution success and the independent verification verdict remain
-   separate facts.
-5. **Cost** — the API/subscription money pair, token classes and source, and
-   the budget basis are one block. Unknown money remains `—` (or its explicit
-   unknown reason), never an invented zero.
+1. **Header** — line 1 is the verdict: the step, its run, the execution status,
+   the independent verdict, and the selected attempt (`attempt 1 of 2`). Line 2
+   is the purpose. Line 3 is `pool · model · effort · reasoning` on the left and
+   the clock on the right; the route sentence follows as its own line. Nothing
+   below the header repeats it.
+2. **Activity** — the turns. A turn is one response and the tools that led to
+   it; the rule carries the turn count and the totals, and the last cells of the
+   rule are the filter control.
+3. **Result** — the report's first lines, the paths the diff file recorded, the
+   step's `Shared-file requests` when its report has that heading, and the
+   artifact row. Execution success and independent verification stay separate
+   facts.
+4. **Task** — the author's own first lines, then `owns`/`after`/`affects` as
+   short facts. The kernel wrapper (workspace rules, dependency list, "read
+   every dependency output…") lives behind the block, with its size stated.
+5. **Cost** — two rows, API rate and the pool's plan, each with its amount and
+   one line of basis, plus the token classes under the API amount. Unknown money
+   stays `—` with its reason, never an invented zero.
+
+At 160 columns and wider the activity takes the left column and result, task
+and cost stack on the right, so a finished step fits one screen. At 120 the
+right column narrows to 40 columns; below that the page stacks like the phone,
+in the order result → activity → task → cost, so the answer is on top and the
+task, which you already know, is at the bottom. While a step runs the phone
+leads with `now` (the newest captured fact) instead of the result.
+
+### The clock: active minutes, span only when it differs
+
+The header prints one clock in h/m/s (`49m07s`). The span across an idle gap
+appears only when it differs from the active time, as `49m07s active of 1h02m`.
+While an attempt is live the clock runs from the attempt's start and the header
+adds `turn 8` and `last event 02:20:26 HKT, 3s ago`; a finished step prints
+`49m07s · 01:50 → 02:39 HKT · 20 Sep 2026` instead.
 
 Execution success and verification remain deliberately separate. An action can
-be `succeeded` while a workflow is still unverified; a result can say
-`verified: true` only when the durable evidence gate says so. While an action is
+be `succeeded` while a workflow is still unverified; a result says
+`verified 6/6` only when the durable evidence gate says so. While an action is
 running, verification is pending, not false. Retry records retain the pool,
 model, ordinal, status, timing, route, failure, output bytes, token source, and
 money pair for every attempt; they are not an inferred transcript.
 
-### Activity is capture-order evidence
+### Turns are the unit
 
-When a connector declares a JSONL event stream, the Step page reads it in
-capture order. Overview is the default: each `response` is a row, followed by
-one summary of the atomic events up to the next response. The summary counts
-paired tool calls by category—commands, files read, edits, other tools, and
-normalized errors—through a table that maps each provider's raw tool kinds to
-those categories (for example codex `command_execution`, Claude Code `Bash`,
-grok `run_terminal_command` all count as commands), and never infers file work
-from command prose. `Enter` expands a selected response's
-atomic events in place; `Esc` collapses it.
+The overview prints one row per turn: the turn's number, the capture clock of
+its response, up to two lines of that response, and only the non-zero tool
+counts (`35 commands`, `14 commands · 3 edits`, `no tools`). On the desk the
+counts sit at the end of the second line; on the phone they take their own row.
+The started and completed halves of one operation count once, classed by the
+real event kind through a table that normalises every provider's tool names
+(codex `command_execution`, Claude Code `Bash`, grok `run_terminal_command` all
+count as commands), and never inferred from command prose. When the `other
+tools` class is a single kind the row names it (`2 grep`). A still-streaming
+response is one turn whose text is the chunks captured so far; a chunk is never
+a row of its own. The last turn is the result: its row reads `→ the report,
+shown under result` instead of printing the report twice.
 
-Press `v` to switch to detail mode. Detail is the current-day capture-order
-log, with `seq`, provider timestamp, capture time, source, provider type, kind,
-status, event/turn/tool identifiers, arguments, result, usage, duration, and
-parent/subagent identifiers when present. Missing optional fields are labelled
-as unavailable. The `all`, `turns`, `tools`, and `errors` filters apply to the
-same log, and a retained artifact row shows full task, output, stream, result,
-and run-directory paths. Without a structured stream the page says `event
+`Enter` on a turn expands it in place: the whole response, its counts with
+`Esc closes`, and its **newest** three tool rows with their own clock and
+measured duration. Older rows fold into one line above them —
+`↑ 6 earlier commands · Space page up` — and `Space`, `PageUp` and `PageDown`
+walk that three-row window back and forward through them. Opening, collapsing
+or moving to another turn resets the window to the newest rows. `Esc` collapses
+the turn again.
+
+A tool that has not finished keeps its place at the bottom of that window: it
+draws a spinner and the time it has been running so far, and it is counted in
+the collapsed turn's counts like any other. A tool that finished in under a
+second prints no duration at all rather than a misleading `0s`, and a capture
+that carried no summary is named by its event kind instead of reading `summary
+unavailable`. While the step is running and the page is following, the current
+turn is expanded by default, so the newest tool rows are on screen without a
+keypress; `f` stops the follow and leaves the page where you put it.
+
+Press `v` for detail: the current-day capture-order log with every technical
+field (seq, capture time, source, provider type, kind, status, event/turn/tool
+identifiers, provider timestamp, duration, usage, parent/subagent, arguments,
+result, summary) and the full artifact paths. Missing optional fields are
+labelled as unavailable. Without a structured stream the page says `event
 stream unavailable`; task or answer prose never creates synthetic activity.
 
-### Money pair and honest degradation
+### Money in plain words
 
-The two money columns answer different questions:
+The two rows answer different questions:
 
 ```text
-API       $0.61 api · provider-reported    subscription 1.5% wk · $0.42
-API       ~ $0.25 api · estimated           subscription — · no meter/calibration
+API rate    $0.96   36.0M tokens · OpenAI rate card, 20 Sep
+                    35.2M cache read · 713k input · 58k output
+codex plan  —       no meter reading for this attempt
+                    $100/mo · weekly window
+measured from the codex transcript
 ```
 
 API is the dated model-rate equivalent (or a transcript sum/byte estimate),
-while subscription is a measured or calibrated quota-window debit. `~` and
-`≈` keep estimates visibly different from measured dollars. Unknown is `—` or
-an `unknown` reason, never `$0.00`; a real measured zero remains `$0.00`.
-`pending` is used for a live attempt whose usage has not arrived yet.
+while the plan row is a measured or calibrated quota-window debit. An exact
+amount prints plain, an estimate gets `≈`, and an unknown gets `—` with its
+reason. The row's basis phrase and the closing `measured from…` line are word
+maps over the finite basis and tokenSource codes in
+`src/lib/usage-basis.js`, so a new code prints itself rather than a blank.
+Token classes print only when the capture recorded them, so grok shows
+reasoning and Claude shows cache write. A live attempt says `measured when the
+attempt finishes (codex transcript)` instead of guessing.
 
 Every missing layer has a named state rather than a blank that looks complete:
 
@@ -266,28 +319,28 @@ Every missing layer has a named state rather than a blank that looks complete:
 | No tool id/name/arguments/result | the corresponding detail field is `unavailable` |
 | No provider timestamp or duration | capture time is shown; provider time/duration is `unavailable` |
 | No parent or subagent ids | subagent structure is `not captured` |
-| Live attempt without usage | `usage pending` and unknown money, not zero |
-| No API rate, subscription meter, plan price, or calibration | `api unknown` and/or `sub unknown` with its reason |
-| No durable result envelope | `result unavailable`; any separately recorded verification remains separate |
-| No verification verdict or requirement evidence | `verification unavailable` |
-| No task, output, stream, or result path | the artifact row says `not recorded` |
-
-At 55 columns the page is one column and selected detail replaces the feed. At
-120 columns the summary and activity remain full width with compact detail. At
-200 columns the activity and selected detail share the middle row. The sticky
-header and bottom navigation remain in all three layouts.
+| Live attempt without usage | `measured when the attempt finishes`, not a guess |
+| No API rate, subscription meter, plan price, or calibration | the amount is `—` with its reason (`no meter reading for this attempt`) |
+| No durable result envelope | `no report was written for this step`; a separate verification stays separate |
+| No verification verdict or requirement evidence | `not verified (0/1 requirements)` or `verification unavailable` |
+| No task, output, stream, or result path | the artifact row names only what was recorded, else `no artifact paths recorded` |
 
 ### Step keys
 
 | Key | Does on Step |
 | --- | --- |
-| `v` | switch between overview (the default) and detail |
-| `↑`/`↓` | select the next or previous visible overview turn or detail event |
-| `Enter` | expand or collapse the selected overview turn in place |
-| `Space` | follow or stop following the activity tail |
-| `e` | filter activity to errors |
-| `t` | filter activity to tools |
+| `v` | switch between the turn overview (the default) and the every-event detail log |
+| `↑`/`↓` | select the next or previous turn (overview) or captured event (detail) |
+| `Enter` | expand or collapse the selected turn, or the selected event's detail |
+| `t` | cycle the activity filter: turns → tools → errors → all |
+| `f` | follow or stop following the activity tail |
+| `Space` | page an expanded turn's tool window back through its older rows, or toggle the follow when no turn is expanded |
+| `PageUp`/`PageDown` | the same tool window, older and newer |
 | `Esc` | collapse an expanded turn, or leave the page |
+
+The footer carries the hints once: `Enter expand turn · Esc close · v detail
+(every event) · t filter · f follow · ? help` on the desk, and the short form on
+the phone.
 
 ## Budget: every window a pool reports
 

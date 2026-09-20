@@ -6,7 +6,9 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
+import { finiteOrNull } from '../lib/num.js';
+import { formatMoney } from '../lib/usage-basis.js';
+import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { v2RunnerLiveness } from './short-id.js';
 import { presentationStageStatus } from './v2-presentation.js';
@@ -58,12 +60,19 @@ import {
   runDurationFacts,
   planProgress,
   planStages,
+  planStageName,
   stepTally,
+  runClockText,
+  runHeaderFacts,
+  runSpendFacts,
+  runTimelineFacts,
 } from './run-model.js';
+import { stepPageModel, turnCountsText } from './step-model.js';
 
 /** Lines of the goal the Preflight segment shows before an ellipsis. */
 const GOAL_PREVIEW_LINES = 5;
 const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const RUN_DONE = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'skipped']);
 
 function runFrame(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
@@ -266,7 +275,7 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
     // Reserve one row for the continuation header while keeping the newest
     // timestamped milestone in view.
     start = Math.max(0, end - Math.max(0, timelineRows - 1));
-    while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]))) start += 1;
+    while (start < end && !/^\d{2}:\d{2}\s/.test(timelineText(timeline.lines[start]).trimStart())) start += 1;
   }
    let visibleTimeline = timeline.lines.slice(start, end);
    if (start > 0 && selectedHeader < 0) {
@@ -275,12 +284,23 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
        ?? currentTimelineSegment(model);
      if (continuation) {
        const priorHeader = timeline.lines.find((line) => line?.header && line.segment === continuation);
-       const header = continuationHeader(
-         timelineSegmentDisplayName(continuation, model),
-         priorHeader?.elapsed ?? 'running',
-         inner,
-         visibleTimeline.find((line) => line?.segment === continuation)?.at,
-       );
+       // A v2 phase rule carries the phase itself, so the continuation repeats
+       // that phase's own name and glyph. The legacy elapsed cell does not
+       // exist there, and defaulting it to `running` claimed a finished run
+       // was still going.
+       const priorPhase = priorHeader?.phase;
+       const header = priorPhase
+         ? {
+           text: truncate(rule(`${priorPhase.glyph} ${priorPhase.index + 1} · ${priorPhase.name} · continued`, null, inner), inner),
+           header: true,
+           at: visibleTimeline.find((line) => line?.segment === continuation)?.at ?? null,
+         }
+         : continuationHeader(
+           timelineSegmentDisplayName(continuation, model),
+           priorHeader?.elapsed ?? 'running',
+           inner,
+           visibleTimeline.find((line) => line?.segment === continuation)?.at,
+         );
        header.segment = continuation;
        visibleTimeline.splice(1, 0, header);
      }
@@ -306,6 +326,17 @@ function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelin
       ? { ...line, text: `\x1b[7m${timelineText(line)}\x1b[0m` }
       : line);
   }
+  // The Run page indents its own timeline rows one column inside the body.
+  // This panel already draws a border, and the Claude mod's pane classifies a
+  // row as a milestone only when the clock is flush against the border
+  // (`^HH:MM `), so the page's margin comes off before the cell is drawn.
+  const unindent = (line) => {
+    const text = timelineText(line);
+    if (!text.startsWith(' ')) return line;
+    const trimmed = text.slice(1);
+    return typeof line === 'string' ? trimmed : { ...line, text: trimmed };
+  };
+  visibleTimeline = visibleTimeline.map(unindent);
   const visibleLive = live.lines.slice(0, liveRows);
   const visibleNext = next.slice(0, nextRows);
   const title = ` Workflow timeline · ${timeline.milestoneCount} milestone${timeline.milestoneCount === 1 ? '' : 's'} `;
@@ -405,7 +436,7 @@ function timelineSegmentDisplayName(name, model) {
   return `Phase ${phaseIndex + 1} · ${short}`;
 }
 
-function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now() } = {}) {
+function legacyWorkflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now() } = {}) {
   const { state } = model;
   const rows = [];
   const add = (at, label, right = '', detail = null, segment = 'Workflow', startedAt = null, extra = {}) => {
@@ -570,6 +601,94 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     add(state.lifecycle.finishedAt, `${status === 'completed' ? glyphs().ok : status === 'partial' ? '!' : '×'} Workflow ${status === 'completed' ? 'complete - result is ready' : `${status} - result is ready`}`, activeMinutesText(runDuration.activeMinutes), null, finalSegment, null, { activeMinutes: runDuration.activeMinutes });
   }
   return groupedTimeline(rows, model, width, state.lifecycle.finishedAt);
+}
+
+/** Run v2's tree: phase facts plus one row per durable attempt. */
+function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now(), phone = Number(width) < 100 } = {}) {
+  const facts = runTimelineFacts(model.row, { nowMs });
+  const lines = [];
+  const safeWidth = Math.max(20, Number(width) || 120);
+  const push = (text, metadata = {}) => lines.push({ text: truncate(String(text ?? ''), safeWidth), ...metadata });
+  const preflight = facts.preflight;
+  if (preflight.at) {
+    push(phone ? '── Preflight' : rule('Preflight', null, safeWidth), { header: true, segment: 'Preflight', phaseIndex: -1 });
+    push(` ${clockText(preflight.at)}  ${glyphs().ongoing} ${preflight.label}`, { segment: 'Preflight', at: preflight.at, milestone: true });
+    // The Run page prints the goal in its own header, so it asks for
+    // `goalPreview: false`. The mod pane's `--overview` frame has no header of
+    // its own and has always read the goal out of this first milestone; it
+    // keeps them.
+    if (goalPreview) {
+      const goalText = String(model.state?.intent?.goal ?? model.state?.workflow ?? '').trim();
+      const goalSource = goalText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const goalWidth = Math.max(20, safeWidth - 7);
+      const wrapped = wrapLines(goalSource, goalWidth);
+      const shown = wrapped.slice(0, GOAL_PREVIEW_LINES);
+      if (shown.length === GOAL_PREVIEW_LINES && wrapped.length > GOAL_PREVIEW_LINES) {
+        shown[GOAL_PREVIEW_LINES - 1] = truncate(`${shown[GOAL_PREVIEW_LINES - 1]} …`, goalWidth);
+      }
+      for (const line of shown) push(timelineDetail(line, safeWidth), { segment: 'Preflight', at: preflight.at });
+    }
+  }
+  const phases = facts.phases;
+  // Keep the opening two phases and the closing three — the last completed
+  // phase, the phase running now, and the one that waits on it. Everything
+  // between those anchors is the middle summary the design calls for. The
+  // running phase is an anchor, never part of the fold: a reader who cannot
+  // see the step that is running has lost the page's whole point.
+  const activeIndex = phases.findIndex((phase) => phase.status === 'active');
+  const tailStart = Math.max(0, (activeIndex >= 0 ? activeIndex : phases.length - 2) - 1);
+  const candidateStart = 2;
+  const foldable = tailStart - candidateStart;
+  const foldStart = foldable >= 2 ? candidateStart : -1;
+  const foldEnd = foldStart >= 0 ? tailStart : -1;
+  const folded = foldStart >= 0 ? phases.slice(foldStart, foldEnd) : [];
+  const renderPhase = (phase) => {
+    const start = phase.startedAt ? clockText(phase.startedAt) : '—';
+    const end = phase.status === 'active' ? 'now' : phase.finishedAt ? clockText(phase.finishedAt) : '—';
+    const duration = runClockText(phase.activeMinutes ?? phase.spanMinutes);
+    const right = `${start} → ${end} · ${duration} · ${phase.done}/${phase.total}`;
+    const name = `${phase.glyph} ${phase.index + 1} · ${phase.name}`;
+    push(phone ? `── ${name}` : rule(name, right, safeWidth), {
+      header: true, segment: phase.label, phaseIndex: phase.index, phase,
+    });
+    if (phone) push(` ${right}`, { segment: phase.label, phaseIndex: phase.index, span: true });
+    const attempts = phase.attempts.slice().sort((a, b) => (Date.parse(a.startedAt ?? '') || 0) - (Date.parse(b.startedAt ?? '') || 0));
+    for (const attempt of attempts) {
+      const at = attempt.startedAt ?? attempt.finishedAt;
+      const clock = at ? clockText(at) : '--:--';
+      const glyph = attempt.status === 'running' ? glyphs().started
+        : ['succeeded', 'completed', 'success'].includes(attempt.status) ? glyphs().ok : glyphs().fail;
+      const pool = attempt.pool ?? '—';
+      const modelName = attempt.model ?? '—';
+      const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
+      const runningText = attempt.status === 'running' ? ' · running' : '';
+      const left = phone
+        ? ` ${clock}  ${glyph} ${attempt.actionId} · ${pool}${runningText}`
+        : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName} · ${effort}${runningText}`;
+      push(alignRight(left, attemptDurationText(attempt, { nowMs }), safeWidth), {
+        segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId, milestone: true,
+      });
+    }
+  };
+  phases.forEach((phase, index) => {
+    if (foldStart >= 0 && index === foldStart) {
+      const stepCount = folded.reduce((sum, item) => sum + item.total, 0);
+      const active = folded.reduce((sum, item) => sum + (finiteOrNull(item.activeMinutes) ?? 0), 0);
+      const failed = folded.reduce((sum, item) => sum + item.attempts.filter((attempt) => !['succeeded', 'completed', 'success'].includes(attempt.status)).length, 0);
+      const label = `↑ phases ${folded[0].index + 1}–${folded.at(-1).index + 1} · ${stepCount} steps · ${runClockText(active)} · ${failed ? `${failed} ✗` : 'all ✓'}`;
+      push(label, { folded: true, segment: folded[0].label, phaseIndex: folded[0].index });
+      return;
+    }
+    if (foldStart >= 0 && index > foldStart && index < foldEnd) return;
+    renderPhase(phase);
+  });
+  if (!lines.length) push('no timeline recorded');
+  return {
+    lines,
+    milestoneCount: lines.filter((line) => line.milestone || line.header).length,
+    phases: phases.length,
+    attempts: facts.attempts.length,
+  };
 }
 
 function segmentHeader(name, elapsed, width) {
@@ -825,7 +944,13 @@ function markStepRows(builder, lines, model, runId = null) {
   const actions = model.state.actions ?? [];
   if (!actions.length) return;
   const from = builder.lines.length - lines.length;
+  const alreadyMarked = new Set(builder.regions
+    .filter((region) => region.action?.kind === 'step')
+    .map((region) => region.y));
   lines.forEach((line, index) => {
+    // An attempt row records its own region as it is painted; marking it a
+    // second time here would put two hit regions on one row.
+    if (alreadyMarked.has(from + index + 1)) return;
     const action = actionNamedIn(String(line).replace(ANSI_SGR, ''), actions);
     if (action) {
       builder.regions.push({
@@ -1032,6 +1157,126 @@ function runBlankReasons(economics, progress) {
   ].filter(Boolean);
 }
 
+function runRollupFor(model) {
+  return (model?.rollups ?? []).find((record) => record?.runId === model?.row?.runId) ?? null;
+}
+
+function runLivePresentation(model, { nowMs = Date.now(), runFollow = true } = {}) {
+  const state = model?.state ?? model?.row?.state ?? {};
+  const attempts = (state.attempts ?? []).filter((attempt) => attempt?.actionId);
+  const running = attempts.findLast((attempt) => attempt.status === 'running');
+  const selected = running ?? attempts
+    .filter((attempt) => attempt.finishedAt || attempt.status !== 'running')
+    .sort((a, b) => (Date.parse(a.finishedAt ?? a.startedAt ?? '') || 0) - (Date.parse(b.finishedAt ?? b.startedAt ?? '') || 0))
+    .at(-1) ?? null;
+  if (!selected) return { attempt: null, action: null, step: null, turn: null, event: null, running: false, stream: false };
+  let step = null;
+  try {
+    step = stepPageModel({ row: model.row, assignments: model.assignments ?? [], pools: model.pools ?? [] }, {
+      actionId: selected.actionId,
+      attemptOrdinal: selected.ordinal,
+      nowMs,
+      follow: runFollow,
+      view: 'overview',
+    });
+  } catch { step = null; }
+  const activity = step?.activity ?? null;
+  const presentationActivity = step?.presentation?.activity ?? null;
+  const turn = presentationActivity?.turns?.at(-1) ?? activity?.turns?.at(-1) ?? null;
+  const event = activity?.events?.at(-1) ?? null;
+  return {
+    attempt: selected,
+    action: step?.action ?? (state.actions ?? []).find((action) => action.id === selected.actionId) ?? null,
+    step,
+    turn,
+    event,
+    running: selected.status === 'running',
+    stream: Boolean(presentationActivity?.available ?? activity?.available),
+    events: Array.isArray(activity?.events) ? activity.events.length : (presentationActivity?.events ?? 0),
+    turns: presentationActivity?.turns?.length ?? activity?.turns?.length ?? 0,
+  };
+}
+
+function runTurnPreviewLines(live, width, { phone = width < 100 } = {}) {
+  const room = Math.max(8, width - 4);
+  const turn = live?.turn;
+  if (!turn) {
+    const summary = live?.event?.summary ? String(live.event.summary).replace(/\s+/g, ' ').trim() : null;
+    return summary ? [` ↳ ${cut(summary, room)}`] : [];
+  }
+  const text = String(turn.text ?? 'response summary unavailable').replace(/\s+/g, ' ').trim();
+  const wrapped = wrapLines([text], room).slice(0, 2);
+  const head = `${String(turn.number ?? 1).padStart(2, ' ')}  ${turn.clock ?? '--:--'}  `;
+  const lines = [];
+  if (wrapped.length) {
+    lines.push(` ${head}${wrapped[0]}`);
+    if (wrapped[1]) lines.push(`    ${wrapped[1]}`);
+  } else lines.push(` ${head}response summary unavailable`);
+  const counts = turn.countsText ?? turnCountsText(turn.summary);
+  if (counts && counts !== 'no tools') {
+    if (phone) lines.push(`    ${counts}`);
+    else lines[lines.length - 1] = cut(`${lines.at(-1)} · ${counts}`, width - 1);
+  }
+  return lines.map((line) => cut(line, width));
+}
+
+function runLiveLinesV2(live, width, { phone = width < 100, runFollow = true, nowMs = Date.now(), paused = null } = {}) {
+  const attempt = live?.attempt;
+  // A paused run has nothing running and will not start anything on its own,
+  // so the block says how to continue it rather than leaving the reader to
+  // read `last finished` as "any moment now" (requirement 8).
+  const pausedLine = paused ? ` paused · bullswarm workflow resume ${paused} continues it` : null;
+  if (!attempt) {
+    return [rule('live', null, width), ...(pausedLine ? [cut(pausedLine, width)] : []), ' no event stream kept for this attempt'];
+  }
+  const duration = attemptDurationText(attempt, { nowMs });
+  const pool = attempt.pool ?? '—';
+  const modelName = attempt.model ?? '—';
+  const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
+  const status = live.running ? `live · ${attempt.actionId}` : `last finished · ${attempt.actionId}`;
+  const title = `${status} · ${pool}${phone ? '' : ` · ${modelName} · ${effort}`} · ${duration}${phone ? '' : ` · ${live.turns ?? 0} turns · ${live.events ?? 0} events`}`;
+  const lines = [rule(title, null, width)];
+  if (pausedLine) lines.push(cut(pausedLine, width));
+  if (phone) lines.push(` ${modelName} · ${effort} · ${live.turns ?? 0} turns · ${live.events ?? 0} events`);
+  if (!live.stream) {
+    lines.push(' no event stream kept for this attempt');
+  } else {
+    lines.push(...runTurnPreviewLines(live, width, { phone }));
+  }
+  const followGlyph = runFollow ? glyphs().ongoing : glyphs().pending;
+  lines.push(cut(` Enter → the step page · following ${followGlyph}`, width));
+  return lines;
+}
+
+function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
+  const lines = [rule(`spend · ${spend.coverageText}`, null, width)];
+  lines.push(cut(` API rate  ${spend.apiText}${spend.suffix ? `  ${spend.suffix}` : ''}`, width));
+  if (!phone && spend.pools.length) {
+    const poolText = spend.pools
+      .filter((entry) => entry.apiKnownSubtotalUsd != null)
+      .map((entry) => `${entry.pool} ${entry.apiKnownSubtotalUsd == null ? '—' : `${entry.estimated > 0 ? '≈ ' : ''}${formatMoney(entry.apiKnownSubtotalUsd)}`}`)
+      .join(' · ');
+    if (poolText) lines.push(cut(`          ${poolText}`, width));
+  }
+  const planCoverage = `${spend.planMeter} attempts with a meter reading · ${spend.planUnmetered} without`;
+  lines.push(cut(` plans     ${spend.plansText}   ${planCoverage}`, width));
+  return lines;
+}
+
+function runPlanGlyphStrip(row) {
+  const { stages } = planStages(row);
+  return stages.flatMap((stage) => (stage.actions ?? []).map((action) => {
+    if (action.status === 'succeeded') return glyphs().ok;
+    if (action.status === 'running') return glyphs().started;
+    if (['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status)) return glyphs().fail;
+    return glyphs().pending;
+  })).join('');
+}
+
+function runAttemptMixText(header) {
+  return header.attemptMix.map((entry) => `${entry.pool} ${entry.count}`).join(' · ');
+}
+
 /**
  * Run: the goal, the plan with its topology and its bars, the budget / live /
  * so far triptych, and the timeline — all flat, with no panel borders.
@@ -1043,7 +1288,7 @@ function runBlankReasons(economics, progress) {
  * panels: the prototype has no frame for either, and they are diagnostic
  * sub-views a reader opens deliberately.
  */
-function runPage(model, opts, body) {
+function legacyRunPage(model, opts, body) {
   const { width, bodyHeight, nowMs, narrow, spinnerFrame } = opts;
   const row = model.row;
   const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex, nowMs });
@@ -1202,6 +1447,142 @@ function runPage(model, opts, body) {
   return header;
 }
 
+/**
+ * Run page v2.  The legacy renderer above remains as a compatibility helper
+ * for the extracted TUI panels; the dashboard page itself uses this grammar.
+ */
+function runPage(model, opts, body) {
+  const width = Math.max(20, Number(opts.width) || 120);
+  const phone = width < 100;
+  const nowMs = Number.isFinite(Number(opts.nowMs)) ? Number(opts.nowMs) : Date.now();
+  const row = model.row;
+  const state = row?.state ?? {};
+  const rollup = runRollupFor(model);
+  const headerFacts = runHeaderFacts(row, { nowMs, rollup });
+  const status = headerFacts.status;
+  const glyph = status === 'completed' || status === 'succeeded' ? glyphs().ok
+    : ['failed', 'partial', 'cancelled', 'interrupted'].includes(status) ? glyphs().fail : glyphs().ongoing;
+  const activeGlyph = status === 'running' && Number(opts.spinnerFrame) > 0
+    ? spinnerGlyph(opts.spinnerFrame)
+    : glyph;
+  const runStatusParts = [
+    `${activeGlyph} ${headerFacts.shortId}`,
+    status,
+    `${headerFacts.done} of ${headerFacts.total} steps done`,
+    headerFacts.running.length ? `${headerFacts.running.length} running (${headerFacts.running.join(', ')})` : null,
+    headerFacts.waiting.length ? `${headerFacts.waiting.length} waiting (${headerFacts.waiting.join(', ')})` : null,
+  ].filter(Boolean);
+  const runStatus = (() => {
+    const full = runStatusParts.join(' · ');
+    if (!phone || full.length <= width) return full;
+    const countsOnly = runStatusParts.slice(0, 3).concat([
+      headerFacts.running.length ? `${headerFacts.running.length} running` : null,
+      headerFacts.waiting.length ? `${headerFacts.waiting.length} waiting` : null,
+    ].filter(Boolean)).join(' · ');
+    const noWaiting = runStatusParts.slice(0, 3).concat(
+      headerFacts.running.length ? [`${headerFacts.running.length} running`] : [],
+    ).join(' · ');
+    const shortDone = [
+      `${activeGlyph} ${headerFacts.shortId}`,
+      status,
+      `${headerFacts.done} of ${headerFacts.total} steps`,
+      headerFacts.running.length ? `${headerFacts.running.length} running` : null,
+    ].filter(Boolean).join(' · ');
+    // The phone target keeps the verdict scannable before it spends the last
+    // cells on parenthesised ids; the full ids remain on the desktop header.
+    return [shortDone, noWaiting, countsOnly, full].find((candidate) => candidate.length <= width) ?? shortDone;
+  })();
+  const clock = headerFacts.activeMinutes == null ? null : [
+    `${headerFacts.activeText} active${headerFacts.spanText !== headerFacts.activeText ? ` of ${headerFacts.spanText}` : ''}`,
+    status === 'running'
+      ? (headerFacts.startedClock ? `since ${headerFacts.startedClock} HKT` : null)
+      : headerFacts.startedClock && headerFacts.finishedClock ? `${headerFacts.startedClock} → ${headerFacts.finishedClock} HKT` : null,
+    phone ? `${headerFacts.attempts} attempts` : null,
+    !phone && width >= 160 ? headerFacts.dateText : null,
+  ].filter(Boolean).join(' · ');
+  const header = phone ? truncate(` ${runStatus}`, width) : alignRight(` ${runStatus}`, clock ?? '', width);
+
+  if (opts.orchestratorDetail || opts.workflowVerbose) {
+    const frame = runFrame(row, { ...opts, focus: opts.focus === 1 ? 1 : 0, bodyHeight: opts.bodyHeight });
+    for (const line of frame.body) body.push(cut(line, width));
+    markStepRows(body, frame.body, frame.model);
+    return header;
+  }
+
+  const goalSource = headerFacts.goal.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const goalLines = wrapLines(goalSource, Math.max(1, width - 2));
+  if (goalLines.length) {
+    const shown = goalLines.slice(0, phone ? 2 : 1);
+    if (goalLines.length > shown.length) shown[shown.length - 1] = `${cut(shown.at(-1), Math.max(1, width - 4))}…`;
+    for (const line of shown) body.push(cut(` ${line}`, width));
+  }
+  if (phone && clock) body.push(cut(` ${clock}`, width));
+  if (!phone) {
+    const project = headerFacts.project ?? '—';
+    const cwd = headerFacts.cwd ?? '—';
+    body.push(cut(alignRight(` ${headerFacts.attempts} attempts  ${runAttemptMixText(headerFacts)}`, `project ${project} · ${cwd}`, width), width));
+  }
+  body.push('');
+
+  const progress = planProgress(row, { assignments: model.assignments, nowMs });
+  if (!phone) body.push(rule(`plan · phase ${progress.phase} of ${progress.phases}`, null, width));
+  if (phone && !opts.planBoxes) {
+    const { stages } = planStages(row);
+    const current = stages[Math.max(0, progress.phase - 1)];
+    const next = stages.slice(Math.max(0, progress.phase)).find((stage) => (stage.actions ?? []).some((action) => !RUN_DONE.has(action.status)));
+    const currentName = current ? planStageName(current, progress.phase - 1) : 'starting';
+    const currentState = current?.actions?.some((action) => action.status === 'running') ? 'running'
+      : current?.actions?.every((action) => RUN_DONE.has(action.status)) ? 'done' : 'waiting';
+    const nextName = next ? planStageName(next, stages.indexOf(next)) : '—';
+    body.push(cut(` plan  ${runPlanGlyphStrip(row)}  ${progress.phase} ${currentName} ${currentState} · then ${nextName}`, width));
+  } else {
+    for (const line of planDagLines(row, {
+      width: Math.max(1, width - 1), runId: row?.runId ?? null, assignments: model.assignments, nowMs,
+      pools: !phone,
+    })) body.parts([{ text: ' ' }, ...line.parts]);
+  }
+  body.push('');
+
+  const live = runLivePresentation(model, { nowMs, runFollow: opts.runFollow !== false });
+  const spend = runSpendFacts(row, { rollup });
+  const pausedId = state.lifecycle?.status === 'paused'
+    ? (state.shortId ?? row?.shortId ?? state.runId ?? row?.runId ?? null)
+    : null;
+  if (width >= 120) {
+    const liveWidth = Math.max(20, width - 82);
+    const left = runLiveLinesV2(live, liveWidth, { phone: false, nowMs, runFollow: opts.runFollow !== false, paused: pausedId });
+    const right = runSpendLinesV2(spend, 79, { phone: false });
+    const count = Math.max(left.length, right.length);
+    // The band is one column: every left cell is padded out to the divider so
+    // the `│` sits in the same place on every row (`live` / `spend` are two
+    // columns of one rule in the Run v2 record, not two ragged blocks).
+    const cell = (text) => {
+      const trimmed = cut(text ?? '', liveWidth);
+      return `${trimmed}${' '.repeat(Math.max(0, liveWidth - visibleLength(trimmed)))}`;
+    };
+    for (let index = 0; index < count; index += 1) {
+      body.push(`${cell(left[index])} │ ${cut(right[index] ?? '', 79)}`);
+    }
+  } else {
+    for (const line of runLiveLinesV2(live, width, { phone, nowMs, runFollow: opts.runFollow !== false, paused: pausedId })) body.push(cut(line, width));
+    body.push('');
+    for (const line of runSpendLinesV2(spend, width, { phone })) body.push(cut(line, width));
+  }
+  if (row?.kernelStderrTail?.length) body.push(' kernel log: available');
+  body.push('');
+
+  const timeline = workflowTimelineLines(workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex, nowMs }), width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone });
+  body.push(rule(`timeline · ${timeline.phases} phases · ${timeline.attempts} attempts${phone ? '' : ' · Enter on a step opens it'}`, null, width));
+  const timelineStart = body.lines.length;
+  for (const line of timeline.lines) {
+    const text = cut(timelineText(line), width);
+    if (line?.actionId) body.row(text, { kind: 'step', actionId: line.actionId, ...(row?.runId ? { runId: row.runId } : {}) });
+    else body.push(text);
+  }
+  markStepRows(body, body.lines.slice(timelineStart), workflowPanelModel(row), row?.runId ?? null);
+  return header;
+}
+
 export {
   runFrame,
   renderWorkflowOverviewPanel,
@@ -1232,6 +1613,9 @@ export {
   runLiveRows,
   runSoFarRows,
   runBlankReasons,
+  runLivePresentation,
+  runLiveLinesV2,
+  runSpendLinesV2,
   runPage,
   actionNamedIn,
   markStepRows,

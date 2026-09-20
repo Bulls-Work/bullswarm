@@ -21,6 +21,10 @@ import {
   phaseDurationFacts,
   attemptDurationText,
   durationClockText,
+  runClockText,
+  runHeaderFacts,
+  runSpendFacts,
+  runTimelineFacts,
   stepTally,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
@@ -119,7 +123,9 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   assert.equal(duration.spanMinutes, 64);
   assert.equal(attemptDurationText(row.state.attempts[1], { nowMs: NOW }), '2m00s');
   assert.equal(durationClockText(14), '14m00s');
-  assert.equal(durationClockText(124.156), '124m09s');
+  // Both records share one clock: h/m/s, so a step past an hour reads
+  // `2h04m`, the way the run header and the Step page read it.
+  assert.equal(durationClockText(124.156), '2h04m');
   const live = runDurationFacts({ state: { attempts: [{ actionId: 'live', status: 'running', startedAt: '2026-09-20T11:50:00.000Z', finishedAt: null }] } }, { nowMs: NOW });
   assert.equal(live.activeMinutes, 10);
   assert.equal(live.spanMinutes, null);
@@ -131,6 +137,9 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   const stage = { id: 'phase-a', label: 'Phase 1 · audit', actionIds: ['a'], actions: [{ id: 'a', status: 'succeeded' }] };
   assert.equal(phaseDurationFacts(row, stage, { nowMs: NOW }).activeMinutes, 10);
   assert.equal(planStageName(stage, 0), 'audit');
+  assert.equal(planStageName({ label: 'Phase 2 · home · active-minutes · run-page · step-page · docs', actions: [
+    { id: 'home' }, { id: 'active-minutes' }, { id: 'run-page' }, { id: 'step-page' }, { id: 'docs' },
+  ] }, 1), 'five writers');
   const box = planStageBoxParts(stage, 0, { runId: 'wf-box' });
   assert.match(box[0].text, /^\[✓ 1\. audit 1\/1\]$/);
   assert.equal(box[0].action.actionId, 'a');
@@ -148,4 +157,60 @@ test('Run model names each attempt\'s routing on one line, a dash where nothing 
   assert.equal(attemptRoutingText({ pool: 'codex', model: 'gpt-test' }), 'codex · gpt-test · —');
   assert.equal(attemptRoutingText({}), '— · — · —');
   assert.equal(attemptRoutingText(null), '— · — · —');
+});
+
+test('Run v2 header and spend facts keep active/span and partial coverage honest', () => {
+  const row = fixture();
+  row.project = 'bullswarm';
+  row.state.intent.cwd = '/repo';
+  row.state.attempts.push(
+    {
+      id: 'audit-1', actionId: 'audit', ordinal: 1, status: 'succeeded', pool: 'codex', model: 'gpt-test',
+      startedAt: '2026-09-20T11:56:00.000Z', finishedAt: '2026-09-20T11:57:00.000Z',
+      usage: { api: { usd: 1.25 }, tokenSource: 'provider-reported', subscription: { usd: 0.5 } },
+    },
+    {
+      id: 'other-1', actionId: 'report', ordinal: 2, status: 'failed', pool: 'claude-code', model: 'claude-test',
+      startedAt: '2026-09-20T11:59:00.000Z', finishedAt: '2026-09-20T12:00:00.000Z',
+      usage: { api: { usd: 0.75 }, tokenSource: 'estimated:utf8-bytes/4' },
+    },
+  );
+  const facts = runHeaderFacts(row, { nowMs: NOW });
+  assert.equal(facts.done, 1);
+  assert.equal(facts.total, 2);
+  assert.deepEqual(facts.running, ['report']);
+  assert.deepEqual(facts.waiting, []);
+  assert.equal(facts.project, 'bullswarm');
+  assert.equal(facts.cwd, '/repo');
+  assert.equal(facts.attempts, 3);
+  assert.equal(facts.spanMinutes, 4);
+  assert.equal(runClockText(362.45), '6h02m');
+  assert.equal(runClockText(7.5), '7m30s');
+
+  const spend = runSpendFacts(row);
+  assert.equal(spend.attempts, 3);
+  assert.equal(spend.apiKnownSubtotalUsd, 2.25);
+  assert.equal(spend.measured, 1);
+  assert.equal(spend.estimated, 1);
+  assert.equal(spend.running, 1);
+  assert.equal(spend.unmeasured, 0, 'running attempts have their own coverage class');
+  assert.match(spend.coverageText, /^1 of 3 attempts measured$/);
+  assert.match(spend.suffix, /1 estimated/);
+  assert.match(spend.suffix, /1 running/);
+  assert.doesNotMatch(spend.suffix, /unmeasured/);
+  assert.deepEqual(spend.pools.map((entry) => entry.pool), ['codex', 'claude-code']);
+  assert.equal(spend.plansKnownSubtotalUsd, 0.5);
+  assert.equal(spend.planMeter, 1);
+  assert.equal(spend.planUnmetered, 2);
+});
+
+test('Run v2 timeline facts are phase and attempt projections, not filler milestones', () => {
+  const row = fixture();
+  const facts = runTimelineFacts(row, { nowMs: NOW });
+  assert.equal(facts.phases.length, 2);
+  assert.equal(facts.attempts.length, 1);
+  assert.equal(facts.attempts[0].actionId, 'report');
+  assert.equal(facts.phases[1].endAt, null);
+  assert.equal(facts.phases[1].done, 0);
+  assert.equal(facts.phases[1].total, 1);
 });

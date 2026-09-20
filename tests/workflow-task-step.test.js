@@ -130,7 +130,9 @@ test('real snapshot task records render through the Step blocks at 55, 120, and 
       const body = bodyFor();
       renderStepPage(model, { width, stepView: 'overview' }, body);
       for (const line of body.lines) assert.ok([...plain(line)].length <= width, `${width}: ${plain(line)}`);
-      assert.match(body.lines.join('\n'), /task · prompt \+ task|result · output \+ artifacts|cost · money pair/);
+      assert.match(body.lines.join('\n'), /── task · build|── task · /);
+      assert.match(body.lines.join('\n'), /── result · /);
+      assert.match(body.lines.join('\n'), /── cost/);
     }
   }
 });
@@ -157,11 +159,12 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
     const beforeOpen = output.text.length;
     input.press('\r');
     await settle();
-    assert.match(plain(output.text.slice(beforeOpen)), /Step key-task/);
+    assert.match(plain(output.text.slice(beforeOpen)), /key-task · key-ta · succeeded/);
     const beforeToggle = output.text.length;
     input.press('v');
     await settle();
-    assert.match(plain(output.text.slice(beforeToggle)), /\[v overview\]/);
+    // 80 columns stacks like the phone, whose footer keeps the short hint.
+    assert.match(plain(output.text.slice(beforeToggle)), /v overview/);
     const beforeBack = output.text.length;
     input.press('\x1b');
     await settle();
@@ -221,6 +224,7 @@ test('a running task with streamFile and a live out-*.md tail renders turns and 
     renderStepPage(model, { width: 120, stepView: 'overview' }, body);
     const text = plain(body.lines.join('\n'));
     assert.match(text, /starting the work/);
+    assert.match(text, /last response \d\d:\d\d {2}still running the/);
     assert.match(text, /live output tail from the worker/);
     assert.doesNotMatch(text, /no event stream path recorded/);
     assert.doesNotMatch(text, /output unavailable/);
@@ -335,7 +339,9 @@ test('a fake-provider run persists stream-<id>.jsonl beside the task file and th
     const body = bodyFor();
     renderStepPage(model, { width: 120, stepView: 'overview' }, body);
     const text = plain(body.lines.join('\n'));
-    assert.match(text, /response turns/);
+    assert.match(text, /── activity · 2 turns/);
+    assert.match(text, /Reviewed the prior attempt block/);
+    assert.match(text, /The answering fixture completed the bounded dispatch/);
     assert.doesNotMatch(text, /no event stream path recorded/);
     assert.doesNotMatch(text, /output unavailable/);
   } finally {

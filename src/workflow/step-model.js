@@ -6,6 +6,7 @@
 // duration, usage, cost, or verification from prose.
 
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative } from 'node:path';
 
 // These imports are the extraction seam used by dashboard.js. They are used
@@ -19,7 +20,7 @@ import {
   outcomePreview,
   runEconomics,
 } from './dashboard.js';
-import { formatMoneyPair } from '../lib/usage-basis.js';
+import { formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
 import { finiteOrNull } from '../lib/num.js';
 import { isFreeModel } from '../lib/usage.js';
 
@@ -300,6 +301,7 @@ export function parseAttemptStream(streamFile) {
     truncated: false,
     dropped: null,
     plainText: false,
+    tailSegment: false,
     reason: streamFile ? 'event stream unavailable' : 'no event stream path recorded',
   };
   if (!streamFile || !existsSync(streamFile)) return empty;
@@ -318,20 +320,30 @@ export function parseAttemptStream(streamFile) {
   let parseErrors = 0;
   let truncated = false;
   let dropped = null;
-  const lines = text.split(/\r?\n/);
-  for (const lineValue of lines) {
-    const line = lineValue.trim();
-    if (!line) continue;
-    let value;
-    try { value = JSON.parse(line); } catch { parseErrors += 1; continue; }
-    const normalized = normalizeEvent(value, events.length);
-    if (!normalized) { parseErrors += 1; continue; }
-    if (normalized.marker) {
-      truncated = true;
-      dropped = normalized.dropped;
-      continue;
+  const appendLines = (body, { dropThroughSeq = null } = {}) => {
+    for (const lineValue of body.split(/\r?\n/)) {
+      const line = lineValue.trim();
+      if (!line) continue;
+      let value;
+      try { value = JSON.parse(line); } catch { parseErrors += 1; continue; }
+      const normalized = normalizeEvent(value, events.length);
+      if (!normalized) { parseErrors += 1; continue; }
+      if (normalized.marker) {
+        truncated = true;
+        dropped = normalized.dropped;
+        continue;
+      }
+      const rawSeq = finiteOrNull(value.seq);
+      if (dropThroughSeq != null && rawSeq != null && rawSeq <= dropThroughSeq) continue;
+      events.push(normalized);
     }
-    events.push(normalized);
+  };
+  appendLines(text);
+  const tailFile = `${streamFile}.tail`;
+  const tailSegment = existsSync(tailFile);
+  if (tailSegment) {
+    const tailText = safeReadText(tailFile);
+    if (tailText != null) appendLines(tailText, { dropThroughSeq: events.at(-1)?.seq ?? null });
   }
   return {
     path: streamFile,
@@ -342,6 +354,7 @@ export function parseAttemptStream(streamFile) {
     truncated,
     dropped,
     plainText: false,
+    tailSegment,
     reason: parseErrors ? `${parseErrors} malformed stream line${parseErrors === 1 ? '' : 's'} ignored` : null,
   };
 }
@@ -354,6 +367,12 @@ function validId(value) {
 function isStart(event) {
   const status = String(event?.status ?? '').toLowerCase();
   return START_STATUSES.has(status) || /\.started$|_started$|^start/.test(String(event?.providerType ?? '').toLowerCase());
+}
+
+function isInFlightStart(event) {
+  const status = String(event?.status ?? '').toLowerCase();
+  return ['started', 'start', 'running'].includes(status)
+    || /\.started$|_started$|^start/.test(String(event?.providerType ?? '').toLowerCase());
 }
 
 function isComplete(event) {
@@ -789,6 +808,7 @@ function activityModel(parsed, {
   nowMs = Date.now(),
   view = 'overview',
   expandedTurn = null,
+  running = false,
 } = {}) {
   const normalizedFilter = normalizeFilter(filter);
   const events = parsed.events ?? [];
@@ -809,11 +829,15 @@ function activityModel(parsed, {
   };
   const minimap = minimapFor(events, selected, visible);
   const parsedExpanded = expandedTurn == null || expandedTurn === '' ? null : Number(expandedTurn);
+  const namedExpanded = grouped.turns.findIndex((turn) => turn.id === String(expandedTurn));
+  // Follow keeps the live turn open so a long-running command is visible even
+  // when no response has arrived to give it a row yet. An explicit turn still
+  // wins, and turning follow off lets the caller close the default expansion.
   const selectedTurn = Number.isInteger(parsedExpanded) && parsedExpanded >= 0 && parsedExpanded < grouped.turns.length
     ? parsedExpanded
-    : grouped.turns.findIndex((turn) => turn.id === String(expandedTurn)) >= 0
-      ? grouped.turns.findIndex((turn) => turn.id === String(expandedTurn))
-      : null;
+    : namedExpanded >= 0
+      ? namedExpanded
+      : running && follow && grouped.turns.length ? grouped.turns.length - 1 : null;
   for (const turn of grouped.turns) turn.expanded = turn.index === selectedTurn;
   const todayEvents = events.filter((event) => sameLocalDay(event.at, nowMs));
   const todayVisible = visibleEventIndices(todayEvents, normalizedFilter, turnResponseIndices);
@@ -1101,7 +1125,9 @@ function attemptRecord(raw, action, { runDir = null, nowMs = Date.now() } = {}) 
     outFile: outputFile,
     taskFile,
     streamFile: parsed.path,
-    activity: activityModel(parsed),
+    activity: activityModel(parsed, {
+      running: String(raw?.status ?? '').toLowerCase() === 'running',
+    }),
     outputBytes: finiteOrNull(raw?.outputBytesObserved ?? raw?.outputBytes ?? raw?.bytes?.output),
     outputBytesObserved: finiteOrNull(raw?.outputBytesObserved ?? raw?.outputBytes ?? raw?.bytes?.output),
     streamAvailable: parsed.available,
@@ -1213,6 +1239,694 @@ function normalizeRowInput(input) {
   return { row: null };
 }
 
+// ---------------------------------------------------------------------------
+// Step page v2 presentation
+//
+// The blocks below are the design record's own vocabulary: one header said
+// once, turn rows with non-zero counts, a result card read from structured
+// data only, the task's author prompt beside the kernel wrapper's size, and
+// two plain-word cost rows. Every string here is either a captured field or a
+// word map over a finite code (a basis, a token source, an event kind); no
+// value is parsed out of prose and an unknown stays a dash.
+// ---------------------------------------------------------------------------
+
+const MONTH_TEXT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `49m07s` / `1h02m` / `30s`: the h/m/s clock, no decimals. */
+export function stepClockText(ms) {
+  if (ms == null || ms === '') return null;
+  const value = finiteMs(ms);
+  if (value == null) return null;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
+}
+
+function stepClockMs(value) {
+  const at = dateMs(value);
+  if (at == null) return null;
+  const date = new Date(at);
+  return {
+    hh: String(date.getHours()).padStart(2, '0'),
+    mm: String(date.getMinutes()).padStart(2, '0'),
+    ss: String(date.getSeconds()).padStart(2, '0'),
+    day: String(date.getDate()).padStart(2, '0'),
+    month: MONTH_TEXT[date.getMonth()],
+    year: String(date.getFullYear()),
+  };
+}
+
+/** `01:50` in local time. */
+function stepTimeText(value) {
+  const parts = stepClockMs(value);
+  return parts ? `${parts.hh}:${parts.mm}` : null;
+}
+
+/** `01:51:12` in local time. */
+function stepTimeSecText(value) {
+  const parts = stepClockMs(value);
+  return parts ? `${parts.hh}:${parts.mm}:${parts.ss}` : null;
+}
+
+/** `20 Sep`. */
+function stepDayText(value) {
+  const parts = stepClockMs(value);
+  return parts ? `${Number(parts.day)} ${parts.month}` : null;
+}
+
+/** `20 Sep 2026`. */
+function stepDateText(value) {
+  const parts = stepClockMs(value);
+  return parts ? `${Number(parts.day)} ${parts.month} ${parts.year}` : null;
+}
+
+/** `2.4 KB`: one decimal, the way the kernel states an artifact's size. */
+function stepBytesText(bytes) {
+  const value = finiteOrNull(bytes);
+  if (value == null || value < 0) return null;
+  return `${(value / 1000).toFixed(1)} KB`;
+}
+
+/** `36.0M` / `713k` / `36`: a token class as the design prints it. */
+function stepTokenText(value) {
+  const tokens = finiteOrNull(value);
+  if (tokens == null || tokens < 0) return null;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(Math.round(tokens));
+}
+
+/** `$0.96` measured, `≈ $0.25` estimated, `—` unknown. */
+function stepMoneyText(usd, { estimated = false } = {}) {
+  const value = finiteOrNull(usd);
+  if (value == null) return '—';
+  const text = formatMoney(value);
+  if (text === '-') return '—';
+  return estimated ? `≈ ${text}` : text;
+}
+
+// The one phrase a row prints for its measurement basis. Both word maps are
+// closed over the finite codes in usage-basis.js: a code the map does not know
+// prints itself, so a new basis is visible rather than silently blank.
+function rateCardVendor(rateCard) {
+  const source = String(rateCard?.source ?? '');
+  if (/openai/i.test(source)) return 'OpenAI';
+  if (/anthropic|claude/i.test(source)) return 'Anthropic';
+  if (/(^|\.)x\.ai|xai|grok/i.test(source)) return 'xAI';
+  if (/google|gemini/i.test(source)) return 'Google';
+  return null;
+}
+
+function apiBasisWords(basis, rateCard, pool, { short = false } = {}) {
+  const code = textOrNull(basis) ?? 'unknown';
+  const vendor = rateCardVendor(rateCard) ?? textOrNull(pool) ?? 'model';
+  const dated = rateCard ? stepDayText(rateCard.updatedAt) : null;
+  const card = short
+    ? `${vendor} card${dated ? ` ${dated}` : ''}`
+    : dated ? `${vendor} rate card, ${dated}` : `${vendor} rate card`;
+  if (code === 'rate-card:complete' || code === 'rate-card:partial') {
+    return code === 'rate-card:partial' ? `${card}${short ? '' : ' (partial)'}` : card;
+  }
+  if (code === 'provider-reported') return 'provider-reported';
+  if (code === 'legacy') return 'legacy estimate';
+  if (code === 'aggregate') return 'summed across attempts';
+  if (code === 'unknown') return 'no recorded rate';
+  // An `unknown: <why>` code is the kernel's own reason; print it as a phrase.
+  const reason = code.replace(/^unknown:\s*/, '').trim();
+  if (reason === code) return code;
+  return /^no\b/i.test(reason) ? reason : `no ${reason}`;
+}
+
+function subscriptionBasisWords(basis, pool, { short = false } = {}) {
+  const code = textOrNull(basis) ?? 'unknown';
+  const name = textOrNull(pool) ?? 'pool';
+  if (code === 'unknown:no-meter') return short ? 'no meter reading' : 'no meter reading for this attempt';
+  if (code === 'unknown:no-price') return short ? 'no plan price' : 'no plan price recorded';
+  if (code === 'unknown:no-cost') return short ? 'no API cost' : 'no API cost to price';
+  if (code === 'unknown:below-resolution') return short ? 'below meter resolution' : 'below the meter resolution';
+  if (code === 'observed:meter-delta') return `measured from the ${name} meter`;
+  if (code === 'observed:meter-ledger') return `measured from the ${name} meter ledger`;
+  if (code === 'calibrated:usd-per-pct') return `calibrated from the ${name} meter`;
+  if (code === 'provider-reported') return 'provider-reported';
+  if (code === 'aggregate') return 'summed across attempts';
+  if (code === 'unknown') return 'no meter reading';
+  return code;
+}
+
+function subscriptionWindowWords(window, windowDays, { short = false } = {}) {
+  const code = textOrNull(window);
+  if (!code) {
+    const days = finiteOrNull(windowDays);
+    return days == null ? null : `${days}-day${short ? '' : ' window'}`;
+  }
+  if (code === 'weekly') return short ? 'weekly' : 'weekly window';
+  if (code === 'monthly') return short ? 'monthly' : 'monthly window';
+  if (code === '5h') return short ? '5h' : '5-hour window';
+  return short ? code : `${code} window`;
+}
+
+// The token source says who measured the tokens; that is the sentence's own
+// subject, so the map is over the finite codes in usage-basis.js.
+function tokenSourceNoun(tokenSource, pool) {
+  const code = textOrNull(tokenSource) ?? 'unknown';
+  const name = textOrNull(pool) ?? 'provider';
+  if (code === 'transcript-summed') return `${name} transcript`;
+  if (code === 'provider-reported') return `${name} provider report`;
+  if (code === 'estimated:utf8-bytes/4') return `${name} output bytes`;
+  if (code === 'mixed') return 'the recorded attempts';
+  return null;
+}
+
+const TOOL_CATEGORIES = new Set(['command', 'read', 'edit']);
+
+/** The distinct kinds behind a turn's `other tools` count, in capture order. */
+function otherToolKindNames(atomicEvents) {
+  const names = [];
+  for (const event of atomicEvents ?? []) {
+    if (eventIsResponse(event) || ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())) continue;
+    if (TOOL_CATEGORIES.has(toolKindCategory(event))) continue;
+    const name = textOrNull(event?.kind);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * The counts a turn row prints: only the non-zero classes, in the design's
+ * order, pluralised, and with a lone `other tools` kind named. Zero segments
+ * never print and an empty turn says `no tools`.
+ */
+export function turnCountsText(summary, { otherKinds = [] } = {}) {
+  const parts = [];
+  const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  if (summary?.commands) parts.push(plural(summary.commands, 'command'));
+  if (summary?.filesRead) parts.push(`${plural(summary.filesRead, 'file')} read`);
+  if (summary?.edits) parts.push(plural(summary.edits, 'edit'));
+  if (summary?.otherTools) {
+    parts.push(otherKinds.length === 1
+      ? `${summary.otherTools} ${otherKinds[0]}`
+      : plural(summary.otherTools, 'other tool'));
+  }
+  if (summary?.errors) parts.push(plural(summary.errors, 'error'));
+  return parts.length ? parts.join(' · ') : 'no tools';
+}
+
+function collapseMarkdownLinks(line) {
+  return String(line ?? '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+}
+
+const BULLET = /^(?:[-*+]|\d+[.)])\s+/;
+const HEADING = /^#{1,6}\s*/;
+
+/**
+ * The report's first lines as the result card prints them: markdown links
+ * collapse to their label, the first item of a list joins the line that
+ * introduced it (the kernel's own "Files added:" + bullet shape), and blank
+ * lines and heading or bullet markers drop out. Nothing is rewritten beyond
+ * that.
+ */
+export function reportLeadLines(text, limit = 3) {
+  const lines = [];
+  let joined = false;
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const bullet = BULLET.test(trimmed);
+    const body = collapseMarkdownLinks(trimmed.replace(HEADING, '').replace(BULLET, '')).replace(/\s+/g, ' ').trim();
+    if (!body) continue;
+    if (bullet && lines.length && !joined) {
+      lines[lines.length - 1] = `${lines[lines.length - 1]} ${body}`;
+      joined = true;
+    } else {
+      lines.push(body);
+      joined = false;
+    }
+    if (lines.length >= limit) break;
+  }
+  return lines;
+}
+
+/** `src/workflow/step-model.js | +992 lines (new)` -> the path. */
+export function diffChangedPaths(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.split(' | ')[0].trim())
+    .filter((line) => line && !line.startsWith('diff '));
+}
+
+/**
+ * What a step asked the integrator to carry. Only a report that carries the
+ * kernel prompt's "Shared-file requests" heading has anything to show.
+ */
+export function sharedFileRequests(text, limit = 3) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const at = lines.findIndex((line) => /^#{1,6}\s*shared-file requests\s*$/i.test(line.trim()));
+  if (at < 0) return [];
+  const body = [];
+  for (const line of lines.slice(at + 1)) {
+    if (/^#{1,6}\s/.test(line.trim())) break;
+    body.push(line);
+  }
+  return reportLeadLines(body.join('\n'), limit);
+}
+
+function shortHomePath(path, homeDir) {
+  const value = textOrNull(path);
+  if (!value) return null;
+  if (homeDir && value.startsWith(homeDir)) return `~${value.slice(homeDir.length)}`;
+  return value;
+}
+
+/** The route sentence, with the picked pool named beside the ones it beat. */
+function routeSentence(routeReason, candidates) {
+  const reason = textOrNull(routeReason);
+  if (!reason) return null;
+  const head = reason.split(/,\s*forecast\b/)[0].trim();
+  const others = (candidates ?? []).slice(1).map((candidate) => textOrNull(candidate?.pool)).filter(Boolean);
+  const picked = others.length ? ` · picked over ${others.join(', ')}` : '';
+  // A trailing comma left by the trimmed forecast clause is the only edit.
+  return `${head.replace(/,\s*$/, '')}${picked}`;
+}
+
+function attemptCountText(attempts, selected) {
+  const total = attempts?.length ?? 0;
+  const ordinal = finiteOrNull(selected?.ordinal) ?? (total ? 1 : null);
+  if (ordinal == null) return null;
+  return total > 1 ? `attempt ${ordinal} of ${total}` : `attempt ${ordinal} of ${total || 1}`;
+}
+
+function verificationSummary(requirements) {
+  const list = Array.isArray(requirements) ? requirements : [];
+  const passed = list.filter((entry) => entry?.status === 'passed').length;
+  return { total: list.length, passed, complete: list.length > 0 && passed === list.length };
+}
+
+/**
+ * The command a worker meant to run. Codex captures a shell invocation as
+ * `/bin/zsh -lc "…"`; the design prints the command itself, so the outer
+ * wrapper a connector adds around its own spawn is unwrapped and nothing else
+ * is touched. Prose is never rewritten — this is the captured summary field.
+ */
+export function toolSummaryText(kind, summary) {
+  const value = textOrNull(summary);
+  if (!value) return toolKindWords(kind);
+  if (kind !== 'command') return value;
+  const match = /^\S*(?:zsh|bash|sh|dash)\s+-l?c\s+([\s\S]*)$/.exec(value);
+  if (!match) return value;
+  const inner = match[1];
+  const quote = inner[0];
+  if (quote === '"' || quote === "'") {
+    if (inner.endsWith(quote)) return inner.slice(1, -1);
+    if (inner.endsWith(`\\${quote}`)) return `${inner.slice(1, -2)}${quote}`;
+    // A clipped capture keeps the text it has; its `…` is the provider's own.
+    return inner.slice(1);
+  }
+  return inner;
+}
+
+function toolKindWords(kind) {
+  const raw = textOrNull(kind);
+  if (!raw) return 'tool';
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, ' ');
+  if (normalized === 'command execution' || normalized === 'shell' || normalized === 'run terminal command') return 'command';
+  if (normalized === 'file change') return 'file change';
+  return normalized;
+}
+
+function changeKindWords(kind) {
+  const raw = textOrNull(kind)?.toLowerCase() ?? '';
+  if (raw === 'add' || raw === 'create' || raw === 'created') return 'add';
+  if (raw === 'delete' || raw === 'remove' || raw === 'deleted') return 'delete';
+  if (raw === 'update' || raw === 'modify' || raw === 'modified' || raw === 'edit') return 'edit';
+  return raw.replace(/[_-]+/g, ' ') || 'edit';
+}
+
+function changeEntries(value) {
+  // Codex `file_change` keeps its complete `changes` array (or the array
+  // itself) in `arguments`; Claude's Edit/Write keep a single file path. Any
+  // other object (a Bash call's {command, description}) is not a change list,
+  // so its keys must never be read as paths.
+  const list = Array.isArray(value) ? value : (Array.isArray(value?.changes) ? value.changes : null);
+  if (list) {
+    return list.map((entry) => {
+      if (typeof entry === 'string') return { path: entry, kind: null };
+      return entry && typeof entry === 'object' ? entry : null;
+    }).filter(Boolean);
+  }
+  const path = textOrNull(value?.file_path) ?? textOrNull(value?.filePath) ?? textOrNull(value?.path);
+  return path ? [{ path, kind: textOrNull(value?.kind) ?? textOrNull(value?.type) }] : [];
+}
+
+function changeSummaryText(event) {
+  if (toolKindCategory(event) !== 'edit') return null;
+  const entries = changeEntries(event?.arguments);
+  if (!entries.length) return null;
+  const labels = entries.map((entry) => {
+    const path = textOrNull(entry.path);
+    if (!path) return null;
+    return `${changeKindWords(entry.kind)} ${path}`;
+  }).filter(Boolean);
+  if (!labels.length) return null;
+  const shown = labels.slice(0, 3);
+  if (labels.length > 3) shown.push(`+${labels.length - 3} more`);
+  return shown.join(' · ');
+}
+
+export function eventToolSummary(event) {
+  const kind = textOrNull(event?.kind);
+  const category = toolKindCategory(event);
+  const changes = changeSummaryText(event);
+  if (changes) return changes;
+  const summary = textOrNull(event?.summary)
+    ? toolSummaryText(category, event.summary)
+    : null;
+  if (summary) {
+    // The connector can only address a scalar path declaratively. It captures
+    // the first Codex change path there and preserves the complete `changes`
+    // array in `arguments`; name that scalar honestly when the array is absent.
+    if (String(kind ?? '').toLowerCase() === 'file_change' && !/^(?:add|edit|delete)\s/.test(summary)) {
+      return `edit ${summary}`;
+    }
+    return summary;
+  }
+  return toolKindWords(kind ?? category);
+}
+
+function truncateCells(value, limit = 40) {
+  const text = String(value ?? '');
+  const chars = [...text];
+  return chars.length > limit ? `${chars.slice(0, Math.max(0, limit - 1)).join('')}…` : text;
+}
+
+function runningAgeText(durationMs) {
+  const value = finiteMs(durationMs);
+  if (value == null || value < 1000) return null;
+  const seconds = Math.floor(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m`;
+}
+
+function stepTurns(activity, { outText = null, expandedTurn = null, nowMs = Date.now() } = {}) {
+  const turns = activity?.turns ?? [];
+  const last = turns.at(-1) ?? null;
+  const reportEquality = last && outText != null
+    ? String(last.responseText ?? '').trim() === String(outText).trim()
+    : false;
+  const pairs = activity?.pairs ?? [];
+  const pairByStart = new Map(pairs.map((pair) => [pair.startIndex, pair]));
+  const paired = new Set();
+  for (const pair of pairs) {
+    paired.add(pair.startIndex);
+    paired.add(pair.completeIndex);
+  }
+  return turns.map((turn) => {
+    const baseCountsText = turnCountsText(turn.summary, { otherKinds: otherToolKindNames(turn.atomicEvents) });
+    const isLast = turn === last;
+    const resultMarked = Boolean(isLast && reportEquality);
+    const expanded = expandedTurn != null && turn.index === expandedTurn;
+    const inFlightEvents = turn.atomicEvents.filter((event) => (
+      !eventIsResponse(event)
+      && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase())
+      && isInFlightStart(event)
+      && !pairByStart.has(event.index)
+      && toolKindCategory(event) != null
+    ));
+    const inFlight = inFlightEvents.map((event) => {
+      const started = dateMs(event.providerAt ?? event.at);
+      const durationMs = started == null || !Number.isFinite(nowMs) ? null : Math.max(0, nowMs - started);
+      return {
+        event,
+        durationMs,
+        durationText: durationMs != null && durationMs >= 1000 ? stepClockText(durationMs) : null,
+        countDurationText: runningAgeText(durationMs),
+        text: eventToolSummary(event),
+      };
+    });
+    const runningTail = inFlight.length
+      ? inFlight.map((tool) => `running: ${truncateCells(tool.text)}${tool.countDurationText ? ` ${tool.countDurationText}` : ''}`).join(' · ')
+      : null;
+    const countsText = runningTail ? `${baseCountsText} · ${runningTail}` : baseCountsText;
+    return {
+      index: turn.index,
+      number: turn.index + 1,
+      clock: stepTimeText(turn.response?.at ?? turn.responseEvent?.at),
+      text: textOrNull(turn.responseText) ?? 'response summary unavailable',
+      countsText,
+      resultMarked,
+      expanded,
+      // One row per operation, not per capture: a started/completed pair is the
+      // command it ran, with the duration the pair measured. A capture whose
+      // partner never arrived still prints, on its own.
+      toolRows: expanded ? turn.atomicEvents
+        .filter((event) => !eventIsResponse(event) && !ENVELOPE_KINDS.has(String(event.kind ?? '').trim().toLowerCase()))
+        .map((event) => {
+          const pair = pairByStart.get(event.index) ?? null;
+          if (!pair && paired.has(event.index)) return null;
+          const inFlightTool = inFlight.find((tool) => tool.event.index === event.index) ?? null;
+          const durationMs = inFlightTool?.durationMs ?? pair?.durationMs ?? event.durationMs ?? null;
+          return {
+            index: event.index,
+            clock: stepTimeSecText(event.at),
+            kind: textOrNull(event.kind),
+            command: toolKindCategory(event) === 'command',
+            text: inFlightTool?.text ?? eventToolSummary(event),
+            durationMs,
+            durationText: durationMs != null && durationMs >= 1000 ? stepClockText(durationMs) : null,
+            inFlight: Boolean(inFlightTool),
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Number(a.inFlight) - Number(b.inFlight) || a.index - b.index) : [],
+      atomicCount: turn.atomicEvents.length,
+      summary: turn.summary,
+      summaryText: turn.summaryText,
+      responseIndex: turn.responseIndex,
+    };
+  });
+}
+
+function stepPresentation({
+  identity, verdict, action, selected, attempts, runDir, homeDir, activity, route,
+  duration, meta, money, prompt, promptPath, outText, outFile, streamFile, diffFile,
+  diffText, resultPath, requirements, nowMs, follow,
+} = {}) {
+  const execution = verdict?.execution ?? {};
+  const running = execution.status === 'running';
+  const verification = verificationSummary(requirements);
+  const attemptText = attemptCountText(attempts, selected);
+  const startMs = dateMs(selected?.startedAt ?? action?.startedAt);
+  const finishMs = dateMs(selected?.finishedAt ?? selected?.endedAt);
+  const lastEvent = activity?.events?.at(-1) ?? null;
+  const lastEventMs = dateMs(lastEvent?.at);
+  const nowValue = finiteOrNull(nowMs);
+  const verdictText = verification.total
+    ? `${verification.complete ? 'verified by the workflow' : 'not verified'} (${verification.passed}/${verification.total} requirements)`
+    : identity?.verified === true ? 'verified' : identity?.verified === false ? 'not verified' : null;
+  // Rule 2: one clock, and the span appears only when it differs from the
+  // active time. `49m07s active of 1h02m` is the only shape that says both.
+  const activeText = stepClockText(duration?.activeMs);
+  const spanText = finiteOrNull(duration?.spanMs) != null && finiteOrNull(duration?.spanMs) !== finiteOrNull(duration?.activeMs)
+    ? stepClockText(duration.spanMs)
+    : null;
+  return {
+    header: {
+      // The verdict of line 1 as a state; the view picks the glyph the terminal
+      // can actually draw (a shell in ascii mode has no `●` or `✓`).
+      state: execution.succeeded ? 'ok' : execution.terminal ? 'fail' : 'running',
+      actionId: identity?.actionId ?? null,
+      shortId: identity?.shortId ?? null,
+      status: execution.status ?? 'unknown',
+      succeeded: execution.succeeded === true,
+      running,
+      verdictText,
+      attemptText,
+      purpose: identity?.purpose ?? null,
+      pool: meta?.pool ?? null,
+      model: meta?.model ?? null,
+      effort: meta?.effort ?? null,
+      reasoning: meta?.reasoning ?? null,
+      activeText,
+      spanText,
+      clockText: spanText ? `${activeText} active of ${spanText}` : activeText,
+      startedClock: stepTimeText(startMs),
+      finishedClock: stepTimeText(finishMs),
+      dateText: stepDateText(finishMs ?? startMs),
+      lastEventClock: stepTimeSecText(lastEventMs),
+      // A raw instant, not a rendered age: "3s ago" is a fact about the screen
+      // that draws it, so the view derives it from its own clock.
+      lastEventMs,
+      turnNumber: activity?.turns?.length ?? 0,
+      following: Boolean(follow),
+      route: routeSentence(route?.reason, route?.candidates),
+    },
+    activity: {
+      available: Boolean(activity?.available),
+      reason: activity?.reason ?? null,
+      events: activity?.events?.length ?? 0,
+      turns: stepTurns(activity, {
+        outText,
+        expandedTurn: activity?.expandedTurn ?? null,
+        nowMs,
+      }),
+      totals: activityTotals(activity?.turns ?? []),
+      filter: activity?.filter ?? 'all',
+      running,
+      following: Boolean(follow),
+    },
+    result: {
+      running,
+      title: execution.status ?? 'unknown',
+      verification,
+      verdictText,
+      attemptNumber: finiteOrNull(selected?.ordinal),
+      failure: textOrNull(selected?.failureReason),
+      events: activity?.events?.length ?? 0,
+      lastResponse: (() => {
+        const last = activity?.turns?.at(-1) ?? null;
+        const text = textOrNull(last?.responseText);
+        return text ? { clock: stepTimeText(last.response?.at ?? last.responseEvent?.at), text } : null;
+      })(),
+      verdictText,
+      reportLines: reportLeadLines(outText),
+      changed: diffChangedPaths(diffText),
+      asks: sharedFileRequests(outText),
+      runDir: shortHomePath(runDir, homeDir),
+      runDirShort: runDir ? basename(runDir) : null,
+      artifacts: {
+        task: shortHomePath(promptPath, homeDir),
+        output: shortHomePath(outFile, homeDir),
+        stream: shortHomePath(streamFile, homeDir),
+        diff: shortHomePath(diffFile, homeDir),
+        result: shortHomePath(resultPath, homeDir),
+      },
+      fullPaths: {
+        task: promptPath ?? null,
+        output: outFile ?? null,
+        stream: streamFile ?? null,
+        diff: diffFile ?? null,
+        result: resultPath ?? null,
+      },
+      reportBytesText: stepBytesText(typeof outText === 'string' ? Buffer.byteLength(outText, 'utf8') : null),
+      streamEvents: activity?.events?.length ?? 0,
+    },
+    task: {
+      kind: textOrNull(action?.kind),
+      lane: textOrNull(action?.lane),
+      promptLines: String(prompt ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3),
+      owns: basenames(action?.ownedFiles),
+      after: (Array.isArray(action?.dependsOn) ? action.dependsOn : []).map((id) => textOrNull(id)).filter(Boolean),
+      affects: (Array.isArray(action?.affects) ? action.affects : []).map((id) => requirementWords(id)).filter(Boolean),
+      bytes: selected?.bytes && typeof selected.bytes === 'object' ? clone(selected.bytes) : null,
+    },
+    cost: costRows(money, { running }),
+  };
+}
+
+function basenames(list) {
+  return (Array.isArray(list) ? list : []).map((entry) => textOrNull(entry)).filter(Boolean).map((entry) => basename(entry));
+}
+
+function requirementWords(id) {
+  const value = textOrNull(id);
+  if (!value) return null;
+  return value.replace(/^requirement[-_ ]?(\d+)$/i, 'requirement $1');
+}
+
+function activityTotals(turns) {
+  const totals = { commands: 0, filesRead: 0, edits: 0, otherTools: 0, errors: 0 };
+  for (const turn of turns) {
+    for (const field of Object.keys(totals)) totals[field] += finiteOrNull(turn?.summary?.[field]) ?? 0;
+  }
+  return totals;
+}
+
+/**
+ * An exact amount prints plain. A rate card without every field priced, a
+ * transcript sum, or a byte estimate is not the provider's own bill, so it
+ * carries `≈`; an amount nobody recorded stays a dash with the reason.
+ */
+function apiAmountIsExact(api, tokenSource) {
+  const basis = textOrNull(api?.basis) ?? '';
+  if (basis === 'rate-card:complete') return true;
+  if (basis === 'provider-reported' || tokenSource === 'provider-reported') return true;
+  return false;
+}
+
+function costRows(moneyInput, { running = false } = {}) {
+  const money = moneyInput?.pair ?? {};
+  const api = money.api ?? {};
+  const subscription = money.subscription ?? {};
+  const tokens = moneyInput?.tokens ?? money.tokens ?? {};
+  const tokenSource = textOrNull(moneyInput?.tokenSource ?? money.tokenSource);
+  const pending = Boolean(moneyInput?.pending) && (api.usd == null || tokens.totalKnown == null);
+  const pool = textOrNull(subscription.pool ?? moneyInput?.pool);
+  const totalText = stepTokenText(tokens.totalKnown);
+  const headline = [
+    totalText ? `${totalText} tokens` : null,
+    apiBasisWords(api.basis, api.rateCard, pool),
+  ].filter(Boolean).join(' · ');
+  const classes = [
+    ['cache read', tokens.cacheRead],
+    ['input', tokens.standardRead],
+    ['cache write', finiteOrNull(tokens.cacheWrite5m) ?? finiteOrNull(tokens.cacheWrite1h) ?? finiteOrNull(tokens.cacheWrite)],
+    ['output', tokens.output],
+    ['reasoning', tokens.reasoning],
+  ]
+    .filter(([, value]) => finiteOrNull(value) != null && finiteOrNull(value) !== 0)
+    .map(([label, value]) => `${stepTokenText(value)} ${label}`);
+  const price = finiteOrNull(subscription.monthlyPriceUsd);
+  const windowWords = subscriptionWindowWords(subscription.window, subscription.windowDays);
+  const subDetails = [
+    price == null ? null : `$${Number(price.toFixed(2))}/mo`,
+    windowWords,
+  ].filter(Boolean);
+  const noun = tokenSourceNoun(tokenSource, pool);
+  const explicit = finiteOrNull(api.usd);
+  const exact = apiAmountIsExact(api, tokenSource);
+  const shortBasis = subscriptionBasisWords(subscription.basis, pool, { short: true });
+  const shortPlan = [
+    price == null ? null : `$${Number(price.toFixed(2))}/mo`,
+    subscriptionWindowWords(subscription.window, subscription.windowDays, { short: true }),
+  ].filter(Boolean).join(' ');
+  const measuring = running && explicit == null;
+  return {
+    pending,
+    running,
+    rows: [
+      {
+        label: 'API rate',
+        amount: measuring ? '—' : stepMoneyText(explicit, { estimated: !exact }),
+        headline: measuring ? 'measured when the attempt finishes' : headline,
+        details: measuring ? [] : classes,
+        // The phone says the same two facts in one row, with the classes left
+        // to the desk layout where they fit.
+        phoneText: measuring
+          ? 'measured when the attempt finishes'
+          : [totalText ? `${totalText} tokens` : null, apiBasisWords(api.basis, api.rateCard, pool, { short: true })].filter(Boolean).join(' · '),
+        unknown: explicit == null,
+      },
+      {
+        label: `${pool ?? 'pool'} plan`,
+        amount: stepMoneyText(subscription.usd, { estimated: String(subscription.basis ?? '').startsWith('calibrated') }),
+        headline: subscriptionBasisWords(subscription.basis, pool),
+        details: subDetails,
+        phoneText: [shortBasis, shortPlan || null].filter(Boolean).join(' · '),
+        unknown: finiteOrNull(subscription.usd) == null,
+      },
+    ],
+    // Rule 6: the closing line is a word map over the finite tokenSource
+    // codes. A live attempt says when the figure will exist instead.
+    basisLine: running
+      ? `measured when the attempt finishes${noun ? ` (${noun})` : ''}`
+      : noun
+        ? `${tokenSource === 'estimated:utf8-bytes/4' ? 'estimated from' : 'measured from'} the ${noun}`
+        : null,
+    tokenSource,
+  };
+}
+
 /** Build the complete Step model from dashboardModel(row) or a row directly. */
 export function stepPageModel(input, {
   phaseIndex = null,
@@ -1272,16 +1986,28 @@ export function stepPageModel(input, {
   const output = outputModel(outFile, outputRecord);
   const prompt = promptModel(taskFile);
   const followState = followTail == null ? Boolean(follow) : Boolean(followTail);
+  // A live attempt shows what had been captured by `now`: a page drawn at an
+  // earlier instant (a projection of a finished record) must not print events
+  // that had not happened yet. A terminal attempt keeps its whole capture.
+  const parsedStream = selected ? parseAttemptStream(selected.streamFile) : parseAttemptStream(null);
+  const liveAttempt = String(selected?.status ?? '').toLowerCase() === 'running';
+  const captured = liveAttempt && Number.isFinite(nowMs)
+    ? parsedStream.events.filter((event) => {
+      const at = dateMs(event.at);
+      return at == null || at <= nowMs;
+    })
+    : parsedStream.events;
   const activity = selected
-    ? activityModel(parseAttemptStream(selected.streamFile), {
+    ? activityModel({ ...parsedStream, events: captured }, {
       filter: filter ?? activityFilter,
       follow: followState,
       selectedIndex: selectedEventIndex,
       nowMs,
       view,
       expandedTurn,
+      running: liveAttempt,
     })
-    : activityModel(parseAttemptStream(null), { nowMs, view, expandedTurn });
+    : activityModel(parseAttemptStream(null), { nowMs, view, expandedTurn, running: false });
   const selectedUsage = selected?.usageModel ?? normalizeAttemptUsage(null);
   const totalUsage = aggregateAttemptUsage(enrichedAttempts);
   const route = routeModel(selected ?? active, action);
@@ -1342,6 +2068,57 @@ export function stepPageModel(input, {
     budget: clone(input?.budget ?? row?.budget ?? state?.budget ?? null),
     pending: Boolean(selected?.usagePending),
   };
+  // The result card and the last turn's `→` marker read the report itself, and
+  // the diff file is the kernel's own record of what the step changed. Both
+  // are resolved inside the run directory, so a copied home stays read-only.
+  const promptText = textOrNull(action.prompt) ?? prompt.text ?? textOrNull(state.intent?.goal);
+  const outText = safeReadText(outFile) ?? output.text;
+  const diffCandidate = selected?.diffFile ?? (runDir && selectedActionId && selected?.ordinal != null
+    ? join(runDir, `diff-${selectedActionId}-attempt-${selected.ordinal}.txt`)
+    : null);
+  const diffPath = resolveExistingPath(diffCandidate, runDir);
+  const diffText = safeReadText(diffPath);
+  const presentation = stepPresentation({
+    identity: {
+      actionId: selectedActionId,
+      shortId: textOrNull(row.shortId ?? state.shortId),
+      purpose: textOrNull(action.purpose ?? action.role),
+      verified: verdict.verified,
+    },
+    verdict,
+    action,
+    selected,
+    attempts: enrichedAttempts,
+    runDir,
+    homeDir: homedir(),
+    activity,
+    route,
+    duration: { activeMs: activeDurationMs, spanMs: spanDurationMs },
+    meta: {
+      pool: textOrNull(selected?.pool ?? active?.pool),
+      model: textOrNull(selected?.model ?? active?.model),
+      effort: textOrNull(selected?.effort ?? selected?.routing?.effort ?? route.effort),
+      reasoning: textOrNull(selected?.reasoning?.applied ?? selected?.reasoning?.requested),
+    },
+    money: {
+      pair: totalUsage,
+      tokens: totalUsage.tokens,
+      tokenSource: totalUsage.tokenSource,
+      pending: Boolean(selected?.usagePending),
+      pool: textOrNull(selected?.pool ?? active?.pool),
+    },
+    prompt: promptText,
+    promptPath: taskFile,
+    outText: outText ?? null,
+    outFile,
+    streamFile: activity.path,
+    diffFile: diffPath,
+    diffText,
+    resultPath,
+    requirements,
+    nowMs,
+    follow: followState,
+  });
   const bytes = finiteOrNull(selected?.outputBytesObserved ?? active?.outputBytesObserved ?? outputRecord?.bytes);
   const live = verdict.executionStatus === 'running' ? 'live' : 'recorded';
   const headerSpark = live === 'live' ? outputSparkline(selected ?? active, row.runDir, 10) : '';
@@ -1464,6 +2241,14 @@ export function stepPageModel(input, {
       { key: 'result', ...resultBlock },
       { key: 'cost', ...costBlock },
     ],
+    // The design record's blocks, said once: one header, turn rows, a result
+    // card, the task's own lines, and two plain-word cost rows. The view reads
+    // these; every field above stays for the callers that already read it.
+    presentation,
+    stepHeader: presentation.header,
+    resultCard: presentation.result,
+    taskCard: presentation.task,
+    costCard: presentation.cost,
     activeDurationMs,
     spanDurationMs,
     activeMinutes: activeDurationMs == null ? null : activeDurationMs / 60_000,

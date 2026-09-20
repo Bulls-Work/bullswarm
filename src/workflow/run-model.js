@@ -5,6 +5,7 @@
 
 import { asciiGlyphsPreferred, glyphs } from '../lib/glyphs.js';
 import { finiteOrNull } from '../lib/num.js';
+import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
 import { cut, progressBar } from './dash-kit.js';
@@ -212,7 +213,15 @@ function runDurationFacts(row, { nowMs = Date.now() } = {}) {
   const union = unionIntervals(intervals);
   const activeMinutes = union.open ? union.activeMinutes : storedMinutes(rollup, 'active') ?? union.activeMinutes;
   const spanMinutes = !runIsTerminal(row) || union.open ? null : storedMinutes(rollup, 'span') ?? union.spanMinutes;
-  return { ...union, activeMinutes, spanMinutes, intervals };
+  // `spanMinutes` remains the proved terminal wall span for compatibility
+  // with the duration helpers.  The Run header also needs the screen's
+  // current wall span while a worker is open; keep that as a separate fact so
+  // an open run can honestly say “active of span” without pretending it has a
+  // terminal finish.
+  const wallSpanMinutes = union.startMs != null && union.endMs != null
+    ? Math.max(0, (union.endMs - union.startMs) / 60_000)
+    : null;
+  return { ...union, activeMinutes, spanMinutes, wallSpanMinutes, intervals };
 }
 
 function phaseAttempts(row, stage) {
@@ -252,7 +261,12 @@ function durationClockText(minutes) {
   if (number == null) return 'time pending';
   const seconds = Math.max(0, Math.round(number * 60));
   if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
+  const totalMinutes = Math.floor(seconds / 60);
+  // The two design records share one clock: h/m/s, never a raw minute count.
+  // A step that ran past an hour reads `1h02m`, the way the run header and the
+  // Step page's own clock read it — `62m10s` was the same number said twice.
+  if (totalMinutes < 60) return `${totalMinutes}m${String(seconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(totalMinutes / 60)}h${String(totalMinutes % 60).padStart(2, '0')}m`;
 }
 
 function attemptDurationMinutes(attempt, { nowMs = Date.now() } = {}) {
@@ -490,6 +504,20 @@ function planStageName(stage, index) {
     .replace(/^Follow-up \d+: /, '')
     .replace(/^Phase \d+\s*·\s*/, '')
     .trim();
+  // “Parallel work” was an implementation label, not a useful phase name.
+  // Prefer the authored step names: small levels fit as `a · b`, while a
+  // larger writer fan-out gets the compact count used by the design record.
+  const actions = stage?.actions ?? [];
+  if (actions.length > 1) {
+    const names = actions.map((action) => String(action?.id ?? '').trim()).filter(Boolean);
+    // A broad level is a writer group even when an older presentation label
+    // already expanded every action name (for example five actions rendered as
+    // `home · active-minutes · run-page · step-page · docs`). Small groups keep
+    // their authored names because two or three names remain useful in a box.
+    const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+    if (names.length > 3) return `${words[names.length] ?? names.length} writers`;
+    if (!label || /^parallel work$/i.test(label) || names.length <= 3) return names.join(' · ') || `phase-${index + 1}`;
+  }
   return label || `phase-${index + 1}`;
 }
 
@@ -665,6 +693,233 @@ function stepTally(row) {
   ].filter(Boolean).join('  ');
 }
 
+const RUN_TERMINAL_ATTEMPTS = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'skipped']);
+const RUN_MEASURED_SOURCES = new Set(['provider-reported', 'transcript-summed']);
+
+/** `6h02m` / `38m17s` / `30s`, the Run header's active/span clock. */
+function runClockText(minutes) {
+  const value = finiteOrNull(minutes);
+  if (value == null) return '—';
+  const seconds = Math.max(0, Math.round(value * 60));
+  if (seconds < 60) return `${seconds}s`;
+  const totalMinutes = Math.floor(seconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m${String(seconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(totalMinutes / 60)}h${String(totalMinutes % 60).padStart(2, '0')}m`;
+}
+
+function runLocalClock(value) {
+  const ms = parsedMs(value);
+  if (ms == null) return null;
+  const date = new Date(ms);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function runDateText(value) {
+  const ms = parsedMs(value);
+  if (ms == null) return null;
+  const date = new Date(ms);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+function runAttemptMix(attempts) {
+  const counts = new Map();
+  for (const attempt of attempts ?? []) {
+    const pool = String(attempt?.pool ?? 'unassigned');
+    counts.set(pool, (counts.get(pool) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([pool, count]) => ({ pool, count }))
+    .sort((a, b) => b.count - a.count || a.pool.localeCompare(b.pool));
+}
+
+/** Facts for the three-line Run header; no prose or money is inferred here. */
+function runHeaderFacts(row, { nowMs = Date.now(), rollup = null } = {}) {
+  const state = row?.state ?? row ?? {};
+  const actions = Array.isArray(state.actions) ? state.actions : [];
+  const attempts = allRunAttempts(row);
+  const duration = runDurationFacts(row, { nowMs });
+  const displaySpan = finiteOrNull(duration.spanMinutes) ?? finiteOrNull(duration.wallSpanMinutes);
+  const running = actions.filter((action) => action.status === 'running');
+  const waiting = actions.filter((action) => !DONE_STATUS.has(action.status) && action.status !== 'running');
+  const startedAt = state.lifecycle?.startedAt ?? attempts.map((attempt) => attempt.startedAt).filter(Boolean).sort()[0] ?? null;
+  const finishedAt = state.lifecycle?.finishedAt ?? row?.finishedAt ?? rollup?.finishedAt ?? null;
+  const goal = String(state.intent?.goal ?? state.workflow ?? rollup?.goal ?? '').trim();
+  return {
+    shortId: row?.shortId ?? state.shortId ?? rollup?.shortId ?? row?.runId ?? state.runId ?? '------',
+    status: String(row?.status ?? state.lifecycle?.status ?? rollup?.status ?? 'starting'),
+    done: actions.filter((action) => action.status === 'succeeded').length,
+    total: actions.length,
+    running: running.map((action) => action.id),
+    waiting: waiting.map((action) => action.id),
+    goal,
+    activeMinutes: duration.activeMinutes,
+    spanMinutes: displaySpan,
+    startedAt,
+    finishedAt,
+    startedClock: runLocalClock(startedAt),
+    finishedClock: runLocalClock(finishedAt),
+    dateText: runDateText(finishedAt ?? startedAt),
+    activeText: runClockText(duration.activeMinutes),
+    spanText: runClockText(displaySpan),
+    attempts: attempts.length,
+    attemptMix: runAttemptMix(attempts),
+    project: row?.project ?? state.project ?? rollup?.project ?? null,
+    cwd: state.intent?.cwd ?? row?.cwd ?? rollup?.cwd ?? null,
+    duration,
+  };
+}
+
+function usageSource(attempt) {
+  return String(attempt?.usage?.tokenSource ?? 'unknown');
+}
+
+function attemptApiAmount(attempt) {
+  return finiteOrNull(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
+}
+
+function attemptSubscriptionAmount(attempt) {
+  return finiteOrNull(attempt?.usage?.subscription?.usd);
+}
+
+function amountText(value, { approximate = false, lowerBound = false } = {}) {
+  if (value == null) return '—';
+  const rendered = formatMoney(value);
+  if (rendered === '-') return '—';
+  return `${lowerBound ? 'at least ' : approximate ? '≈ ' : ''}${rendered}`;
+}
+
+/** Honest partial API/plan subtotals and coverage counts for the Spend block. */
+function runSpendFacts(row, { rollup = null } = {}) {
+  const attempts = allRunAttempts(row);
+  const byPool = new Map();
+  let apiKnownSubtotalUsd = null;
+  let plansKnownSubtotalUsd = null;
+  let measured = 0;
+  let estimated = 0;
+  let running = 0;
+  let unmeasured = 0;
+  let planMeter = 0;
+  for (const attempt of attempts) {
+    const api = attemptApiAmount(attempt);
+    const sub = attemptSubscriptionAmount(attempt);
+    const status = String(attempt?.status ?? '').toLowerCase();
+    const source = usageSource(attempt);
+    const open = status === 'running';
+    const apiMeasured = api != null && RUN_MEASURED_SOURCES.has(source);
+    const apiEstimated = api != null && !apiMeasured;
+    // A live attempt is its own coverage class.  It may also lack a usage
+    // amount, but counting it again as "unmeasured" makes the footer report
+    // more missing attempts than the actual partial scope (the design's
+    // example is `6 estimated · 1 running`, not `… · 1 running · 1
+    // unmeasured`).
+    if (open) running += 1;
+    else if (api == null) unmeasured += 1;
+    else if (apiMeasured) measured += 1;
+    else estimated += 1;
+    if (api != null) apiKnownSubtotalUsd = (apiKnownSubtotalUsd ?? 0) + api;
+    if (sub != null) {
+      plansKnownSubtotalUsd = (plansKnownSubtotalUsd ?? 0) + sub;
+      planMeter += 1;
+    }
+    const pool = String(attempt?.pool ?? 'unassigned');
+    const entry = byPool.get(pool) ?? {
+      pool, apiKnownSubtotalUsd: null, attempts: 0, measured: 0, estimated: 0, running: 0, unmeasured: 0,
+    };
+    entry.attempts += 1;
+    if (api != null) entry.apiKnownSubtotalUsd = (entry.apiKnownSubtotalUsd ?? 0) + api;
+    if (open) entry.running += 1;
+    else if (apiMeasured) entry.measured += 1;
+    else if (apiEstimated) entry.estimated += 1;
+    else entry.unmeasured += 1;
+    byPool.set(pool, entry);
+  }
+  // A rollup may retain a subtotal for an attempt whose raw state was
+  // projected away by the renderer. It remains a known subtotal, never an
+  // invented whole-run amount.
+  const rollupUsage = rollup?.usage ?? rollup?.economics ?? null;
+  if (apiKnownSubtotalUsd == null) apiKnownSubtotalUsd = finiteOrNull(rollupUsage?.apiKnownSubtotalUsd);
+  if (plansKnownSubtotalUsd == null) plansKnownSubtotalUsd = finiteOrNull(rollupUsage?.subscriptionKnownSubtotalUsd);
+  const attemptsTotal = attempts.length || finiteOrNull(rollupUsage?.attempts) || 0;
+  const rollupMeasured = finiteOrNull(rollupUsage?.measuredAttempts);
+  if (!attempts.length && rollupMeasured != null) {
+    measured = rollupMeasured;
+    const priced = finiteOrNull(rollupUsage?.pricedAttempts);
+    estimated = priced == null ? 0 : Math.max(0, priced - measured);
+    unmeasured = priced == null ? 0 : Math.max(0, attemptsTotal - priced);
+    planMeter = finiteOrNull(rollupUsage?.subscriptionPricedAttempts) ?? planMeter;
+  }
+  const apiPartial = unmeasured > 0 || running > 0;
+  const allEstimated = estimated > 0 && measured === 0 && unmeasured === 0 && running === 0;
+  const pools = [...byPool.values()]
+    .filter((entry) => entry.apiKnownSubtotalUsd != null || entry.attempts)
+    .sort((a, b) => (b.apiKnownSubtotalUsd ?? -1) - (a.apiKnownSubtotalUsd ?? -1) || b.attempts - a.attempts);
+  return {
+    attempts: attemptsTotal,
+    apiKnownSubtotalUsd,
+    apiText: amountText(apiKnownSubtotalUsd, { lowerBound: apiPartial, approximate: !apiPartial && allEstimated }),
+    apiPartial,
+    allEstimated,
+    measured,
+    estimated,
+    running,
+    unmeasured,
+    coverageText: `${measured} of ${attemptsTotal} attempts measured`,
+    suffix: [
+      estimated ? `${estimated} estimated` : null,
+      running ? `${running} running` : null,
+      unmeasured ? `${unmeasured} unmeasured` : null,
+    ].filter(Boolean).join(' · '),
+    pools,
+    plansKnownSubtotalUsd,
+    plansText: amountText(plansKnownSubtotalUsd, { lowerBound: planMeter < attemptsTotal }),
+    planMeter,
+    planUnmetered: Math.max(0, attemptsTotal - planMeter),
+  };
+}
+
+function phaseGlyph(status) {
+  const table = glyphs();
+  if (status === 'completed') return table.ok;
+  if (status === 'failed') return table.fail;
+  if (status === 'active') return table.started;
+  return table.pending;
+}
+
+/** The tree facts consumed by both the desktop and phone timeline layouts. */
+function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
+  const state = row?.state ?? row ?? {};
+  const { stages } = planStages(row);
+  const actions = state.actions ?? [];
+  const phaseFacts = stages.map((stage, index) => {
+    const phaseActions = stage.actions?.length ? stage.actions : actions.filter((action) => (stage.actionIds ?? []).includes(action.id));
+    const attempts = phaseAttempts(row, stage).slice().sort((a, b) => parsedMs(a.startedAt) - parsedMs(b.startedAt));
+    const duration = phaseDurationFacts(row, { ...stage, actions: phaseActions }, { nowMs });
+    const progress = presentationStageStatus(stage, actions);
+    const startedAt = stage.startedAt ?? attempts.map((attempt) => attempt.startedAt).filter(Boolean).sort()[0] ?? null;
+    const finishedAt = stage.completedAt ?? attempts.map((attempt) => attempt.finishedAt).filter(Boolean).sort().at(-1) ?? null;
+    const active = phaseActions.some((action) => action.status === 'running') || attempts.some((attempt) => attempt.status === 'running');
+    const failed = phaseActions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status));
+    return {
+      index, id: stage.id, name: planStageName(stage, index), label: stage.label, stage,
+      status: active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending',
+      glyph: phaseGlyph(active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending'),
+      startedAt, finishedAt, endAt: active ? null : finishedAt,
+      duration, activeMinutes: duration.activeMinutes, spanMinutes: duration.spanMinutes,
+      done: progress.completed, total: progress.total, attempts,
+    };
+  });
+  return {
+    preflight: { at: state.lifecycle?.startedAt ?? null, label: 'goal accepted · goal.json' },
+    phases: phaseFacts,
+    attempts: phaseFacts.flatMap((phase) => phase.attempts.map((attempt) => ({
+      ...attempt, phaseIndex: phase.index, phaseName: phase.name,
+      glyph: phaseGlyph(attempt.status === 'running' ? 'active' : RUN_TERMINAL_ATTEMPTS.has(attempt.status) && attempt.status !== 'succeeded' ? 'failed' : 'completed'),
+      durationText: attemptDurationText(attempt, { nowMs }),
+    }))),
+  };
+}
+
 export {
   workflowPanelModel,
   planLevels,
@@ -693,4 +948,8 @@ export {
   fittedParts,
   planPhaseActionParts,
   stepTally,
+  runClockText,
+  runHeaderFacts,
+  runSpendFacts,
+  runTimelineFacts,
 };

@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a0be20-c99c-7741-8cb0-eab0901d19e3"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll create the requested fixture file in the provided scratch directory."}}
+{"type":"item.started","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/bsw-codex-file-change-DxjT3B/file-change-fixture.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"/tmp/bsw-codex-file-change-DxjT3B/file-change-fixture.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":43920,"cached_input_tokens":27136,"cache_write_input_tokens":0,"output_tokens":288,"reasoning_output_tokens":202}}

@@ -1203,6 +1203,28 @@ function navParts(model, { page, width, selectedRunId }) {
       : item.key ? `${underline(item.key)}.${item.label}` : item.label;
     return item.tight ? `[${mark}${label}]` : `[ ${mark}${label} ]`;
   };
+  // The Run page owns its compact footer: navigation back to the catalogue,
+  // the selected run chip, and the page-local plan/follow controls. Keeping it
+  // in the shell means it is painted once, below the scrollable body, and the
+  // same hints are available at every terminal width.
+  if (page === 'run') {
+    const selected = model.runs.find((run) => run.runId === selectedRunId) ?? model.runs[0] ?? null;
+    const items = [];
+    items.push({ key: null, label: 'back', action: { kind: 'back' } });
+    if (selected) items.push({ key: null, label: `1.${selected.shortId ?? '------'}`, mark: true, tight: false, action: { kind: 'run', runId: selected.runId } });
+    const prefix = items.map((item) => button(item)).join(' ');
+    const hint = width < 100
+      ? ' Enter open · p plan · ? help'
+      : ' Enter open step · p plan boxes · Space follow · ? help';
+    const available = Math.max(1, width - prefix.length - 2);
+    const parts = [{ text: ' ' }];
+    items.forEach((item, index) => {
+      if (index) parts.push({ text: ' ' });
+      parts.push({ text: button(item), action: item.action });
+    });
+    parts.push({ text: ` ${cut(hint, available)}` });
+    return parts;
+  }
   const back = page === 'step' || page === 'task' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
   // The run the reader is on is marked wherever a run is what they are
   // reading; the other pages mark themselves in the tab row instead.
@@ -2198,6 +2220,9 @@ export async function runDashboard(bullswarmDir, {
     stepAttemptOrdinal: null,
     stepFollow: true,
     stepFilter: 'all',
+    stepToolPage: 0,
+    runPlanBoxes: false,
+    runFollow: true,
     spinnerFrame: 0,
   };
   if (directV2) {
@@ -2370,6 +2395,9 @@ export async function runDashboard(bullswarmDir, {
     stepAttemptOrdinal: ui.stepAttemptOrdinal,
     stepFollow: ui.stepFollow,
     stepFilter: ui.stepFilter,
+    stepToolPage: ui.stepToolPage,
+    planBoxes: ui.runPlanBoxes,
+    runFollow: ui.runFollow,
   });
   const paintUnsafe = () => {
     if (selected >= rows.length) selected = Math.max(0, rows.length - 1);
@@ -2496,6 +2524,8 @@ export async function runDashboard(bullswarmDir, {
     ui.followActiveAgent = true;
     ui.detailScroll = 0;
     ui.timelineSelection = null;
+    ui.runPlanBoxes = false;
+    ui.runFollow = true;
     bodyScroll = 0;
     message = null;
     paint();
@@ -2579,6 +2609,7 @@ export async function runDashboard(bullswarmDir, {
     ui.stepAttemptOrdinal = null;
     ui.stepFollow = true;
     ui.stepFilter = 'all';
+    ui.stepToolPage = 0;
     bodyScroll = 0;
     paint();
   };
@@ -2685,10 +2716,10 @@ export async function runDashboard(bullswarmDir, {
     rollupFingerprint = null;
   };
   // The wheel: up walks back through whatever is above the window, down walks
-  // on. The timeline counts rows back from its newest event, a page body
-  // counts the first visible row.
+  // on. The boxed panel counts rows back from its newest event; every page
+  // body, Run v2's included, counts the first visible row.
   const scrollActivePage = (delta) => {
-    if (ui.page === 'run' && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose) {
+    if (ui.page === 'run' && (ui.orchestratorDetail || ui.workflowVerbose)) {
       ui.detailScroll = Math.max(0, ui.detailScroll + delta);
       return paint();
     }
@@ -3219,7 +3250,9 @@ export async function runDashboard(bullswarmDir, {
     if (keyPressed('budget', key)) return openPage('budget');
     if (keyPressed('stats', key)) return openPage('stats');
     if (keyPressed('history', key)) return openPage('history');
-    if (keyPressed('fleet', key)) return openPage('fleet');
+    // The Step page's own `f` follows its activity tail (record rule 9);
+    // Fleet keeps the key everywhere else.
+    if (keyPressed('fleet', key) && ui.page !== 'step' && ui.page !== 'task') return openPage('fleet');
     // `p` and Tab are global dashboard bindings elsewhere, but on Step/task they
     // are the page's prompt and section navigation. Handle them before the
     // period/sub-tab dispatch below; the remaining Step keys are handled in
@@ -3238,6 +3271,14 @@ export async function runDashboard(bullswarmDir, {
       // the Step region has already advanced, so callers that inspect the
       // local section still observe the design's reverse traversal.
       if (key === '\x1b[Z' && (allRows.length > 1 || activeRuns.length > 1)) return switchWorkflow(1);
+      return paint();
+    }
+    if (ui.page === 'run' && key === 'p') {
+      ui.runPlanBoxes = !ui.runPlanBoxes;
+      return paint();
+    }
+    if (ui.page === 'run' && key === ' ') {
+      ui.runFollow = !ui.runFollow;
       return paint();
     }
     if (keyPressed('period', key)) return nextPeriod();
@@ -3297,6 +3338,7 @@ export async function runDashboard(bullswarmDir, {
           ui.stepTurnIndex = next;
           ui.stepSelectedEventIndex = turns[next]?.responseIndex ?? null;
           ui.stepFollow = false;
+          ui.stepToolPage = 0;
           return;
         }
         if (!activityIndices.length) return;
@@ -3323,6 +3365,7 @@ export async function runDashboard(bullswarmDir, {
             : Number.isInteger(step.activity?.expandedTurn) ? step.activity.expandedTurn : 0;
           ui.stepTurnIndex = target;
           ui.stepExpandedTurn = ui.stepExpandedTurn === target ? null : target;
+          ui.stepToolPage = 0;
           ui.stepSelectedEventIndex = step.activity.turns[target]?.responseIndex ?? ui.stepSelectedEventIndex;
           ui.stepFollow = false;
         } else if (ui.stepSection === 'activity' && step.activity?.selectedEvent != null) {
@@ -3334,21 +3377,63 @@ export async function runDashboard(bullswarmDir, {
         ui.stepView = ui.stepView === 'detail' ? 'overview' : 'detail';
         ui.stepDetail = false;
         ui.stepExpandedTurn = null;
+        ui.stepToolPage = 0;
+        return paint();
+      }
+      // An expanded turn shows the newest three tool rows; Space and the page
+      // keys walk that window back through the older ones before Space falls
+      // through to its follow toggle.
+      // The tool rows live on the presentation layer the view draws, not on the
+      // durable activity model the selection walks.
+      const expandedToolTurn = ui.stepView === 'overview'
+        && ui.stepSection === 'activity'
+        && ui.stepExpandedTurn != null
+        ? (step.presentation?.activity?.turns ?? []).find((turn) => Number(turn.index) === Number(ui.stepExpandedTurn))
+        : null;
+      const toolRowCount = expandedToolTurn?.toolRows?.length ?? 0;
+      const maxToolPage = Math.max(0, Math.ceil(toolRowCount / 3) - 1);
+      if (expandedToolTurn && maxToolPage > 0
+        && (key === ' ' || keyPressed('pageUp', key) || keyPressed('pageDown', key))) {
+        const older = key === ' ' || keyPressed('pageUp', key);
+        ui.stepToolPage = clamp(
+          (Number.isInteger(ui.stepToolPage) ? ui.stepToolPage : 0) + (older ? 1 : -1),
+          0,
+          maxToolPage,
+        );
+        ui.stepFollow = false;
         return paint();
       }
       if (key === ' ') {
         ui.stepFollow = !ui.stepFollow;
-        if (ui.stepFollow) ui.stepSelectedEventIndex = null;
+        if (ui.stepFollow) { ui.stepSelectedEventIndex = null; ui.stepToolPage = 0; }
         return paint();
       }
       if (key === 'a') { ui.stepSection = 'attempts'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.attempts ?? 1) - 1); return paint(); }
       if (key === 'o') { ui.stepSection = 'outcome'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.outcome ?? 1) - 1); return paint(); }
       if (key === 'p') { ui.stepSection = 'prompt'; ui.stepDetail = false; bodyScroll = Math.max(0, Number(lastFrameResult?.anchor?.step?.prompt ?? 1) - 1); return paint(); }
       if (key === 'e') { ui.stepFilter = ui.stepFilter === 'errors' ? 'all' : 'errors'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
-      if (key === 't') { ui.stepFilter = ui.stepFilter === 'tools' ? 'all' : 'tools'; ui.stepSection = 'activity'; ui.stepDetail = false; return paint(); }
+      // Record rule 9: one filter control. `t` cycles turns → tools → errors →
+      // all. The model's default `all` lens is what the overview draws as
+      // `turns`, so the first press moves to tools.
+      if (key === 't') {
+        ui.stepFilter = ui.stepFilter === 'turns' || ui.stepFilter === 'all' ? 'tools'
+          : ui.stepFilter === 'tools' ? 'errors' : 'all';
+        ui.stepSection = 'activity';
+        ui.stepDetail = false;
+        ui.stepToolPage = 0;
+        return paint();
+      }
+      // `f` follows the step's own activity tail; Fleet keeps the key on
+      // every other page (see the guard on the Fleet binding above).
+      if (key === 'f') {
+        ui.stepFollow = !ui.stepFollow;
+        if (ui.stepFollow) { ui.stepSelectedEventIndex = null; ui.stepToolPage = 0; }
+        return paint();
+      }
       if (keyPressed('out', key) || key === '\x7f' || key === '\b') {
         if (ui.stepExpandedTurn != null) {
           ui.stepExpandedTurn = null;
+          ui.stepToolPage = 0;
           return paint();
         }
         if (ui.stepDetail) { ui.stepDetail = false; return paint(); }
@@ -3396,17 +3481,20 @@ export async function runDashboard(bullswarmDir, {
       return paint();
     }
     const runPageOpen = ui.page === 'run' || ui.page === 'step';
-    const timelineScroll = runPageOpen && ui.focus === 0 && !ui.orchestratorDetail && !ui.workflowVerbose;
+    // Run v2 is one flat page — header, plan, live/spend, timeline — that the
+    // shell windows like every other body. Its boxed panel, which owned a
+    // scroll of its own, only draws under the planner/technical drilldowns, so
+    // those keep `detailScroll` and the page itself moves `bodyScroll`.
+    const panelScroll = runPageOpen && (ui.orchestratorDetail || ui.workflowVerbose);
     if (keyPressed('pageUp', key)) {
-      if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll += 8; return paint(); }
-      if (runPageOpen) ui.detailScroll = Math.max(0, ui.detailScroll - 8);
-      else bodyScroll = Math.max(0, bodyScroll - 8);
+      if (panelScroll) { ui.timelineSelection = null; ui.detailScroll += 8; return paint(); }
+      bodyScroll = Math.max(0, bodyScroll - 8);
       return paint();
     }
     if (keyPressed('pageDown', key)) {
-      if (timelineScroll) { ui.timelineSelection = null; ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
-      if (runPageOpen) ui.detailScroll += 8;
-      else { bodyScroll += 8; loadMoreHistory(); }
+      if (panelScroll) { ui.timelineSelection = null; ui.detailScroll = Math.max(0, ui.detailScroll - 8); return paint(); }
+      bodyScroll += 8;
+      if (!runPageOpen) loadMoreHistory();
       return paint();
     }
     if (key === 'o' && runPageOpen) {

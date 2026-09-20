@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { stepPageModel } from '../src/workflow/step-model.js';
-import { renderStepPage } from '../src/workflow/step-view.js';
+import { renderStepPage, toolRowWindow } from '../src/workflow/step-view.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 
 process.env.BULLSWARM_UNICODE = '1';
@@ -89,7 +89,7 @@ function makeModels() {
 
 function render(model, width, options = {}) {
   const body = { lines: [], push(line = '') { this.lines.push(String(line)); } };
-  const header = renderStepPage(model, { width, spinnerFrame: 0, ...options }, body);
+  const header = renderStepPage(model, { width, spinnerFrame: 0, nowMs: fixedNow, ...options }, body);
   return [header, ...body.lines];
 }
 
@@ -122,52 +122,219 @@ test('running, finished, and failed Step frames stay width-bounded in both views
       const lines = renderDashboardFrame(model, width, { stepView: view });
       for (const line of lines) assert.ok([...plain(line)].length <= width, `${state}-${width}: ${plain(line)}`);
       const direct = render(model, width, { stepView: view });
-      assert.match(direct.map(plain).join('\n'), view === 'overview' ? /\[v detail\]/ : /\[v overview\]/);
+      // The toggle hint lives in the footer, once, and names the other view;
+      // the phone drops the parenthetical so the hint fits its line.
+      const wider = width >= 120;
+      assert.match(direct.map(plain).join('\n'), view === 'overview'
+        ? (wider ? /v detail \(every event\)/ : /v detail/)
+        : (wider ? /v overview \(turns\)/ : /v overview/));
       writeFileSync(join(frameDir, `rendered-${state}-${view}-${width}.txt`), `${lines.map(plain).join('\n')}\n`);
     }
   }
 });
 
-test('running activity exposes turn overview, selection, follow, and filters', () => {
+test('the desk draws two columns and the phone stacks result → activity → task → cost', () => {
+  const { running, finished } = makeModels();
+  const desk = render(running, 200).map(plain);
+  const rule = desk.find((line) => line.startsWith('── activity ·'));
+  assert.ok(rule, 'the activity rule is on the desk');
+  assert.match(rule, / ── result · not yet /);
+  assert.match(rule.slice(0, 132), /showing turns · t to change ── following ●$/);
+  assert.equal([...rule.slice(0, 132)].length, 132);
+  assert.ok(desk.some((line) => /^── task /.test(line.slice(135))), 'task card on the right');
+  assert.ok(desk.some((line) => /^── cost /.test(line.slice(135))), 'cost card on the right');
+  const finishedDesk = render(finished, 200).map(plain);
+  assert.ok(finishedDesk.some((line) => /^── result · succeeded · verified 1\/1 /.test(line.slice(135))));
+  // 120 keeps the two columns with the narrower right column; 55 stacks.
+  const narrow = render(running, 120).map(plain);
+  const narrowRule = narrow.find((line) => line.startsWith('── activity ·'));
+  assert.ok(narrowRule, '120 columns keeps the two columns');
+  assert.equal([...narrowRule.slice(0, 77)].length, 77);
+  assert.match(narrowRule.slice(0, 77), /showing turns/);
+  assert.ok(narrow.filter((line) => line.includes(' │ ')).every((line) => [...line].length <= 120));
+  assert.equal(render(finished, 55).map(plain).some((line) => line.includes(' │ ')), false);
+});
+
+test('running activity leads with the now block and keeps the filter control', () => {
   const base = makeModels().running;
   const model = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 3, follow: false, activityFilter: 'tools' });
   const selected = render(model, 120, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
   const text = selected.map(plain).join('\n');
-  assert.match(text, /events/);
-  assert.match(text, /overview/);
-  assert.match(text, /paused/);
-  assert.match(text, /\[tools\]/);
-  assert.match(text, /2 commands · 0 files read · 0 edits · 0 errors/);
+  assert.match(text, /● step-view · stefx · running · attempt 1 of 1/);
+  assert.match(text, /showing tools/);
+  assert.match(text, /2 turns so far · 3 cmds · 0 edits · 0 err/);
+  assert.doesNotMatch(text, /following ●/);
+  assert.match(text, /· 1 command\b/);
+  const filtered = render(model, 55, { stepSelectedEventIndex: 3, stepFollow: false, stepFilter: 'tools' });
+  assert.match(filtered.map(plain).join('\n'), /showing tools/);
+  assert.match(filtered.map(plain).join('\n'), /now · 7 events · 3 cmds · 0 edits · 0 err/);
+
   const detailModel = stepPageModel(base.modelInput, { nowMs: fixedNow, selectedEventIndex: 6, follow: false });
   const detail = render(detailModel, 55, { stepDetail: true, stepSelectedEventIndex: 6, stepFollow: false });
-  assert.match(detail.map(plain).join('\n'), /today's capture-order|seq 7/i);
+  assert.match(detail.map(plain).join('\n'), /detail · today's capture-order log · all · 7 events/);
+  assert.match(detail.map(plain).join('\n'), /seq 7 · 2026-09-19T17:51/);
   assert.match(detail.map(plain).join('\n'), /eventId|toolCallId|duration/i);
 
   const expanded = render(stepPageModel(base.modelInput, { nowMs: fixedNow, expandedTurn: 0 }), 120);
-  assert.match(expanded.map(plain).join('\n'), /COMMAND · running|COMMAND · completed/);
+  const expandedText = expanded.map(plain).join('\n');
+  assert.match(expandedText, /▶ 1  01:50  I’ll inspect the task-step file/);
+  assert.match(expandedText, /2 commands · Esc closes/);
+  assert.match(expandedText, /01:50:35  \$ inspect task and repository guidance/);
+  assert.match(expandedText, /01:50:46  \$ inspect dependency reports and stream contract/);
+  assert.doesNotMatch(expandedText, /\s0s(?:\s|$)/);
+  // The captured shell wrapper never reaches the row: the command itself does.
+  assert.doesNotMatch(expandedText, /\/bin\/zsh -lc/);
 });
 
-test('money is rendered once and the header carries pool, model, and effort', () => {
+test('expanded turns pin the newest tool window and fold earlier rows first', () => {
+  const model = structuredClone(makeModels().running);
+  const activity = model.presentation.activity;
+  const turn = activity.turns[0];
+  turn.expanded = true;
+  turn.toolRows = [
+    { index: 1, clock: '01:50:01', kind: 'command_execution', command: true, text: 'command 1', durationText: '1s', inFlight: false },
+    { index: 2, clock: '01:50:02', kind: 'command_execution', command: true, text: 'command 2', durationText: '1s', inFlight: false },
+    { index: 3, clock: '01:50:03', kind: 'command_execution', command: true, text: 'command 3', durationText: '1s', inFlight: false },
+    { index: 4, clock: '01:50:04', kind: 'command_execution', command: true, text: 'command 4', durationText: '1s', inFlight: false },
+    { index: 5, clock: '01:50:05', kind: 'command_execution', command: true, text: 'command 5', durationText: '1s', inFlight: false },
+    { index: 6, clock: '01:50:06', kind: 'command_execution', command: true, text: 'command 6', durationText: '1s', inFlight: false },
+    { index: 7, clock: '01:50:07', kind: 'command_execution', command: true, text: 'command 7', durationText: '1s', inFlight: false },
+    { index: 8, clock: '01:50:08', kind: 'command_execution', command: true, text: 'command 8', durationText: '1s', inFlight: false },
+    { index: 9, clock: '01:50:09', kind: 'command_execution', command: true, text: 'command 9', durationText: '1s', inFlight: true },
+  ];
+  activity.expandedTurn = turn.index;
+  activity.following = false;
+  activity.running = true;
+
+  const newest = render(model, 120, { stepToolPage: 0 }).map(plain).join('\n');
+  assert.match(newest, /↑ 6 earlier commands · Space page up/);
+  assert.ok(newest.indexOf('command 7') < newest.indexOf('command 8'));
+  assert.ok(newest.indexOf('command 8') < newest.indexOf('command 9'));
+  assert.doesNotMatch(newest, /command 1/);
+
+  const older = render(model, 120, { stepToolPage: 1 }).map(plain).join('\n');
+  assert.match(older, /↑ 3 earlier commands · Space page up/);
+  assert.ok(older.indexOf('command 4') < older.indexOf('command 5'));
+  assert.ok(older.indexOf('command 5') < older.indexOf('command 6'));
+  assert.doesNotMatch(older, /command 9/);
+
+  const forcedNewest = toolRowWindow(turn, { page: 99, running: true, following: true });
+  assert.equal(forcedNewest.page, 0);
+  assert.deepEqual(forcedNewest.rows.map((row) => row.text), ['command 7', 'command 8', 'command 9']);
+  activity.following = true;
+  const followed = render(model, 120, { stepToolPage: 99 }).map(plain).join('\n');
+  assert.ok(followed.indexOf('command 7') < followed.indexOf('command 8'));
+  assert.ok(followed.indexOf('command 8') < followed.indexOf('command 9'));
+  assert.doesNotMatch(followed, /command 1/);
+});
+
+test('the earlier-row fold noun agrees for commands, edits, and mixed tools', () => {
+  const rows = (items) => items.map((entry, index) => ({
+    index,
+    kind: entry.kind,
+    command: entry.kind === 'command_execution',
+    text: entry.text,
+    inFlight: false,
+  }));
+  const renderFold = (items) => {
+    const model = structuredClone(makeModels().running);
+    const activity = model.presentation.activity;
+    const turn = activity.turns[0];
+    turn.expanded = true;
+    turn.toolRows = rows(items);
+    activity.expandedTurn = turn.index;
+    activity.following = false;
+    activity.running = false;
+    return render(model, 120).map(plain).join('\n');
+  };
+  const commandWindow = toolRowWindow({ toolRows: rows([
+    { kind: 'command_execution', text: 'one' },
+    { kind: 'command_execution', text: 'two' },
+    { kind: 'command_execution', text: 'three' },
+    { kind: 'command_execution', text: 'four' },
+  ]) });
+  assert.equal(commandWindow.earlierCount, 1);
+  assert.match(renderFold([
+    { kind: 'command_execution', text: 'one' },
+    { kind: 'command_execution', text: 'two' },
+    { kind: 'command_execution', text: 'three' },
+    { kind: 'command_execution', text: 'four' },
+  ]), /↑ 1 earlier command · Space page up/);
+  const editWindow = toolRowWindow({ toolRows: rows([
+    { kind: 'file_change', text: 'one' },
+    { kind: 'file_change', text: 'two' },
+    { kind: 'file_change', text: 'three' },
+    { kind: 'file_change', text: 'four' },
+    { kind: 'file_change', text: 'five' },
+  ]) });
+  assert.equal(editWindow.earlierCount, 2);
+  assert.match(renderFold([
+    { kind: 'file_change', text: 'one' },
+    { kind: 'file_change', text: 'two' },
+    { kind: 'file_change', text: 'three' },
+    { kind: 'file_change', text: 'four' },
+    { kind: 'file_change', text: 'five' },
+  ]), /↑ 2 earlier edits · Space page up/);
+  const mixedWindow = toolRowWindow({ toolRows: rows([
+    { kind: 'command_execution', text: 'one' },
+    { kind: 'file_change', text: 'two' },
+    { kind: 'WebFetch', text: 'three' },
+    { kind: 'WebFetch', text: 'four' },
+    { kind: 'WebFetch', text: 'five' },
+  ]) });
+  assert.equal(mixedWindow.earlierCount, 2);
+  assert.equal(new Set(mixedWindow.rows.map((row) => row.text)).size, 3);
+  assert.match(renderFold([
+    { kind: 'command_execution', text: 'one' },
+    { kind: 'file_change', text: 'two' },
+    { kind: 'WebFetch', text: 'three' },
+    { kind: 'WebFetch', text: 'four' },
+    { kind: 'WebFetch', text: 'five' },
+  ]), /↑ 2 earlier tools · Space page up/);
+});
+
+test('money is said once in two plain-word rows under one header', () => {
+  // A live attempt with no usage says when the figure will exist rather than
+  // printing a guess; the plan row still names the pool's meter state.
   const running = render(makeModels().running, 120).map(plain).join('\n');
-  assert.equal((running.match(/API — pending · subscription — pending/g) ?? []).length, 1);
-  assert.match(running, /codex · gpt-5\.6-luna · medium/);
+  assert.equal((running.match(/API rate/g) ?? []).length, 0);
+  assert.match(running, /measured when the attempt finishes/);
+  assert.match(running, /codex · gpt-5\.6-luna · medium effort/);
   assert.doesNotMatch(running, /compatibility ·/);
   assert.doesNotMatch(running, /UNAVAILABLE|level unavailable/);
+
+  const finished = render(makeModels().finished, 200).map(plain).join('\n');
+  assert.equal((finished.match(/API rate/g) ?? []).length, 1);
+  assert.match(finished, / API rate    ≈ \$0\.000556\s+2k tokens · legacy estimate/);
+  assert.match(finished, /codex plan  —       no meter reading for this attempt/);
+  assert.match(finished, /estimated from the codex output bytes/);
 });
 
 test('historical and failed frames state unavailable fields and preserve money bases', () => {
   const { finished, failed } = makeModels();
   const historical = render(finished, 120).map(plain).join('\n');
-  assert.match(historical, /event stream unavailable/i);
-  assert.match(historical, /VERIFIED/);
-  assert.match(historical, /estimated/);
-  assert.match(historical, /~ \$0\.00/);
+  assert.match(historical, /event stream unavailable/);
+  assert.match(historical, /succeeded · verified 1\/1/);
+  assert.match(historical, /verified by the workflow \(1\/1 requirements\)/);
+  assert.match(historical, /≈ \$0\.000556/);
   const retry = render(failed, 120).map(plain).join('\n');
-  assert.match(retry, /attempt history|2 attempts/);
-  assert.match(retry, /attempt history 2 attempts/);
-  assert.match(retry, /API —/);
+  assert.match(retry, /attempt 2 of 2/);
+  assert.match(retry, /failed · not verified 0\/1/);
+  assert.match(retry, /not verified \(0\/1 requirements\)/);
+  assert.match(retry, /API rate {4}—/);
   assert.doesNotMatch(retry, /\$0\.00/);
-  assert.match(retry, /tool identity|event stream unavailable/i);
+  assert.match(retry, /event stream unavailable/);
+  assert.match(retry, /failed   provider stream reported error/);
+});
+
+test('estimated figures always carry a basis marker and never become bare dollars', () => {
+  const { finished, failed } = makeModels();
+  for (const text of [render(finished, 55).map(plain).join('\n'), render(failed, 55).map(plain).join('\n')]) {
+    for (const match of text.matchAll(/\$/g)) {
+      const before = text.slice(Math.max(0, match.index - 2), match.index);
+      assert.ok(before.includes('~') || before.includes('≈'), `bare dollar in ${text.slice(Math.max(0, match.index - 15), match.index + 8)}`);
+    }
+  }
 });
 
 test('estimated figures always carry a basis marker and never become bare dollars', () => {

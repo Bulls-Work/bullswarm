@@ -16,12 +16,15 @@
   `budget · this week`, with the `Last 30 days`/`All time` toggle, the spend
   chart, the by-pool/by-model/by-project lists, and the summary lines; the full
   run list still lives only on Runs.
-- run: the plan is numbered boxes chained with `→`, one per phase, wrapping only
-  between whole boxes, and the timeline is the 0.35.0 tree again -- `started`,
-  one row per attempt carrying `pool · model · effort` with its own clock, and
-  a right-aligned `completed n/n`.
-- run: a phase header shows that phase's active minutes in clock form
-  (`124m09s`), never the span across an idle gap.
+- run: the Run page now follows the Step grammar — `done of total` with running
+  and waiting ids, active-of-span clocks, a per-pool attempt mix, a phone glyph
+  strip (`p` opens phase boxes), and a live block backed by the selected
+  attempt's latest stream turn.
+- run: spend is an honest partial subtotal (`at least` when attempts are still
+  running or unmeasured, `≈` for estimates) with measured/estimated/running/
+  unmeasured coverage and per-pool API splits; the timeline keeps phase rules
+  and one routed attempt row per worker, folds middle phases, and removes
+  licence bars, `so far`, ETA, and started/completed filler rows.
 - money: a run, day, pool or period whose attempts were only partly priced now
   shows the recorded subtotal marked `≈` with its coverage instead of reading
   as unrecorded; strict totals stay strict and a subtotal is never summed into
@@ -31,12 +34,58 @@
   instead of drawing six narrow bars beside it.
 - charts: a column chart sizes its tick gutter to the widest label the axis
   will actually print, so a money axis reads `≈$160.00` rather than `≈$160.…`.
-- step: the page has Header, Task, Activity, Result, and Cost blocks; overview
-  is the default, `v` switches to capture-order detail, and `Enter` expands a
-  selected response's real atomic events without inventing event kinds.
+- step: the page is one header and four blocks — turns, result, task, cost. The
+  header says the verdict, the purpose, `pool · model · effort · reasoning`, one
+  clock (span only when it differs) and the route sentence once; the overview
+  prints one row per turn with only its non-zero counts (`35 commands`, `no
+  tools`), the counts at the end of the response on the desk and on their own
+  row on the phone, `Enter` expands a turn's full response and its tool rows
+  with each clock and measured duration, and the last turn points at the report
+  with `→ the report, shown under result`.
+- step: the result card reads the report itself — its first lines, the diff's
+  changed paths, the step's `Shared-file requests` when its report has that
+  heading, and only the artifacts it left (`files` names the run directory once,
+  then `task · out · stream (N events) · diff`); the task card shows the
+  author's own prompt with `owns`/`after`/`affects` and the kernel wrapper's
+  size (`Enter on task: full text 2.4 KB · kernel wrapper 5.1 KB`); cost is two
+  plain-word rows (API rate and `<pool> plan`) with token classes under the
+  amount, `≈` for estimates, `—` with its reason for unknowns, and a closing
+  `measured from the … transcript` line.
+- step: at 160 columns the activity takes the left column and result, task and
+  cost stack on the right so a finished step fits one screen; 120 narrows the
+  right column to 40; below that the page stacks result → activity → task →
+  cost, with `now` leading while the step runs. The footer carries the keys
+  once (`v detail (every event)`, `t filter`), and a live attempt says when its
+  cost will be measured instead of printing a guess.
 - tasks: a single `bullswarm run` task uses the same Step model and view through
   an adapter, preserving recorded fields and leaving unavailable effort,
   verification, usage, money, and activity unavailable.
+- step: an expanded turn shows its newest three tool rows with a
+  `↑ N earlier commands · Space page up` fold; `Space`, `PageUp` and `PageDown`
+  walk that window back through the older rows, and opening, collapsing or
+  changing the turn resets it.
+- step: a tool that is still running keeps a spinner and its elapsed time, stays
+  the last expanded row and is counted in the collapsed turn's counts; a
+  sub-second tool prints no duration rather than `0s`, and a capture with no
+  summary falls back to its event kind instead of `summary unavailable`.
+- step: the activity reader reads a capture's `.tail` file as well as its head,
+  merges the truncation marker and drops the overlap, so a long attempt's newest
+  events are visible instead of ending at the head cap.
+- step: `t` cycles the activity lens turns → tools → errors → all and `f`
+  follows the tail on this page; Fleet keeps `f` everywhere else.
+- codex: a `file_change` item keeps its path and its raw `changes` array, so the
+  Step page can name the kind and path of each change (capped at three) instead
+  of printing an empty summary.
+- durations: every clock is h/m/s — a step or phase past an hour reads `2h04m`,
+  not `124m09s`, on the Run page, the Step page and the timeline alike.
+- run: the `live` and `spend` columns are one aligned band at 120 columns and
+  wider; the running phase is never folded into the `↑ phases a–b` summary; and
+  the page keys and the wheel scroll the page body, so a timeline longer than
+  the terminal can be read.
+- run: a paused run's live block still says `bullswarm workflow resume <id>
+  continues it` rather than leaving `last finished` to read as "any moment now".
+- mod: `workflow tui --overview` keeps the goal preview and draws its milestone
+  rows flush to the pane border, the two shapes the Claude mod's pane parses.
 
 ## 0.35.0 — the Step page tells the whole story
 

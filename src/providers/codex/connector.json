@@ -79,12 +79,9 @@
           "equals": "command_execution"
         },
         "argumentsPaths": [
-          "item.command"
+          "item.command",
+          "item.changes"
         ],
-        "argumentsMatch": {
-          "path": "item.type",
-          "equals": "command_execution"
-        },
         "kindPaths": [
           "item.type"
         ],
@@ -93,7 +90,8 @@
         },
         "summaryPaths": [
           "item.command",
-          "item.text"
+          "item.text",
+          "item.changes.0.path"
         ],
         "status": "running"
       },
@@ -123,12 +121,9 @@
           "equals": "command_execution"
         },
         "argumentsPaths": [
-          "item.command"
+          "item.command",
+          "item.changes"
         ],
-        "argumentsMatch": {
-          "path": "item.type",
-          "equals": "command_execution"
-        },
         "resultPaths": [
           "item.aggregated_output"
         ],
@@ -144,7 +139,8 @@
         },
         "summaryPaths": [
           "item.command",
-          "item.text"
+          "item.text",
+          "item.changes.0.path"
         ],
         "status": "completed"
       },
