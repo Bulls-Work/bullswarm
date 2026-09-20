@@ -524,6 +524,39 @@ function eventIsResponse(event) {
     || providerType === 'turn.completed';
 }
 
+/**
+ * A response closes a turn only when the provider recorded it as finished.
+ * A streaming response is the model's own text arriving in pieces, not a
+ * boundary: grok declares `aggregate: consecutive` plus `summaryMode: concat`
+ * on its `text` rule, so it captures one `response/streaming` per delta and
+ * closes the run with a summary-less `response/completed` terminator. Reading
+ * every response as a boundary turned that one turn stream into 474 turns, 459
+ * of them empty. Only a completed response ends the turn; the last chunk of a
+ * still-streaming run ends it too, because nothing else will.
+ */
+function responseClosesTurn(event) {
+  const status = String(event?.status ?? '').toLowerCase();
+  if (COMPLETE_STATUSES.has(status)) return true;
+  return /\.completed$|_completed$/.test(String(event?.providerType ?? '').toLowerCase());
+}
+
+/**
+ * The text a turn's row prints. A finished response owns its wording; while a
+ * run is still streaming, the chunks it has already sent are joined. `concat`
+ * streamers send raw deltas, so the join is exact — no space, wording or
+ * sentence is invented, and an empty run stays unknown rather than "0".
+ */
+function responseTextOf(terminal, chunks) {
+  const finished = textOrNull(terminal?.summary);
+  if (finished) return finished;
+  const streamed = chunks
+    .map((chunk) => String(chunk?.summary ?? ''))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return streamed || null;
+}
+
 // A provider's own end-of-run records: the final result envelope and a usage
 // report. They are stream metadata, never a tool call, so they are the only
 // captured events a summary counts as nothing.
@@ -584,25 +617,48 @@ function eventKindSummary(events = [], pairs = null) {
 
 /**
  * Group a capture-order stream into the product's human turn projection.
- * Every response gets a row. Events after that response, up to the next
- * response, remain atomic and are counted only by their normalized kind.
- * `pairs` is the stream-wide pairing when the caller already computed one,
- * so a summary counts a command whose completion crossed a response once.
+ * Every turn gets one response row: the response that finished it, or the
+ * chunks already streamed while it is still running. An atomic event belongs
+ * to the turn that was open when it was captured, so a turn's summary covers
+ * every atomic event since the previous completed response, and the started
+ * and completed halves of one operation are never split across two turns.
+ * `responseEvent` keeps the raw captured event the row was built from, and
+ * `responseChunks` the streamed deltas that carry the text of a turn whose
+ * terminator was captured without any. `pairs` is the stream-wide pairing when
+ * the caller already computed one, so a summary counts a command whose
+ * completion crossed a response once.
  */
 export function groupActivityTurns(events = [], { pairs = null } = {}) {
   const turns = [];
   const prelude = [];
   let current = null;
+  const openTurn = (event) => {
+    const turn = {
+      index: turns.length,
+      id: validId(event.turnId) ?? `turn-${turns.length + 1}`,
+      response: event,
+      responseEvent: event,
+      responseClosed: false,
+      responseChunks: [],
+      eventIndices: [],
+      atomicEvents: [],
+    };
+    turns.push(turn);
+    return turn;
+  };
   for (const event of events) {
     if (eventIsResponse(event)) {
-      current = {
-        index: turns.length,
-        id: validId(event.turnId) ?? `turn-${turns.length + 1}`,
-        response: event,
-        eventIndices: [event.index],
-        atomicEvents: [],
-      };
-      turns.push(current);
+      // A chunk continues the open response; anything else — the completed
+      // terminator, or a first chunk after a finished one — opens a new turn.
+      if (!current || current.responseClosed) current = openTurn(event);
+      current.eventIndices.push(event.index);
+      if (responseClosesTurn(event)) {
+        current.response = event;
+        current.responseEvent = event;
+        current.responseClosed = true;
+      } else {
+        current.responseChunks.push(event);
+      }
       continue;
     }
     if (!current) {
@@ -616,6 +672,13 @@ export function groupActivityTurns(events = [], { pairs = null } = {}) {
   for (const turn of turns) {
     turn.summary = eventKindSummary(turn.atomicEvents, pairedEvents);
     turn.summaryText = turn.summary.text;
+    turn.responseText = responseTextOf(turn.responseClosed ? turn.response : null, turn.responseChunks);
+    // The row prints the turn's own text: a finished response's wording, or the
+    // chunks streamed so far. Only `summary` is composed from the provider's
+    // captured text; every other captured field is carried through untouched.
+    turn.response = turn.responseText != null && turn.responseText !== turn.response.summary
+      ? { ...turn.response, summary: turn.responseText }
+      : turn.response;
     turn.responseIndex = turn.response?.index ?? null;
     turn.expanded = false;
   }
@@ -643,12 +706,15 @@ function normalizeFilter(value) {
   return FILTERS.has(filter) ? filter : 'all';
 }
 
-function visibleEventIndices(events, filter) {
+// The `turns` lens narrows the atomic log to the rows the overview shows: the
+// response each turn prints, plus any event the provider tagged with its own
+// turn id. A streamed chunk is part of a turn's text, never a turn of its own.
+function visibleEventIndices(events, filter, turnResponseIndices) {
   return events
     .filter((event) => {
       if (filter === 'errors') return eventIsError(event);
       if (filter === 'tools') return eventIsTool(event);
-      if (filter === 'turns') return eventIsResponse(event) || validId(event?.turnId) != null;
+      if (filter === 'turns') return turnResponseIndices.has(event.index) || validId(event?.turnId) != null;
       return true;
     })
     .map((event) => event.index);
@@ -726,19 +792,22 @@ function activityModel(parsed, {
 } = {}) {
   const normalizedFilter = normalizeFilter(filter);
   const events = parsed.events ?? [];
-  const visible = visibleEventIndices(events, normalizedFilter);
+  const pairs = pairActivityEvents(events);
+  const grouped = groupActivityTurns(events, { pairs });
+  const turnResponseIndices = new Set(
+    grouped.turns.map((turn) => turn.responseIndex).filter((index) => index != null),
+  );
+  const visible = visibleEventIndices(events, normalizedFilter, turnResponseIndices);
   const selected = selectedIndex != null && visible.includes(Number(selectedIndex))
     ? Number(selectedIndex)
     : follow ? visible.at(-1) ?? null : null;
-  const pairs = pairActivityEvents(events);
   const filterCounts = {
     all: events.length,
-    turns: events.filter((event) => eventIsResponse(event) || validId(event.turnId) != null).length,
+    turns: visibleEventIndices(events, 'turns', turnResponseIndices).length,
     tools: events.filter(eventIsTool).length,
     errors: events.filter(eventIsError).length,
   };
   const minimap = minimapFor(events, selected, visible);
-  const grouped = groupActivityTurns(events, { pairs });
   const parsedExpanded = expandedTurn == null || expandedTurn === '' ? null : Number(expandedTurn);
   const selectedTurn = Number.isInteger(parsedExpanded) && parsedExpanded >= 0 && parsedExpanded < grouped.turns.length
     ? parsedExpanded
@@ -747,7 +816,7 @@ function activityModel(parsed, {
       : null;
   for (const turn of grouped.turns) turn.expanded = turn.index === selectedTurn;
   const todayEvents = events.filter((event) => sameLocalDay(event.at, nowMs));
-  const todayVisible = visibleEventIndices(todayEvents, normalizedFilter);
+  const todayVisible = visibleEventIndices(todayEvents, normalizedFilter, turnResponseIndices);
   const todayEventByIndex = new Map(todayEvents.map((event) => [event.index, event]));
   const visibleDetailEvents = todayVisible
     .map((index) => todayEventByIndex.get(index))

@@ -1021,3 +1021,25 @@ test('columnBars exposes slice geometry that tiles each rendered column', () => 
     }
   }
 });
+
+test('columnBars sizes its tick gutter to the widest label its axis really prints', () => {
+  withEnv(UNICODE_ENV, () => {
+    // A three-figure money axis needs eight cells for `≈$150.00`; the fixed
+    // six-cell gutter cut it to `≈$150.…`, a label that measures nothing.
+    const wide = columnBars([{ values: [110.31, 18.25, 171.3] }], ['18 Sep', '19 Sep', '20 Sep'], {
+      width: 100, height: 8, col: 30, barW: 29, mark: '≈', colors: false, totals: false,
+    });
+    const ticks = wide.map((line) => visible(line).split(/[┤┼]/)[0].trim()).filter(Boolean);
+    assert.ok(ticks.includes('≈$150.00'), `a money tick was cut: ${ticks.join(' ')}`);
+    assert.equal(Math.max(...ticks.map((tick) => [...tick].length)), 8, ticks.join(' '));
+    assert.deepEqual(ticks.filter((tick) => tick.includes('…')), []);
+    for (const line of wide) assert.ok(visibleLength(line) <= 100, visible(line));
+
+    // A narrow axis keeps the six-cell prototype gutter: nothing widened here.
+    const small = columnBars([{ values: [1, 36] }], ['a', 'b'], {
+      width: 55, height: 6, col: 8, barW: 3, mark: '≈', colors: false, totals: false,
+    });
+    const smallTicks = small.map((line) => visible(line).split(/[┤┼]/)[0]).filter((cell) => cell.trim());
+    assert.deepEqual([...new Set(smallTicks.map((cell) => cell.length))], [7], smallTicks.join('|'));
+  });
+});

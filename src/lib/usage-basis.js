@@ -127,6 +127,50 @@ function subscriptionLabel(subscription, tokens = null) {
 }
 
 /**
+ * The API amount a record or row can honestly show, and whether it is whole.
+ *
+ * A canonical v2 total exists only when every attempt in the scope carried a
+ * price; the same scope still records the sum over the attempts that did.
+ * Printing nothing beside a subtotal the rollups hold reads as "free", so the
+ * subtotal is returned flagged `partial` with the coverage that produced it,
+ * and every caller words it as the lower bound it is. A scope with no
+ * recorded amount at all stays null.
+ */
+export function apiMoney(row) {
+  if (!row || typeof row !== 'object') return null;
+  const finite = (value) => (Number.isFinite(Number(value)) && value != null ? Number(value) : null);
+  const strict = finite(row.apiUsd ?? row.apiEquivalentUsd ?? row.value);
+  if (strict != null) {
+    // Unchanged for a whole-scope value: a figure whose price source the
+    // rollup cannot name is still blank rather than presented as measured.
+    return row.tokenSource === 'unknown' ? null : { usd: strict, partial: false, priced: null, attempts: null };
+  }
+  const subtotal = finite(row.apiKnownSubtotalUsd);
+  if (subtotal == null) return null;
+  const attempts = finite(row.attempts ?? row.apiCoverage?.attempts);
+  const priced = finite(row.pricedAttempts ?? row.apiCoverage?.priced);
+  return {
+    usd: subtotal,
+    partial: true,
+    priced: priced != null && priced > 0 ? priced : null,
+    attempts: attempts != null && attempts > 0 ? attempts : null,
+  };
+}
+
+/** The API side of a money pair, with a subtotal's coverage in words. */
+export function apiMoneyText(money, tokenSource = null, tokens = null, { coverage = true } = {}) {
+  if (!money) return 'api unknown';
+  if (!money.partial) {
+    return formatMoneyPair({ api: { usd: money.usd, tokenSource }, subscription: null, tokens })
+      .split(' · ')[0];
+  }
+  const priced = coverage && money.priced != null && money.attempts != null
+    ? ` · ${money.priced}/${money.attempts} priced`
+    : '';
+  return `≈ ${formatMoney(money.usd, tokens)} api${priced}`;
+}
+
+/**
  * Render API-rate and subscription costs side by side.  The leading glyph is
  * derived from the measurement basis, so estimates can never look measured.
  */

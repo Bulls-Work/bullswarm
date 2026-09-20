@@ -190,6 +190,15 @@ export function buildRealFrames({ snapshot = SNAPSHOT } = {}) {
     frames.set(`real-task-${width}.txt`, render(dashboardModel(null, {
       task, taskRunsDir: join(snapshot, 'runs'), nowMs,
     }), { page: 'task', width, height, nowMs, stepView: 'overview' }));
+
+    // The two Stats pages the owner reviewed at 200 columns. Both read the
+    // same refreshed rollups as Home, so a frame is never a second arithmetic.
+    for (const tab of ['spending', 'model']) {
+      frames.set(`real-stats-${tab}-${width}.txt`, render(dashboardModel(null, {
+        rollups, nowMs, runs: [], tasks: taskLedger, usage: { pools: [], assignments: [] },
+        period: '30d',
+      }), { page: 'stats', width, height, nowMs, statsTab: tab, period: '30d' }));
+    }
   }
   for (const [name, lines] of frames) assertWidth(name, Number(name.match(/-(\d+)\.txt$/)?.[1]), lines);
   return frames;

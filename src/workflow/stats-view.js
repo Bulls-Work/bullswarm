@@ -12,7 +12,7 @@ import {
   renderStatsSurface,
   measurePanelGridLayout,
 } from './stat-kit.js';
-import { formatMoneyPair } from '../lib/usage-basis.js';
+import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const TABS = Object.freeze([
@@ -183,12 +183,13 @@ function trendFor(stats, tab, stackBy) {
   const runs = findTrend(source.projectTrend, 'runs') ?? findTrend(project?.trend, 'runs') ?? findTrend(source.trend, 'runs');
   return { trend: runs, metric: 'runs', unit: 'runs', modelCostMeasured: false };
 }
-function totalFor(rows, totals, field) {
+function totalFor(rows, totals, field, valueOf = null) {
   const declared = finite(totals?.[field]);
   if (declared != null) return declared;
+  const read = valueOf ?? ((row) => finite(row?.[field]));
   let total = null;
   for (const row of rows) {
-    const value = finite(row?.[field]);
+    const value = read(row);
     if (value != null) total = (total ?? 0) + value;
   }
   return total;
@@ -199,25 +200,36 @@ function shareFor(row, value, total, preferred = null) {
   return value != null && total != null && total > 0 ? value / total : null;
 }
 function costValue(row) {
-  const value = finite(row?.apiUsd ?? row?.apiEquivalentUsd);
-  return row?.tokenSource === 'unknown' ? null : value;
+  return apiMoney(row)?.usd ?? null;
 }
-function moneyText(rowOrValue, tokenSource = null) {
+
+function moneyText(rowOrValue, tokenSource = null, options = {}) {
   const row = rowOrValue && typeof rowOrValue === 'object'
     ? rowOrValue
     : { apiUsd: rowOrValue, tokenSource };
-  const api = {
-    usd: finite(row.apiUsd ?? row.apiEquivalentUsd),
-    tokenSource: row.tokenSource ?? tokenSource,
-  };
+  const money = apiMoney(row);
   const subscription = row.subscription ?? {
     usd: finite(row.subscriptionUsd),
     deltaPct: finite(row.subscriptionDeltaPct ?? row.deltaPct),
     window: row.subscriptionWindow ?? row.window,
     basis: row.subscriptionBasis,
   };
-  const text = formatMoneyPair({ api, subscription, tokens: row.tokens ?? null });
-  return text;
+  // A panel row has a dozen columns for its conclusion, so it drops the
+  // `sub unknown (…)` prose an amount-less subscription carries; the page's
+  // own notes state the basis once instead. The summary keeps the full pair.
+  if (options.compact === true && finite(subscription.usd) == null) {
+    return apiMoneyText(money, row.tokenSource ?? tokenSource, row.tokens ?? null, options);
+  }
+  const pair = formatMoneyPair({
+    api: { usd: money && !money.partial ? money.usd : null, tokenSource: row.tokenSource ?? tokenSource },
+    subscription,
+    tokens: row.tokens ?? null,
+  });
+  const [apiText, ...subscriptionText] = pair.split(' · ');
+  return [
+    money?.partial ? apiMoneyText(money, null, row.tokens ?? null, options) : apiText,
+    ...subscriptionText,
+  ].join(' · ');
 }
 function minuteText(value) {
   const number = finite(value);
@@ -241,9 +253,14 @@ function reasonFor(field, row = null) {
 }
 function panelRows(table, field, unit, { shareField = null, valueText = null, missingReason = null } = {}) {
   const rows = rowsOf(table);
-  const total = totalFor(rows, table?.totals, field);
+  const moneyField = field === 'apiEquivalentUsd';
+  // The panel's whole is the sum of the figures its rows print, so a period
+  // whose total is a strict-only null still measures its shares over every
+  // recorded amount (S1: a share of nothing stays null).
+  const total = totalFor(rows, table?.totals, field, moneyField ? costValue : null);
   return rows.map((row) => {
-    const raw = field === 'apiEquivalentUsd' ? costValue(row) : finite(row?.[field]);
+    const money = moneyField ? apiMoney(row) : null;
+    const raw = money ? money.usd : finite(row?.[field]);
     let text = null;
     const hasSubscriptionMoney = unit === 'usd' && (
       finite(row?.subscriptionUsd) != null
@@ -251,7 +268,11 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
     );
     if (raw != null || hasSubscriptionMoney) {
       if (valueText) text = valueText(row, raw);
-      else if (unit === 'usd') text = moneyText(row);
+      // A panel cell has room for the amount, its share and nothing else, so
+      // the row carries the `≈` mark and the panel's own share; the coverage
+      // that makes a subtotal readable as a lower bound is named in full on
+      // the hover and once for the page in the Coverage note.
+      else if (unit === 'usd') text = moneyText(row, null, { compact: true, coverage: false });
       else if (unit === 'minutes') text = minuteText(raw);
       else if (unit === 'runs') text = countText(raw, 'run');
       else if (unit === 'attempts') text = countText(raw, 'attempt');
@@ -262,6 +283,11 @@ function panelRows(table, field, unit, { shareField = null, valueText = null, mi
       share: shareFor(row, raw, total, shareField ? row?.[shareField] : null),
       valueText: text,
       missingReason: missingReason ?? reasonFor(field, row),
+      // A subtotal's coverage travels with the row so a hover can word the
+      // figure as the lower bound it is.
+      partial: money?.partial === true,
+      priced: money?.priced ?? null,
+      attempts: money?.attempts ?? null,
     };
   });
 }
@@ -276,6 +302,12 @@ function panel(title, rows, tab, metric, period, unit, basis = null, labelKind =
   // full-width panel independently.
   return { title, rows: limitedRows(rows), labelWidth: sharedGrid ? null : 14, barWidth: 6, tab, metric, period, unit, basis, labelKind, sharedGrid };
 }
+/**
+ * The fourth panel's rows. A duration is the run's active interval union where
+ * the rollup carries one; where an index `workflow reprice` has not corrected
+ * yet, the recorded span stands in and the row names how many runs that
+ * covered, instead of printing `not recorded` over figures the records hold.
+ */
 function outcomeRows(outcomes) {
   if (!outcomes) return [{ id: 'outcome', label: 'Outcome data', value: null, missingReason: 'rollup outcomes unavailable' }];
   const statuses = Object.entries(outcomes.statusCounts ?? {});
@@ -287,12 +319,19 @@ function outcomeRows(outcomes) {
       ? `${completed} completed${otherStatuses > 0 ? ` · ${otherStatuses} other` : ''}`
       : `${statuses[0][1]} ${statuses[0][0]}${statuses.length > 1 ? ` · ${statusTotal - statuses[0][1]} other` : ''}`
     : null;
+  const spanRuns = finite(outcomes.spanRuns) ?? 0;
+  const durationRuns = finite(outcomes.durationRuns);
+  // Compact enough for a shared panel cell: the page's own Durations note
+  // spells the fallback out, and the count stays exact here.
+  const spanNote = spanRuns > 0 && durationRuns != null ? ` · span ${spanRuns}/${durationRuns}` : '';
+  const median = finite(outcomes.medianDurationMinutes ?? outcomes.medianActiveMinutes);
+  const longest = finite(outcomes.longestDurationMinutes ?? outcomes.maxActiveMinutes);
   return [
     { id: 'status', label: 'Status', value: statuses.length ? statusTotal : null, valueText: statusText, missingReason: 'status not recorded' },
     { id: 'verified', label: 'Verified', value: finite(outcomes.verified), valueText: finite(outcomes.verified) == null ? null : `${outcomes.verified} verified`, share: outcomes.verifiedShare, total: outcomes.verifiedTotal, missingReason: 'verification not recorded' },
     { id: 'requirements', label: 'Requirements', value: finite(outcomes.requirementsPassed), valueText: finite(outcomes.requirementsPassed) != null && finite(outcomes.requirementsTotal) != null ? `${outcomes.requirementsPassed}/${outcomes.requirementsTotal} passed` : null, share: outcomes.requirementsShare, total: outcomes.requirementsTotal, missingReason: 'requirements not recorded' },
-    { id: 'median-active', label: 'Median active', value: finite(outcomes.medianActiveMinutes), unit: 'minutes', valueText: finite(outcomes.medianActiveMinutes) == null ? null : `${minuteText(outcomes.medianActiveMinutes)} median`, missingReason: 'active duration not recorded' },
-    { id: 'max-active', label: 'Longest active', value: finite(outcomes.maxActiveMinutes), unit: 'minutes', valueText: finite(outcomes.maxActiveMinutes) == null ? null : `${minuteText(outcomes.maxActiveMinutes)} maximum active`, missingReason: 'active duration not recorded' },
+    { id: 'median-run', label: 'Median run', value: median, unit: 'minutes', valueText: median == null ? null : `${minuteText(median)} median${spanNote}`, missingReason: 'duration not recorded' },
+    { id: 'longest-run', label: 'Longest run', value: longest, unit: 'minutes', valueText: longest == null ? null : `${minuteText(longest)} maximum${spanNote}`, missingReason: 'duration not recorded' },
   ];
 }
 function licenceRows(table) {
@@ -367,19 +406,40 @@ function normalizedTrend(info, table, tab) {
   const trend = info.trend ?? (tab === 'model' ? dailyTrendFromRows(table, 'minutes', 'minutes') : null) ?? (tab === 'project' ? dailyTrendFromRows(table, 'runs', 'runs') : null);
   return trend && Array.isArray(trend.buckets) ? trend : { metric: info.metric, buckets: [], total: null };
 }
-function chartInput(info, table, tab, stackBy, width, period, extraColorNames = []) {
+function chartInput(info, table, tab, stackBy, width, period, extraColorNames = [], geometry = {}) {
   const trend = normalizedTrend(info, table, tab);
-  const sourceBuckets = trend.buckets.map((bucket) => {
+  // A `usd` bucket is the strict day total when every attempt carried a price,
+  // else the recorded subtotal over the attempts that did: the same lower bound
+  // the panels print, flagged so every label can name its coverage.
+  const moneyByBucket = trend.buckets.map((bucket) => (info.unit === 'usd' ? apiMoney(bucket) : null));
+  const sourceBuckets = trend.buckets.map((bucket, index) => {
+    const money = moneyByBucket[index];
     const tokenSource = bucket.tokenSource ?? trend.tokenSource ?? null;
-    return { key: bucket.key, label: bucket.label ?? bucket.key, value: info.unit === 'usd' && tokenSource === 'unknown' ? null : finite(bucket.value), tokenSource, unit: info.unit, basis: trend.segmentBasis ?? info.basis ?? null };
+    return {
+      key: bucket.key,
+      label: bucket.label ?? bucket.key,
+      value: info.unit === 'usd' ? money?.usd ?? null : finite(bucket.value),
+      tokenSource,
+      unit: info.unit,
+      basis: trend.segmentBasis ?? info.basis ?? null,
+      partial: money?.partial === true,
+      priced: money?.priced ?? null,
+      attempts: money?.attempts ?? null,
+    };
   });
   const names = [...new Set(trend.buckets.flatMap((bucket) => (Array.isArray(bucket.segments) ? bucket.segments : []).map((segment) => String(segment.name ?? segment.id ?? 'unknown'))))];
-  const valuesByName = new Map(names.map((name) => [name, trend.buckets.map((bucket) => {
+  // A series' own price source is the pool's recorded one. A day whose worst
+  // source is unknown must not blank a pool whose own figure was priced; a day
+  // that is itself a subtotal draws every recorded slice it has.
+  const seriesSources = new Map(rowsOf(table).map((row) => [rowName(row), row.tokenSource ?? null]));
+  const valuesByName = new Map(names.map((name) => [name, trend.buckets.map((bucket, index) => {
     const segment = (bucket.segments ?? []).find((entry) => String(entry.name ?? entry.id ?? 'unknown') === name);
-    return info.unit === 'usd' && (bucket.tokenSource ?? trend.tokenSource) === 'unknown' ? null : finite(segment?.value);
+    if (info.unit !== 'usd') return finite(segment?.value);
+    if (moneyByBucket[index]?.partial !== true && (bucket.tokenSource ?? trend.tokenSource) === 'unknown') return null;
+    return finite(segment?.value);
   })]));
-  const fallback = trend.buckets.map((bucket) => {
-    const measured = finite(bucket.value);
+  const fallback = trend.buckets.map((bucket, index) => {
+    const measured = info.unit === 'usd' ? moneyByBucket[index]?.usd ?? null : finite(bucket.value);
     const split = (bucket.segments ?? []).reduce((sum, segment) => sum + (finite(segment?.value) ?? 0), 0);
     return measured != null && measured - split > 1e-9 ? measured - split : null;
   });
@@ -389,6 +449,7 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   // null cost placeholder look like another metric.
   const placeholder = tab === 'spending' && stackBy === 'model'
     && info.metric === 'spend' && !info.modelCostMeasured;
+  const subtotalSeries = { subtotal: true, partial: true };
   if (placeholder || (!names.length && fallback.some((value) => value != null))) {
     const fallbackName = info.metric === 'spend' ? 'model cost unavailable' : 'unallocated';
     names.push(fallbackName);
@@ -402,16 +463,46 @@ function chartInput(info, table, tab, stackBy, width, period, extraColorNames = 
   const colorNames = names.map(colorName);
   const panelColors = Array.isArray(extraColorNames) ? extraColorNames.map(colorName) : [];
   const colors = seriesColors([...colorNames, ...panelColors]);
-  const series = names.map((name, index) => ({ id: name, label: name, values: valuesByName.get(name), color: colors.get(colorNames[index]), tokenSource: trend.tokenSource ?? null }));
+  const series = names.map((name, index) => {
+    const unallocated = name === 'unallocated' && !placeholder;
+    return {
+      id: name,
+      label: name,
+      values: valuesByName.get(name),
+      color: colors.get(colorNames[index]),
+      tokenSource: seriesSources.get(name) ?? null,
+      ...(unallocated ? subtotalSeries : {}),
+    };
+  });
   const title = tab === 'spending'
     ? info.modelCostMeasured ? 'Spend per day · API-equivalent · model' : stackBy === 'model' ? 'Worker-minutes per day · model cost is not measured' : 'Spend per day · API-equivalent · pool'
     : tab === 'pool' ? 'Spend per day · API-equivalent · pool' : tab === 'model' ? 'Worker-minutes per day · model' : 'Runs per day · project';
   // Keep the chart's compact marker aligned with formatMoneyPair: `~` means
-  // a local byte estimate, while `≈` is reserved for calibrated subscription
-  // amounts/transcript-summed API values.
-  const mark = info.unit === 'usd' && sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : '';
+  // a local byte estimate, `≈` a value that is not a strict total — a
+  // transcript-summed amount, a calibrated subscription, or a day whose
+  // attempts were only partly priced. The mark also sizes `columnBars`' tick
+  // gutter, so a marked chart keeps its whole label (`≈$160.00`).
+  const partial = sourceBuckets.some((bucket) => bucket.partial);
+  const mark = info.unit === 'usd'
+    ? partial ? '≈' : sourceBuckets.some((bucket) => bucket.tokenSource === 'estimated:utf8-bytes/4') ? '~' : ''
+    : '';
+  const chartArgs = {
+    title,
+    buckets: sourceBuckets,
+    series,
+    width,
+    unit: info.unit,
+    mark,
+    totals: false,
+    tab,
+    metric: info.metric,
+    period,
+    basis: trend.segmentBasis ?? info.basis ?? null,
+    ...(geometry.fill ? { fill: true } : {}),
+  };
+  const drawn = (rows) => renderStackedColumnChart({ ...chartArgs, height: rows, rowCount: rows });
   const chart = (info.unit === 'usd' || info.unit === 'minutes' || info.unit === 'runs')
-    ? renderStackedColumnChart({ title, buckets: sourceBuckets, series, width, height: 6, rowCount: 6, unit: info.unit, mark, totals: false, tab, metric: info.metric, period, basis: trend.segmentBasis ?? info.basis ?? null })
+    ? geometry.fit ? chartFilling(drawn, geometry.rows ?? 6) : drawn(geometry.rows ?? 6)
     : renderColumnChart({ title, buckets: sourceBuckets, width, height: 6, unit: info.unit, totals: false, tab, metric: info.metric, period });
   if (placeholder) {
     for (const region of chart.regions ?? []) {
@@ -432,18 +523,18 @@ function summaryItems(overview, outcomes, poolTable, projectTable) {
   const keys = object(overview?.keys) ?? {};
   const workflows = finite(keys.workflows) ?? totalFor(rowsOf(projectTable), projectTable?.totals, 'runs');
   const workerMinutes = finite(keys.totalWorkerMinutes);
-  const api = finite(keys.apiUsd ?? keys.apiEquivalentUsd);
+  const money = apiMoney(keys);
   const activeDays = finite(keys.activeDays);
   const totals = [
     workflows == null ? null : countText(workflows, 'workflow'),
     workerMinutes == null ? null : `${workerMinutes} worker-minutes`,
-    api == null && finite(keys.subscriptionUsd) == null ? null : `${moneyText({ ...keys, apiUsd: api })}`,
+    money == null && finite(keys.subscriptionUsd) == null ? null : `${moneyText({ ...keys, apiUsd: money?.partial ? null : money?.usd })}`,
     activeDays == null ? null : `${activeDays} active days`,
   ].filter(Boolean).join(' · ');
-  // Verification, requirements and wall duration already have a durable home
-  // in the fourth Spending/Project panel. Keep the summary to one line of
-  // totals that are otherwise not visible together, so it is a header rather
-  // than a second Outcome panel.
+  // Verification, requirements and duration already have a durable home in
+  // the fourth Spending/Project panel. Keep the summary to one line of totals
+  // that are otherwise not visible together, so it is a header rather than a
+  // second Outcome panel.
   return [{ id: 'totals', label: 'Totals', value: totals ? 0 : null, valueText: totals || null, missingReason: 'no measured totals' }];
 }
 function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, outcomes, basis }) {
@@ -478,6 +569,32 @@ function panelSet({ tab, stackBy, period, poolTable, modelTable, projectTable, o
     panel('Project runs', projectRuns, tab, 'runs', period, 'runs', null, 'project'), panel('Project worker-minutes', projectMinutes, tab, 'minutes', period, 'minutes', null, 'project'), panel('Project API-equivalent', projectSpend, tab, 'spend', period, 'usd', null, 'project'), panel('Outcome & duration', outcomeRows(outcomes), tab, 'outcome', period, 'count'),
   ];
 }
+/**
+ * The one line a page needs when its money is partly a subtotal: `reprice`
+ * does not invent a price for an attempt that never recorded one, so a period
+ * can hold both kinds, and a figure over the priced attempts has to say so
+ * once rather than per row.
+ */
+function coverageNote(table) {
+  const totals = object(table)?.totals;
+  const attempts = finite(totals?.attempts);
+  const priced = finite(totals?.pricedAttempts);
+  if (attempts == null || priced == null || priced >= attempts) return null;
+  return `Coverage · ${priced} of ${attempts} attempts carried a price; spend over them is a subtotal, marked ≈.`;
+}
+
+/**
+ * The duration counterpart: an index `workflow reprice` has not corrected yet
+ * holds no active union, so the medians and the longest run are measured over
+ * the spans the same records kept. One line says how many runs that was.
+ */
+function durationNote(outcomes) {
+  const spanRuns = finite(outcomes?.spanRuns);
+  const durationRuns = finite(outcomes?.durationRuns);
+  if (spanRuns == null || durationRuns == null || spanRuns === 0) return null;
+  return `Durations · ${spanRuns} of ${durationRuns} runs recorded no active interval union; their span stands in until workflow reprice fills it.`;
+}
+
 function legendItems(names, colors = null) {
   return names.map((name) => {
     const resolvedName = colorName(name);
@@ -498,6 +615,46 @@ function addToggleRegions(regions, line, tab, stackBy) {
   }
 }
 
+/**
+ * How many lines the panel column occupies: one heading and one line per row
+ * per panel, plus the blank line `desktopPanelColumns` puts between the two
+ * panels stacked in a cell. Measured from the row lists rather than from a
+ * render, because the chart beside them takes its height from this figure and
+ * is drawn first.
+ */
+function panelColumnHeight(panels) {
+  const list = Array.isArray(panels) ? panels : [];
+  const height = (panelInput) => 1 + Math.max(1, Array.isArray(panelInput?.rows) ? panelInput.rows.length : 0);
+  return Math.max(height(list[0]) + 1 + height(list[2]), height(list[1]) + 1 + height(list[3]));
+}
+
+/**
+ * Draw a chart that fills the rows its panel has.
+ *
+ * `columnBars` lays a tick every whole row, so asking for N rows can return up
+ * to `intervals` more of them. The fit is taken from the first render and the
+ * request reduced to whole ticks that stay inside the budget, so the chart
+ * fills its panel instead of overhanging the panels beside it with rows of
+ * its own. The last render wins either way.
+ */
+function chartFilling(render, budget) {
+  let rows = budget;
+  let chart = render(rows);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const meta = chart?.meta?.chart ?? null;
+    const drawn = finite(meta?.chartRows);
+    const step = finite(meta?.tickStep);
+    const top = finite(meta?.axisTop);
+    if (drawn == null || drawn + 2 <= rows) return chart;
+    const intervals = step > 0 && top > 0 ? Math.max(1, Math.round(top / step)) : null;
+    const next = intervals == null ? rows - 1 : intervals * Math.max(1, Math.floor((rows - 2) / intervals));
+    if (!(next >= 1) || next >= rows) return chart;
+    rows = next;
+    chart = render(rows);
+  }
+  return chart;
+}
+
 /** Render the four fixed Stats tabs through the shared stat-kit surface. */
 function statsLines(stats, { width = 120, height = 36, tab = 'spending', period = '7d', stackBy = 'pool', ansi = true, slice = null } = {}) {
   const cols = widthOf(width);
@@ -515,9 +672,19 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   const summary = { title: `Summary · ${activePeriod}`, items: summaryItems(overview, outcomes, poolTable, projectTable), width: cols };
   const panels = panelSet({ tab: activeTab, stackBy, period: activePeriod, poolTable, modelTable, projectTable, outcomes, basis });
   const chartTable = activeTab === 'spending' || activeTab === 'pool' ? poolTable : activeTab === 'model' ? modelTable : projectTable;
+  // The chart fills the panel it shares with the grid: on desktop its bars
+  // take their width from the chart column's own columns and their height from
+  // the rows the panel grid occupies, so a wide terminal shows wide bars rather
+  // than a narrow strip with blank rows beside it. The stacked phone layout has
+  // no panel beside the chart to match, so it keeps its own six rows. The
+  // renderer's tick rule still decides the final row count, so an axis label
+  // stays exact.
+  const geometry = desktop
+    ? { fill: true, fit: true, rows: Math.max(3, panelColumnHeight(panels) - 2) }
+    : { rows: 6 };
   // One map feeds the chart, legend, and every visible panel row in this
   // render. The placeholder +N more row is deliberately not a name.
-  const chartData = chartInput(info, chartTable, activeTab, stackBy, chartWidth, activePeriod, panelColorNames(panels));
+  const chartData = chartInput(info, chartTable, activeTab, stackBy, chartWidth, activePeriod, panelColorNames(panels), geometry);
   const coloredPanels = colorPanels(panels, chartData.colors);
   const surfacePanels = desktop
     ? desktopPanelColumns(coloredPanels, Math.max(1, cols - 2 - chartWidth), activeTab, activePeriod)
@@ -535,6 +702,12 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   }
   if (activeTab === 'model') notes.push('Basis · cost per pool, not per model; model cost is not measured.');
   else if (trend?.segmentBasis) notes.push(`Basis · ${trend.segmentBasis}.`);
+  if (info.unit === 'usd') {
+    const coverage = coverageNote(chartTable);
+    if (coverage) notes.push(coverage);
+  }
+  const durations = durationNote(outcomes);
+  if (durations) notes.push(durations);
   if (trend?.truncated) notes.push('History · the requested period is longer than the retained rollups.');
   const surface = renderStatsSurface({ tab: activeTab, period: activePeriod, width: cols, height, stackBy, tabs: TABS, summary, chart: surfaceChart, panels: surfacePanels, legend, notes, ansi });
   const hovered = object(slice?.payload) ?? (slice?.kind === 'slice' || slice?.kind === 'share' || slice?.kind === 'column' ? slice : null);

@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ Stats · spending
+ Spending  Pool  Model  Project
+Spending · 7d · 30d · all  [By Pool] By Model
+
+── Summary · 30d ──────────────────────────────────────
+Totals 15 workflows · 2816.01 worker-minutes · at leas…
+── Spend per day · API-equivalent · pool ──────────────
+                ┤
+at least $150.00┤             ▆▆▆▆
+                ┤             ████
+at least $100.00┤ ▃▃▃▃        ████
+                ┤ ████        ████
+at least $50.00 ┤ ████        ████
+                ┤ ████        ████
+at least $0.000 ┤ ████  ▅▅▅▅  ████
+                ┼Sep18 Sep19 Sep20
+
+── Pool spend ─────────────────────────────────────────
+codex        ▓▒▒▒▒▒               at least $63.16 21.1%
+claude-code  ▓▓▒▒▒▒              at least $118.00 39.4%
+grok         ▓▒▒▒▒▒               at least $34.04 11.4%
+acme         ▓▓▒▒▒▒               at least $84.66 28.2%
+opencode                            — cost not recorded
+
+── Pool worker-minutes ────────────────────────────────
+codex        ▓▓▓▓▒▒                          35h12m 75%
+claude-code  ▏▒▒▒▒▒                          3h34m 7.6%
+grok         ▏▒▒▒▒▒                          2h35m 5.5%
+acme         ▏▒▒▒▒▒                          2h42m 5.8%
+opencode     ▏▒▒▒▒▒                          2h54m 6.2%
+
+── Project runs ───────────────────────────────────────
+a  ▓▓▓▓▒▒                                 10 runs 66.7%
+b  ▓▓▒▒▒▒                                  4 runs 26.7%
+c  ▏▒▒▒▒▒                                    1 run 6.7%
+
+── Outcome & duration ─────────────────────────────────
+Status        ▓▓▓▓▓▓                       15 completed
+Verified      ▓▓▓▓▒▒                  10 verified 66.7%
+Requirements  ▓▓▓▓▓▒                 78/86 passed 90.7%
+Median run    ▓▓▓▓▓▓                       1h45m median
+Longest run   ▓▓▓▓▓▓                      6h41m maximum
+Legend  ● claude-code:acme  ● grok  ● codex  ● claude-…
+● unallocated
+Basis · the recorded API-equivalent estimate per pool.
+Coverage · 66 of 149 attempts recorded no price; every…
+History · the requested period is longer than the reta…
+
+
+
+
+
+
+
+
+
+
+
+ [Top] [End] [?.Help]

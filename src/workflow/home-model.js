@@ -12,7 +12,7 @@ import {
   worstSubscriptionBasis,
   worstTokenSource,
 } from './dashboard.js';
-import { formatMoneyPair } from '../lib/usage-basis.js';
+import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 
 function taskToday(task, nowMs, { finished = false } = {}) {
   const at = finished ? (task?.endedAt ?? task?.finishedAt) : (task?.startedAt ?? task?.endedAt ?? task?.finishedAt);
@@ -182,6 +182,41 @@ function runMinutesInfo(record, nowMs = Date.now()) {
   };
 }
 
+/**
+ * The period's median run duration, with the basis that produced it.
+ *
+ * A run belongs to the day it finished, falling back to its start only when
+ * it recorded none — the same placement the Stats range selection reads, so
+ * the Overview band's figures and this band's median describe one set.
+ * Active minutes are the figure; a period whose records carry no provable
+ * active interval (an index `workflow reprice` has not corrected yet) falls
+ * back to the spans they do carry, and the caller labels that as a span.
+ */
+function medianRunDuration(records, { from = null, to = null } = {}) {
+  const inPeriod = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!record || typeof record !== 'object') continue;
+    const at = Date.parse(record.finishedAt ?? record.startedAt ?? '');
+    if (!Number.isFinite(at)) continue;
+    if (from != null && at < from) continue;
+    if (to != null && at > to) continue;
+    inPeriod.push(record);
+  }
+  for (const [key, basis] of [['active', 'active'], ['span', 'span'], ['wall', 'span']]) {
+    const values = inPeriod
+      .map((record) => finiteOrNull(record?.minutes?.[key]))
+      .filter((value) => value != null && value >= 0);
+    if (!values.length) continue;
+    const sorted = values.slice().sort((left, right) => left - right);
+    const middle = sorted.length >> 1;
+    const minutes = sorted.length % 2 === 1
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
+    return { minutes: Math.round(minutes * 100) / 100, basis };
+  }
+  return { minutes: null, basis: null };
+}
+
 function runStepCounts(record) {
   const state = recordState(record);
   const actions = Array.isArray(state.actions) ? state.actions : [];
@@ -242,15 +277,35 @@ function recordMoneyInput(record) {
       window: subscriptionWindow,
       basis: subscriptionBasis,
     },
+    apiKnownSubtotalUsd: apiUsd == null ? info.apiKnownSubtotalUsd ?? null : null,
+    apiCoverage: info.apiCoverage ?? null,
     tokenSource,
     tokens: record?.usage?.tokens ?? null,
   };
 }
 
+/**
+ * A money pair whose API side says what it is: the whole amount when every
+ * attempt was priced, else the recorded subtotal marked `≈`. `coverage`
+ * adds `N/M priced` where the surface has room for it.
+ */
+function moneyPairText(input, { coverage = false } = {}) {
+  const money = apiMoney({
+    apiUsd: input?.api?.usd ?? null,
+    apiKnownSubtotalUsd: input?.apiKnownSubtotalUsd ?? null,
+    apiCoverage: input?.apiCoverage ?? null,
+    tokenSource: input?.tokenSource ?? null,
+  });
+  const pair = formatMoneyPair(input);
+  if (!money?.partial) return pair;
+  const [, ...subscriptionText] = pair.split(' · ');
+  return [apiMoneyText(money, null, input?.tokens ?? null, { coverage }), ...subscriptionText].join(' · ');
+}
+
 /** The shared formatter is the source of truth for every Home card money pair. */
-function recordMoneyPair(record) {
+function recordMoneyPair(record, { coverage = false } = {}) {
   const input = recordMoneyInput(record);
-  return { ...input, text: formatMoneyPair(input) };
+  return { ...input, text: moneyPairText(input, { coverage }) };
 }
 
 function isActiveRun(record) {
@@ -377,6 +432,7 @@ function todayLicenceRows(model, today, nowMs) {
     if (!name) return null;
     if (!byName.has(name)) byName.set(name, {
       name, workflowMinutes: null, runMinutes: null, apiUsd: null,
+      apiKnownSubtotalUsd: null, attempts: null, pricedAttempts: null,
       subscriptionUsd: null, subscriptionBasis: null, subscriptionDeltaPct: null,
       subscriptionWindow: null, tokenSource: null,
       apiUnknown: false, subscriptionUnknown: false,
@@ -395,9 +451,20 @@ function todayLicenceRows(model, today, nowMs) {
       if (!row) continue;
       row.worked = true;
       addMinutes(row, 'workflowMinutes', entry?.minutes);
-      const cost = finiteOrNull(entry?.costUsd);
+      // A v2 pool entry keeps its strict amount in `apiUsd` and leaves the
+      // legacy `costUsd` null even when every attempt was priced, so reading
+      // `costUsd` alone marked measured pools unknown.
+      const cost = finiteOrNull(entry?.apiUsd ?? entry?.costUsd);
       if (cost != null) row.apiUsd = (row.apiUsd ?? 0) + cost;
       else row.apiUnknown = true;
+      // A pool entry whose attempts were only partly priced records no
+      // `costUsd`, but it does record the sum over the attempts that were.
+      // Keep that beside the strict figure so the licence row can show the
+      // lower bound instead of a dash that reads as "this pool was free".
+      const subtotal = finiteOrNull(entry?.apiKnownSubtotalUsd) ?? cost;
+      if (subtotal != null) row.apiKnownSubtotalUsd = (row.apiKnownSubtotalUsd ?? 0) + subtotal;
+      row.attempts = (row.attempts ?? 0) + (finiteOrNull(entry?.attempts) ?? 0);
+      row.pricedAttempts = (row.pricedAttempts ?? 0) + (finiteOrNull(entry?.pricedAttempts) ?? 0);
       const subscription = finiteOrNull(entry?.subscriptionUsd);
       if (subscription != null) row.subscriptionUsd = (row.subscriptionUsd ?? 0) + subscription;
       else row.subscriptionUnknown = true;
@@ -497,6 +564,15 @@ function recordCostInfo(record) {
   return {
     value,
     apiUsd: value,
+    // The strict fields above stay strict. A run whose attempts were only
+    // partly priced still recorded the sum over the ones that were; carrying
+    // it named, with its coverage, is what lets a surface print the lower
+    // bound instead of a dash that reads as "this run was free".
+    apiKnownSubtotalUsd: value == null ? finiteOrNull(usage.apiKnownSubtotalUsd) : null,
+    apiCoverage: {
+      priced: finiteOrNull(usage.pricedAttempts),
+      attempts: finiteOrNull(usage.attempts),
+    },
     tokenSource: tokenSource ?? tokenSourceOf(null, value),
     subscription,
     subscriptionUsd: subscription.usd,
@@ -516,6 +592,7 @@ export {
   todayLicenceRows,
   recordCost,
   recordCostInfo,
+  moneyPairText,
   firstMeaningfulLine,
   runStatus,
   runVerdict,
@@ -525,6 +602,7 @@ export {
   unionMinutes,
   spanMinutes,
   runMinutesInfo,
+  medianRunDuration,
   runStepCounts,
   recordMoneyInput,
   recordMoneyPair,

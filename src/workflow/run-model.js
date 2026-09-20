@@ -507,7 +507,8 @@ function planStageHeader(stage, index) {
 /**
  * One whole-phase plan box. The action is attached to the full text so both a
  * mouse click and the dashboard's selected-row Enter open the phase's first
- * step; no individual step names leak into the compact plan.
+ * step; no individual step names leak into the compact plan. The box carries
+ * the phase's number, the number the plan's arrows chain it with.
  */
 function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {}) {
   const actions = stage?.actions ?? [];
@@ -519,7 +520,7 @@ function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {
       : progress.completed === progress.total && progress.total > 0 ? glyphs().ok : glyphs().pending;
   const first = actions[0];
   const selected = first?.id && first.id === selectedId;
-  const text = `[${status} ${planStageName(stage, index)} ${progress.completed}/${progress.total}]`;
+  const text = `[${status} ${index + 1}. ${planStageName(stage, index)} ${progress.completed}/${progress.total}]`;
   return [{
     text: selected ? `\x1b[7m${text}\x1b[0m` : text,
     ...(first ? { action: { kind: 'step', actionId: first.id, ...(runId ? { runId } : {}) } } : {}),
@@ -528,6 +529,19 @@ function planStageBoxParts(stage, index, { runId = null, selectedId = null } = {
 
 function planStageBoxText(stage, index) {
   return planStageBoxParts(stage, index)[0]?.text ?? '';
+}
+
+/**
+ * `pool · model · effort` for one attempt row, each slot a dash when the
+ * attempt never recorded it. The routing reads on the attempt's own row; the
+ * page has no room for a metadata line per attempt.
+ */
+function attemptRoutingText(attempt) {
+  const pool = attempt?.pool ? String(attempt.pool) : '—';
+  const model = attempt?.model ? String(attempt.model) : '—';
+  const effortValue = attempt?.effort ?? attempt?.routing?.effort;
+  const effort = effortValue ? String(effortValue) : '—';
+  return `${pool} · ${model} · ${effort}`;
 }
 
 function planStageActions(stage, limit = null) {
@@ -662,6 +676,7 @@ export {
   runDurationFacts,
   phaseDurationFacts,
   activeMinutesText,
+  durationClockText,
   attemptDurationMinutes,
   attemptDurationText,
   planAttemptDetail,
@@ -671,6 +686,7 @@ export {
   planStageHeader,
   planStageBoxParts,
   planStageBoxText,
+  attemptRoutingText,
   planStageActions,
   planMoreParts,
   phaseActionGlyph,

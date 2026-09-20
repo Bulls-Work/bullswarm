@@ -50,9 +50,10 @@ import {
 } from './dashboard.js';
 import {
   planStageBoxParts,
-  planStageName,
   activeMinutesText,
+  durationClockText,
   attemptDurationText,
+  attemptRoutingText,
   phaseDurationFacts,
   runDurationFacts,
   planProgress,
@@ -375,8 +376,8 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
       const running = !workflowFinishedAt && (segment.name === currentSegment
         || (model.dependencyGroups && model.phases.some((phase) => phase.label === segment.name && phase.status === 'active')));
       const elapsed = running
-        ? (segment.activeMinutes == null ? 'running' : activeMinutesText(segment.activeMinutes))
-        : segment.activeMinutes == null ? durationText(segment.first, segmentFinishedAt) : activeMinutesText(segment.activeMinutes);
+        ? (segment.activeMinutes == null ? 'running' : durationClockText(segment.activeMinutes))
+        : segment.activeMinutes == null ? durationText(segment.first, segmentFinishedAt) : durationClockText(segment.activeMinutes);
       const displayName = timelineSegmentDisplayName(segment.name, model);
       const header = openedSegments.has(segment.name)
         ? continuationHeader(displayName, elapsed, width)
@@ -393,8 +394,15 @@ function groupedTimeline(events, model, width, workflowFinishedAt) {
 }
 
 function timelineSegmentDisplayName(name, model) {
-  const text = String(name ?? '');
-  return text.replace(/^Follow-up \d+: /, '').replace(/^Phase \d+\s*·\s*/, '') || text;
+  const raw = String(name ?? '');
+  const text = raw.replace(/^Follow-up \d+: /, '') || raw;
+  // Program stages already carry their level (`Phase 7 · tidy-fixes`). A
+  // presentation category does not, so the header numbers it the way 0.35.0 did.
+  if (model.dependencyGroups) return text;
+  const phaseIndex = model.phases.findIndex((phase) => phase.label === name);
+  if (phaseIndex < 0) return text;
+  const short = text.replace(/^Phase \d+\s*·\s*/, '') || text;
+  return `Phase ${phaseIndex + 1} · ${short}`;
 }
 
 function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now() } = {}) {
@@ -478,11 +486,9 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
   if (model.dependencyGroups) {
     for (const stage of model.stages) {
       const duration = phaseDurationFacts(model.row, stage, { nowMs });
-      // A phase's durable attempt rows are the timeline milestones. Only show
-      // a standalone start marker when the phase has no attempt record yet.
-      if (!(stageAttempts.get(stage.id) ?? []).length) {
-        add(stage.startedAt, '├─ started', '', null, stage.label, null, { activeMinutes: duration.activeMinutes });
-      }
+      // The tree's opening row, as 0.35.0 drew it: every phase that started
+      // announces itself, whether or not its workers left durable attempts.
+      add(stage.startedAt, '├─ started', '', null, stage.label, null, { activeMinutes: duration.activeMinutes });
     }
   }
   for (const event of model.events) {
@@ -496,8 +502,8 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
       const runtime = state.actions.find((action) => action.id === actionId);
       const stage = model.stages.find((item) => item.actionIds.includes(actionId));
       const status = runtime?.status === 'succeeded' ? glyphs().ok : runtime?.status === 'blocked' ? glyphs().blocked : '×';
-      // Attempt rows below carry the pool/model/effort and their own clock;
-      // avoid drawing an older action-only duplicate when one exists.
+      // The attempt row below carries the same step, its own clock and the
+      // routing it ran on; drawing the action-only duplicate would repeat it.
       if ((stage && (stageAttempts.get(stage.id) ?? []).some((attempt) => attempt.actionId === actionId))) continue;
       const duration = stage ? phaseDurationFacts(model.row, stage, { nowMs }) : null;
       add(event.committedAt, `│  ├─${status} ${actionId}`, runtime?.startedAt ? durationText(runtime.startedAt, runtime.finishedAt) : '', null, stage?.label ?? 'Work', null, { activeMinutes: duration?.activeMinutes ?? null });
@@ -509,22 +515,22 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
       add(event.committedAt, `└─${ok ? glyphs().ok : '×'} completed`, `${event.payload.completed}/${event.payload.total}`, null, stage?.label ?? event.payload.label, null, { activeMinutes: duration?.activeMinutes ?? null });
     }
   }
-  // One row per durable attempt. A retry is intentionally visible as another
-  // row even when it belongs to the same phase/action.
+  // One row per durable attempt, in the tree's own shape: the step's own clock
+  // on the right and the pool · model · effort it ran on in the row. A retry is
+  // intentionally visible as another row even when it belongs to the same
+  // phase/action, and the phase header above them counts the phase's active
+  // minutes, never the idle time between its attempts.
   for (const stage of model.stages) {
     const attempts = stageAttempts.get(stage.id) ?? [];
     if (!attempts.length) continue;
     const duration = phaseDurationFacts(model.row, stage, { nowMs });
     for (const attempt of attempts) {
-      const pool = attempt.pool ?? '—';
-      const modelName = attempt.model ?? '—';
-      const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
-      const metadata = `${pool} · ${modelName} · ${effort} · ${attemptDurationText(attempt, { nowMs })}`;
+      const clock = attemptDurationText(attempt, { nowMs });
       add(
         attempt.finishedAt ?? attempt.startedAt,
-        `${statusIcon(attempt.status, spinnerFrame)} ${planStageName(stage, model.stages.indexOf(stage))}`,
-        '',
-        [`phase active ${activeMinutesText(duration.activeMinutes)}`, metadata],
+        `│  ├─${statusIcon(attempt.status, spinnerFrame)} ${attempt.actionId} · ${attemptRoutingText(attempt)}`,
+        clock === 'time pending' ? '' : clock,
+        null,
         stage.label,
         attempt.startedAt,
         { activeMinutes: duration.activeMinutes },
@@ -552,10 +558,10 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     const at = [stage.completedAt, ...model.events.filter((event) =>
       ['action.finished', 'evidence.recorded'].includes(event.type) && stage.actionIds.includes(event.payload?.actionId))
       .map((event) => event.committedAt)].filter(Boolean).sort().at(-1);
-    if (!(stageAttempts.get(stage.id) ?? []).length) {
-      const duration = phaseDurationFacts(model.row, stage, { nowMs });
-      add(at, `└─${progress.successful ? glyphs().ok : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label, null, { activeMinutes: duration.activeMinutes });
-    }
+    // The phase closes with its tally, as 0.35.0 drew it; a phase that ran
+    // attempts does not lose its closing row to them.
+    const duration = phaseDurationFacts(model.row, stage, { nowMs });
+    add(at, `└─${progress.successful ? glyphs().ok : '×'} completed`, `${progress.completed}/${progress.total}`, null, stage.label, null, { activeMinutes: duration.activeMinutes });
   }
   if (state.lifecycle.finishedAt) {
     const status = state.lifecycle.status;
@@ -837,33 +843,36 @@ function planDagLines(row, {
   if (!stages.length) return [];
   // The plan is intentionally phase-only. A box is one clickable unit whose
   // action points at that phase's first step; the full attempt chronology is
-  // rendered by the timeline below it.
+  // rendered by the timeline below it. Consecutive boxes on one row are chained
+  // with an arrow, so a wrapped row ends on its last box and the last box of
+  // the plan never trails one.
   const boxes = stages.map((stage, index) => {
     const parts = planStageBoxParts(stage, index, { runId, selectedId });
     return { parts, text: parts.map((part) => part.text).join(''), width: visibleLength(parts.map((part) => part.text).join('')) };
   });
   const limit = Math.max(1, Number(width) || 1);
-  // Phones stack boxes so a phase name never gets squeezed into a misleading
-  // ellipsis. Desktop widths keep a stable three-column rhythm at 120 and let
-  // all phases flow together on the 200-column design frame.
-  const maxBoxes = limit < 80 ? 1 : limit < 180 ? 3 : boxes.length;
+  // Phones stack one box per row so a phase name never gets squeezed into a
+  // misleading ellipsis. Wider terminals flow as many whole boxes as fit.
+  const maxBoxes = limit < 80 ? 1 : boxes.length;
+  const arrow = ' → ';
+  const arrowWidth = visibleLength(arrow);
   const out = [];
   let line = [];
   let used = 0;
   const flush = () => {
     if (!line.length) return;
     out.push({ parts: line.flatMap((box, index) => [
-      ...(index ? [{ text: ' ' }] : []),
+      ...(index ? [{ text: arrow }] : []),
       ...box.parts,
     ]) });
     line = [];
     used = 0;
   };
   for (const box of boxes) {
-    const gap = line.length ? 1 : 0;
+    const gap = line.length ? arrowWidth : 0;
     if (line.length >= maxBoxes || (line.length && used + gap + box.width > limit)) flush();
     line.push(box);
-    used += (line.length > 1 ? 1 : 0) + box.width;
+    used += (line.length > 1 ? arrowWidth : 0) + box.width;
   }
   flush();
   return out;

@@ -406,6 +406,62 @@ test('hover wording is unit-aware and honest for missing measurements', () => {
   assert.equal(formatHoverLabel({ kind: 'slice', bucketLabel: '14 Sep', series: 'pool-a', value: null, share: 0.2, unit: 'usd' }), '14 Sep · pool-a · not measured · 20% of the day');
 });
 
+test('a subtotal under the hover names the coverage that produced it', () => {
+  // A recorded sum over the attempts that carry a price is a lower bound. It
+  // is not an unmeasured value and it is not a whole-scope total: the label
+  // says which it is.
+  assert.equal(
+    formatHoverLabel({ kind: 'slice', bucketLabel: '20 Sep', series: 'codex', value: 8.28, share: 0.12, unit: 'usd', partial: true, pricedAttempts: 8, attempts: 11, tokenSource: 'unknown' }),
+    '20 Sep · codex · ≈$8.28 (8/11 attempts priced) · 12% of day',
+  );
+  assert.equal(
+    formatHoverLabel({ kind: 'share', label: 'codex', value: 63.16, share: 0.21, unit: 'usd', partial: true, pricedAttempts: 57, attempts: 113 }),
+    'codex · ≈$63.16 (57/113 attempts priced) · 21% of panel',
+  );
+  // Without a coverage count the mark still says the figure is not a total.
+  assert.equal(
+    formatHoverLabel({ kind: 'column', bucketLabel: '20 Sep', value: 171.3, share: 1, unit: 'usd', partial: true }),
+    '20 Sep · total · ≈$171.30 · 100% of day',
+  );
+});
+
+test('a chart drawn to fill its panel takes its bars and gaps from its own columns', () => {
+  const buckets = [
+    { key: '2026-09-18', value: 320 },
+    { key: '2026-09-19', value: 940 },
+    { key: '2026-09-20', value: 610 },
+  ];
+  const draw = (extra) => renderStackedColumnChart({
+    title: 'Worker-minutes per day', width: 99, unit: 'minutes', colors: false, rowCount: 3,
+    buckets, series: [{ id: 'model', values: buckets.map((bucket) => bucket.value) }],
+    ...extra,
+  });
+  const widestRun = (drawn) => drawn.lines
+    .map((line) => Math.max(0, ...([...visible(line).matchAll(/[█▇▆▅▄▃▂▁]+/g)].map((match) => match[0].length))))
+    .reduce((most, width) => Math.max(most, width), 0);
+  const fixed = draw({});
+  const filled = draw({ fill: true });
+  const fixedBar = widestRun(fixed);
+  const filledBar = widestRun(filled);
+  assert.ok(fixedBar > 0 && filledBar > 0, 'both charts paint a bar');
+  assert.ok(filledBar > fixedBar * 2, `filled bars use the panel's columns (${fixedBar} -> ${filledBar})`);
+  // Three bars and their gaps cover the panel; the line still ends inside it.
+  assert.ok(filledBar <= 31, `a filled three-bucket bar stays inside a 99-column chart (${filledBar})`);
+  for (const drawn of [fixed, filled]) {
+    assertBounded(drawn, 99);
+    // The dated axis is the same label at the same width: filling the panel
+    // never changes what a tick or a date says.
+    assert.equal(dateLabel('2026-09-19', { width: 99, cellWidth: 8 }), '19 Sep');
+    assert.match(drawn.lines.map(visible).join('\n'), /19 Sep/);
+  }
+  // The axis' own numbers and dates are unchanged by the fill.
+  const axisText = (drawn) => drawn.lines.map(visible).filter((line) => /[┤┼]/.test(line)).join('\n');
+  assert.deepEqual(
+    axisText(fixed).match(/[─-◿]?\d+(?:\.\d+)?(?:h\d+m|m)?(?:k)?|\b\d{1,2} Sep\b/g),
+    axisText(filled).match(/[─-◿]?\d+(?:\.\d+)?(?:h\d+m|m)?(?:k)?|\b\d{1,2} Sep\b/g),
+  );
+});
+
 test('stacked slices keep the measured bucket value when a series-wide source is unknown', () => {
   const chart = renderStackedColumnChart({
     title: 'Spend', width: 120, unit: 'usd', mark: '≈', colors: false,

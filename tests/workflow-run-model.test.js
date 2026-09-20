@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  attemptRoutingText,
   fittedParts,
   phaseActionGlyph,
   planAttemptDetail,
@@ -8,6 +9,7 @@ import {
   planMoreParts,
   planProgress,
   planStageBoxParts,
+  planStageBoxText,
   planStageName,
   planStageActions,
   planStageHeader,
@@ -18,6 +20,7 @@ import {
   runDurationFacts,
   phaseDurationFacts,
   attemptDurationText,
+  durationClockText,
   stepTally,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
@@ -115,6 +118,8 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   assert.equal(duration.activeMinutes, 14);
   assert.equal(duration.spanMinutes, 64);
   assert.equal(attemptDurationText(row.state.attempts[1], { nowMs: NOW }), '2m00s');
+  assert.equal(durationClockText(14), '14m00s');
+  assert.equal(durationClockText(124.156), '124m09s');
   const live = runDurationFacts({ state: { attempts: [{ actionId: 'live', status: 'running', startedAt: '2026-09-20T11:50:00.000Z', finishedAt: null }] } }, { nowMs: NOW });
   assert.equal(live.activeMinutes, 10);
   assert.equal(live.spanMinutes, null);
@@ -127,6 +132,20 @@ test('Run model unions overlapping attempt clocks and keeps phase boxes phase-on
   assert.equal(phaseDurationFacts(row, stage, { nowMs: NOW }).activeMinutes, 10);
   assert.equal(planStageName(stage, 0), 'audit');
   const box = planStageBoxParts(stage, 0, { runId: 'wf-box' });
-  assert.match(box[0].text, /audit 1\/1/);
+  assert.match(box[0].text, /^\[✓ 1\. audit 1\/1\]$/);
   assert.equal(box[0].action.actionId, 'a');
+  assert.equal(planStageBoxText(stage, 0).includes('1. audit'), true);
+});
+
+test('Run model names each attempt\'s routing on one line, a dash where nothing was recorded', () => {
+  assert.equal(
+    attemptRoutingText({ pool: 'command-code', model: 'deepseek-v4.1-flash', effort: 'medium' }),
+    'command-code · deepseek-v4.1-flash · medium',
+  );
+  // A routing record the connector never wrote keeps its slot as a dash; the
+  // effort may live under routing.effort when the attempt has no top field.
+  assert.equal(attemptRoutingText({ pool: 'codex', model: 'gpt-test', routing: { effort: 'high' } }), 'codex · gpt-test · high');
+  assert.equal(attemptRoutingText({ pool: 'codex', model: 'gpt-test' }), 'codex · gpt-test · —');
+  assert.equal(attemptRoutingText({}), '— · — · —');
+  assert.equal(attemptRoutingText(null), '— · — · —');
 });

@@ -362,13 +362,69 @@ test('active duration wins over the retained wall span in every Stats duration a
   assert.equal(overview.keys.medianRunMinutes, 360.65);
   assert.equal(overview.keys.longestRunMinutes, 360.65);
   assert.equal(overview.keys.durationBasis, 'active minutes');
+  assert.equal(overview.keys.durationRuns, 1);
+  assert.equal(overview.keys.spanRuns, 0);
 
   const outcomes = outcomesModel(rollups, { period: 'all', now: statsNow });
   assert.equal(outcomes.medianActiveMinutes, 360.65);
   assert.equal(outcomes.maxActiveMinutes, 360.65);
+  assert.equal(outcomes.medianDurationMinutes, 360.65);
+  assert.equal(outcomes.longestDurationMinutes, 360.65);
   assert.equal(outcomes.medianWallMinutes, 360.65);
   assert.equal(outcomes.maxWallMinutes, 360.65);
   assert.equal(outcomes.durationBasis, 'active minutes');
+  assert.equal(outcomes.durationRuns, 1);
+  assert.equal(outcomes.spanRuns, 0);
+});
+
+test('a duration with no active union falls back to the recorded span and says how many runs did', () => {
+  // An index `workflow reprice` has not corrected yet: the older `wall` alias
+  // and no attempt-interval union. The figure stays visible, marked as the
+  // span it is, instead of every duration reading `not recorded`.
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const prerepriced = {
+    ...real,
+    minutes: { wall: real.minutes.wall, agent: real.minutes.agent },
+  };
+  const rollups = indexOf([prerepriced]);
+  const statsNow = Date.parse(real.finishedAt) + 60_000;
+
+  const outcomes = outcomesModel(rollups, { period: 'all', now: statsNow });
+  assert.equal(outcomes.medianDurationMinutes, 2234.93);
+  assert.equal(outcomes.longestDurationMinutes, 2234.93);
+  assert.equal(outcomes.durationRuns, 1);
+  assert.equal(outcomes.spanRuns, 1);
+  assert.equal(outcomes.durationBasis, 'span minutes for 1 of 1 runs');
+  assert.ok(!outcomes.nulls.includes('medianDurationMinutes'));
+
+  const overview = overviewModel(rollups, [], { period: 'all', now: statsNow });
+  assert.equal(overview.keys.medianRunMinutes, 2234.93);
+  assert.equal(overview.keys.spanRuns, 1);
+  assert.equal(overview.keys.durationBasis, 'span minutes for 1 of 1 runs');
+
+  const pools = poolsModel(rollups, [], { period: 'all', now: statsNow });
+  const rows = pools.rows.filter((row) => row.runs > 0);
+  assert.ok(rows.length > 0);
+  for (const row of rows) {
+    assert.equal(row.medianDurationMinutes, 2234.93);
+    assert.equal(row.spanRuns, row.durationRuns);
+    assert.match(row.durationBasis, /^span minutes for \d+ of \d+ runs$/);
+  }
+});
+
+test('a period that mixes corrected and uncorrected records names each run\'s own basis', () => {
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const prerepriced = { ...real, runId: 'wf-old', minutes: { wall: real.minutes.wall, agent: null } };
+  const overview = overviewModel(indexOf([real, prerepriced]), [], {
+    period: 'all',
+    now: Date.parse(real.finishedAt) + 60_000,
+  });
+  // 360.65 (active) and 2234.93 (span): the median is over both figures, and
+  // the basis names how many of them came from a span.
+  assert.equal(overview.keys.durationRuns, 2);
+  assert.equal(overview.keys.spanRuns, 1);
+  assert.equal(overview.keys.durationBasis, 'span minutes for 1 of 2 runs');
+  assert.equal(overview.keys.medianRunMinutes, 1297.79);
 });
 
 // ---------------------------------------------------------------- trendModel
@@ -708,4 +764,61 @@ test('Stats carries strict v2 API/subscription amounts and named partial subtota
   assert.equal(trend.buckets.at(-1).apiKnownSubtotalUsd, claudeApiUsd);
   assert.equal(trend.buckets.at(-1).subscriptionUsd, null);
   assert.equal(trend.buckets.at(-1).subscriptionKnownSubtotalUsd, 0.103491);
+  // The strict day value stays null, and the coverage that produced the
+  // recorded subtotal travels with the bucket so a view can print it as the
+  // lower bound it is instead of blanking the day.
+  assert.equal(trend.buckets.at(-1).value, null);
+  assert.deepEqual(trend.buckets.at(-1).apiCoverage, { priced: 1, attempts: 2 });
+  // A complete day carries the whole-scope value and its own coverage.
+  const complete = trendModel(rollups.filter((record) => record.runId === 'wf-v2-claude'), {
+    metric: 'spend', period: '7d', now: NOW,
+  }).buckets.at(-1);
+  assert.equal(complete.value, claudeApiUsd);
+  assert.deepEqual(complete.apiCoverage, { priced: 1, attempts: 1 });
+});
+
+test('trendModel: a partly-priced v2 period has no strict total, only a named subtotal', () => {
+  const partly = [
+    // A v2 run whose attempts were priced in part: no strict `apiUsd`, but a
+    // recorded sum over the attempts that did carry a price.
+    record({
+      runId: 'wf-partial', startedAt: DAY(0, 9), finishedAt: DAY(0, 10), verified: true,
+      wall: 60, agent: 60,
+      pools: { codex: { attempts: 4, minutes: 60, apiUsd: null, apiKnownSubtotalUsd: 8.5, pricedAttempts: 2, costUsd: null } },
+      models: { 'gpt-5.6-luna': { attempts: 4, minutes: 60 } },
+      usage: { apiUsd: null, apiKnownSubtotalUsd: 8.5, attempts: 4, pricedAttempts: 2 },
+    }),
+    // A v2 run on another day where every attempt was priced.
+    record({
+      runId: 'wf-whole', startedAt: DAY(1, 9), finishedAt: DAY(1, 10),
+      wall: 30, agent: 30,
+      pools: { codex: { attempts: 2, minutes: 30, apiUsd: 1.25, apiKnownSubtotalUsd: 1.25, pricedAttempts: 2, costUsd: 1.25 } },
+      models: { 'gpt-5.6-luna': { attempts: 2, minutes: 30 } },
+      usage: { apiUsd: 1.25, apiKnownSubtotalUsd: 1.25, attempts: 2, pricedAttempts: 2 },
+    }),
+  ];
+  const model = trendModel(indexOf(partly), { metric: 'spend', period: '7d', now: NOW });
+  assert.equal(model.total, null, 'a period with an unpriced attempt publishes no total');
+  assert.equal(model.max, null);
+  assert.deepEqual(model.cumulative, model.cumulative.map(() => null));
+  assert.equal(model.apiUsd, null);
+  assert.equal(model.apiKnownSubtotalUsd, 9.75, 'the recorded sum is still named');
+  const byDay = new Map(model.buckets.map((bucket) => [bucket.label, bucket]));
+  const partialDay = byDay.get('2026-09-16');
+  assert.equal(partialDay.value, null, 'the partly-priced day has no strict value');
+  assert.equal(partialDay.apiKnownSubtotalUsd, 8.5);
+  assert.deepEqual(partialDay.apiCoverage, { priced: 2, attempts: 4 });
+  assert.equal(partialDay.attempts, 4, 'the bucket exports the attempt count the guard reads');
+  assert.equal(byDay.get('2026-09-15').value, 1.25, 'a fully priced day keeps its measurement');
+  assertNoNaN(model);
+});
+
+test('trendModel: a legacy run that measured nothing never nulls a v2 period total', () => {
+  // The legacy record prices no attempt at all; the guard is about v2 buckets,
+  // so the measured days still sum. This is the 0.35.0 behaviour, kept.
+  const model = trendModel(indexOf(corpus()), { metric: 'spend', period: '7d', now: NOW });
+  assert.equal(model.total, 0.4);
+  const legacyDay = model.buckets.find((bucket) => bucket.label === '2026-09-13');
+  assert.equal(legacyDay.value, null);
+  assert.equal(legacyDay.runs, 1);
 });

@@ -21,7 +21,7 @@ import {
 } from './dash-kit.js';
 import {
   measuredTaskMinutes,
-  recordCostInfo,
+  medianRunDuration,
   recordMoneyPair,
   todayDateLabel,
   todayLicenceRows,
@@ -51,10 +51,22 @@ import {
   worstTokenSource,
   workflowRunLabel,
 } from './dashboard.js';
-import { formatMoney } from '../lib/usage-basis.js';
+import { apiMoney, apiMoneyText, formatMoney } from '../lib/usage-basis.js';
 
 const BUDGET_WEEK_POOLS = 4;
 const WEEKDAY_LETTERS = Object.freeze(['S', 'M', 'T', 'W', 'T', 'F', 'S']);
+// The licence block's five slots, in plain words: the header names them, and a
+// column too narrow for the whole sentence wraps the last three under the first.
+const LICENCE_HEADER = 'licence · pool · worker-minutes · weekly share · API · subscription';
+const LICENCE_HEADER_LINES = Object.freeze([
+  'licence · pool · worker-minutes',
+  '         weekly share · API · subscription',
+]);
+const LICENCE_MIN_WIDTH = 40;
+// A card's own fields need this much before the box clips them; three cards
+// that do not fit beside the licence column stack instead.
+const MIN_CARD_WIDTH = 36;
+const CARD_GAP = '  ';
 
 function taskIdText(task) {
   const raw = String(task?.id ?? task?.taskFile ?? 'task');
@@ -197,7 +209,16 @@ function cardLines(card, width, { task = false } = {}) {
     ? `${card.steps.done}/${card.steps.total}` : '—';
   const money = card.money ?? recordMoneyPair(card.record ?? {});
   const [apiRaw = '', subRaw = ''] = String(money.text ?? '').split(' · ');
-  const api = cardMoneySlot(apiRaw, { ...money.api, tokens: money.tokens });
+  // The card's API slot shows whatever the pair's API side says: the strict
+  // amount, or the recorded subtotal a partly-priced run really holds. The
+  // `≈` in front of it comes from the pair's own wording.
+  const apiAmount = apiMoney({
+    apiUsd: money.api?.usd ?? null,
+    apiKnownSubtotalUsd: money.apiKnownSubtotalUsd ?? null,
+    apiCoverage: money.apiCoverage ?? null,
+    tokenSource: money.tokenSource ?? null,
+  });
+  const api = cardMoneySlot(apiRaw, { usd: apiAmount?.usd ?? null, tokens: money.tokens });
   const subscription = cardMoneySlot(subRaw, { ...money.subscription, tokens: money.tokens });
   const content = [
     task ? ` ${project} · task · ${status}` : ` ${project} · ${status} · ${verdict}`,
@@ -237,57 +258,107 @@ function taskCardModel(task) {
   };
 }
 
-function cardParts(cards, width) {
-  const gap = '  ';
-  const cardWidth = Math.max(1, Math.floor((width - gap.length * 2) / 3));
-  const widths = [cardWidth, cardWidth, Math.max(1, width - cardWidth * 2 - gap.length * 2)];
-  const rendered = cards.map((card, index) => cardLines(card, widths[index] ?? cardWidth, { task: card.task }));
-  const lines = Math.max(...rendered.map((entry) => entry.length), 0);
-  const out = [];
-  for (let row = 0; row < lines; row += 1) {
-    const parts = [];
-    rendered.forEach((entry, index) => {
-      const text = entry[row] ?? ' '.repeat(widths[index]);
-      const action = cards[index].task
-        ? { kind: 'task', taskId: cards[index].id }
-        : { kind: 'run', runId: cards[index].record?.runId ?? cards[index].id };
-      parts.push({ text, action });
-      if (index < rendered.length - 1) parts.push({ text: gap });
-    });
-    const joined = parts.reduce((sum, part) => sum + visibleLength(part.text), 0);
-    if (joined < width) parts.push({ text: ' '.repeat(width - joined) });
-    out.push(parts);
+/** How many cards flow side by side in `width` columns without clipping. */
+function cardColumnsFor(count, width) {
+  if (count <= 1) return 1;
+  const needed = count * MIN_CARD_WIDTH + (count - 1) * CARD_GAP.length;
+  return width >= needed ? count : 1;
+}
+
+/**
+ * The cards as part rows, `columns` across. Each painted line carries the
+ * action of the card it belongs to, so a click lands on that card's run.
+ */
+function cardGridLines(cards, width, columns) {
+  const count = Math.max(1, Math.min(columns, cards.length));
+  const lines = [];
+  for (let start = 0; start < cards.length; start += count) {
+    const slice = cards.slice(start, start + count);
+    const base = Math.max(1, Math.floor((width - CARD_GAP.length * (slice.length - 1)) / slice.length));
+    const widths = slice.map((card, index) => (index === slice.length - 1
+      ? Math.max(1, width - (base + CARD_GAP.length) * (slice.length - 1))
+      : base));
+    const rendered = slice.map((card, index) => cardLines(card, widths[index], { task: card.task }));
+    const height = Math.max(...rendered.map((entry) => entry.length));
+    for (let row = 0; row < height; row += 1) {
+      const parts = [];
+      rendered.forEach((entry, index) => {
+        const card = slice[index];
+        parts.push({
+          text: entry[row] ?? ' '.repeat(widths[index]),
+          action: card.task
+            ? { kind: 'task', taskId: card.id }
+            : { kind: 'run', runId: card.record?.runId ?? card.id },
+        });
+        if (index < rendered.length - 1) parts.push({ text: CARD_GAP });
+      });
+      lines.push(parts);
+    }
   }
-  return out;
+  return lines;
 }
 
 function licenceMoney(value, tokenSource = null) {
-  if (value == null) return blank();
-  const formatted = formatMoney(value);
+  // Either a plain amount or the shared money rule's verdict: a subtotal is
+  // always marked `≈`, whatever the pool's worst token source says about the
+  // attempts that recorded nothing.
+  const money = value && typeof value === 'object' ? value : { usd: value, partial: false };
+  if (money.usd == null) return blank();
+  const formatted = formatMoney(money.usd);
   if (formatted === '-') return blank();
+  if (money.partial) return `≈${formatted}`;
   return tokenSource === 'transcript-summed' ? `≈${formatted}`
     : tokenSource === 'estimated:utf8-bytes/4' ? `~${formatted}` : formatted;
 }
 
-function licenceLine(row, width) {
+/** One pool's licence facts in plain words, without padding. */
+function licenceRowText(row, width = null) {
+  const name = width == null ? String(row?.name ?? '—') : todayPoolName(row?.name, Math.max(1, width));
   const worker = row?.workerMinutes == null ? blank() : Number(row.workerMinutes).toFixed(2);
   const share = row?.weeklyShare == null ? blank() : `${Number(row.weeklyShare).toFixed(1)}%`;
-  const api = licenceMoney(row?.apiUsd, row?.tokenSource);
+  const api = licenceMoney(apiMoney(row), row?.tokenSource);
   const subscription = licenceMoney(row?.subscriptionUsd);
-  return todayPadded(`${todayPoolName(row?.name, Math.max(1, width))} · ${worker} · ${share} · ${api} · ${subscription}`, width);
+  return `${name} · ${worker} · ${share} · ${api} · ${subscription}`;
 }
 
-function licenceBlock(model, today, { width, narrow, nowMs }, body) {
-  const rows = todayLicenceRows(model, today, nowMs);
-  if (narrow) {
-    body.push(todayPadded('licence · pool · worker-minutes', width));
-    body.push(todayPadded('         weekly share · API · subscription', width));
-  } else {
-    body.push(todayPadded('licence · pool · worker-minutes · weekly share · API · subscription', width));
+function licenceLine(row, width) {
+  return todayPadded(licenceRowText(row, width), width);
+}
+
+/** The header sentence, wrapped when the column cannot hold it in one row. */
+function licenceHeaderLines(width) {
+  return width != null && width < visibleLength(LICENCE_HEADER)
+    ? LICENCE_HEADER_LINES : [LICENCE_HEADER];
+}
+
+/** The measured width a licence column wants: its words, never its own noise. */
+function licenceColumnWidth(rows) {
+  const widest = LICENCE_HEADER_LINES.reduce(
+    (most, line) => Math.max(most, visibleLength(line)),
+    LICENCE_MIN_WIDTH,
+  );
+  return rows.reduce((most, row) => Math.max(most, visibleLength(licenceRowText(row))), widest);
+}
+
+/** The licence block as its own column of rows, for the desktop band. */
+function licenceColumnLines(rows, width) {
+  const lines = licenceHeaderLines(width).map((line) => ({ text: todayPadded(line, width) }));
+  if (!rows.length) lines.push({ text: todayPadded('none measured in the real snapshot', width) });
+  for (const row of rows) {
+    lines.push({
+      text: todayPadded(licenceRowText(row, width), width),
+      action: { kind: 'page', page: 'budget', pool: row.name },
+    });
   }
+  return lines;
+}
+
+function licenceBlock(rows, { width }, body) {
+  for (const line of licenceHeaderLines(width)) body.push(todayPadded(line, width));
   if (!rows.length) body.push(todayPadded('none measured in the real snapshot', width));
-  for (const row of rows) body.row(licenceLine(row, width), { kind: 'page', page: 'budget', pool: row.name });
-  return rows;
+  for (const row of rows) {
+    body.row(licenceLine(row, width), { kind: 'page', page: 'budget', pool: row.name });
+  }
 }
 
 /** The approved Home today band: finished work on the left, licence draw right. */
@@ -385,7 +456,7 @@ function legacyHomeTodayBand(model, opts, body) {
   return { workflowCount, taskCount, verified };
 }
 
-/** Home's today block: three cards, followed by a plain-words licence block. */
+/** Home's today block: three cards, beside the plain-words licence block. */
 function homeTodayBand(model, opts, body) {
   const width = Number(opts.width) || 120;
   const narrow = opts.narrow ?? width < 100;
@@ -407,19 +478,43 @@ function homeTodayBand(model, opts, body) {
   }
   const date = todayDateLabel(today.date, { year: !narrow });
   body.push(todayPadded(`Home · Today · ${date} · top ${cards.length} runs (active first)`, width));
+  const licenceRows = todayLicenceRows(model, today, nowMs);
   if (!cards.length) body.push(todayPadded('no runs captured in the real snapshot', width));
-  else if (narrow) {
-    for (const card of cards) {
-      for (const line of cardLines(card, width, { task: card.task })) {
-        body.row(line, { kind: card.task ? 'task' : 'run', ...(card.task
-          ? { taskId: card.id } : { runId: card.record?.runId ?? card.id }) });
-      }
+  if (width >= 120) {
+    // The owner's desktop note: the top three runs and licence usage share the
+    // same rows. The licence column takes only the width its own words need,
+    // so the cards keep the rest — side by side when three of them fit there,
+    // stacked when they do not.
+    const gap = 2;
+    const licenceWidth = Math.max(LICENCE_MIN_WIDTH, Math.min(Math.floor(width / 2), licenceColumnWidth(licenceRows)));
+    const cardsWidth = Math.max(1, width - licenceWidth - gap);
+    const cardRows = cardGridLines(cards, cardsWidth, cardColumnsFor(cards.length, cardsWidth));
+    const licenceLines = licenceColumnLines(licenceRows, licenceWidth);
+    const rows = Math.max(cardRows.length, licenceLines.length);
+    for (let row = 0; row < rows; row += 1) {
+      const parts = [...(cardRows[row] ?? [{ text: ' '.repeat(cardsWidth) }])];
+      parts.push({ text: ' '.repeat(gap) });
+      parts.push(licenceLines[row] ?? { text: ' '.repeat(licenceWidth) });
+      body.parts(parts);
     }
   } else {
-    for (const parts of cardParts(cards, width)) body.parts(parts);
+    if (cards.length) {
+      // The phone stacks one card per row and keeps the licence block under
+      // it; a 100–119 column terminal still flows the cards across the width.
+      if (narrow) {
+        for (const card of cards) {
+          for (const line of cardLines(card, width, { task: card.task })) {
+            body.row(line, { kind: card.task ? 'task' : 'run', ...(card.task
+              ? { taskId: card.id } : { runId: card.record?.runId ?? card.id }) });
+          }
+        }
+      } else {
+        for (const parts of cardGridLines(cards, width, cardColumnsFor(cards.length, width))) body.parts(parts);
+      }
+      body.push('');
+    }
+    licenceBlock(licenceRows, opts, body);
   }
-  body.push('');
-  licenceBlock(model, today, opts, body);
   const uniqueRows = (kind, key) => {
     const seen = new Set();
     return body.regions
@@ -607,11 +702,18 @@ function breakdownCells(model, opts, { cellWidth }) {
   const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
   const spend = model.stats?.spendPerDay ?? null;
   const rows = 4;
+  // A day's recorded figure, through the shared money rule: the strict total
+  // when every attempt in it was priced, else the sum over the attempts that
+  // were. A partly-priced day has no strict total, and charting nothing there
+  // would say the day cost nothing, which the rollups contradict. A day's
+  // `tokenSource` is the worst of its attempts, so it may only blank a whole
+  // figure — never the subtotal the priced attempts really recorded.
+  const bucketSpend = (bucket) => apiMoney(bucket);
   const spendTokenSource = (spend?.buckets ?? []).reduce((source, bucket) => (
-    bucket?.value == null
+    bucketSpend(bucket) == null
       ? source
-      : worstTokenSource(source, tokenSourceOf(bucket?.tokenSource, bucket?.value))
-  ), null) ?? tokenSourceOf(spend?.tokenSource, spend?.total);
+      : worstTokenSource(source, tokenSourceOf(bucket?.tokenSource, bucketSpend(bucket).usd))
+  ), null) ?? tokenSourceOf(spend?.tokenSource, spend?.total ?? spend?.apiKnownSubtotalUsd);
   const barOf = (share, role, label, width) => {
     const value = Number(share);
     const raw = shareText(share) ?? blank();
@@ -636,22 +738,23 @@ function breakdownCells(model, opts, { cellWidth }) {
       ],
     };
   };
-  const buckets = spend?.total == null ? [] : (spend?.buckets ?? []);
-  const chartBuckets = buckets.filter((bucket) => (
-    bucket?.value != null
-    && tokenSourceOf(bucket?.tokenSource, bucket?.value) !== 'unknown'
-  ));
+  const buckets = spend?.buckets ?? [];
+  const chartBuckets = buckets.filter((bucket) => bucketSpend(bucket) != null);
+  // A chart that draws any subtotal is a lower bound throughout, so the whole
+  // axis carries the `≈` mark rather than one bar claiming to be exact.
+  const partialSpend = chartBuckets.some((bucket) => bucketSpend(bucket).partial);
   const chart = chartBuckets.length
     ? columnBars(
-      [{ name: 'spent', values: chartBuckets.map((bucket) => bucket.value), color: METER_COLORS.cyan }],
+      [{ name: 'spent', values: chartBuckets.map((bucket) => bucketSpend(bucket).usd), color: METER_COLORS.cyan }],
       chartBuckets.map((bucket) => WEEKDAY_LETTERS[bucket.weekday] ?? String(bucket.label ?? '').slice(-2)),
       {
         width: cellWidth,
         rowCount: chartRowCount(opts.height ?? 36),
         col: Math.max(2, Math.floor((cellWidth - 7) / Math.max(1, chartBuckets.length))),
-        barW: 3, unit: '$', mark: spendTokenSource === 'provider-reported' ? ''
-          : spendTokenSource === 'transcript-summed' ? '≈'
-            : spendTokenSource === 'estimated:utf8-bytes/4' ? '~' : '·',
+        barW: 3, unit: '$', mark: partialSpend ? '≈'
+          : spendTokenSource === 'provider-reported' ? ''
+            : spendTokenSource === 'transcript-summed' ? '≈'
+              : spendTokenSource === 'estimated:utf8-bytes/4' ? '~' : '·',
         totals: false, colors: meterAnsi(),
       },
     )
@@ -669,6 +772,29 @@ function breakdownCells(model, opts, { cellWidth }) {
   ].map((cell) => ({ ...cell, period }));
 }
 
+/**
+ * The period's median run, with the basis it was measured on: active minutes,
+ * or the span a period with no provable active interval falls back to — said
+ * as `span`, because a span is never passed off as active time.
+ */
+function medianRunText(model) {
+  const overview = model.stats?.overview ?? null;
+  const median = medianRunDuration(model.rollups ?? [], {
+    from: overview?.from ?? null,
+    to: overview?.to ?? null,
+  });
+  if (median.minutes == null) return blank();
+  return median.basis === 'span' ? `span ${minutesText(median.minutes)}` : minutesText(median.minutes);
+}
+
+/** A run row's duration: active minutes, else the span it recorded, said so. */
+function recentDurationText(record) {
+  const active = finiteOrNull(record?.minutes?.active);
+  if (active != null && active >= 0) return minutesText(active);
+  const span = finiteOrNull(record?.minutes?.span ?? record?.minutes?.wall);
+  return span == null || span < 0 ? blank() : `span ${minutesText(span)}`;
+}
+
 function summaryBand(body, model, opts) {
   const { width, narrow } = opts;
   const overview = model.stats?.overview ?? null;
@@ -677,8 +803,24 @@ function summaryBand(body, model, opts) {
   const projects = model.stats?.projects ?? null;
   const verified = (overview.breakdown?.projects ?? []).reduce((sum, row) => sum + (row.verified ?? 0), 0);
   const runs = keys.workflows ?? 0;
-  const spent = projects?.totals?.apiEquivalentUsd ?? null;
-  const money = moneyText({ ...keys, apiUsd: spent });
+  // The period's spend through the shared money rule: the strict total when
+  // every attempt was priced, else the recorded subtotal named with its
+  // coverage, so this line can never say `unknown` while the chart above it
+  // draws three bars.
+  const totals = projects?.totals ?? null;
+  const spentMoney = apiMoney({
+    apiUsd: totals?.apiEquivalentUsd ?? totals?.apiUsd ?? null,
+    apiKnownSubtotalUsd: totals?.apiKnownSubtotalUsd ?? null,
+    attempts: totals?.attempts ?? null,
+    pricedAttempts: totals?.pricedAttempts ?? null,
+    tokenSource: totals?.tokenSource ?? null,
+  });
+  const money = spentMoney?.partial
+    ? [
+      apiMoneyText(spentMoney, null, null, { coverage: true }),
+      ...moneyText({ ...keys, apiUsd: null }).split(' · ').slice(1),
+    ].join(' · ')
+    : moneyText({ ...keys, apiUsd: spentMoney?.usd ?? null });
   const share = runs ? shareText(verified / runs) : null;
   const named = (row) => (row?.name ? String(row.name) : blank());
   const figures = [
@@ -692,7 +834,7 @@ function summaryBand(body, model, opts) {
     ],
     [
       `Spent: ${tint(money, 'orange')}`,
-      `Median run: ${tint(minutesText(keys.medianRunMinutes) ?? blank(), 'orange')}`,
+      `Median run: ${tint(medianRunText(model), 'orange')}`,
     ],
   ];
   body.push('');
@@ -702,8 +844,9 @@ function summaryBand(body, model, opts) {
     pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
   }
   body.push('');
-  const sentence = money && !money.includes('api unknown')
-    ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${money} of API-equivalent work`
+  const apiPart = money.split(' · ')[0];
+  const sentence = apiPart && !apiPart.includes('api unknown')
+    ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${apiPart} of API-equivalent work`
     : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
   body.push(cut(` ${tint(sentence, 'purple')}`, width));
 }
@@ -717,8 +860,7 @@ function homePage(model, opts, body) {
   };
   homeTodayBand(model, normalized, body);
   activeRunLines(model, normalized, body);
-  budgetWeekLines(body, model, normalized);
-  return ' bullswarm · home';
+  return homeDetails(model, normalized, body);
 }
 
 function activeRunLines(model, opts, body, title = 'running') {
@@ -811,8 +953,78 @@ function activeRunLines(model, opts, body, title = 'running') {
   }
 }
 
+/**
+ * The rest of Home: the week's budget, the period band below it with the
+ * spent-per-day chart and the three breakdown lists, the period's key figures
+ * and the recent-run list. Home leads with the today cards and the licence
+ * block above all of this.
+ */
 function homeDetails(model, opts, body) {
-  budgetWeekLines(body, model, { width: opts.width, narrow: opts.narrow, nowMs: opts.nowMs });
+  const { width, narrow, nowMs } = opts;
+  budgetWeekLines(body, model, { width, narrow, nowMs });
+
+  const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
+  body.push('');
+  const toggle = periodToggle(PERIOD_ITEMS, { active: period.id, width: narrow ? width - 2 : Math.max(10, width - 24) });
+  if (narrow) {
+    body.push(rule(period.label.toLowerCase(), null, width));
+    body.kit({ text: ` ${toggle.text}`, regions: toggle.regions.map((region) => ({ ...region, x: region.x + 1 })) });
+  } else {
+    const head = rule(period.label.toLowerCase(), null, Math.max(4, width - visibleLength(toggle.text) - 2));
+    body.kit({ text: `${head} ${toggle.text} `, regions: toggle.regions.map((region) => ({ ...region, x: region.x + visibleLength(head) + 1 })) });
+  }
+  if (narrow) {
+    for (const cell of breakdownCells(model, opts, { cellWidth: width - 1 })) {
+      const base = body.lines.length;
+      const rows = cell.rows;
+      for (const line of rows) body.push(` ${cut(line, width - 1)}`);
+      if (cell.action) {
+        for (let row = base + 1; row <= body.lines.length; row += 1) {
+          body.regions.push({ x1: 1, x2: width, y: row, action: cell.action });
+        }
+      }
+    }
+  } else {
+    const gap = 2;
+    const inner = Math.max(4, width - 1 - gap * 3);
+    const cellWidth = Math.floor(inner / 4);
+    pushColumns(body, breakdownCells(model, opts, { cellWidth }), { width: width - 1, gap });
+  }
+  if (!narrow) body.push(dimText(' spent per day carries the provider/transcript/estimate basis · share is measured worker-minutes · click a column for its Stats tab', width));
+
+  summaryBand(body, model, opts);
+
+  body.push('');
+  body.push(rule('recent', 'history ›', width));
+  const recent = [...(model.rollups ?? [])]
+    .sort((a, b) => String(b.finishedAt ?? b.startedAt ?? '').localeCompare(String(a.finishedAt ?? a.startedAt ?? '')))
+    .slice(0, narrow ? 3 : 5);
+  if (!recent.length) {
+    body.push(dimText(' no run has been rolled up yet · bullswarm workflow reindex backfills them', width));
+  }
+  // The duration cell carries the run's basis (`span` when the record proved
+  // no active interval) beside its money, so the desktop cell is five columns
+  // wider than the bare duration it replaced, not five columns of truncated money.
+  const durationWidth = narrow ? 16 : 21;
+  for (const record of recent) {
+    const ok = record.verified === true ? tint(glyphs().ok, 'green') : record.status === 'completed' ? dimText(glyphs().pending, 2) : tint(glyphs().fail, 'red');
+    // The same money rule the cards use: a partly-priced run shows the
+    // recorded subtotal marked `≈` rather than a dash that reads as free.
+    const money = recordMoneyPair(record).text;
+    body.row(compactRow([
+      { text: ` ${ok}`, width: 2 },
+      { text: strong(record.shortId ?? record.runId), width: 7 },
+      {
+        text: cut(`${record.project ?? blank()} · ${String(record.goal ?? '').split('\n')[0]}`, Math.max(6, width - 34 - (durationWidth - 16))),
+        grow: true,
+        min: 6,
+        gap: 2,
+      },
+      { text: `${recentDurationText(record)} · ${money ?? blank()}`, width: durationWidth, align: 'right', gap: 2 },
+      { text: dimText(`${ageText(record.finishedAt, nowMs)} ago`, 12), width: 11, align: 'right', gap: 2 },
+    ], { width }), { kind: 'run', runId: record.runId });
+  }
+  if (narrow) body.push(dimText(' ≈ API-equivalent estimates · click tiles for charts', width));
   return ' bullswarm · home';
 }
 
@@ -823,10 +1035,14 @@ export {
   cardMoneySlot,
   cardLines,
   taskCardModel,
-  cardParts,
+  cardGridLines,
+  cardColumnsFor,
+  licenceRowText,
   licenceLine,
   licenceBlock,
   homeDetails,
+  medianRunText,
+  recentDurationText,
   todayGoalLine,
   todayWorkflowLine,
   todayTaskLine,

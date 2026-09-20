@@ -9,8 +9,28 @@
 - home: today leads with up to three active-or-most-recent run cards, while the
   licence block uses one plain-word `pool · worker-minutes · weekly share · API
   · subscription` row per pool and keeps Running and Budget visible.
-- run: the plan is compact phase boxes with status glyphs and `done/total`, and
-  timeline rows carry the recorded pool, model, effort, and attempt duration.
+- home: from 120 columns the cards sit beside the licence block and share its
+  rows, flowing side by side inside their column at 200 and stacking at 120; at
+  55 they stack full width with the licence block beneath.
+- home: the last-7-days band and the five-row recent list are back below
+  `budget · this week`, with the `Last 30 days`/`All time` toggle, the spend
+  chart, the by-pool/by-model/by-project lists, and the summary lines; the full
+  run list still lives only on Runs.
+- run: the plan is numbered boxes chained with `→`, one per phase, wrapping only
+  between whole boxes, and the timeline is the 0.35.0 tree again -- `started`,
+  one row per attempt carrying `pool · model · effort` with its own clock, and
+  a right-aligned `completed n/n`.
+- run: a phase header shows that phase's active minutes in clock form
+  (`124m09s`), never the span across an idle gap.
+- money: a run, day, pool or period whose attempts were only partly priced now
+  shows the recorded subtotal marked `≈` with its coverage instead of reading
+  as unrecorded; strict totals stay strict and a subtotal is never summed into
+  one.
+- stats: `Median run` and `Longest run` fall back per record to the recorded
+  span and say so, and the Spending chart fills its panel on the desktop grid
+  instead of drawing six narrow bars beside it.
+- charts: a column chart sizes its tick gutter to the widest label the axis
+  will actually print, so a money axis reads `≈$160.00` rather than `≈$160.…`.
 - step: the page has Header, Task, Activity, Result, and Cost blocks; overview
   is the default, `v` switches to capture-order detail, and `Enter` expands a
   selected response's real atomic events without inventing event kinds.

@@ -1,9 +1,74 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { statsLines } from '../src/workflow/stats-view.js';
+import { appendRollupIndex, readRollups, rollupRecord, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
+import { modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from '../src/workflow/stats-model.js';
 
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (value) => String(value ?? '').replace(SGR, '');
+
+// The real Claude result the other Stats fixtures use, so the API figures
+// below are the fixture's own and not a number written into a test.
+const CLAUDE_RESULT = JSON.parse(
+  readFileSync(new URL('./fixtures/transcripts/claude-result-event.json', import.meta.url), 'utf8'),
+);
+
+const homes = [];
+function home() {
+  const dir = mkdtempSync(join(tmpdir(), 'bs-stats-view-'));
+  mkdirSync(join(dir, 'workflows'), { recursive: true });
+  homes.push(dir);
+  return dir;
+}
+test.after(() => { for (const dir of homes) rmSync(dir, { recursive: true, force: true }); });
+
+/**
+ * The v2 record shape the rollup writer emits, with `minutes` in the shape an
+ * index that predates `workflow reprice` still has: the older `wall` alias and
+ * no attempt-interval union.
+ */
+function v2Record({
+  runId, finishedAt, priced = 1, attempts = 2, apiUsd = null, subtotal = CLAUDE_RESULT.total_cost_usd,
+  pools = {}, models = {}, wall = 30,
+}) {
+  return {
+    schemaVersion: ROLLUP_SCHEMA_VERSION,
+    runId,
+    shortId: runId.slice(-6),
+    project: 'project-a',
+    goal: `goal for ${runId}`,
+    startedAt: finishedAt,
+    finishedAt,
+    status: 'completed',
+    verified: true,
+    requirements: { passed: 1, total: 1 },
+    minutes: { wall },
+    pools,
+    models,
+    usage: {
+      attempts, minutes: wall, apiUsd, apiKnownSubtotalUsd: subtotal,
+      subscriptionUsd: null, subscriptionKnownSubtotalUsd: null,
+      measuredAttempts: priced, pricedAttempts: priced, subscriptionPricedAttempts: 0,
+      tokenSource: 'transcript-summed', subscriptionBasis: 'unknown:no-meter',
+    },
+  };
+}
+
+function statsOf(records, { period = '30d', now = Date.now() } = {}) {
+  const overview = overviewModel(records, [], { period, now });
+  return {
+    overview,
+    breakdown: overview.breakdown,
+    trend: trendModel(records, { metric: 'runs', period, now }),
+    spendPerDay: trendModel(records, { metric: 'spend', period, now }),
+    pools: poolsModel(records, [], { period, now }),
+    models: modelsModel(records, { period, now }),
+    projects: projectsModel(records, { period, now }),
+  };
+}
 
 const buckets = [
   { key: '2026-09-13', label: '2026-09-13', value: 0.08, tokenSource: 'estimated:utf8-bytes/4', segments: [{ name: 'claude-code', value: 0.08 }] },
@@ -266,8 +331,8 @@ test('stack slices and outcome duration rows use measured values and matching un
   // stacked width each panel gets its own full-width geometry and exposes the
   // measured outcome rows for the same hover assertions.
   const stacked = statsLines(fixture(), { ...base, width: 55 });
-  const median = stacked.regions.find((region) => region.action.payload?.label === 'Median active');
-  const longest = stacked.regions.find((region) => region.action.payload?.label === 'Longest active');
+  const median = stacked.regions.find((region) => region.action.payload?.label === 'Median run');
+  const longest = stacked.regions.find((region) => region.action.payload?.label === 'Longest run');
   assert.ok(median && longest);
   assert.equal(median.action.payload.unit, 'minutes');
   assert.equal(longest.action.payload.unit, 'minutes');
@@ -323,4 +388,116 @@ test('Stats prints API and subscription money together without a bare estimate',
   assert.match(text, /~ \$1\.23 api estimated/);
   assert.match(text, /2\.5% wk ≈ \$0\.50 sub/);
   assert.doesNotMatch(text, /(?<!~ )\$1\.23 api(?:\s|·|$)/, 'estimated API money never uses the measured form');
+});
+
+// ---------------------------------------------------------------------------
+// The second review round's data path: a period whose records carry a price
+// for some of their attempts, and an index `workflow reprice` has not
+// corrected yet. Both are read through the real models, over the real rollup
+// index, exactly as the dashboard reads them.
+// ---------------------------------------------------------------------------
+
+const REVIEW_NOW = Date.parse('2026-09-20T12:00:00.000Z');
+const REVIEW_DAY = '2026-09-20T09:00:00.000Z';
+
+/** One index holding a partly-priced pool and a fully-priced one. */
+function partialIndex() {
+  const dir = home();
+  const partial = v2Record({
+    runId: 'wf-v2-partial', finishedAt: REVIEW_DAY, priced: 1, attempts: 2, wall: 40,
+    pools: {
+      codex: {
+        attempts: 2, minutes: 40, apiUsd: null,
+        apiKnownSubtotalUsd: CLAUDE_RESULT.total_cost_usd, costUsd: null,
+        pricedAttempts: 1, measuredAttempts: 1, tokens: 1000,
+        tokenSource: 'transcript-summed', subscriptionBasis: 'unknown:no-meter',
+      },
+    },
+    models: { 'gpt-5.6-luna': { attempts: 2, minutes: 40 } },
+  });
+  const whole = v2Record({
+    runId: 'wf-v2-whole', finishedAt: REVIEW_DAY, priced: 1, attempts: 1, wall: 20,
+    apiUsd: CLAUDE_RESULT.total_cost_usd,
+    pools: {
+      'claude-code:acme': {
+        attempts: 1, minutes: 20, apiUsd: CLAUDE_RESULT.total_cost_usd,
+        apiKnownSubtotalUsd: CLAUDE_RESULT.total_cost_usd, costUsd: CLAUDE_RESULT.total_cost_usd,
+        pricedAttempts: 1, measuredAttempts: 1, tokens: 2000,
+        tokenSource: 'provider-reported', subscriptionBasis: 'unknown:no-meter',
+      },
+    },
+    models: { 'claude-opus-5': { attempts: 1, minutes: 20 } },
+  });
+  appendRollupIndex(dir, partial);
+  appendRollupIndex(dir, whole);
+  return readRollups(dir);
+}
+
+test('a pool row shows the recorded subtotal instead of the missing-total reason', () => {
+  const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
+  const text = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false })
+    .lines.map(visible).join('\n');
+  const sub = CLAUDE_RESULT.total_cost_usd.toFixed(2);
+  assert.match(text, new RegExp(`codex[^\\n]*≈ \\$${sub} api 50%`), 'the partial pool prints its recorded subtotal');
+  assert.doesNotMatch(text, /codex [^\n]*cost not recorded/);
+  // The page says once what a subtotal is; the panel cell keeps its columns.
+  assert.match(text, /Coverage · 2 of 3 attempts carried a price; spend over them is a subtotal, marked ≈\./);
+  // The whole-scope pool keeps the strict form and no coverage prose.
+  assert.match(text, /acme[^\n]*\$[\d.]+ api 50%/);
+});
+
+test('the hover over a subtotal names the coverage that produced it', () => {
+  const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
+  const view = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false });
+  const row = view.regions.find((region) => region.action.payload?.kind === 'share' && region.action.payload?.label === 'codex');
+  assert.ok(row, 'the pool spend row is a hit region');
+  assert.equal(row.action.payload.partial, true);
+  const hovered = visible(statsLines(stats, {
+    width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: row.action,
+  }).lines[2]);
+  assert.match(hovered, /codex · ≈\$[\d.]+ \(1\/2 attempts priced\) · [\d.]+% of panel/);
+});
+
+test('a day whose attempts were only partly priced draws its recorded subtotal', () => {
+  const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
+  const view = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false });
+  const chart = view.lines.slice(5, 20).map(visible);
+  assert.ok(chart.some((line) => /[█▇▆▅▄▃▂▁]/.test(line)), 'the partial day has a bar');
+  const column = view.regions.find((region) => region.action.payload?.kind === 'column');
+  assert.ok(column, 'the day is a hit region');
+  assert.equal(column.action.payload.partial, true);
+  const hovered = visible(statsLines(stats, {
+    width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: { ...column.action, kind: 'column' },
+  }).lines[2]);
+  assert.match(hovered, /≈\$[\d.]+ \(2\/3 attempts priced\) · 100% of the day/);
+  // The summary carries the period's recorded sum, named as a subtotal.
+  const summary = visible(view.lines[4]);
+  assert.match(summary, /≈ \$[\d.]+ api · 2\/3 priced/);
+});
+
+test('duration rows name the span an index without active unions falls back to', () => {
+  const stats = statsOf(partialIndex(), { period: '30d', now: REVIEW_NOW });
+  const view = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false });
+  const text = view.lines.map(visible).join('\n');
+  assert.match(text, /Median run[^\n]*30m median · span 2\/2/);
+  assert.match(text, /Longest run[^\n]*40m maximum · span 2\/2/);
+  assert.doesNotMatch(text, /duration not recorded/);
+  assert.match(text, /Durations · 2 of 2 runs recorded no active interval union; their span stands in until workflow reprice fills it\./);
+  // The label a hover carries stays the row's own, and its unit is minutes.
+  const row = view.regions.find((region) => region.action.payload?.label === 'Median run');
+  assert.ok(row);
+  assert.equal(row.action.payload.unit, 'minutes');
+  assert.equal(row.action.payload.value, 30);
+});
+
+test('a record that carries an active union is never labelled as a span', () => {
+  const dir = home();
+  appendRollupIndex(dir, rollupRecord(JSON.parse(
+    readFileSync(new URL('./fixtures/workflows/g6d6q2-state.json', import.meta.url), 'utf8'),
+  ), null, { project: 'project-a' }));
+  const stats = statsOf(readRollups(dir), { period: 'all', now: Date.parse('2026-09-20T12:00:00.000Z') });
+  const text = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: 'all', ansi: false })
+    .lines.map(visible).join('\n');
+  assert.match(text, /Median run[^\n]*6h01m median(?! · span)/);
+  assert.doesNotMatch(text, /Durations ·/);
 });

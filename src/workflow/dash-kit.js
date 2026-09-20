@@ -827,21 +827,6 @@ export function columnBars(series, labels, {
   const requestedRows = Math.max(1, cellsOf(requestedRowCount ?? height, 6));
   const baseCol = Math.max(1, Math.trunc(Number(col)) || 8);
   const markText = typeof mark === 'string' ? mark : '';
-  // The tick gutter, the axis column, and the cell the mark needs in front of
-  // the tick it qualifies. The prototype reserves six cells for a tick label
-  // and one for the axis; on an unusually narrow input, reduce that gutter
-  // before narrowing cells.
-  const tickRoom = 6 + visibleLength(markText);
-  const axisWidth = requested == null
-    ? tickRoom
-    : Math.max(1, Math.min(tickRoom, requested - 1 - n));
-  const available = requested == null ? null : Math.max(1, requested - axisWidth - 1);
-  const cellWidth = available == null
-    ? baseCol
-    : Math.max(1, Math.min(baseCol, Math.floor(available / n)));
-  const barWidth = cellWidth <= 1
-    ? 1
-    : Math.max(1, Math.min(cellWidth - 1, Math.trunc(Number(barW)) || 1));
   const ascii = asciiGlyphsPreferred();
   const axis = ascii ? '|' : '┤';
   const baseAxis = ascii ? '+' : '┼';
@@ -860,6 +845,26 @@ export function columnBars(series, labels, {
   const max = sums.reduce((most, value) => value != null ? Math.max(most, value) : most, 0);
   const axisInfo = niceStep(max, requestedRows);
   const axisTop = axisInfo.ticks.at(-1) ?? 0;
+  // The tick gutter, the axis column, and the cell the mark needs in front of
+  // the tick it qualifies. The prototype's six cells hold a tick up to
+  // `$99.99`; the axis this data produces can be wider (`$160.00`, and a
+  // marked `≈$160.00`), and a cut tick is a label that measures nothing, so
+  // the gutter is sized to the widest tick this axis will actually print. An
+  // unusually narrow input still reduces it before narrowing cells.
+  const tickRoom = axisInfo.ticks.reduce(
+    (most, tick) => Math.max(most, visibleLength(numberTextOf(tick, unit, markText) ?? '')),
+    6 + visibleLength(markText),
+  );
+  const axisWidth = requested == null
+    ? tickRoom
+    : Math.max(1, Math.min(tickRoom, requested - 1 - n));
+  const available = requested == null ? null : Math.max(1, requested - axisWidth - 1);
+  const cellWidth = available == null
+    ? baseCol
+    : Math.max(1, Math.min(baseCol, Math.floor(available / n)));
+  const barWidth = cellWidth <= 1
+    ? 1
+    : Math.max(1, Math.min(cellWidth - 1, Math.trunc(Number(barW)) || 1));
   const intervals = Math.max(1, axisInfo.ticks.length - 1);
   // Nice-number rounding can leave fewer intervals than requested (for
   // example a 0–20 axis at a wanted height of six).  Round the rows per tick
@@ -920,25 +925,7 @@ export function columnBars(series, labels, {
     });
   });
 
-  const numberText = (value) => {
-    const number = reading(value);
-    if (number == null) return null;
-    const absolute = Math.abs(number);
-    let text;
-    if (absolute >= 1000) text = `${(number / 1000).toFixed(absolute >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
-    else if (absolute >= 100) text = String(Math.round(number));
-    else if (absolute >= 10) text = number.toFixed(0);
-    else if (Number.isInteger(number)) text = String(number);
-    else {
-      text = number.toFixed(1);
-      // A recorded fraction of a cent is still a recording; rounding it to
-      // `0.0` would read as free, which is a different claim from "very small".
-      if (number !== 0 && Number(text) === 0) text = number.toPrecision(1);
-    }
-    if (unit === '$') return `${markText}${formatDashboardValue(number, 'money')}`;
-    if (unit === 'minutes') return `${markText}${formatDashboardValue(number, 'minutes')}`;
-    return `${markText}${unit ?? ''}${text}`;
-  };
+  const numberText = (value) => numberTextOf(value, unit, markText);
   // A value under a column keeps one blank cell before the next column. When
   // the full text would fill the cell (`16h34m` in a six-cell phone column ran
   // straight into `3h52m`), a duration falls back to whole hours and anything
@@ -1170,6 +1157,34 @@ export function niceStep(max, ticks = 4) {
     values.push(Number(tick.toPrecision(12)));
   }
   return { step, ticks: values };
+}
+
+/**
+ * One number as a column chart prints it: the compact form for counts, the
+ * money and duration forms for those units, always carrying the caller's mark
+ * in front. `columnBars` measures its tick gutter and paints its ticks through
+ * this one rule, so a label can never be sized differently from the way it is
+ * drawn.
+ */
+function numberTextOf(value, unit, mark = '') {
+  const number = reading(value);
+  if (number == null) return null;
+  const markText = typeof mark === 'string' ? mark : '';
+  const absolute = Math.abs(number);
+  let text;
+  if (absolute >= 1000) text = `${(number / 1000).toFixed(absolute >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
+  else if (absolute >= 100) text = String(Math.round(number));
+  else if (absolute >= 10) text = number.toFixed(0);
+  else if (Number.isInteger(number)) text = String(number);
+  else {
+    text = number.toFixed(1);
+    // A recorded fraction of a cent is still a recording; rounding it to
+    // `0.0` would read as free, which is a different claim from "very small".
+    if (number !== 0 && Number(text) === 0) text = number.toPrecision(1);
+  }
+  if (unit === '$') return `${markText}${formatDashboardValue(number, 'money')}`;
+  if (unit === 'minutes') return `${markText}${formatDashboardValue(number, 'minutes')}`;
+  return `${markText}${unit ?? ''}${text}`;
 }
 
 const DATE_MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);

@@ -278,6 +278,12 @@ function payloadFor(part, common = {}) {
     unit: unitName(part?.unit ?? common.unit),
     tokenSource: part?.tokenSource ?? common.tokenSource ?? null,
     basis: part?.basis ?? common.basis ?? null,
+    // A recorded amount over the attempts that carry a price is a lower bound,
+    // and its coverage travels with it so a label can name it rather than
+    // printing the value as if the whole scope had been measured.
+    partial: part?.partial === true || common.partial === true,
+    pricedAttempts: finite(part?.priced ?? common.priced),
+    attempts: finite(part?.attempts ?? common.attempts),
     apiUsd: part?.apiUsd ?? common.apiUsd ?? null,
     subscriptionUsd: part?.subscriptionUsd ?? common.subscriptionUsd ?? null,
     subscriptionDeltaPct: part?.subscriptionDeltaPct ?? common.subscriptionDeltaPct ?? null,
@@ -633,15 +639,22 @@ export function renderPanel({
   };
 }
 
-function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, colors) {
+// A chart that fills its panel asks `columnBars` for the widest cell it can
+// place. That arithmetic already caps the cell at `floor(available / buckets)`
+// and the bar one column short of it, so an uncapped request resolves to
+// exactly the panel's own columns — bars and their one-column gaps coming from
+// the room there is, with no second copy of the geometry here.
+const FILL_COLUMNS = Number.MAX_SAFE_INTEGER;
+
+function chartOptions(width, height, rowCount, unit, mark, totals, cumulative, colors, fill = false) {
   const cols = widthOf(width, 55);
   const col = cols >= 180 ? 12 : cols >= 90 ? 8 : 6;
   return {
     width: cols,
     height: height ?? 6,
     rowCount: rowCount ?? undefined,
-    col,
-    barW: Math.max(1, col - 2),
+    col: fill ? FILL_COLUMNS : col,
+    barW: fill ? FILL_COLUMNS : Math.max(1, col - 2),
     unit: unitForColumnBars(unit),
     mark: mark ?? '',
     totals: totals !== false,
@@ -666,6 +679,9 @@ function bucketPayload(bucket, value, total, common = {}) {
     unit: unitName(common.unit),
     tokenSource: bucket?.tokenSource ?? common.tokenSource ?? null,
     basis: bucket?.basis ?? common.basis ?? null,
+    partial: bucket?.partial === true || common.partial === true,
+    pricedAttempts: finite(bucket?.priced ?? common.priced),
+    attempts: finite(bucket?.attempts ?? common.attempts),
   };
 }
 
@@ -739,7 +755,7 @@ function datedValueLine(chart, sums, width, unit, mark) {
 export function renderColumnChart({
   title, buckets, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true,
+  tab, metric, period, basis = null, colors = true, fill = false,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -750,7 +766,7 @@ export function renderColumnChart({
   if (!values.some((value) => value != null)) {
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
-  const chart = columnBars([{ name: 'total', values, color: seriesColor('total') }], labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors));
+  const chart = columnBars([{ name: 'total', values, color: seriesColor('total') }], labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;
@@ -813,7 +829,7 @@ function stackSliceRows(column, meta) {
 export function renderStackedColumnChart({
   title, buckets, series, width, height, rowCount = null,
   unit, mark = '', totals = true, cumulative = false,
-  tab, metric, period, basis = null, colors = true,
+  tab, metric, period, basis = null, colors = true, fill = false,
 } = {}) {
   const cols = widthOf(width, 55);
   const list = Array.isArray(buckets) ? buckets : [];
@@ -834,7 +850,7 @@ export function renderStackedColumnChart({
   if (!painterSeries.some((entry) => entry.values.some((value) => finite(value) != null))) {
     return { lines: [heading, lineWithReason('—', 'no measured values', cols)], regions: [] };
   }
-  const chart = columnBars(painterSeries, labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors));
+  const chart = columnBars(painterSeries, labels, chartOptions(cols, height, rowCount, unit, mark, totals, cumulative, colors, fill));
   const lines = [heading, ...chart.map((line) => fit(line, cols))];
   const regions = [];
   const meta = chart.meta;
@@ -873,12 +889,20 @@ export function renderStackedColumnChart({
             total: finite(total),
             share,
             unit: unitName(unit),
-            // A series can span measured and unmeasured days.  The bucket is
-            // the authoritative source for this slice; using a series-wide
-            // fallback first would mark a measured day as `unknown` merely
-            // because another day in the series had no cost reading.
-            tokenSource: bucket?.tokenSource ?? seriesEntry?.tokenSource ?? null,
+            // A series can span measured and unmeasured days. A source the
+            // bucket knows is authoritative for this slice; when the day's
+            // worst source is unknown, the series' own source says where this
+            // slice's figure came from, so a recorded amount is never blanked
+            // because another slice of the same day was unmeasured.
+            tokenSource: bucket?.tokenSource && bucket.tokenSource !== 'unknown'
+              ? bucket.tokenSource
+              : seriesEntry?.tokenSource ?? bucket?.tokenSource ?? null,
             basis: seriesEntry?.basis ?? bucket.basis ?? basis ?? null,
+            // A slice drawn from a subtotal says so, with the coverage that
+            // makes it readable as a lower bound.
+            partial: seriesEntry?.partial === true,
+            pricedAttempts: finite(seriesEntry?.priced),
+            attempts: finite(seriesEntry?.attempts),
             sourceIndex: entry.sourceIndex,
             sourceNames: names,
           };
@@ -1078,7 +1102,11 @@ export function renderStatsSurface({
 
 /** One wording function for the shell's transient and pinned hover row. */
 export function formatHoverLabel(payload = {}) {
-  const unknownCost = unitName(payload.unit) === 'usd' && payload.tokenSource === 'unknown';
+  // A recorded subtotal over the priced attempts is a lower bound, not an
+  // unmeasured value: it is printed with the `≈` mark and the coverage that
+  // produced it, so it can never read as a whole-scope total.
+  const partial = payload.partial === true;
+  const unknownCost = !partial && unitName(payload.unit) === 'usd' && payload.tokenSource === 'unknown';
   const value = unknownCost ? null : finite(payload.value);
   const estimated = typeof payload.tokenSource === 'string' && payload.tokenSource.startsWith('estimated:');
   const kind = payload.kind
@@ -1087,6 +1115,12 @@ export function formatHoverLabel(payload = {}) {
   let valueText = value == null
     ? missingText
     : `${estimated && unitName(payload.unit) === 'usd' ? '≈' : ''}${formatValue(value, payload.unit)}`;
+  if (partial && value != null) {
+    const priced = finite(payload.pricedAttempts);
+    const attempts = finite(payload.attempts);
+    const coverage = priced != null && attempts != null ? ` (${priced}/${attempts} attempts priced)` : '';
+    valueText = `≈${formatValue(value, payload.unit)}${coverage}`;
+  }
   if (value != null && unitName(payload.unit) === 'usd' && payload.subscriptionUsd != null) {
     valueText = formatMoneyPair({
       api: { usd: payload.apiUsd ?? value },

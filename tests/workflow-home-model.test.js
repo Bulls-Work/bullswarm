@@ -2,12 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   measuredTaskMinutes,
+  medianRunDuration,
   poolRatePerMinute,
   runMinutesInfo,
   runStepCounts,
   todayTopRuns,
   recordCost,
   recordCostInfo,
+  recordMoneyPair,
   taskIdentity,
   taskToday,
   todayDateLabel,
@@ -61,6 +63,10 @@ test('Home model deduplicates today rows and builds measured licence rows', () =
   const rows = todayLicenceRows(model, today, NOW);
   assert.deepEqual(rows, [{
     name: 'codex', workflowMinutes: 2, runMinutes: 1, apiUsd: 0.5,
+    // The recorded subtotal and its coverage travel with the row so a
+    // partly-priced pool can show a lower bound instead of a dash. A fully
+    // priced pool's subtotal equals its strict amount.
+    apiKnownSubtotalUsd: 0.5, attempts: 0, pricedAttempts: 0,
     subscriptionUsd: 0.1, subscriptionBasis: 'observed:meter-delta', subscriptionDeltaPct: 2,
     subscriptionWindow: 'weekly', tokenSource: 'provider-reported', worked: true,
     ratePerMinute: 0.5, usedPct: 12, workflowPct: 1,
@@ -77,6 +83,9 @@ test('Home model preserves API cost precedence and usage basis', () => {
   assert.deepEqual(recordCostInfo(record), {
     value: 1.25,
     apiUsd: 1.25,
+    // A whole amount carries no subtotal: the strict figure is the answer.
+    apiKnownSubtotalUsd: null,
+    apiCoverage: { priced: null, attempts: null },
     tokenSource: 'provider-reported',
     subscription: {
       usd: null, deltaPct: null, window: null, basis: 'unknown:no-meter',
@@ -86,6 +95,58 @@ test('Home model preserves API cost precedence and usage basis', () => {
   });
   assert.equal(recordCost({ pools: { codex: { costUsd: 0.5 } } }), 0.5);
   assert.equal(recordCost({ pools: { codex: { costUsd: null } } }), null);
+});
+
+test('Home money shows a partly-priced run as the recorded subtotal, not a dash', () => {
+  const partial = {
+    runId: 'wf-partial',
+    usage: { apiUsd: null, apiKnownSubtotalUsd: 9.523847, pricedAttempts: 3, attempts: 9 },
+  };
+  const info = recordCostInfo(partial);
+  assert.equal(info.apiUsd, null, 'the strict total stays strict');
+  assert.equal(info.apiKnownSubtotalUsd, 9.523847);
+  assert.deepEqual(info.apiCoverage, { priced: 3, attempts: 9 });
+  assert.match(recordMoneyPair(partial).text, /^\u2248 \$9\.52 api \u00b7 /);
+  assert.match(
+    recordMoneyPair(partial, { coverage: true }).text,
+    /^\u2248 \$9\.52 api \u00b7 3\/9 priced \u00b7 /,
+  );
+  // A run whose attempts were all priced is untouched by the fallback.
+  const whole = { runId: 'wf-whole', usage: { apiUsd: 9.760216, apiKnownSubtotalUsd: 9.760216, pricedAttempts: 5, attempts: 5 } };
+  assert.match(recordMoneyPair(whole).text, /^~ \$9\.76 api estimated \u00b7 /);
+  // No recorded amount at all is still a dash, never a zero.
+  assert.match(recordMoneyPair({ runId: 'wf-none', usage: { apiUsd: null, apiKnownSubtotalUsd: null, pricedAttempts: 0, attempts: 2 } }).text, /^api unknown/);
+});
+
+test('Home model medians the period\'s runs on active minutes, or on a labelled span', () => {
+  const records = [
+    { runId: 'wf-a', finishedAt: '2026-09-20T09:00:00.000Z', minutes: { active: 10, span: 40, wall: 40 } },
+    { runId: 'wf-b', finishedAt: '2026-09-20T10:00:00.000Z', minutes: { active: 20, span: 90, wall: 90 } },
+    { runId: 'wf-c', finishedAt: '2026-09-20T11:00:00.000Z', minutes: { active: 60, span: 200, wall: 200 } },
+    // Outside the 7-day window: a period median never reads an older run.
+    { runId: 'wf-old', finishedAt: '2026-09-01T11:00:00.000Z', minutes: { active: 600, span: 600, wall: 600 } },
+  ];
+  const range = { from: Date.parse('2026-09-14T00:00:00.000Z'), to: Date.parse('2026-09-20T23:59:59.000Z') };
+  assert.deepEqual(medianRunDuration(records, range), { minutes: 20, basis: 'active' });
+  // A run that recorded no finish is placed by its start, the way the Stats
+  // range selection reads it.
+  assert.deepEqual(
+    medianRunDuration([{ startedAt: '2026-09-19T09:00:00.000Z', minutes: { active: 30 } }], range),
+    { minutes: 30, basis: 'active' },
+  );
+  // Nothing proved an active interval: the spans stand in, still said to be spans.
+  const spans = records.map((record) => ({ ...record, minutes: { active: null, span: record.minutes.span } }));
+  assert.deepEqual(medianRunDuration(spans, range), { minutes: 90, basis: 'span' });
+  // A pre-0.35 record keeps only the `wall` alias, which is a span too.
+  assert.deepEqual(
+    medianRunDuration([
+      { finishedAt: '2026-09-19T09:00:00.000Z', minutes: { wall: 12 } },
+      { finishedAt: '2026-09-19T10:00:00.000Z', minutes: { wall: 20 } },
+    ], range),
+    { minutes: 16, basis: 'span' },
+  );
+  assert.deepEqual(medianRunDuration([], range), { minutes: null, basis: null });
+  assert.deepEqual(medianRunDuration([{ finishedAt: 'nonsense', minutes: { active: 5 } }], range), { minutes: null, basis: null });
 });
 
 test('Home model orders active runs before newest finished and never promotes wall span to active time', () => {

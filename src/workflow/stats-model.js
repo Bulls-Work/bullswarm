@@ -119,13 +119,40 @@ function parseIso(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
-// New rollups carry the union duration explicitly. Historical terminal rows
-// are corrected by `workflow reprice`; an absent value stays unknown here
-// rather than silently displaying the old wall span as active work.
-function activeMinutesOf(record) {
+// One record's duration, with the fact of what it measured.
+//
+// New rollups carry `minutes.active`, the union of the run's attempt
+// intervals. An index `workflow reprice` has not corrected yet carries only
+// the older `wall` alias, which this release redefined as the run's span; the
+// fallback keeps that recorded number and marks it `span`, so an old wall
+// clock is never passed off as active work while the correction is pending.
+// A record with neither stays unmeasured rather than becoming a zero.
+function durationOf(record) {
   const minutes = record?.minutes;
   if (!minutes || typeof minutes !== 'object') return null;
-  return finite(minutes.active);
+  const active = finite(minutes.active);
+  if (active != null) return { minutes: active, basis: 'active' };
+  const span = finite(minutes.span ?? minutes.wall);
+  if (span == null) return null;
+  return { minutes: span, basis: 'span' };
+}
+
+// The duration figures one aggregate carries, and how much of the set had to
+// fall back to the recorded span. `spanRuns` travels with every median and
+// maximum so a label can name the count instead of printing 'not recorded'
+// over figures the records do hold.
+function durationSummary(durations) {
+  const values = (Array.isArray(durations) ? durations : [])
+    .filter((entry) => entry && Number.isFinite(entry.minutes));
+  const minutes = values.map((entry) => entry.minutes);
+  const spanRuns = values.filter((entry) => entry.basis === 'span').length;
+  return {
+    durationRuns: values.length,
+    spanRuns,
+    medianMinutes: round(median(minutes), 2),
+    longestMinutes: values.length ? round(Math.max(...minutes), 2) : null,
+    basis: spanRuns === 0 ? 'active minutes' : `span minutes for ${spanRuns} of ${values.length} runs`,
+  };
 }
 
 // Local-calendar arithmetic through Date, whose zone is the same system zone
@@ -439,7 +466,7 @@ function newRow(name) {
     v2Money: false,
     workflowsCompleted: 0,
     verified: 0,
-    activeMinutes: [],
+    durations: [],
   };
 }
 
@@ -504,8 +531,8 @@ function countRun(row, record) {
   row.runs += 1;
   if (isDeliveredWorkflowStatus(record?.status)) row.workflowsCompleted += 1;
   if (record?.verified === true) row.verified += 1;
-  const active = activeMinutesOf(record);
-  if (active != null) row.activeMinutes.push(active);
+  const duration = durationOf(record);
+  if (duration) row.durations.push(duration);
 }
 
 /**
@@ -550,15 +577,21 @@ function finishRows(rows, { rankBy = 'attempts' } = {}) {
   let totalMinutes = null;
   for (const row of rows) totalMinutes = add(totalMinutes, row.minutes);
   const finished = rows.map((row) => {
+    const duration = durationSummary(row.durations);
     const finishedRow = {
     name: row.name,
     runs: row.runs,
     attempts: row.attempts,
     minutes: round(row.minutes, 2),
-    medianActiveMinutes: round(median(row.activeMinutes), 2),
-    // Compatibility alias for older views; both values are active minutes.
-    medianWallMinutes: round(median(row.activeMinutes), 2),
-    durationBasis: 'active minutes',
+    medianDurationMinutes: duration.medianMinutes,
+    longestDurationMinutes: duration.longestMinutes,
+    durationRuns: duration.durationRuns,
+    spanRuns: duration.spanRuns,
+    // Compatibility aliases for older views; they carry the same durations,
+    // which are active unions except where `durationBasis` names a span.
+    medianActiveMinutes: duration.medianMinutes,
+    medianWallMinutes: duration.medianMinutes,
+    durationBasis: duration.basis,
     apiUsd: row.v2Money && row.attempts > 0 && row.pricedAttempts === row.attempts
       ? round(row.apiKnownSubtotalUsd, 6) : row.v2Money ? null : round(row.apiKnownSubtotalUsd, 6),
     apiKnownSubtotalUsd: round(row.apiKnownSubtotalUsd, 6),
@@ -897,8 +930,20 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
         && bucket.subscriptionPricedAttempts === bucket.attempts
         ? round(bucket.subscriptionValue, 6) : null,
       subscriptionKnownSubtotalUsd: chosenMetric === 'spend' ? round(bucket.subscriptionKnownSubtotalUsd, 6) : null,
+      // The bucket's own attempt count, which the period guard below and the
+      // model-level strict totals both read. Without it every mapped bucket
+      // measured zero attempts, so `spendIncomplete` never fired and a
+      // partly-priced period published a subtotal as its total.
+      attempts: chosenMetric === 'spend' ? bucket.attempts : null,
       pricedAttempts: chosenMetric === 'spend' ? bucket.pricedAttempts : null,
       subscriptionPricedAttempts: chosenMetric === 'spend' ? bucket.subscriptionPricedAttempts : null,
+      // How much of the bucket's spend is a measurement: the strict `value`
+      // exists only when every attempt carried a price, so a view reading
+      // `apiKnownSubtotalUsd` as a lower bound needs the coverage that
+      // produced it. Rows carry the same pair as `attempts`/`pricedAttempts`.
+      apiCoverage: chosenMetric === 'spend'
+        ? { priced: bucket.pricedAttempts, attempts: bucket.attempts }
+        : null,
       tokenSource: bucket.tokenSource ?? (isCount ? null : 'unknown'),
       subscriptionBasis: chosenMetric === 'spend' ? bucket.subscriptionBasis ?? 'unknown:no-meter' : null,
       segments: [...bucket.segments.entries()]
@@ -911,8 +956,11 @@ export function trendModel(rollups, { metric = 'runs', period = '7d', now = Date
   // every v2 bucket has an API amount. Legacy-only periods keep the original
   // nullable-sum behavior, while a mixed/partial v2 period exposes its named
   // subtotal fields without presenting a misleading total or cumulative line.
+  // Read from the accumulator, not the mapped rows: only a v2 bucket prices
+  // per attempt, so a legacy bucket whose historical cost is simply unknown
+  // must not null a period the v2 records measured completely.
   const spendIncomplete = chosenMetric === 'spend'
-    && out.some((bucket) => bucket.attempts > 0 && bucket.pricedAttempts < bucket.attempts);
+    && buckets.some((bucket) => bucket.v2Money && bucket.attempts > 0 && bucket.pricedAttempts < bucket.attempts);
   if (spendIncomplete) {
     total = null;
     max = null;
@@ -1292,7 +1340,7 @@ function keyValues(records) {
   const pools = finishRows(buildRows(records, 'pool'), { rankBy: 'attempts' });
   const models = finishRows(buildRows(records, 'model'), { rankBy: 'attempts' });
   const projects = finishRows(buildRows(records, 'project'), { rankBy: 'runs' });
-  const active = records.map(activeMinutesOf).filter((value) => value != null);
+  const durations = durationSummary(records.map(durationOf));
   let agent = null;
   for (const record of records) agent = add(agent, finite(record?.minutes?.agent));
   const days = new Set(records.map((record) => dayKeyOf(record.finishedAt) ?? dayKeyOf(record.startedAt)).filter(Boolean));
@@ -1329,13 +1377,18 @@ function keyValues(records) {
     favouritePool: top(pools, 'attempts'),
     busiestProject: top(projects, 'runs'),
     favouriteModel: top(models, 'attempts'),
-    // S3. The median and longest active durations, over the runs that
-    // recorded a provable interval union.
-    medianRunMinutes: round(median(active), 2),
-    longestRunMinutes: active.length ? round(Math.max(...active), 2) : null,
-    medianActiveMinutes: round(median(active), 2),
-    longestActiveMinutes: active.length ? round(Math.max(...active), 2) : null,
-    durationBasis: 'active minutes',
+    // S3. The median and longest durations, over the runs that recorded one:
+    // the active union where the rollup carries it, else the run's span, with
+    // `spanRuns` naming how many of the set that fallback covered.
+    medianDurationMinutes: durations.medianMinutes,
+    longestDurationMinutes: durations.longestMinutes,
+    medianRunMinutes: durations.medianMinutes,
+    longestRunMinutes: durations.longestMinutes,
+    medianActiveMinutes: durations.medianMinutes,
+    longestActiveMinutes: durations.longestMinutes,
+    durationRuns: durations.durationRuns,
+    spanRuns: durations.spanRuns,
+    durationBasis: durations.basis,
     totalAgentMinutes: round(agent, 2),
     totalWorkerMinutes: round(records.reduce((sum, record) => add(sum, recordWorkerMinutes(record)), null), 2),
     apiEquivalentUsd: v2Money
@@ -1357,12 +1410,14 @@ function keyValues(records) {
 }
 
 /**
- * The honest fourth Spending/Project panel: outcomes and active duration.
+ * The honest fourth Spending/Project panel: outcomes and duration.
  *
  * Rollups do not carry a lane field, so this aggregate deliberately stays on
  * the fields the records actually persist: status, verified,
- * requirements.{passed,total}, and minutes.active. Counts remain counts even
- * when no money or duration was measured; a share of an empty set is null.
+ * requirements.{passed,total}, and the duration each run recorded — its active
+ * interval union where the rollup has one, else the span the older `wall`
+ * alias holds, named by `spanRuns`. Counts remain counts even when no money or
+ * duration was measured; a share of an empty set is null.
  */
 export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {}) {
   const range = periodRange(period, now);
@@ -1371,7 +1426,7 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
   let verified = 0;
   let requirementsPassed = null;
   let requirementsTotal = null;
-  const active = [];
+  const durations = [];
   for (const record of records) {
     const status = typeof record?.status === 'string' && record.status.trim()
       ? record.status.trim().toLowerCase()
@@ -1380,9 +1435,10 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     if (record?.verified === true) verified += 1;
     requirementsPassed = add(requirementsPassed, finite(record?.requirements?.passed));
     requirementsTotal = add(requirementsTotal, finite(record?.requirements?.total));
-    const duration = activeMinutesOf(record);
-    if (duration != null) active.push(duration);
+    const duration = durationOf(record);
+    if (duration) durations.push(duration);
   }
+  const summary = durationSummary(durations);
   const model = {
     period: range.period,
     from: range.from,
@@ -1394,13 +1450,17 @@ export function outcomesModel(rollups, { period = '7d', now = Date.now() } = {})
     requirementsPassed,
     requirementsTotal,
     requirementsShare: share(requirementsPassed, requirementsTotal),
-    medianActiveMinutes: round(median(active), 2),
-    maxActiveMinutes: active.length ? round(Math.max(...active), 2) : null,
-    // Compatibility aliases for the pre-0.35 view. They carry active values,
-    // never the old wall span.
-    medianWallMinutes: round(median(active), 2),
-    maxWallMinutes: active.length ? round(Math.max(...active), 2) : null,
-    durationBasis: 'active minutes',
+    medianDurationMinutes: summary.medianMinutes,
+    longestDurationMinutes: summary.longestMinutes,
+    durationRuns: summary.durationRuns,
+    spanRuns: summary.spanRuns,
+    medianActiveMinutes: summary.medianMinutes,
+    maxActiveMinutes: summary.longestMinutes,
+    // Compatibility aliases for the pre-0.35 view. They carry the same
+    // durations, never a separately read wall clock.
+    medianWallMinutes: summary.medianMinutes,
+    maxWallMinutes: summary.longestMinutes,
+    durationBasis: summary.basis,
   };
   model.nulls = nullPaths(model);
   return model;

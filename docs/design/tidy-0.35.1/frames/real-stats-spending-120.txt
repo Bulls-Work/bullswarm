@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ Stats · spending
+ Spending  Pool  Model  Project
+Spending · 7d · 30d · all  [By Pool] By Model
+
+── Summary · 30d ───────────────────────────────────────────────────────────────────────────────────────────────────────
+Totals 15 workflows · 2816.01 worker-minutes · at least $299.87 api · 66 unmeasured · sub unknown (no plan price) · 3 a…
+── Spend per day · API-equivalent · pool ─────────────────│  ── Pool spend ───────────────  ── Pool worker-minutes ─────
+                ┤                             ▁▁▁▁▁▁▁▁▁▁▁▁│  codex   at least $63.16 21.1%  codex             35h12m 75%
+at least $160.00┤                             ████████████│  claud… at least $118.00 39.4%  claud…            3h34m 7.6%
+at least $140.00┤                             ████████████│  grok    at least $34.04 11.4%  grok              2h35m 5.5%
+at least $120.00┤                             ████████████│  acme    at least $84.66 28.2%  acme              2h42m 5.8%
+at least $100.00┤ █████████████               ████████████│  openc…    — cost not recorded  openc…            2h54m 6.2%
+at least $80.00 ┤ █████████████               ████████████│
+                ┤ █████████████               ████████████│  ── Project runs ─────────────  ── Outcome & duration ──────
+                ┤ █████████████               ████████████│  a               10 runs 66.7%  Status          15 completed
+                ┤ █████████████               ████████████│  b                4 runs 26.7%  Verif…     10 verified 66.7%
+                ┤ █████████████ ▆▆▆▆▆▆▆▆▆▆▆▆▆ ████████████│  c                  1 run 6.7%  Requi…    78/86 passed 90.7%
+                ┼18 Sep        19 Sep        20 Sep       │                                 Media…          1h45m median
+                                                          │                                 Longe…         6h41m maximum
+Legend  ● claude-code:acme  ● grok  ● codex  ● claude-code  ● unallocated
+Basis · the recorded API-equivalent estimate per pool.
+Coverage · 66 of 149 attempts recorded no price; every spend total over this scope reads at least $X · 66 unmeasured.
+History · the requested period is longer than the retained rollups.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ ?.help ] [ quit ]

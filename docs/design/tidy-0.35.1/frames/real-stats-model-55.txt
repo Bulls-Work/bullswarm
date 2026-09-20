@@ -1,0 +1,60 @@
+ Home  Runs  Budget  Stats  Fleet
+ Stats · model
+ Spending  Pool  Model  Project
+Model · 7d · 30d · all
+
+── Summary · 30d ──────────────────────────────────────
+Totals 15 workflows · 2816.01 worker-minutes · at leas…
+── Worker-minutes per day · model ─────────────────────
+      ┤ ▁▁▁▁
+16h40m┤ ████        ████
+      ┤ ████        ████
+8h20m ┤ ████        ████
+      ┤ ████        ████
+0m    ┤ ████  ▇▇▇▇  ████
+      ┼Sep18 Sep19 Sep20
+
+── Model worker-minutes ───────────────────────────────
+gpt-5.6-luna                    ▓▓▓▓▒▒     31h49m 67.8%
+claude-opus-5                   ▓▒▒▒▒▒      6h16m 13.3%
+gpt-5.6-sol                     ▏▒▒▒▒▒       3h23m 7.2%
+grok-4.6                        ▏▒▒▒▒▒       2h35m 5.5%
+openrouter/stealth/union-alpha  ▏▒▒▒▒▒       2h54m 6.2%
+
+── Model attempts ─────────────────────────────────────
+gpt-5.6-luna                   ▓▓▓▓▒▒ 98 attempts 65.8%
+claude-opus-5                  ▓▒▒▒▒▒ 22 attempts 14.8%
+gpt-5.6-sol                    ▓▒▒▒▒▒ 15 attempts 10.1%
+grok-4.6                       ▏▒▒▒▒▒  10 attempts 6.7%
+openrouter/stealth/union-alpha ▏▒▒▒▒▒   4 attempts 2.7%
+
+── Model verified / ok ────────────────────────────────
+gpt-5.6-luna                    ▓▓▒▒▒▒ 9 verified 69.2%
+claude-opus-5                   ▓▓▒▒▒▒ 8 verified 72.7%
+gpt-5.6-sol                     ▓▓▒▒▒▒ 8 verified 72.7%
+grok-4.6                        ▓▒▒▒▒▒ 5 verified 71.4%
+openrouter/stealth/union-alpha  ▒▒▒▒▒▒    0 verified 0%
+
+── Cost availability ──────────────────────────────────
+Cost                                    — per-pool only
+Legend  ● gpt-5.6-luna  ● claude-opus-5  ● gpt-5.6-sol
+● grok-4.6  ● openrouter/stealth/union-alpha
+Basis · cost per pool, not per model; model cost is no…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [Top] [End] [?.Help]

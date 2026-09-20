@@ -159,6 +159,36 @@ Examples of the exact basis labels are `$0.42 api`, `≈ $0.42 api summed`,
 The same formatter is used by `run`, Home, Run, Stats, workflow results, and
 the single-run CLI, so a glyph never changes meaning from one view to another.
 
+## Partly priced scopes: totals and subtotals
+
+A total is only a total when every attempt in its scope carried a price. A run,
+a day, a pool or a period whose attempts were priced in part keeps two separate
+fields: the strict total, which stays unknown, and `apiKnownSubtotalUsd` — the
+recorded sum over the attempts that did carry a price.
+
+Surfaces print the subtotal rather than a dash, because a dash beside a figure
+the rollups hold reads as "this was free". It is always marked `≈` and named as
+a lower bound:
+
+- a Home card or recent row shows `≈ $9.52 api`;
+- a Stats panel row shows `≈ $63.16 api 21.1%`, and the Spending page states
+  the coverage once: `Coverage · 83 of 149 attempts carried a price; spend over
+  them is a subtotal, marked ≈.`;
+- a hover label words it in full:
+  `20 Sep · codex · ≈$8.28 (8/11 attempts priced) · 12% of day`;
+- Home's `spent per day` chart draws each day's recorded figure, marking the
+  whole axis `≈` when any bar is a subtotal.
+
+A subtotal is never summed into a strict total, so no surface claims a
+whole-scope number it does not have. A scope with no recorded amount at all
+still says `api unknown`.
+
+The Stats fourth panel reads the same way for time: `Median run` and
+`Longest run` state their basis (`1h45m median · span 15/15`) and the page
+notes `Durations · 15 of 15 runs recorded no active interval union; their span
+stands in until workflow reprice fills it.` A period whose records all carry an
+active union carries no such note.
+
 ## Next steps
 
 - [Result envelope](/reference/result) — per-attempt, per-step, and total JSON fields.
