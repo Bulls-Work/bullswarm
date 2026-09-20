@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
+import { readRollupIndex } from '../src/workflow/rollup.js';
 import { createV2GoalDocument, deserializeV2DurableState, validateV2DurableState } from '../src/workflow/v2-state.js';
 import { pauseV2Run, reviseV2Program, runV2AutonomousWorkflow, unpauseV2Run } from '../src/workflow/v2-runtime.js';
 import {
@@ -349,6 +350,12 @@ test('a finished run is reopened by a revision and finishes again with the exten
   assert.deepEqual(revised.reopened, { previousStatus: 'completed', archivedResult: join(runDirOf(f, runId), 'result-before-revision-2.json'), requeued: [] });
   assert.equal(existsSync(revised.reopened.archivedResult), true);
   assert.equal(revised.state.lifecycle.status, 'running');
+  // Reopening must stop the run looking finished on disk: the dashboard's
+  // fast path skips any run dir holding rollup.json, and the Home card reads
+  // the history index row, which said completed until the run finished again.
+  assert.equal(existsSync(join(runDirOf(f, runId), 'rollup.json')), false);
+  assert.equal(existsSync(join(runDirOf(f, runId), 'rollup-before-revision-2.json')), true);
+  assert.equal(readRollupIndex(f.bullswarmDir).find((record) => record.runId === runId)?.status, 'running');
 
   const result = await resume(f, runId, ctl);
   assert.equal(result.result.status, 'completed');

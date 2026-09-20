@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { readEvents } from '../src/workflow/events.js';
 import { createV2GoalDocument } from '../src/workflow/v2-state.js';
 import { reopenV2RunForRetry, runV2AutonomousWorkflow } from '../src/workflow/v2-runtime.js';
+import { readRollupIndex } from '../src/workflow/rollup.js';
 import {
   formatV2HandbackLines, summarizeV2Result, v2RetryPlan, validateV2ResultEnvelope,
 } from '../src/workflow/v2-outcome.js';
@@ -188,6 +189,9 @@ test('resume reopens a finished run for the steps a retry can fix and leaves the
   assert.ok(existsSync(reopened.archivedResult));
   assert.equal(existsSync(join(first.runDir, 'result.json')), false);
   assert.equal(reopened.state.lifecycle.status, 'running');
+  assert.equal(existsSync(join(first.runDir, 'rollup.json')), false);
+  assert.equal(existsSync(join(first.runDir, 'rollup-before-resume-1.json')), true);
+  assert.equal(readRollupIndex(f.bullswarmDir).find((record) => record.runId === runId)?.status, 'running');
   assert.deepEqual(readEvents(first.runDir).filter((event) => event.type === 'workflow.reopened').at(-1).payload, {
     previousStatus: 'partial', source: 'resume', archivedResult: reopened.archivedResult, requeued: ['a', 'd'],
   });

@@ -870,7 +870,7 @@ function activeRunLines(model, opts, body, title = 'running') {
   body.push(rule(title, null, width));
   if (!model.runs.length && !tasks.length) {
     body.push(dimText(title === 'running'
-      ? ' none captured in the real snapshot'
+      ? ' nothing running right now'
       : ' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
   }
   const unratedPools = new Set();

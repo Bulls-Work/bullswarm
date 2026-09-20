@@ -21,7 +21,7 @@ import {
   validateV2PlannerResponse, V2PlannerValidationError,
 } from './v2-planner.js';
 import { extractScoutUnitIds, recordGoalProject } from './goal.js';
-import { writeRunRollup } from './rollup.js';
+import { appendRollupIndex, bullswarmDirOfRun, readRollup, rollupPath, rollupRecord, writeRunRollup } from './rollup.js';
 import {
   EVIDENCE_CONTRACT_SCHEMA_VERSION, buildEvidencePreflight, readEvidenceCandidate,
 } from './evidence-output.js';
@@ -195,6 +195,25 @@ function submitCallerPlannerResponseLocked({ bullswarmDir, runId, response, onEv
   return { ok: true, boundary, accepted: result.accepted, state: result.state, runDir, candidatePath };
 }
 
+
+/**
+ * A finished run that is reopened must stop looking finished on disk: the
+ * dashboard's fast path treats `rollup.json` as a finished marker and the
+ * history index row still says completed, so the reopened run vanished from
+ * the running block while its Home card kept the old verdict. Archive the
+ * rollup beside the archived result and re-index the run as running.
+ */
+function reopenRollup(runDir, state, tag) {
+  const file = rollupPath(runDir);
+  const previous = readRollup(runDir);
+  if (existsSync(file)) renameSync(file, join(runDir, `rollup-before-${tag}.json`));
+  try {
+    appendRollupIndex(bullswarmDirOfRun(runDir), rollupRecord(state, null, {
+      project: previous?.project ?? null, cwd: previous?.cwd ?? state?.intent?.cwd ?? null,
+    }));
+  } catch { /* the index is a cache of state.json; a failed refresh only delays the card */ }
+}
+
 export function submitCallerPlannerResponse(options = {}) {
   if (!options.bullswarmDir || !/^wf-[a-z0-9]+-[a-f0-9]{6}$/.test(options.runId ?? '')) throw new TypeError('bullswarmDir and a valid runId are required');
   const runDir = join(options.bullswarmDir, 'workflows', options.runId);
@@ -263,6 +282,7 @@ function commitRevisionUnderLease(runDir, request, { now }) {
     const hadResult = existsSync(resultFile);
     if (hadResult) renameSync(resultFile, archived);
     Object.assign(state.lifecycle, { status: 'running', finishedAt: null, resultFile: null });
+    reopenRollup(runDir, state, `revision-${state.program.revision}`);
     if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
     rmSync(cancelFile, { force: true });
     if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
@@ -323,6 +343,7 @@ export function reopenV2RunForRetry({ bullswarmDir, runId, now = () => new Date(
     const hadResult = existsSync(resultFile);
     if (hadResult) renameSync(resultFile, archived);
     Object.assign(state.lifecycle, { status: 'running', finishedAt: null, resultFile: null });
+    reopenRollup(runDir, state, `resume-${earlier + 1}`);
     if (state.cancellation.requested) state.cancellation = { requested: false, requestedAt: null, reason: null };
     rmSync(join(runDir, 'cancellation.json'), { force: true });
     if (['completed', 'cancelled', 'failed'].includes(state.planner.status)) state.planner.status = 'waiting';
