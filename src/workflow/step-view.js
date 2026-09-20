@@ -497,13 +497,16 @@ function detailRows(details, room, indent) {
   const rows = [];
   let current = '';
   for (const detail of details) {
-    const next = current ? `${current} · ${detail}` : detail;
-    if (visibleLength(next) > room && current) {
-      rows.push(current);
-      current = detail;
-      continue;
+    const pieces = wrap(detail, room);
+    for (const piece of pieces) {
+      const next = current ? `${current} · ${piece}` : piece;
+      if (visibleLength(next) > room && current) {
+        rows.push(current);
+        current = piece;
+      } else {
+        current = next;
+      }
     }
-    current = next;
   }
   if (current) rows.push(current);
   return rows.map((row) => `${indent}${row}`);
@@ -600,7 +603,8 @@ function taskLines(presentation, { width, phone }) {
 function costLines(presentation, { width, phone }) {
   const cost = presentation.cost;
   const labelPad = phone ? 11 : 12;
-  const lines = [rule('cost', null, width)];
+  const title = Number(cost.attemptCount) > 1 ? `cost · ${cost.attemptCount} attempts` : 'cost';
+  const lines = [rule(title, null, width)];
   const rows = cost.rows ?? [];
   if (cost.running && rows.every((row) => row.unknown)) {
     lines.push(fit(` ${cost.basisLine ?? 'measured when the attempt finishes'}`, width));
@@ -619,8 +623,13 @@ function costLines(presentation, { width, phone }) {
       lines.push(fit(`${gutter}${amount}${row.phoneText ?? row.headline ?? ''}`.replace(/\s+$/, ''), width));
       continue;
     }
-    lines.push(fit(`${gutter}${amount}${row.headline ?? ''}`.replace(/\s+$/, ''), width));
+    const headlineRoom = Math.max(1, width - visibleLength(gutter) - visibleLength(amount));
+    const headlineRows = Number(cost.attemptCount) > 1
+      ? wrap(row.headline ?? '', headlineRoom)
+      : [row.headline ?? ''];
+    lines.push(fit(`${gutter}${amount}${headlineRows[0] ?? ''}`.replace(/\s+$/, ''), width));
     const indent = ' '.repeat(visibleLength(gutter));
+    for (const headlineRow of headlineRows.slice(1)) lines.push(fit(`${indent}${headlineRow}`, width));
     lines.push(...detailRows(row.details ?? [], Math.max(1, width - visibleLength(indent)), indent));
   }
   if (!phone && cost.basisLine) lines.push(fit(` ${cost.basisLine}`, width));

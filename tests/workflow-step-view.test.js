@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -14,6 +14,7 @@ delete process.env.BULLSWARM_ASCII;
 const fixtureDir = fileURLToPath(new URL('./fixtures/step-model/', import.meta.url));
 const frameDir = '/tmp/bullswarm-step-frames-0.35.1';
 const fixedNow = Date.parse('2026-09-19T18:10:00.000Z');
+const realClaudeRun = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows/wf-mu6mv62z-cdcd5d';
 
 function stateFor({ actionId, actionStatus, lifecycleStatus, attempts, resultFile = null }) {
   return {
@@ -308,6 +309,26 @@ test('money is said once in two plain-word rows under one header', () => {
   assert.match(finished, / API rate    ≈ \$0\.000556\s+2k tokens · legacy estimate/);
   assert.match(finished, /codex plan  —       no meter reading for this attempt/);
   assert.match(finished, /estimated from the codex output bytes/);
+});
+
+test('the rendered multi-attempt cost block names cards, selected share, and pool plans', () => {
+  assert.ok(existsSync(join(realClaudeRun, 'state.json')), `real snapshot missing: ${realClaudeRun}`);
+  const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
+  const model = stepPageModel({
+    runId: state.runId,
+    shortId: state.shortId,
+    runDir: realClaudeRun,
+    state,
+  }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow });
+  const text = render(model, 200).map(plain).join('\n');
+  assert.match(text, /── cost · 5 attempts /);
+  assert.ok(text.includes('xAI + Anthropic rate cards,'));
+  assert.ok(text.includes('20 Sep'));
+  assert.ok(text.includes('this attempt $28.21 · 45.95M tokens · Anthropic rate'));
+  assert.ok(text.includes('card'));
+  assert.match(text, /plans\s+—\s+grok \$30\/mo · claude-code \$200\/mo/);
+  assert.doesNotMatch(text, /\$660\/mo/);
+  assert.match(text, /measured from the recorded attempts/);
 });
 
 test('historical and failed frames state unavailable fields and preserve money bases', () => {

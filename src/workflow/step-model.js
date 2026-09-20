@@ -944,6 +944,7 @@ function normalizeMoney(usage) {
     pricedFields: Array.isArray(apiInput?.pricedFields) ? [...apiInput.pricedFields] : [],
     unpricedFields: Array.isArray(apiInput?.unpricedFields) ? [...apiInput.unpricedFields] : [],
     rateCard: clone(apiInput?.rateCard ?? null),
+    rateCards: clone(apiInput?.rateCards ?? (apiInput?.rateCard ? [apiInput.rateCard] : [])),
   };
   const subInput = value.subscription && typeof value.subscription === 'object'
     ? value.subscription
@@ -1008,6 +1009,32 @@ function aggregateAttemptUsage(attempts) {
   const apiUsd = apiKnownValues.length === records.length ? apiKnownSubtotalUsd : null;
   const subscriptionUsd = subscriptionKnownValues.length === records.length ? subscriptionKnownSubtotalUsd : null;
   const deltaPct = sumField('subscription', 'deltaPct');
+  const subscriptionPools = [];
+  const subscriptionPoolByName = new Map();
+  for (const record of records) {
+    const source = record.subscription ?? {};
+    const name = textOrNull(source.pool) ?? 'pool';
+    let pool = subscriptionPoolByName.get(name);
+    if (!pool) {
+      pool = {
+        name,
+        monthlyPriceUsd: null,
+        window: textOrNull(source.window),
+        windowDays: finiteOrNull(source.windowDays),
+        basis: textOrNull(source.basis) ?? 'unknown:no-meter',
+      };
+      subscriptionPoolByName.set(name, pool);
+      subscriptionPools.push(pool);
+    }
+    const price = finiteOrNull(source.monthlyPriceUsd);
+    if (pool.monthlyPriceUsd == null && price != null) pool.monthlyPriceUsd = price;
+  }
+  const namedPools = records.map((record) => textOrNull(record.subscription?.pool));
+  const sameNamedPool = namedPools.length > 0
+    && namedPools.every((name) => name != null && name === namedPools[0]);
+  const monthlyPriceUsd = sameNamedPool
+    ? finiteOrNull(subscriptionPools.find((pool) => pool.name === namedPools[0])?.monthlyPriceUsd)
+    : null;
   const apiBreakdown = {};
   for (const record of records) {
     for (const [key, value] of Object.entries(record.api?.breakdown ?? {})) {
@@ -1018,6 +1045,16 @@ function aggregateAttemptUsage(attempts) {
   const firstSubscription = records.find((record) => record.subscription?.pool || record.subscription?.window)?.subscription;
   const apiBases = [...new Set(records.map((record) => record.api?.basis).filter(Boolean))];
   const subscriptionBases = [...new Set(records.map((record) => record.subscription?.basis).filter(Boolean))];
+  const rateCards = [];
+  const seenRateCards = new Set();
+  for (const record of records) {
+    for (const card of record.api?.rateCards ?? (record.api?.rateCard ? [record.api.rateCard] : [])) {
+      const key = `${textOrNull(card?.source) ?? ''}|${textOrNull(card?.updatedAt) ?? ''}`;
+      if (seenRateCards.has(key)) continue;
+      seenRateCards.add(key);
+      rateCards.push(clone(card));
+    }
+  }
   const api = {
     usd: apiUsd,
     knownSubtotalUsd: apiKnownSubtotalUsd,
@@ -1026,6 +1063,7 @@ function aggregateAttemptUsage(attempts) {
     pricedFields: [...new Set(records.flatMap((record) => record.api?.pricedFields ?? []))],
     unpricedFields: [...new Set(records.flatMap((record) => record.api?.unpricedFields ?? []))],
     rateCard: clone(records.find((record) => record.api?.rateCard)?.api.rateCard ?? null),
+    rateCards,
   };
   const subscription = {
     pool: textOrNull(firstSubscription?.pool),
@@ -1033,7 +1071,8 @@ function aggregateAttemptUsage(attempts) {
     deltaPct,
     usd: subscriptionUsd,
     knownSubtotalUsd: subscriptionKnownSubtotalUsd,
-    monthlyPriceUsd: sumField('subscription', 'monthlyPriceUsd'),
+    monthlyPriceUsd,
+    pools: subscriptionPools,
     windowDays: finiteOrNull(firstSubscription?.windowDays),
     basis: subscriptionBases.length === 1 && subscriptionUsd != null
       ? subscriptionBases[0]
@@ -1339,10 +1378,10 @@ function rateCardVendor(rateCard) {
   return null;
 }
 
-function apiBasisWords(basis, rateCard, pool, { short = false } = {}) {
+function apiBasisWords(basis, rateCard, pool, { short = false, includeDate = true } = {}) {
   const code = textOrNull(basis) ?? 'unknown';
   const vendor = rateCardVendor(rateCard) ?? textOrNull(pool) ?? 'model';
-  const dated = rateCard ? stepDayText(rateCard.updatedAt) : null;
+  const dated = includeDate && rateCard ? stepDayText(rateCard.updatedAt) : null;
   const card = short
     ? `${vendor} card${dated ? ` ${dated}` : ''}`
     : dated ? `${vendor} rate card, ${dated}` : `${vendor} rate card`;
@@ -1395,7 +1434,7 @@ function tokenSourceNoun(tokenSource, pool) {
   if (code === 'transcript-summed') return `${name} transcript`;
   if (code === 'provider-reported') return `${name} provider report`;
   if (code === 'estimated:utf8-bytes/4') return `${name} output bytes`;
-  if (code === 'mixed') return 'the recorded attempts';
+  if (code === 'mixed') return 'recorded attempts';
   return null;
 }
 
@@ -1820,7 +1859,7 @@ function stepPresentation({
       affects: (Array.isArray(action?.affects) ? action.affects : []).map((id) => requirementWords(id)).filter(Boolean),
       bytes: selected?.bytes && typeof selected.bytes === 'object' ? clone(selected.bytes) : null,
     },
-    cost: costRows(money, { running }),
+    cost: costRows(money, { running, attempts, selected }),
   };
 }
 
@@ -1854,18 +1893,83 @@ function apiAmountIsExact(api, tokenSource) {
   return false;
 }
 
-function costRows(moneyInput, { running = false } = {}) {
+function monthlyPriceText(value) {
+  const price = finiteOrNull(value);
+  return price == null ? '—' : `$${Number(price.toFixed(2))}/mo`;
+}
+
+function usageRecordsForAttempts(attempts) {
+  return (Array.isArray(attempts) ? attempts : [])
+    .map((attempt) => attempt?.usageModel)
+    .filter(Boolean);
+}
+
+/** The dated rate-card vendors represented by every recorded attempt. */
+function aggregateRateCardWords(api, attempts) {
+  const records = usageRecordsForAttempts(attempts);
+  const cards = [];
+  const seen = new Set();
+  for (const record of records) {
+    const card = record.api?.rateCard;
+    if (!card) continue;
+    const vendor = rateCardVendor(card) ?? textOrNull(record.subscription?.pool) ?? 'model';
+    const key = `${vendor}|${textOrNull(card.source) ?? ''}|${textOrNull(card.updatedAt) ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cards.push({ card, vendor });
+  }
+  if (!cards.length) return apiBasisWords(api.basis, api.rateCard, null);
+  const vendors = [...new Set(cards.map((entry) => entry.vendor))];
+  const latest = cards
+    .map((entry) => dateMs(entry.card.updatedAt))
+    .filter((value) => value != null)
+    .sort((a, b) => b - a)[0];
+  const noun = vendors.length === 1 ? 'rate card' : 'rate cards';
+  return `${vendors.join(' + ')} ${noun}${latest == null ? '' : `, ${stepDayText(latest)}`}`;
+}
+
+function poolPriceWords(subscription) {
+  const pools = Array.isArray(subscription?.pools) ? subscription.pools : [];
+  if (!pools.length) return null;
+  return pools.map((pool) => `${pool.name ?? 'pool'} ${monthlyPriceText(pool.monthlyPriceUsd)}`).join(' · ');
+}
+
+function selectedAttemptShare(selected) {
+  const usage = selected?.usageModel;
+  if (!usage) return null;
+  const api = usage.api ?? {};
+  const amount = stepMoneyText(api.usd, { estimated: !apiAmountIsExact(api, usage.tokenSource) });
+  const total = finiteOrNull(usage.tokens?.totalKnown);
+  const tokens = total == null
+    ? null
+    : total >= 1_000_000
+      ? `${(total / 1_000_000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}M`
+      : stepTokenText(total);
+  const basis = apiBasisWords(api.basis, api.rateCard, usage.subscription?.pool, { includeDate: false });
+  return `this attempt ${amount}${tokens ? ` · ${tokens} tokens` : ''}${basis ? ` · ${basis}` : ''}`;
+}
+
+function costRows(moneyInput, { running = false, attempts = [], selected = null } = {}) {
   const money = moneyInput?.pair ?? {};
   const api = money.api ?? {};
   const subscription = money.subscription ?? {};
   const tokens = moneyInput?.tokens ?? money.tokens ?? {};
   const tokenSource = textOrNull(moneyInput?.tokenSource ?? money.tokenSource);
+  const attemptRecords = usageRecordsForAttempts(attempts);
+  const attemptCount = Array.isArray(attempts) && attempts.length
+    ? attempts.length
+    : finiteOrNull(moneyInput?.attemptCount) ?? 1;
+  const poolKeys = [...new Set(attemptRecords.map((record) => textOrNull(record.subscription?.pool) ?? 'pool'))];
+  const multiplePools = attemptCount > 1 && poolKeys.length > 1;
   const pending = Boolean(moneyInput?.pending) && (api.usd == null || tokens.totalKnown == null);
   const pool = textOrNull(subscription.pool ?? moneyInput?.pool);
   const totalText = stepTokenText(tokens.totalKnown);
+  const apiBasis = attemptCount > 1
+    ? aggregateRateCardWords(api, attempts)
+    : apiBasisWords(api.basis, api.rateCard, pool);
   const headline = [
     totalText ? `${totalText} tokens` : null,
-    apiBasisWords(api.basis, api.rateCard, pool),
+    apiBasis,
   ].filter(Boolean).join(' · ');
   const classes = [
     ['cache read', tokens.cacheRead],
@@ -1878,8 +1982,9 @@ function costRows(moneyInput, { running = false } = {}) {
     .map(([label, value]) => `${stepTokenText(value)} ${label}`);
   const price = finiteOrNull(subscription.monthlyPriceUsd);
   const windowWords = subscriptionWindowWords(subscription.window, subscription.windowDays);
+  const poolPrices = multiplePools ? poolPriceWords(subscription) : null;
   const subDetails = [
-    price == null ? null : `$${Number(price.toFixed(2))}/mo`,
+    price == null ? null : monthlyPriceText(price),
     windowWords,
   ].filter(Boolean);
   const noun = tokenSourceNoun(tokenSource, pool);
@@ -1887,19 +1992,28 @@ function costRows(moneyInput, { running = false } = {}) {
   const exact = apiAmountIsExact(api, tokenSource);
   const shortBasis = subscriptionBasisWords(subscription.basis, pool, { short: true });
   const shortPlan = [
-    price == null ? null : `$${Number(price.toFixed(2))}/mo`,
+    price == null ? null : monthlyPriceText(price),
     subscriptionWindowWords(subscription.window, subscription.windowDays, { short: true }),
   ].filter(Boolean).join(' ');
+  const selectedShare = attemptCount > 1 ? selectedAttemptShare(selected) : null;
+  const apiDetails = selectedShare ? [...classes, selectedShare] : classes;
+  const planHeadline = poolPrices ?? subscriptionBasisWords(subscription.basis, pool);
+  const planDetails = poolPrices ? [subscriptionBasisWords(subscription.basis, pool), windowWords].filter(Boolean) : subDetails;
+  const planPhone = poolPrices
+    ? [shortBasis, poolPrices, subscriptionWindowWords(subscription.window, subscription.windowDays, { short: true })].filter(Boolean).join(' · ')
+    : [shortBasis, shortPlan || null].filter(Boolean).join(' · ');
   const measuring = running && explicit == null;
   return {
     pending,
     running,
+    attemptCount,
+    multiplePools,
     rows: [
       {
         label: 'API rate',
         amount: measuring ? '—' : stepMoneyText(explicit, { estimated: !exact }),
         headline: measuring ? 'measured when the attempt finishes' : headline,
-        details: measuring ? [] : classes,
+        details: measuring ? [] : apiDetails,
         // The phone says the same two facts in one row, with the classes left
         // to the desk layout where they fit.
         phoneText: measuring
@@ -1908,11 +2022,11 @@ function costRows(moneyInput, { running = false } = {}) {
         unknown: explicit == null,
       },
       {
-        label: `${pool ?? 'pool'} plan`,
+        label: `${multiplePools ? 'plans' : pool ?? 'pool'}${multiplePools ? '' : ' plan'}`,
         amount: stepMoneyText(subscription.usd, { estimated: String(subscription.basis ?? '').startsWith('calibrated') }),
-        headline: subscriptionBasisWords(subscription.basis, pool),
-        details: subDetails,
-        phoneText: [shortBasis, shortPlan || null].filter(Boolean).join(' · '),
+        headline: planHeadline,
+        details: planDetails,
+        phoneText: planPhone,
         unknown: finiteOrNull(subscription.usd) == null,
       },
     ],
@@ -1921,7 +2035,7 @@ function costRows(moneyInput, { running = false } = {}) {
     basisLine: running
       ? `measured when the attempt finishes${noun ? ` (${noun})` : ''}`
       : noun
-        ? `${tokenSource === 'estimated:utf8-bytes/4' ? 'estimated from' : 'measured from'} the ${noun}`
+        ? `${tokenSource === 'estimated:utf8-bytes/4' ? 'estimated from' : 'measured from'} ${noun.startsWith('the ') ? noun : `the ${noun}`}`
         : null,
     tokenSource,
   };
