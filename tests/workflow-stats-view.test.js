@@ -10,6 +10,25 @@ import { modelsModel, overviewModel, poolsModel, projectsModel, trendModel } fro
 const SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (value) => String(value ?? '').replace(SGR, '');
 
+function chartColumnWidth(width) {
+  return width >= 80 ? Math.floor((width - 2) / 2) : width;
+}
+
+function chartAxisReadout(view, width) {
+  const chartWidth = chartColumnWidth(width);
+  const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
+  const axisRow = view.lines.findLastIndex((line, index) => (
+    index >= titleRow && /[┼+]/.test(visible(line).slice(0, chartWidth))
+  ));
+  const readoutRow = axisRow + 1;
+  return {
+    chartWidth,
+    axisRow,
+    readoutRow,
+    text: visible(view.lines[readoutRow] ?? ''),
+  };
+}
+
 // The real Claude result the other Stats fixtures use, so the API figures
 // below are the fixture's own and not a number written into a test.
 const CLAUDE_RESULT = JSON.parse(
@@ -289,8 +308,11 @@ test('bar regions carry durable hover payloads and the reserved row formats them
   assert.equal(slice.action.payload.metric, 'spend');
   assert.match(slice.action.payload.bucketLabel, /Sep|2026/);
   const hovered = statsLines(fixture(), { width: 120, tab: 'spending', stackBy: 'pool', slice: slice.action, ansi: false });
-  assert.match(visible(hovered.lines[2]), /Sep|2026/);
-  assert.match(visible(hovered.lines[2]), /of the day/);
+  const readout = chartAxisReadout(hovered, 120);
+  assert.equal(readout.readoutRow, readout.axisRow + 1);
+  assert.match(readout.text, /Sep|2026/);
+  assert.match(readout.text, /of the day/);
+  assert.equal(visible(hovered.lines[2]).trim(), '', 'the reserved top row stays blank for a chart-bar hover');
   // The desktop grid now makes one all-four bar decision. The fixture's
   // outcome value field forces that decision to drop panel bars together.
   const share = statsLines(fixture(), { width: 55, tab: 'spending', stackBy: 'pool', ansi: false }).regions
@@ -323,7 +345,7 @@ test('stack slices and outcome duration rows use measured values and matching un
   const slices = view.regions.filter((region) => region.action.payload?.kind === 'slice');
   assert.ok(slices.length > 0);
   for (const region of slices) {
-    const label = visible(statsLines(fixture(), { ...base, slice: region.action }).lines[2]);
+    const label = chartAxisReadout(statsLines(fixture(), { ...base, slice: region.action }), 120).text;
     assert.doesNotMatch(label, /value unavailable/);
     if (region.action.payload.value != null) assert.doesNotMatch(label, /not measured/);
   }
@@ -466,9 +488,9 @@ test('a day whose attempts were only partly priced draws its recorded subtotal',
   const column = view.regions.find((region) => region.action.payload?.kind === 'column');
   assert.ok(column, 'the day is a hit region');
   assert.equal(column.action.payload.partial, true);
-  const hovered = visible(statsLines(stats, {
+  const hovered = chartAxisReadout(statsLines(stats, {
     width: 200, tab: 'spending', stackBy: 'pool', period: '30d', ansi: false, slice: { ...column.action, kind: 'column' },
-  }).lines[2]);
+  }), 200).text;
   assert.match(hovered, /≈\$[\d.]+ \(2\/3 attempts priced\) · 100% of the day/);
   // The summary carries the period's recorded sum, named as a subtotal.
   const summary = visible(view.lines[4]);
@@ -521,14 +543,64 @@ test('real snapshot rollups align every desktop Stats chart with its right colum
       const view = statsLines(stats, { width, tab, period: 'all', stackBy: 'pool', ansi: false });
       const titleRow = view.lines.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
       assert.ok(titleRow >= 0, `${tab}/${width}: chart title missing`);
-      const chartLastRow = view.lines.findLastIndex((line, index) => (
+      const axisRow = view.lines.findLastIndex((line, index) => (
         index >= titleRow && /[┼+]/.test(visible(line).slice(0, leftWidth))
       ));
       const legendRow = view.lines.findIndex((line) => visible(line).startsWith('Legend'));
-      assert.ok(chartLastRow > titleRow, `${tab}/${width}: chart axis missing`);
-      assert.ok(legendRow > chartLastRow, `${tab}/${width}: right column/legend boundary missing`);
+      assert.ok(axisRow > titleRow, `${tab}/${width}: chart axis missing`);
+      assert.ok(legendRow > axisRow, `${tab}/${width}: right column/legend boundary missing`);
       const rightColumnLastRow = legendRow - 1;
-      assert.equal(chartLastRow, rightColumnLastRow, `${tab}/${width}: chart and right column bottoms diverged`);
+      assert.equal(axisRow + 1, rightColumnLastRow, `${tab}/${width}: the under-axis readout is not the last body row`);
+      assert.match(visible(view.lines[rightColumnLastRow]).slice(0, leftWidth), /│/, `${tab}/${width}: chart column does not fill to the panel bottom`);
+    }
+  }
+});
+
+test('a selected chart bar labels the row under the axis inside the chart column', () => {
+  assert.ok(existsSync(join(REAL_SNAPSHOT_HOME, 'workflows')), `missing real rollup snapshot: ${REAL_SNAPSHOT_HOME}`);
+  const records = readRollups(REAL_SNAPSHOT_HOME, { now: REAL_SNAPSHOT_NOW });
+  assert.ok(records.length > 0, 'the real rollup snapshot is empty');
+  const stats = statsOf(records, { period: 'all', now: REAL_SNAPSHOT_NOW });
+
+  for (const width of [55, 120, 200]) {
+    const idle = statsLines(stats, { width, tab: 'spending', period: 'all', stackBy: 'pool', ansi: false });
+    const bar = idle.regions.find((region) => (
+      region.action.payload?.kind === 'slice' || region.action.payload?.kind === 'column'
+    ));
+    assert.ok(bar, `${width}: a chart bar is selectable`);
+    const hovered = statsLines(stats, {
+      width, tab: 'spending', period: 'all', stackBy: 'pool', ansi: false, slice: bar.action,
+    });
+    const readout = chartAxisReadout(hovered, width);
+    assert.ok(readout.axisRow >= 0, `${width}: chart axis missing`);
+    assert.equal(readout.readoutRow, readout.axisRow + 1, `${width}: readout is not the first row under the axis`);
+    assert.match(readout.text, /Sep|2026/, `${width}: readout names the day`);
+    assert.match(readout.text, /\$|m|%|run/, `${width}: readout names the bar's value`);
+    const chartBody = width >= 80 ? Math.max(1, readout.chartWidth - 1) : readout.chartWidth;
+    const chartText = readout.text.slice(0, chartBody);
+    const start = chartText.search(/\S/);
+    const end = chartText.trimEnd().length;
+    assert.ok(start >= 0, `${width}: readout is present`);
+    assert.ok(start < chartBody, `${width}: readout starts outside the chart column`);
+    assert.ok(end <= chartBody, `${width}: readout spills past the chart column`);
+    const remaining = chartBody - (bar.x - 1);
+    if (visible(chartText.trim()).length <= remaining) {
+      assert.equal(start + 1, bar.x, `${width}: readout is not left-aligned to the hovered bar`);
+    } else {
+      assert.equal(end, chartBody, `${width}: a long readout is not clamped to the chart width`);
+    }
+    const idleText = visible(idle.lines[readout.readoutRow] ?? '');
+    assert.equal(idleText.slice(0, chartBody).trim(), '', `${width}: the under-axis row stays blank in the chart column when idle`);
+    assert.ok(hovered.lines.some((line) => visible(line).startsWith('Legend')), `${width}: hovering must not hide the legend`);
+    assert.equal(hovered.lines.length, idle.lines.length, `${width}: hovering must not add a row`);
+    const leftWidth = chartColumnWidth(width);
+    const idleAxis = visible(idle.lines[readout.axisRow] ?? '');
+    const hoveredAxis = visible(hovered.lines[readout.axisRow] ?? '');
+    assert.equal(hoveredAxis, idleAxis, `${width}: hovering must not change the axis row`);
+    if (width >= 80) {
+      const idleReadout = visible(idle.lines[readout.readoutRow] ?? '');
+      const hoveredReadout = visible(hovered.lines[readout.readoutRow] ?? '');
+      assert.equal(hoveredReadout.slice(leftWidth), idleReadout.slice(leftWidth), `${width}: hovering must not push the right-hand column`);
     }
   }
 });

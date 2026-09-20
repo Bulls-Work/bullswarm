@@ -4,7 +4,9 @@
 
 import { formatDashboardValue, periodToggle, seriesColors } from './dash-kit.js';
 import {
+  chartAxisRowIndex,
   formatHoverLabel,
+  paintChartHoverReadout,
   renderColumnChart,
   renderLegend,
   renderPanel,
@@ -605,6 +607,28 @@ function actionForRegion(region) {
   const payload = region.payload ?? {};
   return { kind: 'slice', tab: payload.tab, metric: payload.metric, period: payload.period, bucket: payload.bucketKey ?? null, series: payload.series ?? null, payload: { ...payload, kind: region.kind } };
 }
+
+function chartBarHover(hovered) {
+  if (!hovered || typeof hovered !== 'object') return false;
+  const kind = hovered.kind;
+  return kind === 'slice' || kind === 'column' || (hovered.bucketKey != null && kind !== 'share');
+}
+
+function barColumnStart(regions, hovered) {
+  const bucket = hovered?.bucketKey ?? null;
+  const series = hovered?.series ?? null;
+  const kind = hovered?.kind;
+  const match = (Array.isArray(regions) ? regions : []).find((region) => {
+    const payload = region.payload ?? {};
+    if (bucket != null && payload.bucketKey !== bucket) return false;
+    if (kind === 'share' || payload.kind === 'share' || region.kind === 'share') return false;
+    if (series != null && (payload.series ?? null) !== series) return false;
+    if (series == null && kind === 'slice' && payload.series) return false;
+    return region.kind === 'slice' || region.kind === 'column' || payload.kind === 'slice' || payload.kind === 'column';
+  });
+  const start = Number(match?.columns?.start);
+  return Number.isFinite(start) && start > 0 ? start : 1;
+}
 function addToggleRegions(regions, line, tab, stackBy) {
   if (tab !== 'spending') return;
   const plain = visible(line);
@@ -659,12 +683,13 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   // The chart fills the panel it shares with the grid: on desktop its bars
   // take their width from the chart column's own columns and their height from
   // the rows the panel grid occupies, so a wide terminal shows wide bars rather
-  // than a narrow strip with blank rows beside it. The stacked phone layout has
-  // no panel beside the chart to match, so it keeps its own six rows. The
-  // renderer's tick rule still decides the final row count, so an axis label
-  // stays exact.
+  // than a narrow strip with blank rows beside it. Heading, axis, and the
+  // under-axis readout are the three rows taken out of that budget, so the
+  // padded last chart row stays aligned with the last panel row. The stacked
+  // phone layout has no panel beside the chart to match, so it keeps its own
+  // six rows and uses the gap already under the axis.
   const geometry = desktop
-    ? { fill: true, fit: true, rows: Math.max(3, panelColumnHeight(panels) - 2) }
+    ? { fill: true, fit: true, rows: Math.max(1, panelColumnHeight(panels) - 3) }
     : { rows: 6 };
   // One map feeds the chart, legend, and every visible panel row in this
   // render. The placeholder +N more row is deliberately not a name.
@@ -695,7 +720,29 @@ function statsLines(stats, { width = 120, height = 36, tab = 'spending', period 
   if (trend?.truncated) notes.push('History · the requested period is longer than the retained rollups.');
   const surface = renderStatsSurface({ tab: activeTab, period: activePeriod, width: cols, height, stackBy, tabs: TABS, summary, chart: surfaceChart, panels: surfacePanels, legend, notes, ansi });
   const hovered = object(slice?.payload) ?? (slice?.kind === 'slice' || slice?.kind === 'share' || slice?.kind === 'column' ? slice : null);
-  surface.lines[2] = hovered ? fit(` ${formatHoverLabel({ ...hovered, kind: hovered.kind ?? slice?.kind }).replace(/of day/g, 'of the day')}`, cols) : ' '.repeat(cols);
+  const hoverLabel = hovered
+    ? formatHoverLabel({ ...hovered, kind: hovered.kind ?? slice?.kind }).replace(/of day/g, 'of the day')
+    : null;
+  surface.lines[2] = ' '.repeat(cols);
+  if (hoverLabel && chartBarHover(hovered)) {
+    const axisRow = chartAxisRowIndex(surface.lines, chartWidth);
+    if (axisRow >= 0 && axisRow + 1 < surface.lines.length) {
+      paintChartHoverReadout(surface.lines, {
+        text: hoverLabel,
+        axisRow,
+        barX: barColumnStart(surface.regions, hovered),
+        chartStart: 1,
+        // Keep the desktop divider (and the panel grid beside it) intact.
+        chartWidth: desktop ? Math.max(1, chartWidth - 1) : chartWidth,
+        width: cols,
+      });
+      surface.meta.hoverRow = axisRow + 2;
+    } else {
+      surface.lines[2] = fit(` ${hoverLabel}`, cols);
+    }
+  } else if (hoverLabel) {
+    surface.lines[2] = fit(` ${hoverLabel}`, cols);
+  }
   const regions = [];
   for (const region of surface.regions ?? []) {
     if (!region?.payload || !region.columns) continue;

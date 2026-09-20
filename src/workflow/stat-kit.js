@@ -1089,6 +1089,70 @@ function desktopPanelGrid(panelList, width, gap) {
 }
 
 /**
+ * Zero-based index of the dated chart's x-axis row, or -1 when the surface
+ * has no axis.  The readout belongs on the next row, which already exists
+ * (the stacked gap, or the desktop pad that keeps the chart as tall as the
+ * panel grid).
+ */
+export function chartAxisRowIndex(lines, chartWidth) {
+  const list = Array.isArray(lines) ? lines : [];
+  const span = Math.max(1, widthOf(chartWidth, 55));
+  const titleRow = list.findIndex((line) => /(?:Spend per day|Worker-minutes per day|Runs per day)/.test(visible(line)));
+  if (titleRow < 0) return -1;
+  return list.findLastIndex((line, index) => (
+    index >= titleRow && /[┼+]/.test(visible(line).slice(0, span))
+  ));
+}
+
+function visibleSliceFrom(text, startVisible) {
+  const source = String(text ?? '');
+  const start = Math.max(0, Math.trunc(Number(startVisible)) || 0);
+  let used = 0;
+  let index = 0;
+  while (index < source.length && used < start) {
+    if (source[index] === '\x1b') {
+      const match = source.slice(index).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
+      if (match) {
+        index += match[0].length;
+        continue;
+      }
+    }
+    index += 1;
+    used += 1;
+  }
+  return source.slice(index);
+}
+
+/**
+ * Paint a chart-bar hover on the first existing row under the x-axis, inside
+ * the chart column, left-aligned to the bar and clamped so the text cannot
+ * leave that column.  The divider and right-hand grid on that row stay put.
+ */
+export function paintChartHoverReadout(lines, {
+  text, axisRow, barX = 1, chartStart = 1, chartWidth, width,
+} = {}) {
+  if (!Array.isArray(lines) || axisRow == null || axisRow < 0) return lines;
+  const readoutRow = axisRow + 1;
+  if (readoutRow >= lines.length) return lines;
+  const cols = widthOf(width, visible(lines[readoutRow] ?? '').length);
+  const startCol = Math.max(1, Math.trunc(Number(chartStart)) || 1);
+  const span = Math.max(0, Math.trunc(Number(chartWidth)) || Math.max(0, cols - startCol + 1));
+  const endCol = Math.min(cols, startCol + span - 1);
+  const maxWidth = Math.max(0, endCol - startCol + 1);
+  if (maxWidth <= 0 || cols <= 0) return lines;
+  const clipped = fit(String(text ?? ''), maxWidth);
+  const glyphs = visible(clipped);
+  let at = Math.max(startCol, Math.trunc(Number(barX)) || startCol);
+  if (at + glyphs.length - 1 > endCol) at = Math.max(startCol, endCol - glyphs.length + 1);
+  const cells = Array.from({ length: endCol }, () => ' ');
+  for (let index = 0; index < glyphs.length && at - 1 + index < endCol; index += 1) {
+    cells[at - 1 + index] = glyphs[index];
+  }
+  lines[readoutRow] = `${cells.join('')}${visibleSliceFrom(lines[readoutRow], endCol)}`;
+  return lines;
+}
+
+/**
  * Compose the stable four-tab Stats surface.  On desktop the dated chart and
  * two-by-two panel grid share a row; on a phone the same cells are stacked in
  * order.  The blank hover row is reserved in both modes.
