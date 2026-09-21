@@ -340,10 +340,11 @@ test('a phase rule never cuts its phase number and name: the step names give way
   // as narrow as it is given.
   const row = realRow(realRuns.g6d6q2);
   const panel = workflowPanelModel(row);
-  const facts = '15:33 → 15:54 · 20m35s · 3/3';
+  // Clock times are local, so they read HH:MM here (CI runs in UTC).
+  const facts = 'HH:MM → HH:MM · 20m35s · 3/3';
   const title = '── ✓ Phase 2 · Build';
   const ruleAt = (width) => visible(workflowTimelineLines(panel, width, 0, { goalPreview: false, phone: false, nowMs: NOW })
-    .lines.find((line) => line.header && line.phaseIndex === 1).text);
+    .lines.find((line) => line.header && line.phaseIndex === 1).text).replace(/\b\d\d:\d\d\b/g, 'HH:MM');
   assert.equal(ruleAt(200), `${title} · launcher-dock · list-panel · thread ${'─'.repeat(200 - 58 - facts.length - 2)} ${facts}`);
   // The name and its steps are bold; `Phase 2 · ` is not, as `2 · ` was not.
   const painted = workflowTimelineLines(panel, 200, 0, { goalPreview: false, phone: false, nowMs: NOW })
