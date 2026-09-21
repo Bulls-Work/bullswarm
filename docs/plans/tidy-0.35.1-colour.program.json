@@ -1,0 +1,88 @@
+{
+ "schemaVersion": "bullswarm.workflow.program.v2",
+ "defaults": {
+  "effort": "medium"
+ },
+ "actions": [
+  {
+   "id": "colour",
+   "kind": "implement",
+   "purpose": "Step, Run and single-task pages paint the approved colour rules with the existing helpers; tests pin the named cells; ASCII mode stays plain",
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1, HEAD 43b478a or later). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, never revert or restore files you did not change, and put any change you need elsewhere under a 'Shared-file requests' heading in your report with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB), point BULLSWARM_HOME at the copy, delete it when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1-colour.goal.txt first. Real data only: never invent a figure, fixture or frame; unknown money is a dash. No test.skip: rewrite stale expectations. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail/skipped` lines), 'Shared-file requests', 'Contract deviations'. Outcome (requirement 1): apply the '## Colour rules (approved 2026-09-21)' table at the end of /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/step-v2/README.md and /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/design/tidy-0.35.1/run-v2/README.md to src/workflow/step-view.js (also serves the single-task page through src/workflow/task-step.js) and src/workflow/run-view.js. Use ONLY the helpers the table names: `strong`, `dimText`, `tint(text, role)` and `meterAnsi` from src/workflow/dashboard.js, `METER_COLORS` from src/workflow/usage-view.js, `seriesColor` from src/workflow/dash-kit.js (see how src/workflow/home-view.js uses them). Every SGR must wrap the cell only, never the padding, and width arithmetic must use visible length (src/workflow/dash-kit.js `visibleLength`/`cut` already ignore SGR). Do not change any text; the plain-text frames must stay byte-identical when SGR is stripped (assert that in a test by stripping and comparing with the committed real-*.txt frames). Tests (tests/workflow-step-view.test.js, tests/workflow-run-view.test.js): on the real snapshot frames at 200 and 55 assert the exact cells the records name: header \u2713 and 'verified' carry the green truecolour SGR for METER_COLORS.green, a running frame's \u25b6 carries amber, one clock carries dim (\\x1b[2m), one amount carries bold (\\x1b[1m), one block rule's dashes carry the dim role tint, one pool name carries seriesColor(pool), and the response text of turn 1 carries no SGR; then set ASCII mode (see asciiGlyphsPreferred in src/lib/glyphs.js and how tests toggle it) and assert the same frame carries only bold, dim and inverse codes. Checks: node --test tests/workflow-step-view.test.js tests/workflow-run-view.test.js tests/workflow-task-step.test.js and the full npm test; quote the summaries and paste the header line of the 200-column finished Step frame with its SGR codes made visible (cat -v).",
+   "ownedFiles": [
+    "src/workflow/step-view.js",
+    "src/workflow/run-view.js",
+    "tests/workflow-step-view.test.js",
+    "tests/workflow-run-view.test.js",
+    "tests/workflow-task-step.test.js"
+   ],
+   "affects": [
+    "requirement-1"
+   ],
+   "dependsOn": [],
+   "evidenceFor": []
+  },
+  {
+   "id": "qa-fixes",
+   "kind": "implement",
+   "purpose": "Single-task header identity, Home h/m/s clock, Runs cursor start row",
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1, HEAD 43b478a or later). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, never revert or restore files you did not change, and put any change you need elsewhere under a 'Shared-file requests' heading in your report with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB), point BULLSWARM_HOME at the copy, delete it when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1-colour.goal.txt first. Real data only: never invent a figure, fixture or frame; unknown money is a dash. No test.skip: rewrite stale expectations. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail/skipped` lines), 'Shared-file requests', 'Contract deviations'. Outcomes (requirements 2, 3, 4). (2) src/workflow/task-step.js builds the single-task page's identity for src/workflow/step-view.js: the step name must be `<lane> task` (analyze/build/chore) and the run id the SAME 8-character id the Runs list prints (see how src/workflow/history-view.js or runs-view.js derives `3ad03092` from the task record), so the header reads `\u2713 analyze task \u00b7 3ad03092 \u00b7 succeeded \u00b7 attempt 1 of 1`; never the full UUID, never a 6-character prefix; add the test on the real snapshot task the frames use (tests/workflow-task-step.test.js). (3) Home cards (src/workflow/home-view.js / home-model.js) print durations with the h/m/s formatter the Step and Run pages use (find the shared helper the step-view/run-view import for `49m07s` / `6h02m active of 7h44m`; import it, do not copy it): `active 5h55m \u00b7 steps 18/21` becomes `5h55m active of 6h55m \u00b7 steps 18/21` when span differs and `58m37s \u00b7 steps 9/9` when it does not; never `725.95m`; update tests/workflow-home-view.test.js and tests/workflow-home-model.test.js. (4) The Runs page (src/workflow/dashboard.js runs/history handling, or src/workflow/runs-view.js / history-view.js: find where the cursor index is initialised when the page opens) must start with the cursor on the first row, the first active run when any is running, drawn inverse, and Up on the first row stays; add the test in tests/workflow-dashboard.test.js (the key handler is exercised there already). Do NOT touch src/workflow/step-view.js or run-view.js (another writer owns them); if the task header needs a view change, put the exact diff under Shared-file requests. Checks: node --test on the four test files and the full npm test; quote summaries; paste the new single-task header line and one Home card at 200 columns.",
+   "ownedFiles": [
+    "src/workflow/task-step.js",
+    "src/workflow/home-view.js",
+    "src/workflow/home-model.js",
+    "src/workflow/dashboard.js",
+    "src/workflow/runs-view.js",
+    "src/workflow/history-view.js",
+    "tests/workflow-task-step.test.js",
+    "tests/workflow-home-view.test.js",
+    "tests/workflow-home-model.test.js",
+    "tests/workflow-dashboard.test.js"
+   ],
+   "affects": [
+    "requirement-2",
+    "requirement-3",
+    "requirement-4"
+   ],
+   "dependsOn": [],
+   "evidenceFor": []
+  },
+  {
+   "id": "integrate",
+   "kind": "integration",
+   "purpose": "Apply shared-file requests, regenerate text and colour frames, docs and changelog, npm test 0 fail 0 skipped",
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1, HEAD 43b478a or later). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, never revert or restore files you did not change, and put any change you need elsewhere under a 'Shared-file requests' heading in your report with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB), point BULLSWARM_HOME at the copy, delete it when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1-colour.goal.txt first. Real data only: never invent a figure, fixture or frame; unknown money is a dash. No test.skip: rewrite stale expectations. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail/skipped` lines), 'Shared-file requests', 'Contract deviations'. You run alone after `colour` and `qa-fixes`: read both reports (their outputFile paths are in your task file) and apply every 'Shared-file requests' item. Then (requirement 5) add to scripts/render-tidy-0.35.1-frames.mjs an option (for example `--colour`) or a sibling script that writes the same frames WITH SGR kept to docs/design/tidy-0.35.1/frames/colour/<same names>.txt for Step (overview finished/running, detail finished), Run (running, finished), task and Home at 55 and 200; regenerate the plain real-*.txt frames too; extend tests/workflow-tidy-real-frames.test.js so the colour frames are regenerated and compared as well and every line fits its width in display cells after stripping SGR. (Requirement 6) docs/guide/observing.md gains a short 'Colours' paragraph in plain words (green = went well, amber = running now, red = failed, dim = when/how much/how we know, bold = what and how much money, pool names in their own colour), CHANGELOG.md ## 0.35.1 gains bullets for the colours and the three fixes. Run `npx --yes -p typescript@5 tsc -p mods/bullswarm/tsconfig.json` and the full `npm test`: 0 fail, 0 skipped (rerun a load-flaky file alone and quote it). Report every request and what you did with it, the quoted summaries, and `grep -c $'\\x1b' docs/design/tidy-0.35.1/frames/colour/*.txt` output.",
+   "dependsOn": [
+    "colour",
+    "qa-fixes"
+   ],
+   "ownedFiles": [],
+   "affects": [
+    "requirement-5",
+    "requirement-6"
+   ],
+   "evidenceFor": []
+  },
+  {
+   "id": "verify",
+   "kind": "adversarial-acceptance",
+   "purpose": "Independent evidence for requirements 1-6 against the two design records",
+   "prompt": "Workspace: /home/dev/Repo/bullswork/bullswarm-0.35.1 (git worktree, branch release-0.35.1, HEAD 43b478a or later). Other workers edit this tree at the same time: edit ONLY your owned files, preserve their edits, never revert or restore files you did not change, and put any change you need elsewhere under a 'Shared-file requests' heading in your report with the exact diff. Never read or write the live ~/.bullswarm. A read-only real snapshot is at /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351; if you must write, copy it first (cp -Rp /home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351 /tmp/bsw-<your-action-id>, ~18 MB), point BULLSWARM_HOME at the copy, delete it when done. Read the goal in /home/dev/Repo/bullswork/bullswarm-0.35.1/docs/plans/tidy-0.35.1-colour.goal.txt first. Real data only: never invent a figure, fixture or frame; unknown money is a dash. No test.skip: rewrite stale expectations. Finish with a report: what changed, the quoted test summary (`# tests/pass/fail/skipped` lines), 'Shared-file requests', 'Contract deviations'. Judge requirements 1-6 from the artifacts, inspecting only; try to break it. For 1: render the Step page (va7k9a step-model, finished and a historicalProjection running state), the Run page (euqrni running) and the single-task page from the snapshot at 200 and 55 with SGR kept, and check every row of the records' colour table: list each cell class with the SGR you found; any cell class painted differently from the table, any SGR on response/task/report/command text, any SGR wrapping padding, and any text change once SGR is stripped (diff against the committed real-*.txt) fails it; then flip ASCII mode and fail it if any truecolour code remains. For 2: render the snapshot's single-task page and compare its header id with the Runs list row for the same task. For 3: render Home at 200 and 55 and fail on any decimal-minute figure. For 4: drive the Runs page through the real key handler (see tests/workflow-dashboard.test.js for how) and check the initial cursor row and Up. For 5: check the colour frames exist, carry SGR, strip to the plain frames byte-for-byte, and fit their widths in display cells. For 6: read the docs and run the full npm test yourself.",
+   "dependsOn": [
+    "colour",
+    "qa-fixes",
+    "integrate"
+   ],
+   "evidenceFor": [
+    "requirement-1",
+    "requirement-2",
+    "requirement-3",
+    "requirement-4",
+    "requirement-5",
+    "requirement-6"
+   ],
+   "ownedFiles": [],
+   "affects": []
+  }
+ ]
+}
