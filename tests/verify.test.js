@@ -74,8 +74,8 @@ test('curly-apostrophe intent announcements are not mistaken for completed work'
 
 test('an announcement line does not hide substantive result bullets', () => {
   const output = [
-    'I’ll inspect `package.json` and return only the three requested facts.',
-    '- Package name: `bullswarm`',
+    'I’ll read `package.json` and return only the three sample facts.',
+    '- Package name: `sample-package`',
     '- Version: `0.19.0`',
     '- Supported Node engine: `>=18`',
   ].join('\n');

@@ -1,0 +1,1 @@
+{"analyze":{"order":["claude-code","codex","command-code","grok","opencode"],"fallback":"caller"},"build":{"order":["claude-code","codex","command-code","grok","opencode"],"fallback":"caller"},"chore":{"order":["claude-code","codex","command-code","grok","opencode"],"fallback":"caller"}}

@@ -56,6 +56,7 @@ import {
   renderWorkflowOverviewPanel,
   workflowTimelineLines,
   runPage,
+  runTimelineFold,
 } from './run-view.js';
 // N1: a missing measurement never becomes a confident zero. Number(null) is
 // 0 and Number.isFinite(0) is true, so every reading below goes through this.
@@ -2256,6 +2257,10 @@ export async function runDashboard(bullswarmDir, {
     workflowVerbose: false,
     mobileTimeline: true,
     timelineSelection: null,
+    // The runs whose folded middle phases the reader opened in place, and
+    // whether the cursor now sits on the fold's own `click to fold` line.
+    foldOpen: new Set(),
+    foldStop: false,
     // Step-page-only transient state. The durable attempt/activity model stays
     // immutable; these values drive selection, detail, filters, and section
     // navigation while the reader is on the Step page.
@@ -2433,6 +2438,8 @@ export async function runDashboard(bullswarmDir, {
     workflowVerbose: ui.workflowVerbose,
     mobileTimeline: ui.mobileTimeline,
     timelineSelection: ui.timelineSelection,
+    foldOpen: ui.foldOpen.has(selectedRunId),
+    foldStop: ui.foldStop,
     confirmCancel: ui.confirmCancel,
     stepDetail: ui.stepDetail,
     stepView: ui.stepView,
@@ -2572,6 +2579,7 @@ export async function runDashboard(bullswarmDir, {
     ui.followActiveAgent = true;
     ui.detailScroll = 0;
     ui.timelineSelection = null;
+    ui.foldStop = false;
     ui.runPlanBoxes = false;
     ui.runFollow = true;
     bodyScroll = 0;
@@ -2625,9 +2633,30 @@ export async function runDashboard(bullswarmDir, {
         : clamp(ui.agentIndex ?? nextModel.agentIndex, 0, Math.max(0, agents.length - 1));
       ui.detailScroll = 0;
       ui.timelineSelection = null;
+      ui.foldStop = false;
     }
     message = null;
     paint();
+  };
+  /**
+   * The Run timeline's fold line opens the phases it stands for, and the
+   * `click to fold` line that closes them folds them back. A click and Enter
+   * on the cursor come here; the cursor stays on the line just used.
+   */
+  const toggleFold = (runId) => {
+    if (!runId) return paint();
+    const narrow = output.columns < 100 && ui.mobileTimeline;
+    if (ui.foldOpen.has(runId)) {
+      ui.foldOpen.delete(runId);
+      ui.foldStop = false;
+      if (narrow) ui.timelineSelection = 'fold';
+    } else {
+      ui.foldOpen.add(runId);
+      ui.foldStop = true;
+      if (ui.timelineSelection === 'fold') ui.timelineSelection = null;
+    }
+    message = null;
+    return paint();
   };
   /** Opens the Step page on one action, in the phase that holds it. */
   const openStep = (actionId, runId = null) => {
@@ -2987,6 +3016,7 @@ export async function runDashboard(bullswarmDir, {
     if (action.kind === 'run') return openRun(action.runId);
     if (action.kind === 'task') return openTask(action.taskId);
     if (action.kind === 'step') return openStep(action.actionId, action.runId ?? null);
+    if (action.kind === 'fold') return toggleFold(action.runId ?? selectedRunId);
     if (action.kind === 'back') return moveOut();
     if (action.kind === 'install') return runInstall();
     if (action.kind === 'tab') return showTab(action.tab);
@@ -3153,19 +3183,33 @@ export async function runDashboard(bullswarmDir, {
     const narrowTimeline = output.columns < 100 && ui.mobileTimeline && ui.focus === 0;
     if (ui.orchestratorDetail || ui.workflowVerbose || narrowTimeline) {
       if (narrowTimeline) {
-        const visibleSegments = new Set(workflowTimelineLines(model, Math.max(20, frameWidth() - 2)).lines
+        const visibleSegments = new Set(workflowTimelineLines(model, Math.max(20, frameWidth() - 2), 0, { foldOpen: ui.foldOpen.has(selectedRunId) }).lines
           .filter((line) => line?.header)
           .map((line) => line.segment));
+        const range = row?.state ? runTimelineFold(row) : null;
+        const foldShown = range && !ui.foldOpen.has(selectedRunId);
         const navigable = [
           ...(visibleSegments.has('Preflight') ? [{ selection: 0, phaseIndex: null }] : []),
           ...model.phases
             .map((phase, index) => ({ phase, selection: index + 1, phaseIndex: index }))
             .filter(({ phase }) => visibleSegments.has(phase.label)),
         ];
+        // The fold line is a stop of its own, between the phases either side of it.
+        if (foldShown) {
+          const before = navigable.filter((target) => target.phaseIndex == null || target.phaseIndex < range.start).length;
+          navigable.splice(before, 0, { selection: 'fold', phaseIndex: null });
+        }
         if (navigable.length) {
-          const current = navigable.findIndex((target) => target.selection === ui.timelineSelection);
+          let current = navigable.findIndex((target) => target.selection === ui.timelineSelection);
+          // Off the `click to fold` line, Up lands on the last phase it closes
+          // and Down on the phase after it.
+          if (ui.foldStop && current < 0 && range) {
+            const last = navigable.findIndex((target) => target.phaseIndex === range.end - 1);
+            if (last >= 0) current = delta > 0 ? last : last + 1;
+          }
           const base = current >= 0 ? current : (delta < 0 ? navigable.length : -1);
           const target = navigable[clamp(base + delta, 0, navigable.length - 1)];
+          ui.foldStop = false;
           ui.timelineSelection = target.selection;
           if (target.phaseIndex != null) {
             ui.followActivePhase = false;
@@ -3192,6 +3236,7 @@ export async function runDashboard(bullswarmDir, {
         ui.detailScroll = 0;
         return paint();
       }
+      ui.foldStop = false;
       ui.followActivePhase = false;
       ui.phaseIndex = clamp(model.phaseIndex + delta, 0, model.phases.length - 1);
       ui.agentIndex = null;
@@ -3246,6 +3291,21 @@ export async function runDashboard(bullswarmDir, {
     if (ui.orchestratorDetail) { message = 'Planner detail is the deepest level.'; return paint(); }
     if (ui.workflowVerbose) { message = 'Technical details are the deepest level.'; return paint(); }
     if (ui.focus === 0) {
+      // The cursor on the timeline's fold line (or on the `click to fold` line
+      // that closes it) toggles the fold instead of opening a step.
+      if (ui.page === 'run') {
+        const row = detailRow(bullswarmDir, selectedRunId);
+        const range = row?.state ? runTimelineFold(row) : null;
+        if (range) {
+          const open = ui.foldOpen.has(selectedRunId);
+          const narrow = output.columns < 100 && ui.mobileTimeline;
+          const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });
+          const onFold = ui.foldStop
+            || (!open && (narrow ? ui.timelineSelection === 'fold'
+              : model.phaseIndex >= range.start && model.phaseIndex < range.end));
+          if (onFold) return toggleFold(selectedRunId);
+        }
+      }
       if (output.columns < 100 && ui.mobileTimeline && ui.timelineSelection === 0) {
         const row = detailRow(bullswarmDir, selectedRunId);
         const model = workflowPanelModel(row, { phaseIndex: ui.phaseIndex, agentIndex: ui.agentIndex });

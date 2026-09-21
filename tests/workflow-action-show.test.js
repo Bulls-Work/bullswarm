@@ -5,6 +5,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import { readEvents } from '../src/workflow/events.js';
@@ -14,7 +15,7 @@ import { stepPageModel } from '../src/workflow/step-model.js';
 
 const REPO = resolve(new URL('..', import.meta.url).pathname);
 const BIN = join(REPO, 'bin', 'bullswarm.js');
-const SNAPSHOT = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+const SNAPSHOT = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 const SOURCE_RUN = 'wf-mu8ni8o4-f9baaf';
 const ACTION_ID = 'step-model';
 
@@ -101,7 +102,7 @@ function assertPreviousFieldsUnchanged(shown, previous) {
   assert.deepEqual(Object.keys(shown).slice(-1), ['step']);
 }
 
-test('action show adds the Step model without changing the existing finished payload', { skip: !existsSync(join(SNAPSHOT, 'workflows', SOURCE_RUN, 'state.json')) }, () => {
+test('action show adds the Step model without changing the existing finished payload', () => {
   const shown = show(SNAPSHOT, SOURCE_RUN);
   const { payload } = legacyPayload(SNAPSHOT, SOURCE_RUN, ACTION_ID);
   assertPreviousFieldsUnchanged(shown, payload);
@@ -111,7 +112,7 @@ test('action show adds the Step model without changing the existing finished pay
   assert.deepEqual(shown.step.sectionOrder, ['header', 'task', 'activity', 'result', 'cost']);
 });
 
-test('action show carries the same Step model for a running action from a real snapshot copy', { skip: !existsSync(join(SNAPSHOT, 'workflows', SOURCE_RUN, 'state.json')) }, () => {
+test('action show carries the same Step model for a running action from a real snapshot copy', () => {
   const root = mkdtempSync(join(tmpdir(), 'bullswarm-action-show-'));
   const home = join(root, 'home');
   const workflows = join(home, 'workflows');

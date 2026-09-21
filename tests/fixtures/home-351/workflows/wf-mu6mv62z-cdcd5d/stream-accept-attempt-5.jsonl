@@ -1,0 +1,505 @@
+{"seq":1,"at":"2026-09-19T20:11:24.740Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response lorem nostrud."}
+{"seq":2,"at":"2026-09-19T20:11:25.428Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 non cupidatat dolor non sunt laboris ad id culpa commodo"}
+{"seq":3,"at":"2026-09-19T20:11:30.453Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":4,"at":"2026-09-19T20:11:34.168Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 magna laboris tempor sit aute amet consectetur minim"}
+{"seq":5,"at":"2026-09-19T20:11:34.387Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":6,"at":"2026-09-19T20:11:34.957Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 labore id voluptate et laboris deserunt tempor"}
+{"seq":7,"at":"2026-09-19T20:11:35.128Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":8,"at":"2026-09-19T20:11:37.909Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 magna ipsum mollit occaecat et adipiscing"}
+{"seq":9,"at":"2026-09-19T20:11:38.149Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":10,"at":"2026-09-19T20:11:39.176Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 est sint veniam ex enim veniam ex consequat nostrud exercitation nulla amet labore cillum labore commodo esse excepteur nostrud nostrud ipsum incididunt"}
+{"seq":11,"at":"2026-09-19T20:11:39.331Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":12,"at":"2026-09-19T20:11:43.010Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sit laboris officia irure commodo velit occaecat"}
+{"seq":13,"at":"2026-09-19T20:11:43.294Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":14,"at":"2026-09-19T20:11:44.427Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 incididunt anim deserunt officia irure anim aute pariatur consequat deserunt esse excepteur amet consectetur ut exercitation cillum tempor occaecat anim"}
+{"seq":15,"at":"2026-09-19T20:11:44.740Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":16,"at":"2026-09-19T20:11:50.626Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 proident eiusmod do aliquip anim est non aliqua reprehenderit veniam in nulla duis non nisi proident elit pariatur officia minim tempor laboris occaecat"}
+{"seq":17,"at":"2026-09-19T20:11:50.997Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":18,"at":"2026-09-19T20:11:52.389Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit velit elit dolor cillum laborum nostrud deserunt quis sunt laboris occaecat non amet enim excepteur fugiat do fugiat ex nisi ullamco commodo dolor"}
+{"seq":19,"at":"2026-09-19T20:11:52.587Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":20,"at":"2026-09-19T20:12:04.462Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 et irure veniam ipsum eiusmod enim velit qui ea sed sunt irure magna eiusmod magna laborum adipiscing"}
+{"seq":21,"at":"2026-09-19T20:12:06.037Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco amet incididunt irure culpa eiusmod elit in sit do veniam ea sunt ipsum culpa in fugiat ut id ad voluptate deserunt mollit deserunt exercitation"}
+{"seq":22,"at":"2026-09-19T20:12:06.247Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":23,"at":"2026-09-19T20:12:06.609Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":24,"at":"2026-09-19T20:12:15.589Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ex fugiat esse qui cupidatat commodo ullamco fugiat deserunt quis laborum aliquip et ex commodo incididunt esse et qui commodo reprehenderit consectetur"}
+{"seq":25,"at":"2026-09-19T20:12:17.154Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":26,"at":"2026-09-19T20:12:21.186Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ad quis tempor consectetur fugiat aute dolore consectetur ipsum laboris sunt id lorem lorem do deserunt excepteur mollit occaecat lorem esse consectetur"}
+{"seq":27,"at":"2026-09-19T20:12:21.407Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":28,"at":"2026-09-19T20:12:28.299Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 incididunt commodo veniam consectetur minim occaecat deserunt ipsum pariatur pariatur adipiscing"}
+{"seq":29,"at":"2026-09-19T20:12:30.017Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":30,"at":"2026-09-19T20:12:30.533Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 occaecat elit amet ex est minim ullamco eiusmod consequat quis ipsum excepteur lorem velit deserunt ex mollit pariatur laborum esse aliquip exercitation"}
+{"seq":31,"at":"2026-09-19T20:12:31.303Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":32,"at":"2026-09-19T20:12:34.943Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 exercitation reprehenderit dolor sed est sint tempor minim lorem reprehenderit incididunt occaecat laborum aliquip excepteur consectetur"}
+{"seq":33,"at":"2026-09-19T20:12:35.075Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":34,"at":"2026-09-19T20:12:35.867Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 id nisi commodo tempor"}
+{"seq":35,"at":"2026-09-19T20:12:36.144Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":36,"at":"2026-09-19T20:12:38.605Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolore nostrud enim non nisi reprehenderit cupidatat cupidatat elit consectetur"}
+{"seq":37,"at":"2026-09-19T20:12:38.789Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":38,"at":"2026-09-19T20:12:41.058Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nulla occaecat proident"}
+{"seq":39,"at":"2026-09-19T20:12:41.519Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":40,"at":"2026-09-19T20:12:43.165Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 proident veniam ea qui excepteur amet eiusmod fugiat exercitation excepteur sed dolor voluptate velit et aliqua laborum labore qui dolor mollit occaecat"}
+{"seq":41,"at":"2026-09-19T20:12:44.242Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":42,"at":"2026-09-19T20:12:47.820Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 enim"}
+{"seq":43,"at":"2026-09-19T20:12:48.030Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":44,"at":"2026-09-19T20:12:56.515Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur ullamco sed consectetur esse enim ipsum adipiscing aute veniam nostrud cupidatat ut sint sit nisi aliquip eiusmod mollit do culpa adipiscing"}
+{"seq":45,"at":"2026-09-19T20:12:56.967Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":46,"at":"2026-09-19T20:13:04.847Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 proident duis laborum laborum lorem ex commodo ad consectetur ex id sed id irure pariatur laborum ut aliqua dolore sunt aute sit elit do sunt incididunt"}
+{"seq":47,"at":"2026-09-19T20:13:04.983Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":48,"at":"2026-09-19T20:13:05.703Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ad"}
+{"seq":49,"at":"2026-09-19T20:13:05.889Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":50,"at":"2026-09-19T20:13:13.220Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 irure ea esse consequat ullamco reprehenderit do et cillum magna incididunt minim eiusmod ullamco tempor esse do ex eiusmod sunt exercitation incididunt"}
+{"seq":51,"at":"2026-09-19T20:13:13.517Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":52,"at":"2026-09-19T20:13:13.990Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 fugiat"}
+{"seq":53,"at":"2026-09-19T20:13:14.303Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":54,"at":"2026-09-19T20:13:18.906Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 mollit id culpa officia dolore nisi tempor anim ut sed nostrud lorem aute anim excepteur commodo adipiscing consectetur veniam magna adipiscing deserunt"}
+{"seq":55,"at":"2026-09-19T20:13:19.143Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":56,"at":"2026-09-19T20:13:19.788Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 tempor aliquip elit fugiat est consequat magna"}
+{"seq":57,"at":"2026-09-19T20:13:19.992Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":58,"at":"2026-09-19T20:13:24.849Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 minim laboris commodo adipiscing est ut est non id reprehenderit"}
+{"seq":59,"at":"2026-09-19T20:13:24.977Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":60,"at":"2026-09-19T20:13:25.677Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur qui"}
+{"seq":61,"at":"2026-09-19T20:13:25.774Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":62,"at":"2026-09-19T20:13:30.678Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aute incididunt"}
+{"seq":63,"at":"2026-09-19T20:13:30.906Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":64,"at":"2026-09-19T20:13:34.773Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 qui enim in dolore occaecat"}
+{"seq":65,"at":"2026-09-19T20:13:34.962Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":66,"at":"2026-09-19T20:13:36.379Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 do ea veniam in magna dolore ut duis tempor culpa officia minim consectetur ad labore ullamco pariatur ipsum dolor nulla proident minim minim incididunt"}
+{"seq":67,"at":"2026-09-19T20:13:36.632Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":68,"at":"2026-09-19T20:13:40.782Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit deserunt excepteur aliquip commodo reprehenderit enim sit adipiscing mollit do duis tempor voluptate laboris velit culpa irure amet elit voluptate"}
+{"seq":69,"at":"2026-09-19T20:13:41.134Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":70,"at":"2026-09-19T20:13:41.283Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur"}
+{"seq":71,"at":"2026-09-19T20:13:41.506Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":72,"at":"2026-09-19T20:13:47.425Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolore magna minim proident non sint commodo quis nisi anim reprehenderit est laborum ullamco id voluptate deserunt sit sit ut elit esse laboris laboris"}
+{"seq":73,"at":"2026-09-19T20:13:48.064Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":74,"at":"2026-09-19T20:13:48.616Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 exercitation consequat aliquip reprehenderit"}
+{"seq":75,"at":"2026-09-19T20:13:48.755Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":76,"at":"2026-09-19T20:13:55.076Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 exercitation culpa dolor dolor pariatur eiusmod nostrud enim consequat sit sunt sed incididunt laboris culpa velit fugiat labore laborum ullamco commodo"}
+{"seq":77,"at":"2026-09-19T20:13:55.405Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":78,"at":"2026-09-19T20:13:55.583Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur"}
+{"seq":79,"at":"2026-09-19T20:13:55.777Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":80,"at":"2026-09-19T20:13:58.808Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command labore"}
+{"seq":81,"at":"2026-09-19T20:13:58.950Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":82,"at":"2026-09-19T20:14:09.261Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 tempor magna lorem dolor laborum exercitation ullamco reprehenderit ipsum ad nulla ea cillum non est exercitation est incididunt deserunt dolor occaecat"}
+{"seq":83,"at":"2026-09-19T20:14:09.512Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":84,"at":"2026-09-19T20:14:12.247Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 pariatur reprehenderit esse dolore incididunt pariatur cupidatat"}
+{"seq":85,"at":"2026-09-19T20:14:12.405Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":86,"at":"2026-09-19T20:14:17.004Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 do excepteur quis ullamco adipiscing sit eiusmod veniam mollit adipiscing et proident occaecat culpa sed consectetur"}
+{"seq":87,"at":"2026-09-19T20:14:17.147Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":88,"at":"2026-09-19T20:14:27.149Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor fugiat ex aliqua cillum do mollit irure magna lorem voluptate qui velit ut magna sed voluptate culpa anim in non esse officia magna deserunt culpa"}
+{"seq":89,"at":"2026-09-19T20:14:27.232Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":90,"at":"2026-09-19T20:14:28.601Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ad anim veniam qui fugiat amet in reprehenderit aliquip cillum"}
+{"seq":91,"at":"2026-09-19T20:14:28.786Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":92,"at":"2026-09-19T20:14:33.423Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nostrud excepteur consequat anim ad ullamco adipiscing"}
+{"seq":93,"at":"2026-09-19T20:14:33.667Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":94,"at":"2026-09-19T20:14:37.570Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 minim dolor voluptate proident"}
+{"seq":95,"at":"2026-09-19T20:14:37.739Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":96,"at":"2026-09-19T20:14:49.686Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 incididunt"}
+{"seq":97,"at":"2026-09-19T20:14:49.770Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":98,"at":"2026-09-19T20:15:10.155Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt et enim quis cillum ad magna laboris ut et duis ad aliquip ea anim qui labore proident tempor nulla laborum do cillum elit do reprehenderit"}
+{"seq":99,"at":"2026-09-19T20:15:10.346Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":100,"at":"2026-09-19T20:15:14.652Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 id id et et fugiat ea fugiat laborum lorem nisi fugiat et magna ea aliquip consequat sint adipiscing"}
+{"seq":101,"at":"2026-09-19T20:15:14.747Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":102,"at":"2026-09-19T20:15:21.176Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cillum eiusmod esse exercitation sit cillum consequat ad esse est aute ullamco nostrud elit elit qui esse lorem occaecat"}
+{"seq":103,"at":"2026-09-19T20:15:21.373Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":104,"at":"2026-09-19T20:16:17.071Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia pariatur commodo qui laborum ex tempor ipsum est sint lorem cillum voluptate est qui occaecat consectetur fugiat dolor cupidatat do exercitation"}
+{"seq":105,"at":"2026-09-19T20:16:17.380Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":106,"at":"2026-09-19T20:16:21.562Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur"}
+{"seq":107,"at":"2026-09-19T20:16:21.765Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":108,"at":"2026-09-19T20:16:30.016Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 qui sunt nulla tempor nostrud esse occaecat"}
+{"seq":109,"at":"2026-09-19T20:16:30.224Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":110,"at":"2026-09-19T20:16:43.668Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco tempor eiusmod pariatur magna amet in aliquip minim nostrud magna amet ut laboris lorem sed laborum proident id est lorem ipsum incididunt ipsum"}
+{"seq":111,"at":"2026-09-19T20:16:43.938Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":112,"at":"2026-09-19T20:16:51.287Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nostrud proident voluptate deserunt anim sunt lorem incididunt velit incididunt excepteur exercitation incididunt culpa magna non anim commodo excepteur"}
+{"seq":113,"at":"2026-09-19T20:16:51.620Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":114,"at":"2026-09-19T20:16:58.225Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sit adipiscing deserunt dolor anim magna laborum consectetur ex tempor ex ea voluptate ut elit ut nulla ea elit sed velit minim occaecat elit adipiscing"}
+{"seq":115,"at":"2026-09-19T20:16:58.798Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":116,"at":"2026-09-19T20:17:02.282Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 fugiat ut consequat lorem aliqua lorem aliqua et ad qui reprehenderit id qui esse aliquip non in veniam qui nisi amet sed laboris elit pariatur proident"}
+{"seq":117,"at":"2026-09-19T20:17:02.420Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":118,"at":"2026-09-19T20:17:08.039Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 deserunt do occaecat anim ea excepteur nulla cupidatat nulla tempor ut deserunt cillum ex pariatur consequat veniam do tempor ipsum et nisi exercitation"}
+{"seq":119,"at":"2026-09-19T20:17:08.272Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":120,"at":"2026-09-19T20:17:17.834Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia nisi esse laborum lorem ex aute quis dolore non tempor excepteur irure nostrud cillum consequat tempor aliqua in proident tempor sint adipiscing"}
+{"seq":121,"at":"2026-09-19T20:17:19.081Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":122,"at":"2026-09-19T20:17:24.921Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 voluptate duis ad dolore cillum dolor labore labore do consectetur incididunt laborum consectetur"}
+{"seq":123,"at":"2026-09-19T20:17:25.229Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":124,"at":"2026-09-19T20:17:32.135Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cillum proident sunt quis laborum aliquip nostrud ullamco pariatur sunt amet pariatur excepteur magna pariatur"}
+{"seq":125,"at":"2026-09-19T20:17:32.301Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":126,"at":"2026-09-19T20:17:35.975Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 et enim occaecat dolore sunt excepteur duis culpa laboris consectetur consectetur"}
+{"seq":127,"at":"2026-09-19T20:17:36.109Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":128,"at":"2026-09-19T20:17:57.428Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ut duis lorem cupidatat"}
+{"seq":129,"at":"2026-09-19T20:17:57.595Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":130,"at":"2026-09-19T20:18:07.088Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 enim ex ipsum lorem excepteur reprehenderit magna labore id occaecat proident labore enim id excepteur consequat qui occaecat dolor amet quis incididunt"}
+{"seq":131,"at":"2026-09-19T20:18:07.151Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":132,"at":"2026-09-19T20:18:13.877Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cupidatat in enim anim velit nostrud velit deserunt mollit deserunt sunt incididunt do fugiat exercitation aute sunt lorem irure cupidatat dolor ullamco"}
+{"seq":133,"at":"2026-09-19T20:18:14.065Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":134,"at":"2026-09-19T20:18:23.460Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 irure nulla quis nostrud do cillum fugiat amet enim lorem exercitation aute dolore ea aliqua labore mollit mollit mollit sunt magna id sit dolore veniam"}
+{"seq":135,"at":"2026-09-19T20:18:23.941Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":136,"at":"2026-09-19T20:18:27.244Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum tempor mollit incididunt fugiat et exercitation elit laborum commodo excepteur labore deserunt velit qui incididunt magna irure tempor cupidatat"}
+{"seq":137,"at":"2026-09-19T20:18:27.431Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":138,"at":"2026-09-19T20:18:32.773Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cillum irure irure sit ut laboris minim aliquip sit anim adipiscing aute occaecat dolor nulla ea reprehenderit officia exercitation voluptate adipiscing"}
+{"seq":139,"at":"2026-09-19T20:18:32.978Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":140,"at":"2026-09-19T20:18:37.987Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur officia aliquip sed dolor officia cillum exercitation nulla magna ullamco do irure occaecat"}
+{"seq":141,"at":"2026-09-19T20:18:38.140Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":142,"at":"2026-09-19T20:18:40.847Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 veniam elit aute pariatur ea minim reprehenderit officia laborum cupidatat"}
+{"seq":143,"at":"2026-09-19T20:18:41.312Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":144,"at":"2026-09-19T20:18:44.006Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 eiusmod non exercitation incididunt excepteur excepteur ut do velit culpa lorem laboris culpa do cupidatat labore deserunt"}
+{"seq":145,"at":"2026-09-19T20:18:44.257Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":146,"at":"2026-09-19T20:19:04.604Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 reprehenderit proident aliquip excepteur exercitation anim exercitation qui ut laborum labore aute sunt culpa tempor ex eiusmod qui exercitation ullamco"}
+{"seq":147,"at":"2026-09-19T20:19:04.682Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":148,"at":"2026-09-19T20:19:11.006Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nisi do voluptate velit nostrud duis id laboris quis non aliquip amet incididunt ex enim irure ut in officia duis ad reprehenderit culpa sit consectetur"}
+{"seq":149,"at":"2026-09-19T20:19:11.110Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":150,"at":"2026-09-19T20:19:11.407Z","source":"stdout","providerType":"assistant","kind":"Read","status":"running","summary":"sample command for accept-5 id sed officia officia"}
+{"seq":151,"at":"2026-09-19T20:19:11.508Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":152,"at":"2026-09-19T20:19:33.437Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aliqua officia dolor et sint reprehenderit cupidatat aute pariatur laboris non occaecat tempor duis duis ex aliquip exercitation amet aliquip incididunt"}
+{"seq":153,"at":"2026-09-19T20:19:33.438Z","source":"stdout","providerType":"user","kind":"tool","status":"failed","summary":null}
+{"seq":154,"at":"2026-09-19T20:19:40.377Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 tempor ut deserunt est ipsum et exercitation cupidatat minim sint ut mollit et commodo elit proident est sed adipiscing ullamco tempor voluptate aliquip"}
+{"seq":155,"at":"2026-09-19T20:19:40.565Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":156,"at":"2026-09-19T20:20:01.838Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aliquip ut nisi fugiat in labore dolor aliqua mollit veniam id commodo fugiat est ea in fugiat ipsum velit duis eiusmod officia ut ipsum aute adipiscing"}
+{"seq":157,"at":"2026-09-19T20:20:01.951Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":158,"at":"2026-09-19T20:20:03.880Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nostrud ipsum in velit pariatur"}
+{"seq":159,"at":"2026-09-19T20:20:04.113Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":160,"at":"2026-09-19T20:20:07.488Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 occaecat laborum dolore cupidatat ex irure irure officia fugiat nisi incididunt"}
+{"seq":161,"at":"2026-09-19T20:20:07.676Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":162,"at":"2026-09-19T20:20:13.323Z","source":"stdout","providerType":"assistant","kind":"Read","status":"running","summary":"sample command for accept-5 ut lorem exercitation"}
+{"seq":163,"at":"2026-09-19T20:20:13.404Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":164,"at":"2026-09-19T20:20:16.348Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cillum exercitation"}
+{"seq":165,"at":"2026-09-19T20:20:16.659Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":166,"at":"2026-09-19T20:20:23.932Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt deserunt sit consequat sunt ad labore in sunt quis magna dolor amet aute deserunt sunt nostrud sed consectetur"}
+{"seq":167,"at":"2026-09-19T20:20:25.713Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":168,"at":"2026-09-19T20:20:32.323Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sed voluptate proident est ex sint ex aliqua veniam officia ullamco labore consectetur dolor exercitation do fugiat cillum commodo nulla cillum pariatur"}
+{"seq":169,"at":"2026-09-19T20:20:32.532Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":170,"at":"2026-09-19T20:20:39.398Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nulla ipsum ullamco laborum duis duis irure aliquip sunt velit labore laboris commodo consectetur ex fugiat dolore culpa mollit amet proident adipiscing"}
+{"seq":171,"at":"2026-09-19T20:20:39.566Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":172,"at":"2026-09-19T20:20:40.339Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 voluptate incididunt deserunt ea commodo commodo incididunt officia consectetur"}
+{"seq":173,"at":"2026-09-19T20:20:40.707Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":174,"at":"2026-09-19T20:20:44.809Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ex velit sit dolore sint esse sit irure in qui mollit anim fugiat incididunt"}
+{"seq":175,"at":"2026-09-19T20:20:45.064Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":176,"at":"2026-09-19T20:20:55.068Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 do et nulla reprehenderit mollit excepteur sint officia aute do pariatur eiusmod aliqua ex eiusmod in eiusmod deserunt occaecat ad laboris reprehenderit"}
+{"seq":177,"at":"2026-09-19T20:20:55.368Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":178,"at":"2026-09-19T20:21:20.551Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 do et nulla reprehenderit mollit excepteur sint officia aute do pariatur eiusmod aliqua ex eiusmod in eiusmod deserunt occaecat ad laboris reprehenderit"}
+{"seq":179,"at":"2026-09-19T20:21:20.783Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":180,"at":"2026-09-19T20:21:25.452Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nisi cillum et velit magna esse do aliqua commodo do labore sit ea elit aliquip duis sed tempor sunt aliquip minim do consectetur"}
+{"seq":181,"at":"2026-09-19T20:21:25.552Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":182,"at":"2026-09-19T20:21:32.746Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 do in amet aliqua occaecat ad tempor est labore qui sit nisi deserunt lorem proident amet veniam enim fugiat eiusmod sed aliquip exercitation incididunt"}
+{"seq":183,"at":"2026-09-19T20:21:33.114Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":184,"at":"2026-09-19T20:21:40.335Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 et consectetur esse nulla mollit proident ea minim eiusmod veniam voluptate nisi dolor veniam mollit aliquip reprehenderit commodo reprehenderit laboris"}
+{"seq":185,"at":"2026-09-19T20:21:40.566Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":186,"at":"2026-09-19T20:21:44.801Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 reprehenderit"}
+{"seq":187,"at":"2026-09-19T20:21:44.943Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":188,"at":"2026-09-19T20:21:51.853Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit eiusmod mollit"}
+{"seq":189,"at":"2026-09-19T20:21:51.948Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":190,"at":"2026-09-19T20:21:54.553Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nostrud tempor deserunt sint aliqua labore esse ullamco do consectetur tempor sunt aliquip ex deserunt quis aliqua cupidatat"}
+{"seq":191,"at":"2026-09-19T20:21:54.857Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":192,"at":"2026-09-19T20:22:12.350Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cillum amet deserunt anim qui nisi ad laboris est culpa aliqua tempor esse sit do voluptate amet non sunt excepteur consectetur consectetur exercitation"}
+{"seq":193,"at":"2026-09-19T20:22:12.534Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":194,"at":"2026-09-19T20:22:15.087Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 cupidatat sunt laborum fugiat magna proident mollit amet ullamco fugiat magna laboris consectetur occaecat"}
+{"seq":195,"at":"2026-09-19T20:22:15.275Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":196,"at":"2026-09-19T20:22:20.969Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 culpa aute nostrud deserunt in amet ad officia non occaecat non aliqua eiusmod est deserunt sunt sunt cupidatat minim magna magna veniam in exercitation"}
+{"seq":197,"at":"2026-09-19T20:22:21.322Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":198,"at":"2026-09-19T20:22:29.542Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 excepteur exercitation ex exercitation ullamco lorem esse do enim laboris occaecat et deserunt id deserunt cupidatat aute reprehenderit cillum voluptate"}
+{"seq":199,"at":"2026-09-19T20:22:29.646Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":200,"at":"2026-09-19T20:22:37.574Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 anim esse dolor nisi anim excepteur magna consectetur ea et laboris in officia fugiat amet sed veniam occaecat excepteur qui sed non eiusmod consectetur"}
+{"seq":201,"at":"2026-09-19T20:22:38.028Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":202,"at":"2026-09-19T20:22:56.965Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor et sunt proident qui cupidatat dolor fugiat pariatur commodo velit tempor fugiat do sit tempor minim deserunt lorem occaecat consectetur voluptate"}
+{"seq":203,"at":"2026-09-19T20:22:57.526Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":204,"at":"2026-09-19T20:23:04.778Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 non consectetur irure elit sunt aliqua aliqua ex tempor laboris sint consectetur excepteur mollit incididunt sed proident quis nulla amet sunt consequat"}
+{"seq":205,"at":"2026-09-19T20:23:07.264Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":206,"at":"2026-09-19T20:23:11.602Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 adipiscing dolore amet aliqua sunt ex nisi qui in anim qui fugiat veniam in ullamco mollit duis aliquip sint mollit tempor dolor sint minim exercitation"}
+{"seq":207,"at":"2026-09-19T20:23:13.947Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":208,"at":"2026-09-19T20:23:21.234Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sint ipsum irure amet sed nostrud ut adipiscing ut consectetur laborum ipsum officia in anim non pariatur proident laboris sed exercitation exercitation"}
+{"seq":209,"at":"2026-09-19T20:23:21.413Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":210,"at":"2026-09-19T20:23:28.713Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 culpa sint occaecat veniam sit nisi est excepteur velit et laborum exercitation laborum elit reprehenderit fugiat dolore eiusmod"}
+{"seq":211,"at":"2026-09-19T20:23:29.241Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":212,"at":"2026-09-19T20:23:36.591Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 reprehenderit commodo non in ipsum tempor ad aute occaecat esse ea labore velit nulla dolore officia ipsum sunt minim deserunt velit esse commodo cillum"}
+{"seq":213,"at":"2026-09-19T20:23:52.468Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":214,"at":"2026-09-19T20:24:19.909Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nulla labore irure ut dolor esse veniam ea in excepteur in elit exercitation"}
+{"seq":215,"at":"2026-09-19T20:24:20.032Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":216,"at":"2026-09-19T20:24:24.684Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia officia quis velit quis fugiat proident in duis excepteur adipiscing commodo magna tempor est dolor aliqua exercitation dolore elit exercitation"}
+{"seq":217,"at":"2026-09-19T20:24:24.865Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":218,"at":"2026-09-19T20:24:31.736Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia ad incididunt magna sunt occaecat veniam occaecat consequat amet ad excepteur amet"}
+{"seq":219,"at":"2026-09-19T20:24:32.049Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":220,"at":"2026-09-19T20:24:39.018Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor et elit pariatur nisi velit magna anim consequat quis proident aute laboris dolore fugiat non quis esse quis occaecat incididunt"}
+{"seq":221,"at":"2026-09-19T20:24:39.860Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":222,"at":"2026-09-19T20:24:43.121Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 labore exercitation"}
+{"seq":223,"at":"2026-09-19T20:24:43.283Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":224,"at":"2026-09-19T20:24:46.641Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sed voluptate et duis qui sint voluptate exercitation fugiat"}
+{"seq":225,"at":"2026-09-19T20:24:46.965Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":226,"at":"2026-09-19T20:24:51.530Z","source":"stdout","providerType":"assistant","kind":"Read","status":"running","summary":"sample command for accept-5 incididunt laboris nostrud"}
+{"seq":227,"at":"2026-09-19T20:24:51.621Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":228,"at":"2026-09-19T20:25:00.626Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco laborum ullamco consectetur ut incididunt incididunt"}
+{"seq":229,"at":"2026-09-19T20:25:00.831Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":230,"at":"2026-09-19T20:25:23.571Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sit est minim consequat et cillum id mollit sit proident eiusmod duis consequat culpa officia sint ex do pariatur ut commodo eiusmod lorem dolor ullamco"}
+{"seq":231,"at":"2026-09-19T20:25:23.854Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":232,"at":"2026-09-19T20:25:26.776Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco laborum ullamco consectetur ut incididunt incididunt"}
+{"seq":233,"at":"2026-09-19T20:25:27.122Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":234,"at":"2026-09-19T20:25:30.736Z","source":"stdout","providerType":"assistant","kind":"Read","status":"running","summary":"sample command for accept-5 aliquip sed quis proident"}
+{"seq":235,"at":"2026-09-19T20:25:30.836Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":236,"at":"2026-09-19T20:25:36.121Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco laborum ullamco consectetur ut incididunt incididunt"}
+{"seq":237,"at":"2026-09-19T20:25:36.901Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":238,"at":"2026-09-19T20:25:41.695Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit pariatur"}
+{"seq":239,"at":"2026-09-19T20:25:42.317Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":240,"at":"2026-09-19T20:25:47.247Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 quis qui ad qui qui labore velit nisi duis culpa mollit irure ea ipsum mollit duis est veniam in pariatur commodo"}
+{"seq":241,"at":"2026-09-19T20:25:48.141Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":242,"at":"2026-09-19T20:25:55.859Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 non nulla deserunt excepteur et sunt sunt elit culpa elit elit magna aliqua aute velit labore sunt enim voluptate magna minim amet pariatur exercitation"}
+{"seq":243,"at":"2026-09-19T20:25:56.563Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":244,"at":"2026-09-19T20:26:03.233Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 reprehenderit est incididunt sint id eiusmod eiusmod ipsum"}
+{"seq":245,"at":"2026-09-19T20:26:04.086Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":246,"at":"2026-09-19T20:26:06.842Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 fugiat consectetur"}
+{"seq":247,"at":"2026-09-19T20:26:07.133Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":248,"at":"2026-09-19T20:26:11.113Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 fugiat minim sed laborum eiusmod id commodo duis lorem id consectetur"}
+{"seq":249,"at":"2026-09-19T20:26:11.497Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":250,"at":"2026-09-19T20:26:16.448Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 exercitation aliqua officia deserunt laboris laborum laborum sit non quis occaecat laboris tempor mollit velit quis sunt sint amet consectetur"}
+{"seq":251,"at":"2026-09-19T20:26:16.967Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":252,"at":"2026-09-19T20:26:19.334Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor sint ex sunt et sunt in sunt enim duis duis sint adipiscing est"}
+{"seq":253,"at":"2026-09-19T20:26:19.740Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":254,"at":"2026-09-19T20:26:28.602Z","source":"stdout","providerType":"assistant","kind":"ToolSearch","status":"running","summary":null}
+{"seq":255,"at":"2026-09-19T20:26:28.678Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":256,"at":"2026-09-19T20:26:32.559Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 occaecat sunt eiusmod incididunt excepteur veniam qui consequat veniam excepteur labore laboris ut fugiat laborum excepteur velit"}
+{"seq":257,"at":"2026-09-19T20:26:32.760Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":258,"at":"2026-09-19T20:26:39.266Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command tempor"}
+{"seq":259,"at":"2026-09-19T20:26:40.409Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":260,"at":"2026-09-19T20:26:46.859Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 mollit minim quis qui magna ipsum quis dolor velit cillum mollit id est nostrud sunt id ipsum duis consequat non irure anim proident"}
+{"seq":261,"at":"2026-09-19T20:26:47.083Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":262,"at":"2026-09-19T20:26:52.488Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 reprehenderit adipiscing quis magna exercitation."}
+{"seq":263,"at":"2026-09-19T20:26:54.021Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 culpa voluptate deserunt ipsum tempor aliqua cupidatat incididunt"}
+{"seq":264,"at":"2026-09-19T20:26:54.172Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":265,"at":"2026-09-19T20:26:56.445Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor sint ex sunt et sunt in sunt enim duis duis sint adipiscing est"}
+{"seq":266,"at":"2026-09-19T20:26:56.860Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":267,"at":"2026-09-19T20:27:03.568Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 commodo velit enim ipsum aliquip consequat sed ipsum consectetur pariatur enim ipsum anim magna elit aute nisi exercitation"}
+{"seq":268,"at":"2026-09-19T20:27:03.770Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":269,"at":"2026-09-19T20:27:07.402Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor sint ex sunt et sunt in sunt enim duis duis sint adipiscing est"}
+{"seq":270,"at":"2026-09-19T20:27:07.789Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":271,"at":"2026-09-19T20:27:14.283Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 mollit cupidatat elit cupidatat minim qui dolor ea nulla ad magna laboris et anim irure ullamco culpa eiusmod proident eiusmod magna exercitation veniam"}
+{"seq":272,"at":"2026-09-19T20:27:15.065Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":273,"at":"2026-09-19T20:27:18.534Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 dolor sint ex sunt et sunt in sunt enim duis duis sint adipiscing est"}
+{"seq":274,"at":"2026-09-19T20:27:19.086Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":275,"at":"2026-09-19T20:27:21.333Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 commodo voluptate."}
+{"seq":276,"at":"2026-09-19T20:27:22.800Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laboris dolor ullamco pariatur consectetur officia consectetur non velit dolore ullamco magna proident"}
+{"seq":277,"at":"2026-09-19T20:27:22.958Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":278,"at":"2026-09-19T20:27:26.392Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aliqua esse non ipsum culpa voluptate exercitation"}
+{"seq":279,"at":"2026-09-19T20:27:26.920Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":280,"at":"2026-09-19T20:27:29.216Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 labore excepteur"}
+{"seq":281,"at":"2026-09-19T20:27:29.684Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":282,"at":"2026-09-19T20:27:32.190Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 nostrud exercitation officia."}
+{"seq":283,"at":"2026-09-19T20:27:33.366Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit"}
+{"seq":284,"at":"2026-09-19T20:27:33.754Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":285,"at":"2026-09-19T20:27:36.131Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 labore excepteur"}
+{"seq":286,"at":"2026-09-19T20:27:36.443Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":287,"at":"2026-09-19T20:27:41.262Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 irure sit commodo exercitation do minim esse laborum deserunt amet velit aliqua incididunt ipsum magna nostrud veniam veniam velit commodo consequat"}
+{"seq":288,"at":"2026-09-19T20:27:42.292Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":289,"at":"2026-09-19T20:27:46.655Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 minim et aute tempor deserunt non veniam incididunt qui cillum commodo occaecat ex consectetur"}
+{"seq":290,"at":"2026-09-19T20:27:47.144Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":291,"at":"2026-09-19T20:27:55.199Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 eiusmod mollit eiusmod qui laboris enim exercitation duis voluptate nostrud consectetur pariatur magna aute ipsum irure magna non esse ullamco cupidatat"}
+{"seq":292,"at":"2026-09-19T20:27:55.628Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":293,"at":"2026-09-19T20:28:03.280Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sit nostrud labore aliquip proident fugiat proident aliquip adipiscing ut ex proident cillum cillum irure amet dolor ullamco deserunt veniam consectetur"}
+{"seq":294,"at":"2026-09-19T20:28:06.888Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":295,"at":"2026-09-19T20:28:10.031Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit pariatur consectetur pariatur elit culpa non incididunt"}
+{"seq":296,"at":"2026-09-19T20:28:10.948Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":297,"at":"2026-09-19T20:28:14.909Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consectetur adipiscing sit ex ex culpa aliquip aute elit dolor ipsum pariatur officia labore quis ut do voluptate sed consectetur"}
+{"seq":298,"at":"2026-09-19T20:28:15.354Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":299,"at":"2026-09-19T20:28:28.135Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 culpa officia culpa nulla qui aliquip exercitation ex adipiscing occaecat laborum ullamco occaecat sit reprehenderit non"}
+{"seq":300,"at":"2026-09-19T20:28:28.262Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":301,"at":"2026-09-19T20:28:35.290Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit ipsum ad ex labore sint ipsum elit laboris exercitation mollit"}
+{"seq":302,"at":"2026-09-19T20:28:35.475Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":303,"at":"2026-09-19T20:28:42.278Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 irure tempor nisi id sint incididunt sint labore consectetur"}
+{"seq":304,"at":"2026-09-19T20:28:42.426Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":305,"at":"2026-09-19T20:28:46.014Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aute"}
+{"seq":306,"at":"2026-09-19T20:28:46.183Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":307,"at":"2026-09-19T20:28:48.410Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 ipsum amet adipiscing."}
+{"seq":308,"at":"2026-09-19T20:28:48.865Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":309,"at":"2026-09-19T20:28:49.036Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":310,"at":"2026-09-19T20:28:51.310Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt"}
+{"seq":311,"at":"2026-09-19T20:28:51.427Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":312,"at":"2026-09-19T20:28:54.231Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 adipiscing aliquip voluptate eiusmod irure consequat ullamco nostrud proident velit culpa nisi enim consectetur"}
+{"seq":313,"at":"2026-09-19T20:28:54.391Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":314,"at":"2026-09-19T20:28:56.196Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 sed amet proident."}
+{"seq":315,"at":"2026-09-19T20:28:56.961Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit"}
+{"seq":316,"at":"2026-09-19T20:28:57.073Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":317,"at":"2026-09-19T20:28:59.130Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":318,"at":"2026-09-19T20:28:59.302Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":319,"at":"2026-09-19T20:29:03.811Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aute laborum sint eiusmod reprehenderit ullamco ex exercitation elit enim minim tempor deserunt aliqua consequat consequat tempor cillum in exercitation"}
+{"seq":320,"at":"2026-09-19T20:29:03.975Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":321,"at":"2026-09-19T20:29:06.170Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 quis nisi cillum adipiscing."}
+{"seq":322,"at":"2026-09-19T20:29:07.544Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aute sed occaecat veniam pariatur sit officia cupidatat duis"}
+{"seq":323,"at":"2026-09-19T20:29:07.766Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":324,"at":"2026-09-19T20:29:10.996Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia voluptate do laboris aliquip ad in sed qui voluptate esse cillum aute consectetur excepteur cupidatat"}
+{"seq":325,"at":"2026-09-19T20:29:11.186Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":326,"at":"2026-09-19T20:29:14.626Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 enim incididunt"}
+{"seq":327,"at":"2026-09-19T20:29:14.795Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":328,"at":"2026-09-19T20:29:16.997Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 dolor."}
+{"seq":329,"at":"2026-09-19T20:29:17.444Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":330,"at":"2026-09-19T20:29:17.601Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":331,"at":"2026-09-19T20:29:20.642Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia eiusmod cillum excepteur"}
+{"seq":332,"at":"2026-09-19T20:29:21.719Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":333,"at":"2026-09-19T20:29:24.759Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laboris et laborum anim voluptate est anim qui do officia fugiat laborum culpa pariatur culpa proident"}
+{"seq":334,"at":"2026-09-19T20:29:24.919Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":335,"at":"2026-09-19T20:29:26.604Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 ullamco dolor sed adipiscing veniam."}
+{"seq":336,"at":"2026-09-19T20:29:27.484Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 nulla laboris"}
+{"seq":337,"at":"2026-09-19T20:29:27.581Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":338,"at":"2026-09-19T20:29:29.743Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":339,"at":"2026-09-19T20:29:29.885Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":340,"at":"2026-09-19T20:29:36.036Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 esse mollit occaecat est dolore labore ex pariatur cupidatat dolore nisi commodo excepteur"}
+{"seq":341,"at":"2026-09-19T20:29:36.135Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":342,"at":"2026-09-19T20:29:38.953Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laboris et laborum anim voluptate est anim qui do officia fugiat laborum culpa pariatur culpa proident"}
+{"seq":343,"at":"2026-09-19T20:29:39.345Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":344,"at":"2026-09-19T20:29:51.890Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 magna non voluptate in excepteur et consectetur officia nisi irure ex anim in proident proident aliqua est ea exercitation cupidatat laborum consectetur"}
+{"seq":345,"at":"2026-09-19T20:29:52.206Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":346,"at":"2026-09-19T20:29:54.439Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 commodo."}
+{"seq":347,"at":"2026-09-19T20:29:55.237Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":348,"at":"2026-09-19T20:29:55.561Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":349,"at":"2026-09-19T20:29:58.746Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ex excepteur sit non aliqua sit ex proident sint nostrud occaecat ad labore cupidatat"}
+{"seq":350,"at":"2026-09-19T20:29:58.928Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":351,"at":"2026-09-19T20:30:00.747Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 laborum nulla exercitation."}
+{"seq":352,"at":"2026-09-19T20:30:02.135Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum anim do nulla ut elit enim officia ipsum elit reprehenderit velit esse ea consequat cupidatat tempor amet laboris esse ea anim proident occaecat"}
+{"seq":353,"at":"2026-09-19T20:30:02.444Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":354,"at":"2026-09-19T20:30:04.634Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":355,"at":"2026-09-19T20:30:04.882Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":356,"at":"2026-09-19T20:30:09.650Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aliquip exercitation excepteur incididunt dolore sunt pariatur cupidatat minim excepteur"}
+{"seq":357,"at":"2026-09-19T20:30:10.059Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":358,"at":"2026-09-19T20:30:13.180Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 voluptate occaecat mollit sed nostrud occaecat sunt consectetur in commodo dolor commodo sed consectetur"}
+{"seq":359,"at":"2026-09-19T20:30:13.526Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":360,"at":"2026-09-19T20:30:15.855Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 ut amet nisi deserunt consectetur."}
+{"seq":361,"at":"2026-09-19T20:30:16.912Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sed nisi est culpa excepteur"}
+{"seq":362,"at":"2026-09-19T20:30:17.152Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":363,"at":"2026-09-19T20:30:19.829Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 amet sit cillum id reprehenderit eiusmod ea aliquip adipiscing dolore enim proident ut sunt sunt enim sunt dolor nostrud."}
+{"seq":364,"at":"2026-09-19T20:30:20.413Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":365,"at":"2026-09-19T20:30:20.561Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":366,"at":"2026-09-19T20:30:23.334Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 incididunt"}
+{"seq":367,"at":"2026-09-19T20:30:23.496Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":368,"at":"2026-09-19T20:30:26.314Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sed veniam in eiusmod aute aliqua occaecat tempor culpa nisi sed magna nisi dolor ea adipiscing"}
+{"seq":369,"at":"2026-09-19T20:30:26.508Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":370,"at":"2026-09-19T20:30:28.838Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 fugiat laborum officia eiusmod voluptate et cupidatat ex do exercitation."}
+{"seq":371,"at":"2026-09-19T20:30:30.098Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 qui lorem fugiat dolor sit proident nulla deserunt"}
+{"seq":372,"at":"2026-09-19T20:30:30.449Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":373,"at":"2026-09-19T20:30:32.910Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":374,"at":"2026-09-19T20:30:33.052Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":375,"at":"2026-09-19T20:30:36.484Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum consequat dolor magna velit veniam nostrud irure do amet irure aliqua sunt est eiusmod pariatur qui cillum ad aliquip sed occaecat aliqua dolore"}
+{"seq":376,"at":"2026-09-19T20:30:36.556Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":377,"at":"2026-09-19T20:30:38.893Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response ea adipiscing."}
+{"seq":378,"at":"2026-09-19T20:30:39.674Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 adipiscing sit esse irure ex adipiscing consectetur officia non incididunt"}
+{"seq":379,"at":"2026-09-19T20:30:39.776Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":380,"at":"2026-09-19T20:30:42.451Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 esse anim id dolore velit in enim enim sunt nisi ipsum magna deserunt sed cupidatat id consectetur culpa sed cillum ex qui deserunt magna aliquip ullamco."}
+{"seq":381,"at":"2026-09-19T20:30:43.014Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":382,"at":"2026-09-19T20:30:43.179Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":383,"at":"2026-09-19T20:30:45.578Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 fugiat excepteur"}
+{"seq":384,"at":"2026-09-19T20:30:45.702Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":385,"at":"2026-09-19T20:30:48.648Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum dolore aliquip excepteur sed officia minim minim non dolore irure elit sunt consectetur"}
+{"seq":386,"at":"2026-09-19T20:30:48.814Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":387,"at":"2026-09-19T20:30:51.060Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 nisi deserunt."}
+{"seq":388,"at":"2026-09-19T20:30:51.760Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aute"}
+{"seq":389,"at":"2026-09-19T20:30:51.951Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":390,"at":"2026-09-19T20:30:53.942Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":391,"at":"2026-09-19T20:30:54.258Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":392,"at":"2026-09-19T20:30:57.027Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 voluptate laboris"}
+{"seq":393,"at":"2026-09-19T20:30:57.347Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":394,"at":"2026-09-19T20:31:00.159Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum dolore aliquip excepteur sed officia minim minim non dolore irure elit sunt consectetur"}
+{"seq":395,"at":"2026-09-19T20:31:00.458Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":396,"at":"2026-09-19T20:31:04.374Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 dolor tempor cupidatat esse culpa enim laborum cillum sint in culpa occaecat labore exercitation incididunt."}
+{"seq":397,"at":"2026-09-19T20:31:05.038Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":398,"at":"2026-09-19T20:31:05.423Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":399,"at":"2026-09-19T20:31:07.685Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response esse voluptate."}
+{"seq":400,"at":"2026-09-19T20:31:08.418Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 aliqua ipsum eiusmod laborum"}
+{"seq":401,"at":"2026-09-19T20:31:08.795Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":402,"at":"2026-09-19T20:31:11.734Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 laborum dolore aliquip excepteur sed officia minim minim non dolore irure elit sunt consectetur"}
+{"seq":403,"at":"2026-09-19T20:31:12.256Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":404,"at":"2026-09-19T20:31:14.548Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 laboris do sunt exercitation."}
+{"seq":405,"at":"2026-09-19T20:31:15.295Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ipsum excepteur ea exercitation"}
+{"seq":406,"at":"2026-09-19T20:31:15.995Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":407,"at":"2026-09-19T20:31:19.446Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 sint minim veniam incididunt nisi adipiscing."}
+{"seq":408,"at":"2026-09-19T20:31:20.383Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ullamco commodo proident excepteur pariatur cillum deserunt cupidatat esse nulla cupidatat mollit"}
+{"seq":409,"at":"2026-09-19T20:31:20.717Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":410,"at":"2026-09-19T20:31:23.293Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 occaecat dolor adipiscing"}
+{"seq":411,"at":"2026-09-19T20:31:23.559Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":412,"at":"2026-09-19T20:31:25.910Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 non consectetur."}
+{"seq":413,"at":"2026-09-19T20:31:26.396Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":414,"at":"2026-09-19T20:31:26.774Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":415,"at":"2026-09-19T20:31:30.850Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 est fugiat aliquip ad tempor aliqua ullamco eiusmod esse nostrud cillum fugiat mollit ad est qui consequat reprehenderit pariatur incididunt consectetur"}
+{"seq":416,"at":"2026-09-19T20:31:31.055Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":417,"at":"2026-09-19T20:31:33.110Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 culpa in aliqua consectetur velit."}
+{"seq":418,"at":"2026-09-19T20:31:33.493Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"consequat"}
+{"seq":419,"at":"2026-09-19T20:31:33.693Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":420,"at":"2026-09-19T20:31:36.022Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response esse voluptate."}
+{"seq":421,"at":"2026-09-19T20:31:36.561Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 elit consectetur consectetur"}
+{"seq":422,"at":"2026-09-19T20:31:36.889Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":423,"at":"2026-09-19T20:31:38.637Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response adipiscing."}
+{"seq":424,"at":"2026-09-19T20:31:38.835Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"excepteur"}
+{"seq":425,"at":"2026-09-19T20:31:39.303Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":426,"at":"2026-09-19T20:31:41.949Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":427,"at":"2026-09-19T20:31:42.318Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":428,"at":"2026-09-19T20:31:44.620Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 deserunt."}
+{"seq":429,"at":"2026-09-19T20:31:44.832Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":430,"at":"2026-09-19T20:31:44.985Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":431,"at":"2026-09-19T20:31:47.705Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":432,"at":"2026-09-19T20:31:48.045Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":433,"at":"2026-09-19T20:31:50.141Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 nostrud incididunt."}
+{"seq":434,"at":"2026-09-19T20:31:50.432Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"excepteur"}
+{"seq":435,"at":"2026-09-19T20:31:50.626Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":436,"at":"2026-09-19T20:31:52.887Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":437,"at":"2026-09-19T20:31:53.116Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":438,"at":"2026-09-19T20:31:55.122Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"consequat"}
+{"seq":439,"at":"2026-09-19T20:31:55.221Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":440,"at":"2026-09-19T20:31:58.012Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":441,"at":"2026-09-19T20:31:58.251Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":442,"at":"2026-09-19T20:31:59.956Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 ex in culpa incididunt."}
+{"seq":443,"at":"2026-09-19T20:32:00.389Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":444,"at":"2026-09-19T20:32:00.487Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":445,"at":"2026-09-19T20:32:03.263Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":446,"at":"2026-09-19T20:32:03.432Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":447,"at":"2026-09-19T20:32:05.763Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":448,"at":"2026-09-19T20:32:05.837Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":449,"at":"2026-09-19T20:32:08.414Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":450,"at":"2026-09-19T20:32:08.591Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":451,"at":"2026-09-19T20:32:10.782Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"consequat"}
+{"seq":452,"at":"2026-09-19T20:32:10.859Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":453,"at":"2026-09-19T20:32:13.309Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":454,"at":"2026-09-19T20:32:13.473Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":455,"at":"2026-09-19T20:32:15.759Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"consequat"}
+{"seq":456,"at":"2026-09-19T20:32:15.839Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":457,"at":"2026-09-19T20:32:18.623Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":458,"at":"2026-09-19T20:32:18.760Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":459,"at":"2026-09-19T20:32:21.106Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"excepteur"}
+{"seq":460,"at":"2026-09-19T20:32:21.314Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":461,"at":"2026-09-19T20:32:24.168Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":462,"at":"2026-09-19T20:32:24.600Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":463,"at":"2026-09-19T20:32:26.841Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":464,"at":"2026-09-19T20:32:26.992Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":465,"at":"2026-09-19T20:32:29.327Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":466,"at":"2026-09-19T20:32:29.614Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":467,"at":"2026-09-19T20:32:31.587Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":468,"at":"2026-09-19T20:32:31.732Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":469,"at":"2026-09-19T20:32:34.180Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":470,"at":"2026-09-19T20:32:34.506Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":471,"at":"2026-09-19T20:32:36.295Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"excepteur"}
+{"seq":472,"at":"2026-09-19T20:32:36.434Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":473,"at":"2026-09-19T20:32:38.970Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":474,"at":"2026-09-19T20:32:39.261Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":475,"at":"2026-09-19T20:32:41.749Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"voluptate"}
+{"seq":476,"at":"2026-09-19T20:32:41.885Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":477,"at":"2026-09-19T20:32:44.325Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 occaecat in nisi adipiscing excepteur reprehenderit qui sint ad id ea adipiscing cillum labore anim adipiscing occaecat"}
+{"seq":478,"at":"2026-09-19T20:32:44.574Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":479,"at":"2026-09-19T20:32:46.049Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 consectetur."}
+{"seq":480,"at":"2026-09-19T20:32:46.309Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"cupidatat"}
+{"seq":481,"at":"2026-09-19T20:32:46.460Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":482,"at":"2026-09-19T20:32:49.181Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":483,"at":"2026-09-19T20:32:49.354Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":484,"at":"2026-09-19T20:32:51.451Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"cupidatat"}
+{"seq":485,"at":"2026-09-19T20:32:51.601Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":486,"at":"2026-09-19T20:32:54.319Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 sunt do commodo culpa amet dolor nisi id voluptate anim commodo deserunt mollit"}
+{"seq":487,"at":"2026-09-19T20:32:54.458Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":488,"at":"2026-09-19T20:32:59.651Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 officia labore aute anim amet aute nostrud velit sunt ad laboris ad et lorem ea laboris laboris nulla non magna non adipiscing amet sit adipiscing lorem"}
+{"seq":489,"at":"2026-09-19T20:32:59.762Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":490,"at":"2026-09-19T20:33:14.928Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 velit laborum consectetur amet labore irure do commodo qui deserunt dolore commodo adipiscing ad dolor tempor nulla et adipiscing ullamco consectetur ad"}
+{"seq":491,"at":"2026-09-19T20:34:53.297Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":492,"at":"2026-09-19T20:35:01.530Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 proident irure et lorem proident sunt adipiscing officia incididunt sunt in nulla amet ipsum et ullamco exercitation laboris dolore veniam mollit fugiat"}
+{"seq":493,"at":"2026-09-19T20:35:43.082Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":494,"at":"2026-09-19T20:35:57.561Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 ex amet dolor do enim esse laborum voluptate ex quis in nisi non do mollit eiusmod et veniam ipsum laboris aliquip deserunt sit esse occaecat adipiscing"}
+{"seq":495,"at":"2026-09-19T20:36:48.691Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":496,"at":"2026-09-19T20:37:01.330Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample response for accept-5 adipiscing nulla adipiscing duis cillum adipiscing esse."}
+{"seq":497,"at":"2026-09-19T20:37:02.823Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 anim ex occaecat ullamco velit do commodo esse aliqua cillum tempor consequat non reprehenderit proident aliqua consectetur laboris quis amet incididunt"}
+{"seq":498,"at":"2026-09-19T20:37:03.045Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":499,"at":"2026-09-19T20:39:16.754Z","source":"stdout","providerType":"assistant","kind":"Write","status":"running","summary":"sample command for accept-5 commodo excepteur non occaecat proident consequat"}
+{"seq":500,"at":"2026-09-19T20:39:16.804Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":501,"at":"2026-09-19T20:39:21.071Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 consequat velit non ad id occaecat tempor esse commodo in amet tempor fugiat ea aute pariatur quis commodo dolor nostrud ea irure occaecat incididunt in"}
+{"seq":502,"at":"2026-09-19T20:39:21.256Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":503,"at":"2026-09-19T20:39:25.410Z","source":"stdout","providerType":"assistant","kind":"Bash","status":"running","summary":"sample command for accept-5 incididunt et laborum dolore velit qui exercitation aliqua sint deserunt consectetur laboris irure proident eiusmod qui adipiscing fugiat eiusmod tempor"}
+{"seq":504,"at":"2026-09-19T20:39:25.624Z","source":"stdout","providerType":"user","kind":"tool","status":"completed","summary":null}
+{"seq":505,"at":"2026-09-19T20:39:35.171Z","source":"stdout","providerType":"assistant","kind":"response","status":"completed","summary":"sample report for accept-5 sed veniam tempor duis tempor magna pariatur amet officia est ad consectetur occaecat duis dolore adipiscing adipiscing excepteur quis nisi culpa velit duis dolore aliquip dolor aliquip elit nostrud irure labore ullamco mollit ullamco velit commodo irure quis ut esse officia anim occaecat occaecat cupidatat duis sunt labore elit est elit et dolore ut velit ex dolor consequat sunt lorem ea proident tempor ipsum deserunt anim culpa ut fugiat nostrud minim.\n\nsample culpa exercitation anim magna occaecat eiusmod anim lorem enim nisi eiusmod esse id cillum laborum veniam nulla reprehenderit ea culpa nulla ex anim officia veniam veniam labore exercitation laborum veniam duis culpa aute do officia quis fugiat enim nulla ut aute esse commodo labore et velit tempor exercitation est ullamco deserunt\n\nsample enim ut commodo anim veniam et ut cupidatat amet aliquip lorem nulla cillum quis et reprehenderit eiusmod:\n\n- sample amet fugiat pariatur enim commodo cillum sed est incididunt ipsum adipiscing.\n- sample qui ipsum irure dolor ullamco nostrud aliquip mollit anim id amet commodo incididunt veniam elit adipiscing.\n- sample ullamco nulla proident sit do sunt sit commodo magna non id lorem incididunt ea qui consequat dolore voluptate enim.\n- sample minim commodo consequat exercitation ut consectetur tempor aliquip duis velit laborum occaecat dolore id ullamco elit laboris ad ex tempor officia incididunt eiusmod minim qui sed sit officia veniam reprehenderit minim duis laboris occaecat deserunt officia pariatur velit ut deserunt elit excepteur non.\n- sample ullamco do esse ipsum exercitation aliquip laborum elit est exercitation.\n- sample dolore sint voluptate ad sint quis eiusmod aute amet esse exercitation velit sint id non nostrud dolore consequat incididunt laboris fugiat tempor ea laboris consequat cillum exercitation.\n\nsample anim quis non excepteur magna consequat dolor do sit lorem incididunt.\n\nsample lorem"}

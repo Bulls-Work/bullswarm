@@ -10,13 +10,17 @@ import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.j
 import { seriesColor } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 
+// The fixture's clocks were recorded in Hong Kong and the expectations quote
+// them as HKT, so this file reads them there on any machine (CI runs in UTC).
+process.env.TZ = 'Asia/Hong_Kong';
+
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
 
 const fixtureDir = fileURLToPath(new URL('./fixtures/step-model/', import.meta.url));
 const frameDir = '/tmp/bullswarm-step-frames-0.35.1';
 const fixedNow = Date.parse('2026-09-19T18:10:00.000Z');
-const realClaudeRun = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows/wf-mu6mv62z-cdcd5d';
+const realClaudeRun = fileURLToPath(new URL('./fixtures/home-351/workflows/wf-mu6mv62z-cdcd5d/', import.meta.url));
 
 function stateFor({ actionId, actionStatus, lifecycleStatus, attempts, resultFile = null }) {
   return {
@@ -339,7 +343,7 @@ test('running activity leads with the now block and keeps the filter control', (
 
   const expanded = render(stepPageModel(base.modelInput, { nowMs: fixedNow, expandedTurn: 0 }), 120);
   const expandedText = expanded.map(plain).join('\n');
-  assert.match(expandedText, /▶ 1  01:50  I’ll inspect the task-step file/);
+  assert.match(expandedText, /▶ 1  01:50  sample dolor qui excepteur amet non sit/);
   assert.match(expandedText, /2 commands · Esc closes/);
   assert.match(expandedText, /01:50:35  \$ inspect task and repository guidance/);
   assert.match(expandedText, /01:50:46  \$ inspect dependency reports and stream contract/);

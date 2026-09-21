@@ -105,7 +105,7 @@ function corpus() {
       models: { 'claude-opus-5': { attempts: 1, minutes: 30 } },
     }),
     record({
-      runId: 'wf-small', startedAt: DAY(2, 8), finishedAt: DAY(2, 9), wall: 30, project: 'project-b',
+      runId: 'wf-small', startedAt: DAY(2, 8), finishedAt: DAY(2, 9), wall: 30, project: 'kitdemo',
       pools: {
         'claude-code': { attempts: 1, minutes: 10, costUsd: 0.05, tokens: 12 },
         codex: { attempts: 1, minutes: 7, costUsd: null, tokens: null },

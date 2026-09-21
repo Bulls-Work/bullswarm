@@ -131,7 +131,7 @@ function corpus() {
     // yesterday: the only run of its day
     record({
       runId: 'wf-single', startedAt: DAY(1, 9), finishedAt: DAY(1, 10), verified: true,
-      wall: 2, agent: 1, project: 'project-b',
+      wall: 2, agent: 1, project: 'kitdemo',
       pools: { 'claude-code': { attempts: 1, minutes: 30, costUsd: 0.1, tokens: 20 } },
       models: { 'claude-opus-5': { attempts: 1, minutes: 30 } },
     }),
@@ -256,7 +256,7 @@ test('overviewModel: the breakdown splits the period by pool, model and project'
   assert.equal(model5.attempts, 4);
   assert.equal(model5.apiEquivalentUsd, null);
 
-  const project = model.breakdown.projects.find((row) => row.name === 'project-b');
+  const project = model.breakdown.projects.find((row) => row.name === 'kitdemo');
   assert.equal(project.runs, 1);
   assert.equal(project.apiEquivalentUsd, 0.1);
 });
@@ -353,7 +353,7 @@ test('active duration wins over the retained wall span in every Stats duration a
   // This is the real g6d6q2 snapshot fixture used by the rollup test. Its
   // active union is 360.65m while the retained lifecycle wall alias is
   // 2234.94m.
-  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'bulldemo' });
   const rollups = indexOf([real]);
   const statsNow = Date.parse(real.finishedAt) + 60_000;
   const overview = overviewModel(rollups, [], { period: 'all', now: statsNow });
@@ -381,7 +381,7 @@ test('a duration with no active union falls back to the recorded span and says h
   // An index `workflow reprice` has not corrected yet: the older `wall` alias
   // and no attempt-interval union. The figure stays visible, marked as the
   // span it is, instead of every duration reading `not recorded`.
-  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'bulldemo' });
   const prerepriced = {
     ...real,
     minutes: { wall: real.minutes.wall, agent: real.minutes.agent },
@@ -413,7 +413,7 @@ test('a duration with no active union falls back to the recorded span and says h
 });
 
 test('a period that mixes corrected and uncorrected records names each run\'s own basis', () => {
-  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const real = rollupRecord(REAL_G6D6Q2, null, { project: 'bulldemo' });
   const prerepriced = { ...real, runId: 'wf-old', minutes: { wall: real.minutes.wall, agent: null } };
   const overview = overviewModel(indexOf([real, prerepriced]), [], {
     period: 'all',

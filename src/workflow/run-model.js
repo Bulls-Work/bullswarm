@@ -926,8 +926,11 @@ function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
     const attempts = phaseAttempts(row, stage).slice().sort((a, b) => parsedMs(a.startedAt) - parsedMs(b.startedAt));
     const duration = phaseDurationFacts(row, { ...stage, actions: phaseActions }, { nowMs });
     const progress = presentationStageStatus(stage, actions);
-    const startedAt = stage.startedAt ?? attempts.map((attempt) => attempt.startedAt).filter(Boolean).sort()[0] ?? null;
-    const finishedAt = stage.completedAt ?? attempts.map((attempt) => attempt.finishedAt).filter(Boolean).sort().at(-1) ?? null;
+    // The rule reads `start → end` above its own attempt rows, so both ends come
+    // from those rows: the first attempt's start and the last attempt's finish.
+    // The stage's own stamps only stand in for a phase that has no attempt yet.
+    const startedAt = attempts.map((attempt) => attempt.startedAt).filter(Boolean).sort()[0] ?? stage.startedAt ?? null;
+    const finishedAt = attempts.map((attempt) => attempt.finishedAt).filter(Boolean).sort().at(-1) ?? stage.completedAt ?? null;
     const active = phaseActions.some((action) => action.status === 'running') || attempts.some((attempt) => attempt.status === 'running');
     const failed = phaseActions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status));
     return {

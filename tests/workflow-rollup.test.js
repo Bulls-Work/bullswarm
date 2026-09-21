@@ -47,7 +47,7 @@ function home() {
 
 function stateFixture({
   runId = 'wf-mu42yeqn-e4b9a7', shortId = 'imzcvs', goal = 'Deliver the data floor',
-  cwd = '/Users/dev/Repo/bullswarm', status = 'completed',
+  cwd = '/home/dev/Repo/bullswarm', status = 'completed',
   startedAt = '2026-09-16T12:31:50.017Z', finishedAt = '2026-09-16T12:52:51.027Z',
   seconds = 1260.2, attempts = null, requirements = null,
 } = {}) {
@@ -96,7 +96,7 @@ test('R1: the record carries every field the dashboard reads, measured from stat
   assert.equal(record.shortId, 'imzcvs');
   assert.equal(record.project, 'bullswarm');
   assert.equal(record.goal, 'Deliver the data floor');
-  assert.equal(record.cwd, '/Users/dev/Repo/bullswarm');
+  assert.equal(record.cwd, '/home/dev/Repo/bullswarm');
   assert.equal(record.startedAt, '2026-09-16T12:31:50.017Z');
   assert.equal(record.finishedAt, '2026-09-16T12:52:51.027Z');
   assert.equal(record.status, 'completed');
@@ -120,7 +120,7 @@ test('R1: the record carries every field the dashboard reads, measured from stat
 });
 
 test('R1: active minutes union real g6d6q2 attempt intervals and retain the idle span', () => {
-  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'bulldemo' });
   assert.equal(record.minutes.active, 360.65);
   assert.equal(record.minutes.span, 2234.93);
   assert.equal(record.minutes.active < record.minutes.span, true);
@@ -379,11 +379,11 @@ test('writeRunRollup resolves the project from the record the run made at goal t
     const runDir = runDirWith(h.dir, state);
     writeFileSync(join(runDir, 'project.json'), JSON.stringify({
       schemaVersion: 'bullswarm.workflow.project.v1',
-      name: 'project-a', remote: 'git@github.com:Bulls-Work/project-a.git',
+      name: 'bulldemo', remote: 'git@github.com:Bulls-Work/bulldemo.git',
       toplevel: '/gone/forever', cwd: '/gone/forever', recordedAt: '2026-09-16T12:00:00.000Z',
     }));
     const record = writeRunRollup(runDir, state, resultFixture());
-    assert.equal(record.project, 'project-a', 'the goal-time record outlives the checkout');
+    assert.equal(record.project, 'bulldemo', 'the goal-time record outlives the checkout');
   } finally { h.cleanup(); }
 });
 
@@ -419,7 +419,7 @@ test('R4: re-finishing a run replaces its line rather than adding a second', () 
   try {
     const first = rollupRecord(stateFixture(), resultFixture({ verified: false, passed: 1 }), { project: 'bullswarm' });
     appendRollupIndex(h.dir, first);
-    appendRollupIndex(h.dir, rollupRecord(stateFixture({ runId: 'wf-other-000000', shortId: 'other1' }), null, { project: 'project-a' }));
+    appendRollupIndex(h.dir, rollupRecord(stateFixture({ runId: 'wf-other-000000', shortId: 'other1' }), null, { project: 'bulldemo' }));
     const revised = rollupRecord(stateFixture(), resultFixture({ verified: true, passed: 2 }), { project: 'bullswarm' });
     const result = appendRollupIndex(h.dir, revised);
     assert.deepEqual(result, { runId: revised.runId, appended: true, replaced: true });
@@ -428,7 +428,7 @@ test('R4: re-finishing a run replaces its line rather than adding a second', () 
     assert.equal(index.length, 2, 'one line per run');
     assert.equal(index.filter((entry) => entry.runId === revised.runId).length, 1);
     assert.equal(index.find((entry) => entry.runId === revised.runId).verified, true, 'the newest record wins');
-    assert.equal(index.find((entry) => entry.runId === 'wf-other-000000').project, 'project-a', 'the sibling line survives the rewrite');
+    assert.equal(index.find((entry) => entry.runId === 'wf-other-000000').project, 'bulldemo', 'the sibling line survives the rewrite');
   } finally { h.cleanup(); }
 });
 
@@ -601,13 +601,13 @@ test('R3: readLegacyRunFacts prefers report.json, then state.json, then the file
 
 test('R3: a legacy record carries identity and times, and neither cost nor pool minutes', () => {
   const record = legacyRollupRecord({
-    runId: 'wf-legacy-report', shortId: 'legacy', project: 'project-a', goal: 'smoke-two-step',
+    runId: 'wf-legacy-report', shortId: 'legacy', project: 'bulldemo', goal: 'smoke-two-step',
     status: 'completed', startedAt: '2026-08-22T07:51:08.084Z', finishedAt: '2026-08-22T07:54:08.084Z',
     timeSource: 'report',
   });
   assert.deepEqual(record, {
     schemaVersion: ROLLUP_SCHEMA_VERSION,
-    runId: 'wf-legacy-report', shortId: 'legacy', project: 'project-a', goal: 'smoke-two-step', cwd: null,
+    runId: 'wf-legacy-report', shortId: 'legacy', project: 'bulldemo', goal: 'smoke-two-step', cwd: null,
     startedAt: '2026-08-22T07:51:08.084Z', finishedAt: '2026-08-22T07:54:08.084Z', status: 'completed',
     verified: false, requirements: { passed: 0, total: 0 },
     minutes: { active: null, span: 3, wall: 3, agent: null }, pools: {}, models: {}, legacy: true, timeSource: 'report',

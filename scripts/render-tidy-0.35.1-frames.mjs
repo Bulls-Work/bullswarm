@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   dashboardModel,
@@ -11,7 +11,12 @@ import { listTasks } from '../src/lib/tasks.js';
 import { readRollups, rollupRecord } from '../src/workflow/rollup.js';
 import { workflowPanelModel } from '../src/workflow/run-model.js';
 
-export const SNAPSHOT = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+// The scrubbed in-repo copy of the real home (scripts/build-test-home.mjs).
+export const SNAPSHOT = fileURLToPath(new URL('../tests/fixtures/home-351/', import.meta.url));
+const REPO = fileURLToPath(new URL('..', import.meta.url));
+// The zone the owner reviewed the frames in: every clock a frame prints reads
+// the same on any machine.
+const FRAME_TZ = 'Asia/Hong_Kong';
 export const FRAME_DIR = new URL('../docs/design/tidy-0.35.1/frames/', import.meta.url);
 // The same frames with their SGR codes kept, so a reviewer can grep a colour
 // instead of taking a screenshot's word for it (requirement 5).
@@ -154,7 +159,7 @@ function refreshedRollups(rows, stored, nowMs) {
 }
 
 /**
- * Render the 0.35.1 review frames from the supplied real snapshot.
+ * Render the 0.35.1 review frames from the scrubbed real home.
  *
  * `colour: false` writes the plain `real-*.txt` set at every width — the text
  * frames the records quote. `colour: true` renders the same screens with their
@@ -163,6 +168,24 @@ function refreshedRollups(rows, stored, nowMs) {
  * frame is never a second arithmetic of the plain one.
  */
 export function buildRealFrames({ snapshot = SNAPSHOT, colour = false } = {}) {
+  // The pages print run folders and task files. Rendered from the repository
+  // root through a relative path, in one pinned zone, a frame reads the same
+  // on every checkout; both are restored before returning.
+  const cwd = process.cwd();
+  const tz = process.env.TZ;
+  const home = relative(REPO, resolve(cwd, snapshot)) || '.';
+  process.chdir(REPO);
+  process.env.TZ = FRAME_TZ;
+  try {
+    return renderRealFrames(home, colour);
+  } finally {
+    process.chdir(cwd);
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
+}
+
+function renderRealFrames(snapshot, colour) {
   if (!existsSync(join(snapshot, 'history', 'runs.jsonl'))) throw new Error(`snapshot missing: ${snapshot}`);
   const rows = dashboardRows(snapshot, { all: true });
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');

@@ -53,23 +53,23 @@ function twoLogins(home) {
 
 test('default home uses unsuffixed keychain service; extra homes hash the abs path', () => {
   assert.equal(
-    keychainServiceForConfigDir('/Users/me/.claude', '/Users/me'),
+    keychainServiceForConfigDir('/home/me/.claude', '/home/me'),
     'Claude Code-credentials',
   );
   assert.equal(
-    keychainServiceForConfigDir('/Users/me/.claude-work', '/Users/me'),
-    'Claude Code-credentials-1e91dd84',
+    keychainServiceForConfigDir('/home/me/.claude-work', '/home/me'),
+    'Claude Code-credentials-95e632f0',
   );
 });
 
 test('slug and pool names come from the directory, never a hardcoded profile list', () => {
-  assert.equal(accountSlugForConfigDir('/Users/me/.claude', '/Users/me'), null);
-  assert.equal(accountSlugForConfigDir('/Users/me/.claude-work', '/Users/me'), 'work');
+  assert.equal(accountSlugForConfigDir('/home/me/.claude', '/home/me'), null);
+  assert.equal(accountSlugForConfigDir('/home/me/.claude-work', '/home/me'), 'work');
   assert.equal(poolNameForSlug(null), 'claude-code');
   assert.equal(poolNameForSlug('work'), 'claude-code:work');
   assert.equal(
-    profileCommand('/Users/me/.claude-work'),
-    'CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude',
+    profileCommand('/home/me/.claude-work'),
+    'CLAUDE_CONFIG_DIR=/home/me/.claude-work claude',
   );
 });
 

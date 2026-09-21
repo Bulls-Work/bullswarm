@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { statsLines } from '../src/workflow/stats-view.js';
 import { appendRollupIndex, readRollups, rollupRecord, ROLLUP_SCHEMA_VERSION } from '../src/workflow/rollup.js';
 import { modelsModel, overviewModel, poolsModel, projectsModel, trendModel } from '../src/workflow/stats-model.js';
@@ -57,7 +58,7 @@ function v2Record({
     schemaVersion: ROLLUP_SCHEMA_VERSION,
     runId,
     shortId: runId.slice(-6),
-    project: 'project-a',
+    project: 'bulldemo',
     goal: `goal for ${runId}`,
     startedAt: finishedAt,
     finishedAt,
@@ -113,7 +114,7 @@ function fixture({ emptyModels = false } = {}) {
     overview: {
       keys: { workflows: 59, activeDays: 6, totalWorkerMinutes: 7018.74, apiEquivalentUsd: 7.032817, tokenSource: 'estimated:utf8-bytes/4', medianRunMinutes: 54.49 },
       outcomes: { statusCounts: { completed: 53, partial: 2, cancelled: 4 }, verified: 30, verifiedTotal: 59, verifiedShare: 30 / 59, requirementsPassed: 235, requirementsTotal: 301, requirementsShare: 235 / 301, medianActiveMinutes: 54.49, maxActiveMinutes: 542.69 },
-      breakdown: { pools, models, projects: [{ name: 'project-c', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }] },
+      breakdown: { pools, models, projects: [{ name: 'project-alpha-long-names', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }] },
     },
     spendPerDay: { metric: 'spend', segmentBasis: 'the recorded API-equivalent estimate per pool', buckets, total: 7.032817 },
     pools: { rows: pools, totals: { runs: 5, attempts: 180, minutes: 3253, apiEquivalentUsd: 6.27 }, licencePerDay: null },
@@ -123,8 +124,8 @@ function fixture({ emptyModels = false } = {}) {
       trend: { metric: 'minutes', unit: 'worker-minutes', segmentBasis: 'measured worker-minutes per model', buckets: buckets.map((bucket, index) => ({ ...bucket, value: index < 4 ? [320, 940, 400, 600][index] : null, segments: index < 4 ? [{ name: 'claude-opus-5', value: [220, 600, 250, 400][index] }, { name: 'gpt-5.6-luna', value: [100, 340, 150, 200][index] }] : [] })) },
     },
     projects: {
-      rows: [{ name: 'project-c', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }],
-      trend: { metric: 'runs', segmentBasis: 'the project each run recorded', buckets: buckets.map((bucket, index) => ({ ...bucket, value: index < 4 ? index + 2 : 0, segments: index < 4 ? [{ name: 'project-c', value: index + 1 }, { name: 'bullswarm', value: 1 }] : [] })) },
+      rows: [{ name: 'project-alpha-long-names', runs: 20, attempts: 40, minutes: 3000, apiEquivalentUsd: 2.1, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.427 }, { name: 'bullswarm', runs: 15, attempts: 30, minutes: 1900, apiEquivalentUsd: 1.8, tokenSource: 'estimated:utf8-bytes/4', minutesShare: 0.271 }],
+      trend: { metric: 'runs', segmentBasis: 'the project each run recorded', buckets: buckets.map((bucket, index) => ({ ...bucket, value: index < 4 ? index + 2 : 0, segments: index < 4 ? [{ name: 'project-alpha-long-names', value: index + 1 }, { name: 'bullswarm', value: 1 }] : [] })) },
     },
   };
 }
@@ -516,7 +517,7 @@ test('a record that carries an active union is never labelled as a span', () => 
   const dir = home();
   appendRollupIndex(dir, rollupRecord(JSON.parse(
     readFileSync(new URL('./fixtures/workflows/g6d6q2-state.json', import.meta.url), 'utf8'),
-  ), null, { project: 'project-a' }));
+  ), null, { project: 'bulldemo' }));
   const stats = statsOf(readRollups(dir), { period: 'all', now: Date.parse('2026-09-20T12:00:00.000Z') });
   const text = statsLines(stats, { width: 200, tab: 'spending', stackBy: 'pool', period: 'all', ansi: false })
     .lines.map(visible).join('\n');
@@ -528,7 +529,7 @@ test('a record that carries an active union is never labelled as a span', () => 
 // rollups, rather than a hand-sized fixture: the pool rows are long enough to
 // expose the chart/grid mismatch at both desktop widths.
 const REAL_SNAPSHOT_HOME = process.env.BULLSWARM_STATS_SNAPSHOT_HOME
-  ?? '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  ?? fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 const REAL_SNAPSHOT_NOW = Date.parse('2026-09-20T12:00:00.000Z');
 
 test('real snapshot rollups align every desktop Stats chart with its right column', () => {

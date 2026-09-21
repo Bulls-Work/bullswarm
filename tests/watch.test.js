@@ -507,7 +507,7 @@ test('PWD quirk mode: env.PWD is set to the resolved target dir', async () => {
       ...connector,
       spawn: { cmd: connector.spawn.cmd, cwdMode: 'pwd' },
     };
-    const v = await watchOnce(pwdConnector, 'PWD: report', ctx.dir, ctx.paths, { timeoutSec: 60 });
+    const v = await watchOnce(pwdConnector, 'PWD: sample report', ctx.dir, ctx.paths, { timeoutSec: 60 });
     assert.equal(v.ok, true);
     const out = readFileSync(ctx.paths.outFile, 'utf8');
     // realpath: /var symlinks to /private/var on macOS; both lines must agree

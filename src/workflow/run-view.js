@@ -407,7 +407,7 @@ function runFrame(row, {
 
 function renderWorkflowOverviewPanel(model, width, height, spinnerFrame, timelineScroll = 0, selectedTimelineSegment = null, nowMs = Date.now()) {
   const inner = Math.max(1, width - 2);
-  const timeline = workflowTimelineLines(model, inner, spinnerFrame, { nowMs });
+  const timeline = workflowTimelineLines(model, inner, spinnerFrame, { nowMs, foldHint: false });
   const live = workflowLiveLines(model, inner, spinnerFrame, nowMs);
   const next = workflowNextLines(model, inner);
   const contentRows = Math.max(3, height - 4); // outer border + two section dividers
@@ -758,7 +758,33 @@ function legacyWorkflowTimelineLines(model, width, spinnerFrame = 0, { goalPrevi
 }
 
 /** Run v2's tree: phase facts plus one row per durable attempt. */
-function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = true, nowMs = Date.now(), phone = Number(width) < 100 } = {}) {
+/**
+ * Which phases the Run timeline folds into one line: everything between the
+ * opening two and the closing three (the last completed phase, the phase
+ * running now, and the one that waits on it). The running phase is an anchor,
+ * never part of the fold: a reader who cannot see the step that is running has
+ * lost the page's whole point. `{ start, end }` are phase indexes, `end`
+ * exclusive; null when fewer than two phases would fold.
+ */
+function foldRangeOf(phases) {
+  const activeIndex = phases.findIndex((phase) => phase.status === 'active');
+  const tailStart = Math.max(0, (activeIndex >= 0 ? activeIndex : phases.length - 2) - 1);
+  const candidateStart = 2;
+  return tailStart - candidateStart >= 2 ? { start: candidateStart, end: tailStart } : null;
+}
+
+function runTimelineFold(row, { nowMs = Date.now() } = {}) {
+  return foldRangeOf(runTimelineFacts(row, { nowMs }).phases);
+}
+
+/**
+ * `foldOpen` shows the folded phases in place and closes them with a
+ * `click to fold` line; `foldHint: false` drops the `click to expand` hint
+ * for a reader (the mod pane) that has no pointer to click with.
+ */
+function workflowTimelineLines(model, width, spinnerFrame = 0, {
+  goalPreview = true, nowMs = Date.now(), phone = Number(width) < 100, foldOpen = false, foldHint = true,
+} = {}) {
   const facts = runTimelineFacts(model.row, { nowMs });
   const lines = [];
   const safeWidth = Math.max(20, Number(width) || 120);
@@ -787,18 +813,10 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     }
   }
   const phases = facts.phases;
-  // Keep the opening two phases and the closing three — the last completed
-  // phase, the phase running now, and the one that waits on it. Everything
-  // between those anchors is the middle summary the design calls for. The
-  // running phase is an anchor, never part of the fold: a reader who cannot
-  // see the step that is running has lost the page's whole point.
-  const activeIndex = phases.findIndex((phase) => phase.status === 'active');
-  const tailStart = Math.max(0, (activeIndex >= 0 ? activeIndex : phases.length - 2) - 1);
-  const candidateStart = 2;
-  const foldable = tailStart - candidateStart;
-  const foldStart = foldable >= 2 ? candidateStart : -1;
-  const foldEnd = foldStart >= 0 ? tailStart : -1;
-  const folded = foldStart >= 0 ? phases.slice(foldStart, foldEnd) : [];
+  const fold = foldRangeOf(phases);
+  const foldStart = fold ? fold.start : -1;
+  const foldEnd = fold ? fold.end : -1;
+  const folded = fold ? phases.slice(foldStart, foldEnd) : [];
   const renderPhase = (phase) => {
     const start = phase.startedAt ? clockText(phase.startedAt) : '—';
     const end = phase.status === 'active' ? 'now' : phase.finishedAt ? clockText(phase.finishedAt) : '—';
@@ -834,16 +852,28 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     }
   };
   phases.forEach((phase, index) => {
-    if (foldStart >= 0 && index === foldStart) {
+    if (foldStart >= 0 && index === foldStart && !foldOpen) {
       const stepCount = folded.reduce((sum, item) => sum + item.total, 0);
       const active = folded.reduce((sum, item) => sum + (finiteOrNull(item.activeMinutes) ?? 0), 0);
       const failed = folded.reduce((sum, item) => sum + item.attempts.filter((attempt) => !['succeeded', 'completed', 'success'].includes(attempt.status)).length, 0);
-      const label = `↑ phases ${folded[0].index + 1}–${folded.at(-1).index + 1} · ${stepCount} steps · ${runClockText(active)} · ${failed ? `${failed} ✗` : 'all ✓'}`;
-      push(dimCell(label), { folded: true, segment: folded[0].label, phaseIndex: folded[0].index });
+      const range = `phases ${folded[0].index + 1}–${folded.at(-1).index + 1}`;
+      const tally = failed ? `${failed} ✗` : 'all ✓';
+      const hint = foldHint ? ' · click to expand' : '';
+      // The hint is what the line is for, so a narrow page gives up the step
+      // count and then the clock before it lets the cut land inside the hint.
+      const label = [
+        `${range} · ${stepCount} steps · ${runClockText(active)} · ${tally}${hint}`,
+        `${range} · ${runClockText(active)} · ${tally}${hint}`,
+        `${range} · ${tally}${hint}`,
+      ].find((candidate) => visibleLength(candidate) <= safeWidth) ?? `${range} · ${tally}${hint}`;
+      push(dimCell(label), { folded: true, fold: foldHint ? 'expand' : null, segment: folded[0].label, phaseIndex: folded[0].index });
       return;
     }
-    if (foldStart >= 0 && index > foldStart && index < foldEnd) return;
+    if (foldStart >= 0 && index > foldStart && index < foldEnd && !foldOpen) return;
     renderPhase(phase);
+    if (foldStart >= 0 && foldOpen && foldHint && index === foldEnd - 1) {
+      push(dimCell('click to fold'), { fold: 'collapse', segment: phase.label, phaseIndex: phase.index });
+    }
   });
   if (!lines.length) push('no timeline recorded');
   return {
@@ -1202,7 +1232,7 @@ function planDagLines(row, {
  * reading of the same lines.
  */
 function flatTimelineLines(panel, { width, rows, scroll = 0, selectedSegment = null, spinnerFrame = 0, nowMs = Date.now() } = {}) {
-  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false, nowMs });
+  const timeline = workflowTimelineLines(panel, width, spinnerFrame, { goalPreview: false, nowMs, foldHint: false });
   const room = Math.max(1, Number(rows) || 1);
   const selectedHeader = selectedSegment
     ? timeline.lines.findIndex((line) => line?.header && line.segment === selectedSegment)
@@ -1886,15 +1916,24 @@ function runPage(model, opts, body) {
   if (row?.kernelStderrTail?.length) body.push(' kernel log: available');
   body.push('');
 
-  const timeline = workflowTimelineLines(panel, width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone });
-  const cursorSegment = !cursorInTimeline ? null
+  const foldOpen = opts.foldOpen === true;
+  const timeline = workflowTimelineLines(panel, width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone, foldOpen });
+  const cursorSegment = !cursorInTimeline || opts.timelineSelection === 'fold' ? null
     : opts.timelineSelection === 0 ? 'Preflight' : panel.selectedPhase?.label ?? null;
+  const foldRange = foldRangeOf(runTimelineFacts(row, { nowMs }).phases);
+  const foldCursor = cursorOn && foldRange
+    ? (foldOpen ? opts.foldStop === true : (opts.foldStop === true
+      || (phone ? opts.timelineSelection === 'fold'
+        : panel.phaseIndex >= foldRange.start && panel.phaseIndex < foldRange.end)))
+    : false;
   body.push(paintRule(rule(`timeline · ${timeline.phases} phases · ${timeline.attempts} attempts${phone ? '' : ' · Enter on a step opens it'}`, null, width)));
   const timelineStart = body.lines.length;
   for (const line of timeline.lines) {
     const plain = cut(timelineText(line), width);
-    const text = cursorSegment && line?.header && line.segment === cursorSegment ? inverseText(plain) : plain;
-    if (line?.actionId) body.row(text, { kind: 'step', actionId: line.actionId, ...(row?.runId ? { runId: row.runId } : {}) });
+    const text = (cursorSegment && line?.header && line.segment === cursorSegment) || (foldCursor && line?.fold)
+      ? inverseText(plain) : plain;
+    if (line?.fold) body.row(text, { kind: 'fold', ...(row?.runId ? { runId: row.runId } : {}) });
+    else if (line?.actionId) body.row(text, { kind: 'step', actionId: line.actionId, ...(row?.runId ? { runId: row.runId } : {}) });
     else body.push(text);
   }
   markStepRows(body, body.lines.slice(timelineStart), workflowPanelModel(row), row?.runId ?? null);
@@ -1908,6 +1947,7 @@ export {
   groupedTimeline,
   timelineSegmentDisplayName,
   workflowTimelineLines,
+  runTimelineFold,
   segmentHeader,
   continuationHeader,
   currentTimelineSegment,

@@ -109,6 +109,12 @@
 - runs: the page opens with the cursor on its first row — the first active run
   when one is running — drawn inverse, so `Enter` opens the highlighted row, and
   `Up` on the first row stays there.
+- tests: the real-data tests and the frame script now run from a scrubbed
+  in-repo fixture, `tests/fixtures/home-351` (2.8 MB), built by
+  `scripts/build-test-home.mjs`: every id, time, status, pool, model, token
+  count, cost and event kind is as recorded, while goals, prompts, reports,
+  responses, commands and paths are marked placeholder text and project names
+  are aliases, so the suite needs no copy of anyone's home.
 
 ## 0.35.0 — the Step page tells the whole story
 

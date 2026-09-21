@@ -716,13 +716,13 @@ test('I13: reindex records the project a run stamped at goal time, without touch
   try {
     v2Run(home, { runId: 'wf-proj-000001', shortId: 'proj01', goal: 'a finished run' });
     writeFileSync(join(home, 'workflows', 'wf-proj-000001', 'project.json'), JSON.stringify({
-      schemaVersion: 'bullswarm.workflow.project.v1', name: 'project-a',
-      remote: 'git@github.com:Bulls-Work/project-a.git', toplevel: '/gone', cwd: '/gone',
+      schemaVersion: 'bullswarm.workflow.project.v1', name: 'bulldemo',
+      remote: 'git@github.com:Bulls-Work/bulldemo.git', toplevel: '/gone', cwd: '/gone',
       recordedAt: '2026-09-01T00:00:00.000Z',
     }));
     assert.equal(run(wf('reindex', '--json'), { home }).status, 0);
     const record = JSON.parse(readFileSync(join(home, 'workflows', 'wf-proj-000001', 'rollup.json'), 'utf8'));
-    assert.equal(record.project, 'project-a', 'the goal-time record outlives the checkout it names');
+    assert.equal(record.project, 'bulldemo', 'the goal-time record outlives the checkout it names');
   } finally { cleanup(); }
 });
 
@@ -799,7 +799,7 @@ test('I13: reindex --force rewrites rollups that already exist', () => {
 // later. The Runs table must print 6h01m, and a record too old to carry the
 // active union keeps only its span, which the row has to say out loud.
 test('the Runs table prints a real history row\u2019s active minutes, not its span', () => {
-  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'project-a' });
+  const record = rollupRecord(REAL_G6D6Q2, null, { project: 'bulldemo' });
   assert.equal(record.minutes.active, 360.65);
   assert.equal(record.minutes.span, 2234.93);
   const day = (row) => historyLines([{ date: '2026-09-19', runs: 1, finished: 1, rows: [row] }], { width: 200, ansi: false });

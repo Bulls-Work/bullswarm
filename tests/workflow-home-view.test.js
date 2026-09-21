@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   activeRunLines,
   cardLines,
@@ -17,12 +18,17 @@ import {
 import { readRollups } from '../src/workflow/rollup.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
 
+// The fixture's clocks were recorded in Hong Kong and the expectations quote
+// them as HKT, so this file reads them there on any machine (CI runs in UTC).
+process.env.TZ = 'Asia/Hong_Kong';
+
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
 // A top-run card reads a run's state from under BULLSWARM_HOME, so the file
-// points the model at the supplied read-only snapshot: rendering a real card
-// never probes the live home.
-process.env.BULLSWARM_HOME = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+// points the model at the scrubbed in-repo home (scripts/build-test-home.mjs):
+// rendering a real card never probes the live home.
+const SNAPSHOT = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
+process.env.BULLSWARM_HOME = SNAPSHOT;
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0, 0).getTime();
 const TODAY = new Date(NOW).toISOString();
@@ -132,7 +138,7 @@ test('Home view renders a measured live step bar and active section without over
 });
 
 test('Home real snapshot flows the top cards by width with the licence words plain', () => {
-  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = {
@@ -188,7 +194,7 @@ test('Home real snapshot flows the top cards by width with the licence words pla
 });
 
 test('Home restores the period band and the recent list below the budget block', () => {
-  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
@@ -235,7 +241,7 @@ test('Home restores the period band and the recent list below the budget block',
 });
 
 test('the period selector redraws the band for Last 30 days and All time', () => {
-  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const rollups = readRollups(snapshot);
@@ -282,7 +288,7 @@ test('Home labels the median and recent-run durations with the basis they were m
 });
 
 test('Home card hit regions cover each run for Enter and click navigation', () => {
-  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {
@@ -298,7 +304,7 @@ test('Home card hit regions cover each run for Enter and click navigation', () =
 });
 
 test('Home shows a partly-priced period as the subtotal the rollups really hold', () => {
-  const snapshot = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+  const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
   const model = dashboardModel(null, {

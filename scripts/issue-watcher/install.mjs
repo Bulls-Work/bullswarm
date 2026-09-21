@@ -27,7 +27,7 @@ import { randomBytes } from 'node:crypto';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 export const LABEL = 'com.bullswarm.issue-watcher';
-export const DEFAULT_REPO = 'cowcow02/bullswarm';
+export const DEFAULT_REPO = 'Bulls-Work/bullswarm';
 export const DEFAULT_INTERVAL = 300;
 const COPIED = ['watch.mjs', 'triage-task.md', 'fix-task.md'];
 

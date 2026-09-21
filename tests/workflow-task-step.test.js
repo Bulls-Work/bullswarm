@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
@@ -15,7 +16,7 @@ import {
 import { renderStepPage } from '../src/workflow/step-view.js';
 import { runDashboard } from '../src/workflow/dashboard.js';
 
-const REAL_HOME = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+const REAL_HOME = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 const REAL_RUNS = join(REAL_HOME, 'runs');
 const NOW = Date.parse('2026-09-20T00:00:00.000Z');
 const REPO = new URL('..', import.meta.url).pathname.replace(/\/$/, '');

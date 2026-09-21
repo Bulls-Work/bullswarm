@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { DASHBOARD_KEYS, activeDashboardRows, agentDetailLines, dashboardModel, dashboardRows, overviewSnapshot, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
 import { readRollups } from '../src/workflow/rollup.js';
@@ -11,6 +12,10 @@ import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
 import { createV2GoalDocument, createV2DurableState, createV2State } from '../src/workflow/v2-state.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
+
+// The fixture's clocks were recorded in Hong Kong and the expectations quote
+// them as HKT, so this file reads them there on any machine (CI runs in UTC).
+process.env.TZ = 'Asia/Hong_Kong';
 
 // These tests assert the unicode presentation, so pin it: the glyph table
 // otherwise follows the developer's terminal and would fall back to ascii
@@ -1123,7 +1128,7 @@ function rollupFixture(now = Date.now()) {
     },
     {
       schemaVersion: 'bullswarm.workflow.rollup.v1',
-      runId: 'wf-yyy', shortId: 'yyy888', project: 'project-a', goal: 'Tidy the repo',
+      runId: 'wf-yyy', shortId: 'yyy888', project: 'bulldemo', goal: 'Tidy the repo',
       startedAt: day(2), finishedAt: day(2), status: 'failed', verified: false,
       requirements: { passed: 1, total: 3 }, minutes: { wall: 12, agent: 15 },
       pools: { relay: { attempts: 1, minutes: 12, costUsd: null, tokens: null } },
@@ -4013,7 +4018,7 @@ test('Home today matches the approved 55/120 cards with a licence row per pool',
   const nowMs = Date.parse('2026-09-18T12:00:00.000Z');
   const workflows = [
     {
-      runId: 'wf-today-1', shortId: 'today1', project: 'project-a', goal: 'First today goal',
+      runId: 'wf-today-1', shortId: 'today1', project: 'bulldemo', goal: 'First today goal',
       startedAt: '2026-09-18T00:00:00.000Z', finishedAt: '2026-09-18T01:00:00.000Z',
       status: 'completed', verified: false, minutes: { wall: 104.9 },
       pools: { acme: { attempts: 1, minutes: 84, costUsd: 0.16 } },
@@ -4025,7 +4030,7 @@ test('Home today matches the approved 55/120 cards with a licence row per pool',
       pools: { codex: { attempts: 1, minutes: 161.8, costUsd: 0.03 }, grok: { attempts: 1, minutes: 26, costUsd: 0.01 } },
     },
     {
-      runId: 'wf-today-3', shortId: 'today3', project: 'project-a', goal: 'Third today goal',
+      runId: 'wf-today-3', shortId: 'today3', project: 'bulldemo', goal: 'Third today goal',
       startedAt: '2026-09-18T02:00:00.000Z', finishedAt: '2026-09-18T03:00:00.000Z',
       status: 'completed', verified: true, minutes: { wall: 542.7 },
       pools: { opencode: { attempts: 1, minutes: 634.6, costUsd: null } },
@@ -4062,7 +4067,7 @@ test('Home today matches the approved 55/120 cards with a licence row per pool',
     // task is not a card: its row lives on Runs.
     // Three boxes: side by side at 120, stacked at 55.
     assert.equal((band.join('\n').match(/┌─ /g) ?? []).length, 3, band.join('\n'));
-    assert.match(band.join('\n'), /project-a · completed · verified/);
+    assert.match(band.join('\n'), /bulldemo · completed · verified/);
     // The middle card's second column is clipped at 120, so only its own
     // fields are asserted whole.
     assert.match(band.join('\n'), /bullswarm · completed · not verifi/);
@@ -4242,3 +4247,66 @@ test('a task with no recorded id is listed and counted once, not once per source
   assert.equal(homeLines.filter((line) => /⚙ task\b/.test(line)).length, 0, homeLines.join('\n'));
   assert.doesNotMatch(homeLines.join('\n'), /\d task\b/);
 });
+
+// The scrubbed in-repo home holds g6d6q2: twelve phases, finished, so phases
+// 3–9 sit behind the timeline's fold line. The dashboard reads a copy of it.
+const REAL_RUN_HOME = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
+const FOLD_RUN = 'wf-mu6mv62z-cdcd5d';
+
+function foldFixture() {
+  const home = mkdtempSync(join(tmpdir(), 'bs-fold-'));
+  cpSync(REAL_RUN_HOME, home, { recursive: true });
+  return { home, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+const timelineRows = (screen) => paintedRows(screen).filter((row) => /^ ?(── |\d{2}:\d{2}  |phases \d|click to )/.test(row));
+const FOLD_LINE = 'phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand';
+
+for (const columns of [55, 200]) {
+  for (const how of ['click', 'Enter']) {
+    test(`the Run timeline's fold line opens and closes on a ${how} at ${columns} columns`, async () => {
+      const { home, cleanup } = foldFixture();
+      try {
+        const session = shellSession(home, { token: FOLD_RUN, columns, rows: 90 });
+        const folded = paintedRows(lastFrame(session.output));
+        assert.ok(folded.some((row) => row.trimEnd() === FOLD_LINE), `the fold line is painted:\n${folded.join('\n')}`);
+        assert.ok(!folded.some((row) => row.includes('click to fold')));
+        assert.ok(!folded.some((row) => row.includes('4 · e2e')), 'phase 4 is folded away');
+        const foldedRules = folded.filter((row) => row.startsWith('── ✓ ')).length;
+
+        if (how === 'click') clickOn(session, 'click to expand');
+        else {
+          // The cursor starts on phase 1 and Down walks it into the phases
+          // the fold hides (on the phone it starts before Preflight: Preflight, 1, 2, then the fold
+          // line). The fold line is then the row the cursor is on, drawn
+          // inverse, and Enter opens it.
+          for (let index = 0; index < (columns >= 100 ? 2 : 4); index += 1) session.press('\x1b[B');
+          const onFold = lastFrame(session.output).split('\n').find((row) => plain(row).includes('click to expand'));
+          assert.match(onFold, /\x1b\[7m/, 'the cursor is drawn on the fold line');
+          session.press('\r');
+        }
+        const open = paintedRows(lastFrame(session.output));
+        assert.ok(!open.some((row) => row.includes('click to expand')), 'the fold line is gone once open');
+        assert.ok(open.some((row) => row.includes('4 · e2e')), `phase 4 is back in place:\n${open.join('\n')}`);
+        assert.ok(open.filter((row) => row.startsWith('── ✓ ')).length > foldedRules, 'the phase rules the fold hid are printed');
+        const closing = open.findIndex((row) => row.trimEnd() === 'click to fold');
+        assert.ok(closing > 0, 'one `click to fold` line closes the block');
+        assert.ok(open[closing - 1].includes('ship-drag'), 'the block closes right after phase 9, the last phase it opened');
+        assert.equal(open.filter((row) => row.includes('click to fold')).length, 1);
+
+        if (how === 'click') clickOn(session, 'click to fold');
+        else {
+          // Enter opened the fold, so the cursor stays on the line it used.
+          const onClose = lastFrame(session.output).split('\n').find((row) => plain(row).includes('click to fold'));
+          assert.match(onClose, /\x1b\[7m/, 'the cursor is drawn on the `click to fold` line');
+          session.press('\r');
+        }
+        const closed = paintedRows(lastFrame(session.output));
+        assert.ok(closed.some((row) => row.trimEnd() === FOLD_LINE), 'folded again');
+        assert.ok(!closed.some((row) => row.includes('click to fold') || row.includes('4 · e2e')));
+        assert.equal(await session.quit(), 0);
+      } finally { cleanup(); }
+    });
+  }
+}
+

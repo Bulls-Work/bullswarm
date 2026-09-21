@@ -5,7 +5,7 @@ the token usage recorded in a Claude Code JSONL transcript.
 
 ```sh
 node scripts/cost-audit/claude-transcript-cost.mjs \
-  /home/dev/.claude-acme/projects/-home-dev-Repo-bullswork-bullswarm-dashboard/<session-id>.jsonl
+  <claude-config-dir>/projects/<project-slug>/<session-id>.jsonl
 ```
 
 The output is JSON. The parent file is always included. If Claude Code has a
@@ -19,13 +19,13 @@ for pricing. `models` repeats the same buckets per model.
 - Only `type: "assistant"` rows contribute token usage.
 - Streaming rows are deduplicated by `message.id:requestId`; the last row
   wins. This follows project-n's documented identity and usage rule in
-  `/home/dev/project-n/packages/parser/src/claude-code.ts:263-289`.
+  `project-n/packages/parser/src/claude-code.ts:263-289`.
   Rows without a message id remain distinct physical lines.
 - A row from a discovered `subagents/` file, or a row with
   `isSidechain: true`, is sidechain usage. The sidechain usage is included in
   the total as well as shown separately, following the parent-plus-subagent
   traversal in
-  `/home/dev/project-n/packages/parser/src/claude-code.ts:293-323` and
+  `project-n/packages/parser/src/claude-code.ts:293-323` and
   its sibling `subagents` layout at lines `415-425`.
 - `turns` is the number of unique assistant messages after deduplication.
 - `toolCalls.total` counts each unique `tool_use.id` across all streaming

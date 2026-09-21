@@ -11,7 +11,7 @@ const days = [
     date: '2026-09-15',
     runs: [
       { runId: 'wf-old111', shortId: 'old111', project: 'bullswarm', goal: 'older goal', status: 'completed', minutes: { wall: 4 }, apiEquivalentUsd: 0.1, finishedAt: '2026-09-15T09:00:00Z' },
-      { runId: 'wf-new222', shortId: 'new222', project: 'project-b', goal: 'newer goal', status: 'completed', minutes: { wall: 12 }, apiEquivalentUsd: 0.25, finishedAt: '2026-09-15T13:00:00Z' },
+      { runId: 'wf-new222', shortId: 'new222', project: 'kitdemo', goal: 'newer goal', status: 'completed', minutes: { wall: 12 }, apiEquivalentUsd: 0.25, finishedAt: '2026-09-15T13:00:00Z' },
     ],
     finished: 2,
     spendUsd: 0.35,
@@ -99,12 +99,12 @@ test('History keeps identity and trailing metric columns at stable x positions o
     date: '2026-09-16',
     runs: [
       { runId: 'wf-first-000001', shortId: 'first1', project: 'bullswarm', goal: 'short summary', status: 'completed', minutes: { wall: 4 }, apiEquivalentUsd: 0.1, finishedAt: '2026-09-16T09:00:00Z' },
-      { runId: 'wf-second-000002', shortId: 'second', project: 'project-b', goal: 'a much longer summary that still fits the elastic field', status: 'failed', minutes: { wall: 42 }, apiEquivalentUsd: 1.2, finishedAt: '2026-09-16T10:00:00Z' },
+      { runId: 'wf-second-000002', shortId: 'second', project: 'kitdemo', goal: 'a much longer summary that still fits the elastic field', status: 'failed', minutes: { wall: 42 }, apiEquivalentUsd: 1.2, finishedAt: '2026-09-16T10:00:00Z' },
     ],
   }], { width: 120, ansi: false });
   const rows = view.lines.filter((line) => /(?:first1|second)/.test(line));
   assert.equal(rows.length, 2);
-  assert.deepEqual(rows.map((line) => line.indexOf('bullswarm') >= 0 ? line.indexOf('bullswarm') : line.indexOf('project-b')), [11, 11]);
+  assert.deepEqual(rows.map((line) => line.indexOf('bullswarm') >= 0 ? line.indexOf('bullswarm') : line.indexOf('kitdemo')), [11, 11]);
   assert.deepEqual(rows.map((line) => line.match(/\d{2}:\d{2}/)?.index), [114, 114]);
   assert.deepEqual(rows.map((line) => line.slice(3, 9).trim()).sort(), ['first1', 'second']);
 });

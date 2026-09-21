@@ -1,0 +1,1084 @@
+{"seq":1,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"enim"}
+{"seq":2,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":3,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":4,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sample magna"}
+{"seq":5,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":6,"at":"2026-09-19T17:13:45.750Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":7,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ipsum"}
+{"seq":8,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" et"}
+{"seq":9,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" f"}
+{"seq":10,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":11,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":12,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ea"}
+{"seq":13,"at":"2026-09-19T17:13:45.751Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":14,"at":"2026-09-19T17:13:45.797Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":15,"at":"2026-09-19T17:13:45.797Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":16,"at":"2026-09-19T17:13:46.667Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":17,"at":"2026-09-19T17:13:46.667Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":18,"at":"2026-09-19T17:13:46.727Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":19,"at":"2026-09-19T17:13:46.735Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":20,"at":"2026-09-19T17:13:46.801Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":21,"at":"2026-09-19T17:13:46.815Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":22,"at":"2026-09-19T17:13:46.880Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":23,"at":"2026-09-19T17:13:51.178Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sunt"}
+{"seq":24,"at":"2026-09-19T17:13:51.215Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":25,"at":"2026-09-19T17:13:51.215Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":26,"at":"2026-09-19T17:13:51.215Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":27,"at":"2026-09-19T17:13:51.257Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":28,"at":"2026-09-19T17:13:51.300Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":29,"at":"2026-09-19T17:13:51.343Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":30,"at":"2026-09-19T17:13:51.389Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sample velit"}
+{"seq":31,"at":"2026-09-19T17:13:51.429Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" "}
+{"seq":32,"at":"2026-09-19T17:13:51.429Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"c"}
+{"seq":33,"at":"2026-09-19T17:13:51.430Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"s"}
+{"seq":34,"at":"2026-09-19T17:13:51.430Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"d"}
+{"seq":35,"at":"2026-09-19T17:13:51.477Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":36,"at":"2026-09-19T17:13:51.477Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":37,"at":"2026-09-19T17:13:51.477Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laboris"}
+{"seq":38,"at":"2026-09-19T17:13:51.478Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":39,"at":"2026-09-19T17:13:51.507Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consequat"}
+{"seq":40,"at":"2026-09-19T17:13:51.508Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":41,"at":"2026-09-19T17:13:51.556Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" voluptate"}
+{"seq":42,"at":"2026-09-19T17:13:51.556Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":43,"at":"2026-09-19T17:13:51.597Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"o"}
+{"seq":44,"at":"2026-09-19T17:13:51.597Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":45,"at":"2026-09-19T17:13:51.644Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" e"}
+{"seq":46,"at":"2026-09-19T17:13:51.680Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"t"}
+{"seq":47,"at":"2026-09-19T17:13:51.681Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"m."}
+{"seq":48,"at":"2026-09-19T17:13:51.681Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"nisi"}
+{"seq":49,"at":"2026-09-19T17:13:51.681Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"minim"}
+{"seq":50,"at":"2026-09-19T17:13:51.722Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"u"}
+{"seq":51,"at":"2026-09-19T17:13:51.723Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":52,"at":"2026-09-19T17:13:51.723Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" d"}
+{"seq":53,"at":"2026-09-19T17:13:51.723Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":54,"at":"2026-09-19T17:13:51.774Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":55,"at":"2026-09-19T17:13:51.774Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":56,"at":"2026-09-19T17:13:51.817Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":57,"at":"2026-09-19T17:13:51.860Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":58,"at":"2026-09-19T17:13:51.905Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":59,"at":"2026-09-19T17:13:51.905Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" excepteur"}
+{"seq":60,"at":"2026-09-19T17:13:51.905Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"v"}
+{"seq":61,"at":"2026-09-19T17:13:51.905Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":62,"at":"2026-09-19T17:13:51.946Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" irure"}
+{"seq":63,"at":"2026-09-19T17:13:51.946Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":64,"at":"2026-09-19T17:13:51.946Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" occaecat"}
+{"seq":65,"at":"2026-09-19T17:13:51.994Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":66,"at":"2026-09-19T17:13:51.994Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":67,"at":"2026-09-19T17:13:54.402Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":68,"at":"2026-09-19T17:13:54.403Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":69,"at":"2026-09-19T17:13:54.514Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":70,"at":"2026-09-19T17:13:54.520Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"proident"}
+{"seq":71,"at":"2026-09-19T17:13:54.589Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":72,"at":"2026-09-19T17:13:54.594Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":73,"at":"2026-09-19T17:13:54.658Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":74,"at":"2026-09-19T17:13:54.664Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 sint labore minim dolor laborum enim in ullamco sint consequat"}
+{"seq":75,"at":"2026-09-19T17:13:54.768Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":76,"at":"2026-09-19T17:13:54.791Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 voluptate id anim ad cupidatat nulla est mollit sunt velit exercitation"}
+{"seq":77,"at":"2026-09-19T17:13:54.796Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"failed","summary":null}
+{"seq":78,"at":"2026-09-19T17:13:54.890Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":79,"at":"2026-09-19T17:13:54.985Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":80,"at":"2026-09-19T17:13:55.514Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 voluptate id anim ad cupidatat nulla est mollit sunt velit exercitation"}
+{"seq":81,"at":"2026-09-19T17:13:55.532Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 voluptate id anim ad cupidatat nulla est mollit sunt velit exercitation"}
+{"seq":82,"at":"2026-09-19T17:13:59.166Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"cupidatat"}
+{"seq":83,"at":"2026-09-19T17:13:59.205Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":84,"at":"2026-09-19T17:13:59.206Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" minim"}
+{"seq":85,"at":"2026-09-19T17:13:59.206Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" c"}
+{"seq":86,"at":"2026-09-19T17:13:59.255Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"d"}
+{"seq":87,"at":"2026-09-19T17:13:59.256Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":88,"at":"2026-09-19T17:13:59.256Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"ea"}
+{"seq":89,"at":"2026-09-19T17:13:59.256Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":90,"at":"2026-09-19T17:13:59.291Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"m"}
+{"seq":91,"at":"2026-09-19T17:13:59.291Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"n"}
+{"seq":92,"at":"2026-09-19T17:13:59.291Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" in"}
+{"seq":93,"at":"2026-09-19T17:13:59.291Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" o"}
+{"seq":94,"at":"2026-09-19T17:13:59.340Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"officia"}
+{"seq":95,"at":"2026-09-19T17:13:59.340Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"dolor"}
+{"seq":96,"at":"2026-09-19T17:13:59.341Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"m."}
+{"seq":97,"at":"2026-09-19T17:13:59.341Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":98,"at":"2026-09-19T17:13:59.382Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":99,"at":"2026-09-19T17:13:59.382Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":100,"at":"2026-09-19T17:13:59.425Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" duis"}
+{"seq":101,"at":"2026-09-19T17:13:59.471Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"i"}
+{"seq":102,"at":"2026-09-19T17:13:59.472Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":103,"at":"2026-09-19T17:13:59.515Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":104,"at":"2026-09-19T17:13:59.515Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":105,"at":"2026-09-19T17:13:59.515Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"c"}
+{"seq":106,"at":"2026-09-19T17:13:59.515Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"dolor"}
+{"seq":107,"at":"2026-09-19T17:13:59.573Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":108,"at":"2026-09-19T17:13:59.573Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"i"}
+{"seq":109,"at":"2026-09-19T17:13:59.575Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":110,"at":"2026-09-19T17:13:59.575Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":111,"at":"2026-09-19T17:13:59.606Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":112,"at":"2026-09-19T17:13:59.606Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" occaecat"}
+{"seq":113,"at":"2026-09-19T17:13:59.606Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":114,"at":"2026-09-19T17:13:59.649Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" mollit"}
+{"seq":115,"at":"2026-09-19T17:13:59.649Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ad"}
+{"seq":116,"at":"2026-09-19T17:13:59.698Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" o"}
+{"seq":117,"at":"2026-09-19T17:13:59.741Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":118,"at":"2026-09-19T17:13:59.741Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":119,"at":"2026-09-19T17:13:59.741Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":120,"at":"2026-09-19T17:13:59.741Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":121,"at":"2026-09-19T17:13:59.787Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":122,"at":"2026-09-19T17:13:59.787Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":123,"at":"2026-09-19T17:13:59.787Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" voluptate"}
+{"seq":124,"at":"2026-09-19T17:13:59.835Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":125,"at":"2026-09-19T17:14:03.036Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":126,"at":"2026-09-19T17:14:03.037Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"aute"}
+{"seq":127,"at":"2026-09-19T17:14:03.096Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":128,"at":"2026-09-19T17:14:03.102Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"enim"}
+{"seq":129,"at":"2026-09-19T17:14:03.153Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":130,"at":"2026-09-19T17:14:03.158Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"occaecat"}
+{"seq":131,"at":"2026-09-19T17:14:03.217Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":132,"at":"2026-09-19T17:14:03.224Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"pariatur"}
+{"seq":133,"at":"2026-09-19T17:14:03.287Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":134,"at":"2026-09-19T17:14:03.292Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"proident"}
+{"seq":135,"at":"2026-09-19T17:14:03.356Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":136,"at":"2026-09-19T17:14:03.361Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":137,"at":"2026-09-19T17:14:03.416Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":138,"at":"2026-09-19T17:14:03.428Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":139,"at":"2026-09-19T17:14:03.511Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":140,"at":"2026-09-19T17:14:03.571Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":141,"at":"2026-09-19T17:14:03.629Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":142,"at":"2026-09-19T17:14:03.703Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":143,"at":"2026-09-19T17:14:03.767Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":144,"at":"2026-09-19T17:14:10.609Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":145,"at":"2026-09-19T17:14:11.090Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":146,"at":"2026-09-19T17:14:11.106Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":147,"at":"2026-09-19T17:14:11.381Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":148,"at":"2026-09-19T17:14:11.619Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 cupidatat id esse quis fugiat sint consectetur id reprehenderit commodo cupidatat adipiscing adipiscing ut commodo incididunt ad proident consequat elit"}
+{"seq":149,"at":"2026-09-19T17:14:12.084Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":150,"at":"2026-09-19T17:14:12.098Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 cupidatat id esse quis fugiat sint consectetur id reprehenderit commodo cupidatat adipiscing adipiscing ut commodo incididunt ad proident consequat elit"}
+{"seq":151,"at":"2026-09-19T17:14:12.180Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":152,"at":"2026-09-19T17:14:12.751Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":153,"at":"2026-09-19T17:14:27.209Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 cupidatat id esse quis fugiat sint consectetur id reprehenderit commodo cupidatat adipiscing adipiscing ut commodo incididunt ad proident consequat elit"}
+{"seq":154,"at":"2026-09-19T17:14:29.598Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"qui"}
+{"seq":155,"at":"2026-09-19T17:14:29.641Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":156,"at":"2026-09-19T17:14:29.641Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":157,"at":"2026-09-19T17:14:29.642Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" in"}
+{"seq":158,"at":"2026-09-19T17:14:29.643Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ipsum"}
+{"seq":159,"at":"2026-09-19T17:14:29.684Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nostrud"}
+{"seq":160,"at":"2026-09-19T17:14:29.685Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":161,"at":"2026-09-19T17:14:29.685Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":162,"at":"2026-09-19T17:14:29.686Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ullamco"}
+{"seq":163,"at":"2026-09-19T17:14:29.748Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":164,"at":"2026-09-19T17:14:29.749Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":165,"at":"2026-09-19T17:14:29.749Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"l"}
+{"seq":166,"at":"2026-09-19T17:14:29.749Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"dolor"}
+{"seq":167,"at":"2026-09-19T17:14:29.775Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":168,"at":"2026-09-19T17:14:29.827Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":169,"at":"2026-09-19T17:14:29.828Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":170,"at":"2026-09-19T17:14:29.829Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":171,"at":"2026-09-19T17:14:29.863Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":172,"at":"2026-09-19T17:14:29.864Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" id"}
+{"seq":173,"at":"2026-09-19T17:14:29.864Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":174,"at":"2026-09-19T17:14:29.908Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":175,"at":"2026-09-19T17:14:29.909Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":176,"at":"2026-09-19T17:14:29.957Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ad"}
+{"seq":177,"at":"2026-09-19T17:14:29.998Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":178,"at":"2026-09-19T17:14:29.999Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":179,"at":"2026-09-19T17:14:29.999Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":180,"at":"2026-09-19T17:14:30.050Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":181,"at":"2026-09-19T17:14:30.050Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":182,"at":"2026-09-19T17:14:30.099Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":183,"at":"2026-09-19T17:14:33.442Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":184,"at":"2026-09-19T17:14:33.442Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":185,"at":"2026-09-19T17:14:33.726Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":186,"at":"2026-09-19T17:14:33.835Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":187,"at":"2026-09-19T17:14:34.039Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":188,"at":"2026-09-19T17:14:34.164Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":189,"at":"2026-09-19T17:14:34.464Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":190,"at":"2026-09-19T17:14:34.510Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":191,"at":"2026-09-19T17:14:34.899Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":192,"at":"2026-09-19T17:14:34.937Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":193,"at":"2026-09-19T17:14:35.151Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":194,"at":"2026-09-19T17:14:35.187Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"deserunt"}
+{"seq":195,"at":"2026-09-19T17:14:35.509Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":196,"at":"2026-09-19T17:14:35.600Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":197,"at":"2026-09-19T17:14:35.917Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":198,"at":"2026-09-19T17:14:36.050Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":199,"at":"2026-09-19T17:14:36.263Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":200,"at":"2026-09-19T17:14:36.417Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":201,"at":"2026-09-19T17:14:36.566Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":202,"at":"2026-09-19T17:14:40.952Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 cupidatat id esse quis fugiat sint consectetur id reprehenderit commodo cupidatat adipiscing adipiscing ut commodo incididunt ad proident consequat elit"}
+{"seq":203,"at":"2026-09-19T17:14:44.313Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":204,"at":"2026-09-19T17:14:44.426Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":205,"at":"2026-09-19T17:14:44.435Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":206,"at":"2026-09-19T17:14:44.515Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":207,"at":"2026-09-19T17:14:44.524Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":208,"at":"2026-09-19T17:14:44.596Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":209,"at":"2026-09-19T17:14:44.603Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":210,"at":"2026-09-19T17:14:44.667Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":211,"at":"2026-09-19T17:14:44.676Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"anim"}
+{"seq":212,"at":"2026-09-19T17:14:44.738Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":213,"at":"2026-09-19T17:14:44.746Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":214,"at":"2026-09-19T17:14:44.815Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":215,"at":"2026-09-19T17:14:44.853Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":216,"at":"2026-09-19T17:14:44.924Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":217,"at":"2026-09-19T17:14:45.001Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":218,"at":"2026-09-19T17:14:45.075Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":219,"at":"2026-09-19T17:14:45.200Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":220,"at":"2026-09-19T17:14:45.283Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":221,"at":"2026-09-19T17:14:54.181Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":222,"at":"2026-09-19T17:14:54.236Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":223,"at":"2026-09-19T17:14:54.241Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"duis"}
+{"seq":224,"at":"2026-09-19T17:14:54.297Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":225,"at":"2026-09-19T17:14:54.302Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":226,"at":"2026-09-19T17:14:54.354Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":227,"at":"2026-09-19T17:14:54.359Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":228,"at":"2026-09-19T17:14:54.417Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":229,"at":"2026-09-19T17:14:54.425Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":230,"at":"2026-09-19T17:14:54.478Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":231,"at":"2026-09-19T17:14:54.482Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":232,"at":"2026-09-19T17:14:54.541Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":233,"at":"2026-09-19T17:14:54.562Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":234,"at":"2026-09-19T17:14:54.639Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":235,"at":"2026-09-19T17:14:54.697Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":236,"at":"2026-09-19T17:14:54.758Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":237,"at":"2026-09-19T17:14:54.815Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":238,"at":"2026-09-19T17:14:54.878Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":239,"at":"2026-09-19T17:15:03.916Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"o"}
+{"seq":240,"at":"2026-09-19T17:15:03.917Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sit"}
+{"seq":241,"at":"2026-09-19T17:15:03.947Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"ut"}
+{"seq":242,"at":"2026-09-19T17:15:04.050Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ipsum"}
+{"seq":243,"at":"2026-09-19T17:15:04.050Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" tempor"}
+{"seq":244,"at":"2026-09-19T17:15:04.057Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":245,"at":"2026-09-19T17:15:04.057Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ea"}
+{"seq":246,"at":"2026-09-19T17:15:04.057Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" irure"}
+{"seq":247,"at":"2026-09-19T17:15:04.057Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" minim"}
+{"seq":248,"at":"2026-09-19T17:15:04.096Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"v"}
+{"seq":249,"at":"2026-09-19T17:15:04.096Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":250,"at":"2026-09-19T17:15:04.096Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":251,"at":"2026-09-19T17:15:04.145Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"c"}
+{"seq":252,"at":"2026-09-19T17:15:04.145Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"t"}
+{"seq":253,"at":"2026-09-19T17:15:04.145Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sed"}
+{"seq":254,"at":"2026-09-19T17:15:04.145Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":255,"at":"2026-09-19T17:15:04.218Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":256,"at":"2026-09-19T17:15:04.219Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":257,"at":"2026-09-19T17:15:04.219Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":258,"at":"2026-09-19T17:15:04.219Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"m"}
+{"seq":259,"at":"2026-09-19T17:15:04.219Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"culpa"}
+{"seq":260,"at":"2026-09-19T17:15:04.219Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" veniam"}
+{"seq":261,"at":"2026-09-19T17:15:04.248Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":262,"at":"2026-09-19T17:15:04.248Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":263,"at":"2026-09-19T17:15:04.248Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":264,"at":"2026-09-19T17:15:04.248Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nulla"}
+{"seq":265,"at":"2026-09-19T17:15:04.285Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" officia"}
+{"seq":266,"at":"2026-09-19T17:15:04.323Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":267,"at":"2026-09-19T17:15:04.323Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":268,"at":"2026-09-19T17:15:04.374Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" et"}
+{"seq":269,"at":"2026-09-19T17:15:04.480Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":270,"at":"2026-09-19T17:15:04.481Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":271,"at":"2026-09-19T17:15:04.481Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":272,"at":"2026-09-19T17:15:04.481Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":273,"at":"2026-09-19T17:15:04.481Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":274,"at":"2026-09-19T17:15:04.489Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":275,"at":"2026-09-19T17:15:04.568Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cillum"}
+{"seq":276,"at":"2026-09-19T17:15:04.568Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" labore"}
+{"seq":277,"at":"2026-09-19T17:15:04.568Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":278,"at":"2026-09-19T17:15:07.495Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":279,"at":"2026-09-19T17:15:07.496Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":280,"at":"2026-09-19T17:15:07.561Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":281,"at":"2026-09-19T17:15:07.566Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"anim"}
+{"seq":282,"at":"2026-09-19T17:15:07.625Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":283,"at":"2026-09-19T17:15:07.632Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"aute"}
+{"seq":284,"at":"2026-09-19T17:15:07.692Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":285,"at":"2026-09-19T17:15:07.697Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":286,"at":"2026-09-19T17:15:07.756Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":287,"at":"2026-09-19T17:15:07.761Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":288,"at":"2026-09-19T17:15:07.817Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":289,"at":"2026-09-19T17:15:07.837Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":290,"at":"2026-09-19T17:15:07.915Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":291,"at":"2026-09-19T17:15:07.980Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":292,"at":"2026-09-19T17:15:08.042Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":293,"at":"2026-09-19T17:15:08.106Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":294,"at":"2026-09-19T17:15:20.579Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":295,"at":"2026-09-19T17:15:20.639Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":296,"at":"2026-09-19T17:15:20.644Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":297,"at":"2026-09-19T17:15:20.698Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":298,"at":"2026-09-19T17:15:20.702Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":299,"at":"2026-09-19T17:15:20.759Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":300,"at":"2026-09-19T17:15:20.764Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":301,"at":"2026-09-19T17:15:20.821Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":302,"at":"2026-09-19T17:15:20.826Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":303,"at":"2026-09-19T17:15:20.883Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":304,"at":"2026-09-19T17:15:20.888Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"deserunt"}
+{"seq":305,"at":"2026-09-19T17:15:20.995Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":306,"at":"2026-09-19T17:15:21.002Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"deserunt"}
+{"seq":307,"at":"2026-09-19T17:15:21.010Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":308,"at":"2026-09-19T17:15:21.085Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":309,"at":"2026-09-19T17:15:21.148Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":310,"at":"2026-09-19T17:15:21.230Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":311,"at":"2026-09-19T17:15:21.309Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":312,"at":"2026-09-19T17:15:21.855Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":313,"at":"2026-09-19T17:15:21.956Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"pariatur"}
+{"seq":314,"at":"2026-09-19T17:15:22.157Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"pariatur"}
+{"seq":315,"at":"2026-09-19T17:15:22.451Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"pariatur"}
+{"seq":316,"at":"2026-09-19T17:15:22.652Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":317,"at":"2026-09-19T17:15:27.056Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"deserunt"}
+{"seq":318,"at":"2026-09-19T17:15:31.255Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"occaecat"}
+{"seq":319,"at":"2026-09-19T17:15:36.372Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"occaecat"}
+{"seq":320,"at":"2026-09-19T17:15:42.960Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"occaecat"}
+{"seq":321,"at":"2026-09-19T17:15:43.054Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":322,"at":"2026-09-19T17:15:43.869Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"minim"}
+{"seq":323,"at":"2026-09-19T17:15:43.869Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":324,"at":"2026-09-19T17:15:43.870Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":325,"at":"2026-09-19T17:15:43.884Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nostrud"}
+{"seq":326,"at":"2026-09-19T17:15:43.885Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":327,"at":"2026-09-19T17:15:43.885Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":328,"at":"2026-09-19T17:15:43.886Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" eiusmod"}
+{"seq":329,"at":"2026-09-19T17:15:43.891Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":330,"at":"2026-09-19T17:15:43.932Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"r"}
+{"seq":331,"at":"2026-09-19T17:15:43.932Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":332,"at":"2026-09-19T17:15:43.932Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"est"}
+{"seq":333,"at":"2026-09-19T17:15:43.985Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"r"}
+{"seq":334,"at":"2026-09-19T17:15:43.986Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":335,"at":"2026-09-19T17:15:43.986Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":336,"at":"2026-09-19T17:15:44.025Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":337,"at":"2026-09-19T17:15:44.059Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"a"}
+{"seq":338,"at":"2026-09-19T17:15:44.060Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":339,"at":"2026-09-19T17:15:44.060Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":340,"at":"2026-09-19T17:15:44.060Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" commodo"}
+{"seq":341,"at":"2026-09-19T17:15:44.098Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" r"}
+{"seq":342,"at":"2026-09-19T17:15:44.151Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"n"}
+{"seq":343,"at":"2026-09-19T17:15:44.151Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"est"}
+{"seq":344,"at":"2026-09-19T17:15:44.151Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"id"}
+{"seq":345,"at":"2026-09-19T17:15:44.151Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sit"}
+{"seq":346,"at":"2026-09-19T17:15:44.193Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"d"}
+{"seq":347,"at":"2026-09-19T17:15:44.194Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"dolor"}
+{"seq":348,"at":"2026-09-19T17:15:44.195Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"l"}
+{"seq":349,"at":"2026-09-19T17:15:44.234Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"q"}
+{"seq":350,"at":"2026-09-19T17:15:44.235Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":351,"at":"2026-09-19T17:15:44.235Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" labore"}
+{"seq":352,"at":"2026-09-19T17:15:44.278Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":353,"at":"2026-09-19T17:15:44.279Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":354,"at":"2026-09-19T17:15:44.279Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" dolor"}
+{"seq":355,"at":"2026-09-19T17:15:44.279Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":356,"at":"2026-09-19T17:15:47.934Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":357,"at":"2026-09-19T17:15:47.936Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"sint"}
+{"seq":358,"at":"2026-09-19T17:15:48.018Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":359,"at":"2026-09-19T17:15:48.034Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":360,"at":"2026-09-19T17:15:48.121Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":361,"at":"2026-09-19T17:15:48.128Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":362,"at":"2026-09-19T17:15:48.262Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":363,"at":"2026-09-19T17:15:48.270Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":364,"at":"2026-09-19T17:15:48.444Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":365,"at":"2026-09-19T17:15:48.459Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":366,"at":"2026-09-19T17:15:48.611Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":367,"at":"2026-09-19T17:15:48.618Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":368,"at":"2026-09-19T17:15:48.702Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":369,"at":"2026-09-19T17:15:48.721Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":370,"at":"2026-09-19T17:15:48.809Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":371,"at":"2026-09-19T17:15:48.907Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":372,"at":"2026-09-19T17:15:48.991Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":373,"at":"2026-09-19T17:15:49.060Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":374,"at":"2026-09-19T17:15:49.132Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":375,"at":"2026-09-19T17:15:53.152Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":376,"at":"2026-09-19T17:15:53.253Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":377,"at":"2026-09-19T17:15:53.355Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"occaecat"}
+{"seq":378,"at":"2026-09-19T17:15:53.453Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"pariatur"}
+{"seq":379,"at":"2026-09-19T17:15:57.260Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"proident"}
+{"seq":380,"at":"2026-09-19T17:15:58.754Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"pariatur"}
+{"seq":381,"at":"2026-09-19T17:16:16.191Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":382,"at":"2026-09-19T17:16:16.247Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":383,"at":"2026-09-19T17:16:16.253Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":384,"at":"2026-09-19T17:16:16.309Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":385,"at":"2026-09-19T17:16:16.315Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":386,"at":"2026-09-19T17:16:16.380Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":387,"at":"2026-09-19T17:16:16.384Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":388,"at":"2026-09-19T17:16:16.437Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":389,"at":"2026-09-19T17:16:16.443Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"anim"}
+{"seq":390,"at":"2026-09-19T17:16:16.501Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":391,"at":"2026-09-19T17:16:16.506Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":392,"at":"2026-09-19T17:16:16.564Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":393,"at":"2026-09-19T17:16:16.576Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":394,"at":"2026-09-19T17:16:16.640Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":395,"at":"2026-09-19T17:16:16.701Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":396,"at":"2026-09-19T17:16:16.768Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":397,"at":"2026-09-19T17:16:16.833Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":398,"at":"2026-09-19T17:16:16.916Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":399,"at":"2026-09-19T17:16:43.482Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"elit"}
+{"seq":400,"at":"2026-09-19T17:16:43.483Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" fugiat"}
+{"seq":401,"at":"2026-09-19T17:16:43.483Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":402,"at":"2026-09-19T17:16:43.485Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":403,"at":"2026-09-19T17:16:43.487Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliquip"}
+{"seq":404,"at":"2026-09-19T17:16:43.490Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":405,"at":"2026-09-19T17:16:43.496Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":406,"at":"2026-09-19T17:16:43.502Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" adipiscing"}
+{"seq":407,"at":"2026-09-19T17:16:43.512Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliqua"}
+{"seq":408,"at":"2026-09-19T17:16:43.518Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"q"}
+{"seq":409,"at":"2026-09-19T17:16:43.520Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" minim"}
+{"seq":410,"at":"2026-09-19T17:16:43.520Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":411,"at":"2026-09-19T17:16:43.524Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":412,"at":"2026-09-19T17:16:43.530Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":413,"at":"2026-09-19T17:16:43.533Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":414,"at":"2026-09-19T17:16:43.536Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":415,"at":"2026-09-19T17:16:43.560Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":416,"at":"2026-09-19T17:16:43.615Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":417,"at":"2026-09-19T17:16:43.616Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"m"}
+{"seq":418,"at":"2026-09-19T17:16:43.616Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":419,"at":"2026-09-19T17:16:43.617Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":420,"at":"2026-09-19T17:16:43.654Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":421,"at":"2026-09-19T17:16:43.655Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":422,"at":"2026-09-19T17:16:43.656Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":423,"at":"2026-09-19T17:16:43.699Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" anim"}
+{"seq":424,"at":"2026-09-19T17:16:43.700Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" deserunt"}
+{"seq":425,"at":"2026-09-19T17:16:43.748Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":426,"at":"2026-09-19T17:16:43.749Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":427,"at":"2026-09-19T17:16:49.089Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":428,"at":"2026-09-19T17:16:49.095Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":429,"at":"2026-09-19T17:16:49.166Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":430,"at":"2026-09-19T17:16:49.173Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":431,"at":"2026-09-19T17:16:49.230Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":432,"at":"2026-09-19T17:16:49.238Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":433,"at":"2026-09-19T17:16:49.299Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":434,"at":"2026-09-19T17:16:49.305Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":435,"at":"2026-09-19T17:16:49.372Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":436,"at":"2026-09-19T17:16:49.379Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":437,"at":"2026-09-19T17:16:49.439Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":438,"at":"2026-09-19T17:16:49.444Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":439,"at":"2026-09-19T17:16:49.497Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":440,"at":"2026-09-19T17:16:49.502Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"aute"}
+{"seq":441,"at":"2026-09-19T17:16:49.553Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":442,"at":"2026-09-19T17:16:49.559Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":443,"at":"2026-09-19T17:16:49.615Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":444,"at":"2026-09-19T17:16:49.630Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":445,"at":"2026-09-19T17:16:49.693Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":446,"at":"2026-09-19T17:16:49.751Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":447,"at":"2026-09-19T17:16:49.889Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":448,"at":"2026-09-19T17:16:50.003Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":449,"at":"2026-09-19T17:16:50.093Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":450,"at":"2026-09-19T17:16:50.168Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":451,"at":"2026-09-19T17:16:50.236Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":452,"at":"2026-09-19T17:17:33.518Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":453,"at":"2026-09-19T17:17:34.155Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":454,"at":"2026-09-19T17:17:34.231Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":455,"at":"2026-09-19T17:17:34.760Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":456,"at":"2026-09-19T17:17:34.768Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":457,"at":"2026-09-19T17:17:35.081Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":458,"at":"2026-09-19T17:17:35.109Z","source":"stdout","providerType":"tool_call","kind":"list_dir","status":"pending","summary":"deserunt"}
+{"seq":459,"at":"2026-09-19T17:17:35.290Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":460,"at":"2026-09-19T17:17:35.426Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":461,"at":"2026-09-19T17:17:35.799Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":462,"at":"2026-09-19T17:17:35.993Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":463,"at":"2026-09-19T17:17:36.547Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":464,"at":"2026-09-19T17:17:36.676Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":465,"at":"2026-09-19T17:17:37.270Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":466,"at":"2026-09-19T17:17:37.615Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":467,"at":"2026-09-19T17:17:38.636Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":468,"at":"2026-09-19T17:17:39.078Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":469,"at":"2026-09-19T17:17:39.604Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":470,"at":"2026-09-19T17:17:53.458Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"nulla"}
+{"seq":471,"at":"2026-09-19T17:17:53.484Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" labore"}
+{"seq":472,"at":"2026-09-19T17:17:53.484Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":473,"at":"2026-09-19T17:17:53.484Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" duis"}
+{"seq":474,"at":"2026-09-19T17:17:53.516Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":475,"at":"2026-09-19T17:17:53.517Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":476,"at":"2026-09-19T17:17:53.517Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":477,"at":"2026-09-19T17:17:53.517Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":478,"at":"2026-09-19T17:17:53.550Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laboris"}
+{"seq":479,"at":"2026-09-19T17:17:53.550Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":480,"at":"2026-09-19T17:17:53.550Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":481,"at":"2026-09-19T17:17:53.591Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" voluptate"}
+{"seq":482,"at":"2026-09-19T17:17:53.675Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":483,"at":"2026-09-19T17:17:53.676Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":484,"at":"2026-09-19T17:17:53.676Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":485,"at":"2026-09-19T17:17:53.677Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ex"}
+{"seq":486,"at":"2026-09-19T17:17:53.688Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" anim"}
+{"seq":487,"at":"2026-09-19T17:17:53.718Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":488,"at":"2026-09-19T17:17:53.756Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"d"}
+{"seq":489,"at":"2026-09-19T17:17:53.756Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":490,"at":"2026-09-19T17:17:53.757Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":491,"at":"2026-09-19T17:17:53.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":492,"at":"2026-09-19T17:17:53.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":493,"at":"2026-09-19T17:17:53.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":494,"at":"2026-09-19T17:17:53.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":495,"at":"2026-09-19T17:17:53.818Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":496,"at":"2026-09-19T17:17:53.818Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" labore"}
+{"seq":497,"at":"2026-09-19T17:17:53.859Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":498,"at":"2026-09-19T17:17:53.860Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":499,"at":"2026-09-19T17:18:04.910Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":500,"at":"2026-09-19T17:18:04.911Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 velit esse cillum laborum reprehenderit nostrud mollit et laboris ex ex sed nostrud exercitation incididunt dolore consequat amet nisi commodo excepteur"}
+{"seq":501,"at":"2026-09-19T17:18:05.086Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":502,"at":"2026-09-19T17:18:05.095Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 elit sunt veniam tempor ex labore sit veniam culpa minim officia ad nulla reprehenderit culpa nostrud sit do incididunt sed reprehenderit esse voluptate"}
+{"seq":503,"at":"2026-09-19T17:18:05.224Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":504,"at":"2026-09-19T17:18:05.236Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":505,"at":"2026-09-19T17:18:05.352Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":506,"at":"2026-09-19T17:18:05.358Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":507,"at":"2026-09-19T17:18:05.427Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":508,"at":"2026-09-19T17:18:05.436Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":509,"at":"2026-09-19T17:18:05.514Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":510,"at":"2026-09-19T17:18:05.528Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore nisi dolor quis voluptate esse elit sed deserunt magna laboris consequat ut ut incididunt amet officia elit ad qui irure do fugiat dolor proident"}
+{"seq":511,"at":"2026-09-19T17:18:05.536Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 elit sunt veniam tempor ex labore sit veniam culpa minim officia ad nulla reprehenderit culpa nostrud sit do incididunt sed reprehenderit esse voluptate"}
+{"seq":512,"at":"2026-09-19T17:18:05.540Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":513,"at":"2026-09-19T17:18:05.571Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":514,"at":"2026-09-19T17:18:05.760Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":515,"at":"2026-09-19T17:18:06.360Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":516,"at":"2026-09-19T17:18:06.388Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 elit sunt veniam tempor ex labore sit veniam culpa minim officia ad nulla reprehenderit culpa nostrud sit do incididunt sed reprehenderit esse voluptate"}
+{"seq":517,"at":"2026-09-19T17:18:06.390Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore nisi dolor quis voluptate esse elit sed deserunt magna laboris consequat ut ut incididunt amet officia elit ad qui irure do fugiat dolor proident"}
+{"seq":518,"at":"2026-09-19T17:18:06.462Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 labore nisi dolor quis voluptate esse elit sed deserunt magna laboris consequat ut ut incididunt amet officia elit ad qui irure do fugiat dolor proident"}
+{"seq":519,"at":"2026-09-19T17:18:06.463Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":520,"at":"2026-09-19T17:18:07.406Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 elit sunt veniam tempor ex labore sit veniam culpa minim officia ad nulla reprehenderit culpa nostrud sit do incididunt sed reprehenderit esse voluptate"}
+{"seq":521,"at":"2026-09-19T17:18:07.497Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 elit sunt veniam tempor ex labore sit veniam culpa minim officia ad nulla reprehenderit culpa nostrud sit do incididunt sed reprehenderit esse voluptate"}
+{"seq":522,"at":"2026-09-19T17:18:07.673Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":523,"at":"2026-09-19T17:18:07.782Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":524,"at":"2026-09-19T17:18:07.855Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":525,"at":"2026-09-19T17:18:08.155Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":526,"at":"2026-09-19T17:18:10.952Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":527,"at":"2026-09-19T17:18:11.005Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"# sample command for verify-1 laborum fugiat laboris excepteur exercitation dolore irure velit labore amet nostrud incididunt culpa proident exercitation cillum laboris consectetur"}
+{"seq":528,"at":"2026-09-19T17:18:31.027Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"occaecat"}
+{"seq":529,"at":"2026-09-19T17:18:31.067Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" occaecat"}
+{"seq":530,"at":"2026-09-19T17:18:31.070Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":531,"at":"2026-09-19T17:18:31.106Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":532,"at":"2026-09-19T17:18:31.200Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":533,"at":"2026-09-19T17:18:31.203Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"f"}
+{"seq":534,"at":"2026-09-19T17:18:31.203Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ea"}
+{"seq":535,"at":"2026-09-19T17:18:31.203Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":536,"at":"2026-09-19T17:18:31.203Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":537,"at":"2026-09-19T17:18:31.229Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"ea"}
+{"seq":538,"at":"2026-09-19T17:18:31.229Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" id"}
+{"seq":539,"at":"2026-09-19T17:18:31.229Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laboris"}
+{"seq":540,"at":"2026-09-19T17:18:31.264Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"l"}
+{"seq":541,"at":"2026-09-19T17:18:31.264Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ullamco"}
+{"seq":542,"at":"2026-09-19T17:18:31.265Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" officia"}
+{"seq":543,"at":"2026-09-19T17:18:31.304Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nulla"}
+{"seq":544,"at":"2026-09-19T17:18:31.304Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ad"}
+{"seq":545,"at":"2026-09-19T17:18:31.345Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":546,"at":"2026-09-19T17:18:31.345Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":547,"at":"2026-09-19T17:18:31.346Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" tempor"}
+{"seq":548,"at":"2026-09-19T17:18:31.388Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"s"}
+{"seq":549,"at":"2026-09-19T17:18:31.388Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":550,"at":"2026-09-19T17:18:31.388Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":551,"at":"2026-09-19T17:18:31.388Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":552,"at":"2026-09-19T17:18:31.451Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":553,"at":"2026-09-19T17:18:31.453Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":554,"at":"2026-09-19T17:18:31.453Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":555,"at":"2026-09-19T17:18:50.222Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":556,"at":"2026-09-19T17:18:50.222Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":557,"at":"2026-09-19T17:18:50.379Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":558,"at":"2026-09-19T17:18:50.386Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"# sample command for verify-1 magna enim veniam aute nostrud cillum quis ullamco culpa amet id sed laborum esse sint sint in exercitation dolor fugiat sint enim anim ex consectetur"}
+{"seq":559,"at":"2026-09-19T17:18:50.514Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":560,"at":"2026-09-19T17:18:50.522Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":561,"at":"2026-09-19T17:18:50.635Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":562,"at":"2026-09-19T17:18:50.640Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":563,"at":"2026-09-19T17:18:50.707Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":564,"at":"2026-09-19T17:18:50.713Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":565,"at":"2026-09-19T17:18:50.773Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":566,"at":"2026-09-19T17:18:50.787Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":567,"at":"2026-09-19T17:18:50.790Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 magna enim veniam aute nostrud cillum quis ullamco culpa amet id sed laborum esse sint sint in exercitation dolor fugiat sint enim anim ex consectetur"}
+{"seq":568,"at":"2026-09-19T17:18:50.805Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":569,"at":"2026-09-19T17:18:50.930Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":570,"at":"2026-09-19T17:18:51.024Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":571,"at":"2026-09-19T17:18:51.560Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":572,"at":"2026-09-19T17:18:51.755Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":573,"at":"2026-09-19T17:18:51.856Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":574,"at":"2026-09-19T17:18:51.984Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":575,"at":"2026-09-19T17:18:51.991Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 anim duis eiusmod anim aliqua exercitation lorem in lorem elit dolore ea consectetur culpa et sed pariatur duis ea sit sed dolor ipsum duis exercitation"}
+{"seq":576,"at":"2026-09-19T17:18:52.270Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 magna enim veniam aute nostrud cillum quis ullamco culpa amet id sed laborum esse sint sint in exercitation dolor fugiat sint enim anim ex consectetur"}
+{"seq":577,"at":"2026-09-19T17:18:52.276Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"# sample command for verify-1 magna enim veniam aute nostrud cillum quis ullamco culpa amet id sed laborum esse sint sint in exercitation dolor fugiat sint enim anim ex consectetur"}
+{"seq":578,"at":"2026-09-19T17:19:50.242Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":579,"at":"2026-09-19T17:19:50.487Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":580,"at":"2026-09-19T17:19:50.503Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"# sample command for verify-1 dolor in magna aute commodo in quis fugiat est id eiusmod sit sit adipiscing aliquip lorem proident aliquip pariatur magna irure sit non fugiat labore"}
+{"seq":581,"at":"2026-09-19T17:19:50.681Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":582,"at":"2026-09-19T17:19:50.693Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":583,"at":"2026-09-19T17:19:50.782Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":584,"at":"2026-09-19T17:19:50.788Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":585,"at":"2026-09-19T17:19:50.863Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":586,"at":"2026-09-19T17:19:50.869Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":587,"at":"2026-09-19T17:19:51.142Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":588,"at":"2026-09-19T17:19:51.216Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":589,"at":"2026-09-19T17:19:51.229Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 dolor in magna aute commodo in quis fugiat est id eiusmod sit sit adipiscing aliquip lorem proident aliquip pariatur magna irure sit non fugiat labore"}
+{"seq":590,"at":"2026-09-19T17:19:51.267Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":591,"at":"2026-09-19T17:19:51.491Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":592,"at":"2026-09-19T17:19:51.921Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":593,"at":"2026-09-19T17:19:52.366Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":594,"at":"2026-09-19T17:19:52.556Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 dolor in magna aute commodo in quis fugiat est id eiusmod sit sit adipiscing aliquip lorem proident aliquip pariatur magna irure sit non fugiat labore"}
+{"seq":595,"at":"2026-09-19T17:19:52.756Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":596,"at":"2026-09-19T17:19:53.158Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":597,"at":"2026-09-19T17:19:53.560Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":598,"at":"2026-09-19T17:19:53.955Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":599,"at":"2026-09-19T17:19:54.033Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 anim est nisi ut non irure amet aute sed nostrud qui ex labore commodo minim duis occaecat fugiat laboris adipiscing fugiat id mollit non aliquip veniam"}
+{"seq":600,"at":"2026-09-19T17:20:04.636Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 dolor in magna aute commodo in quis fugiat est id eiusmod sit sit adipiscing aliquip lorem proident aliquip pariatur magna irure sit non fugiat labore"}
+{"seq":601,"at":"2026-09-19T17:20:04.636Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"# sample command for verify-1 dolor in magna aute commodo in quis fugiat est id eiusmod sit sit adipiscing aliquip lorem proident aliquip pariatur magna irure sit non fugiat labore"}
+{"seq":602,"at":"2026-09-19T17:20:26.348Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"duis"}
+{"seq":603,"at":"2026-09-19T17:20:26.380Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nostrud"}
+{"seq":604,"at":"2026-09-19T17:20:26.380Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":605,"at":"2026-09-19T17:20:26.565Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" occaecat"}
+{"seq":606,"at":"2026-09-19T17:20:26.565Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"ad"}
+{"seq":607,"at":"2026-09-19T17:20:26.565Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ipsum"}
+{"seq":608,"at":"2026-09-19T17:20:26.565Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliquip"}
+{"seq":609,"at":"2026-09-19T17:20:26.565Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" officia"}
+{"seq":610,"at":"2026-09-19T17:20:26.566Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"a"}
+{"seq":611,"at":"2026-09-19T17:20:26.566Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":612,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":613,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":614,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" minim"}
+{"seq":615,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":616,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":617,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":618,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":619,"at":"2026-09-19T17:20:26.567Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cupidatat"}
+{"seq":620,"at":"2026-09-19T17:20:26.588Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ullamco"}
+{"seq":621,"at":"2026-09-19T17:20:26.626Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":622,"at":"2026-09-19T17:20:26.664Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":623,"at":"2026-09-19T17:20:26.707Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":624,"at":"2026-09-19T17:20:26.747Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":625,"at":"2026-09-19T17:20:34.215Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":626,"at":"2026-09-19T17:20:34.215Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 ad mollit ipsum qui nisi veniam ex ad id reprehenderit duis mollit eiusmod incididunt laborum mollit consectetur velit in ea cupidatat magna consectetur"}
+{"seq":627,"at":"2026-09-19T17:20:34.387Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":628,"at":"2026-09-19T17:20:34.396Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":629,"at":"2026-09-19T17:20:34.461Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":630,"at":"2026-09-19T17:20:34.466Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"sint"}
+{"seq":631,"at":"2026-09-19T17:20:34.529Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":632,"at":"2026-09-19T17:20:34.536Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":633,"at":"2026-09-19T17:20:34.672Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":634,"at":"2026-09-19T17:20:34.689Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ad mollit ipsum qui nisi veniam ex ad id reprehenderit duis mollit eiusmod incididunt laborum mollit consectetur velit in ea cupidatat magna consectetur"}
+{"seq":635,"at":"2026-09-19T17:20:34.717Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":636,"at":"2026-09-19T17:20:34.948Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":637,"at":"2026-09-19T17:20:35.088Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":638,"at":"2026-09-19T17:20:35.473Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ad mollit ipsum qui nisi veniam ex ad id reprehenderit duis mollit eiusmod incididunt laborum mollit consectetur velit in ea cupidatat magna consectetur"}
+{"seq":639,"at":"2026-09-19T17:20:35.495Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 ad mollit ipsum qui nisi veniam ex ad id reprehenderit duis mollit eiusmod incididunt laborum mollit consectetur velit in ea cupidatat magna consectetur"}
+{"seq":640,"at":"2026-09-19T17:20:59.241Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"velit"}
+{"seq":641,"at":"2026-09-19T17:20:59.259Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":642,"at":"2026-09-19T17:20:59.260Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":643,"at":"2026-09-19T17:20:59.260Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":644,"at":"2026-09-19T17:20:59.458Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" elit"}
+{"seq":645,"at":"2026-09-19T17:20:59.459Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":646,"at":"2026-09-19T17:20:59.459Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":647,"at":"2026-09-19T17:20:59.460Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":648,"at":"2026-09-19T17:20:59.461Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":649,"at":"2026-09-19T17:20:59.462Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":650,"at":"2026-09-19T17:20:59.462Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":651,"at":"2026-09-19T17:20:59.473Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":652,"at":"2026-09-19T17:20:59.474Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" dolor"}
+{"seq":653,"at":"2026-09-19T17:20:59.474Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":654,"at":"2026-09-19T17:20:59.536Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":655,"at":"2026-09-19T17:20:59.537Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ea"}
+{"seq":656,"at":"2026-09-19T17:20:59.572Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cupidatat"}
+{"seq":657,"at":"2026-09-19T17:20:59.572Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"a"}
+{"seq":658,"at":"2026-09-19T17:20:59.572Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":659,"at":"2026-09-19T17:20:59.572Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":660,"at":"2026-09-19T17:20:59.612Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":661,"at":"2026-09-19T17:20:59.612Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":662,"at":"2026-09-19T17:20:59.612Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":663,"at":"2026-09-19T17:20:59.612Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":664,"at":"2026-09-19T17:20:59.655Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":665,"at":"2026-09-19T17:20:59.656Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" quis"}
+{"seq":666,"at":"2026-09-19T17:20:59.656Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"quis"}
+{"seq":667,"at":"2026-09-19T17:20:59.656Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" id"}
+{"seq":668,"at":"2026-09-19T17:20:59.696Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":669,"at":"2026-09-19T17:20:59.697Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":670,"at":"2026-09-19T17:20:59.742Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":671,"at":"2026-09-19T17:20:59.742Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" "}
+{"seq":672,"at":"2026-09-19T17:20:59.742Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"e"}
+{"seq":673,"at":"2026-09-19T17:20:59.742Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":674,"at":"2026-09-19T17:20:59.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"ex"}
+{"seq":675,"at":"2026-09-19T17:20:59.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":676,"at":"2026-09-19T17:20:59.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"s"}
+{"seq":677,"at":"2026-09-19T17:20:59.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":678,"at":"2026-09-19T17:20:59.825Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cillum"}
+{"seq":679,"at":"2026-09-19T17:20:59.876Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":680,"at":"2026-09-19T17:21:05.693Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":681,"at":"2026-09-19T17:21:05.695Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"enim"}
+{"seq":682,"at":"2026-09-19T17:21:05.755Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":683,"at":"2026-09-19T17:21:05.763Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"quis"}
+{"seq":684,"at":"2026-09-19T17:21:05.820Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":685,"at":"2026-09-19T17:21:05.824Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":686,"at":"2026-09-19T17:21:05.970Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":687,"at":"2026-09-19T17:21:05.987Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":688,"at":"2026-09-19T17:21:06.024Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":689,"at":"2026-09-19T17:21:06.083Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":690,"at":"2026-09-19T17:21:06.892Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":691,"at":"2026-09-19T17:21:06.991Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":692,"at":"2026-09-19T17:21:07.118Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":693,"at":"2026-09-19T17:21:07.126Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 labore amet sit aliqua duis quis in in cillum sed in pariatur deserunt duis nulla sint et id nisi ut nisi in proident consequat ut sunt culpa adipiscing"}
+{"seq":694,"at":"2026-09-19T17:21:23.218Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":695,"at":"2026-09-19T17:21:23.275Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":696,"at":"2026-09-19T17:21:23.280Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":697,"at":"2026-09-19T17:21:23.412Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":698,"at":"2026-09-19T17:21:23.443Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":699,"at":"2026-09-19T17:21:23.554Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":700,"at":"2026-09-19T17:21:23.567Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":701,"at":"2026-09-19T17:21:23.699Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":702,"at":"2026-09-19T17:21:23.715Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":703,"at":"2026-09-19T17:21:23.793Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":704,"at":"2026-09-19T17:21:23.831Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":705,"at":"2026-09-19T17:21:23.956Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":706,"at":"2026-09-19T17:21:24.100Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":707,"at":"2026-09-19T17:21:24.272Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":708,"at":"2026-09-19T17:21:24.388Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":709,"at":"2026-09-19T17:21:30.842Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":710,"at":"2026-09-19T17:21:30.907Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":711,"at":"2026-09-19T17:21:30.915Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":712,"at":"2026-09-19T17:21:30.974Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":713,"at":"2026-09-19T17:21:30.981Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":714,"at":"2026-09-19T17:21:31.056Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":715,"at":"2026-09-19T17:21:31.061Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"anim"}
+{"seq":716,"at":"2026-09-19T17:21:31.119Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":717,"at":"2026-09-19T17:21:31.123Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":718,"at":"2026-09-19T17:21:31.180Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":719,"at":"2026-09-19T17:21:31.197Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":720,"at":"2026-09-19T17:21:31.256Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":721,"at":"2026-09-19T17:21:31.320Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":722,"at":"2026-09-19T17:21:31.380Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":723,"at":"2026-09-19T17:21:31.440Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":724,"at":"2026-09-19T17:22:00.426Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":725,"at":"2026-09-19T17:22:00.510Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":726,"at":"2026-09-19T17:22:00.515Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":727,"at":"2026-09-19T17:22:00.572Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":728,"at":"2026-09-19T17:22:00.576Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":729,"at":"2026-09-19T17:22:00.634Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":730,"at":"2026-09-19T17:22:00.639Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":731,"at":"2026-09-19T17:22:00.692Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":732,"at":"2026-09-19T17:22:00.712Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":733,"at":"2026-09-19T17:22:00.773Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":734,"at":"2026-09-19T17:22:00.840Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":735,"at":"2026-09-19T17:22:00.918Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":736,"at":"2026-09-19T17:22:22.332Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":737,"at":"2026-09-19T17:22:22.753Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":738,"at":"2026-09-19T17:22:22.764Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":739,"at":"2026-09-19T17:22:22.818Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":740,"at":"2026-09-19T17:22:22.823Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"esse"}
+{"seq":741,"at":"2026-09-19T17:22:22.878Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":742,"at":"2026-09-19T17:22:22.886Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"quis"}
+{"seq":743,"at":"2026-09-19T17:22:23.023Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":744,"at":"2026-09-19T17:22:23.043Z","source":"stdout","providerType":"tool_call","kind":"web_fetch","status":"pending","summary":"cupidatat"}
+{"seq":745,"at":"2026-09-19T17:22:23.246Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":746,"at":"2026-09-19T17:22:23.252Z","source":"stdout","providerType":"tool_call","kind":"web_fetch","status":"pending","summary":"consequat"}
+{"seq":747,"at":"2026-09-19T17:22:23.345Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":748,"at":"2026-09-19T17:22:23.366Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":749,"at":"2026-09-19T17:22:23.385Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":750,"at":"2026-09-19T17:22:23.447Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":751,"at":"2026-09-19T17:22:23.506Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":752,"at":"2026-09-19T17:22:23.807Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":753,"at":"2026-09-19T17:22:23.996Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":754,"at":"2026-09-19T17:22:24.298Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":755,"at":"2026-09-19T17:22:24.727Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":756,"at":"2026-09-19T17:22:38.406Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":757,"at":"2026-09-19T17:22:42.199Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":758,"at":"2026-09-19T17:22:42.208Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 non culpa laborum consectetur elit minim pariatur laboris ex minim id ad id irure irure sit anim esse laboris deserunt fugiat nostrud laborum incididunt"}
+{"seq":759,"at":"2026-09-19T17:23:05.551Z","source":"stdout","providerType":"tool_call","kind":"Web search:","status":"in_progress","summary":"adipiscing:"}
+{"seq":760,"at":"2026-09-19T17:23:05.775Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":761,"at":"2026-09-19T17:23:08.296Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"nisi"}
+{"seq":762,"at":"2026-09-19T17:23:08.368Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":763,"at":"2026-09-19T17:23:08.372Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":764,"at":"2026-09-19T17:23:08.429Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":765,"at":"2026-09-19T17:23:08.434Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":766,"at":"2026-09-19T17:23:08.492Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":767,"at":"2026-09-19T17:23:08.498Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":768,"at":"2026-09-19T17:23:08.558Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":769,"at":"2026-09-19T17:23:08.570Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":770,"at":"2026-09-19T17:23:08.663Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":771,"at":"2026-09-19T17:23:08.720Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":772,"at":"2026-09-19T17:23:08.783Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":773,"at":"2026-09-19T17:23:38.948Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":774,"at":"2026-09-19T17:23:39.010Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":775,"at":"2026-09-19T17:23:39.020Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"esse"}
+{"seq":776,"at":"2026-09-19T17:23:39.073Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":777,"at":"2026-09-19T17:23:39.077Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":778,"at":"2026-09-19T17:23:39.134Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":779,"at":"2026-09-19T17:23:39.139Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":780,"at":"2026-09-19T17:23:39.196Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":781,"at":"2026-09-19T17:23:39.219Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":782,"at":"2026-09-19T17:23:39.286Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":783,"at":"2026-09-19T17:23:39.351Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":784,"at":"2026-09-19T17:23:39.415Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":785,"at":"2026-09-19T17:24:12.025Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":786,"at":"2026-09-19T17:24:12.087Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":787,"at":"2026-09-19T17:24:12.096Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"# sample command for verify-1 sed laboris proident aliquip reprehenderit veniam consequat minim esse magna aliquip proident excepteur non nulla enim nostrud esse laborum incididunt"}
+{"seq":788,"at":"2026-09-19T17:24:12.243Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":789,"at":"2026-09-19T17:24:12.251Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"duis"}
+{"seq":790,"at":"2026-09-19T17:24:12.311Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":791,"at":"2026-09-19T17:24:12.316Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":792,"at":"2026-09-19T17:24:12.375Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":793,"at":"2026-09-19T17:24:12.385Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sed laboris proident aliquip reprehenderit veniam consequat minim esse magna aliquip proident excepteur non nulla enim nostrud esse laborum incididunt"}
+{"seq":794,"at":"2026-09-19T17:24:12.393Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":795,"at":"2026-09-19T17:24:12.459Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":796,"at":"2026-09-19T17:24:12.565Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":797,"at":"2026-09-19T17:24:13.000Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sed laboris proident aliquip reprehenderit veniam consequat minim esse magna aliquip proident excepteur non nulla enim nostrud esse laborum incididunt"}
+{"seq":798,"at":"2026-09-19T17:24:13.176Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sed laboris proident aliquip reprehenderit veniam consequat minim esse magna aliquip proident excepteur non nulla enim nostrud esse laborum incididunt"}
+{"seq":799,"at":"2026-09-19T17:24:13.176Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"# sample command for verify-1 sed laboris proident aliquip reprehenderit veniam consequat minim esse magna aliquip proident excepteur non nulla enim nostrud esse laborum incididunt"}
+{"seq":800,"at":"2026-09-19T17:24:19.237Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sit"}
+{"seq":801,"at":"2026-09-19T17:24:19.286Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" anim"}
+{"seq":802,"at":"2026-09-19T17:24:19.287Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":803,"at":"2026-09-19T17:24:19.287Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliquip"}
+{"seq":804,"at":"2026-09-19T17:24:19.287Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" dolore"}
+{"seq":805,"at":"2026-09-19T17:24:19.321Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" "}
+{"seq":806,"at":"2026-09-19T17:24:19.366Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"i"}
+{"seq":807,"at":"2026-09-19T17:24:19.366Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":808,"at":"2026-09-19T17:24:19.366Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":809,"at":"2026-09-19T17:24:19.366Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" amet"}
+{"seq":810,"at":"2026-09-19T17:24:19.402Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":811,"at":"2026-09-19T17:24:19.403Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":812,"at":"2026-09-19T17:24:19.496Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":813,"at":"2026-09-19T17:24:19.497Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":814,"at":"2026-09-19T17:24:19.497Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sample cillum"}
+{"seq":815,"at":"2026-09-19T17:24:19.497Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":816,"at":"2026-09-19T17:24:19.530Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":817,"at":"2026-09-19T17:24:19.530Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consequat"}
+{"seq":818,"at":"2026-09-19T17:24:19.531Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ipsum"}
+{"seq":819,"at":"2026-09-19T17:24:19.531Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" commodo"}
+{"seq":820,"at":"2026-09-19T17:24:19.580Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" commodo"}
+{"seq":821,"at":"2026-09-19T17:24:19.581Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":822,"at":"2026-09-19T17:24:19.581Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nisi"}
+{"seq":823,"at":"2026-09-19T17:24:19.630Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laborum"}
+{"seq":824,"at":"2026-09-19T17:24:19.630Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":825,"at":"2026-09-19T17:24:22.056Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":826,"at":"2026-09-19T17:24:22.056Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":827,"at":"2026-09-19T17:24:22.109Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":828,"at":"2026-09-19T17:24:22.114Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":829,"at":"2026-09-19T17:24:22.174Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":830,"at":"2026-09-19T17:24:22.182Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":831,"at":"2026-09-19T17:24:22.239Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":832,"at":"2026-09-19T17:25:02.899Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 sint mollit dolore aliqua pariatur sed adipiscing lorem amet fugiat fugiat magna veniam ipsum nulla irure ut cupidatat amet ad dolore ex mollit proident"}
+{"seq":833,"at":"2026-09-19T17:25:03.054Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":834,"at":"2026-09-19T17:25:03.060Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":835,"at":"2026-09-19T17:25:03.117Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":836,"at":"2026-09-19T17:25:03.124Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"nisi"}
+{"seq":837,"at":"2026-09-19T17:25:03.185Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":838,"at":"2026-09-19T17:25:03.195Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":839,"at":"2026-09-19T17:25:03.283Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":840,"at":"2026-09-19T17:25:03.293Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 sint mollit dolore aliqua pariatur sed adipiscing lorem amet fugiat fugiat magna veniam ipsum nulla irure ut cupidatat amet ad dolore ex mollit proident"}
+{"seq":841,"at":"2026-09-19T17:25:03.303Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":842,"at":"2026-09-19T17:25:03.416Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":843,"at":"2026-09-19T17:25:03.494Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":844,"at":"2026-09-19T17:25:04.104Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 sint mollit dolore aliqua pariatur sed adipiscing lorem amet fugiat fugiat magna veniam ipsum nulla irure ut cupidatat amet ad dolore ex mollit proident"}
+{"seq":845,"at":"2026-09-19T17:25:04.400Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 sint mollit dolore aliqua pariatur sed adipiscing lorem amet fugiat fugiat magna veniam ipsum nulla irure ut cupidatat amet ad dolore ex mollit proident"}
+{"seq":846,"at":"2026-09-19T17:25:04.413Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 sint mollit dolore aliqua pariatur sed adipiscing lorem amet fugiat fugiat magna veniam ipsum nulla irure ut cupidatat amet ad dolore ex mollit proident"}
+{"seq":847,"at":"2026-09-19T17:25:31.517Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"nisi"}
+{"seq":848,"at":"2026-09-19T17:25:31.840Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":849,"at":"2026-09-19T17:25:31.952Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"nisi"}
+{"seq":850,"at":"2026-09-19T17:25:32.049Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":851,"at":"2026-09-19T17:25:32.070Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":852,"at":"2026-09-19T17:25:32.168Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":853,"at":"2026-09-19T17:25:32.177Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":854,"at":"2026-09-19T17:25:32.262Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":855,"at":"2026-09-19T17:25:32.286Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":856,"at":"2026-09-19T17:25:32.404Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":857,"at":"2026-09-19T17:25:32.539Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":858,"at":"2026-09-19T17:25:32.645Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":859,"at":"2026-09-19T17:25:43.632Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"esse"}
+{"seq":860,"at":"2026-09-19T17:25:43.691Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":861,"at":"2026-09-19T17:25:43.697Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":862,"at":"2026-09-19T17:25:43.768Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":863,"at":"2026-09-19T17:25:43.773Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":864,"at":"2026-09-19T17:25:43.833Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":865,"at":"2026-09-19T17:25:43.851Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":866,"at":"2026-09-19T17:25:43.916Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":867,"at":"2026-09-19T17:25:43.976Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":868,"at":"2026-09-19T17:25:59.317Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"cupidatat"}
+{"seq":869,"at":"2026-09-19T17:25:59.373Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":870,"at":"2026-09-19T17:25:59.378Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":871,"at":"2026-09-19T17:25:59.436Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":872,"at":"2026-09-19T17:25:59.441Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"aute"}
+{"seq":873,"at":"2026-09-19T17:25:59.505Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":874,"at":"2026-09-19T17:25:59.510Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":875,"at":"2026-09-19T17:25:59.565Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":876,"at":"2026-09-19T17:25:59.579Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":877,"at":"2026-09-19T17:25:59.648Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":878,"at":"2026-09-19T17:25:59.707Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":879,"at":"2026-09-19T17:25:59.767Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":880,"at":"2026-09-19T17:26:11.034Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"anim"}
+{"seq":881,"at":"2026-09-19T17:26:11.090Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":882,"at":"2026-09-19T17:26:11.095Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":883,"at":"2026-09-19T17:26:11.151Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":884,"at":"2026-09-19T17:26:11.163Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":885,"at":"2026-09-19T17:26:11.224Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":886,"at":"2026-09-19T17:26:14.631Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":887,"at":"2026-09-19T17:26:14.697Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":888,"at":"2026-09-19T17:26:14.700Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"elit"}
+{"seq":889,"at":"2026-09-19T17:26:14.760Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":890,"at":"2026-09-19T17:26:14.766Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"esse"}
+{"seq":891,"at":"2026-09-19T17:26:14.830Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":892,"at":"2026-09-19T17:26:14.846Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":893,"at":"2026-09-19T17:26:14.907Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":894,"at":"2026-09-19T17:26:14.969Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":895,"at":"2026-09-19T17:26:17.387Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"sint"}
+{"seq":896,"at":"2026-09-19T17:26:17.451Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":897,"at":"2026-09-19T17:26:17.469Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":898,"at":"2026-09-19T17:26:21.188Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":899,"at":"2026-09-19T17:26:21.246Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":900,"at":"2026-09-19T17:26:21.252Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"duis"}
+{"seq":901,"at":"2026-09-19T17:26:21.306Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":902,"at":"2026-09-19T17:26:21.311Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"voluptate"}
+{"seq":903,"at":"2026-09-19T17:26:21.367Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":904,"at":"2026-09-19T17:26:21.380Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":905,"at":"2026-09-19T17:26:21.443Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":906,"at":"2026-09-19T17:26:21.504Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":907,"at":"2026-09-19T17:26:42.930Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"esse"}
+{"seq":908,"at":"2026-09-19T17:26:43.449Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":909,"at":"2026-09-19T17:26:43.512Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":910,"at":"2026-09-19T17:26:43.663Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":911,"at":"2026-09-19T17:26:43.732Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":912,"at":"2026-09-19T17:26:44.021Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":913,"at":"2026-09-19T17:26:44.038Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":914,"at":"2026-09-19T17:26:44.438Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":915,"at":"2026-09-19T17:26:44.789Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":916,"at":"2026-09-19T17:27:06.242Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"sint"}
+{"seq":917,"at":"2026-09-19T17:27:06.271Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" lorem"}
+{"seq":918,"at":"2026-09-19T17:27:06.272Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliqua"}
+{"seq":919,"at":"2026-09-19T17:27:06.274Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":920,"at":"2026-09-19T17:27:06.274Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":921,"at":"2026-09-19T17:27:06.307Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" magna"}
+{"seq":922,"at":"2026-09-19T17:27:06.308Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nostrud"}
+{"seq":923,"at":"2026-09-19T17:27:06.308Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" eiusmod"}
+{"seq":924,"at":"2026-09-19T17:27:06.349Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":925,"at":"2026-09-19T17:27:06.350Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" anim"}
+{"seq":926,"at":"2026-09-19T17:27:06.350Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":927,"at":"2026-09-19T17:27:06.457Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":928,"at":"2026-09-19T17:27:06.458Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"d"}
+{"seq":929,"at":"2026-09-19T17:27:06.458Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"non"}
+{"seq":930,"at":"2026-09-19T17:27:06.458Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":931,"at":"2026-09-19T17:27:06.469Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" nulla"}
+{"seq":932,"at":"2026-09-19T17:27:06.469Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" in"}
+{"seq":933,"at":"2026-09-19T17:27:06.469Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"irure"}
+{"seq":934,"at":"2026-09-19T17:27:06.470Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" in"}
+{"seq":935,"at":"2026-09-19T17:27:06.509Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":936,"at":"2026-09-19T17:27:06.509Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cillum"}
+{"seq":937,"at":"2026-09-19T17:27:06.547Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":938,"at":"2026-09-19T17:27:06.549Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"i"}
+{"seq":939,"at":"2026-09-19T17:27:06.549Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":940,"at":"2026-09-19T17:27:06.550Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":941,"at":"2026-09-19T17:27:06.588Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":942,"at":"2026-09-19T17:27:06.588Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":943,"at":"2026-09-19T17:27:06.588Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":944,"at":"2026-09-19T17:27:06.628Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" dolor"}
+{"seq":945,"at":"2026-09-19T17:27:06.667Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":946,"at":"2026-09-19T17:27:15.856Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":947,"at":"2026-09-19T17:27:15.857Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 labore culpa dolor labore quis nostrud sint tempor dolor dolore amet laboris aliqua elit culpa laborum fugiat et commodo culpa nulla culpa tempor mollit"}
+{"seq":948,"at":"2026-09-19T17:27:16.519Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":949,"at":"2026-09-19T17:27:16.553Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore culpa dolor labore quis nostrud sint tempor dolor dolore amet laboris aliqua elit culpa laborum fugiat et commodo culpa nulla culpa tempor mollit"}
+{"seq":950,"at":"2026-09-19T17:27:21.006Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore culpa dolor labore quis nostrud sint tempor dolor dolore amet laboris aliqua elit culpa laborum fugiat et commodo culpa nulla culpa tempor mollit"}
+{"seq":951,"at":"2026-09-19T17:27:31.803Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 labore culpa dolor labore quis nostrud sint tempor dolor dolore amet laboris aliqua elit culpa laborum fugiat et commodo culpa nulla culpa tempor mollit"}
+{"seq":952,"at":"2026-09-19T17:27:39.331Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 labore culpa dolor labore quis nostrud sint tempor dolor dolore amet laboris aliqua elit culpa laborum fugiat et commodo culpa nulla culpa tempor mollit"}
+{"seq":953,"at":"2026-09-19T17:27:43.508Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 est labore consequat cillum pariatur cillum labore veniam sunt voluptate minim est sit ullamco ea quis amet esse quis laborum qui irure magna adipiscing"}
+{"seq":954,"at":"2026-09-19T17:27:43.711Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":955,"at":"2026-09-19T17:27:43.727Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":956,"at":"2026-09-19T17:27:43.832Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":957,"at":"2026-09-19T17:27:43.840Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 est labore consequat cillum pariatur cillum labore veniam sunt voluptate minim est sit ullamco ea quis amet esse quis laborum qui irure magna adipiscing"}
+{"seq":958,"at":"2026-09-19T17:27:43.854Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":959,"at":"2026-09-19T17:27:44.649Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 est labore consequat cillum pariatur cillum labore veniam sunt voluptate minim est sit ullamco ea quis amet esse quis laborum qui irure magna adipiscing"}
+{"seq":960,"at":"2026-09-19T17:27:44.657Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 est labore consequat cillum pariatur cillum labore veniam sunt voluptate minim est sit ullamco ea quis amet esse quis laborum qui irure magna adipiscing"}
+{"seq":961,"at":"2026-09-19T17:28:05.649Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 dolor mollit officia aute id sit dolore laboris in est lorem sed pariatur ea minim anim quis ea incididunt duis ipsum ea aliquip laboris labore occaecat"}
+{"seq":962,"at":"2026-09-19T17:28:05.808Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":963,"at":"2026-09-19T17:28:05.813Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 dolor mollit officia aute id sit dolore laboris in est lorem sed pariatur ea minim anim quis ea incididunt duis ipsum ea aliquip laboris labore occaecat"}
+{"seq":964,"at":"2026-09-19T17:28:06.603Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 dolor mollit officia aute id sit dolore laboris in est lorem sed pariatur ea minim anim quis ea incididunt duis ipsum ea aliquip laboris labore occaecat"}
+{"seq":965,"at":"2026-09-19T17:28:14.738Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 dolor mollit officia aute id sit dolore laboris in est lorem sed pariatur ea minim anim quis ea incididunt duis ipsum ea aliquip laboris labore occaecat"}
+{"seq":966,"at":"2026-09-19T17:28:14.741Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 dolor mollit officia aute id sit dolore laboris in est lorem sed pariatur ea minim anim quis ea incididunt duis ipsum ea aliquip laboris labore occaecat"}
+{"seq":967,"at":"2026-09-19T17:28:42.628Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 magna non culpa irure dolore esse cupidatat consequat do qui elit aliqua magna eiusmod quis aliquip nisi pariatur mollit excepteur reprehenderit laboris"}
+{"seq":968,"at":"2026-09-19T17:28:42.832Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":969,"at":"2026-09-19T17:28:42.842Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 magna non culpa irure dolore esse cupidatat consequat do qui elit aliqua magna eiusmod quis aliquip nisi pariatur mollit excepteur reprehenderit laboris"}
+{"seq":970,"at":"2026-09-19T17:28:43.810Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 magna non culpa irure dolore esse cupidatat consequat do qui elit aliqua magna eiusmod quis aliquip nisi pariatur mollit excepteur reprehenderit laboris"}
+{"seq":971,"at":"2026-09-19T17:28:52.471Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 magna non culpa irure dolore esse cupidatat consequat do qui elit aliqua magna eiusmod quis aliquip nisi pariatur mollit excepteur reprehenderit laboris"}
+{"seq":972,"at":"2026-09-19T17:28:52.474Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 magna non culpa irure dolore esse cupidatat consequat do qui elit aliqua magna eiusmod quis aliquip nisi pariatur mollit excepteur reprehenderit laboris"}
+{"seq":973,"at":"2026-09-19T17:29:22.535Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"minim"}
+{"seq":974,"at":"2026-09-19T17:29:22.539Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":975,"at":"2026-09-19T17:29:22.543Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laborum"}
+{"seq":976,"at":"2026-09-19T17:29:22.546Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"i"}
+{"seq":977,"at":"2026-09-19T17:29:22.548Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":978,"at":"2026-09-19T17:29:22.553Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":979,"at":"2026-09-19T17:29:22.558Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aliqua"}
+{"seq":980,"at":"2026-09-19T17:29:22.561Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" l"}
+{"seq":981,"at":"2026-09-19T17:29:22.629Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"velit"}
+{"seq":982,"at":"2026-09-19T17:29:22.629Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"velit"}
+{"seq":983,"at":"2026-09-19T17:29:22.633Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"s"}
+{"seq":984,"at":"2026-09-19T17:29:22.635Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" culpa"}
+{"seq":985,"at":"2026-09-19T17:29:22.637Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sed"}
+{"seq":986,"at":"2026-09-19T17:29:22.638Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":987,"at":"2026-09-19T17:29:22.638Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":988,"at":"2026-09-19T17:29:22.716Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":989,"at":"2026-09-19T17:29:22.752Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" m"}
+{"seq":990,"at":"2026-09-19T17:29:22.752Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" enim"}
+{"seq":991,"at":"2026-09-19T17:29:22.752Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" do"}
+{"seq":992,"at":"2026-09-19T17:29:22.752Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" laboris"}
+{"seq":993,"at":"2026-09-19T17:29:22.785Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" officia"}
+{"seq":994,"at":"2026-09-19T17:29:22.786Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" dolore"}
+{"seq":995,"at":"2026-09-19T17:29:22.787Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" qui"}
+{"seq":996,"at":"2026-09-19T17:29:22.802Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":997,"at":"2026-09-19T17:29:22.803Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":998,"at":"2026-09-19T17:29:22.803Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" esse"}
+{"seq":999,"at":"2026-09-19T17:29:22.803Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sit"}
+{"seq":1000,"at":"2026-09-19T17:29:22.842Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":1001,"at":"2026-09-19T17:29:22.888Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":1002,"at":"2026-09-19T17:29:22.943Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" fugiat"}
+{"seq":1003,"at":"2026-09-19T17:29:22.943Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":1004,"at":"2026-09-19T17:29:33.546Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":1005,"at":"2026-09-19T17:29:33.549Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"# sample command for verify-1 sint consequat nisi amet elit veniam reprehenderit tempor cillum ad magna culpa sint exercitation enim ut lorem irure enim proident culpa exercitation"}
+{"seq":1006,"at":"2026-09-19T17:29:33.799Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1007,"at":"2026-09-19T17:29:33.816Z","source":"stdout","providerType":"tool_call","kind":"grep","status":"pending","summary":"amet"}
+{"seq":1008,"at":"2026-09-19T17:29:34.198Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1009,"at":"2026-09-19T17:29:34.476Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"consequat"}
+{"seq":1010,"at":"2026-09-19T17:29:34.786Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1011,"at":"2026-09-19T17:29:34.855Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sint consequat nisi amet elit veniam reprehenderit tempor cillum ad magna culpa sint exercitation enim ut lorem irure enim proident culpa exercitation"}
+{"seq":1012,"at":"2026-09-19T17:29:34.895Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1013,"at":"2026-09-19T17:29:35.185Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1014,"at":"2026-09-19T17:29:38.512Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sint consequat nisi amet elit veniam reprehenderit tempor cillum ad magna culpa sint exercitation enim ut lorem irure enim proident culpa exercitation"}
+{"seq":1015,"at":"2026-09-19T17:29:38.600Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"# sample command for verify-1 sint consequat nisi amet elit veniam reprehenderit tempor cillum ad magna culpa sint exercitation enim ut lorem irure enim proident culpa exercitation"}
+{"seq":1016,"at":"2026-09-19T17:29:38.702Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"# sample command for verify-1 sint consequat nisi amet elit veniam reprehenderit tempor cillum ad magna culpa sint exercitation enim ut lorem irure enim proident culpa exercitation"}
+{"seq":1017,"at":"2026-09-19T17:30:01.231Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1018,"at":"2026-09-19T17:30:01.440Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1019,"at":"2026-09-19T17:30:01.449Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1020,"at":"2026-09-19T17:30:16.570Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1021,"at":"2026-09-19T17:30:25.840Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":1022,"at":"2026-09-19T17:30:26.102Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1023,"at":"2026-09-19T17:31:05.423Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1024,"at":"2026-09-19T17:31:05.512Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1025,"at":"2026-09-19T17:31:05.704Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 anim anim ex est laboris nostrud magna laboris consectetur aliqua proident fugiat cillum aliqua consequat dolore et dolore aute nostrud dolor incididunt"}
+{"seq":1026,"at":"2026-09-19T17:31:05.864Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1027,"at":"2026-09-19T17:32:00.223Z","source":"stdout","providerType":"tool_call","kind":"read_file","status":"pending","summary":"excepteur"}
+{"seq":1028,"at":"2026-09-19T17:32:00.538Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1029,"at":"2026-09-19T17:32:00.785Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1030,"at":"2026-09-19T17:32:01.852Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1031,"at":"2026-09-19T17:32:01.866Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1032,"at":"2026-09-19T17:32:02.083Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1033,"at":"2026-09-19T17:32:12.619Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1034,"at":"2026-09-19T17:32:14.813Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1035,"at":"2026-09-19T17:32:17.100Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1036,"at":"2026-09-19T17:32:17.332Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1037,"at":"2026-09-19T17:32:17.511Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1038,"at":"2026-09-19T17:32:17.768Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 nostrud amet duis reprehenderit quis do mollit culpa velit do adipiscing occaecat consequat consequat dolore dolore laboris aliquip pariatur consectetur"}
+{"seq":1039,"at":"2026-09-19T17:32:25.438Z","source":"stdout","providerType":"tool_call","kind":"get_command_or_subagent_output","status":"pending","summary":"sample command for verify-1 ex"}
+{"seq":1040,"at":"2026-09-19T17:32:25.979Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1041,"at":"2026-09-19T17:32:26.094Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1042,"at":"2026-09-19T17:32:54.758Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1043,"at":"2026-09-19T17:32:54.871Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1044,"at":"2026-09-19T17:32:54.876Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1045,"at":"2026-09-19T17:32:55.831Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1046,"at":"2026-09-19T17:32:56.212Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1047,"at":"2026-09-19T17:32:56.682Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1048,"at":"2026-09-19T17:32:56.691Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 tempor pariatur ut quis excepteur quis tempor sunt ea adipiscing velit tempor duis dolor fugiat ullamco cupidatat nostrud aliqua enim ut ea exercitation"}
+{"seq":1049,"at":"2026-09-19T17:33:26.219Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 ea do veniam cupidatat incididunt ut nisi deserunt elit exercitation lorem cillum tempor officia in officia adipiscing do est esse id commodo adipiscing"}
+{"seq":1050,"at":"2026-09-19T17:33:26.693Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1051,"at":"2026-09-19T17:33:26.708Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ea do veniam cupidatat incididunt ut nisi deserunt elit exercitation lorem cillum tempor officia in officia adipiscing do est esse id commodo adipiscing"}
+{"seq":1052,"at":"2026-09-19T17:33:33.161Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ea do veniam cupidatat incididunt ut nisi deserunt elit exercitation lorem cillum tempor officia in officia adipiscing do est esse id commodo adipiscing"}
+{"seq":1053,"at":"2026-09-19T17:33:33.286Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 ea do veniam cupidatat incididunt ut nisi deserunt elit exercitation lorem cillum tempor officia in officia adipiscing do est esse id commodo adipiscing"}
+{"seq":1054,"at":"2026-09-19T17:33:45.387Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"s"}
+{"seq":1055,"at":"2026-09-19T17:33:45.387Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sunt"}
+{"seq":1056,"at":"2026-09-19T17:33:45.422Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" tempor"}
+{"seq":1057,"at":"2026-09-19T17:33:45.427Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consectetur"}
+{"seq":1058,"at":"2026-09-19T17:33:45.471Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" pariatur"}
+{"seq":1059,"at":"2026-09-19T17:33:45.471Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":1060,"at":"2026-09-19T17:33:45.471Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" sint"}
+{"seq":1061,"at":"2026-09-19T17:33:45.513Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" aute"}
+{"seq":1062,"at":"2026-09-19T17:33:45.514Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" velit"}
+{"seq":1063,"at":"2026-09-19T17:33:45.514Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" non"}
+{"seq":1064,"at":"2026-09-19T17:33:45.514Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":1065,"at":"2026-09-19T17:33:45.553Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":1066,"at":"2026-09-19T17:33:45.553Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" est"}
+{"seq":1067,"at":"2026-09-19T17:33:45.554Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" proident"}
+{"seq":1068,"at":"2026-09-19T17:33:45.595Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" ut"}
+{"seq":1069,"at":"2026-09-19T17:33:45.595Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":1070,"at":"2026-09-19T17:34:48.923Z","source":"stdout","providerType":"text","kind":"response","status":"completed","summary":null}
+{"seq":1071,"at":"2026-09-19T17:34:48.924Z","source":"stdout","providerType":"tool_call","kind":"write","status":"pending","summary":"sample command for verify-1 eiusmod ullamco id labore sunt id amet adipiscing"}
+{"seq":1072,"at":"2026-09-19T17:34:48.986Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1073,"at":"2026-09-19T17:34:49.001Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":null}
+{"seq":1074,"at":"2026-09-19T17:34:53.909Z","source":"stdout","providerType":"tool_call","kind":"run_terminal_command","status":"pending","summary":"sample command for verify-1 ullamco sit adipiscing proident aliqua officia voluptate incididunt reprehenderit cillum deserunt sed id minim ipsum do quis enim reprehenderit pariatur"}
+{"seq":1075,"at":"2026-09-19T17:34:54.036Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"observed","summary":null}
+{"seq":1076,"at":"2026-09-19T17:34:54.042Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ullamco sit adipiscing proident aliqua officia voluptate incididunt reprehenderit cillum deserunt sed id minim ipsum do quis enim reprehenderit pariatur"}
+{"seq":1077,"at":"2026-09-19T17:34:54.629Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"in_progress","summary":"sample command for verify-1 ullamco sit adipiscing proident aliqua officia voluptate incididunt reprehenderit cillum deserunt sed id minim ipsum do quis enim reprehenderit pariatur"}
+{"seq":1078,"at":"2026-09-19T17:34:54.635Z","source":"stdout","providerType":"tool_call_update","kind":"agent","status":"completed","summary":"sample command for verify-1 ullamco sit adipiscing proident aliqua officia voluptate incididunt reprehenderit cillum deserunt sed id minim ipsum do quis enim reprehenderit pariatur"}
+{"seq":1079,"at":"2026-09-19T17:35:02.603Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"officia"}
+{"seq":1080,"at":"2026-09-19T17:35:02.604Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" occaecat"}
+{"seq":1081,"at":"2026-09-19T17:35:02.604Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" consequat"}
+{"seq":1082,"at":"2026-09-19T17:35:02.604Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":" cupidatat"}
+{"seq":1083,"at":"2026-09-19T17:35:02.605Z","source":"stdout","providerType":"text","kind":"response","status":"streaming","summary":"."}
+{"seq":1084,"at":"2026-09-19T17:35:06.409Z","source":"event-stream","providerType":"text","kind":"response","status":"completed","summary":null}

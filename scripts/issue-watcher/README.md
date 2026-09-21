@@ -1,6 +1,6 @@
 # issue-watcher
 
-A launchd agent that watches `cowcow02/bullswarm` for new GitHub issues,
+A launchd agent that watches `Bulls-Work/bullswarm` for new GitHub issues,
 triages each one through a bullswarm delegate, and — for a clear, fixable bug
 — makes exactly one fix attempt that ends in a pull request. A maintainer
 merges. The watcher never does.
@@ -150,7 +150,7 @@ All by environment; the plist carries `PATH`, `HOME` and
 | variable | default |
 | --- | --- |
 | `BULLSWARM_ISSUE_WATCHER_DIR` | `~/.bullswarm/issue-watcher` |
-| `BULLSWARM_ISSUE_WATCHER_REPO` | `cowcow02/bullswarm` (else `state.json`) |
+| `BULLSWARM_ISSUE_WATCHER_REPO` | `Bulls-Work/bullswarm` (else `state.json`) |
 | `BULLSWARM_ISSUE_WATCHER_GH` | `gh` |
 | `BULLSWARM_ISSUE_WATCHER_BULLSWARM` | `bullswarm` |
 | `BULLSWARM_ISSUE_WATCHER_TEST_COMMAND` | `npm test` |
@@ -164,7 +164,7 @@ All by environment; the plist carries `PATH`, `HOME` and
 ```json
 {
   "version": 1,
-  "repo": "cowcow02/bullswarm",
+  "repo": "Bulls-Work/bullswarm",
   "installedAt": "2026-09-10T04:12:00.000Z",
   "lastPassAt": "2026-09-10T09:35:02.114Z",
   "seen": {
@@ -176,7 +176,7 @@ All by environment; the plist carries `PATH`, `HOME` and
       "fixAttempts": 1,
       "pool": "codex",
       "model": "gpt-5.4",
-      "prUrl": "https://github.com/cowcow02/bullswarm/pull/43"
+      "prUrl": "https://github.com/Bulls-Work/bullswarm/pull/43"
     }
   },
   "counters": { "2026-09-10": { "triages": 3, "fixes": 1 } }

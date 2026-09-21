@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  buildOpenRouterDatapack, loadOpenRouterCatalog, openRouterMetadata, openRouterModelKey,
+  buildOpenRouterDatapack, loadOpenRouterCatalog, OPENROUTER_DATAPACK_URL, openRouterMetadata, openRouterModelKey,
   validateOpenRouterDatapack,
 } from '../src/lib/openrouter-models.js';
 
@@ -161,7 +161,7 @@ test('there is no bundled last-resort tier: a cold home with no network misses h
     assert.equal(offline.cache, 'miss');
     assert.equal(offline.error, 'offline');
     assert.deepEqual(offline.models, {});
-    assert.equal(offline.source, 'https://github.com/cowcow02/bullswarm/releases/download/benchmark-data-latest/openrouter-benchmarks.json');
+    assert.equal(offline.source, OPENROUTER_DATAPACK_URL);
 
     // Same with no fetch implementation available at all.
     const noFetch = await loadOpenRouterCatalog({

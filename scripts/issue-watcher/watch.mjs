@@ -68,7 +68,7 @@ export function loadConfig(env = process.env) {
     // An empty GH config dir handed to every delegate (W3).
     ghEmptyDir: join(dir, 'gh-empty'),
     repo: env.BULLSWARM_ISSUE_WATCHER_REPO || null, // null -> state.json -> default
-    defaultRepo: 'cowcow02/bullswarm',
+    defaultRepo: 'Bulls-Work/bullswarm',
     gh: env.BULLSWARM_ISSUE_WATCHER_GH || 'gh',
     bullswarm: env.BULLSWARM_ISSUE_WATCHER_BULLSWARM || 'bullswarm',
     testCommand: env.BULLSWARM_ISSUE_WATCHER_TEST_COMMAND || 'npm test',
@@ -812,7 +812,7 @@ const USAGE = `Usage: node watch.mjs [--once] [--dry-run] [--status]
 
 Environment:
   BULLSWARM_ISSUE_WATCHER_DIR                 state/clone/log root (default ~/.bullswarm/issue-watcher)
-  BULLSWARM_ISSUE_WATCHER_REPO                owner/name (default cowcow02/bullswarm, else state.json)
+  BULLSWARM_ISSUE_WATCHER_REPO                owner/name (default Bulls-Work/bullswarm, else state.json)
   BULLSWARM_ISSUE_WATCHER_GH                  gh binary (default gh)
   BULLSWARM_ISSUE_WATCHER_BULLSWARM           bullswarm binary (default bullswarm)
   BULLSWARM_ISSUE_WATCHER_TEST_COMMAND        fix verification command (default npm test)

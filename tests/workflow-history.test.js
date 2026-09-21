@@ -288,7 +288,7 @@ function everyWorkflowHome() {
   // 2. Finished run the index does not carry: it must still be on the timeline,
   //    with the cost its own attempts recorded.
   runDir(h.dir, {
-    runId: 'wf-unindexed-000001', project: 'project-a',
+    runId: 'wf-unindexed-000001', project: 'bulldemo',
     state: v2State({
       runId: 'wf-unindexed-000001', shortId: 'unindx', goal: 'finished, not yet indexed',
       status: 'completed', startedAt: localNoon(2026, 9, 16, 11), finishedAt: localNoon(2026, 9, 16, 11, 30),
@@ -416,7 +416,7 @@ test('H6: the timeline holds every workflow — indexed, un-indexed, partial, le
     // measured the same way reindex would have measured it.
     const unindexed = rows.find((row) => row.runId === 'wf-unindexed-000001');
     assert.equal(unindexed.status, 'completed');
-    assert.equal(unindexed.project, 'project-a', 'the project the run recorded at goal time');
+    assert.equal(unindexed.project, 'bulldemo', 'the project the run recorded at goal time');
     assert.equal(unindexed.unfinished, undefined);
     assert.equal(unindexed.pools.codex.costUsd, 0.05);
     assert.equal(unindexed.minutes.wall, 30);

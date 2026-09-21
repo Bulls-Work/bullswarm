@@ -55,8 +55,8 @@ test('detectInstall: checkout beats global; posix and windows global layouts yie
   });
   assert.deepEqual(detectInstall({ packageRoot: '/nvm/versions/node/v22.0.0/lib/node_modules/bullswarm', exists: () => false }).prefix,
     '/nvm/versions/node/v22.0.0');
-  assert.deepEqual(detectInstall({ packageRoot: 'C:/Users/u/AppData/Roaming/npm/node_modules/bullswarm', exists: () => false }), {
-    kind: 'global', root: 'C:/Users/u/AppData/Roaming/npm/node_modules/bullswarm', prefix: 'C:/Users/u/AppData/Roaming/npm',
+  assert.deepEqual(detectInstall({ packageRoot: 'C:/Profiles/u/AppData/Roaming/npm/node_modules/bullswarm', exists: () => false }), {
+    kind: 'global', root: 'C:/Profiles/u/AppData/Roaming/npm/node_modules/bullswarm', prefix: 'C:/Profiles/u/AppData/Roaming/npm',
   });
   assert.equal(detectInstall({ packageRoot: '/opt/somewhere/bullswarm', exists: () => false }).kind, 'unknown');
 });
@@ -90,12 +90,12 @@ test('detectInstall: a pnpm global store is its own shape, and a pnpm project de
   // npm case above is: node:path only splits backslashes when running ON
   // Windows, so a backslash fixture would assert posix behaviour, not win32.
   assert.deepEqual(detectInstall({
-    packageRoot: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    packageRoot: 'C:/Profiles/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
     exists: () => false,
   }), {
     kind: 'pnpm-global',
-    root: 'C:/Users/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
-    prefix: 'C:/Users/u/AppData/Local/pnpm/global/5',
+    root: 'C:/Profiles/u/AppData/Local/pnpm/global/5/.pnpm/bullswarm@0.30.0/node_modules/bullswarm',
+    prefix: 'C:/Profiles/u/AppData/Local/pnpm/global/5',
   });
 });
 

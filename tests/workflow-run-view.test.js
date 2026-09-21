@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   actionNamedIn,
   flatTimelineLines,
@@ -24,6 +25,7 @@ import { historicalProjection } from '../scripts/render-tidy-0.35.1-frames.mjs';
 import { seriesColor } from '../src/workflow/dash-kit.js';
 import { METER_COLORS } from '../src/workflow/usage-view.js';
 import { readEvents } from '../src/workflow/events.js';
+import { readdirSync } from 'node:fs';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
 
@@ -40,14 +42,14 @@ const rgb = (hex) => {
 // Timestamps render in the local zone, so only their shape is asserted.
 const normalizeRow = (line) => visible(line).replace(/^\s*\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
 
-// Two real runs from the read-only snapshot the design frames use:
+// Real runs from the scrubbed in-repo home the design frames use:
 //   g6d6q2 — the 14-action contract stream: 12 phases, five `accept` attempts
 //            across two days, and a ten-hour idle gap between revisions.
 //   euqrni — finished sequential run of the same shape as 8zgqei's tidy-fixes
 //            tree (one attempt per phase, started / attempt / completed).
 //            8zgqei itself is the live tidy-up workflow, not in this snapshot.
 //   va7k9a — the real Step-page run: six phases, eight steps.
-const realHome = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351/workflows';
+const realHome = fileURLToPath(new URL('./fixtures/home-351/workflows/', import.meta.url));
 const realRuns = {
   g6d6q2: join(realHome, 'wf-mu6mv62z-cdcd5d'),
   euqrni: join(realHome, 'wf-mu8thu2e-27c504'),
@@ -249,7 +251,7 @@ test('Run view paints numbered phase boxes and v2 attempt routing metadata', () 
   assert.doesNotMatch(text, /phase active|├─ started|└─✓ completed/);
 });
 
-test('the real g6d6q2 and euqrni runs stay inside 55, 120 and 200 columns', { skip: !existsSync(join(realRuns.g6d6q2, 'state.json')) || !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
+test('the real g6d6q2 and euqrni runs stay inside 55, 120 and 200 columns', () => {
   const measured = {};
   for (const [name, runDir] of Object.entries(realRuns)) {
     const row = realRow(runDir);
@@ -284,7 +286,7 @@ test('the real g6d6q2 and euqrni runs stay inside 55, 120 and 200 columns', { sk
   assert.ok(measured['euqrni@200'] > 120 && measured['euqrni@200'] <= 200);
 });
 
-test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per attempt', { skip: !existsSync(join(realRuns.g6d6q2, 'state.json')) }, () => {
+test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per attempt', () => {
   const row = realRow(realRuns.g6d6q2);
   const panel = workflowPanelModel(row);
   const timeline = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW });
@@ -324,12 +326,13 @@ test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per a
 
   // The phase rule carries the tally/duration; filler started/completed rows
   // and the old phase-active rows must not return.
-  assert.ok(lines.some((line) => line.match(/^↑ phases 3–\d+ ·/)));
+  assert.ok(lines.includes('phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand'), lines.filter((line) => line.startsWith('phases')).join('\n'));
+  assert.ok(lines.every((line) => !line.includes('↑')), 'the fold line no longer says ↑ (which suggests scrolling)');
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
   assert.deepEqual(lines.filter((line) => line.includes('phase active')), []);
 });
 
-test('the real euqrni run draws one v2 phase rule per sequential phase', { skip: !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
+test('the real euqrni run draws one v2 phase rule per sequential phase', () => {
   const row = realRow(realRuns.euqrni);
   const panel = workflowPanelModel(row);
   const timeline = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW });
@@ -349,7 +352,7 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', { skip:
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
 });
 
-test('waiting phase rules dim every clock and duration placeholder', { skip: !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
+test('waiting phase rules dim every clock and duration placeholder', () => {
   const source = realRow(realRuns.euqrni);
   const projected = historicalProjection(source, 'integrate', 1, 'running');
   const panel = workflowPanelModel(projected.row);
@@ -432,7 +435,7 @@ test('the spend block draws the record\u2019s columns, and the 55-column form st
   assert.equal(visible(realLines[2]).indexOf('0 attempts'), 30);
 });
 
-test('the phone plan strip counts real phases, not their steps', { skip: !existsSync(join(realRuns.va7k9a, 'state.json')) }, () => {
+test('the phone plan strip counts real phases, not their steps', () => {
   const row = realRow(realRuns.va7k9a);
   assert.equal(row.state.presentation.stages.length, 6);
   assert.equal(row.state.actions.length, 8);
@@ -464,4 +467,125 @@ test('plan boxes are numbered, chained with arrows, and never leave a trailing a
   const numbers = wrapped.join(' ').match(/\[[✓▶○✗] (\d+) /g).map((match) => Number(match.replace(/\D+/g, '')));
   assert.deepEqual(numbers, Array.from({ length: numbers.length }, (_, index) => index + 1));
   assert.ok(!wrapped.join(' ').includes('. '), wrapped.join('\n'));
+});
+
+// Run g6d6q2 folded to a line: phases 3–9 are behind it, and the line says how
+// to get them back. The same page with the fold open prints them in place.
+function foldPage(row, width, foldOpen) {
+  const body = bodyBuilder();
+  runPage({ row, assignments: [], pools: [] }, {
+    width, bodyHeight: 200, narrow: width < 100, nowMs: NOW, spinnerFrame: 0, focus: 0, foldOpen,
+  }, body);
+  return body;
+}
+
+test('the fold line reads `click to expand`, is one click region over its text, and the open fold ends with `click to fold`', () => {
+  const row = realRow(realRuns.g6d6q2);
+  for (const width of [55, 200]) {
+    const shut = foldPage(row, width, false);
+    const shutRows = shut.lines.map(visible);
+    const at = shutRows.findIndex((line) => line.startsWith('phases 3–9'));
+    assert.equal(shutRows[at].trimEnd(), 'phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand', `${width}`);
+    assert.ok(shut.lines[at].startsWith('\x1b[2m'), `${width}: the fold line is dim, like the other hints`);
+    const region = shut.regions.find((entry) => entry.y === at + 1);
+    assert.deepEqual(region?.action?.kind, 'fold', `${width}: the fold line is a click region`);
+    // Hover lights the text, not the row: the region is exactly the words.
+    assert.equal(region.x1, 1);
+    assert.equal(region.x2, shutRows[at].trimEnd().length);
+    assert.ok(!shutRows.some((line) => line.includes('click to fold')));
+    assert.ok(!shutRows.some((line) => line.includes('3 · wire')));
+
+    const open = foldPage(row, width, true);
+    const openRows = open.lines.map(visible);
+    assert.ok(!openRows.some((line) => line.includes('click to expand')), `${width}: nothing left to expand`);
+    const closing = openRows.findIndex((line) => line.trimEnd() === 'click to fold');
+    assert.ok(closing > 0 && openRows.filter((line) => line.includes('click to fold')).length === 1, `${width}: exactly one closing line`);
+    assert.equal(open.regions.find((entry) => entry.y === closing + 1)?.action.kind, 'fold');
+    assert.ok(open.lines[closing].startsWith('\x1b[2m'), `${width}: the closing line is dim`);
+
+    // The block it closes is phases 3–9, printed the way every other phase is:
+    // one rule per phase and one row per attempt, each attempt naming its step.
+    const first = openRows.findIndex((line) => /^── ✓ 3 · wire/.test(line));
+    assert.ok(first >= 0 && first < closing);
+    const block = openRows.slice(first, closing);
+    const rules = block.filter((line) => line.startsWith('── '));
+    assert.deepEqual(rules.map((line) => line.match(/^── \S+ (\d+)/)[1]), ['3', '4', '5', '6', '7', '8', '9']);
+    if (width >= 100) for (const rule of rules) assert.match(rule, /\d{2}:\d{2} → \d{2}:\d{2} · \S+ · \d+\/\d+$/);
+    const attempts = row.state.attempts.filter((attempt) => ['wire', 'e2e', 'fix-browser', 'integrate', 'fix-clock', 'fix-drag', 'ship-drag'].includes(attempt.actionId));
+    assert.equal(block.filter((line) => /^ \d{2}:\d{2}  [✓✗▶] /.test(line)).length, attempts.length, `${width}: one row per attempt`);
+    assert.equal(openRows.length - closing - 1 > 0, true, 'the phases after the block still follow it');
+    for (const line of [...shutRows, ...openRows]) assert.ok([...line].length <= width, `${width}: fits its width: ${line}`);
+  }
+});
+
+test('the fold opens and closes on a running run too, at 55 and 200', () => {
+  const state = structuredClone(realRow(realRuns.g6d6q2).state);
+  // accept's last attempt is still in flight: phase 12 is the running anchor.
+  const last = state.attempts.filter((attempt) => attempt.actionId === 'accept').at(-1);
+  Object.assign(last, { status: 'running', finishedAt: null });
+  const action = state.actions.find((entry) => entry.id === 'accept');
+  Object.assign(action, { status: 'running', finishedAt: null });
+  state.lifecycle = { ...state.lifecycle, status: 'running', finishedAt: null };
+  const row = { ...realRow(realRuns.g6d6q2), state, status: 'running', liveness: { alive: true } };
+  for (const width of [55, 200]) {
+    const shutRows = foldPage(row, width, false).lines.map(visible);
+    const fold = shutRows.find((line) => line.startsWith('phases 3–10'));
+    assert.match(fold ?? '', /^phases 3–10 · \d+ steps · \S+ · (all ✓|\d+ ✗) · click to expand/, `${width}: ${shutRows.filter((line) => line.startsWith('phases')).join('|')}`);
+    assert.ok(shutRows.some((line) => /running/.test(line) && line.includes('accept')), `${width}: the running step stays visible`);
+    const open = foldPage(row, width, true);
+    const openRows = open.lines.map(visible);
+    assert.ok(openRows.some((line) => line.includes('10 · fix-height')));
+    assert.equal(openRows.filter((line) => line.trimEnd() === 'click to fold').length, 1);
+    assert.ok(openRows.some((line) => line.includes('accept') && /running/.test(line)));
+  }
+});
+
+test('a phase rule starts where its first attempt row starts and ends where its last attempt ends', () => {
+  const hhmm = (iso) => {
+    const at = new Date(iso);
+    return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  };
+  let checked = 0;
+  for (const name of readdirSync(realHome)) {
+    const runDir = join(realHome, name);
+    const row = realRow(runDir);
+    const panel = workflowPanelModel(row);
+    // Open, so every phase of the run is a rule with its rows under it.
+    const lines = workflowTimelineLines(panel, 200, 0, { goalPreview: false, nowMs: NOW, foldOpen: true }).lines;
+    lines.forEach((line, index) => {
+      if (!line?.header || !line.phase) return;
+      const rule = visible(line.text);
+      const times = rule.match(/(\d{2}:\d{2}) → (\d{2}:\d{2}|now)/);
+      const rows = [];
+      for (let next = index + 1; next < lines.length && !lines[next]?.header; next += 1) {
+        if (lines[next]?.attempt) rows.push(lines[next].attempt);
+      }
+      if (!rows.length) return;
+      const starts = rows.map((attempt) => attempt.startedAt).filter(Boolean).sort();
+      const ends = rows.map((attempt) => attempt.finishedAt).filter(Boolean).sort();
+      assert.equal(times[1], hhmm(starts[0]), `${row.shortId} phase ${line.phase.index + 1}: the rule starts at its first attempt\n${rule}`);
+      if (line.phase.status !== 'active' && ends.length === rows.length) {
+        assert.equal(times[2], hhmm(ends.at(-1)), `${row.shortId} phase ${line.phase.index + 1}: the rule ends at its last attempt\n${rule}`);
+      }
+      checked += 1;
+    });
+  }
+  assert.ok(checked > 50, `checked ${checked} phase rules across the fixture`);
+
+  // u9d48s phase 5: the stage was stamped at 06:28:52Z, its first attempt
+  // started at 06:25:24Z — the rule used to open three minutes after its rows.
+  const u9 = realRow(join(realHome, 'wf-mu6h8obw-baa03e'));
+  const fifth = workflowPanelModel(u9);
+  const rule = workflowTimelineLines(fifth, 200, 0, { goalPreview: false, nowMs: NOW, foldOpen: true }).lines
+    .find((line) => line?.phase?.index === 4);
+  assert.match(visible(rule.text), new RegExp(`${hhmm('2026-09-18T06:25:24.692Z')} → ${hhmm('2026-09-18T06:59:54.155Z')}`));
+});
+
+test('a narrow page gives up the fold line\'s counts before its `click to expand` hint', () => {
+  const panel = workflowPanelModel(realRow(realRuns.g6d6q2));
+  const fold = (width) => visible(workflowTimelineLines(panel, width, 0, { goalPreview: false, nowMs: NOW }).lines
+    .find((line) => line?.folded).text);
+  assert.equal(fold(55), 'phases 3–9 · 7 steps · 2h39m · 1 ✗ · click to expand');
+  assert.equal(fold(45), 'phases 3–9 · 2h39m · 1 ✗ · click to expand');
+  assert.equal(fold(40), 'phases 3–9 · 1 ✗ · click to expand');
 });

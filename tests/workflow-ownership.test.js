@@ -60,7 +60,7 @@ test('real filenames may contain glob metacharacters; author-supplied globs stil
   // repository names dynamic routes app/[space]/page.tsx, so capturing its
   // manifest threw and the kernel died on the first dispatch with
   // "workspace file must name one exact file, not a directory or glob".
-  // Observed live: project-b has 64 such files and every workflow run there died.
+  // Observed live: one private project has 64 such files and every workflow run there died.
   const nextish = {
     'src/app/(app)/[space]/[...path]/page.tsx': 'a',
     'src/app/api/[[...route]]/route.ts': 'b',

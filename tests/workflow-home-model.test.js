@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   measuredTaskMinutes,
   cardDurationText,
@@ -31,10 +31,10 @@ delete process.env.BULLSWARM_ASCII;
 
 const NOW = new Date(2026, 8, 20, 12, 0, 0, 0).getTime();
 const TODAY = new Date(NOW).toISOString();
-// The supplied read-only capture of a real home. The top-run cards read a
+// The scrubbed in-repo capture of a real home (scripts/build-test-home.mjs). The top-run cards read a
 // run's state from under BULLSWARM_HOME, so the file points the model at this
 // snapshot: no test here may probe the live home.
-const SNAPSHOT = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
+const SNAPSHOT = fileURLToPath(new URL('./fixtures/home-351/', import.meta.url));
 process.env.BULLSWARM_HOME = SNAPSHOT;
 
 test('Home model keeps task identity, dates, durations and nullable figures honest', () => {
@@ -197,9 +197,7 @@ test('Home model orders active runs before newest finished and never promotes wa
   assert.deepEqual(runStepCounts({ steps: { done: 3, total: 4 }, requirements: { passed: 1, total: 7 } }), { done: 3, total: 4 });
 });
 
-test('Home model answers a pre-0.35.1 rollup row with the Run page\'s own figures', {
-  skip: !existsSync(join(SNAPSHOT, 'workflows', 'wf-mu6mv62z-cdcd5d', 'state.json')),
-}, () => {
+test('Home model answers a pre-0.35.1 rollup row with the Run page\'s own figures', () => {
   // g6d6q2's index row is the owner's defect: the run finished before the
   // rollup carried `minutes.active` and `steps`, so the card printed
   // `active — · steps —` beside a Run header that had both.

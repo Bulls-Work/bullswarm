@@ -22,7 +22,7 @@ const WATCH = join(REPO_ROOT, 'scripts', 'issue-watcher', 'watch.mjs');
 const INSTALL = join(REPO_ROOT, 'scripts', 'issue-watcher', 'install.mjs');
 const RS = '\u001e'; // argv separator inside the shim call logs
 const F = '```';
-const REPO = 'cowcow02/bullswarm';
+const REPO = 'Bulls-Work/bullswarm';
 const INSTALLED_AT = '2026-08-01T00:00:00.000Z';
 
 // --- shims -------------------------------------------------------------------
@@ -36,7 +36,7 @@ const GH_SHIM = [
   '  "issue view") cat "$GH_CANNED/issue-$3.json"; exit 0 ;;',
   '  "issue edit") exit 0 ;;',
   '  "issue comment") exit 0 ;;',
-  '  "pr create") echo "https://github.com/cowcow02/bullswarm/pull/99"; exit 0 ;;',
+  '  "pr create") echo "https://github.com/Bulls-Work/bullswarm/pull/99"; exit 0 ;;',
   '  "repo clone")',
   '    git clone -q "$GH_CLONE_SOURCE" "$4" || exit 1',
   '    git -C "$4" config user.email watcher@example.test',
@@ -110,7 +110,7 @@ function issueViewJson(number = 7, title = 'Crash when the config file is empty'
     author: { login: 'reporter' },
     labels: [],
     comments: [{ author: { login: 'helper' }, body: 'Seeing this too on v0.28.1.' }],
-    url: `https://github.com/cowcow02/bullswarm/issues/${number}`,
+    url: `https://github.com/Bulls-Work/bullswarm/issues/${number}`,
   }, null, 2);
 }
 
@@ -161,7 +161,7 @@ function fixture({
   const shims = join(root, 'shims');
   for (const d of [dir, canned, shims]) mkdirSync(d, { recursive: true });
 
-  // A tiny repository with a bare remote, standing in for cowcow02/bullswarm.
+  // A tiny repository with a bare remote, standing in for Bulls-Work/bullswarm.
   const source = join(root, 'source');
   mkdirSync(source);
   git(source, 'init', '-q', '-b', 'main');
@@ -354,7 +354,7 @@ test('the task file carries the issue body as quoted data it cannot break out of
     assert.ok(task.includes('Use **no network**'));
     assert.ok(task.includes('`gh`'));
     assert.ok(task.includes(f.repoDir));
-    assert.ok(task.includes('https://github.com/cowcow02/bullswarm/issues/7'));
+    assert.ok(task.includes('https://github.com/Bulls-Work/bullswarm/issues/7'));
     assert.ok(task.includes('reporter'));
     assert.ok(task.includes('Seeing this too on v0.28.1.'), 'comments are quoted too');
   } finally { f.cleanup(); }
@@ -590,12 +590,12 @@ test('a clear fixable bug gets one build delegation, a verified commit, a push a
     const comments = f.gh().filter((c) => c[0] === 'issue' && c[1] === 'comment');
     assert.equal(comments.length, 2, 'the triage comment and the pull-request comment');
     const note = readFileSync(comments[1][6], 'utf8');
-    assert.ok(note.includes('https://github.com/cowcow02/bullswarm/pull/99'));
+    assert.ok(note.includes('https://github.com/Bulls-Work/bullswarm/pull/99'));
 
     const entry = f.state().seen['7'];
     assert.equal(entry.status, 'fix-open');
     assert.equal(entry.fixAttempts, 1);
-    assert.equal(entry.prUrl, 'https://github.com/cowcow02/bullswarm/pull/99');
+    assert.equal(entry.prUrl, 'https://github.com/Bulls-Work/bullswarm/pull/99');
     assert.equal(f.state().counters[today()].fixes, 1);
 
     // Nothing was merged or closed.
