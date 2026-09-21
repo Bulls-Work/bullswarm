@@ -119,3 +119,25 @@ test('listTasks normalizes the workflow attempt spelling of the out file', () =>
     assert.equal(tasks.finished[0].outFile, '/tmp/out-attempt.md');
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test('listTasks carries task text and attempt pricing from a copied home', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-tasks-copy-'));
+  mkdirSync(join(home, 'assignments'), { recursive: true });
+  mkdirSync(join(home, 'runs'), { recursive: true });
+  try {
+    writeFileSync(join(home, 'runs', 'task-priced.md'), '# Price the task row\n\nDetails.\n');
+    writeFileSync(join(home, 'state.json'), `${JSON.stringify({
+      decisionLog: [{
+        kind: 'run', id: 'priced-1', lane: 'build', pool: 'codex', model: 'gpt-5.6-luna',
+        cwd: '/tmp/example-project', startedAt: '2026-09-18T11:40:00.000Z', endedAt: '2026-09-18T11:41:00.000Z',
+        taskFile: '/another/home/runs/task-priced.md', ok: true,
+        usage: { tokenSource: 'transcript-summed', api: { usd: 1.25 } },
+      }],
+    })}\n`);
+    const [task] = listTasks({ home, now: NOW }).finished;
+    assert.equal(task.taskText, '# Price the task row\n\nDetails.');
+    assert.equal(task.project, 'example-project');
+    assert.equal(task.apiEquivalentUsd, 1.25);
+    assert.equal(task.tokenSource, 'transcript-summed');
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

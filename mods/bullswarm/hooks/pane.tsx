@@ -14,7 +14,7 @@ import type {
 } from '../types'
 import type { OverviewLine } from './overview'
 import { METER_AMBER, METER_GREEN, METER_RED, meterBar, poolRows, severityColor } from './pool-rows'
-import { ageOf } from './runs'
+import { ageOf, standaloneTasks } from './runs'
 import { shapeStep, taskStepPane, type StepMode, type StepPaneRow } from './step'
 
 export type PaneUi = Pick<ElementTable<'terminal' | 'desktop'>, 'Box' | 'Text' | 'Button'>
@@ -22,6 +22,8 @@ export type PaneUi = Pick<ElementTable<'terminal' | 'desktop'>, 'Box' | 'Text' |
 export type PaneModel = {
   runs: readonly BullswarmRun[]
   selected: BullswarmRun | null
+  /** The standalone task explicitly selected, or promoted because no workflow exists. */
+  selectedTask: BullswarmAssignment | null
   overview: readonly OverviewLine[] | null
   detail: BullswarmRunDetail | null
   /** The action the person opened, when one is open. */
@@ -62,6 +64,7 @@ export type PaneScroll = {
 
 export type PaneActions = {
   select: (shortId: string) => void
+  selectTask: (taskId: string) => void
   openAction: (actionId: string) => void
   /** Optional until the host wires the pane's v/Enter controls to state. */
   toggleStep?: () => void
@@ -125,9 +128,6 @@ const assignmentWork = (a: BullswarmAssignment): string => {
   return value ? pathTail(value) : 'task unavailable'
 }
 
-const standaloneTask = (assignments: readonly BullswarmAssignment[]): BullswarmAssignment | null =>
-  assignments.find(a => a.source === 'run') ?? null
-
 /** Greedy word wrap to `width` cells, one string per row; long words are cut. */
 export function wrapText(text: string, width: number): string[] {
   const w = Math.max(8, width)
@@ -177,7 +177,7 @@ export function paneView(
   const run = model.selected
   const rule = '─'.repeat(Math.max(1, Math.min(kit.columns, 120)))
   const nameOf = (pool: string | null) => (pool ? (model.names.get(pool) ?? pool) : '')
-  const looseTask = standaloneTask(model.assignments)
+  const looseTask = model.selectedTask
 
   // Compact: a phone terminal or a short inline pane. One header row, one
   // nav row with [Top] [End] beside it and no [close] (the frame's ✕ does
@@ -192,7 +192,13 @@ export function paneView(
       onPress={() => actions.select(r.shortId)}
     />
   ))
-  const backButton = model.action || model.poolsPage
+  const taskButtons = standaloneTasks(model.assignments).map(task => {
+    const id = task.id!
+    const tail = id.length > 8 ? id.slice(-8) : id
+    const active = looseTask && (looseTask as AssignmentRecord).id === id && !model.poolsPage
+    return <Button key={`task-${id}`} label={`${active ? '● ' : ''}task ${tail}`} onPress={() => actions.selectTask(id)} />
+  })
+  const backButton = model.action || model.poolsPage || looseTask
     ? <Button key="back" hotkey="b" label="back" onPress={actions.back} />
     : null
   const usageButton = (
@@ -203,6 +209,7 @@ export function paneView(
     <Box key="switcher" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
       {backButton}
       {runButtons}
+      {taskButtons}
       {usageButton}
       <Button key="top" plain label="[Top]" onPress={() => actions.scrollTo('start')} />
       <Button key="end" plain label="[End]" onPress={() => actions.scrollTo('end')} />
@@ -211,6 +218,7 @@ export function paneView(
     <Box key="switcher" flexDirection="row" gap={1} flexWrap="nowrap" overflow="hidden">
       {backButton}
       {runButtons}
+      {taskButtons}
       {usageButton}
       {closeButton}
     </Box>
@@ -392,7 +400,6 @@ export function paneView(
           <Button
             key={entry.key}
             plain
-            hotkey={entry.turnIndex === 0 ? 'enter' : undefined}
             label={first ?? entry.text}
             onPress={() => entry.turnIndex === undefined ? undefined : actions.expandStepTurn?.(entry.turnIndex)}
           />,
@@ -411,7 +418,12 @@ export function paneView(
     if (!compact) header.push(nav)
     if (model.error) header.push(plain('err', model.error, 'red'))
     // The hint sits whole above the nav, as the usage page's note does.
-    const hint = wrapText(shaped.runId ? `bullswarm workflow action show ${shaped.runId} ${a.id}` : 'bullswarm run task · read-only Step view', width)
+    const hintText = looseTask
+      ? `bullswarm workflow task show ${(looseTask as AssignmentRecord).id ?? a.id} · read-only Step view`
+      : shaped.runId
+        ? `bullswarm workflow action show ${shaped.runId} ${a.id}`
+        : 'bullswarm run task · read-only Step view'
+    const hint = wrapText(hintText, width)
     const stepModeButton = (
       <Button
         key="step-mode"

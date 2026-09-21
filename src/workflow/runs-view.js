@@ -5,9 +5,9 @@
 // Home supplies the same active-run block through activeRunLines.
 
 import { dayKey } from './history.js';
-import { historyLines } from './history-view.js';
+import { historyLines, runTableLayout, runTableLines } from './history-view.js';
 import { taskIdentity, verifyRoundLabel } from './home-model.js';
-import { activeRunLines } from './home-view.js';
+import { rule } from './dash-kit.js';
 import {
   clamp,
   dimText,
@@ -98,9 +98,15 @@ function listWindow(groups, selected, height, narrow) {
 
 // A selected row may already contain palette SGR resets.  Re-arm reverse
 // video after each reset so the whole row remains visibly inverse, not just
-// its first coloured cell.
+// its first coloured cell.  Reverse video paints a cell's foreground as its
+// background, so a grey cost or clock cell would show as a grey band inside
+// the bar: only the status glyph (the row's first colour) keeps its colour,
+// and dim is dropped.
 function inverseLine(value) {
-  const text = String(value ?? '');
+  let coloured = 0;
+  const text = String(value ?? '')
+    .replace(/\x1b\[(?:2|22)m/g, '')
+    .replace(/\x1b\[(?:38;2;\d+;\d+;\d+|38;5;\d+|3[0-7]|9[0-7])m/g, (code) => (coloured++ === 0 ? code : ''));
   return `\x1b[7m${text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')}\x1b[27m\x1b[0m`;
 }
 
@@ -159,20 +165,26 @@ function runsPage(model, opts, body) {
     if ((row.ongoing || isWaitingWorkflow(row.state)) && !active.some((run) => run.runId === row.runId)) active.push(row);
   }
   const query = String(opts.query ?? '').toLowerCase();
-  const matches = (run) => !query || `${run.runId ?? ''} ${run.shortId ?? ''} ${run.goal ?? workflowRunLabel(run)} ${run.id ?? ''} ${run.taskFile ?? ''} ${run.lane ?? ''} ${run.pool ?? ''} ${run.model ?? ''} ${run.project ?? ''}`.toLowerCase().includes(query);
-  activeRunLines({
-    ...model,
-    runs: active.filter(matches),
-    tasks: { ...(model.tasks ?? {}), inflight: (model.tasks?.inflight ?? []).filter(matches) },
-  }, opts, body, 'active');
-  body.push('');
-  body.anchor = { history: body.lines.length + 1, cursor: null };
+  const matches = (run) => !query || `${run.runId ?? ''} ${run.shortId ?? ''} ${run.goal ?? workflowRunLabel(run)} ${run.id ?? ''} ${run.taskFile ?? ''} ${run.taskText ?? ''} ${run.lane ?? ''} ${run.pool ?? ''} ${run.model ?? ''} ${run.project ?? ''}`.toLowerCase().includes(query);
+  const activeRows = [
+    ...active.filter(matches),
+    ...(model.tasks?.inflight ?? []).filter(matches).map((task) => ({ ...task, kind: 'task', source: 'run' })),
+  ].sort((a, b) => String(b?.startedAt ?? b?.state?.lifecycle?.startedAt ?? '')
+    .localeCompare(String(a?.startedAt ?? a?.state?.lifecycle?.startedAt ?? '')));
   const ids = new Set(active.map((run) => run.runId));
   const days = daysWithTasks(model.days, (model.tasks?.finished ?? []).filter(matches)).map((day) => ({
     ...day,
     rows: (day.rows ?? []).filter((run) => !ids.has(run.runId) && matches(run)),
   }));
-  pushView(body, historyLines(days, { width, ansi: meterAnsi() }));
+  const loadedRows = days.flatMap((day) => day.rows ?? []);
+  const layout = runTableLayout([...activeRows, ...loadedRows], { width, nowMs: opts.nowMs });
+  body.push('');
+  body.push(rule('active', null, width));
+  if (activeRows.length) pushView(body, runTableLines(activeRows, { width, ansi: meterAnsi(), nowMs: opts.nowMs, layout }));
+  else body.push(dimText(' nothing in flight · bullswarm workflow goal "<goal>" launches one', width));
+  body.push('');
+  body.anchor = { history: body.lines.length + 1, cursor: null };
+  pushView(body, historyLines(days, { width, ansi: meterAnsi(), nowMs: opts.nowMs, layout }));
   if (opts.query) body.push(dimText(` filter “${opts.query}”`, width));
   const runRegions = body.regions.filter((region) => region.action?.kind === 'run');
   const taskRegions = body.regions.filter((region) => region.action?.kind === 'task');

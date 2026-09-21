@@ -11,7 +11,8 @@
 // only when the old record also preserved its cwd; records with no cwd stay
 // anonymous.
 
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { readJsonSafe } from './fsjson.js';
 import { listAssignments } from './assignments.js';
 import { projectName } from './project.js';
@@ -68,7 +69,33 @@ function projectOf(entry) {
   return cwd ? projectName(cwd) : null;
 }
 
-function taskRow(record) {
+function taskText(record, home) {
+  if (typeof record?.taskText === 'string' && record.taskText.trim()) return record.taskText;
+  const path = nullableString(record?.taskFile);
+  if (!path) return null;
+  const candidates = [path, home ? join(home, 'runs', basename(path)) : null].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      // Task prompts are bounded at write time. Keep a defensive display-side
+      // ceiling so a corrupt ledger pointer cannot make the dashboard ingest
+      // an arbitrary large file.
+      const text = readFileSync(candidate, 'utf8').slice(0, 256 * 1024);
+      return text.trim() || null;
+    } catch { /* a legacy or disappearing task file remains displayable */ }
+  }
+  return null;
+}
+
+function taskRow(record, home) {
+  const usage = record?.usage && typeof record.usage === 'object' ? record.usage : null;
+  const prompt = taskText(record, home);
+  const amount = finiteNumber(record?.apiEquivalentUsd
+    ?? record?.apiUsd
+    ?? record?.costUsd
+    ?? usage?.api?.usd
+    ?? usage?.cost?.estimatedUsd);
+  const tokenSource = nullableString(record?.tokenSource ?? usage?.tokenSource);
   return {
     id: nullableString(record?.id),
     lane: nullableString(record?.lane),
@@ -77,6 +104,10 @@ function taskRow(record) {
     project: projectOf(record),
     startedAt: nullableString(record?.startedAt),
     taskFile: nullableString(record?.taskFile),
+    ...(prompt == null ? {} : { taskText: prompt }),
+    ...(usage == null ? {} : { usage }),
+    ...(amount == null ? {} : { apiEquivalentUsd: amount }),
+    ...(tokenSource == null ? {} : { tokenSource }),
     // The out file is the row's only pointer at what the worker actually
     // wrote, and the two surfaces spell it differently: an assignment and the
     // CLI decision log write `outFile`, the workflow attempt shape writes
@@ -111,8 +142,8 @@ function sinceAllows(entry, sinceMs) {
   return event == null || event >= sinceMs;
 }
 
-function finishedRow(entry) {
-  const row = taskRow(entry);
+function finishedRow(entry, home) {
+  const row = taskRow(entry, home);
   const endedAt = nullableString(entry?.endedAt ?? entry?.finishedAt ?? entry?.ts);
   const reasonValue = entry && Object.hasOwn(entry, 'reason')
     ? entry.reason
@@ -163,14 +194,14 @@ export function listTasks({ home, since = null, now = Date.now() } = {}) {
 
   const inflight = listAssignments(home, { now: nowMs })
     .filter((record) => record?.source === TASK_KIND)
-    .map(taskRow)
+    .map((record) => taskRow(record, home))
     .sort((a, b) => (timeMs(b.startedAt) ?? -Infinity) - (timeMs(a.startedAt) ?? -Infinity));
 
   const state = readJsonSafe(join(home, 'state.json'), null);
   const entries = Array.isArray(state?.decisionLog) ? state.decisionLog : [];
   const finished = entries
     .filter((entry) => isRunEntry(entry) && sinceAllows(entry, sinceMs))
-    .map(finishedRow)
+    .map((entry) => finishedRow(entry, home))
     .sort((a, b) => {
       const at = timeMs(a.endedAt) ?? timeMs(a.startedAt) ?? -Infinity;
       const bt = timeMs(b.endedAt) ?? timeMs(b.startedAt) ?? -Infinity;

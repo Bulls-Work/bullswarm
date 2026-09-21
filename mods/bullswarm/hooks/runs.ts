@@ -123,6 +123,35 @@ export function looseOf(
   return assignments.filter(a => !a.runId || !known.has(a.runId))
 }
 
+/** Standalone task assignments in nav order; workflow digits never depend on these. */
+export function standaloneTasks(assignments: readonly BullswarmAssignment[]): BullswarmAssignmentRecord[] {
+  return assignments.filter((a): a is BullswarmAssignmentRecord => a.source === 'run' && typeof (a as BullswarmAssignmentRecord).id === 'string')
+}
+
+export type PaneChoice =
+  | { kind: 'workflow'; shortId: string }
+  | { kind: 'task'; taskId: string }
+  | null
+
+/**
+ * Resolve the pane without letting an unrelated live task override a workflow.
+ * An explicit task wins, then an explicit workflow, then the first workflow;
+ * a task is promoted only when there is no workflow to show.
+ */
+export function paneChoice(
+  runs: readonly BullswarmRun[],
+  assignments: readonly BullswarmAssignment[],
+  selectedShortId: string | null,
+  selectedTaskId: string | null,
+): PaneChoice {
+  const tasks = standaloneTasks(assignments)
+  const task = selectedTaskId ? tasks.find(a => a.id === selectedTaskId) : null
+  if (task?.id) return { kind: 'task', taskId: task.id }
+  const run = (selectedShortId ? runs.find(r => r.shortId === selectedShortId) : null) ?? runs[0] ?? null
+  if (run) return { kind: 'workflow', shortId: run.shortId }
+  return tasks[0]?.id ? { kind: 'task', taskId: tasks[0].id } : null
+}
+
 /** One plain-text line per run, for `/bullswarm runs` and the context block. */
 export function runLine(
   run: BullswarmRun,

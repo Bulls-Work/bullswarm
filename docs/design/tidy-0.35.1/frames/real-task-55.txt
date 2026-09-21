@@ -18,8 +18,8 @@
  commodo nulla tempor excepteur consequat ad ipsum…
 
 ── cost ───────────────────────────────────────────────
- API rate   —       no recorded rate
- codex plan —       no meter reading
+ API rate   —       no-rate-card
+ codex plan —       no API cost · $100/mo weekly
 
 
 

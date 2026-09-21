@@ -161,6 +161,8 @@ const TABLE = {
   'workflow resume': ['foreground', 'watch', 'json'],
   'workflow action': [],
   'workflow action show': ['json'],
+  'workflow task': [],
+  'workflow task show': ['json'],
   'workflow step': [],
   'workflow step restart': ['pool', 'wait', 'json'],
   'workflow reindex': ['json', 'force'],

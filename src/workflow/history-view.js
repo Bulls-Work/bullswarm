@@ -20,7 +20,8 @@
 import { glyphs } from '../lib/glyphs.js';
 import { taskKey } from '../lib/tasks.js';
 import { formatMoney, formatUsageBasis } from '../lib/usage-basis.js';
-import { poolUsageAggregate, spendFacts } from './spend-facts.js';
+import { runMinutesInfo, runProject, runStepCounts } from './home-model.js';
+import { poolUsageAggregate, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
 import { METER_COLORS } from './usage-view.js';
 
@@ -224,18 +225,46 @@ function recordCostInfo(run) {
     run.estimatedUsd,
     run.estimate,
     run.usage?.cost?.estimatedUsd,
+    run.usage?.api?.usd,
     run.result?.usage?.cost?.estimatedUsd,
+    run.result?.usage?.api?.usd,
   ];
   for (const value of direct) {
     const number = finite(value);
     if (number != null) {
       return {
-        ...costInfo(number, run.tokenSource),
+        ...costInfo(number, run.tokenSource ?? run.usage?.tokenSource ?? run.result?.usage?.tokenSource),
         known: number,
         facts: usageFacts ?? spendFacts({ apiKnownSubtotalUsd: number }),
         counts: usageFacts ? countsOf(usageFacts) : { attempts: 0, priced: 0, measured: 0, running: 0 },
       };
     }
+  }
+  const attempts = [
+    ...(run?.state?.preflight?.scout?.attempts ?? []),
+    ...(run?.state?.planner?.attempts ?? []),
+    ...(run?.state?.attempts ?? run?.attempts ?? []),
+  ];
+  if (attempts.length) {
+    let known = null;
+    let tokenSource = null;
+    for (const attempt of attempts) {
+      const amount = finite(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd);
+      if (amount != null) known = (known ?? 0) + amount;
+      tokenSource = worstTokenSource(tokenSource, attempt?.usage?.tokenSource);
+    }
+    const facts = recordSpendFacts(run, attempts);
+    return {
+      ...costInfo(known, tokenSource),
+      known,
+      facts,
+      counts: {
+        attempts: attempts.length,
+        priced: attempts.filter((attempt) => finite(attempt?.usage?.api?.usd ?? attempt?.usage?.cost?.estimatedUsd) != null).length,
+        measured: attempts.filter((attempt) => attempt?.usage?.tokenSource === 'provider-reported').length,
+        running: facts?.running ?? 0,
+      },
+    };
   }
   const aggregate = poolUsageAggregate(run.pools);
   if (!aggregate) return { ...costInfo(null, run.tokenSource), known: null, facts: null, counts: empty.counts };
@@ -328,7 +357,7 @@ function elapsedText(run) {
 const LIVE_STATUS_WORDS = new Set(['queued', 'planning', 'running', 'ready-to-finalize']);
 
 function unfinishedWord(run) {
-  if (run?.running === true) return 'running';
+  if (run?.running === true || run?.ongoing === true) return 'running';
   const status = statusValue(run);
   if (!status) return 'stopped';
   return LIVE_STATUS_WORDS.has(status) ? 'interrupted' : status;
@@ -362,7 +391,8 @@ function project(run) {
 }
 
 function goal(run) {
-  const value = run?.goal ?? run?.label ?? run?.title ?? run?.purpose;
+  const value = run?.goal ?? run?.state?.intent?.goal ?? run?.state?.goal
+    ?? run?.label ?? run?.title ?? run?.purpose;
   return textOf(value, 'goal unavailable').replace(/\s+/g, ' ');
 }
 
@@ -520,7 +550,7 @@ function statusValue(run) {
 
 /** The mark is a result, not a second status sentence. */
 function resultMark(run) {
-  if (unfinishedRun(run)) return run.running === true ? glyphs().ongoing : glyphs().stopped;
+  if (unfinishedRun(run)) return run.running === true || run.ongoing === true ? glyphs().ongoing : glyphs().stopped;
   const status = statusValue(run);
   if (status === 'completed' || status === 'success' || status?.startsWith('succeeded')) return glyphs().ok;
   if (status && /(?:failed|failure|error|cancel(?:led)?|interrupted|partial|blocked|budget[_-]exhausted|stopped|aborted|timed[_-]?out|completed[_-]with[_-](?:gaps|concerns))/.test(status)) {
@@ -532,7 +562,7 @@ function resultMark(run) {
 }
 
 function markRole(mark, run) {
-  if (unfinishedRun(run)) return run.running ? 'cyan' : 'red';
+  if (unfinishedRun(run)) return run.running || run.ongoing ? 'cyan' : 'red';
   if (mark === glyphs().ok) return 'green';
   if (mark === glyphs().fail) return 'red';
   return 'dim';
@@ -549,123 +579,241 @@ function rowSummary(run) {
   return base;
 }
 
-/**
- * One compact row. The first five fields are the stable identity columns;
- * the summary grows and gives cells back before the right-aligned duration,
- * estimate and clock. A one-cell trailing spacer reserves the prototype's
- * final blank without painting it, keeping the right columns stable at 120.
- */
-function runRow(run, width, ansi, { durationWidth = null } = {}) {
-  const cols = widthOf(width);
-  const desktop = cols >= 100;
-  const phone = !desktop;
-  const id = shortId(run) || '------';
-  // Legacy directories have no V2 measurement contract. Ignore any stale
-  // cost-shaped field a caller may have attached instead of pricing a
-  // read-only row by accident.
-  const cost = isLegacy(run) ? costInfo(null, 'unknown') : recordCostInfo(run);
-  const estimate = isLegacy(run) ? null : apiEstimateFor(cost, { compact: phone });
-  const mark = resultMark(run);
-  const duration = displayedDuration(run);
-  const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
-  const projectWidth = desktop
-    ? 25
-    : Math.min(18, Math.max(9, Math.floor(cols * 0.2)));
-  // A legacy row's read-only marker is the important fact on a phone. Keep
-  // it whole when the wider duration cell consumes the last elastic cells;
-  // the goal remains available on desktop and in the day header.
-  const summary = phone && isLegacy(run) ? 'legacy · read-only' : rowSummary(run);
-  const summaryFloor = phone && isLegacy(run) ? visible(summary).length : 1;
-  // A live run has a start but no result time; never let its start clock read
-  // as a finished timestamp. A stopped run may expose its last file write,
-  // which is the only honest time available for that row.
-  const atValue = unfinishedRun(run)
-    ? (run.running === true ? null : run?.lastWriteAt)
-    : runTime(run);
-  const at = clock(atValue) ?? '—';
-  const timeText = tint(at, 'dim', ansi);
-  // Keep the approximation marker and basis at every width. A phone row
-  // drops the trailing API word but retains the full estimated label.
-  const estimateText = estimate ? tint(estimate, 'dim', ansi) : '';
-  const estimateWidth = Math.max(1, visible(estimate || '(cost unknown)').length);
-  const compactUnfinished = phone && cols < 70 && unfinishedRun(run);
-  const rightFields = compactUnfinished
-    ? []
-    : [
-      { text: duration, width: durationCells, align: 'right', gap: 1 },
-      ...((!isLegacy(run) && !unfinishedRun(run)) ? [
-        { text: estimate ? '·' : '', width: 1, gap: 1 },
-        { text: estimateText || '(cost unknown)', width: estimateWidth, align: 'right', gap: 0 },
-      ] : []),
-      { text: timeText, width: 5, align: 'right', gap: 2 },
-    ];
+function taskId(task) {
+  const value = textOf(task?.id ?? task?.taskFile, '');
+  if (!value) return '—';
+  // UUID-backed assignments are not useful as a whole on a table row. Keep
+  // the short human-authored ids intact, and use the stable tail for UUIDs.
+  return value.length > 8 ? value.slice(-8) : value;
+}
+
+function cleanTaskDescription(value) {
+  return String(value ?? '')
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '')
+    .replace(/\s*\([^)]*(?:worktree|branch\s+[^)]*|\bHEAD\b|open[- ]source)[^)]*\)\s*/gi, ' ')
+    .replace(/^\s*(?:(?:workspace|repository|cwd)\s*:\s*)?(?:~|\.{0,2}\/|[A-Za-z]:\\)[^\s,;:]*(?:\s*[-–—:]\s*|\s+)/i, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([.,;:])/g, '$1')
+    .trim();
+}
+
+function taskSentences(source) {
+  return String(source ?? '')
+    .replace(/\r/g, '')
+    .split(/\n+/)
+    .flatMap((line) => line.trim().split(/(?<=[.!?])\s+(?=[A-Z#])/))
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function taskPreamble(sentence) {
+  return /^(?:You are\b|Workspace:|Read-only\b|Repository:|cwd\b)/i.test(sentence.trim());
+}
+
+// Standing rules a worker brief repeats ("Edit only …", "Do not commit.",
+// "Never read or write …") say how to work, not what the task is about.
+function taskRule(sentence) {
+  return /^(?:Run (?:every|all) commands?\b|Edit (?:only|nothing|no)\b|Only edit\b|Do not\b|Don't\b|Never\b|You may\b|Commit nothing\b|Leave (?:the|changes|it)\b|Real data only\b|No test\.skip\b|Work only\b|Territory:)/i
+    .test(sentence.trim());
+}
+
+// A brief that opens with setup usually names its subject on a labelled line:
+// "Outcome: …", "Goal: …", "Defect (owner screenshot): …". Labels are tried in
+// this order, so a Defect wins over the Deliver list that follows it.
+const SUBJECT_LABELS = ['outcome', 'goal', 'task', 'question', 'problem', 'defects?', 'bug', 'deliver'];
+
+function labelledSubject(source) {
+  const lines = String(source ?? '').replace(/\r/g, '').split('\n').map((line) => line.trim());
+  for (const label of SUBJECT_LABELS) {
+    const pattern = new RegExp(`^${label}\\b[^\\n]{0,100}?:\\s+(\\S.*)$`, 'i');
+    for (const line of lines) {
+      const text = line.match(pattern)?.[1];
+      if (!text) continue;
+      const first = taskSentences(text)[0]?.replace(/^\([0-9A-Za-z]\)\s*/, '') ?? '';
+      if (!first) continue;
+      return /^[a-z]+\b(?![/.`])/.test(first) ? first[0].toUpperCase() + first.slice(1) : first;
+    }
+  }
+  return null;
+}
+
+function mostlyPath(sentence) {
+  const withoutFacts = String(sentence ?? '')
+    .replace(/\([^)]*(?:worktree|branch|\bHEAD\b|open[- ]source)[^)]*\)/gi, '')
+    .trim();
+  if (!withoutFacts) return true;
+  const words = withoutFacts.split(/\s+/);
+  return words.length <= 2 && words.every((word) => /^(?:(?:~|\.{0,2}\/|[A-Za-z]:\\)|[^\s]*[/\\][^\s]*)/.test(word));
+}
+
+/** A task's subject, ignoring worker/worktree setup prose when possible. */
+export function taskDescription(task) {
+  const source = typeof task?.taskText === 'string' ? task.taskText : '';
+  const heading = source.split(/\r?\n/)
+    .map((line) => line.match(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/)?.[1])
+    .find(Boolean);
+  if (heading) return cleanTaskDescription(heading) || '—';
+  const labelled = labelledSubject(source);
+  if (labelled) return cleanTaskDescription(labelled) || '—';
+  const sentences = taskSentences(source);
+  const chosen = sentences.find((sentence) => !taskPreamble(sentence) && !taskRule(sentence) && !mostlyPath(sentence))
+    ?? sentences.find((sentence) => !taskPreamble(sentence) && !mostlyPath(sentence))
+    ?? sentences.find((sentence) => !mostlyPath(sentence))
+    ?? sentences[0];
+  return cleanTaskDescription(chosen) || '—';
+}
+
+function taskDescriptionFallback(task) {
+  const lane = textOf(task?.lane, '');
+  const pool = textOf(task?.pool ?? task?.picked, '');
+  return `${lane ? `${lane} task` : 'task'}${pool ? ` on ${pool}` : ''}`;
+}
+
+function compactMoney(info) {
+  const amount = finite(info?.known ?? info?.value);
+  if (amount == null) return '—';
+  const lowerBound = (info?.facts?.unmeasured ?? 0) > 0 || (info?.facts?.running ?? 0) > 0;
+  const prefix = lowerBound ? '≥'
+    : info?.tokenSource === 'provider-reported' ? ''
+      : info?.tokenSource === 'transcript-summed' ? '≈' : '~';
+  const money = amount > 0 && amount < 0.01 ? '<$0.01' : `$${amount.toFixed(2)}`;
+  return `${prefix}${money}`;
+}
+
+function taskStartTime(record) {
+  const direct = record?.startedAt;
+  if (dateMs(direct) != null) return direct;
+  const ended = dateMs(record?.endedAt ?? record?.finishedAt ?? record?.ts);
+  const duration = finite(record?.durationMs);
+  return ended != null && duration != null && duration >= 0 ? ended - duration : null;
+}
+
+function tableRowModel(record, nowMs = Date.now()) {
+  const task = isTask(record);
+  const legacy = !task && isLegacy(record);
+  const cost = legacy ? costInfo(null, 'unknown') : recordCostInfo(record);
+  let minutes = null;
+  let fallback = false;
+  if (task) {
+    const measured = durationFacts(record).minutes;
+    if (measured != null) minutes = measured;
+    else {
+      const started = dateMs(record?.startedAt);
+      if (started != null && !record?.endedAt && !record?.finishedAt) minutes = Math.max(0, nowMs - started) / 60_000;
+    }
+  } else {
+    const facts = runMinutesInfo(record, nowMs);
+    minutes = facts.active;
+    if (minutes == null) {
+      minutes = durationFacts(record).minutes ?? facts.span;
+      fallback = minutes != null;
+    }
+    if (minutes == null && finite(record?.elapsedMinutes) != null) minutes = finite(record.elapsedMinutes);
+  }
+  const steps = task ? null : runStepCounts(record);
+  const id = task ? taskId(record) : shortId(record) || '—';
+  const recordedTime = typeof record?.duration === 'string' && record.duration.trim()
+    ? record.duration.trim().replace(/^span\s+/, '')
+    : null;
+  const mark = task
+    ? record?.ok === false ? glyphs().fail
+      : record?.ok === true || record?.endedAt || record?.finishedAt ? glyphs().ok : glyphs().ongoing
+    : resultMark(record);
+  const described = task ? taskDescription(record) : goal(record);
+  const descriptionFallback = task && described === '—';
   return {
+    record,
+    task,
+    mark,
+    role: task ? (record?.ok === false ? 'red' : record?.ok === true || record?.endedAt || record?.finishedAt ? 'green' : 'cyan') : markRole(mark, record),
     id,
-    idWidth: Math.min(6, visible(id).length),
-    line: compactRow([
-      { text: ' ', width: 1 },
-      { text: tint(mark, markRole(mark, run), ansi), width: 1, gap: 0 },
-      { text: bold(id, ansi), width: 6, gap: 1 },
-      { text: project(run), width: projectWidth, gap: 2 },
-      { text: summary, grow: true, min: summaryFloor, gap: desktop ? 2 : 1 },
-      ...rightFields,
-      { text: ' ', width: 1, gap: 0 },
-    ], { width: cols, gap: 1 }),
+    project: runProject(record),
+    what: descriptionFallback ? taskDescriptionFallback(record) : described,
+    whatFallback: descriptionFallback,
+    kind: task ? 'task' : steps.done != null && steps.total != null ? `${steps.done}/${steps.total} steps` : '—',
+    time: minutes == null ? recordedTime ?? '—' : minutesText(minutes),
+    timeFallback: fallback,
+    cost: compactMoney(cost),
+    start: clock(task ? taskStartTime(record) : record?.startedAt ?? record?.state?.lifecycle?.startedAt) ?? '—',
+    action: task
+      ? { kind: 'task', taskId: taskKey(record) }
+      : { kind: 'run', runId: runId(record) || shortId(record) || '—' },
+    unpriced: legacy ? 0
+      : task ? (cost.value == null ? 1 : 0)
+        : Math.max(0, cost?.facts?.unmeasured ?? (cost.value == null ? 1 : 0)),
+    costInfo: cost,
   };
 }
 
-function renderRun(run, lines, regions, width, ansi, options = {}) {
-  const action = { kind: 'run', runId: runId(run) || shortId(run) || '------' };
-  const rendered = runRow(run, width, ansi, options);
-  lines.push(fit(rendered.line, width, ansi));
-  // The shell has always made the id the click target. The leading spacer and
-  // result mark restore its prototype x coordinate at column 4.
-  addRegion(regions, lines, 4, rendered.idWidth, action);
-}
-
-function taskId(task) {
-  const value = textOf(task?.id ?? task?.taskFile, 'task');
-  // UUID-backed assignments are not useful as a whole on a table row. Keep
-  // the short human-authored ids intact, and use the stable tail for UUIDs.
-  return value.length > 14 ? value.slice(-8) : value;
-}
-
-function taskPoolModel(task) {
-  return [task?.pool, task?.model].filter((value) => value != null && String(value).trim()).join(' · ') || 'pool/model unavailable';
-}
-
-function taskResult(task) {
-  if (task?.ok === true) return 'ok';
-  if (task?.ok === false) return textOf(task.reason, 'failed').replace(/\s+/g, ' ');
-  return 'result unavailable';
-}
-
-function taskRow(task, lines, regions, width, ansi, { durationWidth = null } = {}) {
+function tableLayout(rows, width) {
   const cols = widthOf(width);
-  const duration = durationText(task);
-  const durationCells = Math.max(1, Math.trunc(Number(durationWidth) || 0), visible(duration).length);
-  const at = clock(task?.endedAt ?? task?.finishedAt ?? task?.startedAt) ?? '—';
-  const identity = [task?.lane ?? 'lane unavailable', taskId(task), taskPoolModel(task)]
-    .filter(Boolean).join(' · ');
-  const result = taskResult(task);
-  // Keep the outcome visible while the identity gives back cells on narrow
-  // terminals. Reasons are intentionally short in the ledger; a longer
-  // legacy reason is still bounded so the duration and clock remain fixed.
-  const resultWidth = Math.max(2, Math.min(24, visible(result).length));
-  const mark = glyphs().inflight;
-  const line = compactRow([
-    { text: ' ', width: 1 },
-    { text: tint(mark, task?.ok === false ? 'red' : task?.ok === true ? 'green' : 'cyan', ansi), width: 1, gap: 0 },
-    { text: identity, grow: true, min: 1, gap: 2 },
-    { text: result, width: resultWidth, gap: 2 },
-    { text: duration, width: durationCells, align: 'right', gap: 2 },
-    { text: tint(at, 'dim', ansi), width: 5, align: 'right', gap: 2 },
-    { text: ' ', width: 1, gap: 0 },
-  ], { width: cols, gap: 1 });
-  lines.push(fit(line, cols, ansi));
-  addRegion(regions, lines, 4, Math.max(1, visible(line).length - 3), {
-    kind: 'task', taskId: taskKey(task),
-  });
+  const max = (key, floor, ceiling) => Math.min(ceiling, Math.max(floor, ...rows.map((row) => visible(row[key]).length)));
+  const layout = {
+    id: 8,
+    project: max('project', 7, 18),
+    kind: max('kind', 4, 11),
+    time: max('time', 4, 8),
+    cost: max('cost', 1, 14),
+    start: 5,
+    showProject: true,
+    showKind: true,
+    showStart: true,
+  };
+  const fixed = () => 3 + layout.id
+    + (layout.showProject ? 2 + layout.project : 0)
+    + (layout.showKind ? 2 + layout.kind : 0)
+    + 2 + layout.time + 2 + layout.cost
+    + (layout.showStart ? 2 + layout.start : 0);
+  // The description is the only elastic cell. It contracts first; once it
+  // reaches its useful floor, columns disappear in the specified order.
+  for (const key of ['showStart', 'showKind', 'showProject']) {
+    if (cols - fixed() >= 10) break;
+    layout[key] = false;
+  }
+  layout.what = Math.max(0, cols - fixed() - 2);
+  return layout;
+}
+
+function cell(value, width, ansi, { align = 'left', role = null, strongText = false } = {}) {
+  const plain = fit(value, width, false);
+  const padded = align === 'right' ? plain.padStart(width) : plain.padEnd(width);
+  if (strongText) return bold(padded, ansi);
+  return role ? tint(padded, role, ansi) : padded;
+}
+
+/** Render one interleaved section with a single column calculation. */
+export function runTableLines(records, {
+  width = 120, ansi = true, nowMs = Date.now(), layout: suppliedLayout = null,
+} = {}) {
+  const cols = widthOf(width);
+  const rows = (records ?? []).map((record) => tableRowModel(record, nowMs));
+  const layout = suppliedLayout ?? tableLayout(rows, cols);
+  const lines = [];
+  const regions = [];
+  for (const row of rows) {
+    const parts = [
+      ' ', tint(row.mark, row.role, ansi), ' ', cell(row.id, layout.id, ansi, { strongText: true }),
+    ];
+    if (layout.showProject) parts.push('  ', cell(row.project, layout.project, ansi));
+    if (layout.what > 0) parts.push('  ', cell(row.what, layout.what, ansi, { role: row.whatFallback || row.what === '—' ? 'dim' : null }));
+    if (layout.showKind) parts.push('  ', cell(row.kind, layout.kind, ansi, { align: 'right', role: row.kind === '—' ? 'dim' : null }));
+    parts.push(
+      '  ', cell(row.time, layout.time, ansi, { align: 'right', role: row.timeFallback || row.time === '—' ? 'dim' : null }),
+      '  ', cell(row.cost, layout.cost, ansi, { align: 'right', role: 'dim' }),
+    );
+    if (layout.showStart) parts.push('  ', cell(row.start, layout.start, ansi, { align: 'right', role: 'dim' }));
+    const line = fit(parts.join(''), cols, ansi);
+    lines.push(line);
+    // Hover covers text only, not terminal padding; Enter and click therefore
+    // resolve through the same row action without lighting unused columns.
+    addRegion(regions, lines, 2, Math.max(1, visible(line).length - 1), row.action);
+  }
+  return { lines, regions, rows, layout };
+}
+
+/** One layout shared by active rows and every currently loaded history day. */
+export function runTableLayout(records, { width = 120, nowMs = Date.now() } = {}) {
+  return tableLayout((records ?? []).map((record) => tableRowModel(record, nowMs)), width);
 }
 
 /**
@@ -673,7 +821,7 @@ function taskRow(task, lines, regions, width, ansi, { durationWidth = null } = {
  * Regions use 1-based x coordinates relative to the line that owns them; the
  * shell associates them with the returned line while composing its frame.
  */
-export function historyLines(days, { width = 120, ansi = true } = {}) {
+export function historyLines(days, { width = 120, ansi = true, nowMs = Date.now(), layout = null } = {}) {
   const cols = widthOf(width);
   const list = topLevelDays(days).slice().sort((a, b) => {
     const left = dateKey(a.date);
@@ -687,6 +835,7 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
     return { lines, regions };
   }
 
+  const sharedLayout = layout ?? runTableLayout(list.flatMap(dayRows), { width: cols, nowMs });
   for (const day of list) {
     const runs = dayRows(day);
     const count = dayCount(day, runs);
@@ -694,27 +843,35 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
     const workflowRows = runs.filter((run) => !isTask(run));
     const onlyLegacy = Boolean(day.legacyOnly || day.onlyLegacy || day.legacy)
       || (workflowRows.length > 0 && workflowRows.every((run) => isLegacy(run)));
-    // A legacy-only day has no V2 usage record.  Even if a stale summary
-    // happens to carry a spend field, showing it would make an unmeasured
-    // legacy run look priced.
     const summary = `${count} run${count === 1 ? '' : 's'}${tasks ? ` · ${tasks} task${tasks === 1 ? '' : 's'}` : ''}`;
-    // A day whose runs have not delivered has no estimate because there is no
-    // result yet — a different reason from "nothing recorded", and the one the
-    // reader needs.
-    const inFlight = workflowRows.length > 0 && workflowRows.every((run) => unfinishedRun(run));
-    const spend = onlyLegacy ? costInfo(null, 'unknown') : daySpendInfo(day, runs);
-    const money = onlyLegacy || inFlight ? null : apiEstimateFor(spend);
-    const basis = money ?? (inFlight ? 'no result recorded yet' : 'estimate unavailable (no recorded API-equivalent cost)');
-    const title = bold(dateLabel(day.date), ansi);
-    const right = `${summary} · ${money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi)}`;
-    const ruleHeadWidth = visible(`── ${dateLabel(day.date)} `).length;
-    const ruleTailWidth = visible(` ${right} ──`).length;
-    if (ruleHeadWidth + ruleTailWidth < cols) {
-      push(lines, rule(title, right, cols), cols, ansi);
-    } else {
-      push(lines, rule(`${title} · ${summary}`, null, cols), cols, ansi);
-      pushWrapped(lines, money ? tint(money, 'orange', ansi) : tint(basis, 'dim', ansi), cols, ansi, '');
+    const table = runTableLines(runs, { width: cols, ansi, nowMs, layout: sharedLayout });
+    let amount = null;
+    let source = null;
+    let unpriced = 0;
+    for (const row of table.rows) {
+      if (row.costInfo?.known != null) amount = (amount ?? 0) + row.costInfo.known;
+      source = worstTokenSource(source, row.costInfo?.tokenSource);
+      unpriced += row.unpriced;
     }
+    // A day supplied as counts only can still carry its indexed total.
+    if (!table.rows.length) amount = finite(day?.spendUsd ?? day?.apiEquivalentUsd ?? day?.spend);
+    const money = onlyLegacy ? '—' : compactMoney({
+      known: amount,
+      value: amount,
+      tokenSource: source ?? tokenSourceOf(day?.tokenSource, amount),
+      facts: { unmeasured: unpriced, running: 0 },
+    });
+    const title = bold(dateLabel(day.date), ansi);
+    const moneyText = money === '—' ? tint(money, 'dim', ansi) : tint(money, 'orange', ansi);
+    const unpricedText = unpriced ? `${unpriced} unpriced` : '';
+    const choices = [
+      `${summary} · ${moneyText}${unpricedText ? ` · ${unpricedText}` : ''}`,
+      `${summary}${unpricedText ? ` · ${unpricedText}` : ''}`,
+      summary,
+    ];
+    const right = choices.find((candidate) => visible(rule(title, candidate, cols)).length === cols
+      && visible(rule(title, candidate, cols)).endsWith(`${visible(candidate)} ──`)) ?? summary;
+    push(lines, rule(title, right, cols), cols, ansi);
     if (!runs.length) {
       const legacyOnly = Boolean(day.legacyOnly || day.onlyLegacy || day.legacy);
       pushWrapped(lines, legacyOnly
@@ -723,15 +880,10 @@ export function historyLines(days, { width = 120, ansi = true } = {}) {
           ? '  Workflow rows are not loaded for this day yet.'
           : '  No workflows recorded.', cols, ansi, '');
     } else {
-      const durationWidth = runs.reduce((longest, run) => Math.max(longest, visible(isTask(run) ? durationText(run) : displayedDuration(run)).length), 5);
-      let normal = 0;
-      for (const run of runs) {
-        if (isTask(run)) taskRow(run, lines, regions, cols, ansi, { durationWidth });
-        else {
-          renderRun(run, lines, regions, cols, ansi, { durationWidth });
-          if (!isLegacy(run)) normal += 1;
-        }
-      }
+      const rowOffset = lines.length;
+      for (const line of table.lines) lines.push(line);
+      for (const region of table.regions) regions.push({ ...region, y: rowOffset + region.y });
+      const normal = workflowRows.filter((run) => !isLegacy(run)).length;
       if (!normal && workflowRows.length) pushWrapped(lines, 'Legacy workflows are read-only: no cost and no pool minutes were recorded.', cols, ansi);
     }
     lines.push('');

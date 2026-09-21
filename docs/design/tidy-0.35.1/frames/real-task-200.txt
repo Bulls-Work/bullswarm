@@ -16,9 +16,9 @@
                                                                                                                                      │  excepteur consequat ad ipsum deserunt labore irure do consequat…
                                                                                                                                      │
                                                                                                                                      │ ── cost ─────────────────────────────────────────────────────────
-                                                                                                                                     │  API rate    —       no recorded rate
-                                                                                                                                     │  codex plan  —       no meter reading for this attempt
-
+                                                                                                                                     │  API rate    —       no-rate-card
+                                                                                                                                     │  codex plan  —       no API cost to price
+                                                                                                                                     │              $100/mo · weekly window
 
 
 

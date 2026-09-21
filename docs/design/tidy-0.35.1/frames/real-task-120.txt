@@ -16,9 +16,9 @@
                                                                               │  laborum sit et nostrud commodo nulla…
                                                                               │
                                                                               │ ── cost ────────────────────────────────
-                                                                              │  API rate    —       no recorded rate
-                                                                              │  codex plan  —       no meter reading f…
-
+                                                                              │  API rate    —       no-rate-card
+                                                                              │  codex plan  —       no API cost to pri…
+                                                                              │              $100/mo · weekly window
 
 
 

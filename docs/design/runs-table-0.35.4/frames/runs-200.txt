@@ -1,0 +1,70 @@
+ Home  Runs  Budget  Stats  Fleet
+ bullswarm · runs · all · 6 days · 1–66/79
+
+── active ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ nothing in flight · bullswarm workflow goal "<goal>" launches one
+
+── Sun 20 Sep ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 6 runs · 24 tasks · ≥$181.26 · 44 unpriced ──
+ ✓ 9e481d57  project-a  build task on grok                                                                                                                                   task    19m   ≈$4.01  15:31
+ ✓ 8eebd0ff  project-a  build task on grok                                                                                                                                   task    15m   ≈$5.02  15:15
+ ✓ d7f99bde  project-a  build task on command-code                                                                                                                           task    12m  ~<$0.01  15:15
+ ✓ 8b9b1b6f  project-a  build task on codex                                                                                                                                  task    18m    $0.22  15:03
+ ✓ 7d432faa  project-a  analyze task on codex                                                                                                                                task    23m    $0.33  08:33
+ ✓ 5453ef44  project-a  analyze task on codex                                                                                                                                task    20m    $0.38  08:33
+ ✓ f684c5f3  project-b  build task on codex                                                                                                                                  task    14m        —  06:15
+ ✓ 3155fb3c  project-a  sample task qui consequat et nulla ex amet magna ullamco enim cupidatat nulla laborum sit et nostrud commodo nulla tempor excepteur consequ…         task    24m        —  06:04
+ ✓ 1e733624  project-b  build task on codex                                                                                                                                  task     6m        —  06:18
+ ✓ 7f320764  project-a  build task on codex                                                                                                                                  task    14m        —  06:03
+ ✓ rensha    project-b  sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim aute ad ipsum anim ea oc…    9/9 steps    59m   ≥$9.52  05:13
+ ✓ 5aab47e2  project-a  build task on codex                                                                                                                                  task     4m        —  06:04
+ ✓ euqrni    project-a  sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris elit commodo culpa exer…    5/5 steps  1h56m   ≈$9.76  04:05
+ ✓ 21078132  project-a  build task on codex                                                                                                                                  task    29m        —  04:41
+ ✓ 70ea992d  project-a  build task on codex                                                                                                                                  task     7m        —  04:45
+ ✓ rw3dhi    project-a  sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis quis in cupidatat exce…    7/7 steps  1h38m  ≈$16.16  03:04
+ ✓ g6d6q2    project-b  sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip duis tempor qui duis ipsum…  14/14 steps  6h01m  ≥$86.79  15:24
+ ✓ 677871be  project-a  build task on codex                                                                                                                                  task    31m        —  04:05
+ ✓ 0efb3eb7  project-a  build task on codex                                                                                                                                  task    17m        —  04:05
+ ✓ 6118b6db  project-a  build task on codex                                                                                                                                  task    13m        —  04:05
+ ✓ va7k9a    project-a  sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim mollit ex officia laboris ex…    8/8 steps  2h46m  ≥$15.27  01:18
+ ✓ gbnq62    project-a  sample goal for gbnq62 officia ut tempor labore cillum amet officia ea minim id velit lorem laborum occaecat consequat laborum aliqua tempo…  13/13 steps  4h14m  ≥$33.80  23:13
+ ✓ 91b7d09a  project-a  build task on codex                                                                                                                                  task    16m        —  02:32
+ ✓ f6dc2b47  project-a  build task on codex                                                                                                                                  task    42m        —  02:00
+ ✓ ac594979  project-a  build task on codex                                                                                                                                  task    18m        —  02:21
+ ✓ b386c2f5  project-a  analyze task on codex                                                                                                                                task    19m        —  01:52
+ ✓ ead18bde  project-a  build task on codex                                                                                                                                  task    34m        —  01:16
+ ✓ 8f2f2618  project-a  build task on codex                                                                                                                                  task    31m        —  01:16
+ ✓ 13c6f3bc  project-a  analyze task on codex                                                                                                                                task    34m        —  01:12
+ ✓ 52109621  project-a  build task on codex                                                                                                                                  task    26m        —  01:16
+
+── Sat 19 Sep ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 2 runs · 7 tasks · ≥$18.26 · 7 unpriced ──
+ ✓ qvh8e2    project-a  sample goal for qvh8e2 proident irure eiusmod ex mollit exercitation magna occaecat laborum minim est labore voluptate nisi irure laboris t…    2/2 steps    28m   ≈$4.00  23:24
+ ✓ c71e896e  project-a  sample task dolore proident et ex ullamco incididunt laboris dolore                                                                                  task    16m        —  20:18
+ ✓ 6a4e8085  project-a  sample task incididunt adipiscing exercitation                                                                                                       task    24m        —  19:56
+ ✓ a9e254cc  project-a  sample task aliqua incididunt laboris excepteur                                                                                                      task    20m        —  19:56
+ ✓ —         —          build task on codex                                                                                                                                  task    19m        —  19:25
+ ✓ —         —          build task on codex                                                                                                                                  task    29m        —  05:21
+ ✓ —         —          build task on codex                                                                                                                                  task    29m        —  04:51
+ ✓ 7e4w3i    project-a  sample goal for 7e4w3i ullamco cillum dolore quis voluptate dolor irure ut anim tempor ex adipiscing reprehenderit eiusmod ut quis dolor do…    8/8 steps  3h28m  ≈$14.25  01:21
+ ✓ —         —          build task on codex                                                                                                                                  task    27m        —  01:07
+
+── Fri 18 Sep ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 7 runs · 3 tasks · ≥$110.31 · 43 unpriced ──
+ ✓ kresj2    project-c  sample goal for kresj2 ipsum proident enim ex sed officia mollit mollit commodo et eiusmod ea deserunt esse anim amet veniam amet ex nisi a…  11/11 steps  1h24m   ≥$9.61  18:46
+ ✓ u9d48s    project-a  sample goal for u9d48s esse tempor fugiat occaecat deserunt commodo nostrud mollit est aute elit est qui cupidatat duis mollit ullamco sint…  23/23 steps  6h41m  ≥$57.91  12:47
+ ✓ is9aaa    project-a  sample goal for is9aaa reprehenderit non qui esse sint excepteur ut sint consequat fugiat aliquip dolore exercitation laborum culpa minim n…    9/9 steps  1h06m   ≥$2.54  14:09
+ ✓ uamgfi    project-b  sample goal for uamgfi pariatur ullamco pariatur aliqua in duis mollit culpa excepteur aliquip sunt duis qui anim enim ut velit quis culpa …    2/2 steps    34m   ≈$2.16  14:09
+ ✓ cqxyw2    project-a  sample goal for cqxyw2 anim pariatur pariatur tempor anim do dolore occaecat laboris commodo minim cillum et id deserunt ipsum consequat in…    2/2 steps     4m        —  14:12
+ ✓ 2yrcxi    project-b  sample goal for 2yrcxi est nostrud ipsum nulla dolore nulla est magna proident incididunt dolor commodo esse nisi reprehenderit amet quis v…    8/8 steps  1h45m   ≥$8.02  10:57
+ ✓ —         —          build task on codex                                                                                                                                  task  1h00m        —  10:05
+ ✗ —         —          build task on opencode                                                                                                                               task     0m        —  09:45
+ ✓ fuyyca    project-a  sample goal for fuyyca aute non ad id laboris et culpa ut dolor mollit dolor veniam non eiusmod magna anim nostrud lorem consectetur exerci…    5/5 steps  3h28m  ≥$30.06  02:13
+ ✗ —         —          analyze task on opencode                                                                                                                             task    18m        —  01:06
+
+── Thu 17 Sep ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 0 runs · 4 tasks · — · 4 unpriced ──
+ ✗ —         —          build task on opencode                                                                                                                               task     7m        —  18:56
+ ✓ —         —          build task on codex                                                                                                                                  task    22m        —  11:18
+ ✓ —         —          build task on codex                                                                                                                                  task    24m        —  11:09
+ ✓ —         —          build task on codex                                                                                                                                  task    14m        —  04:25
+
+── Wed 16 Sep ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 0 runs · 3 tasks · — · 3 unpriced ──
+6 days loaded · older days load as you scroll
+ [ ?.help ] [ quit ]

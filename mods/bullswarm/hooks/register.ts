@@ -29,7 +29,9 @@ import {
   parseDetail,
   parseRuns,
   parseStep,
+  paneChoice,
   runLine,
+  standaloneTasks,
   type BullswarmAssignmentRecord,
 } from './runs'
 import { strip } from './strip'
@@ -131,6 +133,7 @@ export function register(on: On, options: PluginOptions = {}) {
   let timerGeneration = 0
   let paneOpen = false
   let selectedShortId: string | null = null
+  let selectedTaskId: string | null = null
   let detail: BullswarmRunDetail | null = null
   let detailError: string | null = null
   let overview: OverviewLine[] | null = null
@@ -228,6 +231,12 @@ export function register(on: On, options: PluginOptions = {}) {
     const failed = [p, r, a].find((x): x is PromiseRejectedResult => x.status === 'rejected')
     lastError = failed ? messageOf(failed.reason) : null
     nowMs = await h.now()
+    if (selectedTaskId && !standaloneTasks(assignments).some(task => task.id === selectedTaskId)) {
+      selectedTaskId = null
+      step = null
+      detailError = null
+      paneOffset = 0
+    }
     if (selectedShortId && !runs.some(r => r.shortId === selectedShortId)) {
       // The selected run finished and left the ongoing list: keep its last
       // detail on screen, fall to the newest run when one exists. The open
@@ -259,12 +268,29 @@ export function register(on: On, options: PluginOptions = {}) {
   }
 
   async function readDetail(h: Host): Promise<BullswarmRunDetail | null> {
-    const id = selectedShortId ?? runs[0]?.shortId ?? null
-    if (!id) {
+    const choice = paneChoice(runs, assignments, selectedShortId, selectedTaskId)
+    if (!choice) {
       detail = null
       overview = null
+      step = null
       return null
     }
+    if (choice.kind === 'task') {
+      detailError = null
+      selectedActionId = null
+      step = null
+      promptPreview = []
+      outputTail = null
+      try {
+        step = await readLargeJson(h, ['bullswarm', 'workflow', 'task', 'show', choice.taskId, '--json'], text =>
+          parseStep(text, Date.now()),
+        )
+      } catch (error) {
+        detailError = messageOf(error)
+      }
+      return detail
+    }
+    const id = choice.shortId
     // A frame tall enough to hold the whole timeline: the pane scrolls it,
     // so no level is hidden behind an "earlier rows" marker. The TUI keeps
     // two columns for its own borders, which the parser strips, so asking
@@ -327,6 +353,7 @@ export function register(on: On, options: PluginOptions = {}) {
 
   async function openPane(h: Host, shortId: string | null) {
     if (shortId && shortId !== selectedShortId) selectedActionId = null
+    if (shortId) selectedTaskId = null
     selectedShortId = shortId ?? selectedShortId ?? runs[0]?.shortId ?? null
     // Seated inline (a phone terminal, a narrow window) the pane asks for
     // most of the screen: the engine grants what the layout spares, and the
@@ -789,7 +816,13 @@ export function register(on: On, options: PluginOptions = {}) {
     if (e.requestId !== PANE_ID || e.surface === 'mobile') return next(e)
     const { Box, Text, Button } = await $.ui.resolve(e)
     const h = host
-    const selected = runs.find(r => r.shortId === selectedShortId) ?? runs[0] ?? null
+    const choice = paneChoice(runs, assignments, selectedShortId, selectedTaskId)
+    const selected = choice?.kind === 'workflow'
+      ? (runs.find(r => r.shortId === choice.shortId) ?? null)
+      : null
+    const selectedTask = choice?.kind === 'task'
+      ? (standaloneTasks(assignments).find(task => task.id === choice.taskId) ?? null)
+      : null
 
     // The frame is sized to the pane; a resize re-reads at the new size.
     // The engine reports the body as the lesser of the rows it granted and
@@ -820,6 +853,7 @@ export function register(on: On, options: PluginOptions = {}) {
       {
         runs,
         selected,
+        selectedTask,
         overview,
         detail,
         action,
@@ -848,6 +882,18 @@ export function register(on: On, options: PluginOptions = {}) {
           expandedStepTurn = null
           if (h) void openPane(h, shortId)
         },
+        selectTask: taskId => {
+          selectedTaskId = taskId
+          selectedActionId = null
+          poolsPage = false
+          stepMode = 'overview'
+          expandedStepTurn = null
+          paneOffset = 0
+          if (h) {
+            settle(h)
+            void readDetail(h).then(() => settle(h))
+          }
+        },
         openAction: actionId => {
           selectedActionId = actionId
           stepMode = 'overview'
@@ -859,8 +905,12 @@ export function register(on: On, options: PluginOptions = {}) {
           }
         },
         back: () => {
+          const wasPoolsPage = poolsPage
           poolsPage = false
-          selectedActionId = null
+          if (!wasPoolsPage) {
+            selectedActionId = null
+            selectedTaskId = null
+          }
           outputTail = null
           step = null
           stepMode = 'overview'

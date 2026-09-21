@@ -1,0 +1,70 @@
+ Home  Runs  Budget  Stats  Fleet
+ bullswarm · runs · all · 6 days · 1–66/79
+
+── active ─────────────────────────────────────────────
+ nothing in flight · bullswarm workflow goal "<goal>" …
+
+── Sun 20 Sep ────── 6 runs · 24 tasks · 44 unpriced ──
+ ✓ 9e481d57  project-a  build task on …    19m   ≈$4.01
+ ✓ 8eebd0ff  project-a  build task on …    15m   ≈$5.02
+ ✓ d7f99bde  project-a  build task on …    12m  ~<$0.01
+ ✓ 8b9b1b6f  project-a  build task on …    18m    $0.22
+ ✓ 7d432faa  project-a  analyze task o…    23m    $0.33
+ ✓ 5453ef44  project-a  analyze task o…    20m    $0.38
+ ✓ f684c5f3  project-b  build task on …    14m        —
+ ✓ 3155fb3c  project-a  sample task qu…    24m        —
+ ✓ 1e733624  project-b  build task on …     6m        —
+ ✓ 7f320764  project-a  build task on …    14m        —
+ ✓ rensha    project-b  sample goal fo…    59m   ≥$9.52
+ ✓ 5aab47e2  project-a  build task on …     4m        —
+ ✓ euqrni    project-a  sample goal fo…  1h56m   ≈$9.76
+ ✓ 21078132  project-a  build task on …    29m        —
+ ✓ 70ea992d  project-a  build task on …     7m        —
+ ✓ rw3dhi    project-a  sample goal fo…  1h38m  ≈$16.16
+ ✓ g6d6q2    project-b  sample goal fo…  6h01m  ≥$86.79
+ ✓ 677871be  project-a  build task on …    31m        —
+ ✓ 0efb3eb7  project-a  build task on …    17m        —
+ ✓ 6118b6db  project-a  build task on …    13m        —
+ ✓ va7k9a    project-a  sample goal fo…  2h46m  ≥$15.27
+ ✓ gbnq62    project-a  sample goal fo…  4h14m  ≥$33.80
+ ✓ 91b7d09a  project-a  build task on …    16m        —
+ ✓ f6dc2b47  project-a  build task on …    42m        —
+ ✓ ac594979  project-a  build task on …    18m        —
+ ✓ b386c2f5  project-a  analyze task o…    19m        —
+ ✓ ead18bde  project-a  build task on …    34m        —
+ ✓ 8f2f2618  project-a  build task on …    31m        —
+ ✓ 13c6f3bc  project-a  analyze task o…    34m        —
+ ✓ 52109621  project-a  build task on …    26m        —
+
+── Sat 19 Sep ──────── 2 runs · 7 tasks · 7 unpriced ──
+ ✓ qvh8e2    project-a  sample goal fo…    28m   ≈$4.00
+ ✓ c71e896e  project-a  sample task do…    16m        —
+ ✓ 6a4e8085  project-a  sample task in…    24m        —
+ ✓ a9e254cc  project-a  sample task al…    20m        —
+ ✓ —         —          build task on …    19m        —
+ ✓ —         —          build task on …    29m        —
+ ✓ —         —          build task on …    29m        —
+ ✓ 7e4w3i    project-a  sample goal fo…  3h28m  ≈$14.25
+ ✓ —         —          build task on …    27m        —
+
+── Fri 18 Sep ─────── 7 runs · 3 tasks · 43 unpriced ──
+ ✓ kresj2    project-c  sample goal fo…  1h24m   ≥$9.61
+ ✓ u9d48s    project-a  sample goal fo…  6h41m  ≥$57.91
+ ✓ is9aaa    project-a  sample goal fo…  1h06m   ≥$2.54
+ ✓ uamgfi    project-b  sample goal fo…    34m   ≈$2.16
+ ✓ cqxyw2    project-a  sample goal fo…     4m        —
+ ✓ 2yrcxi    project-b  sample goal fo…  1h45m   ≥$8.02
+ ✓ —         —          build task on …  1h00m        —
+ ✗ —         —          build task on …     0m        —
+ ✓ fuyyca    project-a  sample goal fo…  3h28m  ≥$30.06
+ ✗ —         —          analyze task o…    18m        —
+
+── Thu 17 Sep ──── 0 runs · 4 tasks · — · 4 unpriced ──
+ ✗ —         —          build task on …     7m        —
+ ✓ —         —          build task on …    22m        —
+ ✓ —         —          build task on …    24m        —
+ ✓ —         —          build task on …    14m        —
+
+── Wed 16 Sep ──── 0 runs · 3 tasks · — · 3 unpriced ──
+6 days loaded · older days load as you scroll
+ [Top] [End] [?.Help]

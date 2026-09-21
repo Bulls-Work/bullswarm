@@ -808,9 +808,10 @@ test('the Runs table prints a real history row\u2019s active minutes, not its sp
   assert.match(row[0], /6h01m/);
   assert.doesNotMatch(row[0], /37h15m/);
 
-  // A record written before 0.35 kept only the wall alias, which this release
-  // made equal to the span. The value stays visible and is labelled `span`.
+  // A record written before 0.35 kept only the wall alias. The value stays in
+  // the time column, dimmed by the renderer, without reintroducing `span`.
   const stored = { ...record, minutes: { wall: record.minutes.wall, agent: record.minutes.agent } };
   const old = day(stored).lines.filter((line) => line.includes('g6d6q2'));
-  assert.match(old[0], /span 37h15m/);
+  assert.match(old[0], /37h15m/);
+  assert.doesNotMatch(old[0], /span/);
 });

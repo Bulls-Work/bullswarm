@@ -949,6 +949,7 @@ const workflowText = rich({
     { name: 'events <runId>', desc: 'replay durable events after a sequence cursor' },
     { name: 'steer <runId>', desc: 'queue guidance for the next planner checkpoint' },
     { name: 'action show ...', desc: 'inspect one action and all of its attempts' },
+    { name: 'task show <taskId>', desc: 'read one standalone task through the dashboard Step model' },
   ],
   options: [],
   safety: [
@@ -956,7 +957,7 @@ const workflowText = rich({
       + 'stdout are TTYs; non-interactive callers receive this help text instead',
     'goal dispatches real coding-agent CLI processes and writes durable state under '
       + '~/.bullswarm/workflows/<runId>/',
-    'capabilities, tui, watch, events, and action show are read-only; cancel, steer, step restart, plan submit, '
+    'capabilities, tui, watch, events, action show, and task show are read-only; cancel, steer, step restart, plan submit, '
       + 'and runs delete are the exceptions — see their own --help',
     'legacy authored-graph runs are read-only; driving commands fail closed before dispatch',
     'plan contract, plan validate, plan show, and plan export are read-only; plan submit and plan revise write the accepted program into the run and relaunch its kernel when none is running',
@@ -1378,6 +1379,7 @@ const workflowTuiText = rich({
     + 'and budget), Step (one action\'s full panel), Budget (quota, measured worker-time share, labelled money, '
     + 'fit, and biggest workflows), Stats (Overview, Trends, Pools, Models, Projects), Fleet (lane/provider '
     + 'rungs), and Help. The tab row is Home, Runs, Budget, Stats, Fleet; History is the day table inside Runs. '
+    + 'Runs interleaves workflows and single tasks in one table: status, id, project, what, steps/task, active time, compact cost, and start. '
     + 'Keys: h Home, r Runs, b Budget, s Stats, y the first day of the Runs history, f Fleet, '
     + '? Help, 1–9 open a run, Tab cycles sub-tabs, Shift+Tab cycles workflows, p cycles the period, '
     + 'Esc or the left arrow moves out, arrows move one line, PgUp/PgDn scroll a screen, Home/End jump to '
@@ -1528,6 +1530,27 @@ const workflowActionShowText = rich({
   safety: ['read-only'],
   examples: [{ cmd: 'bullswarm workflow action show ab12cd act-3' }],
   next: 'bullswarm workflow watch <runId> or bullswarm workflow tui <runId> to see actions in context.',
+});
+
+const workflowTaskText = rich({
+  usage: 'bullswarm workflow task <command> ...',
+  purpose: 'Inspect one standalone bullswarm run task through the dashboard Step model.',
+  argsTitle: 'Commands',
+  args: [{ name: 'show <taskId>', desc: 'print the task record and its read-only Step model' }],
+  options: [],
+  safety: ['read-only — reads the single-task ledger and persisted task artifacts'],
+  examples: [{ cmd: 'bullswarm workflow task show f1e2d3c4 --json' }],
+  next: 'bullswarm workflow task show <taskId> --json for the full Step model.',
+});
+
+const workflowTaskShowText = rich({
+  usage: 'bullswarm workflow task show <taskId> [--json]',
+  purpose: 'Print a standalone task using the same Step model as the dashboard, including its task text, event-stream turns, result, and recorded cost.',
+  args: [{ name: '<taskId>', desc: 'full assignment id or an unambiguous id suffix (the pane shows its last 8 characters)' }],
+  options: [{ flag: '--json', desc: 'accepted for consistency; output is always JSON', default: 'output is always JSON' }],
+  safety: ['read-only — follows task artifacts only through the selected Bullswarm home runs directory'],
+  examples: [{ cmd: 'bullswarm workflow task show f1e2d3c4 --json' }],
+  next: 'bullswarm assignments --json to list tasks still in flight.',
 });
 
 const workflowStepText = rich({
@@ -1856,6 +1879,10 @@ const HELP = {
     action: {
       _text: workflowActionText,
       show: { _text: workflowActionShowText },
+    },
+    task: {
+      _text: workflowTaskText,
+      show: { _text: workflowTaskShowText },
     },
     step: {
       _text: workflowStepText,

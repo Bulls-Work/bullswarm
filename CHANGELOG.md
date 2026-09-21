@@ -1,5 +1,32 @@
 # bullswarm changelog
 
+## 0.35.4 — one Runs table for workflows and tasks
+
+- mod: a live single task no longer replaces the selected workflow; each task
+  gets its own `task <8-char-tail>` pane button and a real dashboard Step model
+  from the read-only `workflow task show` command.
+- runs: workflow and task rows share one set of columns — status, id, project,
+  what, kind (`7/7 steps` or `task`), active time, cost and start clock — sized
+  once for the whole page, so every day section lines up; long project names
+  stop at 18 cells with `…`.
+- runs: a task says what it is about: its first Markdown heading, else a
+  labelled subject line (`Outcome:`, `Goal:`, `Task:`, `Defect:` …), else the
+  first sentence that is neither setup (`You are …`, `Workspace: …`) nor a
+  standing rule (`Edit only …`, `Do not commit.`, `Never …`).
+- runs: tasks recorded before the task ledger show their start clock, their
+  project when the cwd was recorded, and a dim `build task on codex`-style
+  description instead of a row of dashes.
+- runs: money is one cents cell: `$0.32` measured, `≈$4.01` or `~$25.87`
+  estimated, `≥$138.12` when some attempts are unpriced, and `~<$0.01` below
+  a cent; rows no longer print `API`, `summed`, `estimated`, `unmeasured` or
+  `span`. Day rules read `6 runs · 7 tasks · ≥$374.85 · 3 unpriced`, dropping
+  the money and then the unpriced count at narrow widths, never the words.
+- runs: the description shrinks first, then start, kind and project drop as
+  the terminal narrows; status, id, time and cost always stay, and no line is
+  wider than the page from 40 to 260 columns.
+- runs: the cursor bar is one even inverse band; the grey cost and clock cells
+  no longer show as darker blocks inside it.
+
 ## 0.35.3 — whole right edges in Ghostty and herdr, Enter opens the row you are on, named phases
 
 - dashboard: every row is erased before it is painted instead of after, so a

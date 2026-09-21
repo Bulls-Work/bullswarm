@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +48,45 @@ class FakeOutput extends EventEmitter {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('workflow task show reads a fixture-home assignment through the shared Step model', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bullswarm-task-show-'));
+  try {
+    cpSync(REAL_HOME, home, { recursive: true });
+    mkdirSync(join(home, 'assignments'), { recursive: true });
+    mkdirSync(join(home, 'runs'), { recursive: true });
+    const id = 'f1e2d3c4-0b1a-4c2d-9e8f-7a6b5c4d3e21';
+    const taskFile = join(home, 'runs', 'task-sample.md');
+    const outFile = join(home, 'runs', 'out-sample.md');
+    const streamFile = join(home, 'runs', 'stream-sample.jsonl');
+    writeFileSync(taskFile, '# Sample task\nSummarize the invented orchard records.\n');
+    writeFileSync(outFile, 'The invented orchard summary is still being prepared.\n');
+    writeFileSync(streamFile, [
+      JSON.stringify({ at: '2026-09-20T00:00:10.000Z', kind: 'response', status: 'completed', summary: 'Reading the sample records.' }),
+      JSON.stringify({ at: '2026-09-20T00:00:20.000Z', kind: 'command_execution', status: 'completed', summary: 'npm test' }),
+    ].join('\n'));
+    writeFileSync(join(home, 'assignments', `${id}.json`), JSON.stringify({
+      id, source: 'run', pool: 'codex', model: 'gpt-5.6-luna', lane: 'build', effort: 'medium',
+      startedAt: '2026-09-20T00:00:00.000Z', kernelPid: 999999, workerPid: 999998,
+      taskFile, outFile, streamFile,
+    }));
+    const shown = spawnSync(process.execPath, [BIN, 'workflow', 'task', 'show', '7a6b5c4d3e21', '--json'], {
+      env: { ...process.env, BULLSWARM_HOME: home }, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(shown.status, 0, shown.stderr || shown.stdout);
+    const doc = JSON.parse(shown.stdout);
+    assert.equal(doc.action, 'show-task');
+    assert.equal(doc.taskId, id);
+    assert.equal(doc.step.identity.shortId, '5c4d3e21');
+    assert.deepEqual(doc.step.task.lines, ['# Sample task', 'Summarize the invented orchard records.']);
+    assert.equal(doc.step.activity.available, true);
+    assert.equal(doc.step.activity.turns.length, 1);
+    assert.match(doc.step.resultBlock.output.lines.join('\n'), /invented orchard summary/);
+    assert.equal(doc.step.presentation.header.model, 'gpt-5.6-luna');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 /** The painted rows a chunk of terminal output positions, as `[row, text]`. */
 function positionedRows(chunk) {

@@ -347,7 +347,7 @@ test('all-runs ordering uses the V2 lifecycle start time and keeps the initial l
     const running = cmdWorkflow([], { bullswarmDir: home, input, output });
     input.emit('data', Buffer.from('r')); // Home -> Runs
     assert.match(plain(lastFrame(output)), /── active ─/);
-    assert.match(plain(lastFrame(output)), /abc234  Audit every file/);
+    assert.match(plain(lastFrame(output)), /abc234.*Audit every file/);
     input.emit('data', Buffer.from('q'));
     assert.equal(await running, 0);
   } finally { cleanup(); }
@@ -396,13 +396,13 @@ test('Runs opens on the first active row, paints it inverse, and clamps Up there
   try {
     const session = shellSession(home, { columns: 120, rows: 30 });
     const runs = session.press('r');
-    const activeRow = String(runs).split('\n').find((line) => plain(line).includes('● 1.aaa111'));
+    const activeRow = String(runs).split('\n').find((line) => plain(line).includes('● aaa111'));
     assert.ok(activeRow, 'the first active run is visible on Runs');
     assert.match(activeRow, /\x1b\[7m/, 'the initial cursor row is inverse');
 
     session.press('\x1b[A');
     const afterUp = lastFrame(session.output);
-    const stillFirst = String(afterUp).split('\n').find((line) => plain(line).includes('● 1.aaa111'));
+    const stillFirst = String(afterUp).split('\n').find((line) => plain(line).includes('● aaa111'));
     assert.ok(stillFirst, 'the first active run remains visible after Up');
     assert.match(stillFirst, /\x1b\[7m/, 'Up did not move the cursor off the first row');
 
@@ -678,10 +678,8 @@ test('live dashboard navigation preserves V2 drilldowns, mobile panes, and empty
   } finally { cleanup(); }
 });
 
-test('the Runs active block draws a live run exactly as Home\u2019s running section does', () => {
-  // Requirement 7: the `active` block is the same renderer as Home's
-  // `running` section, so a live run gets its plan strip and per-step bar on
-  // both pages. Compare the painted rows, not the section title.
+test('the Runs active block uses the unified one-row columns', () => {
+  // Runs uses the same columns for live workflows and live tasks.
   const { home, cleanup } = fixture();
   try {
     const rows = dashboardRows(home, { all: true });
@@ -689,26 +687,14 @@ test('the Runs active block draws a live run exactly as Home\u2019s running sect
     assert.equal(live.length, 1, 'the fixture must have one live run');
     const model = dashboardModel(live[0], { runs: live, rollups: readRollups(home) });
     const opts = { width: 120, height: 60, rows, allRows: rows, selectedRunId: live[0].runId };
-    const homeFrame = renderDashboardPage(model, { ...opts, page: 'home' }).lines.map(plain);
     const runsFrame = renderDashboardPage(model, { ...opts, page: 'runs' }).lines.map(plain);
 
-    const section = (lines, title, stopAt) => {
-      const at = lines.findIndex((line) => line.startsWith(`\u2500\u2500 ${title} \u2500`));
-      assert.ok(at >= 0, `no ${title} section in ${lines.join('\n')}`);
-      const rest = lines.slice(at + 1);
-      const end = rest.findIndex((line) => /^\u2500\u2500 /.test(line) || stopAt.test(line));
-      return rest.slice(0, end === -1 ? rest.length : end).filter((line) => line.trim());
-    };
-    const running = section(homeFrame, 'running', /^ \u2500 /);
-    const active = section(runsFrame, 'active', /No workflow history|days loaded/);
-    assert.ok(running.length, homeFrame.join('\n'));
-    // Every row Home paints for the live run is the row Runs paints for it.
-    for (const line of running) assert.ok(active.includes(line), `Runs is missing Home's row:\n${line}\n---\n${active.join('\n')}`);
-    // And it really is a live run with its plan strip, not the empty state.
-    const strip = running.find((line) => line.includes('abc234'));
-    assert.ok(strip, running.join('\n'));
-    assert.match(running.join('\n'), /\u25b6\u2500\u2500\u25cb\s+audit-files/);
-    assert.ok(!active.some((line) => line.includes('nothing in flight')), active.join('\n'));
+    const active = runsFrame.find((line) => line.includes('abc234'));
+    assert.ok(active, runsFrame.join('\n'));
+    assert.match(active, /^ ● abc234\s+/);
+    assert.match(active, /Audit every file autonomously/);
+    assert.match(active, /0\/2 steps/);
+    assert.doesNotMatch(active, /phase|span|API|estimated|unmeasured/);
   } finally { cleanup(); }
 });
 
@@ -854,7 +840,7 @@ test('bare workflow dashboard navigates active and recent runs on mobile', async
     // The record predates the active union, so the row keeps its recorded
     // span and says so; the elastic goal gives back the cells that label and
     // the duration take.
-    assert.match(plain(lastFrame(session.output)), /✓ def345  bs-dashboa… Aud… span 5m/);
+    assert.match(plain(lastFrame(session.output)), /✓ def345\s+bs-dashboard-.*Audit documentat.*5m\s+—/);
     assert.match(plain(session.output.text), /── timeline · \d+ phases? · \d+ attempts?/);
     assert.equal(await session.quit(), 0);
     assert.deepEqual(session.input.rawModes, [true, false]);
@@ -4450,9 +4436,9 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
     assert.match(homeText, /Home · Today · \d+ Sep · top 1 runs/);
     assert.match(homeText, /live-task/);
     const runs = session.press('r');
-    assert.match(plain(runs), /finished-task/);
-    assert.match(plain(runs), /short failure/);
-    assert.ok(runs.includes('⚙'), 'task glyph is distinct from workflow glyph');
+    assert.match(plain(runs), /hed-task/);
+    assert.match(plain(runs), /ive-task/);
+    assert.doesNotMatch(runs, /⚙/, 'tasks use the same result glyphs as workflows');
     assert.match(plain(runs), /0 runs · 1 task/, 'the day header counts the task apart from the workflows');
     const task = session.press('\r');
     // Enter opens the task through the same Step model and view: the five
@@ -4565,7 +4551,7 @@ test('a task with no recorded id is listed and counted once, not once per source
 
   const runs = renderDashboardPage(model, { page: 'runs', width: 120, height: 40, nowMs });
   const runLines = runs.lines.map(plain);
-  const taskRows = runLines.filter((line) => /build · task · codex/.test(line));
+  const taskRows = runLines.filter((line) => /✓ —\s+—\s+build task on codex\s+task\s+1h00m\s+—\s+\d{2}:\d{2}/.test(line));
   assert.equal(taskRows.length, 1, `task listed ${taskRows.length} times:\n${runLines.join('\n')}`);
   const header = runLines.find((line) => /Fri 18 Sep/.test(line));
   assert.ok(header, 'the day header is missing');
@@ -4745,6 +4731,13 @@ function cursorRow(screen) {
   return at < 0 ? null : { y: at + 1, text: plain(raw[at]).trimEnd() };
 }
 
+/** The Runs cursor row's raw escapes, for checks on how the bar is painted. */
+function cursorRaw(screen) {
+  const raw = String(screen).split('\n');
+  if (plain(raw[0] ?? '') === '') raw.shift();
+  return raw.find((row, index) => index >= 2 && index < raw.length - 1 && row.includes('\x1b[7m')) ?? '';
+}
+
 // The owner's Runs page (0.35.2): on a day where single tasks sit between
 // workflow rows, Enter on the workflow row under the cursor opened a task.
 // Tasks recorded before the single-task ledger have no id, their rows were
@@ -4765,16 +4758,22 @@ for (const columns of [55, 200]) {
       const saturday = listTasks({ home, now: Date.now() }).finished
         .filter((task) => new Date(task.endedAt).getDate() === 19);
       /** What a row must open: the page's header, and for a task with no id the duration only it has. */
-      const expected = (text) => {
+      const anonymous = saturday.filter((entry) => entry.id == null)
+        .sort((a, b) => String(b.endedAt).localeCompare(String(a.endedAt)));
+      const expected = (text, anonymousOrdinal = 0) => {
         const run = text.match(/^ ✓ ([a-z0-9]{6}) /);
         if (run) return { kind: 'run', header: new RegExp(`^ ✓ ${run[1]} · completed · `) };
-        const task = text.match(/^ ⚙ +(\w+) · (\S+) · .* (\d\d:\d\d)$/);
+        const task = text.match(/^ [✓✗] +(\S+)/);
         assert.ok(task, `not a run or task row: ${text}`);
-        const [, lane, id, clock] = task;
-        const record = saturday.find((entry) => hhmm(entry.endedAt) === clock);
-        assert.ok(record, `no ledger task ended at ${clock}`);
-        assert.equal(record.id == null, id === 'task', `${text}: the row's id is not the ledger's`);
-        return { kind: 'task', header: new RegExp(`^ ✓ ${lane} task · ${id} · succeeded`), duration: id === 'task' ? stepClockText(record.durationMs) : null };
+        const [, id] = task;
+        const record = id === '—'
+          ? anonymous[anonymousOrdinal]
+          : saturday.find((entry) => entry.id != null && String(entry.id).endsWith(id));
+        assert.ok(record, `no ledger task matches ${id}`);
+        const rowId = record.id == null ? '—' : String(record.id).slice(-8);
+        assert.equal(id, rowId, `${text}: the row's id is not the ledger's`);
+        const detailId = record.id == null ? 'task' : String(record.id).length > 14 ? String(record.id).slice(-8) : record.id;
+        return { kind: 'task', header: new RegExp(`^ ✓ ${record.lane} task · ${detailId} · succeeded`), duration: record.id == null ? stepClockText(record.durationMs) : null };
       };
       const check = (screen, want, how) => {
         assert.match(frameHeader(screen), want.header, `${how}: opened the wrong item`);
@@ -4787,15 +4786,16 @@ for (const columns of [55, 200]) {
       const end = rows.findIndex((row, index) => index > start && row.startsWith('── '));
       const day = rows.slice(start + 1, end)
         .map((text, index) => ({ y: start + index + 2, text: text.trimEnd() }))
-        .filter((row) => /^ [✓⚙] /.test(row.text));
-      assert.deepEqual(day.map((row) => row.text.match(/^ [✓⚙] +(\S+( · \S+)?)/)[1]), [
-        'qvh8e2', 'build · c71e896e', 'analyze · 6a4e8085', 'build · a9e254cc',
-        'build · task', 'build · task', 'build · task', '7e4w3i', 'build · task',
+        .filter((row) => /^ [✓✗] /.test(row.text));
+      assert.deepEqual(day.map((row) => row.text.match(/^ [✓✗] +(\S+)/)[1]), [
+        'qvh8e2', 'c71e896e', '6a4e8085', 'a9e254cc',
+        '—', '—', '—', '7e4w3i', '—',
       ]);
 
       // A click opens the row it lands on.
-      for (const row of day) {
-        const want = expected(row.text);
+      for (const [index, row] of day.entries()) {
+        const anonymousOrdinal = day.slice(0, index).filter((entry) => /^ [✓✗] +—\s/.test(entry.text)).length;
+        const want = expected(row.text, anonymousOrdinal);
         session.press(`\x1b[<0;5;${row.y}M`);
         check(lastFrame(session.output), want, `click on ${row.text}`);
         session.press(ESC_KEY);
@@ -4804,10 +4804,15 @@ for (const columns of [55, 200]) {
 
       // Enter opens the row the cursor is drawn on: walk it down the list.
       let screen = lastFrame(session.output);
-      for (const row of day) {
-        const want = expected(row.text);
+      for (const [index, row] of day.entries()) {
+        const anonymousOrdinal = day.slice(0, index).filter((entry) => /^ [✓✗] +—\s/.test(entry.text)).length;
+        const want = expected(row.text, anonymousOrdinal);
         for (let step = 0; step < 80 && cursorRow(screen)?.y !== row.y; step += 1) screen = session.press('\x1b[B');
         assert.deepEqual(cursorRow(screen), row, `the cursor never reached ${row.text}`);
+        // Reverse video turns a cell's text colour into its background: past
+        // the status glyph, a coloured or dim cell would be a band in the bar.
+        const bar = cursorRaw(screen);
+        assert.ok((bar.match(/\x1b\[38;/g) ?? []).length <= 1 && !/\x1b\[2m/.test(bar), `the cursor bar has coloured cells: ${JSON.stringify(bar)}`);
         check(session.press('\r'), want, `Enter on ${row.text}`);
         // Out again: a task returns to Runs with the cursor where it was; a
         // run returns to Home, and Runs opens on its first row.

@@ -16,9 +16,9 @@
                                                                                                                                      │  excepteur consequat ad ipsum deserunt labore irure do consequat…
                                                                                                                                      │
                                                                                                                                      │ [2m──[0m cost [2m─────────────────────────────────────────────────────────[0m
-                                                                                                                                     │  [2mAPI rate[0m    [2m—[0m       [2mno recorded rate[0m
-                                                                                                                                     │  [38;2;127;163;224mcodex[0m[2m plan[0m  [2m—[0m       [2mno meter reading for this attempt[0m
-
+                                                                                                                                     │  [2mAPI rate[0m    [2m—[0m       [2mno-rate-card[0m
+                                                                                                                                     │  [38;2;127;163;224mcodex[0m[2m plan[0m  [2m—[0m       [2mno API cost to price[0m
+                                                                                                                                     │              [1m$100/mo[22m · [2mweekly window[0m
 
 
 

@@ -41,6 +41,8 @@ import { helpText, usageLine } from '../help.js';
 import { flagName, unknownFlagExit } from '../lib/cli-flags.js';
 import { cmdReprice } from './reprice.js';
 import { stepPageModel } from './step-model.js';
+import { taskStepInput, taskStepModel } from './task-step.js';
+import { listAssignments } from '../lib/assignments.js';
 
 // BULLSWARM_DIR is read on every call so that changes to the
 // BULLSWARM_HOME env var (e.g. set per-test) are honored, not
@@ -150,6 +152,8 @@ export async function cmdWorkflow(args, {
       return wfSteer(opts);
     case 'action':
       return wfAction(opts);
+    case 'task':
+      return wfTask(opts, bullswarmDir);
     case 'step':
       return wfStep(opts);
     default: {
@@ -1986,12 +1990,58 @@ function wfAction(opts) {
   }
 }
 
+function taskRecordFor(home, token) {
+  const live = listAssignments(home, { prune: false }).filter((entry) => entry?.source === 'run');
+  let finished = [];
+  try {
+    const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'));
+    finished = (state?.decisionLog ?? []).filter((entry) => entry?.kind === 'run' || entry?.source === 'run');
+  } catch { /* a home with only a live ledger is still inspectable */ }
+  const records = [...live, ...finished];
+  const exact = records.find((entry) => entry?.id === token);
+  if (exact) return exact;
+  const matches = records.filter((entry) => typeof entry?.id === 'string' && entry.id.endsWith(token));
+  if (matches.length > 1) throw new Error(`task id "${token}" is ambiguous`);
+  return matches[0] ?? null;
+}
+
+/** Read one standalone task through the dashboard's shared Step projection. */
+function wfTask(opts, home) {
+  const [sub, token] = opts.rest;
+  if (sub !== 'show' || !token) {
+    console.error(`usage: ${usageLine(['workflow', 'task', 'show'])}`);
+    return 2;
+  }
+  try {
+    const taskRecord = taskRecordFor(home, token);
+    if (!taskRecord) throw new Error(`no task found for "${token}"`);
+    const input = taskStepInput(taskRecord, { runsDir: join(home, 'runs') });
+    const attempt = input.row.state.attempts[0] ?? null;
+    const actionRecord = input.row.state.actions[0] ?? null;
+    const step = taskStepModel(input);
+    console.log(JSON.stringify({
+      action: 'show-task',
+      taskId: taskRecord.id ?? null,
+      taskRecord,
+      actionRecord,
+      attempts: attempt ? [attempt] : [],
+      events: [],
+      step,
+    }, null, 2));
+    return 0;
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    return 1;
+  }
+}
+
 // The help path whose usage line explains this workflow verb. Returns null
 // for a verb with no help node — the dispatcher's default branch already
 // answers those with guidance and exit 2.
 function workflowHelpPath(sub, opts) {
   if (!sub) return ['workflow'];
   if (sub === 'action') return opts.rest[0] === 'show' ? ['workflow', 'action', 'show'] : ['workflow', 'action'];
+  if (sub === 'task') return opts.rest[0] === 'show' ? ['workflow', 'task', 'show'] : ['workflow', 'task'];
   if (sub === 'step') return opts.rest[0] === 'restart' ? ['workflow', 'step', 'restart'] : ['workflow', 'step'];
   const LEAVES = ['goal', 'cancel', 'pause', 'resume', 'capabilities', 'tui', 'events', 'watch', 'steer', 'reindex', 'reprice'];
   return LEAVES.includes(sub) ? ['workflow', sub] : null;

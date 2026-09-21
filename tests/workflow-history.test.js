@@ -378,7 +378,7 @@ test('H6: a finished run with no index entry and no goal-project file is named b
     // And the page text agrees: the row is named, the blank stays blank.
     const text = historyLines([today], { width: 100, ansi: false }).lines.join('\n');
     assert.match(text, /bullswarm-handoff/);
-    assert.match(text, /unknown project/);
+    assert.match(text, /✓ nocwd1\s+—\s+no cwd on record/);
   } finally { h.cleanup(); }
 });
 
@@ -507,7 +507,8 @@ test('H5/H6: a run with no readable start is not dated from the clock, and paint
       rows: [{ runId: 'wf-nostart-000001', shortId: 'nostrt', project: 'bullswarm', goal: 'no start recorded', startedAt: null, unfinished: true, running: true, elapsedMinutes: null, lastWriteAt: null }],
     };
     const text = historyLines([day], { width: 120, ansi: false }).lines.join('\n');
-    assert.match(text, /● nostrt\s+bullswarm\s+running · elapsed unavailable · no result yet/);
+    assert.match(text, /● nostrt\s+bullswarm\s+no start recorded/);
+    assert.match(text, /—\s+—\s+—$/m);
   } finally { h.cleanup(); }
 });
 
@@ -535,7 +536,6 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
       // The legacy state survives the phone width in its compact row; the
       // shared reason now appears once in the page footer rather than being
       // repeated as a second line for every legacy workflow.
-      assert.match(text, /legacy · read-only/);
       assert.match(text, /Legacy workflows are read-only: no cost and no pool minutes were recorded\./);
       // Marks and identities stay at the row start at every width. Desktop
       // also has room for the measured state, duration and trailing clock;
@@ -544,19 +544,20 @@ test('H6/H7: legacy and unfinished rows render with their marks at 120 and 55 co
       assert.match(text, /■ stop01/, 'a dead kernel is never painted as a live run');
       assert.match(text, /✓ 000001/, 'the legacy result mark survives');
       if (width === 120) {
-        assert.match(text, /running · 5h00m elapsed · no result yet/);
-        assert.match(text, /interrupted · no result recorded/);
-        // A pre-0.35 record carries only its span, and the row says so.
-        assert.match(text, /legacy · read-only · smoke-two-step\s+span 2m\s+09:02/, 'the legacy row shows its measured duration and finish time');
+        assert.match(text, /run101\s+bullswarm\s+still going.*5h00m/);
+        assert.match(text, /stop01\s+repo\s+died before it delivered.*30m/);
+        // A pre-0.35 record keeps its wall fallback in the time cell without
+        // putting the old `span` prose back into the row.
+        assert.match(text, /000001\s+—\s+smoke-two-step.*2m.*09:00/);
       }
     }
     // A goal long enough to fill the row leaves the identity and fixed
     // trailing measurements intact: the elastic summary is what gets cut.
     const running = days[0].rows.find((row) => row.unfinished === true);
     const wide = historyLines([{ ...days[0], rows: [{ ...running, goal: 'g'.repeat(200) }] }], { width: 120, ansi: false });
-    const row = wide.lines.find((line) => line.includes('running'));
+    const row = wide.lines.find((line) => line.includes('run101'));
     assert.match(row, /^ ● run101\s+bullswarm/);
-    assert.match(row, /5h00m\s+—$/, `fixed measurements trimmed instead of the summary: ${JSON.stringify(row)}`);
+    assert.match(row, /5h00m\s+—\s+13:00$/, `fixed measurements trimmed instead of the summary: ${JSON.stringify(row)}`);
     assert.ok(row.length <= 120, `over the frame: ${row.length}`);
 
     // The legacy-only day prints no money at all (H3), at either width.
@@ -579,8 +580,8 @@ test('H7: a day whose runs are all still in flight says why it has no estimate',
     assert.equal(today.unfinishedRows, 1);
     for (const width of [120, 55]) {
       const view = historyLines([today], { width, ansi: false });
-      assert.match(view.lines.join('\n'), /no result recorded yet/);
-      assert.doesNotMatch(view.lines.join('\n'), /no recorded API-equivalent cost/, 'the reason is that it has not delivered, not that it recorded nothing');
+      assert.match(view.lines.join('\n'), /1(?: run|r) · — · 1 unpriced/);
+      assert.doesNotMatch(view.lines.join('\n'), /span|API|estimated|unmeasured/);
     }
     assert.equal(historyNote([today], { width: 120 })[0], '1 day loaded · older days load as you scroll');
   } finally { h.cleanup(); }
@@ -603,7 +604,7 @@ test('H7: finished single tasks share a day row without changing workflow counts
     assert.deepEqual(day.rows, [task]);
     const view = historyLines([day], { width: 120, ansi: false });
     assert.match(view.lines.join('\n'), /0 runs · 1 task/);
-    assert.match(view.lines.join('\n'), /task-history-1/);
+    assert.match(view.lines.join('\n'), /istory-1/);
     assert.ok(view.regions.some((region) => region.action.kind === 'task'
       && region.action.taskId === 'task-history-1'));
   } finally { h.cleanup(); }
