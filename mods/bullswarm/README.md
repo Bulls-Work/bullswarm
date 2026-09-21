@@ -38,10 +38,10 @@ What it adds beyond the packaged skill and the MCP server:
 | `ui.close` | keeps the strip's `[w]` label in step when the person closes the pane |
 
 Pool names in the strip and pane are display names: an account pool such as
-`claude-code:acme` shows as `claude-code:w` (first letter of the account slug,
+`claude-code:acme` shows as `claude-code:a` (first letter of the account slug,
 unless two accounts would collide). The plugin option `poolAliases`
 (`/config`, or `pluginConfigs` in settings) overrides any name:
-`claude-code:acme=cc:w,claude-code:initech=cc:p`. The real pool names are
+`claude-code:acme=cc:a,claude-code:initech=cc:i`. The real pool names are
 unchanged everywhere else, because bullswarm derives them from the account's
 config directory (`~/.claude-acme`) and the keychain entry is keyed by it.
 

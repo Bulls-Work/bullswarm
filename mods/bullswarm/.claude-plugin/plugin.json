@@ -10,7 +10,7 @@
     "poolAliases": {
       "type": "string",
       "title": "Pool display names",
-      "description": "Display names for pools in the strip and pane, as from=to pairs separated by commas (claude-code:acme=claude-code:w). Without one, an account pool shows as prefix:<first letter of its slug>.",
+      "description": "Display names for pools in the strip and pane, as from=to pairs separated by commas (claude-code:acme=claude-code:a). Without one, an account pool shows as prefix:<first letter of its slug>.",
       "default": ""
     },
     "strip": {
