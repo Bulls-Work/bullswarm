@@ -20,19 +20,19 @@
 ── timeline · 5 phases · 4 attempts ───────────────────
 ── Preflight
  04:05  ● goal accepted · goal.json
-── ✓ 1 · home-extraction
+── ✓ Phase 1 · Mechanical · home-extraction
  04:05 → 04:34 · 28m25s · 1/1
  04:05  ✓ home-extraction · codex                28m25s
-── ✓ 2 · runs-extraction
+── ✓ Phase 2 · Mechanical · runs-extraction
  04:34 → 05:04 · 30m32s · 1/1
  04:34  ✓ runs-extraction · codex                30m32s
-── ✓ 3 · run-extraction
+── ✓ Phase 3 · Mechanical · run-extraction
  05:04 → 05:36 · 31m52s · 1/1
  05:04  ✓ run-extraction · codex                 31m52s
-── ▶ 4 · integrate
+── ▶ Phase 4 · Integrate · integrate
  05:36 → now · 2m19s · 0/1
  05:36  ▶ integrate · codex · running             2m19s
-── ○ 5 · verify
+── ○ Phase 5 · Verify · verify
  — → — · — · 0/1
 
 

@@ -377,6 +377,68 @@ test('Home spend chart: one bar a day for seven days from a $0 axis, whole-dolla
   }
 });
 
+test('Home at every width from 110 to 260: the halves and gutter add up to the page, the right column keeps its last cells, the chart fills its half', () => {
+  // The owner read Home at 199–200 columns with the right column's last cell
+  // gone on every row (`40` for `40%`). The halves must add up to the width
+  // at odd widths as well as even ones, and nothing the band says is cut.
+  const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+  const model = dashboardModel(null, {
+    rollups: readRollups(SNAPSHOT), nowMs, usage: { pools: [], assignments: [] }, days: [], period: '7d',
+  });
+  const breakdown = model.stats.overview.breakdown;
+  const shares = (list) => list.slice(0, 4).map((row) => `${Math.round(row.minutesShare * 100)}%`);
+  const figures = [
+    ...shares(breakdown.pools),
+    ...shares(breakdown.models),
+    ...breakdown.projects.slice(0, 4).map((row) => String(row.runs)),
+  ];
+  assert.ok(figures.some((figure) => /^\d$/.test(figure)), 'the fixture has a single-digit count to lose');
+  // The page body as painted, before the frame cuts anything, on the owner's
+  // 55-row terminal and a 36-row one: the chart's height once followed the
+  // terminal's, and only the 36-row one left it shorter than the breakdowns
+  // with this fixture.
+  for (const [width, height] of Array.from({ length: 151 }, (_, index) => [[110 + index, 55], [110 + index, 36]]).flat()) {
+    const body = bodyBuilder();
+    homePage(model, { width, narrow: false, nowMs, period: '7d', height }, body);
+    const lines = body.lines.map(visible);
+    const over = lines.find((line) => [...line].length > width);
+    assert.equal(over, undefined, `${width}: a line is wider than the page\n${over}`);
+    const { half, right } = halvesOf(width);
+    assert.equal(right + half, width, `${width}: left half, gutter and right half do not add up`);
+
+    // The period band: every breakdown row fills the right half to the page's
+    // last cell, and that cell ends its own figure.
+    const head = lines.findIndex((line) => line.includes('spent per day'));
+    const summary = lines.findIndex((line, index) => index > head && line.includes('Workflows:'));
+    const band = lines.slice(head, summary);
+    const rowsWith = band.filter((line) => /[▇░]/.test(line.slice(right)));
+    assert.equal(rowsWith.length, figures.length, `${width}: breakdown rows\n${band.join('\n')}`);
+    rowsWith.forEach((line, index) => {
+      assert.equal([...line].length, width, `${width}: the right half stops short\n${line}`);
+      assert.ok(line.endsWith(` ${figures[index]}`), `${width}: the row lost the end of ${figures[index]}\n${line}`);
+      assert.equal(line.slice(half, right).trim(), '', `${width}: the gutter is painted\n${line}`);
+    });
+    // The chart takes the height of the three breakdowns beside it: its note,
+    // day labels and baseline end on the stack's last row.
+    const leftEnd = band.findLastIndex((line) => line.slice(0, half).trim());
+    const rightEnd = band.findLastIndex((line) => line.slice(right).trim());
+    assert.equal(leftEnd, rightEnd, `${width}: the chart and the breakdowns end on different rows\n${band.join('\n')}`);
+    assert.match(band[leftEnd], /^ ~ bars leave 66 unpriced attempts out/, `${width}`);
+
+    // The Today band's licence table and the summary band cut nothing.
+    const today = lines.slice(lines.findIndex((line) => line.startsWith('Home · Today')), lines.findIndex((line) => line.startsWith('── running')));
+    assert.ok(today.every((line) => !line.slice(right).includes('…')), `${width}: the licence table is cut\n${today.join('\n')}`);
+    const figuresBand = lines.slice(summary, lines.findIndex((line) => line.startsWith('── recent')));
+    assert.ok(figuresBand.every((line) => !line.includes('…')), `${width}: the summary is cut\n${figuresBand.join('\n')}`);
+    const figuresText = figuresBand.join('\n');
+    assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unmeasured/, `${width}\n${figuresText}`);
+    assert.match(figuresText, /sub unknown \(no plan price\)/, `${width}\n${figuresText}`);
+    if (width >= 190) {
+      assert.match(figuresText, /Spent: at least \$299\.87 api · 66 unmeasured · sub unknown \(no plan price\)/, `${width}: Spent wraps at a width that holds it\n${figuresText}`);
+    }
+  }
+});
+
 test('the period selector redraws the band for Last 30 days and All time', () => {
   const snapshot = SNAPSHOT;
   assert.ok(existsSync(`${snapshot}/history/runs.jsonl`), 'the supplied real Home snapshot is missing');

@@ -43,8 +43,8 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
              Mon          Tue          Wed          Thu          Fri          Sat          Sun        project-b        ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    4
  ~ bars leave 66 unpriced attempts out                                                                project-c        ▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
 
- Workflows: 15 · verified 10 (67%)                                  Favourite pool: codex                                              Spent: at least $299.87 api · 66 unmeasured · sub unknown (no pl…
- Busiest project: project-a (10)                                    Favourite model: gpt-5.6-luna                                      Median run: 1h45m
+ Workflows: 15 · verified 10 (67%)                                Favourite pool: codex                                        Spent: at least $299.87 api · 66 unmeasured · sub unknown (no plan price)
+ Busiest project: project-a (10)                                  Favourite model: gpt-5.6-luna                                Median run: 1h45m
 
  Your 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work
 

@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { DASHBOARD_KEYS, activeDashboardRows, agentDetailLines, dashboardModel, dashboardRows, overviewSnapshot, readLicencePerDay, renderDashboard, renderDashboardPage, renderDetails, renderWorkflowTui, workflowPanelModel, requestCancel, dashboardJson, runDashboard, writeClipboard } from '../src/workflow/dashboard.js';
 import { readRollups } from '../src/workflow/rollup.js';
+import { listTasks } from '../src/lib/tasks.js';
+import { stepClockText } from '../src/workflow/step-model.js';
 import { SUBSTITUTED_GLYPHS } from '../src/lib/glyphs.js';
 import { appendEvent, readEvents } from '../src/workflow/events.js';
 import { cmdWorkflow } from '../src/workflow/cli.js';
@@ -131,7 +133,7 @@ function timelinePaneRows(screen) {
   return pane;
 }
 
-// Run v2's phase rule is `── <glyph> <n> · <name> ───… <start> → <end> ·
+// Run v2's phase rule is `── <glyph> Phase <n> · <name> ───… <start> → <end> ·
 // <duration> · <done>/<total> ──` (the phone splits the right half onto its
 // own dim line). The label is the phase name with its glyph and number off,
 // and `elapsed` is the duration cell out of the right half.
@@ -245,11 +247,11 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.match(plain(screen), /● goal accepted · goal\.json/);
     // Rule 6: the phase rule carries start → end, duration and done/total, so
     // the `started` and `completed` filler rows are gone.
-    assert.match(plain(screen), /── ✓ 1 · Implementation ─.* → .* · 3s · 1\/1/);
+    assert.match(plain(screen), /── ✓ Phase 1 · Implementation ─.* → .* · 3s · 1\/1/);
     assert.doesNotMatch(segmentRows(screen, 'Implementation').join('\n'), /├─ started/);
     assert.doesNotMatch(segmentRows(screen, 'Implementation').join('\n'), /└─✓ completed/);
     assert.doesNotMatch(segmentRows(screen, 'Implementation').join('\n'), /phase active/);
-    assert.match(plain(screen), /── ▶ 2 · Evidence ─/);
+    assert.match(plain(screen), /── ▶ Phase 2 · Evidence ─/);
     assert.doesNotMatch(timelinePaneRows(screen).join('\n'), /\[Phase:/);
     assert.match(plain(screen), /▶ check-result · relay:b · /);
     // The timeline row carries the attempt's own clock, pool · model · effort
@@ -274,7 +276,7 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     assert.doesNotMatch(plain(narrowPhases), /\[✓ 1 Implementation/);
     // Run v2 folds the old agent pane into the timeline: the phase rule names
     // the phase and the row under it carries its span and done/total.
-    assert.match(plain(narrowAgents), /── ▶ 2 · Evidence/);
+    assert.match(plain(narrowAgents), /── ▶ Phase 2 · Evidence/);
     assert.match(plain(narrowAgents), /^ \d{2}:\d{2} → now · \S+ · 0\/1$/m);
     const cancelled = requestCancel(home, 'v2d234', { source: 'test', requesterPid: 1234 });
     assert.equal(cancelled.state.cancellation.requested, true);
@@ -908,7 +910,12 @@ test('interactive TUI repaints spinner frames in place without clearing the scre
     const rowWrites = output.text.match(/\x1b\[\d+;1H/g) ?? [];
     assert.ok(rowWrites.length >= 2, 'spinner ticks repaint by row');
     assert.ok(rowWrites.length < output.rows, 'a spinner tick does not rewrite the whole frame');
-    assert.ok((output.text.match(/\x1b\[K/g) ?? []).length >= output.rows, 'each row clears only its stale tail');
+    assert.ok((output.text.match(/\x1b\[K/g) ?? []).length >= output.rows, 'each row is erased before it is painted');
+    // Never an erase straight after a row's text: on a row that fills the
+    // terminal the cursor sits on its last cell, and Ghostty's erase takes
+    // that cell with it.
+    const beforeErase = output.text.split('\x1b[K').slice(0, -1);
+    assert.ok(beforeErase.every((chunk) => /(?:\x1b\[(?:\d+;1)?H|\n)$/.test(chunk)), 'an erase follows painted text');
   } finally { cleanup(); }
 });
 
@@ -950,7 +957,7 @@ test('narrow interactive TUI opens on the timeline and p toggles the plan boxes'
     // span line under it; Preflight keeps the goal row only.
     assert.match(plain(preflightText), /── Preflight/);
     assert.match(plain(preflightText), /^ \d{2}:\d{2}  ● goal accepted · goal\.json$/m);
-    assert.match(plain(preflightText), /^── ✓ 1 · Implementation$/m);
+    assert.match(plain(preflightText), /^── ✓ Phase 1 · Implementation$/m);
     assert.match(plain(plannerText), /Workflow Planner · overview/);
     assert.match(plain(agentsText), /audit-files · abc234 · succeeded/);
     const visibleWidths = paintedRows(timelineText).map((line) => plain(line).length);
@@ -1165,23 +1172,26 @@ function dayFixture(now = Date.now()) {
 
 /** The last frame written to a fake output, with its leading paint escape. */
 // The painter writes a full frame from cursor-home (`\x1b[H`) and then, for
-// every later change, only the rows that differ (`\x1b[<row>;1H<line>\x1b[K`).
-// The screen a reader sees is the last full frame with those patches applied.
+// every later change, only the rows that differ (`\x1b[<row>;1H\x1b[K<line>`):
+// each row is erased first, then painted. The screen a reader sees is the
+// last full frame with those patches applied.
 function lastFrame(output) {
   const frames = output.text.split('\x1b[H');
   const last = frames[frames.length - 1];
   const patchAt = last.search(/\x1b\[\d+;1H/);
   if (patchAt < 0) return last;
-  const rows = last.slice(0, patchAt).split('\n').map((row) => row.replace(/\x1b\[K$/, ''));
+  const rows = last.slice(0, patchAt).split('\n').map((row) => row.replace(/^\x1b\[K/, ''));
   // `split` on the row address leaves [lead, row, content, row, content, …].
   const parts = last.slice(patchAt).split(/\x1b\[(\d+);1H/);
   for (let at = 1; at + 1 < parts.length; at += 2) {
     const row = Number(parts[at]) - 1;
-    const content = parts[at + 1].replace(/\x1b\[K[\s\S]*$/, '');
+    // A row is its SGR-painted text; the first other control sequence (the
+    // exit escapes after the last patch) is not part of it.
+    const content = parts[at + 1].replace(/^\x1b\[K/, '').replace(/\x1b\[(?![0-9;]*m)[\s\S]*$/, '');
     while (rows.length <= row) rows.push('');
     rows[row] = content;
   }
-  return rows.map((row) => `${row}\x1b[K`).join('\n');
+  return rows.map((row) => `\x1b[K${row}`).join('\n');
 }
 
 /** Clicks the first painted occurrence of `needle`, the way a mouse would. */
@@ -1475,11 +1485,11 @@ test('the nav records a hit region for every button, today row, chart bar and st
     const timelineSteps = steps.filter((region) => !stepSlice(region).startsWith('['));
     for (const region of timelineSteps) {
       // Rule 6: an attempt row is `HH:MM  <glyph> <step> · <pool> · …`. A
-      // phase rule that names its own steps (`── ▶ 1 · scan · build-alpha ──`)
+      // phase rule that names its own steps (`── ▶ Phase 1 · scan · build-alpha ──`)
       // is clickable too and opens one of them.
       assert.match(
         stepSlice(region),
-        /^(?: \d{2}:\d{2}  \S+ \S+ · |── [✓✗▶○⊘] \d+ · )/,
+        /^(?: \d{2}:\d{2}  \S+ \S+ · |── [✓✗▶○⊘] Phase \d+ · )/,
         'a timeline step region covers its attempt row',
       );
     }
@@ -2179,8 +2189,8 @@ test('V2 planned steps name each action work or evidence, never undefined', () =
     const runV2 = plain(renderWorkflowTui(row, { width: 120, height: 30, focus: 1 }));
     assert.doesNotMatch(runV2, /undefined/);
     assert.match(runV2, /\[▶ 1 two writers 0\/2\]/);
-    assert.match(runV2, /── ▶ 1 · shell-and-visual-system · space-and-spaces ─/);
-    assert.match(runV2, /── ○ 2 · Evidence ─/);
+    assert.match(runV2, /── ▶ Phase 1 · shell-and-visual-system · space-and-spaces ─/);
+    assert.match(runV2, /── ○ Phase 2 · Evidence ─/);
 
     // The role each step carries is what the agent detail pane prints, and it
     // is derived (never read off `action.kind`, which only drafts carry).
@@ -2717,7 +2727,7 @@ test('a dependency level whose action never dispatched names the dependency that
     // The timeline names the blocked phase; a phase that never dispatched has
     // no attempt row to draw, so the phase rule carries its 0/1 instead.
     const timeline = timelinePaneRows(renderWorkflowTui(row, { width: 120, height: 40, phaseIndex: 2 }));
-    assert.match(timeline.join('\n'), /── [✗⊘] 3 · harden-core ─/);
+    assert.match(timeline.join('\n'), /── [✗⊘] Phase 3 · harden-core ─/);
     assert.match(timeline.join('\n'), /✗ verify-core/);
   } finally { run.cleanup(); }
 });
@@ -2732,7 +2742,7 @@ test('the timeline opens one segment header per phase change instead of prefixin
     assert.deepEqual(segmentLabels(screen), [
       'Preflight', 'discover-a · discover-b', 'implement-a · implement-b', 'Evidence',
     ]);
-    assert.equal(pane.filter((line) => /^─{2,} ✓ 1 · discover-a · discover-b /.test(line)).length, 1);
+    assert.equal(pane.filter((line) => /^─{2,} ✓ Phase 1 · discover-a · discover-b /.test(line)).length, 1);
 
     // The rows themselves never name their phase as a prefix.
     assert.deepEqual(pane.filter((line) => line.includes('[Phase:')), []);
@@ -2874,7 +2884,7 @@ test('the live block follows the newest work, and the page body is what scrolls'
     assert.match(frameHeader(following), /^ ● lng234 · running/);
     // The timeline keeps every attempt as its own row, in phase order, and
     // never claims there is a viewport marker to chase.
-    assert.match(pane.filter((line) => line.trim()).at(-1), /── [✓✗▶○] \d+ · Evidence ─/);
+    assert.match(pane.filter((line) => line.trim()).at(-1), /── [✓✗▶○] Phase \d+ · Evidence ─/);
     assert.deepEqual(pane.filter((line) => /(?:newer|earlier) timeline rows/.test(line)), []);
 
     // The whole page is one body the shell windows, so a short terminal shows
@@ -2932,7 +2942,7 @@ test('narrow timeline rendering keeps the segment headers and never overflows th
     // attempt, and the phone's second line carrying the phase span.
     const scrolled = renderWorkflowTui(long.row(), { width: 60, height: 28 });
     const narrowPane = timelinePaneRows(scrolled);
-    assert.ok(narrowPane.some((line) => /^── [✓✗▶○] 1 · work-0 · work-1 /.test(line)), narrowPane.join('\n'));
+    assert.ok(narrowPane.some((line) => /^── [✓✗▶○] Phase 1 · work-0 · work-1 /.test(line)), narrowPane.join('\n'));
     assert.ok(narrowPane.some((line) => /^\d{2}:\d{2} → now · \S+ · 12\/13$/.test(line)), narrowPane.join('\n'));
     assert.deepEqual(overflow(scrolled, 60), []);
   } finally { run.cleanup(); long.cleanup(); }
@@ -4601,7 +4611,7 @@ for (const columns of [55, 200]) {
       if (columns >= 100) assert.match(firstHeader, /attempt 1 of 3/);
       assert.equal(await first.quit(), 0);
 
-      const rule = open('7 · verify');
+      const rule = open('Phase 7 · Verify · verify');
       const ruleHeader = paintedRows(lastFrame(rule.output)).slice(0, 6).join('\n');
       assert.match(ruleHeader, /^ claude-code · claude-opus-5 · high/m);
       if (columns >= 100) assert.match(ruleHeader, /attempt 3 of 3/);
@@ -4619,7 +4629,7 @@ for (const columns of [55, 200]) {
         const folded = paintedRows(lastFrame(session.output));
         assert.ok(folded.some((row) => row.trimEnd() === FOLD_LINE), `the fold line is painted:\n${folded.join('\n')}`);
         assert.ok(!folded.some((row) => row.includes('click to fold')));
-        assert.ok(!folded.some((row) => row.includes('4 · e2e')), 'phase 4 is folded away');
+        assert.ok(!folded.some((row) => row.includes('Phase 4 · Build · e2e')), 'phase 4 is folded away');
         const foldedRules = folded.filter((row) => row.startsWith('── ✓ ')).length;
 
         if (how === 'click') clickOn(session, 'click to expand');
@@ -4635,7 +4645,7 @@ for (const columns of [55, 200]) {
         }
         const open = paintedRows(lastFrame(session.output));
         assert.ok(!open.some((row) => row.includes('click to expand')), 'the fold line is gone once open');
-        assert.ok(open.some((row) => row.includes('4 · e2e')), `phase 4 is back in place:\n${open.join('\n')}`);
+        assert.ok(open.some((row) => row.includes('Phase 4 · Build · e2e')), `phase 4 is back in place:\n${open.join('\n')}`);
         assert.ok(open.filter((row) => row.startsWith('── ✓ ')).length > foldedRules, 'the phase rules the fold hid are printed');
         const closing = open.findIndex((row) => row.trimEnd() === 'click to fold');
         assert.ok(closing > 0, 'one `click to fold` line closes the block');
@@ -4651,9 +4661,165 @@ for (const columns of [55, 200]) {
         }
         const closed = paintedRows(lastFrame(session.output));
         assert.ok(closed.some((row) => row.trimEnd() === FOLD_LINE), 'folded again');
-        assert.ok(!closed.some((row) => row.includes('click to fold') || row.includes('4 · e2e')));
+        assert.ok(!closed.some((row) => row.includes('click to fold') || row.includes('Phase 4 · Build · e2e')));
         assert.equal(await session.quit(), 0);
       } finally { cleanup(); }
     });
   }
+}
+
+/**
+ * The screen a terminal shows for the bytes the dashboard wrote, under
+ * Ghostty's rules for the two things that matter here: a character printed
+ * into the last column leaves the cursor on that cell with a wrap pending,
+ * and an erase to the end of the line starts at the cursor's own cell
+ * (ghostty src/terminal/Terminal.zig, print and eraseLine). `\n` is a new
+ * line, as the tty's output translation makes it.
+ */
+function ghosttyScreen(text, columns, rows) {
+  const screen = Array.from({ length: rows }, () => Array(columns).fill(' '));
+  let x = 0;
+  let y = 0;
+  let pending = false;
+  for (let at = 0; at < text.length;) {
+    if (text[at] === '\x1b') {
+      const csi = /^\x1b\[([0-9;?]*)([A-Za-z])/.exec(text.slice(at, at + 32));
+      if (!csi) { at += 1; continue; }
+      const [all, params, final] = csi;
+      if (final === 'H') {
+        const [row, column] = params.split(';').map(Number);
+        y = Math.max(0, (row || 1) - 1);
+        x = Math.max(0, (column || 1) - 1);
+        pending = false;
+      } else if (final === 'K' && !params) {
+        for (let column = x; column < columns; column += 1) screen[y][column] = ' ';
+        pending = false;
+      } else if (final === 'J' && params === '2') {
+        for (const line of screen) line.fill(' ');
+      }
+      at += all.length;
+      continue;
+    }
+    if (text[at] === '\n' || text[at] === '\r') {
+      if (text[at] === '\n') y = Math.min(rows - 1, y + 1);
+      x = 0;
+      pending = false;
+      at += 1;
+      continue;
+    }
+    const glyph = String.fromCodePoint(text.codePointAt(at));
+    if (pending) { x = 0; y = Math.min(rows - 1, y + 1); pending = false; }
+    screen[y][x] = glyph;
+    if (x === columns - 1) pending = true;
+    else x += 1;
+    at += glyph.length;
+  }
+  return screen.map((line) => line.join('').trimEnd());
+}
+
+// The owner read Home in Ghostty at 199–200 columns: every row that filled
+// the terminal lost its last cell (`40` for `40%`, a single-digit count gone),
+// because the painter erased the rest of each row after painting it.
+for (const columns of [199, 200]) {
+  test(`Home at ${columns} columns reaches a terminal whose erase starts at the cursor with every last cell intact`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-20T12:00:00.000Z') });
+    const { home, cleanup } = foldFixture();
+    try {
+      const session = shellSession(home, { columns, rows: 55 });
+      const painted = paintedRows(lastFrame(session.output)).map((row) => row.trimEnd());
+      const shown = ghosttyScreen(session.output.text, columns, 55);
+      const full = painted.filter((row) => [...row].length === columns);
+      assert.ok(full.some((row) => /[▇░] +\d+%$/.test(row)), `no by-pool row fills the page:\n${painted.join('\n')}`);
+      assert.ok(full.some((row) => /[▇░] +\d$/.test(row)), 'no single-digit count ends a row');
+      assert.deepEqual(shown, painted, 'the terminal shows something other than what was painted');
+      assert.equal(await session.quit(), 0);
+    } finally { cleanup(); }
+  });
+}
+
+/** The body row the Runs cursor is drawn on: its 1-based screen row and text. */
+function cursorRow(screen) {
+  const raw = String(screen).split('\n');
+  if (plain(raw[0] ?? '') === '') raw.shift();
+  const at = raw.findIndex((row, index) => index >= 2 && index < raw.length - 1 && row.includes('\x1b[7m'));
+  return at < 0 ? null : { y: at + 1, text: plain(raw[at]).trimEnd() };
+}
+
+// The owner's Runs page (0.35.2): on a day where single tasks sit between
+// workflow rows, Enter on the workflow row under the cursor opened a task.
+// Tasks recorded before the single-task ledger have no id, their rows were
+// keyed `null`, and `null` is also "no task selected". The scrubbed home's
+// Sat 19 Sep is that day: workflows qvh8e2 and 7e4w3i, seven tasks around
+// them, four of those with no id.
+for (const columns of [55, 200]) {
+  test(`Runs: Enter and a click on each row of a day mixing workflows and tasks open that row's own item at ${columns} columns`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-20T12:00:00.000Z') });
+    const tz = process.env.TZ;
+    process.env.TZ = 'Asia/Hong_Kong';
+    const { home, cleanup } = foldFixture();
+    try {
+      const hhmm = (at) => {
+        const date = new Date(at);
+        return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+      };
+      const saturday = listTasks({ home, now: Date.now() }).finished
+        .filter((task) => new Date(task.endedAt).getDate() === 19);
+      /** What a row must open: the page's header, and for a task with no id the duration only it has. */
+      const expected = (text) => {
+        const run = text.match(/^ ✓ ([a-z0-9]{6}) /);
+        if (run) return { kind: 'run', header: new RegExp(`^ ✓ ${run[1]} · completed · `) };
+        const task = text.match(/^ ⚙ +(\w+) · (\S+) · .* (\d\d:\d\d)$/);
+        assert.ok(task, `not a run or task row: ${text}`);
+        const [, lane, id, clock] = task;
+        const record = saturday.find((entry) => hhmm(entry.endedAt) === clock);
+        assert.ok(record, `no ledger task ended at ${clock}`);
+        assert.equal(record.id == null, id === 'task', `${text}: the row's id is not the ledger's`);
+        return { kind: 'task', header: new RegExp(`^ ✓ ${lane} task · ${id} · succeeded`), duration: id === 'task' ? stepClockText(record.durationMs) : null };
+      };
+      const check = (screen, want, how) => {
+        assert.match(frameHeader(screen), want.header, `${how}: opened the wrong item`);
+        if (want.duration) assert.ok(paintedRows(screen)[2].includes(want.duration), `${how}: not the task that ran ${want.duration}\n${paintedRows(screen)[2]}`);
+      };
+      const session = shellSession(home, { columns, rows: 120 });
+      const runs = session.press('r');
+      const rows = paintedRows(runs);
+      const start = rows.findIndex((row) => row.startsWith('── Sat 19 Sep'));
+      const end = rows.findIndex((row, index) => index > start && row.startsWith('── '));
+      const day = rows.slice(start + 1, end)
+        .map((text, index) => ({ y: start + index + 2, text: text.trimEnd() }))
+        .filter((row) => /^ [✓⚙] /.test(row.text));
+      assert.deepEqual(day.map((row) => row.text.match(/^ [✓⚙] +(\S+( · \S+)?)/)[1]), [
+        'qvh8e2', 'build · c71e896e', 'analyze · 6a4e8085', 'build · a9e254cc',
+        'build · task', 'build · task', 'build · task', '7e4w3i', 'build · task',
+      ]);
+
+      // A click opens the row it lands on.
+      for (const row of day) {
+        const want = expected(row.text);
+        session.press(`\x1b[<0;5;${row.y}M`);
+        check(lastFrame(session.output), want, `click on ${row.text}`);
+        session.press(ESC_KEY);
+        session.press('r');
+      }
+
+      // Enter opens the row the cursor is drawn on: walk it down the list.
+      let screen = lastFrame(session.output);
+      for (const row of day) {
+        const want = expected(row.text);
+        for (let step = 0; step < 80 && cursorRow(screen)?.y !== row.y; step += 1) screen = session.press('\x1b[B');
+        assert.deepEqual(cursorRow(screen), row, `the cursor never reached ${row.text}`);
+        check(session.press('\r'), want, `Enter on ${row.text}`);
+        // Out again: a task returns to Runs with the cursor where it was; a
+        // run returns to Home, and Runs opens on its first row.
+        session.press(ESC_KEY);
+        screen = want.kind === 'run' ? session.press('r') : lastFrame(session.output);
+        if (want.kind === 'task') assert.deepEqual(cursorRow(screen), row, `Esc lost the cursor on ${row.text}`);
+      }
+      assert.equal(await session.quit(), 0);
+    } finally {
+      cleanup();
+      if (tz == null) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
 }

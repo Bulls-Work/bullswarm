@@ -22,6 +22,7 @@ import {
   worstTokenSource,
 } from './dashboard.js';
 import { withV2Cancellation } from './v2-cancellation.js';
+import { taskIdentity, taskKey } from '../lib/tasks.js';
 import { runClockText, runDurationFacts } from './run-model.js';
 import { verifyRoundLabel } from './verify-rounds.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
@@ -41,19 +42,6 @@ function isToday(value, nowMs, today = dayKey(nowMs)) {
   const at = Date.parse(value ?? '');
   if (!Number.isFinite(at) || Math.abs(at - nowMs) > 27 * 60 * 60 * 1000) return false;
   return dayKey(at) === today;
-}
-
-// One identity for a finished task row, used everywhere a task can arrive from
-// two sources at once (the day's rows AND `tasks.finished`). A task recorded
-// before the single-task ledger has neither `id` nor `taskFile`, so keying on
-// those alone silently deduplicated nothing and every legacy task was listed
-// and counted twice. The fallback is the tuple the decision log always has.
-function taskIdentity(task) {
-  const id = task?.id ?? task?.taskFile;
-  if (id != null && id !== '') return `id:${id}`;
-  const at = task?.endedAt ?? task?.finishedAt ?? task?.ts ?? task?.startedAt ?? '';
-  const pool = task?.pool ?? task?.picked ?? '';
-  return `at:${at}|${pool}|${task?.lane ?? ''}|${task?.durationMs ?? ''}`;
 }
 
 function todayMinutesText(value) {
@@ -816,6 +804,7 @@ function recordCostInfo(record) {
 export {
   taskToday,
   taskIdentity,
+  taskKey,
   todayMinutesText,
   todayMinutesNumberText,
   measuredTaskMinutes,

@@ -43,8 +43,8 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
              Mon          Tue          Wed          Thu          Fri          Sat          Sun        project-b        [38;2;191;108;105m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m    4
 [2m ~ bars leave 66 unpriced attempts out[0m                                                                project-c        [38;2;169;156;240m▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m    1
 
- Workflows: [1m[38;2;210;133;107m15[0m[22m · verified [38;2;210;133;107m10[0m (67%)                                  Favourite pool: [38;2;210;133;107mcodex[0m                                              Spent: [38;2;210;133;107mat least $299.87 api · 66 unmeasured · sub unknown (no pl…[0m
- Busiest project: [38;2;210;133;107mproject-a[0m (10)                                    Favourite model: [38;2;210;133;107mgpt-5.6-luna[0m                                      Median run: [38;2;210;133;107m1h45m[0m
+ Workflows: [1m[38;2;210;133;107m15[0m[22m · verified [38;2;210;133;107m10[0m (67%)                                Favourite pool: [38;2;210;133;107mcodex[0m                                        Spent: [38;2;210;133;107mat least $299.87 api · 66 unmeasured · sub unknown (no plan price)[0m
+ Busiest project: [38;2;210;133;107mproject-a[0m (10)                                  Favourite model: [38;2;210;133;107mgpt-5.6-luna[0m                                Median run: [38;2;210;133;107m1h45m[0m
 
  [38;2;169;156;240mYour 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work[0m
 

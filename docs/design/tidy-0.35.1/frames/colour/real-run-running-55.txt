@@ -20,19 +20,19 @@
 [2m──[0m timeline · 5 phases · 4 attempts [2m───────────────────[0m
 [2m──[0m Preflight
  [2m04:05[0m  [2m●[0m goal accepted · goal.json
-[2m──[0m [38;2;182;189;115m✓[0m 1 · [1mhome-extraction[22m
+[2m──[0m [38;2;182;189;115m✓[0m Phase 1 · [1mMechanical · home-extraction[22m
  [2m04:05 → 04:34 · 28m25s · 1/1[0m
  [2m04:05[0m  [38;2;182;189;115m✓[0m [1mhome-extraction[22m · [38;2;127;163;224mcodex[0m                [2m28m25s[0m
-[2m──[0m [38;2;182;189;115m✓[0m 2 · [1mruns-extraction[22m
+[2m──[0m [38;2;182;189;115m✓[0m Phase 2 · [1mMechanical · runs-extraction[22m
  [2m04:34 → 05:04 · 30m32s · 1/1[0m
  [2m04:34[0m  [38;2;182;189;115m✓[0m [1mruns-extraction[22m · [38;2;127;163;224mcodex[0m                [2m30m32s[0m
-[2m──[0m [38;2;182;189;115m✓[0m 3 · [1mrun-extraction[22m
+[2m──[0m [38;2;182;189;115m✓[0m Phase 3 · [1mMechanical · run-extraction[22m
  [2m05:04 → 05:36 · 31m52s · 1/1[0m
  [2m05:04[0m  [38;2;182;189;115m✓[0m [1mrun-extraction[22m · [38;2;127;163;224mcodex[0m                 [2m31m52s[0m
-[7m[2m──[0m[7m [38;2;233;200;128m▶[0m[7m 4 · [1mintegrate[22m[27m
+[7m[2m──[0m[7m [38;2;233;200;128m▶[0m[7m Phase 4 · [1mIntegrate · integrate[22m[27m
  [2m05:36 → now · 2m19s · 0/1[0m
  [2m05:36[0m  [38;2;233;200;128m▶[0m [1mintegrate[22m · [38;2;127;163;224mcodex[0m · [38;2;233;200;128mrunning[0m             [2m2m19s[0m
-[2m──[0m [2m○[0m 5 · [1mverify[22m
+[2m──[0m [2m○[0m Phase 5 · [1mVerify · verify[22m
  [2m— → — · — · 0/1[0m
 
 

@@ -30,7 +30,7 @@ import { dayKey, historyDays } from './history.js';
 import { readRollups, rollupIndexPath } from './rollup.js';
 import { loadState } from '../lib/state.js';
 import { readMeterHistoryDays } from '../meters/registry.js';
-import { listTasks } from '../lib/tasks.js';
+import { listTasks, taskKey } from '../lib/tasks.js';
 import { attemptOutputSeries } from './v2-state.js';
 import { formatMoneyPair } from '../lib/usage-basis.js';
 import {
@@ -2381,13 +2381,20 @@ export async function runDashboard(bullswarmDir, {
     // frame — the difference between smooth and laggy over a phone or a
     // remote terminal. A first paint, a resize, or a return from the setup
     // hand-off (lastPaintedFrame reset to null) writes the full frame.
+    //
+    // Each row is erased from its first column before it is painted, never
+    // after: a row that fills the terminal leaves the cursor on its last cell
+    // with a wrap pending, and an erase sent then clears that cell. Ghostty
+    // does exactly that (its eraseLine starts at the cursor's column), which
+    // cost every full-width row its last cell at 200 columns — `40%` read
+    // `40` and a single-digit count vanished.
     if (lastPaintedFrame != null && Array.isArray(lastPaintedLines) && lastPaintedLines.length === lines.length) {
       let patch = '';
       let changed = 0;
       for (let row = 0; row < lines.length; row += 1) {
         if (lines[row] === lastPaintedLines[row]) continue;
         changed += 1;
-        patch += `${ESC}${String(row + 1)};1H${lines[row]}${ESC}K`;
+        patch += `${ESC}${String(row + 1)};1H${ESC}K${lines[row]}`;
       }
       if (!changed) return;
       lastPaintedLines = lines.slice();
@@ -2395,7 +2402,7 @@ export async function runDashboard(bullswarmDir, {
       output.write(patch);
       return;
     }
-    const frame = `${ESC}H${lines.map((line) => `${line}${ESC}K`).join('\n')}`;
+    const frame = `${ESC}H${lines.map((line) => `${ESC}K${line}`).join('\n')}`;
     lastPaintedLines = lines.slice();
     lastPaintedFrame = frame;
     output.write(frame);
@@ -2472,7 +2479,7 @@ export async function runDashboard(bullswarmDir, {
     if ((ui.page === 'run' || ui.page === 'step') && !selectedRunId) ui.page = 'home';
     const row = ui.page === 'run' || ui.page === 'step' ? currentRow() : null;
     const task = ui.page === 'task'
-      ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])].find((entry) => (entry.id ?? entry.taskFile) === selectedTaskId) ?? null
+      ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])].find((entry) => taskKey(entry) === selectedTaskId) ?? null
       : null;
     if (row && !row.legacy) {
       // The follow flags track whatever the page last resolved as current.
@@ -2574,7 +2581,7 @@ export async function runDashboard(bullswarmDir, {
     const tableKeepsCursor = ui.page === 'runs'
       && (lastFrameResult?.runRows ?? []).some((row) => row.runId === previousRunId);
     const taskStillExists = [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
-      .some((row) => (row.id ?? row.taskFile) === previousTaskId);
+      .some((row) => taskKey(row) === previousTaskId);
     const taskKeepsCursor = ui.page === 'runs'
       && (lastFrameResult?.taskRows ?? []).some((row) => row.taskId === previousTaskId)
       && taskStillExists;
@@ -2718,7 +2725,7 @@ export async function runDashboard(bullswarmDir, {
   /** Opens the compact detail page for one standalone task. */
   const openTask = (taskId) => {
     const found = [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
-      .find((entry) => (entry.id ?? entry.taskFile) === taskId);
+      .find((entry) => taskKey(entry) === taskId);
     if (!found) {
       message = 'That task is no longer in the ledger.';
       return paint();
@@ -3237,7 +3244,7 @@ export async function runDashboard(bullswarmDir, {
       ].sort((a, b) => a.y - b.y);
       if (listed.length) {
         const at = listed.findIndex((entry) => entry.kind === 'task'
-          ? entry.taskId === selectedTaskId
+          ? selectedTaskId != null && entry.taskId === selectedTaskId
           : !selectedTaskId && entry.runId === selectedRunId);
         const wanted = at < 0 ? (delta > 0 ? 0 : listed.length - 1) : at + delta;
         // Once the cursor reaches the end of the Home list, keep the old
@@ -3264,7 +3271,7 @@ export async function runDashboard(bullswarmDir, {
         ...(lastFrameResult?.taskRows ?? []).map((row) => ({ ...row, kind: 'task' })),
       ].sort((a, b) => a.y - b.y);
       const at = listed.findIndex((entry) => entry.kind === 'task'
-        ? entry.taskId === selectedTaskId
+        ? selectedTaskId != null && entry.taskId === selectedTaskId
         : !selectedTaskId && entry.runId === selectedRunId);
       const target = listed[clamp(at < 0 ? (delta > 0 ? 0 : listed.length - 1) : at + delta, 0, Math.max(0, listed.length - 1))];
       if (target) {
@@ -3370,15 +3377,13 @@ export async function runDashboard(bullswarmDir, {
   /** Enter: open the selected run, then its agents, then the selected step. */
   const drillIn = () => {
     if (ui.page === 'runs' || ui.page === 'home') {
-      if (ui.page === 'runs') {
-        const task = lastFrameResult?.taskRows?.find((entry) => entry.taskId === selectedTaskId)
-          ?? (lastFrameResult?.cursorAction?.kind === 'task' ? lastFrameResult.cursorAction : null);
-        if (task) return openTask(task.taskId);
-      } else {
-        const action = lastFrameResult?.cursorAction;
-        if (action?.kind === 'task') return openTask(action.taskId);
-        if (action?.kind === 'run') return openRun(action.runId);
-      }
+      // Enter opens the row the page drew its cursor on — the same action a
+      // click on that row runs — never a row found again by id: a task that
+      // predates the ledger had no id, so its row matched "no task selected"
+      // and Enter on a workflow row opened that task.
+      const action = lastFrameResult?.cursorAction;
+      if (action?.kind === 'task') return openTask(action.taskId);
+      if (action?.kind === 'run') return openRun(action.runId);
       selectedRunId = ui.page === 'runs'
         ? (lastFrameResult?.runRows?.find((row) => row.runId === selectedRunId) ?? lastFrameResult?.runRows?.[0])?.runId
         : rows[selected]?.runId ?? activeRuns[0]?.runId ?? selectedRunId;
@@ -3530,7 +3535,7 @@ export async function runDashboard(bullswarmDir, {
     if (stepLikePage) {
       const taskRecord = ui.page === 'task'
         ? [...(tasks.inflight ?? []), ...(tasks.finished ?? [])]
-          .find((entry) => (entry.id ?? entry.taskFile) === selectedTaskId) ?? null
+          .find((entry) => taskKey(entry) === selectedTaskId) ?? null
         : null;
       const row = ui.page === 'step' ? detailRow(bullswarmDir, selectedRunId) : null;
       const step = ui.page === 'task'

@@ -173,7 +173,9 @@ function paintPhaseRule(line, phase) {
   const start = phase?.startedAt ? clockText(phase.startedAt) : '—';
   const end = phase?.status === 'active' ? 'now' : phase?.finishedAt ? clockText(phase.finishedAt) : '—';
   const duration = runClockText(phase?.activeMinutes ?? phase?.spanMinutes);
-  let factsFrom = 0;
+  // The facts sit after the label: a step named `now` is not the clock.
+  const labelAt = phase?.name ? source.indexOf(phase.name) : -1;
+  let factsFrom = labelAt >= 0 ? labelAt + phase.name.length : 0;
   const addFact = (value) => {
     const text = String(value ?? '');
     if (!text) return;
@@ -829,12 +831,13 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
     const start = phase.startedAt ? clockText(phase.startedAt) : '—';
     const end = phase.status === 'active' ? 'now' : phase.finishedAt ? clockText(phase.finishedAt) : '—';
     const duration = runClockText(phase.activeMinutes ?? phase.spanMinutes);
-    const right = `${start} → ${end} · ${duration} · ${phase.done}/${phase.total}`;
-    const name = `${phase.glyph} ${phase.index + 1} · ${phase.name}`;
-    const phaseLine = phone
-      ? `── ${phase.glyph} ${phase.index + 1} · ${phase.name}`
-      : phaseRule(name, right, safeWidth);
-    push(phone ? paintPhaseRule(phaseLine, phase) : paintPhaseRule(phaseLine, phase), {
+    const tally = `${phase.done}/${phase.total}`;
+    const right = `${start} → ${end} · ${duration} · ${tally}`;
+    // The phone prints the facts on their own row under the rule.
+    const rule = phaseRule(phaseTitle(phase), phaseStepsText(phase), phone ? [] : [right, `${duration} · ${tally}`, tally], safeWidth);
+    // The name and the steps are bold, `Phase <n> · ` plain, as `<n> · ` was.
+    const named = rule.label.slice(`${phase.glyph} Phase ${phase.index + 1}`.length).replace(/^ · /, '');
+    push(paintPhaseRule(rule.line, { ...phase, name: named }), {
       header: true, segment: phase.label, phaseIndex: phase.index, phase,
     });
     if (phone) push(` ${dimCell(right)}`, { segment: phase.label, phaseIndex: phase.index, span: true });
@@ -899,27 +902,63 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, {
   };
 }
 
+/** `✓ Phase 2 · Build`: the phase's glyph, number and the name its kinds give it. */
+function phaseTitle(phase) {
+  return `${phase.glyph} Phase ${phase.index + 1}${phase.kindName ? ` · ${phase.kindName}` : ''}`;
+}
+
 /**
- * `── <glyph> <n> · <name> ──── <start> → <end> · <duration> · <done>/<total>`:
- * the v2 phase rule spends its dashes between the name and the facts and ends
+ * The step names a phase rule carries after its title. A kernel loop phase is
+ * named by its round (`repair · round 1 · 2 requirements`); the title already
+ * says `Repair`, so the round's own leading word is not said twice.
+ */
+function phaseStepsText(phase) {
+  const name = String(phase.name ?? '').trim();
+  // Only a round's label: a phase whose first step is named `build` keeps it.
+  const lead = phase.stage?.loopLabel && phase.kindName ? `${phase.kindName.toLowerCase()} · ` : null;
+  return lead && name.toLowerCase().startsWith(lead) ? name.slice(lead.length) : name;
+}
+
+/**
+ * `── ✓ Phase 2 · Build · time-box · docs ──── <start> → <end> · <duration> · <done>/<total>`:
+ * the v2 phase rule spends its dashes between the label and the facts and ends
  * on the tally, so the count is the last thing the row says. Rule 6 of the
  * run-v2 record draws it that way; `rule()` keeps its closing dashes for the
- * rules that have a right-hand label to fence off. A phase whose steps are
- * named at length gives way before its facts do: the count, the clock and the
- * duration are what the rule is read for.
+ * rules that have a right-hand label to fence off. `rights` are the facts from
+ * the fullest down; the phone passes none, prints the facts on a row of their
+ * own, and draws no dashes after the label.
+ *
+ * The phase number and name are never cut. A phase whose steps are named at
+ * length gives way first — its step names shorten, then go — and only then
+ * the facts, shortest last: the count, the clock and the duration are what the
+ * rule is read for. Returns the line and the label it painted.
  */
-function phaseRule(name, right, width) {
+function phaseRule(title, steps, rights, width) {
   const cols = Math.max(1, Number(width) || 1);
-  const label = String(name ?? '');
-  const tail = right == null || `${right}` === '' ? '' : ` ${right}`;
-  const room = cols - 3 - 1 - 2 - visibleLength(tail);
-  if (visibleLength(`── ${label} `) + visibleLength(tail) < cols) {
-    const head = `── ${label} `;
-    return `${head}${'─'.repeat(cols - visibleLength(head) - visibleLength(tail))}${tail}`;
+  const named = String(title ?? '');
+  const stepText = String(steps ?? '');
+  const fill = rights.length > 0;
+  const tails = [...rights.map((right) => ` ${right}`), ''];
+  const draw = (label, tail) => {
+    const head = `── ${label}`;
+    if (!fill) return visibleLength(head) <= cols ? head : null;
+    const dashes = cols - visibleLength(head) - 1 - visibleLength(tail);
+    return dashes >= (tail ? 2 : 0) ? `${head} ${'─'.repeat(dashes)}${tail}` : null;
+  };
+  for (const tail of tails) {
+    const whole = stepText ? `${named} · ${stepText}` : named;
+    const line = draw(whole, tail);
+    if (line) return { line, label: whole };
+    const room = cols - visibleLength(`── ${named} · `) - (fill ? 1 + (tail ? 2 : 0) + visibleLength(tail) : 0);
+    if (stepText && room >= 4) {
+      const label = `${named} · ${cut(stepText, room)}`;
+      return { line: draw(label, tail), label };
+    }
+    const bare = draw(named, tail);
+    if (bare) return { line: bare, label: named };
   }
-  if (room < 1) return cut(`── ${label}${tail}`, cols);
-  const head = `── ${cut(label, room)} `;
-  return `${head}${'─'.repeat(Math.max(2, cols - visibleLength(head) - visibleLength(tail)))}${tail}`;
+  // Too narrow for the title itself: the one place a cut is left.
+  return { line: cut(`── ${named}`, cols), label: named };
 }
 
 function segmentHeader(name, elapsed, width) {

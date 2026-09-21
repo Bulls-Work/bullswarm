@@ -8,7 +8,7 @@ import { finiteOrNull } from '../lib/num.js';
 import { formatMoney } from '../lib/usage-basis.js';
 import { isProgramWorkflow } from './execution-policy.js';
 import { presentationStageStatus, projectV2DependencyStages } from './v2-presentation.js';
-import { loopStageLabel } from './verify-rounds.js';
+import { kernelRepairActionIds, loopStageLabel } from './verify-rounds.js';
 import { cut, progressBar } from './dash-kit.js';
 import {
   blank,
@@ -924,6 +924,37 @@ function phaseGlyph(status) {
   return table.pending;
 }
 
+// What a phase does, named from the kinds of the steps it holds: the owner's
+// words for the program's step kinds (0.35.3). A kind with no entry reads as
+// the kind itself, capitalised.
+const PHASE_KIND_NAMES = Object.freeze({
+  implement: 'Build',
+  integration: 'Integrate',
+  'adversarial-acceptance': 'Verify',
+  digest: 'Digest',
+  architecture: 'Design',
+});
+
+/**
+ * A phase's name from its steps' kinds, in the order each kind first appears,
+ * joined with ` + ` when the phase mixes them (`Build + Verify`). A repair
+ * step the kernel's verify loop added reads `Repair`, whatever kind it was
+ * added as. Null when no step of the phase declares a kind.
+ */
+function phaseKindName(state, actionIds) {
+  const repairs = new Set(kernelRepairActionIds(state));
+  const kinds = new Map((state?.program?.actions ?? []).map((action) => [action?.id, action?.kind]));
+  const names = [];
+  for (const id of actionIds) {
+    const kind = String(kinds.get(id) ?? '').trim();
+    const name = repairs.has(id) ? 'Repair'
+      : Object.hasOwn(PHASE_KIND_NAMES, kind) ? PHASE_KIND_NAMES[kind]
+        : kind ? `${kind[0].toUpperCase()}${kind.slice(1).replaceAll('-', ' ')}` : null;
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names.length ? names.join(' + ') : null;
+}
+
 /** The tree facts consumed by both the desktop and phone timeline layouts. */
 function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
   const state = row?.state ?? row ?? {};
@@ -943,6 +974,7 @@ function runTimelineFacts(row, { nowMs = Date.now() } = {}) {
     const failed = phaseActions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status));
     return {
       index, id: stage.id, name: planStageStepsName(stage, index), label: stage.label, stage,
+      kindName: phaseKindName(state, phaseActions.map((action) => action.id)),
       status: active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending',
       glyph: phaseGlyph(active ? 'active' : failed ? 'failed' : progress.completed === progress.total && progress.total > 0 ? 'completed' : 'pending'),
       startedAt, finishedAt, endAt: active ? null : finishedAt,

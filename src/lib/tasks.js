@@ -126,6 +126,30 @@ function finishedRow(entry) {
   };
 }
 
+// One identity for a finished task row, used everywhere a task can arrive from
+// two sources at once (the day's rows AND `tasks.finished`). A task recorded
+// before the single-task ledger has neither `id` nor `taskFile`, so keying on
+// those alone silently deduplicated nothing and every legacy task was listed
+// and counted twice. The fallback is the tuple the decision log always has.
+export function taskIdentity(task) {
+  const id = task?.id ?? task?.taskFile;
+  if (id != null && id !== '') return `id:${id}`;
+  const at = task?.endedAt ?? task?.finishedAt ?? task?.ts ?? task?.startedAt ?? '';
+  const pool = task?.pool ?? task?.picked ?? '';
+  return `at:${at}|${pool}|${task?.lane ?? ''}|${task?.durationMs ?? ''}`;
+}
+
+/**
+ * The id a task row opens by: its ledger id or task file, else the identity
+ * tuple above. Never null: a row keyed `null` equalled the dashboard's "no
+ * task selected", so Enter on a workflow row opened the first task that
+ * predates the ledger instead (seen on the owner's home, 0.35.2).
+ */
+export function taskKey(task) {
+  const id = task?.id ?? task?.taskFile;
+  return id != null && id !== '' ? id : taskIdentity(task);
+}
+
 /**
  * List single-task work from a Bullswarm home.
  *

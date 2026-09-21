@@ -1,5 +1,21 @@
 # bullswarm changelog
 
+## 0.35.3 — whole right edges in Ghostty and herdr, Enter opens the row you are on, named phases
+
+- dashboard: every row is erased before it is painted instead of after, so a
+  row that fills the terminal keeps its last cell in Ghostty and herdr (both
+  cleared it, turning `50%` into `50` and `16` into `1` on Home's right edge).
+- home: from 110 columns the spent-per-day chart grows to the height of the
+  stacked breakdowns beside it; the summary band sizes `Spent` to its text and
+  wraps at ` · ` rather than cutting a figure; the closing sentence wraps too.
+- runs: Enter and a click open exactly the row the cursor is on. Tasks recorded
+  before the task ledger have no id, and all of them shared one empty key, so
+  Enter on a workflow row could open one of those tasks instead.
+- run: phase rules name the phase: `Phase 2 · Build · time-box · docs`
+  (Build, Integrate, Verify, Digest, Design, Repair from the steps' kinds,
+  joined with ` + ` when a phase mixes them); the phase number and name are
+  never cut, step names shorten first.
+
 ## 0.35.2 — the Step page reads like a transcript; prices without a command, honest totals, a home that stops growing
 
 - step: detail is now a scrollable transcript of every turn in order: the full

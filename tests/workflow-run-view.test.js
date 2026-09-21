@@ -184,14 +184,14 @@ test('Run timeline dims the attempt clock it prints and draws the selected phase
     }
     // One cursor, on the phase Up/Down selected; it moves with the selection
     // and only SGR changes — the text and width of every row are kept.
-    for (const [phaseIndex, name] of [[0, 'home-extraction'], [4, 'verify']]) {
+    for (const [phaseIndex, name, kind] of [[0, 'home-extraction', 'Mechanical'], [4, 'verify', 'Verify']]) {
       const selected = page(width, { phaseIndex });
       const cursor = selected.filter((line) => line.includes('\x1b[7m'));
       assert.equal(cursor.length, 1, `${width}/${phaseIndex}: ${cursor.map(visible).join(' | ')}`);
       assert.ok(cursor[0].includes('\x1b[27m'), JSON.stringify(cursor[0]));
       const inverse = visible(/\x1b\[7m(.*)\x1b\[27m/.exec(cursor[0])[1]);
       if (width >= 100) assert.equal(inverse, `[✓ ${phaseIndex + 1} ${name}]`);
-      else assert.equal(inverse, `── ✓ ${phaseIndex + 1} · ${name}`);
+      else assert.equal(inverse, `── ✓ Phase ${phaseIndex + 1} · ${kind} · ${name}`);
       assert.deepEqual(selected.map(visible), lines.map(visible), `${width}/${phaseIndex}: the cursor changed text`);
     }
     // A reader inside the agent list has no phase cursor on the plan.
@@ -310,7 +310,7 @@ test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per a
   const acceptHeader = headers.find((line) => String(line.segment).endsWith(' · accept') || String(line.segment) === 'accept');
   // Rule 6 of the run-v2 record: the rule spends its dashes between the phase
   // name and the facts and ends on the tally — no closing `──`.
-  assert.match(visible(acceptHeader.text), /^── ✓ 12 · accept \S.*2h04m · 1\/1$/);
+  assert.match(visible(acceptHeader.text), /^── ✓ Phase 12 · Verify · accept \S.*2h04m · 1\/1$/);
   assert.ok(!visible(acceptHeader.text).trimEnd().endsWith('──'), visible(acceptHeader.text));
   assert.doesNotMatch(visible(acceptHeader.text), new RegExp(`${Math.round(spanMinutes)}m`));
 
@@ -335,6 +335,34 @@ test('the real g6d6q2 run draws v2 phase rules and pool · model · effort per a
   assert.deepEqual(lines.filter((line) => line.includes('phase active')), []);
 });
 
+test('a phase rule never cuts its phase number and name: the step names give way first, then the times', () => {
+  // g6d6q2's phase 2 builds three steps; the mod pane draws the desktop rule
+  // as narrow as it is given.
+  const row = realRow(realRuns.g6d6q2);
+  const panel = workflowPanelModel(row);
+  const facts = '15:33 → 15:54 · 20m35s · 3/3';
+  const title = '── ✓ Phase 2 · Build';
+  const ruleAt = (width) => visible(workflowTimelineLines(panel, width, 0, { goalPreview: false, phone: false, nowMs: NOW })
+    .lines.find((line) => line.header && line.phaseIndex === 1).text);
+  assert.equal(ruleAt(200), `${title} · launcher-dock · list-panel · thread ${'─'.repeat(200 - 58 - facts.length - 2)} ${facts}`);
+  // The name and its steps are bold; `Phase 2 · ` is not, as `2 · ` was not.
+  const painted = workflowTimelineLines(panel, 200, 0, { goalPreview: false, phone: false, nowMs: NOW })
+    .lines.find((line) => line.header && line.phaseIndex === 1).text;
+  assert.ok(painted.includes(' Phase 2 · \x1b[1mBuild · launcher-dock · list-panel · thread\x1b[22m'), JSON.stringify(painted));
+  let stepsCut = false;
+  for (let width = 100; width >= 20; width -= 1) {
+    const line = ruleAt(width);
+    assert.ok([...line].length <= width, `${width}: ${line}`);
+    assert.ok(line.startsWith(title), `${width}: the phase number or name was cut: ${line}`);
+    if (line.includes('…')) stepsCut = true;
+    // The times shorten only once the title alone cannot sit beside them.
+    if (!line.endsWith(facts)) assert.ok(`${title} ── ${facts}`.length > width, `${width}: the times gave way before the steps: ${line}`);
+  }
+  assert.ok(stepsCut, 'no width shortened the step names');
+  assert.match(ruleAt(50), /^── ✓ Phase 2 · Build · \S+… ─+ 20m35s · 3\/3$/);
+  assert.equal(ruleAt(30), `${title} ───── 3/3`);
+});
+
 test('the real euqrni run draws one v2 phase rule per sequential phase', () => {
   const row = realRow(realRuns.euqrni);
   const panel = workflowPanelModel(row);
@@ -350,7 +378,7 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', () => {
     assert.ok(lines.includes(expected), `missing attempt row:\n  ${expected}\nin:\n${lines.join('\n')}`);
     const header = timeline.lines.find((line) => line?.header && (String(line.segment).endsWith(` · ${actionId}`) || String(line.segment) === actionId));
     const duration = phaseDurationFacts(row, panel.stages.find((stage) => (stage.actionIds ?? []).includes(actionId)), { nowMs: NOW });
-    assert.match(visible(header.text), new RegExp(`^── ✓ \\d+ · ${actionId} \\S.*${durationClockText(duration.activeMinutes)} · 1/1$`));
+    assert.match(visible(header.text), new RegExp(`^── ✓ Phase \\d+ · (?:Mechanical|Integrate|Verify) · ${actionId} \\S.*${durationClockText(duration.activeMinutes)} · 1/1$`));
   }
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
 });
@@ -363,7 +391,7 @@ test('waiting phase rules dim every clock and duration placeholder', () => {
     goalPreview: false,
     nowMs: projected.nowMs,
   });
-  const waiting = timeline.lines.find((line) => visible(line?.text).includes('○ 5 · verify'));
+  const waiting = timeline.lines.find((line) => visible(line?.text).includes('○ Phase 5 · Verify · verify'));
   assert.ok(waiting, 'the projected real run has a waiting verify phase');
   assert.match(
     waiting.text,
@@ -496,7 +524,7 @@ test('the fold line reads `click to expand`, is one click region over its text, 
     assert.equal(region.x1, 1);
     assert.equal(region.x2, shutRows[at].trimEnd().length);
     assert.ok(!shutRows.some((line) => line.includes('click to fold')));
-    assert.ok(!shutRows.some((line) => line.includes('3 · wire')));
+    assert.ok(!shutRows.some((line) => line.includes('Phase 3 · Integrate · wire')));
 
     const open = foldPage(row, width, true);
     const openRows = open.lines.map(visible);
@@ -508,11 +536,11 @@ test('the fold line reads `click to expand`, is one click region over its text, 
 
     // The block it closes is phases 3–9, printed the way every other phase is:
     // one rule per phase and one row per attempt, each attempt naming its step.
-    const first = openRows.findIndex((line) => /^── ✓ 3 · wire/.test(line));
+    const first = openRows.findIndex((line) => /^── ✓ Phase 3 · Integrate · wire/.test(line));
     assert.ok(first >= 0 && first < closing);
     const block = openRows.slice(first, closing);
     const rules = block.filter((line) => line.startsWith('── '));
-    assert.deepEqual(rules.map((line) => line.match(/^── \S+ (\d+)/)[1]), ['3', '4', '5', '6', '7', '8', '9']);
+    assert.deepEqual(rules.map((line) => line.match(/^── \S+ Phase (\d+)/)[1]), ['3', '4', '5', '6', '7', '8', '9']);
     if (width >= 100) for (const rule of rules) assert.match(rule, /\d{2}:\d{2} → \d{2}:\d{2} · \S+ · \d+\/\d+$/);
     const attempts = row.state.attempts.filter((attempt) => ['wire', 'e2e', 'fix-browser', 'integrate', 'fix-clock', 'fix-drag', 'ship-drag'].includes(attempt.actionId));
     assert.equal(block.filter((line) => /^ \d{2}:\d{2}  [✓✗▶] /.test(line)).length, attempts.length, `${width}: one row per attempt`);
@@ -537,7 +565,7 @@ test('the fold opens and closes on a running run too, at 55 and 200', () => {
     assert.ok(shutRows.some((line) => /running/.test(line) && line.includes('accept')), `${width}: the running step stays visible`);
     const open = foldPage(row, width, true);
     const openRows = open.lines.map(visible);
-    assert.ok(openRows.some((line) => line.includes('10 · fix-height')));
+    assert.ok(openRows.some((line) => line.includes('Phase 10 · Build · fix-height')));
     assert.equal(openRows.filter((line) => line.trimEnd() === 'click to fold').length, 1);
     assert.ok(openRows.some((line) => line.includes('accept') && /running/.test(line)));
   }

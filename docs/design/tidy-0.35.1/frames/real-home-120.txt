@@ -43,8 +43,9 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
           Mon    Tue    Wed    Thu    Fri    Sat    Sun       project-b        ▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░    4
  ~ bars leave 66 unpriced attempts out                        project-c        ▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
 
- Workflows: 15 · verified 10 (67%)        Favourite pool: codex                   Spent: at least $299.87 api · 66 unme…
- Busiest project: project-a (10)          Favourite model: gpt-5.6-luna           Median run: 1h45m
+ Workflows: 15 · verified 10 (67%)  Favourite pool: codex          Spent: at least $299.87 api · 66 unmeasured
+ Busiest project: project-a (10)    Favourite model: gpt-5.6-luna         sub unknown (no plan price)
+                                                                   Median run: 1h45m
 
  Your 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work
 
@@ -54,7 +55,6 @@ Home · Today · 20 Sep 2026 · top 3 runs (active first)
  ✓ rw3dhi   project-a · sample goal for rw3dhi lorem sed sin…  1h38m · ≈ $16.16 api summed · sub unknown (…   15h17m ago
  ✓ g6d6q2   project-b · sample goal for g6d6q2 laborum ex id…  6h01m · at least $86.79 api · 4 unmeasured …   15h20m ago
  ✓ va7k9a   project-a · sample goal for va7k9a proident fugi…  2h46m · at least $15.27 api · 6 unmeasured …   15h56m ago
-
 
 
  [ ?.help ] [ quit ]

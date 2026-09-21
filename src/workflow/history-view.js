@@ -18,6 +18,7 @@
 //               does.  Its `elapsedMinutes` is measured, never estimated.
 
 import { glyphs } from '../lib/glyphs.js';
+import { taskKey } from '../lib/tasks.js';
 import { formatMoney, formatUsageBasis } from '../lib/usage-basis.js';
 import { poolUsageAggregate, spendFacts } from './spend-facts.js';
 import { compactRow, cut, formatDashboardValue, rule } from './dash-kit.js';
@@ -663,7 +664,7 @@ function taskRow(task, lines, regions, width, ansi, { durationWidth = null } = {
   ], { width: cols, gap: 1 });
   lines.push(fit(line, cols, ansi));
   addRegion(regions, lines, 4, Math.max(1, visible(line).length - 3), {
-    kind: 'task', taskId: task?.id ?? task?.taskFile ?? null,
+    kind: 'task', taskId: taskKey(task),
   });
 }
 

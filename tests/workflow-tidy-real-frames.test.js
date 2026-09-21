@@ -89,7 +89,7 @@ test('the supplied snapshot renders every 0.35.1 real frame within its width', (
   const run200 = frames.get('real-run-running-200.txt');
   assert.match(run200.join('\n'), /\[✓ 1 home-extraction\] → \[✓ 2 runs-extraction\] → \[✓ 3 run-extraction\] → \[▶ 4 integrate 0\/1\] → \[○ 5 verify\]/);
   assert.doesNotMatch(run200.join('\n'), /\[\S+ \d+\. /);
-  const phaseRule = run200.find((line) => line.startsWith('── ✓ 1 · home-extraction '));
+  const phaseRule = run200.find((line) => line.startsWith('── ✓ Phase 1 · Mechanical · home-extraction '));
   assert.match(phaseRule, / · 1\/1$/, phaseRule);
   const spendRows = run200
     .filter((line) => line.includes('API rate') || /│ {2}plans /.test(line))
@@ -175,7 +175,7 @@ test('the colour frames dim the attempt clocks and the footer hints, and draw th
     if (width >= 100) assert.ok(cursorRows[0].includes('\x1b[7m[▶ 4 integrate 0/1]\x1b[27m'), JSON.stringify(cursorRows[0]));
     else {
       // The phone shows the glyph strip, so the cursor is the phase's timeline rule.
-      assert.equal(stripped(cursorRows[0]), '── ▶ 4 · integrate');
+      assert.equal(stripped(cursorRows[0]), '── ▶ Phase 4 · Integrate · integrate');
       assert.ok(cursorRows[0].startsWith('\x1b[7m') && cursorRows[0].endsWith('\x1b[27m'), JSON.stringify(cursorRows[0]));
     }
 

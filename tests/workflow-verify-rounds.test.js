@@ -12,7 +12,8 @@ import {
 import { validateActionProgram } from '../src/workflow/action-validator.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { createV2GoalDocument, createV2State, validateV2DurableState } from '../src/workflow/v2-state.js';
-import { planStages, runTimelineFacts } from '../src/workflow/run-model.js';
+import { planStages, runTimelineFacts, workflowPanelModel } from '../src/workflow/run-model.js';
+import { workflowTimelineLines } from '../src/workflow/run-view.js';
 import { todayTopRuns } from '../src/workflow/home-model.js';
 
 const round = (over = {}) => ({
@@ -274,6 +275,51 @@ test('labels: the Run phase names, the in-loop round, and the finished verdict',
   state.verifyLoop.rounds[1].failed = [];
   assert.equal(loopVerdictText(state), 'verified');
   assert.equal(loopVerdictText({}), null, 'runs without a loop read as before');
+});
+
+test('Run phase rules name each phase from its steps\' kinds: Build, Verify, Repair, and a mix joined with +', () => {
+  // The owner's form (0.35.3): `── ✓ Phase 2 · Build · time-box · docs ──`.
+  // A digest beside the two builds makes phase 1 a mix, named in the order
+  // its kinds first appear; the kernel's repair is `Repair` though it was
+  // added as an implement step; a round's own leading word is not repeated.
+  const state = synthetic({
+    extraActions: [
+      { id: 'digest-notes', kind: 'digest', lane: 'analyze', effort: 'low', dependsOn: [], affects: [], ownedFiles: [], evidenceFor: [] },
+      { id: 'repair-1', kind: 'implement', lane: 'build', effort: 'high', dependsOn: ['verify'], affects: ['alpha'], ownedFiles: ['src/a.js'], evidenceFor: [] },
+      { id: 'verify-round-2', kind: 'adversarial-acceptance', lane: 'analyze', effort: 'high', dependsOn: ['repair-1'], affects: [], ownedFiles: [], evidenceFor: ['alpha'] },
+    ],
+    loop: { max: 3, stoppedBy: null, rounds: [
+      round({ closedAt: 'x', failed: ['alpha'], passed: ['beta'], repairActionId: 'repair-1', repairRequirements: ['alpha'], repairStartedAt: 'x', repairFinishedAt: 'y' }),
+      round({ round: 2, verifyActionIds: ['verify-round-2'], toJudge: ['alpha'], carried: ['beta'] }),
+    ] },
+  });
+  state.actions.find((action) => action.id === 'verify-round-2').status = 'running';
+  const row = { runId: state.runId, shortId: state.shortId, state, status: 'running' };
+  assert.deepEqual(runTimelineFacts(row).phases.map((phase) => phase.kindName), ['Build + Digest', 'Verify', 'Repair', 'Verify']);
+  const rules = (width) => workflowTimelineLines(workflowPanelModel(row), width, 0, { goalPreview: false })
+    .lines.filter((line) => line.header && line.phaseIndex >= 0)
+    .map((line) => line.text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
+  // At 55 the step names give way; the phase number and name never do.
+  assert.deepEqual(rules(55), [
+    '── ✓ Phase 1 · Build + Digest · build-a · build-b · di…',
+    '── ✓ Phase 2 · Verify · round 1 of 3 · 2 to judge',
+    '── ✓ Phase 3 · Repair · round 1 · 1 requirement',
+    '── ▶ Phase 4 · Verify · round 2 of 3 · 1 to re-check',
+  ]);
+  for (const [index, line] of rules(200).entries()) {
+    assert.equal([...line].length, 200, line);
+    assert.match(line, new RegExp(`^── [✓▶] Phase ${index + 1} · (Build \\+ Digest|Verify|Repair) · \\S.* ─+ .* · \\d+/\\d+$`), line);
+  }
+
+  // Only a round's label loses its leading word: a phase whose first step is
+  // named `build` still names it.
+  const plain = synthetic({ loop: { max: 1, stoppedBy: null, rounds: [] } });
+  plain.program.actions = ['build', 'docs'].map((id) => ({ id, kind: 'implement', lane: 'build', effort: 'medium', dependsOn: [], affects: [], ownedFiles: [`${id}.md`], evidenceFor: [] }));
+  plain.actions = plain.program.actions.map((action) => ({ id: action.id, status: 'succeeded' }));
+  const plainRow = { runId: plain.runId, shortId: plain.shortId, state: plain, status: 'running' };
+  const [first] = workflowTimelineLines(workflowPanelModel(plainRow), 55, 0, { goalPreview: false })
+    .lines.filter((line) => line.header && line.phaseIndex >= 0);
+  assert.equal(first.text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''), '── ✓ Phase 1 · Build · build · docs');
 });
 
 test('a revision\'s verifyRounds sets the rest of the run\'s budget, never below the rounds already closed', () => {

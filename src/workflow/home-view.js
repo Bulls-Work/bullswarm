@@ -53,9 +53,11 @@ import {
   usageBasisText,
   visibleLength,
   workflowRunLabel,
+  wrapLines,
 } from './dashboard.js';
 import { apiMoney, formatMoney } from '../lib/usage-basis.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
+import { taskKey } from '../lib/tasks.js';
 
 const BUDGET_WEEK_POOLS = 4;
 // From this width up the Today band and the period band are each two halves
@@ -166,6 +168,20 @@ function todayTableRow(row, width, { header = false } = {}) {
   return todayPadded(line, width);
 }
 
+/**
+ * `parts` joined with ` · ` in lines of at most `width` cells, a line breaking
+ * only at a join: a part longer than a whole line wraps at its own spaces.
+ */
+function joinedLines(parts, width) {
+  const lines = [];
+  for (const part of parts.map(String).filter(Boolean)) {
+    const last = lines.at(-1);
+    if (last != null && visibleLength(`${last} · ${part}`) <= width) lines[lines.length - 1] = `${last} · ${part}`;
+    else lines.push(...wrapLines([part], width));
+  }
+  return lines.length ? lines : [''];
+}
+
 function todayBareRule(width) {
   return '─'.repeat(Math.max(0, width));
 }
@@ -245,7 +261,7 @@ function taskCardModel(task) {
   };
   return {
     record,
-    id: task?.id ?? task?.taskFile ?? null,
+    id: taskKey(task),
     name: String(task?.goal ?? task?.lane ?? task?.id ?? task?.taskFile ?? 'task')
       .split(/\r?\n/).find((line) => line.trim())?.trim() ?? 'task',
     project: task?.project ?? '—',
@@ -633,8 +649,8 @@ function homeTodayBand(model, opts, body) {
   // workflows, so it remains workflow-only while a task-only home is useful.
   for (const task of today.tasks) {
     if (cards.length >= 3) break;
-    const id = task?.id ?? task?.taskFile;
-    if (!id || used.has(id)) continue;
+    const id = taskKey(task);
+    if (used.has(id)) continue;
     const card = taskCardModel(task);
     card.task = true;
     cards.push(card);
@@ -932,8 +948,14 @@ function slotLabelLine(slots, { cell, weekly, room }) {
  * approximate — an estimate, or a day with unpriced attempts left out — and
  * `$400` when every bar is a provider-reported whole), the day under each
  * bar, and at most one dim line saying what the bars leave out.
+ *
+ * `lines`, when given, is how many lines the chart fills: the half beside the
+ * breakdowns asks for their height, so no empty block sits under the chart.
+ * Each tick interval then takes a whole number of rows and the bars scale to
+ * them; the one or two rows that leave over sit above the top tick as
+ * headroom, so every tick still marks its exact amount.
  */
-function spendChartLines(model, opts, width) {
+function spendChartLines(model, opts, width, { lines: fill = null } = {}) {
   const spend = model.stats?.spendPerDay ?? null;
   const period = PERIOD_ITEMS.find((item) => item.id === opts.period) ?? PERIOD_ITEMS[0];
   const weekly = spend?.bucketBy === 'week';
@@ -949,8 +971,20 @@ function spendChartLines(model, opts, width) {
   const ticks = spendTicks(Math.max(...drawn.map((slot) => slot.usd)));
   const top = ticks.at(-1);
   const intervals = ticks.length - 1;
-  const perTick = Math.max(2, Math.round(chartRowCount(opts.height ?? 36) / intervals));
-  const rows = intervals * perTick;
+  const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
+  const unknownDays = slots.filter((slot) => slot.unknown).length;
+  const notes = [
+    unpriced ? `~ bars leave ${unpriced} unpriced attempt${unpriced === 1 ? '' : 's'} out` : null,
+    unknownDays ? `${blank()} no price recorded` : null,
+  ].filter(Boolean);
+  // The plot's rows: what `lines` leaves after the baseline, the day labels
+  // and the note, else the terminal height's share.
+  const room = fill == null ? null : fill - 2 - (notes.length ? 1 : 0);
+  const perTick = room == null
+    ? Math.max(2, Math.round(chartRowCount(opts.height ?? 36) / intervals))
+    : Math.max(2, Math.floor(room / intervals));
+  const scaled = intervals * perTick;
+  const rows = room == null ? scaled : Math.max(scaled, room);
   const gutter = Math.max(...ticks.map((tick) => tickText(tick, mark).length));
   const ascii = asciiGlyphsPreferred();
   const plot = Math.max(slots.length, width - gutter - 3);
@@ -960,10 +994,10 @@ function spendChartLines(model, opts, width) {
   // A day that spent anything keeps at least one eighth, so it never reads
   // as the zero a day with no run draws.
   const eighths = slots.map((slot) => (slot.usd > 0
-    ? Math.max(1, Math.round((slot.usd / top) * rows * 8)) : 0));
+    ? Math.max(1, Math.round((slot.usd / top) * scaled * 8)) : 0));
   const lines = [];
   for (let row = rows; row >= 1; row -= 1) {
-    const tick = row % perTick === 0 ? ticks[row / perTick] : null;
+    const tick = row % perTick === 0 ? ticks[row / perTick] ?? null : null;
     const axis = tick == null ? (ascii ? '|' : '│') : (ascii ? '|' : '┤');
     let line = ` ${(tick == null ? '' : tickText(tick, mark)).padStart(gutter)} ${dimText(axis, 1)}`;
     slots.forEach((slot, index) => {
@@ -979,12 +1013,6 @@ function spendChartLines(model, opts, width) {
   const baseline = `${ascii ? '+' : '┼'}${(ascii ? '-' : '─').repeat(cell * slots.length)}`;
   lines.push(` ${tickText(0, mark).padStart(gutter)} ${dimText(baseline, baseline.length)}`);
   lines.push(`${' '.repeat(gutter + 3)}${slotLabelLine(slots, { cell, weekly, room: Math.max(cell * slots.length, plot) })}`);
-  const unpriced = slots.reduce((sum, slot) => sum + slot.unpriced, 0);
-  const unknownDays = slots.filter((slot) => slot.unknown).length;
-  const notes = [
-    unpriced ? `~ bars leave ${unpriced} unpriced attempt${unpriced === 1 ? '' : 's'} out` : null,
-    unknownDays ? `${blank()} no price recorded` : null,
-  ].filter(Boolean);
   if (notes.length) lines.push(dimText(` ${notes.join(' · ')}`, width));
   return lines;
 }
@@ -1023,9 +1051,10 @@ function breakdownSection(label, list, { width, role, runs = false, nameWidth })
 /**
  * The period band's cells: the spent-per-day chart, then `by pool`,
  * `by model` and `by project`, each `{ action, rows }` and `cellWidth` wide.
- * The breakdowns share one name column, so their bars start together.
+ * The breakdowns share one name column, so their bars start together. With
+ * `chartLines` the chart cell is that many lines tall, its label included.
  */
-function breakdownCells(model, opts, { cellWidth }) {
+function breakdownCells(model, opts, { cellWidth, chartLines = null }) {
   const breakdown = model.stats?.overview?.breakdown ?? { pools: [], models: [], projects: [] };
   const spend = model.stats?.spendPerDay ?? null;
   const lists = {
@@ -1044,7 +1073,7 @@ function breakdownCells(model, opts, { cellWidth }) {
       action: { kind: 'trend', metric: 'spend' },
       rows: [
         dimText(` spent per ${spend?.bucketBy === 'week' ? 'week' : 'day'}`, cellWidth),
-        ...spendChartLines(model, opts, cellWidth),
+        ...spendChartLines(model, opts, cellWidth, { lines: chartLines == null ? null : chartLines - 1 }),
       ],
     },
     // The Stats tab each section opens: its `pool`, `model` and `project`
@@ -1060,17 +1089,20 @@ function breakdownCells(model, opts, { cellWidth }) {
  * breakdowns stacked in the right one, a blank row between them; below 110
  * columns the four read one under another. Each line keeps its cell's action,
  * so a click on the chart opens the spend trend and one on a section its tab.
+ * In halves the chart is as tall as the stack beside it.
  */
 function periodBand(model, opts, body) {
   const { width } = opts;
   const split = width >= HALVES_WIDTH;
   const halves = split ? bandHalves(width) : null;
-  const [chart, ...sections] = breakdownCells(model, opts, { cellWidth: split ? halves.half : width });
+  const cellWidth = split ? halves.half : width;
+  const [, ...sections] = breakdownCells(model, opts, { cellWidth });
   const linesOf = (cell) => cell.rows.map((text) => ({ text, action: cell.action }));
   const stacked = sections.flatMap((cell, index) => [
     ...(index ? [{ text: '' }] : []),
     ...linesOf(cell),
   ]);
+  const [chart] = breakdownCells(model, opts, { cellWidth, chartLines: split ? stacked.length : null });
   if (split) pushHalves(body, linesOf(chart), stacked, halves);
   else {
     pushStack(body, linesOf(chart));
@@ -1142,22 +1174,46 @@ function summaryBand(body, model, opts) {
       `Favourite pool: ${tint(named(keys.favouritePool), 'orange')}`,
       `Favourite model: ${tint(named(keys.favouriteModel), 'orange')}`,
     ],
-    [
-      `Spent: ${tint(money, 'orange')}`,
-      `Median run: ${tint(medianRunText(model), 'orange')}`,
-    ],
   ];
+  const median = `Median run: ${tint(medianRunText(model), 'orange')}`;
+  // The amount with its coverage is the longest figure: where its column is
+  // too narrow it wraps at its ` · ` joins under its label, never cut short.
+  const label = 'Spent: ';
+  const spentRows = (own) => joinedLines(money.split(' · '), Math.max(8, own - label.length))
+    .map((line, index) => `${index ? ' '.repeat(label.length) : label}${tint(line, 'orange')}`);
   body.push('');
   if (narrow) {
     for (const figure of figures.flat()) body.push(cut(` ${figure}`, width));
+    for (const row of [...spentRows(width - 1), median]) body.push(cut(` ${row}`, width));
   } else {
-    pushColumns(body, figures.map((rows) => ({ rows })), { width: width - 1, gap: 2 });
+    // Three even columns while every figure fits its third. Past that, which
+    // an even split met at 200 columns by cutting the coverage off `Spent`,
+    // `Spent` takes the width it needs out of what the other two leave, and
+    // they share whatever is over.
+    const gap = 2;
+    const cells = width - 1;
+    const inner = cells - gap * 2;
+    const natural = [
+      ...figures.map((rows) => Math.max(...rows.map((row) => visibleLength(row)))),
+      visibleLength(`${label}${money}`),
+    ];
+    const even = Math.floor(inner / 3);
+    const spentWidth = Math.max(even, Math.min(natural[2], inner - natural[0] - natural[1]));
+    const over = inner - spentWidth - natural[0] - natural[1];
+    const widths = natural[2] > even && over >= 0
+      ? [natural[0] + Math.ceil(over / 2), natural[1] + Math.floor(over / 2), spentWidth]
+      : null;
+    pushColumns(body, [
+      ...figures.map((rows) => ({ rows })),
+      { rows: [...spentRows(widths ? spentWidth : even), median] },
+    ].map((cell, index) => (widths ? { ...cell, width: widths[index] } : cell)), { width: cells, gap });
   }
   body.push('');
   const sentence = apiPart && !apiPart.includes('api unknown')
     ? `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded ${apiPart} of API-equivalent work`
     : `Your ${runs} run${runs === 1 ? '' : 's'} in this period recorded no API-equivalent estimate`;
-  body.push(cut(` ${tint(sentence, 'purple')}`, width));
+  // Wrapped, not cut: a phone would otherwise cut the amount it states.
+  for (const line of wrapLines([sentence], Math.max(8, width - 1))) body.push(` ${tint(line, 'purple')}`);
 }
 
 function homePage(model, opts, body) {
@@ -1262,7 +1318,7 @@ function activeRunLines(model, opts, body, title = 'running') {
       { text: elapsed, width: Math.max(5, visibleLength(elapsed)), align: 'right', gap: 2 },
       { text: ' ', width: 1, gap: 0 },
     ], { width });
-    body.row(line, { kind: 'task', taskId: task?.id ?? task?.taskFile ?? null });
+    body.row(line, { kind: 'task', taskId: taskKey(task) });
   }
   if (unratedPools.size) {
     body.push(dimText(` ${blank()} no measured %/minute rate for ${[...unratedPools].join(', ')}, so no licence draw`, width));
