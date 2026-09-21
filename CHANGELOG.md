@@ -15,6 +15,8 @@
   (Build, Integrate, Verify, Digest, Design, Repair from the steps' kinds,
   joined with ` + ` when a phase mixes them); the phase number and name are
   never cut, step names shorten first.
+- home: day keys no longer build an `Intl.DateTimeFormat` per call to learn
+  the zone (it is cached against `TZ`); a Home paint takes about 40% less time.
 
 ## 0.35.2 — the Step page reads like a transcript; prices without a command, honest totals, a home that stops growing
 

@@ -50,9 +50,18 @@ import { readGoalProject } from './goal.js';
 
 const DAY_MS = 86_400_000;
 
+// Resolving the zone builds an Intl.DateTimeFormat, and Home asks once per day
+// key, which made it most of a Home paint. Node only changes the process zone
+// when TZ is assigned, so the answer is cached against TZ's value.
+let zoneTz;
+let zoneName = null;
 function localTimeZone() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
-  catch { return 'UTC'; }
+  const tz = process.env.TZ ?? '';
+  if (zoneName !== null && tz === zoneTz) return zoneName;
+  try { zoneName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+  catch { zoneName = 'UTC'; }
+  zoneTz = tz;
+  return zoneName;
 }
 
 // Building an Intl.DateTimeFormat costs about 0.1 ms, and a 181-run history
