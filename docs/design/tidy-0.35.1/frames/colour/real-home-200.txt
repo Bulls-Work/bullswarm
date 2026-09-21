@@ -1,0 +1,60 @@
+ [7m[4mH[24mome[0m  [4mR[24muns  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ bullswarm · home
+Home · Today · 20 Sep 2026 · top 3 runs (active first)
+┌─ sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco …─┐  ── licences · today ───────────────────────────────────────────────────────────────────────────────
+│ project-b · completed · verified                                                                │  [2m pool              agent min  weekly quota   API $  unpriced  plan $[0m
+│ 58m37s active of 58m38s · steps 9/9                                                             │   [38;2;127;191;168mclaude-code[0m           171.3             [2m—[0m  ≈89.11         0       [2m—[0m
+│ API at least $9.52 · 6 unmeasured · subscription —                                              │   [38;2;191;108;105mclaude-code:acme[0m       58.4             [2m—[0m  ≈24.71         1       [2m—[0m
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘   [38;2;127;163;224mcodex[0m                 964.5             [2m—[0m  ≈36.30        25       [2m—[0m
+┌─ sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore lab…─┐   [38;2;155;196;232mcommand-code[0m              [2m—[0m             [2m—[0m       [2m—[0m         [2m—[0m       [2m—[0m
+│ project-a · completed · verified                                                                │   [38;2;182;189;115mgrok[0m                   76.2             [2m—[0m  ≈21.17         0       [2m—[0m
+│ 1h55m · steps 5/5                                                                               │  [2m ≈ ~ estimates (~ is rougher) · — not measured · a pool row opens Budget[0m
+│ API ≈ $9.76 · subscription —                                                                    │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est cul…─┐
+│ project-a · completed · not verified                                                            │
+│ 1h38m active of 1h39m · steps 7/7                                                               │
+│ API ≈ $16.16 · subscription —                                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+── running ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[2m nothing running right now[0m
+
+── budget · this week ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[2m no pool reported a licence meter · bullswarm doctor checks the meters[0m
+
+── last 7 days ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── [7mLast 7 days[0m · Last 30 days · All time
+[2m spent per day[0m                                                                                       [2m by pool · share of agent minutes[0m
+ ~$200 [2m┤[0m                                                                                              codex            [38;2;127;163;224m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░[0m  75%
+       [2m│[0m                                                                                              claude-code      [38;2;127;191;168m▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   8%
+       [2m│[0m                                                                                [38;2;143;199;207m████████[0m      grok             [38;2;182;189;115m▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   6%
+       [2m│[0m                                                                                [38;2;143;199;207m████████[0m      claude-code:acme [38;2;191;108;105m▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   6%
+       [2m│[0m                                                                                [38;2;143;199;207m████████[0m     [2m +1 more[0m
+       [2m│[0m                                                                                [38;2;143;199;207m████████[0m
+       [2m│[0m                                                      [38;2;143;199;207m▆▆▆▆▆▆▆▆[0m                  [38;2;143;199;207m████████[0m     [2m by model · share of agent minutes[0m
+ ~$100 [2m┤[0m                                                      [38;2;143;199;207m████████[0m                  [38;2;143;199;207m████████[0m      gpt-5.6-luna     [38;2;233;200;128m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░[0m  68%
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m                  [38;2;143;199;207m████████[0m      claude-opus-5    [38;2;233;200;128m▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m  13%
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m                  [38;2;143;199;207m████████[0m      gpt-5.6-sol      [38;2;143;199;207m▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   7%
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m                  [38;2;143;199;207m████████[0m      grok-4.6         [38;2;217;176;96m▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   6%
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m                  [38;2;143;199;207m████████[0m     [2m +1 more[0m
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m     [38;2;143;199;207m▂▂▂▂▂▂▂▂[0m     [38;2;143;199;207m████████[0m
+       [2m│[0m                                                      [38;2;143;199;207m████████[0m     [38;2;143;199;207m████████[0m     [38;2;143;199;207m████████[0m     [2m by project · runs[0m
+    $0 [2m┼───────────────────────────────────────────────────────────────────────────────────────────[0m   project-a        [38;2;210;133;107m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░[0m   10
+             Mon          Tue          Wed          Thu          Fri          Sat          Sun        project-b        [38;2;191;108;105m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m    4
+[2m ~ bars leave 66 unpriced attempts out[0m                                                                project-c        [38;2;169;156;240m▇▇▇▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m    1
+
+ Workflows: [1m[38;2;210;133;107m15[0m[22m · verified [38;2;210;133;107m10[0m (67%)                                  Favourite pool: [38;2;210;133;107mcodex[0m                                              Spent: [38;2;210;133;107mat least $299.87 api · 66 unmeasured · sub unknown (no pl…[0m
+ Busiest project: [38;2;210;133;107mproject-a[0m (10)                                    Favourite model: [38;2;210;133;107mgpt-5.6-luna[0m                                      Median run: [38;2;210;133;107m1h45m[0m
+
+ [38;2;169;156;240mYour 15 runs in this period recorded at least $299.87 api · 66 unmeasured of API-equivalent work[0m
+
+── recent ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── history › ──
+ [38;2;182;189;115m✓[0m [1mrensha[22m   project-b · sample goal for rensha nostrud lorem nostrud mollit labore labore laboris qui dolore ullamco in ex consequat minim a…  59m · at least $9.52 api · 6 unmeasured · s…   [2m13h47m ago[0m
+ [38;2;182;189;115m✓[0m [1meuqrni[22m   project-a · sample goal for euqrni minim labore magna eiusmod quis labore elit aute culpa enim dolore laborum excepteur laboris …  1h56m · ≈ $9.76 api summed · sub unknown (n…   [2m13h58m ago[0m
+ [38;2;182;189;115m✓[0m [1mrw3dhi[22m   project-a · sample goal for rw3dhi lorem sed sint ipsum lorem laborum mollit magna voluptate amet est culpa amet in officia duis…  1h38m · ≈ $16.16 api summed · sub unknown (…   [2m15h17m ago[0m
+ [38;2;182;189;115m✓[0m [1mg6d6q2[22m   project-b · sample goal for g6d6q2 laborum ex id occaecat consequat ad elit consequat nulla ut laboris non consequat aliquip dui…  6h01m · at least $86.79 api · 4 unmeasured …   [2m15h20m ago[0m
+ [38;2;182;189;115m✓[0m [1mva7k9a[22m   project-a · sample goal for va7k9a proident fugiat fugiat tempor exercitation sint aliquip ipsum commodo consectetur minim molli…  2h46m · at least $15.27 api · 6 unmeasured …   [2m15h56m ago[0m
+
+
+
+ [ [4m?[24m.help ] [ [4mq[24muit ]

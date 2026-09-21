@@ -128,11 +128,22 @@ test('real snapshot task records render through the Step blocks at 55, 120, and 
     const model = taskStepModel(record, { nowMs: NOW });
     for (const width of [55, 120, 200]) {
       const body = bodyFor();
-      renderStepPage(model, { width, stepView: 'overview' }, body);
+      const header = renderStepPage(model, { width, stepView: 'overview' }, body);
       for (const line of body.lines) assert.ok([...plain(line)].length <= width, `${width}: ${plain(line)}`);
-      assert.match(body.lines.join('\n'), /── task · build|── task · /);
-      assert.match(body.lines.join('\n'), /── result · /);
-      assert.match(body.lines.join('\n'), /── cost/);
+      const text = body.lines.map(plain).join('\n');
+      assert.match(text, /── task · build|── task · /);
+      assert.match(text, /── result · /);
+      assert.match(text, /── cost/);
+      if (width === 200) {
+        const expectedId = String(record.id ?? record.taskFile).length > 14
+          ? String(record.id ?? record.taskFile).slice(-8)
+          : String(record.id ?? record.taskFile);
+        assert.match(
+          plain(header),
+          new RegExp(`^ [✓✗●] ${record.lane} task · ${expectedId} · succeeded · attempt 1 of 1`),
+        );
+        assert.doesNotMatch(plain(header), new RegExp(String(record.id)));
+      }
     }
   }
 });
@@ -159,7 +170,8 @@ test('dashboard task route uses the Step toggle and Esc leaves the task page', a
     const beforeOpen = output.text.length;
     input.press('\r');
     await settle();
-    assert.match(plain(output.text.slice(beforeOpen)), /key-task · key-ta · succeeded/);
+    assert.match(plain(output.text.slice(beforeOpen)), /build task · key-task/);
+    assert.match(plain(output.text.slice(beforeOpen)), /── result · succeeded/);
     const beforeToggle = output.text.length;
     input.press('v');
     await settle();

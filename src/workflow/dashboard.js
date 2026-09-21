@@ -660,11 +660,23 @@ export function tint(text, role) {
   return `\x1b[38;2;${rgbOf(hex).join(';')}m${body}${SGR_RESET}`;
 }
 
-/** A key figure or a key name, bold where the terminal can be bold. */
+/** A key figure or a key name, bold — ASCII mode keeps bold, dim and inverse. */
 function strong(text) {
   const body = String(text ?? '');
-  if (!body || !meterAnsi()) return body;
+  if (!body) return body;
   return `${SGR_BOLD}${body}${SGR_NO_BOLD}`;
+}
+
+/**
+ * The cursor row, inverse as the tab row: `\x1b[7m … \x1b[27m`. A painted row
+ * resets its own cells, so reverse video is re-armed after each reset and the
+ * whole row stays inverse. SGR only — the row keeps its text and its width —
+ * and kept in ASCII mode, which drops colour but keeps bold, dim and inverse.
+ */
+function inverseText(text) {
+  const body = String(text ?? '');
+  if (!body) return body;
+  return `\x1b[7m${body.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')}\x1b[27m`;
 }
 
 /** The run marks, each in the colour the tagged prototype frame gives it. */
@@ -1203,6 +1215,12 @@ function navParts(model, { page, width, selectedRunId, stepView = 'overview', st
       : item.key ? `${underline(item.key)}.${item.label}` : item.label;
     return item.tight ? `[${mark}${label}]` : `[ ${mark}${label} ]`;
   };
+  // Colour rules: the footer hints are meta, so their prose is dim; the
+  // buttons before them keep their own faces.
+  const hintText = (hint, room) => {
+    const text = cut(hint, room);
+    return text ? dimText(text, Math.max(1, visibleLength(text))) : text;
+  };
   // The Run page owns its compact footer: navigation back to the catalogue,
   // the selected run chip, and the page-local plan/follow controls. Keeping it
   // in the shell means it is painted once, below the scrollable body, and the
@@ -1222,7 +1240,7 @@ function navParts(model, { page, width, selectedRunId, stepView = 'overview', st
       if (index) parts.push({ text: ' ' });
       parts.push({ text: button(item), action: item.action });
     });
-    parts.push({ text: ` ${cut(hint, available)}` });
+    parts.push({ text: ` ${hintText(hint, available)}` });
     return parts;
   }
   if (page === 'step' || page === 'task') {
@@ -1246,7 +1264,7 @@ function navParts(model, { page, width, selectedRunId, stepView = 'overview', st
     });
     // Desktop separates the button group from the prose hint by one extra
     // cell; the phone keeps the compact two-cell gap from the approved frame.
-    parts.push({ text: `${narrow ? ' ' : '  '}${cut(hint, available)}` });
+    parts.push({ text: `${narrow ? ' ' : '  '}${hintText(hint, available)}` });
     return parts;
   }
   const back = page === 'step' || page === 'task' ? [{ key: null, label: 'back', action: { kind: 'back' } }] : [];
@@ -1945,7 +1963,7 @@ export function renderDashboardPage(model, options = {}) {
     for (let index = 0; index < padding; index += 1) body.push('');
   }
   const window = windowOf(body, { height: bodyHeight, scroll: opts.bodyScroll });
-  frame.push(truncate(`${header}${window.position}`, width));
+  frame.push(cut(`${header}${window.position}`, width));
   drawWindow(frame, body, window);
   // The nav is sticky at the bottom: a body shorter than its window is padded
   // out to it rather than leaving the nav floating up the screen.
@@ -2673,7 +2691,14 @@ export async function runDashboard(bullswarmDir, {
     if (page !== 'stats') clearSliceState();
     const historyJump = page === 'history';
     if (historyJump) page = 'runs';
-    if (page === 'runs') ensureCatalog();
+    if (page === 'runs') {
+      ensureCatalog();
+      // Runs is a fresh list entry point: an old Home/Stats selection must
+      // not steal the cursor from the first in-flight row.  The active list is
+      // already sorted newest-first by activeDashboardRows().
+      selectedTaskId = null;
+      selectedRunId = activeRuns[0]?.runId ?? null;
+    }
     if ((page === 'run' || page === 'step') && !selectedRunId) {
       message = 'No workflow selected.';
       ui.page = 'home';
@@ -2689,6 +2714,23 @@ export async function runDashboard(bullswarmDir, {
       bodyScroll = Math.max(0, (frame?.anchor?.history ?? 1) - 1);
       selectedRunId = frame?.runRows?.find((row) => row.y > bodyScroll)?.runId ?? selectedRunId;
       return paint();
+    }
+    // When no active run exists, the first visible row comes from the history
+    // projection (or the task ledger).  Persist that rendered cursor so Up on
+    // the first row remains clamped there and Enter opens exactly that row.
+    if (page === 'runs' && frame?.cursorAction) {
+      const cursor = frame.cursorAction;
+      if (cursor.kind === 'task') {
+        if (selectedTaskId !== cursor.taskId || selectedRunId != null) {
+          selectedTaskId = cursor.taskId;
+          selectedRunId = null;
+          return paint();
+        }
+      } else if (cursor.kind === 'run' && selectedRunId !== cursor.runId) {
+        selectedRunId = cursor.runId;
+        selectedTaskId = null;
+        return paint();
+      }
     }
     return frame;
   };
@@ -3653,6 +3695,7 @@ export {
   workflowStatusIcon,
   PERIOD_ITEMS,
   strong,
+  inverseText,
   pushColumns,
   TOKEN_SOURCE_RANK,
   SUBSCRIPTION_BASIS_RANK,

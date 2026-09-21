@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   measuredTaskMinutes,
+  cardDurationText,
   medianRunDuration,
   poolRatePerMinute,
   runMinutesInfo,
@@ -44,6 +45,9 @@ test('Home model keeps task identity, dates, durations and nullable figures hone
   assert.equal(todayMinutesNumberText(1.25), '1.3');
   assert.equal(measuredTaskMinutes(finished), 1.5);
   assert.equal(measuredTaskMinutes({ durationMs: 'not measured' }), null);
+  assert.equal(cardDurationText({ active: 355, span: 415 }), '5h55m active of 6h55m');
+  assert.equal(cardDurationText({ active: 58 + 37 / 60, span: 58 + 37 / 60 }), '58m37s');
+  assert.equal(cardDurationText({ active: null, span: 4 }), 'span 4m00s');
   assert.equal(todayDateLabel('2026-09-20', { year: true }), '20 Sep 2026');
   assert.equal(todayDateLabel(null), 'today');
 });

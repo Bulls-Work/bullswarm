@@ -1,0 +1,60 @@
+ [4mH[24mome  [7m[4mR[24muns[0m  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ [38;2;182;189;115m✓[0m [1mstep-model[22m · [1mva7k9a[22m · [38;2;182;189;115msucceeded[0m · [38;2;182;189;115mverified[0m · 1–57/3…[0m
+ sample purpose for va7k9a aute commodo proident
+ ullamco cupidatat magna
+ [38;2;127;163;224mcodex[0m · gpt-5.6-luna · medium · [2m49m07s · 01:50→02:39[0m
+
+[2m──[0m result · [38;2;182;189;115mverified by the workflow[0m 6/6 [2m──────────────[0m
+ sample report magna exercitation.
+ sample sint: sample exercitation nisi consequat cillum
+ anim id exercitation culpa ut veniam exercitation…
+ [2mchanged[0m src/dir-01/file-267.js
+         tests/file-268.test.js
+ [2mfiles[0m       wf-mu8ni8o4-f9baaf/ task · out · stream ·…[0m
+ [2mtask[0m     tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ [2moutput[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ [2mstream[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ [2mdiff[0m     tests/fixtures/home-351/workflows/wf-mu8ni8o4
+ [2mresult[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4
+
+[2m──[0m transcript · overview · [7mdetail[0m · 15 turns [2m──────────[0m
+  1  [2m01:50[0m  sample response for step-model-1 incididunt
+            id consequat tempor labore qui pariatur
+            mollit laborum eiusmod dolore et et fugiat
+            proident.
+            [2m3 commands[0m
+            [2m01:50:35[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:50:46[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:50:58[0m  [2m$[0m sample command for step-model-…[0m
+  2  [2m01:51[0m  sample response for step-model-1 sunt
+            eiusmod commodo tempor enim amet nisi
+            dolore nulla laborum ad non amet minim ea
+            et amet qui duis labore elit commodo aliqua
+            irure consequat amet veniam excepteur.
+            [2m35 commands[0m
+            [2m01:51:12[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:51:28[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:51:34[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:51:39[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:51:45[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:51:51[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:06[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:18[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:24[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:31[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:41[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:52:50[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:04[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:17[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:26[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:32[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:45[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:53:57[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:05[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:17[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:34[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:38[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:43[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:48[0m  [2m$[0m sample command for step-model-…[0m
+            [2m01:54:53[0m  [2m$[0m sample command for step-model-…[0m
+ [ back ]  [2mEnter open · v overview · t filter · ? help[0m

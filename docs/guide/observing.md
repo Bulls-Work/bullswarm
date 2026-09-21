@@ -49,6 +49,32 @@ task/output paths; it does not invent effort, usage, money, verification, a
 result envelope, or an event stream. With no stream pointer it says `no event
 stream path recorded`.
 
+## Colours
+
+The Step and Run pages use colour for one thing only: telling you what a word
+is, not decorating it. **Green** is work that went well — `✓`, `succeeded`,
+`verified`, `completed`. **Amber** is work happening right now — `▶`, `●`,
+`running`, the spinner, `following ●`. **Red** is work that failed — `✗`,
+`failed`, `interrupted`, and an error count above zero. **Dim** is the
+supporting detail: when (clocks and dates), how much (counts and token
+classes), how we know (`OpenAI rate card, 20 Sep`, `no meter reading for this
+attempt`), the row labels, the block rule dashes, the footer hints, and
+anything still pending (`○`, `waiting`). **Bold** is what the thing is and how
+much it cost — the step or task name, the run's short id, and every money
+amount. Each **pool** is drawn in its own colour, the same colour its bar has
+on Home, wherever it appears: the `pool · model · effort` row, the attempt mix,
+the spend split, the timeline. Everything else — the agent's own response text,
+the task text, report lines and command text — is left plain, and the selected
+row is drawn inverse.
+
+If your terminal cannot draw the status glyphs (see
+[Glyphs in your terminal](#glyphs-in-your-terminal)), the pages fall back to
+ASCII and only bold, dim and inverse remain, so nothing is lost, only recoloured.
+The exact rules are in the design records under
+`docs/design/tidy-0.35.1/step-v2/README.md` and `run-v2/README.md`, and the
+rendered frames with their escape codes kept are in
+`docs/design/tidy-0.35.1/frames/colour/` if you want to grep for a colour.
+
 ## The dashboard
 
 The dashboard is Bullswarm's main screen once setup is complete. Bare

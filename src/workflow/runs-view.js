@@ -94,6 +94,14 @@ function listWindow(groups, selected, height, narrow) {
   return groups.slice(start, start + capacity).flatMap((group) => group.lines).slice(0, height);
 }
 
+// A selected row may already contain palette SGR resets.  Re-arm reverse
+// video after each reset so the whole row remains visibly inverse, not just
+// its first coloured cell.
+function inverseLine(value) {
+  const text = String(value ?? '');
+  return `\x1b[7m${text.replace(/\x1b\[0m/g, '\x1b[0m\x1b[7m')}\x1b[27m\x1b[0m`;
+}
+
 function humanWorkflowStatus(status, ongoing) {
   const value = String(status ?? '').replaceAll('_', ' ');
   if (ongoing && (!value || value === 'running')) return 'running';
@@ -175,7 +183,7 @@ function runsPage(model, opts, body) {
     : allRows.findIndex((region) => region.action.kind === 'run' && region.action.runId === desired);
   const cursor = allRows[wanted >= 0 ? wanted : 0];
   if (cursor) {
-    body.lines[cursor.y - 1] = `\x1b[7m${body.lines[cursor.y - 1]}\x1b[0m`;
+    body.lines[cursor.y - 1] = inverseLine(body.lines[cursor.y - 1]);
     body.anchor.cursor = cursor.y;
   }
   body.runRows = runRows.map((region) => ({ runId: region.action.runId, y: region.y }));

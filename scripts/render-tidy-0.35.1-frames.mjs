@@ -13,7 +13,21 @@ import { workflowPanelModel } from '../src/workflow/run-model.js';
 
 export const SNAPSHOT = '/home/dev/.claude-acme/jobs/cce88dd2/tmp/home-351';
 export const FRAME_DIR = new URL('../docs/design/tidy-0.35.1/frames/', import.meta.url);
+// The same frames with their SGR codes kept, so a reviewer can grep a colour
+// instead of taking a screenshot's word for it (requirement 5).
+export const COLOUR_DIR = new URL('../docs/design/tidy-0.35.1/frames/colour/', import.meta.url);
 export const WIDTHS = Object.freeze([55, 120, 200]);
+// The colour pass was approved on the narrow and the wide terminal only: the
+// two widths the Step and Run records draw their rules at.
+export const COLOUR_WIDTHS = Object.freeze([55, 200]);
+// The seven screens the colour rules name: Step in both views, Run in both
+// states, the single task and Home.
+export const COLOUR_FRAMES = Object.freeze([
+  'home',
+  'run-running', 'run-finished',
+  'step-overview-finished', 'step-overview-running', 'step-detail-finished',
+  'task',
+]);
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
 const clone = (value) => structuredClone(value);
@@ -22,6 +36,11 @@ const atMs = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 const plain = (line) => String(line ?? '').replace(ANSI, '').replace(/\s+$/, '');
+// A painted line keeps every escape; only the padding spaces a full-width row
+// ends on are dropped, so the file is the frame and not the terminal's blanks.
+const painted = (line) => String(line ?? '').replace(/[ \t]+$/, '');
+/** Display cells a frame line occupies: escapes carry no width. */
+export const displayCells = (line) => [...String(line ?? '').replace(ANSI, '')].length;
 
 function actionStatus(attempts, mode, targetActionId) {
   if (!attempts.length) return 'pending';
@@ -98,13 +117,13 @@ function selection(row, actionId) {
   return { phaseIndex: phase, agentIndex };
 }
 
-function render(model, options) {
-  return renderDashboardPage(model, options).lines.map(plain);
+function render(model, options, colour) {
+  return renderDashboardPage(model, options).lines.map(colour ? painted : plain);
 }
 
 function assertWidth(name, width, lines) {
   for (const [index, line] of lines.entries()) {
-    const length = [...line].length;
+    const length = displayCells(line);
     if (length > width) throw new Error(`${name}:${index + 1} is ${length} columns at width ${width}`);
   }
 }
@@ -134,7 +153,16 @@ function refreshedRollups(rows, stored, nowMs) {
   });
 }
 
-export function buildRealFrames({ snapshot = SNAPSHOT } = {}) {
+/**
+ * Render the 0.35.1 review frames from the supplied real snapshot.
+ *
+ * `colour: false` writes the plain `real-*.txt` set at every width — the text
+ * frames the records quote. `colour: true` renders the same screens with their
+ * SGR codes kept, at the two widths the colour rules were approved at, for the
+ * subset the rules name. Both read one snapshot and one render, so a colour
+ * frame is never a second arithmetic of the plain one.
+ */
+export function buildRealFrames({ snapshot = SNAPSHOT, colour = false } = {}) {
   if (!existsSync(join(snapshot, 'history', 'runs.jsonl'))) throw new Error(`snapshot missing: ${snapshot}`);
   const rows = dashboardRows(snapshot, { all: true });
   const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
@@ -154,20 +182,24 @@ export function buildRealFrames({ snapshot = SNAPSHOT } = {}) {
   if (!task?.id) throw new Error('required real standalone task is absent');
 
   const frames = new Map();
-  for (const width of WIDTHS) {
+  // A colour frame exists only for the screens and widths the rules cover; the
+  // plain set stays whole, so neither list is trimmed by the other.
+  const wanted = (name) => !colour || COLOUR_FRAMES.includes(name);
+  const keep = (name, width, lines) => { if (wanted(name)) frames.set(`real-${name}-${width}.txt`, lines); };
+  for (const width of colour ? COLOUR_WIDTHS : WIDTHS) {
     const height = 60;
-    frames.set(`real-home-${width}.txt`, render(dashboardModel(null, {
+    keep('home', width, render(dashboardModel(null, {
       rollups, nowMs, runs: [], tasks: taskLedger, usage: { pools: [], assignments: [] },
-    }), { page: 'home', width, height, nowMs }));
+    }), { page: 'home', width, height, nowMs }, colour));
 
     for (const [state, projected] of [['running', runRunning], ['finished', { row: finishedRun, nowMs }]]) {
       const selected = selection(projected.row, state === 'running' ? 'integrate' : 'verify');
-      frames.set(`real-run-${state}-${width}.txt`, render(dashboardModel(projected.row, {
+      keep(`run-${state}`, width, render(dashboardModel(projected.row, {
         runs: [projected.row], rollups, nowMs: projected.nowMs,
       }), {
         page: 'run', width, height, nowMs: projected.nowMs,
         selectedRunId: projected.row.runId, ...selected,
-      }));
+      }, colour));
     }
 
     for (const [state, projected, actionId, ordinal] of [
@@ -177,27 +209,27 @@ export function buildRealFrames({ snapshot = SNAPSHOT } = {}) {
     ]) {
       const selected = selection(projected.row, actionId);
       for (const view of ['overview', 'detail']) {
-        frames.set(`real-step-${view}-${state}-${width}.txt`, render(dashboardModel(projected.row, {
+        keep(`step-${view}-${state}`, width, render(dashboardModel(projected.row, {
           runs: [projected.row], rollups, nowMs: projected.nowMs,
         }), {
           page: 'step', width, height, nowMs: projected.nowMs,
           selectedRunId: projected.row.runId, stepView: view,
           stepAttemptOrdinal: ordinal, ...selected,
-        }));
+        }, colour));
       }
     }
 
-    frames.set(`real-task-${width}.txt`, render(dashboardModel(null, {
+    keep('task', width, render(dashboardModel(null, {
       task, taskRunsDir: join(snapshot, 'runs'), nowMs,
-    }), { page: 'task', width, height, nowMs, stepView: 'overview' }));
+    }), { page: 'task', width, height, nowMs, stepView: 'overview' }, colour));
 
     // The two Stats pages the owner reviewed at 200 columns. Both read the
     // same refreshed rollups as Home, so a frame is never a second arithmetic.
     for (const tab of ['spending', 'model']) {
-      frames.set(`real-stats-${tab}-${width}.txt`, render(dashboardModel(null, {
+      keep(`stats-${tab}`, width, render(dashboardModel(null, {
         rollups, nowMs, runs: [], tasks: taskLedger, usage: { pools: [], assignments: [] },
         period: '30d',
-      }), { page: 'stats', width, height, nowMs, statsTab: tab, period: '30d' }));
+      }), { page: 'stats', width, height, nowMs, statsTab: tab, period: '30d' }, colour));
     }
   }
   for (const [name, lines] of frames) assertWidth(name, Number(name.match(/-(\d+)\.txt$/)?.[1]), lines);
@@ -205,13 +237,30 @@ export function buildRealFrames({ snapshot = SNAPSHOT } = {}) {
 }
 
 export function writeRealFrames(options = {}) {
-  const frames = buildRealFrames(options);
+  const frames = buildRealFrames({ ...options, colour: false });
   mkdirSync(FRAME_DIR, { recursive: true });
   for (const [name, lines] of frames) writeFileSync(new URL(name, FRAME_DIR), `${lines.join('\n')}\n`);
   return frames;
 }
 
+/** The same screens with their SGR codes kept, under `frames/colour/`. */
+export function writeColourFrames(options = {}) {
+  const frames = buildRealFrames({ ...options, colour: true });
+  mkdirSync(COLOUR_DIR, { recursive: true });
+  for (const [name, lines] of frames) writeFileSync(new URL(name, COLOUR_DIR), `${lines.join('\n')}\n`);
+  return frames;
+}
+
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  const frames = writeRealFrames({ snapshot: process.argv[2] ?? SNAPSHOT });
-  process.stdout.write(`rendered ${frames.size} real frames\n`);
+  // `--colour` writes the painted set only, `--plain` the text set only; with
+  // neither flag the script regenerates both, which is what a release pass wants.
+  const args = process.argv.slice(2);
+  const only = args.find((arg) => arg === '--colour' || arg === '--plain') ?? null;
+  const snapshot = args.find((arg) => !arg.startsWith('--')) ?? SNAPSHOT;
+  if (only !== '--colour') {
+    process.stdout.write(`rendered ${writeRealFrames({ snapshot }).size} real frames\n`);
+  }
+  if (only !== '--plain') {
+    process.stdout.write(`rendered ${writeColourFrames({ snapshot }).size} colour frames\n`);
+  }
 }

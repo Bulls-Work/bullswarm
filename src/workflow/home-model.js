@@ -22,7 +22,7 @@ import {
   worstTokenSource,
 } from './dashboard.js';
 import { withV2Cancellation } from './v2-cancellation.js';
-import { runDurationFacts } from './run-model.js';
+import { runClockText, runDurationFacts } from './run-model.js';
 import { apiMoney, apiMoneyText, formatMoneyPair } from '../lib/usage-basis.js';
 
 function taskToday(task, nowMs, { finished = false } = {}) {
@@ -439,6 +439,24 @@ function measuredTaskMinutes(task) {
   return null;
 }
 
+/**
+ * The Home card's duration sentence, using the Run header's h/m/s clock.
+ *
+ * Active time is the primary answer.  A proved wall span is appended only
+ * when its rendered clock differs, so a card never repeats one duration as
+ * both active and span.  When only a span exists, keep that basis explicit.
+ */
+function cardDurationText(minutes) {
+  const active = finiteOrNull(minutes?.active);
+  const span = finiteOrNull(minutes?.span);
+  const activeText = active != null && active >= 0 ? runClockText(active) : null;
+  const spanText = span != null && span >= 0 ? runClockText(span) : null;
+  if (activeText && spanText && spanText !== activeText) return `${activeText} active of ${spanText}`;
+  if (activeText) return activeText;
+  if (spanText) return `span ${spanText}`;
+  return null;
+}
+
 function todayDateLabel(value, { year = false } = {}) {
   const key = /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? '')) ? String(value) : dayKey(value);
   if (!key) return 'today';
@@ -650,6 +668,7 @@ export {
   measuredTaskMinutes,
   todayDateLabel,
   todayRows,
+  cardDurationText,
   poolRatePerMinute,
   todayLicenceRows,
   recordCost,

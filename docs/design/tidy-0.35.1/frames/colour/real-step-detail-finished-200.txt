@@ -1,0 +1,60 @@
+ [4mH[24mome  [7m[4mR[24muns[0m  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ [38;2;182;189;115m✓[0m [1mstep-model[22m · [1mva7k9a[22m · [38;2;182;189;115msucceeded[0m · [38;2;182;189;115mverified by the workflow (6/6 requirements)[0m · [2mattempt 1 of 1[0m · 1–57/222
+ sample purpose for va7k9a aute commodo proident ullamco cupidatat magna
+ [38;2;127;163;224mcodex[0m · gpt-5.6-luna · medium effort · reasoning max                                                                                                           [2m49m07s · 01:50 → 02:39 HKT · 20 Sep 2026[0m
+ [2mroute[0m  expiring soon: codex resets in 8h28m, surplus 11.8 over 5% of the week left → urgency 236 · picked over command-code, grok
+
+[2m──[0m transcript · overview · [7mdetail[0m · 15 turns · 120 commands · 35 edits · 0 errors [2m─────────────[0m [2mshowing all · t to change[0m [2m──────────[0m │ [2m──[0m result · [38;2;182;189;115msucceeded[0m · [38;2;182;189;115mverified[0m 6/6 [2m────────────────────────────[0m
+  1  [2m01:50[0m  sample response for step-model-1 incididunt id consequat tempor labore qui pariatur mollit laborum eiusmod dolore et et  │  sample report magna exercitation.
+            fugiat proident.                                                                                                         │  sample sint: sample exercitation nisi consequat cillum anim id
+            [2m3 commands[0m                                                                                                               │  exercitation culpa ut veniam exercitation fugiat ex sint nulla…
+            [2m01:50:35[0m  [2m$[0m sample command for step-model-1 mollit ea occaecat commodo occaecat magna occaecat culpa laboris qui eiusmo…[0m │  [2mchanged[0m  src/dir-01/file-267.js
+            [2m01:50:46[0m  [2m$[0m sample command for step-model-1 lorem ut minim commodo sint commodo cupidatat aliqua excepteur enim exercit…[0m │           tests/file-268.test.js
+            [2m01:50:58[0m  [2m$[0m sample command for step-model-1 id laboris ullamco minim dolore deserunt et duis minim adipiscing qui irure…[0m │  [2mfiles[0m    tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf
+  2  [2m01:51[0m  sample response for step-model-1 sunt eiusmod commodo tempor enim amet nisi dolore nulla laborum ad non amet minim ea et │           task · out · stream (325 events) · diff
+            amet qui duis labore elit commodo aliqua irure consequat amet veniam excepteur.                                          │  [2mtask[0m     tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/ta
+            [2m35 commands[0m                                                                                                              │  [2moutput[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/ou
+            [2m01:51:12[0m  [2m$[0m sample command for step-model-1 do duis sed incididunt commodo enim labore reprehenderit tempor nostrud off…[0m │  [2mstream[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/st
+            [2m01:51:28[0m  [2m$[0m sample command for step-model-1 tempor ea id quis qui enim exercitation in ea commodo proident aliquip       │  [2mdiff[0m     tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/di
+            [2m01:51:34[0m  [2m$[0m sample command for step-model-1 ea ipsum et ex dolore veniam sit culpa enim nulla magna aliquip adipiscing …[0m │  [2mresult[0m   tests/fixtures/home-351/workflows/wf-mu8ni8o4-f9baaf/re
+            [2m01:51:39[0m  [2m$[0m sample command for step-model-1 sint ad sit adipiscing irure eiusmod proident aliquip nostrud minim dolor c…[0m │  [2mEnter on result: the full report, 1.3 KB[0m
+            [2m01:51:45[0m  [2m$[0m sample command for step-model-1 sint incididunt do dolore elit aliqua ea sit dolor occaecat tempor laborum …[0m │
+            [2m01:51:51[0m  [2m$[0m sample command for step-model-1 exercitation dolor irure aliquip aute ex non laboris est pariatur incididun…[0m │ [2m──[0m task · implement · build lane [2m────────────────────────────────[0m
+            [2m01:52:06[0m  [2m$[0m sample command for step-model-1 consectetur dolor nostrud elit duis sint est laborum do ipsum enim fugiat c…[0m │  sample prompt for va7k9a lorem aute ipsum exercitation deserunt
+            [2m01:52:18[0m  [2m$[0m sample command for step-model-1 ad duis sed id dolore incididunt commodo laborum non officia adipiscing vel…[0m │  reprehenderit exercitation sit laborum consectetur exercitation
+            [2m01:52:24[0m  [2m$[0m sample command for step-model-1 laboris consectetur ea occaecat anim dolor quis dolor culpa excepteur        │  dolore nostrud aute cupidatat sed amet commodo deserunt anim es…
+            [2m01:52:31[0m  [2m$[0m sample command for step-model-1 magna mollit sint magna ea amet culpa pariatur labore esse occaecat ipsum l…[0m │  [2mowns[0m    file-267.js · file-268.test.js
+            [2m01:52:41[0m  [2m$[0m sample command for step-model-1 veniam et ex sunt exercitation ad cillum laborum esse aute esse enim et iru…[0m │  [2mafter[0m   extract · stream-contract
+            [2m01:52:50[0m  [2m$[0m sample command for step-model-1 magna velit aliquip exercitation aliquip minim amet do proident voluptate d…[0m │  [2maffects[0m requirement 3 · requirement 6
+            [2m01:53:04[0m  [2m$[0m sample command for step-model-1 cupidatat excepteur nostrud sit amet reprehenderit sint minim occaecat quis…[0m │  [2mEnter on task: full text 2.4 KB · kernel wrapper 5.1 KB[0m
+            [2m01:53:17[0m  [2m$[0m sample command for step-model-1 aliquip consequat incididunt                                                 │
+            [2m01:53:26[0m  [2m$[0m sample command for step-model-1 aliquip proident aute ex consectetur aute in dolore sint cupidatat ex sunt …[0m │ [2m──[0m cost [2m─────────────────────────────────────────────────────────[0m
+            [2m01:53:32[0m  [2m$[0m sample command for step-model-1 adipiscing sit non sint aute aute et id culpa amet ut veniam laborum repreh…[0m │  [2mAPI rate[0m    [1m$0.96[22m   [2m36.0M tokens[0m · [2mOpenAI rate card, 20 Sep[0m
+            [2m01:53:45[0m  [2m$[0m sample command for step-model-1 fugiat reprehenderit elit ex ut magna ad id laboris ipsum exercitation adip…[0m │              [2m35.2M cache read[0m · [2m713k input[0m · [2m58k output[0m
+            [2m01:53:57[0m  [2m$[0m sample command for step-model-1 esse sunt veniam reprehenderit id commodo officia in consectetur tempor ame…[0m │              [2m37k reasoning[0m
+            [2m01:54:05[0m  [2m$[0m sample command for step-model-1 culpa esse ipsum dolore qui occaecat pariatur enim velit aliqua do sint inc…[0m │  [38;2;127;163;224mcodex[0m[2m plan[0m  [2m—[0m       [2mno meter reading for this attempt[0m
+            [2m01:54:17[0m  [2m$[0m sample command for step-model-1 adipiscing dolore consequat ad dolor duis sit sed voluptate do exercitation…[0m │              [1m$100/mo[22m · [2mweekly window[0m
+            [2m01:54:34[0m  [2m$[0m sample command for step-model-1 ad sit dolore qui incididunt laborum proident exercitation incididunt sint …[0m │  [2mmeasured from the codex transcript[0m
+            [2m01:54:38[0m  [2m$[0m sample command for step-model-1 sint ullamco laboris ea elit adipiscing do enim in eiusmod culpa adipiscing…[0m │
+            [2m01:54:43[0m  [2m$[0m sample command for step-model-1 anim velit in irure mollit sunt laboris amet cupidatat sit do dolore occaec…[0m │
+            [2m01:54:48[0m  [2m$[0m sample command for step-model-1 esse proident laborum enim proident velit duis aliqua incididunt pariatur c…[0m │
+            [2m01:54:53[0m  [2m$[0m sample command for step-model-1 nulla officia sunt pariatur ea ad occaecat aute deserunt occaecat in repreh…[0m │
+            [2m01:55:04[0m  [2m$[0m sample command for step-model-1 incididunt anim commodo est elit laboris duis adipiscing consectetur cillum…[0m │
+            [2m01:57:02[0m  [2m$[0m sample command for step-model-1 sint ipsum anim tempor id aliqua laborum nulla tempor qui ullamco esse fugi…[0m │
+            [2m01:57:09[0m  [2m$[0m sample command for step-model-1 non sunt adipiscing ut ea enim do quis reprehenderit incididunt pariatur es…[0m │
+            [2m01:57:19[0m  [2m$[0m sample command for step-model-1 cillum aliqua ipsum magna mollit pariatur eiusmod ipsum duis dolor quis tem…[0m │
+            [2m01:57:24[0m  [2m$[0m sample command for step-model-1 deserunt laboris commodo occaecat minim consectetur deserunt consequat sunt…[0m │
+            [2m01:57:29[0m  [2m$[0m sample command for step-model-1 adipiscing adipiscing deserunt sed commodo velit sed lorem ex enim proident…[0m │
+            [2m01:57:59[0m  [2m$[0m sample command for step-model-1 velit amet nisi aliqua ex commodo ipsum id nulla proident consectetur ea oc…[0m │
+            [2m01:58:06[0m  [2m$[0m sample command for step-model-1 ut ad sunt non consequat pariatur consequat laborum anim enim excepteur in …[0m │
+            [2m01:58:17[0m  [2m$[0m sample command for step-model-1 sunt occaecat tempor cillum consectetur ipsum non do anim ut est eiusmod co…[0m │
+            [2m01:58:26[0m  [2m$[0m sample command for step-model-1 sunt in dolore nulla officia velit officia aliqua cupidatat sit non amet su…[0m │
+  3  [2m02:00[0m  sample response for step-model-1 aliquip quis dolore nostrud commodo culpa et occaecat id veniam labore proident elit    │
+            velit nisi cupidatat minim consequat anim labore adipiscing voluptate consectetur.                                       │
+            [2m2 edits[0m                                                                                                                  │
+            [2m02:04:18[0m  file change                                                                                                    │
+            [2m02:07:20[0m  file change                                                                                                    │
+  4  [2m02:09[0m  sample response for step-model-1 ea labore sed minim velit esse excepteur labore aute tempor tempor consectetur tempor   │
+            tempor mollit officia voluptate sed officia qui qui consectetur ea laborum ipsum.                                        │
+            [2m14 commands · 3 edits[0m                                                                                                    │
+ [ back ] [ ● 1.va7k9a ]   [2mEnter open tool call · Esc close · v overview (latest turns) · t filter · f follow · ? help[0m

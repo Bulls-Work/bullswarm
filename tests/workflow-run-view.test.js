@@ -20,6 +20,9 @@ import {
   runSpendFacts,
   workflowPanelModel,
 } from '../src/workflow/run-model.js';
+import { historicalProjection } from '../scripts/render-tidy-0.35.1-frames.mjs';
+import { seriesColor } from '../src/workflow/dash-kit.js';
+import { METER_COLORS } from '../src/workflow/usage-view.js';
 import { readEvents } from '../src/workflow/events.js';
 import { applyV2PlannerResponse } from '../src/workflow/v2-planner.js';
 import { createV2GoalDocument, createV2State } from '../src/workflow/v2-state.js';
@@ -30,6 +33,10 @@ delete process.env.BULLSWARM_ASCII;
 const NOW = Date.parse('2026-09-20T12:00:00.000Z');
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const visible = (value) => String(value ?? '').replace(ANSI, '');
+const rgb = (hex) => {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+};
 // Timestamps render in the local zone, so only their shape is asserted.
 const normalizeRow = (line) => visible(line).replace(/^\s*\d{2}:\d{2}/, 'HH:MM').replace(/\s+/g, ' ').trim();
 
@@ -102,6 +109,91 @@ function bodyBuilder() {
   return body;
 }
 
+test('real Run frames paint verdicts, clocks, amounts, rules, and pool identity', () => {
+  assert.ok(existsSync(join(realRuns.g6d6q2, 'state.json')), 'the supplied real Run snapshot is present');
+  const row = realRow(realRuns.g6d6q2);
+  for (const width of [55, 200]) {
+    const body = bodyBuilder();
+    const header = runPage({ row, assignments: [], pools: [] }, {
+      width, bodyHeight: 70, narrow: width < 100, nowMs: NOW, spinnerFrame: 0, focus: 0,
+    }, body);
+    const raw = [header, ...body.lines].join('\n');
+    assert.ok(raw.includes(`${rgb(METER_COLORS.green)}✓\x1b[0m`), `${width}: finished glyph is green`);
+    assert.ok(raw.includes('\x1b[1m'), `${width}: identity or amount is bold`);
+    assert.ok(raw.includes('\x1b[2m'), `${width}: clocks/meta are dim`);
+    assert.ok(raw.includes('\x1b[2m──\x1b[0m'), `${width}: rule dashes are dim`);
+    assert.ok(raw.includes(`${rgb(seriesColor('codex'))}codex\x1b[0m`), `${width}: codex keeps its series colour`);
+    assert.ok(raw.includes('\x1b[1m$'), `${width}: spend amount is bold`);
+  }
+
+  const running = rowFixture();
+  const body = bodyBuilder();
+  const header = runPage({ row: running, assignments: [], pools: [] }, {
+    width: 120, bodyHeight: 40, narrow: false, nowMs: NOW, spinnerFrame: 0, focus: 0,
+  }, body);
+  assert.ok([header, ...body.lines].join('\n').includes(`${rgb(METER_COLORS.amber)}▶\x1b[0m`), 'running glyph is amber');
+  if (/\d+ .*waiting/.test(header.replace(/\x1b\[[0-9;]*m/g, ''))) {
+    assert.match(header, /\d+ \x1b\[2mwaiting\x1b\[0m/, 'the header count word `waiting` is dim');
+  }
+});
+
+test('Run ASCII mode removes truecolour and leaves only attribute SGR', () => {
+  const previous = process.env.BULLSWARM_ASCII;
+  try {
+    process.env.BULLSWARM_ASCII = '1';
+    const row = rowFixture();
+    const body = bodyBuilder();
+    const header = runPage({ row, assignments: [], pools: [] }, {
+      width: 55, bodyHeight: 40, narrow: true, nowMs: NOW, spinnerFrame: 0, focus: 0,
+    }, body);
+    const raw = [header, ...body.lines].join('\n');
+    assert.doesNotMatch(raw, /\x1b\[38;2;/);
+    const codes = raw.match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
+    assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
+    assert.ok(raw.includes('\x1b[1m'), 'ASCII mode keeps bold identity');
+    assert.ok(raw.includes('\x1b[7m'), 'ASCII mode keeps the inverse cursor');
+    assert.match(raw, /\x1b\[2m\d+m\d{2}s\x1b\[0m$/m, 'ASCII mode keeps the dim attempt clock');
+  } finally {
+    if (previous == null) delete process.env.BULLSWARM_ASCII;
+    else process.env.BULLSWARM_ASCII = previous;
+  }
+});
+
+test('Run timeline dims the attempt clock it prints and draws the selected phase as the one inverse cursor', () => {
+  const row = realRow(realRuns.euqrni);
+  const page = (width, options = {}) => {
+    const body = bodyBuilder();
+    runPage({ row, assignments: [], pools: [] }, {
+      width, bodyHeight: 70, narrow: width < 100, nowMs: NOW, spinnerFrame: 0, focus: 0, ...options,
+    }, body);
+    return body.lines;
+  };
+  for (const width of [55, 200]) {
+    // The per-attempt duration column is dim: the clock alignRight printed,
+    // not a durationText field the projection leaves null.
+    const lines = page(width);
+    for (const clock of ['28m25s', '30m32s', '31m52s']) {
+      const attemptRow = lines.find((line) => visible(line).endsWith(clock) && !visible(line).includes('→'));
+      assert.ok(attemptRow, `${width}: an attempt row prints ${clock}`);
+      assert.ok(attemptRow.endsWith(`\x1b[2m${clock}\x1b[0m`), `${width}: ${JSON.stringify(attemptRow)}`);
+    }
+    // One cursor, on the phase Up/Down selected; it moves with the selection
+    // and only SGR changes — the text and width of every row are kept.
+    for (const [phaseIndex, name] of [[0, 'home-extraction'], [4, 'verify']]) {
+      const selected = page(width, { phaseIndex });
+      const cursor = selected.filter((line) => line.includes('\x1b[7m'));
+      assert.equal(cursor.length, 1, `${width}/${phaseIndex}: ${cursor.map(visible).join(' | ')}`);
+      assert.ok(cursor[0].includes('\x1b[27m'), JSON.stringify(cursor[0]));
+      const inverse = visible(/\x1b\[7m(.*)\x1b\[27m/.exec(cursor[0])[1]);
+      if (width >= 100) assert.equal(inverse, `[✓ ${phaseIndex + 1} ${name}]`);
+      else assert.equal(inverse, `── ✓ ${phaseIndex + 1} · ${name}`);
+      assert.deepEqual(selected.map(visible), lines.map(visible), `${width}/${phaseIndex}: the cursor changed text`);
+    }
+    // A reader inside the agent list has no phase cursor on the plan.
+    assert.ok(page(width, { focus: 1 }).every((line) => !line.includes('\x1b[7m')), `${width}: focus 1 kept a phase cursor`);
+  }
+});
+
 test('Run view keeps timeline, overview and plan rows within the requested width', () => {
   const row = rowFixture();
   const panel = workflowPanelModel(row);
@@ -150,7 +242,7 @@ test('Run view paints numbered phase boxes and v2 attempt routing metadata', () 
   const rows = planDagLines(row, { width: 120, nowMs: NOW }).map((line) => visible(line.parts.map((part) => part.text).join('')));
   assert.deepEqual(rows, ['[✓ 1 audit] → [▶ 2 report 0/1]']);
   const timeline = workflowTimelineLines(workflowPanelModel(row), 120, 0, { goalPreview: false, nowMs: NOW });
-  const text = timeline.lines.map((line) => line.text ?? line).join('\n');
+  const text = timeline.lines.map((line) => visible(line.text ?? line)).join('\n');
   // One v2 row per attempt, its own clock on the right and the routing it ran
   // on beside the step's name. Phase start/completed filler is gone.
   assert.match(text, /\d{2}:\d{2}\s+✓ report · codex · gpt-test · high\s+1m30s/);
@@ -257,6 +349,27 @@ test('the real euqrni run draws one v2 phase rule per sequential phase', { skip:
   assert.ok(lines.every((line) => !line.includes('├─ started') && !line.includes('└─✓ completed')));
 });
 
+test('waiting phase rules dim every clock and duration placeholder', { skip: !existsSync(join(realRuns.euqrni, 'state.json')) }, () => {
+  const source = realRow(realRuns.euqrni);
+  const projected = historicalProjection(source, 'integrate', 1, 'running');
+  const panel = workflowPanelModel(projected.row);
+  const timeline = workflowTimelineLines(panel, 200, 0, {
+    goalPreview: false,
+    nowMs: projected.nowMs,
+  });
+  const waiting = timeline.lines.find((line) => visible(line?.text).includes('○ 5 · verify'));
+  assert.ok(waiting, 'the projected real run has a waiting verify phase');
+  assert.match(
+    waiting.text,
+    /\x1b\[2m—\x1b\[0m → \x1b\[2m—\x1b\[0m · \x1b\[2m—\x1b\[0m · \x1b\[2m0\/1\x1b\[0m$/,
+    JSON.stringify(waiting.text),
+  );
+  const emDashes = waiting.text.match(/—/g) ?? [];
+  const dimmedDashes = waiting.text.match(/\x1b\[2m—\x1b\[0m/g) ?? [];
+  assert.equal(emDashes.length, 3, 'the waiting facts contain start, end, and duration placeholders');
+  assert.equal(dimmedDashes.length, 3, 'all three placeholders carry dim SGR');
+});
+
 test('the spend block draws the record\u2019s columns, and the 55-column form stays two short rows', () => {
   // The run the run-v2 record was drawn from: 26 attempts, 19 measured, 6
   // estimated (command-code) and 1 still running (command-code), of which 17
@@ -291,32 +404,32 @@ test('the spend block draws the record\u2019s columns, and the 55-column form st
   const wide = runSpendLinesV2(spend, 79, { phone: false });
   // The amount opens the split on the API row, the pools that do not fit keep
   // the same column under it, and the run's own counts close the last row.
-  assert.match(wide[1], /^ API rate   at least \$92\.25 {3}claude-code \$55\.56 · acme \$22\.55 · codex \$11\.45$/);
-  assert.equal(wide[1].indexOf('claude-code'), 30);
-  assert.match(wide[2], /^ {30}grok \$2\.68 · command-code ≈\$0\.01 \(6 estimated\)$/);
-  assert.equal(wide[2].indexOf('grok'), 30);
+  assert.match(visible(wide[1]), /^ API rate   at least \$92\.25 {3}claude-code \$55\.56 · acme \$22\.55 · codex \$11\.45$/);
+  assert.equal(visible(wide[1]).indexOf('claude-code'), 30);
+  assert.match(visible(wide[2]), /^ {30}grok \$2\.68 · command-code ≈\$0\.01 \(6 estimated\)$/);
+  assert.equal(visible(wide[2]).indexOf('grok'), 30);
   // `claude-code:acme` is the qualified name of one pool: the split says
   // `acme`, the way the record's own row does.
   assert.doesNotMatch(wide.join('\n'), /claude-code:acme/);
-  assert.match(wide[3], /^ plans      at least \$1\.99 {4}17 attempts with a meter reading · 9 without$/);
-  assert.equal(wide[3].indexOf('17 attempts'), 30);
+  assert.match(visible(wide[3]), /^ plans      at least \$1\.99 {4}17 attempts with a meter reading · 9 without$/);
+  assert.equal(visible(wide[3]).indexOf('17 attempts'), 30);
   assert.ok(wide.every((line) => visible(line).length <= 79), wide.join('\n'));
 
   // The 55-column form is the record's two short rows: the amount keeps its
   // own coverage words, and the meter phrase shortens rather than cutting off.
   const phone = runSpendLinesV2(spend, 54, { phone: true });
-  assert.equal(phone[1], ' API rate  at least $92.25  6 estimated · 1 running');
-  assert.equal(phone[2], ' plans     at least $1.99   17 with a meter reading');
+  assert.equal(visible(phone[1]), ' API rate  at least $92.25  6 estimated · 1 running');
+  assert.equal(visible(phone[2]), ' plans     at least $1.99   17 with a meter reading');
   assert.ok(phone.every((line) => visible(line).length <= 54));
 
   // The real euqrni run: two priced pools share the amount's own row, and the
   // meter phrase fits whole at this width.
   const real = realRow(realRuns.euqrni);
   const realLines = runSpendLinesV2(runSpendFacts(real), 79, { phone: false });
-  assert.match(realLines[1], /^ API rate   \$9\.76 {13}claude-code \$6\.78 · codex \$2\.98$/);
-  assert.equal(realLines[1].indexOf('claude-code'), 30);
-  assert.match(realLines[2], /^ plans      — {17}0 attempts with a meter reading · 5 without$/);
-  assert.equal(realLines[2].indexOf('0 attempts'), 30);
+  assert.match(visible(realLines[1]), /^ API rate   \$9\.76 {13}claude-code \$6\.78 · codex \$2\.98$/);
+  assert.equal(visible(realLines[1]).indexOf('claude-code'), 30);
+  assert.match(visible(realLines[2]), /^ plans      — {17}0 attempts with a meter reading · 5 without$/);
+  assert.equal(visible(realLines[2]).indexOf('0 attempts'), 30);
 });
 
 test('the phone plan strip counts real phases, not their steps', { skip: !existsSync(join(realRuns.va7k9a, 'state.json')) }, () => {

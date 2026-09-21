@@ -229,14 +229,15 @@ test('V2 dashboard renders durable presentation stages, dense timeline, live fil
     const screen = renderWorkflowTui(row, { width: 120, height: 42 });
     assert.doesNotMatch(screen, /\[Workflow Planner\] plan created/);
     // Run v2 rule 1: the step counts live in the header, so the plan rule
-    // carries only the phase the run is in.
-    assert.match(screen, /── plan · phase 2 of 2 ─/);
-    assert.match(screen, /^ ● v2d234 · running · 1 of 2 steps done/m);
+    // carries only the phase the run is in. The 0.35.1 colour pass dims the
+    // rule dashes and paints the glyphs, so these read the words.
+    assert.match(plain(screen), /── plan · phase 2 of 2 ─/);
+    assert.match(plain(screen), /^ ● v2d234 · running · 1 of 2 steps done/m);
     // The plan boxes are numbered and arrow-chained across the width. Run v2
     // rule 2: a finished single step and a pending phase show no count.
-    assert.match(screen, /\[✓ 1 Implementation\] → \[▶ 2 Evidence 0\/1\]/);
+    assert.match(plain(screen), /\[✓ 1 Implementation\] → \[▶ 2 Evidence 0\/1\]/);
     // Rule 6: Preflight keeps the `● goal accepted · goal.json` row only.
-    assert.match(screen, /● goal accepted · goal\.json/);
+    assert.match(plain(screen), /● goal accepted · goal\.json/);
     // Rule 6: the phase rule carries start → end, duration and done/total, so
     // the `started` and `completed` filler rows are gone.
     assert.match(plain(screen), /── ✓ 1 · Implementation ─.* → .* · 3s · 1\/1/);
@@ -379,6 +380,27 @@ test('a Runs-table cursor on a finished run survives the refresh tick, so Enter 
     await new Promise((resolve) => setTimeout(resolve, 80));
     session.press('\r');
     assert.match(frameHeader(lastFrame(session.output)), /^ ✓ v2n456 · completed/);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Runs opens on the first active row, paints it inverse, and clamps Up there', async () => {
+  const { home, cleanup } = shellFixture();
+  try {
+    const session = shellSession(home, { columns: 120, rows: 30 });
+    const runs = session.press('r');
+    const activeRow = String(runs).split('\n').find((line) => plain(line).includes('● 1.aaa111'));
+    assert.ok(activeRow, 'the first active run is visible on Runs');
+    assert.match(activeRow, /\x1b\[7m/, 'the initial cursor row is inverse');
+
+    session.press('\x1b[A');
+    const afterUp = lastFrame(session.output);
+    const stillFirst = String(afterUp).split('\n').find((line) => plain(line).includes('● 1.aaa111'));
+    assert.ok(stillFirst, 'the first active run remains visible after Up');
+    assert.match(stillFirst, /\x1b\[7m/, 'Up did not move the cursor off the first row');
+
+    const opened = session.press('\r');
+    assert.match(frameHeader(opened), /aaa111 · running/, 'Enter opens the highlighted active run');
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -922,8 +944,8 @@ test('narrow interactive TUI opens on the timeline and p toggles the plan boxes'
     assert.match(plain(preflightText), /── Preflight/);
     assert.match(plain(preflightText), /^ \d{2}:\d{2}  ● goal accepted · goal\.json$/m);
     assert.match(plain(preflightText), /^── ✓ 1 · Implementation$/m);
-    assert.match(plannerText, /Workflow Planner · overview/);
-    assert.match(agentsText, /audit-files · abc234 · succeeded/);
+    assert.match(plain(plannerText), /Workflow Planner · overview/);
+    assert.match(plain(agentsText), /audit-files · abc234 · succeeded/);
     const visibleWidths = paintedRows(timelineText).map((line) => plain(line).length);
     assert.ok(visibleWidths.every((lineWidth) => lineWidth <= 80 - 1), 'mobile frames reserve the terminal wrap column');
     // Rule 2: the phone folds the plan to a glyph strip, and `p` opens the
@@ -1054,9 +1076,14 @@ function tabNames(screen) {
   return tabRow(screen).trim().split(/\s{2,}/).filter(Boolean);
 }
 
-/** The sticky header: the row under the tab row. */
+/**
+ * The sticky header: the row under the tab row, stripped of its colours. The
+ * 0.35.1 colour pass paints the header's glyph, identity and clocks, so the
+ * shell tests read the words and the colour rules are pinned in the Step and
+ * Run view suites.
+ */
 function frameHeader(screen) {
-  return String(paintedRows(screen)[1] ?? '').replace(/\s+$/, '');
+  return plain(String(paintedRows(screen)[1] ?? '')).replace(/\s+$/, '');
 }
 
 /** The sticky bottom nav as its `[ label ]` buttons, marks included. */
@@ -1709,6 +1736,48 @@ test('Step keyboard controls select, filter, follow, open detail, and jump secti
     // Rule 9: following is a single ● on the header, and `f` is the key that
     // turns it off on this page (Fleet keeps `f` everywhere else).
     assert.match(plain(lastFrame(session.output)), /── activity · /);
+    assert.equal(await session.quit(), 0);
+  } finally { cleanup(); }
+});
+
+test('Up and Down on the Step page move one inverse cursor row through the turns', async () => {
+  // Colour rules: the cursor row is inverse. The shell tracked the selected
+  // turn on Up/Down but never drew it, so moving through turns showed nothing.
+  const { home, cleanup } = shellFixture();
+  try {
+    const dir = join(home, 'workflows', 'wf-alpha');
+    writeFileSync(join(dir, 'stream-scan-attempt-1.jsonl'), [
+      { seq: 1, at: '2026-08-29T00:02:01.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'first answer' },
+      { seq: 2, at: '2026-08-29T00:02:05.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'second answer' },
+      { seq: 3, at: '2026-08-29T00:02:09.000Z', source: 'codex', providerType: 'response', kind: 'response', status: 'completed', summary: 'third answer' },
+    ].map((event) => JSON.stringify(event)).join('\n'));
+    const session = shellSession(home, { token: 'wf-alpha', columns: 120, rows: 30 });
+    // The body rows only: the tab row's current tab and the nav are not cursors.
+    const cursorRows = (screen) => {
+      const rows = String(screen).split('\n');
+      if (plain(rows[0]) === '') rows.shift();
+      return rows.slice(1, -1).map((row, index) => [index, row]).filter(([, row]) => row.includes('\x1b[7m'));
+    };
+    const run = lastFrame(session.output);
+    assert.equal(cursorRows(run).length, 1, 'the Run page draws its selected phase box as the cursor');
+    // The selected phase is the first, whose first step Enter opens next.
+    assert.match(plain(/\x1b\[7m(.*?)\x1b\[27m/.exec(cursorRows(run)[0][1])[1]), /^\[\S 1 two writers 1\/2\]$/);
+
+    session.press('\r'); // the run page opens the phase's first step
+    assert.match(frameHeader(lastFrame(session.output)), /scan · aaa111 · succeeded/);
+    assert.deepEqual(cursorRows(lastFrame(session.output)), [], 'no cursor before the reader moves');
+
+    const seen = [];
+    for (const [number, text] of [[1, 'first answer'], [2, 'second answer'], [3, 'third answer']]) {
+      const rows = cursorRows(session.press('\x1b[B'));
+      assert.equal(rows.length, 1, `Down to turn ${number}: ${rows.map(([, row]) => plain(row)).join(' | ')}`);
+      assert.match(plain(rows[0][1]), new RegExp(`^ +${number}  \\d{2}:\\d{2}  ${text}`));
+      seen.push(rows[0][0]);
+    }
+    assert.ok(seen[0] < seen[1] && seen[1] < seen[2], `the cursor moved down the page: ${seen}`);
+    const up = cursorRows(session.press('\x1b[A'));
+    assert.equal(up.length, 1);
+    assert.equal(up[0][0], seen[1], 'Up moves the cursor back one turn');
     assert.equal(await session.quit(), 0);
   } finally { cleanup(); }
 });
@@ -4054,7 +4123,7 @@ test('Runs and Home show single-task ledger rows, and Enter opens task detail', 
     // blocks, the header and the same keys.
     // Requirement 5: a single task renders through the same Step header —
     // identity, short id, verdict — so the retired `Step ` prefix is gone.
-    assert.match(frameHeader(task), /^ [●✓✗] (?:live-task|finished-task) · /);
+    assert.match(frameHeader(task), /^ [●✓✗] build task · (?:live-task|finished-task) · /);
     // Step v2's blocks, on a live task: `now` stands in for the result that
     // does not exist yet (rule 11), then activity, task and cost.
     assert.match(plain(task), /── now · /);

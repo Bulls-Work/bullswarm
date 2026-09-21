@@ -1,0 +1,60 @@
+ [4mH[24mome  [7m[4mR[24muns[0m  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ [38;2;182;189;115m✓[0m [1mstep-model[22m · [1mva7k9a[22m · [38;2;182;189;115msucceeded[0m · [38;2;182;189;115mverified[0m
+ sample purpose for va7k9a aute commodo proident
+ ullamco cupidatat magna
+ [38;2;127;163;224mcodex[0m · gpt-5.6-luna · medium · [2m49m07s · 01:50→02:39[0m
+
+[2m──[0m result · [38;2;182;189;115mverified by the workflow[0m 6/6 [2m──────────────[0m
+ sample report magna exercitation.
+ sample sint: sample exercitation nisi consequat cillum
+ anim id exercitation culpa ut veniam exercitation…
+ [2mchanged[0m src/dir-01/file-267.js
+         tests/file-268.test.js
+ [2mfiles[0m       wf-mu8ni8o4-f9baaf/ task · out · stream ·…[0m
+
+[2m──[0m activity · [7moverview[0m · detail · 15 turns [2m────────────[0m
+ [2mturns 1–10 · 95 commands · 25 edits · click for detail[0m
+ 11  [2m02:26[0m  sample response for step-model-1 sit et
+            voluptate ipsum ad do non consequat esse e…
+            [2m6 commands · 2 edits[0m
+ 12  [2m02:31[0m  sample response for step-model-1 aute
+            aliqua esse voluptate reprehenderit culpa…
+            [2m1 command[0m
+ 13  [2m02:31[0m  sample response for step-model-1 laborum
+            magna cillum esse laboris sunt et labore…
+            [2m7 commands[0m
+ 14  [2m02:35[0m  sample response for step-model-1 incididunt
+            nisi aliqua id culpa officia voluptate…
+            [2m11 commands · 8 edits[0m
+[7m 15  [2m02:39[0m[7m  sample report magna exercitation.[27m
+            [2m→ the report, shown under result[0m
+
+[2m──[0m task · implement · build [2m───────────────────────────[0m
+ sample prompt for va7k9a lorem aute ipsum exercitation
+ deserunt reprehenderit exercitation sit laborum
+ consectetur exercitation dolore nostrud aute cupidata…
+ [2mowns[0m   file-267.js · file-268.test.js
+ [2mafter[0m  extract · stream-contract
+
+[2m──[0m cost [2m───────────────────────────────────────────────[0m
+ [2mAPI rate[0m   [1m$0.96[22m   [2m36.0M tokens[0m · [2mOpenAI card 20 Sep[0m
+ [38;2;127;163;224mcodex[0m[2m plan[0m [2m—[0m       [2mno meter reading[0m · [1m$100/mo[22m[2m weekly[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ]  [2mEnter turn · v detail · t filter · ? help[0m

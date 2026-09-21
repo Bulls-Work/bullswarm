@@ -12,7 +12,7 @@ import { asciiGlyphsPreferred, glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow } from './execution-policy.js';
 import { v2RunnerLiveness } from './short-id.js';
 import { presentationStageStatus } from './v2-presentation.js';
-import { absentLine, cut, progressBar, rule } from './dash-kit.js';
+import { absentLine, cut, progressBar, rule, seriesColor } from './dash-kit.js';
 import {
   about,
   actionRoleLabel,
@@ -25,6 +25,7 @@ import {
   dimText,
   durationText,
   formatBytes,
+  inverseText,
   joinPanels,
   moneyText,
   outputSparkline,
@@ -35,6 +36,7 @@ import {
   renderPanel,
   runEconomics,
   runningMark,
+  strong,
   SIDEBAR_WIDTH,
   selectLine,
   stateFinishedAt,
@@ -73,6 +75,158 @@ import { stepPageModel, turnCountsText } from './step-model.js';
 const GOAL_PREVIEW_LINES = 5;
 const ANSI_SGR = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const RUN_DONE = new Set(['succeeded', 'failed', 'blocked', 'cancelled', 'interrupted', 'skipped']);
+
+function dimCell(value) {
+  const text = String(value ?? '');
+  return text ? dimText(text, Math.max(1, visibleLength(text))) : text;
+}
+
+function paintRule(line) {
+  return String(line ?? '').replace(/─+/g, (dashes) => dimCell(dashes));
+}
+
+function dimCounts(value) {
+  const text = String(value ?? '');
+  const matcher = /\b[1-9]\d* (?:errors?|err)\b/g;
+  let cursor = 0;
+  let out = '';
+  for (const match of text.matchAll(matcher)) {
+    out += dimCell(text.slice(cursor, match.index));
+    out += tint(match[0], 'red');
+    cursor = match.index + match[0].length;
+  }
+  return cursor ? `${out}${dimCell(text.slice(cursor))}` : dimCell(text);
+}
+
+function paintMoney(value) {
+  const text = String(value ?? '');
+  if (!text) return text;
+  const prefix = text.match(/^(at least |[≈~](?: )?|—)/)?.[1] ?? '';
+  const rest = text.slice(prefix.length);
+  const prefixPaint = prefix ? dimCell(prefix.trimEnd()) + (prefix.endsWith(' ') ? ' ' : '') : '';
+  return `${prefixPaint}${rest && rest !== '—' ? strong(rest) : rest ? dimCell(rest) : ''}`;
+}
+
+function paintPool(value) {
+  const text = String(value ?? '');
+  return text && text !== '—' ? tint(text, seriesColor(text)) : text;
+}
+
+function paintStatusGlyph(glyph, status) {
+  const value = String(status ?? '').toLowerCase();
+  if (['succeeded', 'completed', 'success', 'complete', 'done'].includes(value)) return tint(glyph, 'green');
+  if (['running', 'active', 'started', 'start'].includes(value)) return tint(glyph, 'amber');
+  if (['failed', 'blocked', 'cancelled', 'interrupted', 'skipped', 'partial'].includes(value)) return tint(glyph, 'red');
+  return dimCell(glyph);
+}
+
+function paintStatusWord(value) {
+  const text = String(value ?? '');
+  const lower = text.toLowerCase();
+  if (/(?:succeed|complete|verified|done)/.test(lower)) return tint(text, 'green');
+  if (/(?:running|active|following|live)/.test(lower)) return tint(text, 'amber');
+  if (/(?:fail|error|interrupted|cancelled|blocked|partial)/.test(lower)) return tint(text, 'red');
+  return dimCell(text);
+}
+
+function paintRunHeader(line, headerFacts, activeGlyph) {
+  let out = String(line ?? '');
+  const glyph = String(activeGlyph ?? '');
+  if (glyph) out = out.replace(glyph, paintStatusGlyph(glyph, headerFacts.status));
+  if (headerFacts.shortId) out = out.replace(headerFacts.shortId, strong(headerFacts.shortId));
+  out = out.replace(` · ${headerFacts.status} · `, ` · ${paintStatusWord(headerFacts.status)} · `);
+  for (const id of [...headerFacts.running, ...headerFacts.waiting]) {
+    if (id) out = out.replace(`(${id}`, `(${strong(id)}`).replace(`, ${id}`, `, ${strong(id)}`);
+  }
+  // Colour rules: the `<n> running` count reads as running, `<n> waiting` as pending.
+  out = out.replace(/(\d+) running\b/, (_, n) => `${n} ${tint('running', 'amber')}`);
+  out = out.replace(/(\d+) waiting\b/, (_, n) => `${n} ${dimCell('waiting')}`);
+  return out;
+}
+
+function paintAttemptMix(header) {
+  const parts = header.attemptMix.map((entry) => `${paintPool(entry.pool)} ${entry.count}`);
+  return parts.join(` ${dimCell('·')} `);
+}
+
+function paintPhaseRule(line, phase) {
+  const source = String(line ?? '');
+  const spans = [];
+  const add = (value, style, from = 0) => {
+    const text = String(value ?? '');
+    if (!text) return;
+    let at = source.indexOf(text, from);
+    while (at >= 0 && spans.some((span) => at < span.end && at + text.length > span.at)) {
+      at = source.indexOf(text, at + 1);
+    }
+    if (at >= 0) spans.push({ at, end: at + text.length, style });
+  };
+  for (const match of source.matchAll(/─+/g)) spans.push({ at: match.index, end: match.index + match[0].length, style: dimCell });
+  add(phase?.glyph, (value) => paintStatusGlyph(value, phase.status), source.indexOf('──') + 2);
+  add(phase?.name, (value) => strong(value), source.indexOf(phase?.glyph ?? '') + 1);
+  // The phase facts are built as four adjacent fields.  Locate each from the
+  // preceding field instead of replacing the first repeated placeholder: a
+  // waiting phase has `— → — · —`, and all three clocks/durations are meta.
+  const start = phase?.startedAt ? clockText(phase.startedAt) : '—';
+  const end = phase?.status === 'active' ? 'now' : phase?.finishedAt ? clockText(phase.finishedAt) : '—';
+  const duration = runClockText(phase?.activeMinutes ?? phase?.spanMinutes);
+  let factsFrom = 0;
+  const addFact = (value) => {
+    const text = String(value ?? '');
+    if (!text) return;
+    const at = source.indexOf(text, factsFrom);
+    if (at < 0) return;
+    spans.push({ at, end: at + text.length, style: dimCell });
+    factsFrom = at + text.length;
+  };
+  addFact(start);
+  addFact(end);
+  addFact(duration);
+  addFact(`${phase?.done ?? 0}/${phase?.total ?? 0}`);
+  spans.sort((a, b) => a.at - b.at || b.end - a.end);
+  let out = '';
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.at < cursor) continue;
+    out += source.slice(cursor, span.at);
+    out += span.style(source.slice(span.at, span.end));
+    cursor = span.end;
+  }
+  return out + source.slice(cursor);
+}
+
+function paintTimelineAttempt(line, attempt, { phone = false, duration = null } = {}) {
+  const text = String(line ?? '');
+  const glyph = attempt?.glyph;
+  let out = text;
+  if (glyph) out = out.replace(glyph, paintStatusGlyph(glyph, attempt.status));
+  if (attempt?.actionId) out = out.replace(attempt.actionId, strong(attempt.actionId));
+  if (attempt?.pool) out = out.replace(attempt.pool, paintPool(attempt.pool));
+  if (attempt?.startedAt) {
+    const clock = clockText(attempt.startedAt);
+    if (clock) out = out.replace(clock, dimCell(clock));
+  }
+  if (attempt?.status === 'running') out = out.replace(' · running', ` · ${tint('running', 'amber')}`);
+  // The duration column is the clock the row prints at its right edge, which
+  // alignRight put last; painting a field the row never shows left it plain.
+  const clock = String(duration ?? '');
+  if (clock && out.endsWith(clock)) out = `${out.slice(0, -clock.length)}${dimCell(clock)}`;
+  return out;
+}
+
+function paintPlanPart(part) {
+  const text = String(part?.text ?? '');
+  // The selected box is the cursor: inverse as the tab row, its glyph left
+  // uncoloured so the cell reads the same on every terminal.
+  if (text.includes('\x1b[7m')) return { ...part, text: inverseText(text.replace(ANSI_SGR, '')) };
+  if (!text || text.includes('\x1b[')) return part;
+  const glyph = text.match(/[✓✗▶●○+x>o]/)?.[0] ?? null;
+  if (!glyph) return part;
+  const status = glyph === '✓' || glyph === '+' ? 'succeeded'
+    : glyph === '✗' || glyph === 'x' ? 'failed'
+      : glyph === '▶' || glyph === '>' ? 'running' : 'pending';
+  return { ...part, text: text.replace(glyph, paintStatusGlyph(glyph, status)) };
+}
 
 function runFrame(row, {
   width = 120, height = 36, focus = 0, phaseIndex = null, agentIndex = null,
@@ -608,11 +762,11 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
   const facts = runTimelineFacts(model.row, { nowMs });
   const lines = [];
   const safeWidth = Math.max(20, Number(width) || 120);
-  const push = (text, metadata = {}) => lines.push({ text: truncate(String(text ?? ''), safeWidth), ...metadata });
+  const push = (text, metadata = {}) => lines.push({ text: cut(String(text ?? ''), safeWidth), ...metadata });
   const preflight = facts.preflight;
   if (preflight.at) {
-    push(phone ? '── Preflight' : rule('Preflight', null, safeWidth), { header: true, segment: 'Preflight', phaseIndex: -1 });
-    push(` ${clockText(preflight.at)}  ${glyphs().ongoing} ${preflight.label}`, { segment: 'Preflight', at: preflight.at, milestone: true });
+    push(paintRule(phone ? '── Preflight' : rule('Preflight', null, safeWidth)), { header: true, segment: 'Preflight', phaseIndex: -1 });
+    push(` ${dimCell(clockText(preflight.at))}  ${dimCell(glyphs().ongoing)} ${preflight.label}`, { segment: 'Preflight', at: preflight.at, milestone: true });
     // The Run page prints the goal in its own header, so it asks for
     // `goalPreview: false`. The mod pane's `--overview` frame has no header of
     // its own and has always read the goal out of this first milestone; it
@@ -626,7 +780,10 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
       if (shown.length === GOAL_PREVIEW_LINES && wrapped.length > GOAL_PREVIEW_LINES) {
         shown[GOAL_PREVIEW_LINES - 1] = truncate(`${shown[GOAL_PREVIEW_LINES - 1]} …`, goalWidth);
       }
-      for (const line of shown) push(timelineDetail(line, safeWidth), { segment: 'Preflight', at: preflight.at });
+      for (const line of shown) {
+        const detail = timelineDetail(line, safeWidth);
+        push(`${detail.startsWith('       ') ? '       ' : ''}${dimCell(detail.replace(/^       /, ''))}`, { segment: 'Preflight', at: preflight.at });
+      }
     }
   }
   const phases = facts.phases;
@@ -648,10 +805,13 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
     const duration = runClockText(phase.activeMinutes ?? phase.spanMinutes);
     const right = `${start} → ${end} · ${duration} · ${phase.done}/${phase.total}`;
     const name = `${phase.glyph} ${phase.index + 1} · ${phase.name}`;
-    push(phone ? `── ${name}` : phaseRule(name, right, safeWidth), {
+    const phaseLine = phone
+      ? `── ${phase.glyph} ${phase.index + 1} · ${phase.name}`
+      : phaseRule(name, right, safeWidth);
+    push(phone ? paintPhaseRule(phaseLine, phase) : paintPhaseRule(phaseLine, phase), {
       header: true, segment: phase.label, phaseIndex: phase.index, phase,
     });
-    if (phone) push(` ${right}`, { segment: phase.label, phaseIndex: phase.index, span: true });
+    if (phone) push(` ${dimCell(right)}`, { segment: phase.label, phaseIndex: phase.index, span: true });
     const attempts = phase.attempts.slice().sort((a, b) => (Date.parse(a.startedAt ?? '') || 0) - (Date.parse(b.startedAt ?? '') || 0));
     for (const attempt of attempts) {
       const at = attempt.startedAt ?? attempt.finishedAt;
@@ -665,7 +825,10 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
       const left = phone
         ? ` ${clock}  ${glyph} ${attempt.actionId} · ${pool}${runningText}`
         : ` ${clock}  ${glyph} ${attempt.actionId} · ${pool} · ${modelName} · ${effort}${runningText}`;
-      push(alignRight(left, attemptDurationText(attempt, { nowMs }), safeWidth), {
+      const duration = attemptDurationText(attempt, { nowMs });
+      push(paintTimelineAttempt(alignRight(left, duration, safeWidth), {
+        ...attempt, glyph,
+      }, { phone, duration }), {
         segment: phase.label, phaseIndex: phase.index, at, attempt, actionId: attempt.actionId, milestone: true,
       });
     }
@@ -676,7 +839,7 @@ function workflowTimelineLines(model, width, spinnerFrame = 0, { goalPreview = t
       const active = folded.reduce((sum, item) => sum + (finiteOrNull(item.activeMinutes) ?? 0), 0);
       const failed = folded.reduce((sum, item) => sum + item.attempts.filter((attempt) => !['succeeded', 'completed', 'success'].includes(attempt.status)).length, 0);
       const label = `↑ phases ${folded[0].index + 1}–${folded.at(-1).index + 1} · ${stepCount} steps · ${runClockText(active)} · ${failed ? `${failed} ✗` : 'all ✓'}`;
-      push(label, { folded: true, segment: folded[0].label, phaseIndex: folded[0].index });
+      push(dimCell(label), { folded: true, segment: folded[0].label, phaseIndex: folded[0].index });
       return;
     }
     if (foldStart >= 0 && index > foldStart && index < foldEnd) return;
@@ -836,15 +999,19 @@ function timelineDetail(text, width) {
   return truncate(`       ${text}`, width);
 }
 
+// Both sides arrive painted, so every measurement and cut here counts display
+// cells and keeps escapes whole: `truncate` would score an SGR run as text and
+// could slice a colour in half.
 function alignRight(left, right, width) {
   const suffix = right ? String(right) : '';
+  const suffixCells = visibleLength(suffix);
   // Preserve the actionable event label in the compact preview; dropping a
   // duration is preferable to turning the action name into an ellipsis.
-  if (width < 30) return truncate(left, width);
-  if (!suffix) return truncate(left, width);
-  const room = Math.max(1, width - suffix.length - 1);
-  const lhs = truncate(left, room);
-  return `${lhs}${' '.repeat(Math.max(1, width - lhs.length - suffix.length))}${suffix}`;
+  if (width < 30) return cut(left, width);
+  if (!suffix) return cut(left, width);
+  const room = Math.max(1, width - suffixCells - 1);
+  const lhs = cut(left, room);
+  return `${lhs}${' '.repeat(Math.max(1, width - visibleLength(lhs) - suffixCells))}${suffix}`;
 }
 
 function streamActivityLine(agent) {
@@ -1231,12 +1398,12 @@ function runTurnPreviewLines(live, width, { phone = width < 100 } = {}) {
     return summary ? [` ↳ ${cut(summary, width - 4)}`] : [];
   }
   const text = String(turn.text ?? 'response summary unavailable').replace(/\s+/g, ' ').trim();
-  const head = ` ${String(turn.number ?? 1).padStart(2, ' ')}  ${turn.clock ?? '--:--'}  `;
+  const head = ` ${tint(glyphs().started, 'amber')}${String(turn.number ?? 1).padStart(2, ' ')}  ${dimCell(turn.clock ?? '--:--')}  `;
   const counts = turn.countsText ?? turnCountsText(turn.summary);
   const hasCounts = Boolean(counts) && counts !== 'no tools';
   // Desktop appends ` · <counts>` to the second line and truncates the TEXT to
   // make room, so the counts always survive; the phone gives them a third row.
-  const tail = hasCounts && !phone ? ` · ${counts}` : '';
+  const tail = hasCounts && !phone ? ` ${dimCell('·')} ${dimCounts(counts)}` : '';
   const all = wrapLines([text], room);
   const wrapped = all.slice(0, 2);
   const overflow = all.length > 2;
@@ -1249,7 +1416,7 @@ function runTurnPreviewLines(live, width, { phone = width < 100 } = {}) {
   const lines = wrapped.length
     ? wrapped.map((line, index) => (index === 0 ? `${head}${line}` : `${indent}${line}`))
     : [`${head}response summary unavailable${tail}`];
-  if (hasCounts && phone) lines.push(`${indent}${counts}`);
+  if (hasCounts && phone) lines.push(`${indent}${dimCounts(counts)}`);
   return lines.map((line) => cut(line, width));
 }
 
@@ -1266,18 +1433,19 @@ function runLiveLinesV2(live, width, { phone = width < 100, runFollow = true, no
   const pool = attempt.pool ?? '—';
   const modelName = attempt.model ?? '—';
   const effort = attempt.effort ?? attempt.routing?.effort ?? '—';
-  const status = live.running ? `live · ${attempt.actionId}` : `last finished · ${attempt.actionId}`;
-  const title = `${status} · ${pool}${phone ? '' : ` · ${modelName} · ${effort}`} · ${duration}${phone ? '' : ` · ${live.turns ?? 0} turns · ${live.events ?? 0} events`}`;
-  const lines = [rule(title, null, width)];
-  if (pausedLine) lines.push(cut(pausedLine, width));
-  if (phone) lines.push(` ${modelName} · ${effort} · ${live.turns ?? 0} turns · ${live.events ?? 0} events`);
+  const status = live.running ? tint('live', 'amber') : dimCell('last finished');
+  const liveCounts = `${live.turns ?? 0} turns · ${live.events ?? 0} events`;
+  const title = `${status} · ${strong(attempt.actionId)} · ${paintPool(pool)}${phone ? '' : ` · ${modelName} · ${effort}`} · ${dimCell(duration)}${phone ? '' : ` · ${dimCounts(liveCounts)}`}`;
+  const lines = [paintRule(rule(title, null, width))];
+  if (pausedLine) lines.push(cut(` ${dimCell(pausedLine.trimStart())}`, width));
+  if (phone) lines.push(` ${modelName} · ${effort} · ${dimCounts(liveCounts)}`);
   if (!live.stream) {
-    lines.push(' no event stream kept for this attempt');
+    lines.push(` ${dimCell('no event stream kept for this attempt')}`);
   } else {
     lines.push(...runTurnPreviewLines(live, width, { phone }));
   }
-  const followGlyph = runFollow ? glyphs().ongoing : glyphs().pending;
-  lines.push(cut(` Enter → the step page · following ${followGlyph}`, width));
+  const followGlyph = runFollow ? tint(glyphs().ongoing, 'amber') : dimCell(glyphs().pending);
+  lines.push(cut(` ${dimCell('Enter → the step page · following')} ${followGlyph}`, width));
   return lines;
 }
 
@@ -1290,8 +1458,9 @@ const SPEND_DETAIL_GAP = 3;
 
 /** `╴<label>╴╴<amount>` — the label column the spend block is read down. */
 function spendHead(label, amount, { gap = 1 } = {}) {
-  const text = ` ${String(label).padEnd(SPEND_LABEL_WIDTH)}`;
-  return `${text}${amount == null || amount === '' ? '' : `${' '.repeat(gap)}${amount}`}`;
+  const rawLabel = String(label);
+  const text = ` ${dimCell(rawLabel)}${' '.repeat(Math.max(0, SPEND_LABEL_WIDTH - visibleLength(rawLabel)))}`;
+  return `${text}${amount == null || amount === '' ? '' : `${' '.repeat(gap)}${paintMoney(amount)}`}`;
 }
 
 /**
@@ -1299,8 +1468,8 @@ function spendHead(label, amount, { gap = 1 } = {}) {
  * split or the coverage words it belongs to.
  */
 function spendDetailRow(head, tail, width) {
-  const opener = head.padEnd(Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP));
-  return cut(`${opener}${tail ?? ''}`, width);
+  const opener = `${head}${' '.repeat(Math.max(0, Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP) - visibleLength(head)))}`;
+  return cut(`${opener}${tail ? dimCell(tail) : ''}`, width);
 }
 
 /** A pool's name in the split: the vendor-qualified suffix, as `acme` is. */
@@ -1312,7 +1481,8 @@ function spendPoolName(name) {
 /** `codex $11.45`, or `command-code ≈$0.01` when its subtotal is a sum of estimates. */
 function spendPoolToken(entry) {
   const amount = formatMoney(entry.apiKnownSubtotalUsd);
-  return `${spendPoolName(entry.pool)} ${entry.estimated > 0 ? `≈${amount}` : amount}`;
+  const money = entry.estimated > 0 ? `≈${amount}` : amount;
+  return `${paintPool(spendPoolName(entry.pool))} ${paintMoney(money)}`;
 }
 
 /**
@@ -1334,9 +1504,9 @@ function spendSplitCounts(spend) {
  */
 function spendSplitRows(head, tokens, counts, width) {
   const indent = ' '.repeat(SPEND_DETAIL_COLUMN);
-  const opener = head.padEnd(Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP));
+  const opener = `${head}${' '.repeat(Math.max(0, Math.max(SPEND_DETAIL_COLUMN, visibleLength(head) + SPEND_DETAIL_GAP) - visibleLength(head)))}`;
   const units = tokens.map((text, index) => ({ text, gap: index ? ' · ' : '' }));
-  if (counts) units.push({ text: `(${counts})`, gap: ' ' });
+  if (counts) units.push({ text: dimCell(`(${counts})`), gap: ' ' });
   const rows = [];
   let text = opener;
   let fresh = true;
@@ -1366,15 +1536,15 @@ function planCoverageText(spend, room) {
 }
 
 function runSpendLinesV2(spend, width, { phone = width < 100 } = {}) {
-  const lines = [rule(`spend · ${spend.coverageText}`, null, width)];
-  const suffix = spend.suffix ? `  ${spend.suffix}` : '';
+  const lines = [paintRule(rule(`spend · ${spend.coverageText}`, null, width))];
+  const suffix = spend.suffix ? `  ${dimCell(spend.suffix)}` : '';
   const pools = spend.pools.filter((entry) => entry.apiKnownSubtotalUsd != null);
   if (phone) {
     // The phone has one row per fact: the amount with its own coverage words,
     // then the plan row the width can hold whole.
     lines.push(cut(`${spendHead('API rate', spend.apiText, { gap: 0 })}${suffix}`, width));
     const head = spendHead('plans', spend.plansText, { gap: 0 });
-    lines.push(cut(`${head}   ${planCoverageText(spend, Math.max(0, width - visibleLength(head) - 3))}`, width));
+    lines.push(cut(`${head}   ${dimCell(planCoverageText(spend, Math.max(0, width - visibleLength(head) - 3)))}`, width));
     return lines;
   }
   const head = spendHead('API rate', spend.apiText);
@@ -1401,10 +1571,10 @@ function runPlanGlyphStrip(row) {
     // wins over failure so a phase with one retry in flight still reads live;
     // otherwise a failed/blocked phase is red, a wholly successful phase is
     // done, and an untouched or mixed phase remains pending.
-    if (actions.some((action) => action.status === 'running')) return glyphs().started;
-    if (actions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status))) return glyphs().fail;
-    if (actions.length > 0 && actions.every((action) => action.status === 'succeeded')) return glyphs().ok;
-    return glyphs().pending;
+    if (actions.some((action) => action.status === 'running')) return tint(glyphs().started, 'amber');
+    if (actions.some((action) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(action.status))) return tint(glyphs().fail, 'red');
+    if (actions.length > 0 && actions.every((action) => action.status === 'succeeded')) return tint(glyphs().ok, 'green');
+    return dimCell(glyphs().pending);
   }).join('');
 }
 
@@ -1635,7 +1805,9 @@ function runPage(model, opts, body) {
     phone ? `${headerFacts.attempts} attempts` : null,
     !phone && width >= 160 ? headerFacts.dateText : null,
   ].filter(Boolean).join(' · ');
-  const header = phone ? truncate(` ${runStatus}`, width) : alignRight(` ${runStatus}`, clock ?? '', width);
+  const paintedRunStatus = paintRunHeader(runStatus, headerFacts, activeGlyph);
+  const paintedClock = clock ? dimCell(clock) : '';
+  const header = phone ? cut(` ${paintedRunStatus}`, width) : alignRight(` ${paintedRunStatus}`, paintedClock, width);
 
   if (opts.orchestratorDetail || opts.workflowVerbose) {
     const frame = runFrame(row, { ...opts, focus: opts.focus === 1 ? 1 : 0, bodyHeight: opts.bodyHeight });
@@ -1651,16 +1823,24 @@ function runPage(model, opts, body) {
     if (goalLines.length > shown.length) shown[shown.length - 1] = `${cut(shown.at(-1), Math.max(1, width - 4))}…`;
     for (const line of shown) body.push(cut(` ${line}`, width));
   }
-  if (phone && clock) body.push(cut(` ${clock}`, width));
+  if (phone && clock) body.push(cut(` ${dimCell(clock)}`, width));
   if (!phone) {
     const project = headerFacts.project ?? '—';
     const cwd = headerFacts.cwd ?? '—';
-    body.push(cut(alignRight(` ${headerFacts.attempts} attempts  ${runAttemptMixText(headerFacts)}`, `project ${project} · ${cwd}`, width), width));
+    const attemptsLabel = `${dimCell(`${headerFacts.attempts} attempts`)}  ${paintAttemptMix(headerFacts)}`;
+    body.push(cut(alignRight(` ${attemptsLabel}`, dimCell(`project ${project} · ${cwd}`), width), width));
   }
   body.push('');
 
   const progress = planProgress(row, { assignments: model.assignments, nowMs });
-  if (!phone) body.push(rule(`plan · phase ${progress.phase} of ${progress.phases}`, null, width));
+  // The cursor: Up/Down move the selected phase and Enter opens its first
+  // step, so that phase's plan box — or, on a phone showing the glyph strip,
+  // its timeline rule — is drawn inverse.
+  const panel = workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex, nowMs });
+  const cursorOn = (Number(opts.focus) || 0) === 0 && !opts.controlSelected;
+  const cursorId = cursorOn ? panel.selectedPhase?.actions?.[0]?.id ?? null : null;
+  const cursorInTimeline = cursorOn && phone && !opts.planBoxes;
+  if (!phone) body.push(paintRule(rule(`plan · phase ${progress.phase} of ${progress.phases}`, null, width)));
   if (phone && !opts.planBoxes) {
     const { stages } = planStages(row);
     const current = stages[Math.max(0, progress.phase - 1)];
@@ -1669,12 +1849,12 @@ function runPage(model, opts, body) {
     const currentState = current?.actions?.some((action) => action.status === 'running') ? 'running'
       : current?.actions?.every((action) => RUN_DONE.has(action.status)) ? 'done' : 'waiting';
     const nextName = next ? planStageName(next, stages.indexOf(next)) : '—';
-    body.push(cut(` plan  ${runPlanGlyphStrip(row)}  ${progress.phase} ${currentName} ${currentState} · then ${nextName}`, width));
+    body.push(cut(` ${dimCell('plan')}  ${runPlanGlyphStrip(row)}  ${progress.phase} ${strong(currentName)} ${paintStatusWord(currentState)} · then ${nextName}`, width));
   } else {
     for (const line of planDagLines(row, {
       width: Math.max(1, width - 1), runId: row?.runId ?? null, assignments: model.assignments, nowMs,
-      pools: !phone,
-    })) body.parts([{ text: ' ' }, ...line.parts]);
+      pools: !phone, selectedId: cursorId,
+    })) body.parts([{ text: ' ' }, ...line.parts.map((part) => paintPlanPart(part))]);
   }
   body.push('');
 
@@ -1706,11 +1886,14 @@ function runPage(model, opts, body) {
   if (row?.kernelStderrTail?.length) body.push(' kernel log: available');
   body.push('');
 
-  const timeline = workflowTimelineLines(workflowPanelModel(row, { phaseIndex: opts.phaseIndex, agentIndex: opts.agentIndex, nowMs }), width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone });
-  body.push(rule(`timeline · ${timeline.phases} phases · ${timeline.attempts} attempts${phone ? '' : ' · Enter on a step opens it'}`, null, width));
+  const timeline = workflowTimelineLines(panel, width, opts.spinnerFrame ?? 0, { goalPreview: false, nowMs, phone });
+  const cursorSegment = !cursorInTimeline ? null
+    : opts.timelineSelection === 0 ? 'Preflight' : panel.selectedPhase?.label ?? null;
+  body.push(paintRule(rule(`timeline · ${timeline.phases} phases · ${timeline.attempts} attempts${phone ? '' : ' · Enter on a step opens it'}`, null, width)));
   const timelineStart = body.lines.length;
   for (const line of timeline.lines) {
-    const text = cut(timelineText(line), width);
+    const plain = cut(timelineText(line), width);
+    const text = cursorSegment && line?.header && line.segment === cursorSegment ? inverseText(plain) : plain;
     if (line?.actionId) body.row(text, { kind: 'step', actionId: line.actionId, ...(row?.runId ? { runId: row.runId } : {}) });
     else body.push(text);
   }

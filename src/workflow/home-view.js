@@ -21,6 +21,7 @@ import {
 } from './dash-kit.js';
 import {
   measuredTaskMinutes,
+  cardDurationText,
   medianRunDuration,
   recordMoneyPair,
   todayDateLabel,
@@ -207,8 +208,7 @@ function cardLines(card, width, { task = false } = {}) {
   const project = cut(String(card.project ?? blank()), Math.max(1, inner - 9));
   const status = cardStatusText(card.status);
   const verdict = String(card.verdict ?? '—');
-  const minuteValue = card.minutes?.active == null ? blank() : `${Number(card.minutes.active).toFixed(2)}m`;
-  const minuteLabel = 'active';
+  const duration = cardDurationText(card.minutes) ?? blank();
   const steps = card.steps?.done != null && card.steps?.total != null
     ? `${card.steps.done}/${card.steps.total}` : '—';
   const money = card.money ?? recordMoneyPair(card.record ?? {});
@@ -226,12 +226,9 @@ function cardLines(card, width, { task = false } = {}) {
   const subscription = cardMoneySlot(subRaw, { ...money.subscription, tokens: money.tokens });
   const content = [
     task ? ` ${project} · task · ${status}` : ` ${project} · ${status} · ${verdict}`,
-    ` ${minuteLabel} ${minuteValue} · steps ${steps}`,
+    ` ${duration} · steps ${steps}`,
     ` API ${api} · subscription ${subscription}`,
   ];
-  if (width >= 56 && card.minutes?.span != null) {
-    content[1] += ` · span ${Number(card.minutes.span).toFixed(2)}m`;
-  }
   const title = cut(goal, Math.max(1, inner - 3));
   return [
     `┌─ ${title}${'─'.repeat(Math.max(0, width - 4 - visibleLength(title)))}┐`,

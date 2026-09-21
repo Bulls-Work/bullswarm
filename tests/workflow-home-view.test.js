@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import {
   activeRunLines,
+  cardLines,
   homeDetails,
   homePage,
   homeTodayBand,
@@ -74,6 +75,24 @@ test('Home view keeps today rows and table rows at their requested width', () =>
     // it through todayPadded when it is placed in the page band.
     assert.ok(visible(table).length <= width + 10);
   }
+});
+
+test('Home cards use the shared h/m/s clock and only name a differing span', () => {
+  const withSpan = cardLines({
+    name: 'long-running task', project: 'bullswarm', status: 'completed', verdict: '—',
+    minutes: { active: 355, span: 415 }, steps: { done: 18, total: 21 },
+    money: { text: 'api unknown · sub unknown' },
+  }, 200).map(visible).join('\n');
+  assert.match(withSpan, /5h55m active of 6h55m · steps 18\/21/);
+  assert.doesNotMatch(withSpan, /725\.95m|355\.00m|415\.00m/);
+
+  const sameClock = cardLines({
+    name: 'short task', project: 'bullswarm', status: 'completed', verdict: '—',
+    minutes: { active: 58 + 37 / 60, span: 58 + 37 / 60 }, steps: { done: 9, total: 9 },
+    money: { text: 'api unknown · sub unknown' },
+  }, 200).map(visible).join('\n');
+  assert.match(sameClock, /58m37s · steps 9\/9/);
+  assert.doesNotMatch(sameClock, /active of|span /);
 });
 
 test('Home view registers today actions and renders the empty page through the extracted page', () => {

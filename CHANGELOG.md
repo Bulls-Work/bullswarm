@@ -86,6 +86,29 @@
   continues it` rather than leaving `last finished` to read as "any moment now".
 - mod: `workflow tui --overview` keeps the goal preview and draws its milestone
   rows flush to the pane border, the two shapes the Claude mod's pane parses.
+- colour: the Step page, the Run page and the single-task page paint one meaning
+  per colour — green for work that went well (`✓`, `succeeded`, `verified`),
+  amber for work running now (`▶`, `●`, the spinner, `following ●`), red for
+  failures (`✗`, `failed`, an error count above zero), dim for the supporting
+  detail (clocks, counts, row labels, basis phrases, block rule dashes, footer
+  hints, pending marks), bold for identity and every money amount, and each pool
+  in the colour its bar has on Home. Response, task, report and command text
+  stay plain, the selected row is inverse, and in ASCII mode only bold, dim and
+  inverse remain.
+- colour: the frames the records are reviewed against are rendered twice —
+  `docs/design/tidy-0.35.1/frames/real-*.txt` as text and
+  `docs/design/tidy-0.35.1/frames/colour/` with the escape codes kept, from the
+  one snapshot render (`scripts/render-tidy-0.35.1-frames.mjs --colour`), so a
+  reviewer can grep for a colour instead of trusting a screenshot.
+- tasks: the single-task page names the task the way the Runs list does —
+  `<lane> task · <8-char id>` (`analyze task · 3155fb3c`) — instead of the full
+  UUID or a six-character prefix.
+- home: a card's durations use the same h/m/s clock as the Step and Run pages
+  (`58m37s active of 58m38s`, `1h38m active of 1h39m`), never decimal minutes
+  like `active 725.95m`.
+- runs: the page opens with the cursor on its first row — the first active run
+  when one is running — drawn inverse, so `Enter` opens the highlighted row, and
+  `Up` on the first row stays there.
 
 ## 0.35.0 — the Step page tells the whole story
 

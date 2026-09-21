@@ -4,13 +4,119 @@
 // result → activity → task → cost so the answer is on top. Every string here
 // comes from step-model.js; a missing field prints as a dash, never as prose.
 
-import { cut, rule } from './dash-kit.js';
-import { blank, visibleLength } from './dashboard.js';
+import { cut, rule, seriesColor } from './dash-kit.js';
+import { blank, dimText, inverseText, strong, tint, visibleLength } from './dashboard.js';
 import { glyphs, spinnerGlyph } from '../lib/glyphs.js';
 import { stepClockText } from './step-model.js';
 
 const DIVIDER = ' │ ';
 const GUTTER = 12;
+
+// Keep styling at cell boundaries.  `dimText` takes a width because it is
+// also used for clipped dashboard rows; these small wrappers give it the
+// exact visible width of the cell so it never adds or removes text here.
+/** A glyph used inside a RegExp: ASCII glyphs such as `*` are quantifiers. */
+const escapeRegExp = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function dimCell(value) {
+  const text = String(value ?? '');
+  return text ? dimText(text, Math.max(1, visibleLength(text))) : text;
+}
+
+function statusColor(status) {
+  const value = String(status ?? '').toLowerCase();
+  if (['succeeded', 'success', 'completed', 'complete', 'done', 'verified'].includes(value)) return 'green';
+  if (['running', 'started', 'start', 'in_progress', 'in-progress', 'queued'].includes(value)) return 'amber';
+  if (['failed', 'failure', 'error', 'interrupted', 'cancelled', 'canceled', 'blocked'].includes(value)) return 'red';
+  if (value.startsWith('verified by the workflow')) return 'green';
+  if (value.startsWith('not verified')) return 'red';
+  return null;
+}
+
+function paintStatus(value, status = value) {
+  const role = statusColor(status);
+  return role ? tint(value, role) : dimCell(value);
+}
+
+function paintRule(line) {
+  return String(line ?? '').replace(/─+/g, (dashes) => dimCell(dashes));
+}
+
+function paintErrorCounts(value) {
+  const text = String(value ?? '');
+  const matcher = /\b[1-9]\d* (?:errors?|err)\b/g;
+  let cursor = 0;
+  let out = '';
+  for (const match of text.matchAll(matcher)) {
+    out += text.slice(cursor, match.index);
+    out += tint(match[0], 'red');
+    cursor = match.index + match[0].length;
+  }
+  return cursor ? `${out}${text.slice(cursor)}` : text;
+}
+
+function dimCounts(value) {
+  const text = String(value ?? '');
+  const matcher = /\b[1-9]\d* (?:errors?|err)\b/g;
+  let cursor = 0;
+  let out = '';
+  for (const match of text.matchAll(matcher)) {
+    out += dimCell(text.slice(cursor, match.index));
+    out += tint(match[0], 'red');
+    cursor = match.index + match[0].length;
+  }
+  return cursor ? `${out}${dimCell(text.slice(cursor))}` : dimCell(text);
+}
+
+function paintLabelRow(line, label) {
+  const prefix = ` ${label}`;
+  if (!String(line).startsWith(prefix)) return line;
+  return ` ${dimCell(label)}${String(line).slice(prefix.length)}`;
+}
+
+function paintMoney(value) {
+  const text = String(value ?? '');
+  if (!text) return text;
+  const glyph = text.match(/^(≈|~|—)(?=\s|\$|$)/)?.[1] ?? null;
+  if (!glyph) return strong(text);
+  const rest = text.slice(glyph.length);
+  return `${dimCell(glyph)}${rest ? strong(rest) : ''}`;
+}
+
+function paintCostLabel(label) {
+  const text = String(label ?? '');
+  if (!text) return text;
+  if (text === 'API rate') return dimCell(text);
+  const match = /^(.*?)( plan)?$/.exec(text);
+  if (match?.[2]) return `${tint(match[1], seriesColor(match[1]))}${dimCell(match[2])}`;
+  if (text === 'plans') return dimCell(text);
+  return dimCell(text);
+}
+
+function paintCostDetails(value) {
+  const text = String(value ?? '');
+  if (!text) return text;
+  // Detail rows are basis/token-class words.  Any amount embedded in a
+  // selected-attempt detail remains an amount cell and keeps its bold face.
+  return text.split(' · ')
+    .map((part) => {
+      const match = /(?:≈|~|—)?\s*\$[0-9]+(?:\.[0-9]+)?(?:\/mo)?/.exec(part);
+      if (!match) return dimCell(part);
+      const before = part.slice(0, match.index);
+      const after = part.slice(match.index + match[0].length);
+      return `${before ? dimCell(before) : ''}${paintMoney(match[0])}${after ? dimCell(after) : ''}`;
+    })
+    .join(' · ');
+}
+
+function paintResultRule(line) {
+  const source = String(line ?? '');
+  const out = source.replace(/not verified|verified by the workflow|verified|succeeded|completed|failed|interrupted|cancelled|running|not yet/g, (status) => {
+    const role = statusColor(status);
+    return role ? tint(status, role) : dimCell(status);
+  });
+  return paintRule(out);
+}
 
 function number(value) {
   if (value == null || value === '' || typeof value === 'boolean') return null;
@@ -114,22 +220,33 @@ function stateGlyph(state) {
 }
 
 function headerIdentityLine(header, { phone, nowMs = null }) {
-  const parts = [header.actionId, header.shortId, header.status];
+  const state = header.state;
+  const mark = state === 'ok' ? tint(stateGlyph(state), 'green')
+    : state === 'fail' ? tint(stateGlyph(state), 'red')
+      : tint(stateGlyph(state), 'amber');
+  const parts = [
+    header.actionId ? strong(header.actionId) : null,
+    header.shortId ? strong(header.shortId) : null,
+    header.status ? paintStatus(header.status) : null,
+  ];
   if (header.running) {
-    if (!phone) parts.push(header.attemptText);
-    if (header.activeText) parts.push(header.activeText);
-    if (header.turnNumber) parts.push(`turn ${header.turnNumber}`);
+    if (!phone && header.attemptText) parts.push(dimCell(header.attemptText));
+    if (header.activeText) parts.push(dimCell(header.activeText));
+    if (header.turnNumber) parts.push(dimCell(`turn ${header.turnNumber}`));
     if (!phone) {
       if (header.lastEventClock) {
-        parts.push(`last event ${header.lastEventClock} HKT${lastEventAge(header, nowMs)}`);
+        parts.push(dimCell(`last event ${header.lastEventClock} HKT${lastEventAge(header, nowMs)}`));
       }
-      if (header.following) parts.push(`following ${glyphs().ongoing}`);
+      if (header.following) parts.push(tint(`following ${glyphs().ongoing}`, 'amber'));
     }
   } else {
-    if (header.verdictText) parts.push(phone ? shortVerdict(header.verdictText) : header.verdictText);
-    if (!phone && header.attemptText) parts.push(header.attemptText);
+    if (header.verdictText) {
+      const verdict = phone ? shortVerdict(header.verdictText) : header.verdictText;
+      parts.push(paintStatus(verdict, header.succeeded ? 'verified' : 'failed'));
+    }
+    if (!phone && header.attemptText) parts.push(dimCell(header.attemptText));
   }
-  return `${stateGlyph(header.state)} ${parts.filter(Boolean).join(' · ')}`;
+  return `${mark} ${parts.filter(Boolean).join(' · ')}`;
 }
 
 /** `, 3s ago` — the age of the newest captured event, or nothing. */
@@ -160,11 +277,12 @@ function headerMetaLine(header, { phone }) {
   // The level slot keeps its dash when the attempt recorded none, so a missing
   // effort is visible rather than silently absent; `reasoning` only prints when
   // there is a record behind it.
-  const effort = header.effort ? (phone ? header.effort : `${header.effort} effort`) : '—';
+  const effort = header.effort ? (phone ? header.effort : `${header.effort} effort`) : dimCell('—');
+  const pool = header.pool ? tint(header.pool, seriesColor(header.pool)) : null;
   return phone
-    ? countList([header.pool, header.model, effort])
+    ? countList([pool, header.model, effort])
     : countList([
-      header.pool,
+      pool,
       header.model,
       effort,
       header.reasoning ? `reasoning ${header.reasoning}` : null,
@@ -181,9 +299,9 @@ function headerLines(presentation, { width, phone }) {
   }
   const meta = headerMetaLine(header, { phone });
   const clock = headerClockText(header, { phone });
-  if (phone) lines.push(` ${oneLine(countList([meta, clock]))}`);
-  else lines.push(alignRight(` ${meta}`, clock ?? '', width));
-  if (!phone && header.route) lines.push(` route  ${oneLine(header.route)}`);
+  if (phone) lines.push(` ${oneLine(countList([meta, clock ? dimCell(clock) : null]))}`);
+  else lines.push(alignRight(` ${meta}`, clock ? dimCell(clock) : '', width));
+  if (!phone && header.route) lines.push(` ${dimCell('route')}  ${oneLine(header.route)}`);
   return lines;
 }
 
@@ -223,7 +341,8 @@ function activityTitle(presentation, { phone, view, compact }) {
  * keeps the control in the same place whether or not it is following.
  */
 function activityRule(title, suffix, width, { following }) {
-  if (!suffix) return rule(title, null, width);
+  const paintedTitle = paintErrorCounts(title);
+  if (!suffix) return paintRule(rule(paintedTitle, null, width));
   // The control is the first thing to shorten when the column cannot hold it,
   // then the dashes that follow it — the follow marker is the last to go, and
   // only because the header line already carries it. The counts in the title
@@ -234,17 +353,27 @@ function activityRule(title, suffix, width, { following }) {
   for (const tail of tails) {
     for (const candidate of [suffix, suffix.replace(/ · t to change$/, ''), null]) {
       if (!candidate) break;
-      const head = `── ${title} `;
+      const head = `── ${paintedTitle} `;
       const middle = ` ${candidate} `;
       const fill = width - visibleLength(head) - visibleLength(middle) - visibleLength(tail);
-      if (fill >= 3) return `${head}${'─'.repeat(fill)}${middle}${tail}`;
+      if (fill >= 3) {
+        // Colour rules: every dash run on a block rule is dim, the filter
+        // control is meta, and a `following ●` marker reads as running.
+        const paintedTail = paintRule(tail).replace(
+          new RegExp(`following ${escapeRegExp(glyphs().ongoing)}|${escapeRegExp(glyphs().ongoing)}`),
+          (mark) => tint(mark, 'amber'),
+        );
+        return `${dimCell('──')} ${paintedTitle} ${dimCell('─'.repeat(fill))} ${dimCell(candidate)} ${paintedTail}`;
+      }
     }
   }
-  return rule(title, null, width);
+  return paintRule(rule(title, null, width));
 }
 
 function turnHead(turn, { mark }) {
-  return `${mark}${String(turn.number).padStart(2, ' ')}  ${turn.clock ?? '—:—'}  `;
+  const paintedMark = mark === glyphs().started ? tint(mark, 'amber') : mark;
+  const clock = turn.clock ?? '—:—';
+  return `${paintedMark}${String(turn.number).padStart(2, ' ')}  ${dimCell(clock)}  `;
 }
 
 const TOOL_ROW_LIMIT = 3;
@@ -319,7 +448,7 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
     (body.length ? body : ['response summary unavailable']).forEach((line, index) => {
       rows.push(index === 0 ? `${turnHead(turn, { mark: glyphs().started })}${line}` : `${indent}${line}`);
     });
-    rows.push(`${indent}${turn.countsText} · Esc closes`);
+    rows.push(`${indent}${dimCounts(turn.countsText)} · ${dimCell('Esc closes')}`);
     const window = toolRowWindow(turn, {
       limit: TOOL_ROW_LIMIT,
       page: toolPage,
@@ -327,20 +456,20 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
       running,
     });
     if (window.earlierCount) {
-      rows.push(`${indent}↑ ${window.earlierCount} earlier ${toolRowNoun(window.earlierRows)} · Space page up`);
+      rows.push(`${indent}${dimCell(`↑ ${window.earlierCount} earlier ${toolRowNoun(window.earlierRows)} · Space page up`)}`);
     }
     const shownTools = window.rows;
     for (const tool of shownTools) {
       if (tool.inFlight) {
-        const elapsed = tool.durationText ? `${tool.durationText}  ` : '';
-        rows.push(fit(`${indent}${spinnerGlyph(spinnerFrame)} running ${elapsed}${tool.text}`, width));
+        const elapsed = tool.durationText ? `${dimCell(tool.durationText)}  ` : '';
+        rows.push(fit(`${indent}${tint(spinnerGlyph(spinnerFrame), 'amber')} ${tint('running', 'amber')} ${elapsed}${tool.text}`, width));
         continue;
       }
       const durationText = tool.durationText;
-      const label = tool.command ? `$ ${tool.text}` : tool.text;
+      const label = tool.command ? `${dimCell('$')} ${tool.text}` : tool.text;
       const labelRoom = Math.max(8, room - (durationText ? visibleLength(durationText) + 3 : 0));
-      const labelLine = `${indent}${tool.clock ?? '—:—:—'}  ${fit(label, labelRoom)}`;
-      rows.push(durationText ? alignRight(labelLine, durationText, width) : fit(labelLine, width));
+      const labelLine = `${indent}${dimCell(tool.clock ?? '—:—:—')}  ${fit(label, labelRoom)}`;
+      rows.push(durationText ? alignRight(labelLine, dimCell(durationText), width) : fit(labelLine, width));
     }
     return rows;
   }
@@ -351,7 +480,7 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
     // the report instead of printing it twice.
     const lead = oneLine(String(turn.text ?? '').split(/\r?\n/)[0]) || first;
     rows.push(`${turnHead(turn, { mark: ' ' })}${lead}`);
-    rows.push(`${indent}→ the report, shown under result`);
+    rows.push(`${indent}${dimCell('→ the report, shown under result')}`);
     return rows;
   }
   const countTail = ` · ${turn.countsText}`;
@@ -365,18 +494,18 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
     } else if (cut2) {
       rows.push(`${indent}…`);
     }
-    rows.push(`${indent}${turn.countsText}`);
+    rows.push(`${indent}${dimCounts(turn.countsText)}`);
     return rows;
   }
   // Desktop keeps the counts at the end of the last response line, truncating
   // the text with `…` to make room.
   if (body.length <= 2) {
     if (body.length === 1) {
-      rows.push(`${turnHead(turn, { mark: ' ' })}${first}${countTail}`);
+      rows.push(`${turnHead(turn, { mark: ' ' })}${first}${dimCounts(countTail)}`);
       return rows;
     }
     rows.push(`${turnHead(turn, { mark: ' ' })}${first}`);
-    rows.push(`${indent}${body[1] ?? ''}${countTail}`.replace(/\s+$/, ''));
+    rows.push(`${indent}${body[1] ?? ''}${dimCounts(countTail)}`.replace(/\s+$/, ''));
     return rows;
   }
   const room2 = Math.max(1, room - visibleLength(countTail));
@@ -388,7 +517,7 @@ function turnRowLines(turn, { width, phone, spinnerFrame = 0, toolPage = 0, foll
     truncated = next;
   }
   rows.push(`${turnHead(turn, { mark: ' ' })}${first}`);
-  rows.push(`${indent}${truncated ? `${truncated}…` : '…'}${countTail}`);
+  rows.push(`${indent}${truncated ? `${truncated}…` : '…'}${dimCounts(countTail)}`);
   return rows;
 }
 
@@ -399,34 +528,40 @@ function activityLines(presentation, {
   compact,
   spinnerFrame = 0,
   toolPage = 0,
+  cursorTurn = null,
 }) {
   const activity = presentation.activity;
   const title = `activity · ${activityTitle(presentation, { phone, view, compact })}`;
   const lines = [];
   if (!activity.available) {
-    lines.push(rule(title, null, width));
-    lines.push(fit(` ${activity.reason ?? 'event stream unavailable'}.`, width));
-    lines.push(fit(' turns, tools, and event timing cannot be reconstructed.', width));
+    lines.push(paintRule(rule(title, null, width)));
+    lines.push(fit(` ${dimCell(`${activity.reason ?? 'event stream unavailable'}.`)}`, width));
+    lines.push(fit(` ${dimCell('turns, tools, and event timing cannot be reconstructed.')}`, width));
     return lines;
   }
   // One filter control, and the follow marker only while the step runs
   // (rule 9): a finished page has nothing to follow.
   const suffix = phone ? null : `showing ${filterLabel(presentation, view)} · t to change`;
   lines.push(activityRule(title, suffix, width, { following: activity.running && activity.following }));
-  if (phone && activity.running) lines.push(fit(' ↑ earlier turns', width));
+  if (phone && activity.running) lines.push(fit(` ${dimCell('↑ earlier turns')}`, width));
   if (!activity.turns.length) {
-    lines.push(fit(` no response turns captured · ${activity.events} atomic events`, width));
+    lines.push(fit(` ${dimCell(`no response turns captured · ${activity.events} atomic events`)}`, width));
     return lines;
   }
   for (const turn of activity.turns) {
-    for (const row of turnRowLines(turn, {
+    const rows = turnRowLines(turn, {
       width,
       phone,
       spinnerFrame,
       toolPage,
       following: Boolean(activity.following),
       running: Boolean(activity.running),
-    })) lines.push(fit(row, width));
+    });
+    // The cursor row: the head row of the turn Up/Down selected, inverse.
+    rows.forEach((row, index) => {
+      const line = fit(row, width);
+      lines.push(index === 0 && turn.index === cursorTurn ? inverseText(line) : line);
+    });
   }
   return lines;
 }
@@ -435,16 +570,17 @@ function nowLines(presentation, { width, nowMs = null }) {
   const activity = presentation.activity;
   const header = presentation.header;
   const totals = { ...activity.totals };
-  const title = `now · ${activity.events} events · ${countList([
+  const title = paintErrorCounts(`now · ${activity.events} events · ${countList([
     `${totals.commands} cmds`,
     `${totals.edits} edits`,
     `${totals.errors} err`,
-  ])}`;
-  const lines = [rule(title, null, width)];
+  ])}`);
+  const lines = [paintRule(rule(title, null, width))];
   const last = header.lastEventClock
-    ? `last event ${header.lastEventClock}${lastEventAge(header, nowMs)}${header.following ? ` · following ${glyphs().ongoing}` : ''}`
+    ? `last event ${header.lastEventClock}${lastEventAge(header, nowMs)}`
     : 'no captured event yet';
-  lines.push(fit(` ${last}`, width));
+  const following = header.following ? ` · following ${tint(glyphs().ongoing, 'amber')}` : '';
+  lines.push(fit(` ${dimCell(last)}${following}`, width));
   return lines;
 }
 
@@ -515,15 +651,17 @@ function detailRows(details, room, indent) {
 function resultLines(presentation, { width, phone, detail }) {
   const result = presentation.result;
   const lines = [];
-  lines.push(rule(`result · ${resultTitle(presentation, { phone })}`, null, width));
+  lines.push(paintResultRule(rule(`result · ${resultTitle(presentation, { phone })}`, null, width)));
   if (result.running) {
     const attempt = result.attemptNumber == null ? 'attempt running' : `attempt ${result.attemptNumber} running`;
-    lines.push(fit(` ${attempt} · ${result.events} events so far`, width));
+    lines.push(fit(` ${attempt.replace(/\brunning\b/, tint('running', 'amber'))} · ${dimCell(`${result.events} events so far`)}`, width));
     if (result.lastResponse) {
       // The clock and the response keep the design's two spaces between them.
       const prefix = `last response ${result.lastResponse.clock ?? '—'}  `;
       const body = wrap(oneLine(result.lastResponse.text), Math.max(1, width - 1 - prefix.length));
-      body.slice(0, 2).forEach((line, index) => lines.push(` ${index ? '  ' : ''}${index ? line : `${prefix}${line}`}`));
+      body.slice(0, 2).forEach((line, index) => lines.push(index
+        ? `  ${line}`
+        : ` ${dimCell(`last response ${result.lastResponse.clock ?? '—'}`)}  ${line}`));
     }
     // An out file already written to still shows what it says so far.
     if ((result.reportLines ?? []).length) lines.push(...reportRows(result.reportLines, { limit: 2, width }));
@@ -531,13 +669,19 @@ function resultLines(presentation, { width, phone, detail }) {
   }
   const card = phone ? { pad: 7, gap: 1 } : { pad: 7, gap: 2 };
   // A step that stopped without a report still says why it stopped.
-  if (result.failure) lines.push(...labelRow('failed', result.failure, { width, ...card }).slice(0, 2));
+  if (result.failure) {
+    lines.push(...labelRow('failed', result.failure, { width, ...card }).slice(0, 2)
+      .map((line) => line.startsWith(' failed')
+        ? `${paintLabelRow(line, 'failed').replace(result.failure, tint(result.failure, 'red'))}`
+        : line));
+  }
   lines.push(...reportRows(result.reportLines ?? [], { limit: 3, width }));
   if (!(result.reportLines ?? []).length) lines.push(fit(' no report was written for this step', width));
   const asks = result.asks ?? [];
-  if (asks.length) lines.push(...labelRow('asks', asks.join(' '), { width, ...card }).slice(0, 2));
+  if (asks.length) lines.push(...labelRow('asks', asks.join(' '), { width, ...card }).slice(0, 2)
+    .map((line) => paintLabelRow(line, 'asks')));
   if ((result.changed ?? []).length) {
-    lines.push(...labelRow('changed', result.changed[0], { width, ...card }));
+    lines.push(...labelRow('changed', result.changed[0], { width, ...card }).map((line) => paintLabelRow(line, 'changed')));
     const indent = ' '.repeat(phone ? 9 : 10);
     for (const path of result.changed.slice(1, 3)) lines.push(fit(`${indent}${path}`, width));
     if (result.changed.length > 3) lines.push(fit(`${indent}… ${result.changed.length - 3} more paths`, width));
@@ -552,17 +696,17 @@ function resultLines(presentation, { width, phone, detail }) {
   ].filter(Boolean);
   const names = ['task', 'out', 'stream', 'diff'].filter((name) => parts.some((part) => part.startsWith(name)));
   if (phone) {
-    lines.push(fit(` ${'files'.padEnd(7)} ${result.runDirShort ? `${result.runDirShort}/` : '—'} ${names.join(' · ') || '—'}`, width));
+    lines.push(fit(` ${dimCell('files')}       ${result.runDirShort ? `${result.runDirShort}/` : '—'} ${names.join(' · ') || '—'}`, width));
   } else {
-    lines.push(...labelRow('files', result.runDir ?? '—', { width, ...card }));
-    lines.push(fit(`          ${parts.join(' · ') || 'no artifact paths recorded'}`, width));
+    lines.push(...labelRow('files', result.runDir ?? '—', { width, ...card }).map((line) => paintLabelRow(line, 'files')));
+    lines.push(fit(`          ${parts.join(' · ') || dimCell('no artifact paths recorded')}`, width));
   }
   if (detail) {
     for (const [name, path] of Object.entries(result.fullPaths ?? {})) {
-      if (path) lines.push(...labelRow(name, path, { width, pad: 7, gap: 2 }));
+      if (path) lines.push(...labelRow(name, path, { width, pad: 7, gap: 2 }).map((line) => paintLabelRow(line, name)));
     }
   }
-  if (!phone && result.reportBytesText) lines.push(fit(` Enter on result: the full report, ${result.reportBytesText}`, width));
+  if (!phone && result.reportBytesText) lines.push(fit(` ${dimCell(`Enter on result: the full report, ${result.reportBytesText}`)}`, width));
   return lines;
 }
 
@@ -571,7 +715,7 @@ function resultLines(presentation, { width, phone, detail }) {
 function taskLines(presentation, { width, phone }) {
   const task = presentation.task;
   const title = countList(['task', task.kind, task.lane ? (phone ? task.lane : `${task.lane} lane`) : null]);
-  const lines = [rule(title, null, width)];
+  const lines = [paintRule(rule(title, null, width))];
   const rows = [];
   for (const line of task.promptLines ?? []) {
     for (const piece of wrap(oneLine(line), Math.max(1, width - 1))) rows.push(` ${piece}`);
@@ -580,9 +724,9 @@ function taskLines(presentation, { width, phone }) {
   if (rows.length) lines.push(...rows.slice(0, 3));
   else lines.push(fit(' task unavailable; no task file was captured.', width));
   const label = phone ? { pad: 6, gap: 1 } : { pad: 7, gap: 1 };
-  if ((task.owns ?? []).length) lines.push(...labelRow('owns', task.owns.join(' · '), { width, ...label }).slice(0, 2));
-  if ((task.after ?? []).length) lines.push(...labelRow('after', task.after.join(' · '), { width, ...label }).slice(0, 1));
-  if (!phone && (task.affects ?? []).length) lines.push(...labelRow('affects', task.affects.join(' · '), { width, ...label }).slice(0, 2));
+  if ((task.owns ?? []).length) lines.push(...labelRow('owns', task.owns.join(' · '), { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'owns')));
+  if ((task.after ?? []).length) lines.push(...labelRow('after', task.after.join(' · '), { width, ...label }).slice(0, 1).map((line) => paintLabelRow(line, 'after')));
+  if (!phone && (task.affects ?? []).length) lines.push(...labelRow('affects', task.affects.join(' · '), { width, ...label }).slice(0, 2).map((line) => paintLabelRow(line, 'affects')));
   if (!phone) {
     const bytes = task.bytes ?? {};
     const full = number(bytes.authorPrompt ?? bytes.output);
@@ -592,7 +736,7 @@ function taskLines(presentation, { width, phone }) {
         full == null ? null : `full text ${(full / 1000).toFixed(1)} KB`,
         wrapper == null ? null : `kernel wrapper ${(wrapper / 1000).toFixed(1)} KB`,
       ].filter(Boolean);
-      lines.push(fit(` Enter on task: ${parts.join(' · ')}`, width));
+      lines.push(fit(` ${dimCell(`Enter on task: ${parts.join(' · ')}`)}`, width));
     }
   }
   return lines;
@@ -604,35 +748,38 @@ function costLines(presentation, { width, phone }) {
   const cost = presentation.cost;
   const labelPad = phone ? 11 : 12;
   const title = Number(cost.attemptCount) > 1 ? `cost · ${cost.attemptCount} attempts` : 'cost';
-  const lines = [rule(title, null, width)];
+  const lines = [paintRule(rule(title, null, width))];
   const rows = cost.rows ?? [];
   if (cost.running && rows.every((row) => row.unknown)) {
-    lines.push(fit(` ${cost.basisLine ?? 'measured when the attempt finishes'}`, width));
+    lines.push(fit(` ${dimCell(cost.basisLine ?? 'measured when the attempt finishes')}`, width));
     return lines;
   }
   for (const row of rows) {
     // A pool name longer than the design's gutter keeps its whole label and
     // pushes its own amount, rather than being silently cut.
-    const gutter = ` ${row.label.padEnd(Math.max(labelPad, visibleLength(row.label) + 1))}`;
+    const labelWidth = Math.max(labelPad, visibleLength(row.label) + 1);
+    const gutter = ` ${paintCostLabel(row.label)}${' '.repeat(Math.max(0, labelWidth - visibleLength(row.label)))}`;
     // An amount that needs more than the design's eight cells (a sub-cent
     // estimate) keeps all of it, and always one space before its basis.
-    const amount = padTo(row.amount ?? '—', Math.max(8, visibleLength(row.amount ?? '—') + 1));
+    const amount = padTo(paintMoney(row.amount ?? '—'), Math.max(8, visibleLength(row.amount ?? '—') + 1));
     if (phone) {
       // One row per pool on the phone: the amount and the two plain words that
       // say where it came from, with the classes left to the desk layout.
-      lines.push(fit(`${gutter}${amount}${row.phoneText ?? row.headline ?? ''}`.replace(/\s+$/, ''), width));
+      const detail = row.phoneText ?? row.headline ?? '';
+      lines.push(fit(`${gutter}${amount}${detail ? paintCostDetails(detail) : ''}`.replace(/\s+$/, ''), width));
       continue;
     }
     const headlineRoom = Math.max(1, width - visibleLength(gutter) - visibleLength(amount));
     const headlineRows = Number(cost.attemptCount) > 1
       ? wrap(row.headline ?? '', headlineRoom)
       : [row.headline ?? ''];
-    lines.push(fit(`${gutter}${amount}${headlineRows[0] ?? ''}`.replace(/\s+$/, ''), width));
+    lines.push(fit(`${gutter}${amount}${headlineRows[0] ? paintCostDetails(headlineRows[0]) : ''}`.replace(/\s+$/, ''), width));
     const indent = ' '.repeat(visibleLength(gutter));
-    for (const headlineRow of headlineRows.slice(1)) lines.push(fit(`${indent}${headlineRow}`, width));
-    lines.push(...detailRows(row.details ?? [], Math.max(1, width - visibleLength(indent)), indent));
+    for (const headlineRow of headlineRows.slice(1)) lines.push(fit(`${indent}${paintCostDetails(headlineRow)}`, width));
+    lines.push(...detailRows(row.details ?? [], Math.max(1, width - visibleLength(indent)), indent)
+      .map((line) => `${indent}${paintCostDetails(line.slice(indent.length))}`));
   }
-  if (!phone && cost.basisLine) lines.push(fit(` ${cost.basisLine}`, width));
+  if (!phone && cost.basisLine) lines.push(fit(` ${dimCell(cost.basisLine)}`, width));
   return lines;
 }
 
@@ -644,7 +791,7 @@ function technicalValue(value) {
   try { return JSON.stringify(value); } catch { return String(value); }
 }
 
-function detailLines(step, presentation, { width, phone, view }) {
+function detailLines(step, presentation, { width, phone, view, selectedEventIndex = null }) {
   const activity = step.activity ?? {};
   const filter = filterLabel(presentation, view);
   const events = activity.visibleDetailEvents ?? activity.visibleEvents ?? [];
@@ -666,7 +813,13 @@ function detailLines(step, presentation, { width, phone, view }) {
       technicalValue(event.source),
       technicalValue(event.providerType),
     ]);
-    lines.push(fit(` ${head}`, width));
+    const headLine = fit(` ${head}`, width);
+    // Detail navigation selects the atomic event itself.  Keep the cursor on
+    // the compact event header (the row a reader moves through), rather than
+    // repainting its technical fields or changing any displayed text.
+    lines.push(Number.isInteger(selectedEventIndex) && Number(event.index) === selectedEventIndex
+      ? inverseText(headLine)
+      : headLine);
     const fields = [
       ['kind', technicalValue(event.kind)],
       ['status', technicalValue(event.status)],
@@ -738,7 +891,12 @@ export function renderStepPage(step, opts = {}, body) {
   const columnWidth = layout.twoColumn ? layout.right : width;
   const activityWidth = layout.twoColumn ? layout.left : width;
   const activityColumn = view === 'detail'
-    ? detailLines(step, presentation, { width: activityWidth, phone, view })
+    ? detailLines(step, presentation, {
+      width: activityWidth,
+      phone,
+      view,
+      selectedEventIndex: opts.stepSelectedEventIndex,
+    })
     : activityLines(presentation, {
       width: activityWidth,
       phone,
@@ -746,6 +904,9 @@ export function renderStepPage(step, opts = {}, body) {
       compact: phone || width < 160,
       spinnerFrame: opts.spinnerFrame ?? 0,
       toolPage: opts.stepToolPage ?? opts.stepToolPageIndex ?? opts.toolPage ?? opts.toolPageIndex ?? 0,
+      // Only a turn the reader moved to is the cursor; an untouched page
+      // draws no cursor, so turn 1 reads as plain text.
+      cursorTurn: Number.isInteger(opts.stepTurnIndex) ? opts.stepTurnIndex : null,
     });
   const resultColumn = resultLines(presentation, { width: columnWidth, phone: phone || !layout.twoColumn, detail: view === 'detail' });
   const taskColumn = taskLines(presentation, { width: columnWidth, phone: phone || !layout.twoColumn });

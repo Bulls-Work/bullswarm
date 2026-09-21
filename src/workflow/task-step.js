@@ -137,6 +137,17 @@ function taskId(record, recordPath, taskFile) {
     ?? 'task';
 }
 
+// History and Runs keep authored task ids intact, but reduce UUID-backed ids
+// to their stable eight-character tail (the same value a reader can use to
+// identify the row).  Keep this separate from the internal action id: stream
+// and artifact paths may still use the full source id.
+function taskDisplayId(record) {
+  const value = text(record?.id)
+    ?? text(record?.taskFile)
+    ?? 'task';
+  return value.length > 14 ? value.slice(-8) : value;
+}
+
 /**
  * Build the row shape consumed by stepPageModel.
  *
@@ -153,6 +164,7 @@ export function taskStepInput(input, options = {}) {
     ?? artifactValue(record.meta ?? {}, ['streamFile', 'eventStream', 'streamPath', 'stream'], root);
   const resultFile = artifactValue(record, ['resultFile', 'resultPath'], root);
   const id = taskId(record, recordPath, taskFile);
+  const displayId = taskDisplayId(record);
   const status = statusFor(record);
   const startedAt = text(record.startedAt);
   const finishedAt = text(record.endedAt ?? record.finishedAt);
@@ -203,7 +215,7 @@ export function taskStepInput(input, options = {}) {
   // persist one.
   const state = {
     runId: `task:${id}`,
-    shortId: id.slice(0, 6),
+    shortId: displayId,
     workflow: null,
     project: text(record.project ?? record.projectName),
     intent: { goal: text(record.goal) },
@@ -256,6 +268,9 @@ export function taskStepModel(input, {
     follow: options.follow ?? options.followTail ?? true,
   });
   const record = normalized.taskRecord ?? {};
+  const lane = text(record.lane ?? record.routing?.lane);
+  const taskName = lane ? `${lane} task` : 'task';
+  const displayId = taskDisplayId(record);
   const reason = text(record.reason ?? (record.ok === false ? record.why : null));
   model.taskRecord = normalized.taskRecord;
   model.taskRecordPath = normalized.taskRecordPath;
@@ -263,6 +278,14 @@ export function taskStepModel(input, {
   model.taskResult = reason;
   model.identity.project = normalized.row.project;
   model.identity.goal = text(record.goal);
+  // A standalone task has no workflow action name.  Give the shared Step
+  // header the same identity grammar as the Runs row instead of exposing the
+  // full UUID (or the old six-character prefix).
+  model.identity.actionId = taskName;
+  model.identity.shortId = displayId;
+  model.presentation.header.actionId = taskName;
+  model.presentation.header.shortId = displayId;
+  model.stepHeader = model.presentation.header;
   // A standalone task has no workflow result envelope or verification ledger.
   // Preserve the generic execution status, but explicitly clear the fields
   // that the task record cannot prove.

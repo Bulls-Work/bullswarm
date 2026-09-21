@@ -1,0 +1,60 @@
+ [7m[4mH[24mome[0m  [4mR[24muns  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ bullswarm · home · 1–57/86
+Home · Today · 20 Sep · top 3 runs (active first)
+┌─ sample goal for rensha nostrud lorem nostrud moll…─┐
+│ project-b · completed · verified                    │
+│ 58m37s active of 58m38s · steps 9/9                 │
+│ API at least $9.52 · 6 unmeasured · subscription —  │
+└─────────────────────────────────────────────────────┘
+┌─ sample goal for euqrni minim labore magna eiusmod…─┐
+│ project-a · completed · verified                    │
+│ 1h55m · steps 5/5                                   │
+│ API ≈ $9.76 · subscription —                        │
+└─────────────────────────────────────────────────────┘
+┌─ sample goal for rw3dhi lorem sed sint ipsum lorem…─┐
+│ project-a · completed · not verified                │
+│ 1h38m active of 1h39m · steps 7/7                   │
+│ API ≈ $16.16 · subscription —                       │
+└─────────────────────────────────────────────────────┘
+
+── licences · today ───────────────────────────────────
+[2m pool              agent min   API $  unpriced[0m
+ [38;2;127;191;168mclaude-code[0m           171.3  ≈89.11         0
+ [38;2;191;108;105mclaude-code:acme[0m       58.4  ≈24.71         1
+ [38;2;127;163;224mcodex[0m                 964.5  ≈36.30        25
+ [38;2;155;196;232mcommand-code[0m              [2m—[0m       [2m—[0m         [2m—[0m
+ [38;2;182;189;115mgrok[0m                   76.2  ≈21.17         0
+[2m ≈ ~ estimates (~ is rougher) · — not measured[0m
+
+── running ────────────────────────────────────────────
+[2m nothing running right now[0m
+
+── budget · this week ─────────────────────────────────
+[2m no pool reported a licence meter · bullswarm doctor c…[0m
+
+── last 7 days ────────────────────────────────────────
+ [7mLast 7 days[0m · Last 30 days · All time
+[2m spent per day[0m
+ ~$200 [2m┤[0m
+       [2m│[0m
+       [2m│[0m                                     [38;2;143;199;207m████[0m
+       [2m│[0m                                     [38;2;143;199;207m████[0m
+       [2m│[0m                                     [38;2;143;199;207m████[0m
+       [2m│[0m                                     [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m▆▆▆▆[0m        [38;2;143;199;207m████[0m
+ ~$100 [2m┤[0m                         [38;2;143;199;207m████[0m        [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m        [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m        [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m        [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m        [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m  [38;2;143;199;207m▂▂▂▂[0m  [38;2;143;199;207m████[0m
+       [2m│[0m                         [38;2;143;199;207m████[0m  [38;2;143;199;207m████[0m  [38;2;143;199;207m████[0m
+    $0 [2m┼──────────────────────────────────────────[0m
+         Mon   Tue   Wed   Thu   Fri   Sat   Sun
+[2m ~ bars leave 66 unpriced attempts out[0m
+
+[2m by pool · share of agent minutes[0m
+ codex            [38;2;127;163;224m▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░[0m  75%
+ claude-code      [38;2;127;191;168m▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   8%
+ grok             [38;2;182;189;115m▇▇░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░[0m   6%
+ [Top] [End] [[4m?[24m.Help]

@@ -1,0 +1,60 @@
+ [4mH[24mome  [7m[4mR[24muns[0m  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ [38;2;182;189;115m✓[0m [1manalyze task[22m · [1m3155fb3c[22m · [38;2;182;189;115msucceeded[0m
+ [38;2;127;163;224mcodex[0m · gpt-5.6-luna · [2m—[0m · [2m23m36s · 06:04→06:28[0m
+
+[2m──[0m result · [38;2;182;189;115msucceeded[0m [2m─────────────────────────────────[0m
+ commodo
+ sample ea fugiat elit ipsum deserunt reprehenderit
+ excepteur elit excepteur laboris nisi est culpa cill…
+ [2mfiles[0m       — task · out
+
+[2m──[0m activity · [7moverview[0m · detail · 0 turns · 0 cmds [2m────[0m
+ [2mno event stream path recorded.[0m
+ [2mturns, tools, and event timing cannot be reconstructe…[0m
+
+[2m──[0m task · analyze [2m─────────────────────────────────────[0m
+ sample task qui consequat et nulla ex amet magna
+ ullamco enim cupidatat nulla laborum sit et nostrud
+ commodo nulla tempor excepteur consequat ad ipsum…
+
+[2m──[0m cost [2m───────────────────────────────────────────────[0m
+ [2mAPI rate[0m   [2m—[0m       [2mno recorded rate[0m
+ [38;2;127;163;224mcodex[0m[2m plan[0m [2m—[0m       [2mno meter reading[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ]  [2mEnter turn · v detail · t filter · ? help[0m

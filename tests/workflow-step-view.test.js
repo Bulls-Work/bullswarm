@@ -7,6 +7,8 @@ import { test } from 'node:test';
 import { stepPageModel } from '../src/workflow/step-model.js';
 import { renderStepPage, toolRowWindow } from '../src/workflow/step-view.js';
 import { dashboardModel, renderDashboardPage } from '../src/workflow/dashboard.js';
+import { seriesColor } from '../src/workflow/dash-kit.js';
+import { METER_COLORS } from '../src/workflow/usage-view.js';
 
 process.env.BULLSWARM_UNICODE = '1';
 delete process.env.BULLSWARM_ASCII;
@@ -114,6 +116,161 @@ function renderDashboardFrame(model, width, options = {}) {
 function plain(value) {
   return String(value ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
+
+function rgb(hex) {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `\x1b[38;2;${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}m`;
+}
+
+test('real Step frames paint the approved cells and keep response prose plain', () => {
+  assert.ok(existsSync(join(realClaudeRun, 'state.json')), 'the supplied real Step snapshot is present');
+  const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
+  const model = stepPageModel({
+    runId: state.runId,
+    shortId: state.shortId,
+    runDir: realClaudeRun,
+    state,
+  }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow });
+  const green = rgb(METER_COLORS.green);
+  const reset = '\x1b[0m';
+  for (const width of [55, 200]) {
+    const raw = render(model, width).join('\n');
+    assert.ok(raw.includes(`${green}✓${reset}`), `${width}: finished glyph is green`);
+    assert.ok(raw.includes(`${green}verified by the workflow`), `${width}: verified verdict is green`);
+    assert.ok(raw.includes('\x1b[2m'), `${width}: a clock/meta cell is dim`);
+    assert.ok(raw.includes('\x1b[1m$'), `${width}: an amount is bold`);
+    assert.ok(raw.includes('\x1b[2m──\x1b[0m'), `${width}: rule dashes are dim`);
+    const pool = model.presentation.header.pool;
+    assert.ok(raw.includes(`${rgb(seriesColor(pool))}${pool}${reset}`), `${width}: a pool keeps its series colour`);
+    const response = model.presentation.activity.turns[0]?.text;
+    assert.ok(response, 'real snapshot has a first response');
+    const at = raw.indexOf(response);
+    assert.ok(at >= 0, `${width}: first response is present`);
+    assert.equal(raw.slice(at, at + response.length).includes('\x1b['), false, `${width}: response text is plain`);
+  }
+});
+
+test('the turn Up/Down selected is the one inverse row on real Step frames, in ASCII mode too', () => {
+  const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
+  const model = stepPageModel({
+    runId: state.runId, shortId: state.shortId, runDir: realClaudeRun, state,
+  }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow });
+  const turns = model.presentation.activity.turns;
+  assert.ok(turns.length >= 2, 'the real attempt has two turns to move between');
+  const inverseRows = (lines) => lines.map((line, index) => [index, line]).filter(([, line]) => line.includes('\x1b[7m'));
+  const check = (width) => {
+    const untouched = render(model, width);
+    // An untouched page has no cursor, so turn 1's response stays plain.
+    assert.deepEqual(inverseRows(untouched), [], `${width}: a cursor was drawn before any Up/Down`);
+    const at = [];
+    for (const stepTurnIndex of [0, 1]) {
+      const lines = render(model, width, { stepTurnIndex });
+      const rows = inverseRows(lines);
+      assert.equal(rows.length, 1, `${width}/${stepTurnIndex}: ${rows.map(([, line]) => plain(line)).join(' | ')}`);
+      const [index, line] = rows[0];
+      // The head row of the selected turn: its number, its clock, its text.
+      const inverse = plain(/\x1b\[7m(.*?)\x1b\[27m/.exec(line)[1]);
+      assert.match(inverse, new RegExp(`^ +${turns[stepTurnIndex].number}  `), `${width}/${stepTurnIndex}: ${inverse}`);
+      assert.ok(line.startsWith('\x1b[7m'), `${width}/${stepTurnIndex}: the whole row is inverse from its first cell`);
+      // SGR only: every row keeps its text and width.
+      assert.deepEqual(lines.map(plain), untouched.map(plain), `${width}/${stepTurnIndex}: the cursor changed text`);
+      at.push(index);
+    }
+    assert.ok(at[1] > at[0], `${width}: the cursor did not move down with the selection (${at})`);
+  };
+  for (const width of [55, 200]) check(width);
+
+  const previous = process.env.BULLSWARM_ASCII;
+  try {
+    process.env.BULLSWARM_ASCII = '1';
+    for (const width of [55, 200]) {
+      const lines = render(model, width, { stepTurnIndex: 1 });
+      assert.equal(inverseRows(lines).length, 1, `ascii ${width}: the cursor survives ASCII mode`);
+      const codes = lines.join('\n').match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
+      assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
+    }
+  } finally {
+    if (previous == null) delete process.env.BULLSWARM_ASCII;
+    else process.env.BULLSWARM_ASCII = previous;
+  }
+});
+
+test('the selected event in Step detail is one inverse event row, in ASCII mode too', () => {
+  const state = JSON.parse(readFileSync(join(realClaudeRun, 'state.json'), 'utf8'));
+  const model = stepPageModel({
+    runId: state.runId, shortId: state.shortId, runDir: realClaudeRun, state,
+  }, { actionId: 'accept', attemptOrdinal: 5, nowMs: fixedNow, follow: false, view: 'detail' });
+  const events = model.activity.visibleDetailEvents;
+  assert.ok(events.length >= 3, 'the real detail stream has events to select');
+  const inverseRows = (lines) => lines
+    .map((line, index) => [index, line])
+    .filter(([, line]) => line.includes('\x1b[7m'));
+  const check = (width) => {
+    const untouched = render(model, width, { stepDetail: true, stepFollow: false });
+    assert.deepEqual(inverseRows(untouched), [], `${width}: detail has no cursor before navigation`);
+    const selected = (event) => render(model, width, {
+      stepDetail: true, stepFollow: false, stepSelectedEventIndex: event.index,
+    });
+    const first = selected(events[2]);
+    const second = selected(events[3]);
+    const firstRows = inverseRows(first);
+    const secondRows = inverseRows(second);
+    assert.equal(firstRows.length, 1, `${width}: ${firstRows.map(([, line]) => plain(line)).join(' | ')}`);
+    assert.equal(secondRows.length, 1, `${width}: ${secondRows.map(([, line]) => plain(line)).join(' | ')}`);
+    const [firstIndex, firstLine] = firstRows[0];
+    const [secondIndex, secondLine] = secondRows[0];
+    assert.ok(firstLine.startsWith('\x1b[7m'), `${width}: cursor starts at the event row`);
+    assert.match(plain(firstLine), new RegExp(`^ seq ${events[2].seq} · `), `${width}: ${plain(firstLine)}`);
+    assert.match(plain(secondLine), new RegExp(`^ seq ${events[3].seq} · `), `${width}: ${plain(secondLine)}`);
+    assert.ok(secondIndex > firstIndex, `${width}: the cursor moves down with the next event (${firstIndex}, ${secondIndex})`);
+    assert.deepEqual(first.map(plain), untouched.map(plain), `${width}: first cursor changed detail text`);
+    assert.deepEqual(second.map(plain), untouched.map(plain), `${width}: second cursor changed detail text`);
+    return secondIndex;
+  };
+  const positions = [55, 200].map(check);
+  assert.ok(positions.every((position) => Number.isInteger(position)), `cursor rows: ${positions}`);
+
+  const previous = process.env.BULLSWARM_ASCII;
+  try {
+    process.env.BULLSWARM_ASCII = '1';
+    const selected = render(model, 55, {
+      stepDetail: true, stepFollow: false, stepSelectedEventIndex: events[2].index,
+    }).join('\n');
+    assert.match(selected, /\x1b\[7m seq \d+ · /, 'ASCII mode keeps the inverse event row');
+    const codes = selected.match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
+    assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
+  } finally {
+    if (previous == null) delete process.env.BULLSWARM_ASCII;
+    else process.env.BULLSWARM_ASCII = previous;
+  }
+});
+
+test('running Step marks and ASCII mode obey the colour contract', () => {
+  const running = structuredClone(makeModels().running);
+  running.presentation.activity.turns[0].expanded = true;
+  const raw = render(running, 200).join('\n');
+  assert.ok(raw.includes(`${rgb(METER_COLORS.amber)}▶\x1b[0m`), 'running turn mark is amber');
+
+  const previous = process.env.BULLSWARM_ASCII;
+  try {
+    process.env.BULLSWARM_ASCII = '1';
+    const ascii = render(makeModels().finished, 55).join('\n');
+    const codes = ascii.match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
+    assert.ok(codes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), codes.join(','));
+    assert.doesNotMatch(ascii, /\x1b\[38;2;/);
+    // At 200 the block rules are wide enough to build the `following *` matcher;
+    // the ASCII ongoing glyph is a regex quantifier and once threw here.
+    for (const model of [makeModels().finished, makeModels().running]) {
+      const wide = render(model, 200).join('\n');
+      const wideCodes = wide.match(/\x1b\[[0-9;?]*[A-Za-z]/g) ?? [];
+      assert.ok(wideCodes.every((code) => /^\x1b\[(?:0|1|2|7|22|27)m$/.test(code)), wideCodes.join(','));
+      assert.ok(wide.includes('\x1b[1m'), 'ASCII mode keeps bold identity');
+    }
+  } finally {
+    if (previous == null) delete process.env.BULLSWARM_ASCII;
+    else process.env.BULLSWARM_ASCII = previous;
+  }
+});
 
 test('running, finished, and failed Step frames stay width-bounded in both views', () => {
   const models = makeModels();

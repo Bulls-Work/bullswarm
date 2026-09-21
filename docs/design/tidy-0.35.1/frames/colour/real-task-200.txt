@@ -1,0 +1,60 @@
+ [4mH[24mome  [7m[4mR[24muns[0m  [4mB[24mudget  [4mS[24mtats  [4mF[24mleet
+ [38;2;182;189;115m✓[0m [1manalyze task[22m · [1m3155fb3c[22m · [38;2;182;189;115msucceeded[0m · [2mattempt 1 of 1[0m
+ [38;2;127;163;224mcodex[0m · gpt-5.6-luna · [2m—[0m                                                                                                                                       [2m23m36s · 06:04 → 06:28 HKT · 20 Sep 2026[0m
+
+[2m──[0m activity · [7moverview[0m · detail · 0 turns · 0 commands · 0 edits · 0 errors [2m────────────────────────────────────────────────────────[0m │ [2m──[0m result · [38;2;182;189;115msucceeded[0m [2m───────────────────────────────────────────[0m
+ [2mno event stream path recorded.[0m                                                                                                      │  commodo
+ [2mturns, tools, and event timing cannot be reconstructed.[0m                                                                             │  sample ea fugiat elit ipsum deserunt reprehenderit excepteur
+                                                                                                                                     │  elit excepteur laboris nisi est culpa cillum incididunt…
+                                                                                                                                     │  [2mfiles[0m    —
+                                                                                                                                     │           task · out
+                                                                                                                                     │  [2mEnter on result: the full report, 13.8 KB[0m
+                                                                                                                                     │
+                                                                                                                                     │ [2m──[0m task · analyze lane [2m──────────────────────────────────────────[0m
+                                                                                                                                     │  sample task qui consequat et nulla ex amet magna ullamco enim
+                                                                                                                                     │  cupidatat nulla laborum sit et nostrud commodo nulla tempor
+                                                                                                                                     │  excepteur consequat ad ipsum deserunt labore irure do consequat…
+                                                                                                                                     │
+                                                                                                                                     │ [2m──[0m cost [2m─────────────────────────────────────────────────────────[0m
+                                                                                                                                     │  [2mAPI rate[0m    [2m—[0m       [2mno recorded rate[0m
+                                                                                                                                     │  [38;2;127;163;224mcodex[0m[2m plan[0m  [2m—[0m       [2mno meter reading for this attempt[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [ back ]   [2mEnter expand turn · Esc close · v detail (every turn in full) · t filter · f follow · ? help[0m
