@@ -18,7 +18,7 @@ bullswarm workflow plan contract '<goal>' --cwd=<abs-dir> --json
 |---|---|---|
 | `schemaVersion` | yes | exactly `bullswarm.workflow.program.v2` |
 | `actions` | yes | non-empty array of actions |
-| `defaults` | no | object with only `effort` (`high`, `medium`, `low`) and `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`); applies where neither the action nor its kind sets the field |
+| `defaults` | no | object with only `effort` (`high`, `medium`, `low`), `reasoning` (`low`, `medium`, `high`, `xhigh`, `max`, `default`), `timeBox` (whole minutes, 0-240) and `verifyRounds` (1-3); `effort`, `reasoning` and `timeBox` apply where neither the action nor its kind sets the field. `verifyRounds` is the most verify rounds the kernel runs before handing the rest to you (default 3; 1 keeps a single round) |
 
 No other top-level field is accepted.
 
@@ -37,10 +37,35 @@ No other top-level field is accepted.
 | `lane` | kind or lane | `analyze` (read-only), `build` (edits), `chore` (mechanical edits); only when there is no kind |
 | `effort` | no | `high`, `medium`, `low`; overrides the kind's effort |
 | `reasoning` | no | `low`, `medium`, `high`, `xhigh`, `max`, `default`; how hard the picked model thinks, outranks every configured level |
+| `timeBox` | no | whole minutes, 0-240: the soft time box written into this step's task; `0` leaves it out. Omit it to take `defaults.timeBox`, else a box computed from this home's recorded attempts. A guide, never a timeout |
 | `inputs`, `produces` | no | artifact IDs, kebab-case: the producer lists an ID in `produces`, its consumer in `inputs`; omit for ordinary dependencies |
 
 Any other field is rejected. Resolution per field: the action's own `lane` or
 `effort`, then the kind table, then `defaults`, then the lane's default.
+
+## Time box and verify rounds
+
+Every work and evidence step's task ends with a time-box paragraph: the box in
+minutes, the start clock, a wrap-up point at 70% of the box, and an invitation
+to stop and report `## Done`, `## Not done` (one line per unfinished item) and
+`## Suggested next step`. It is a guide: nothing is stopped at the box, and
+timeouts, stall detection and routing are unchanged. Set `timeBox` on an action
+when you know its size better than the history does, `defaults.timeBox` for the
+whole program, or `timeBox: 0` to leave the paragraph out of one step. The
+computed box is 1.5 x the median wall minutes of succeeded attempts for the
+same pool and kind (5 or more attempts), else the kind, else 20; rounded to 5
+and kept within 10-60.
+
+A step whose `## Not done` lists items still succeeds. It is recorded as
+`returned early · N not done`, and the items go to the verifiers with the rest
+of the evidence.
+
+When a mandatory requirement fails its check, the kernel repairs it itself, at
+most 3 verify rounds in all: it adds a `repair-<n>` step and a
+`verify-round-<n>` step to the program, which you will see in `plan export`.
+Never author a repair step, and do not add a fix step for an ordinary failing
+check. `defaults.verifyRounds` (1-3, default 3) sets the cap. What is still
+failing after the last round comes back in the result's caller-decision block.
 
 ## Kinds
 
@@ -80,6 +105,8 @@ each, and use exactly the same goal text for validate and launch.
   as "return only JSON" is rejected; the kernel owns the evidence format.
 - A kind outside the table, a lane outside `analyze|build|chore`, or an effort
   outside `high|medium|low` exits 2 before anything runs.
+- `timeBox` must be a whole number from 0 to 240 and `verifyRounds` a whole
+  number from 1 to 3; anything else, and any `repair` field or type, exits 2.
 
 ## Example
 

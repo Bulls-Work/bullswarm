@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { scheduleV2Actions } from './v2-scheduler.js';
+import { NOT_JUDGED_STATUS, verifyLoopResult } from './verify-rounds.js';
 import { validateV2DurableState } from './v2-state.js';
 import { hasPassingRequirementEvidence, isProgramWorkflow, v2SchedulingOptions } from './execution-policy.js';
 import { aggregateAttemptUsage } from './rollup.js';
@@ -260,6 +262,10 @@ function describeSteps(actions, runtimeStates, limit = 3) {
 // had failed the work, and callers stopped there (2026-09 caller study).
 function succeededProgramReason(state, count) {
   const steps = `all ${count} step${count === 1 ? '' : 's'} succeeded`;
+  // A loop that handed failures back says how many rounds it spent.
+  const loop = state.verifyLoop;
+  const rounds = loop && loop.max > 1 && loop.rounds.some((round) => round.closedAt && round.failed.length)
+    ? ` after verify rounds ${loop.rounds.length}/${loop.max}` : '';
   if (hasPassingRequirementEvidence(state)) return `${steps} and every mandatory requirement passed its check`;
   const checked = new Set(state.program.actions.flatMap((action) => action.evidenceFor ?? []));
   if (!checked.size) return `${steps}, but no step checked the requirements, so the result is not verified`;
@@ -268,7 +274,7 @@ function succeededProgramReason(state, count) {
   const named = open.slice(0, 3).map((requirement) => `${requirement.id} ${requirement.status}${checked.has(requirement.id) ? '' : ' (no step checks it)'}`);
   const first = open.find((requirement) => checked.has(requirement.id));
   const why = first ? clipAtWord(firstLine(currentEvidence(state.ledger, first).at(-1)?.evidence?.[0], 400), 160) : null;
-  return `${steps}, but not verified: ${named.join(', ')}${open.length > 3 ? ` and ${open.length - 3} more` : ''}${why ? ` — ${first.id}: ${why}` : ''}`;
+  return `${steps}, but not verified${rounds}: ${named.join(', ')}${open.length > 3 ? ` and ${open.length - 3} more` : ''}${why ? ` — ${first.id}: ${why}` : ''}`;
 }
 
 function stateByAction(state) {
@@ -493,7 +499,11 @@ export function evaluateV2Progress(state, { plannerExhausted = false, limitsExha
   return { status: 'needs-planner', terminal: false, boundary: 'gaps', reason: gaps.summary, gaps };
 }
 
-export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null, unreadSteering = [] } = {}) {
+function readTextQuietly(path) {
+  try { return readFileSync(path, 'utf8'); } catch { return null; }
+}
+
+export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOString(), plannerExhausted = false, limitsExhausted = false, terminalReason = null, workspace = null, unreadSteering = [], readText = readTextQuietly } = {}) {
   validateV2DurableState(state);
   const progress = evaluateV2Progress(state, { plannerExhausted, limitsExhausted, terminalReason });
   if (!['ready-to-finalize', 'partial', 'cancelled'].includes(progress.status)) {
@@ -502,6 +512,8 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
   const status = progress.status === 'ready-to-finalize' ? 'completed' : progress.status;
   const program = isProgramWorkflow(state);
   const verified = status === 'completed' && (!program || hasPassingRequirementEvidence(state));
+  // The repair loop's rounds, measured, and what is left for the caller.
+  const loop = program ? verifyLoopResult(state, { readText, token: state.shortId ?? state.runId }) : null;
   const result = {
     schemaVersion: V2_RESULT_SCHEMA_VERSION,
     runId: state.runId,
@@ -554,6 +566,7 @@ export function createV2ResultEnvelope(state, { finishedAt = new Date().toISOStr
     finishedAt,
     // Anything short of a verified run with no unread guidance is handed back.
     ...(status === 'completed' && verified && !unreadSteering.length ? {} : { handback: buildV2Handback(state, { unreadSteering }) }),
+    ...(loop ? { verifyRounds: loop.verifyRounds, callerDecision: loop.callerDecision } : {}),
   };
   validateV2ResultEnvelope(result);
   return clone(result);
@@ -628,6 +641,30 @@ function summarySize(summary) {
   return Buffer.byteLength(JSON.stringify(summary), 'utf8');
 }
 
+// The loop's per-phase measures shrink first, to what a caller compares
+// across rounds (minutes, pool, cost: requirement 5 of 0.35.2 names all
+// three), then the decision evidence; ids and `next` are never cut.
+const LOOP_FIT_LEVELS = [
+  { phases: 'full', evidence: 200 },
+  { phases: 'compact', evidence: 200 },
+  { phases: 'compact', evidence: 120 },
+];
+// Only when everything else is already at its smallest: the round counts
+// stay, the per-phase rows go (the full result keeps them).
+const LOOP_LAST_RESORT = { phases: 'none', evidence: 120 };
+
+function fitVerifyRounds(value, level) {
+  if (!value) return value;
+  if (level.phases === 'full') return value;
+  if (level.phases === 'none') return { ...value, phases: [] };
+  return { ...value, phases: value.phases.map(({ kind, round, wallMinutes, pools, cost }) => ({ kind, round, wallMinutes, pools, cost })) };
+}
+
+function fitCallerDecision(value, level) {
+  if (!value) return value;
+  return { ...value, requirements: value.requirements.map((entry) => ({ ...entry, evidence: firstLine(entry.evidence, level.evidence) ?? '' })) };
+}
+
 function fitResultSummary(summary) {
   const actionsAt = (level) => summary.actions.map((action) => {
     // Output paths are always basenames under `next.runDir`: one directory
@@ -668,7 +705,8 @@ function fitResultSummary(summary) {
       unreadSteering: unreadSteering.map((entry) => ({ ...entry, message: firstLine(entry.message, Math.max(limit, 80)) ?? '' })),
     };
   };
-  const candidates = RESULT_SUMMARY_FIT_STEPS.map((step) => {
+  const loopKeys = Object.hasOwn(summary, 'verifyRounds') || Object.hasOwn(summary, 'callerDecision');
+  const build = (step, level) => {
     const actions = actionsAt(step.actions);
     return {
       ...summary,
@@ -676,10 +714,24 @@ function fitResultSummary(summary) {
       requirements: requirementsAt(step.why),
       concerns: concernsAt(step.concern, step.concerns),
       ...(summary.handback ? { handback: handbackAt(step.handbackWhy, step.handbackCount) } : {}),
+      ...(loopKeys ? { verifyRounds: fitVerifyRounds(summary.verifyRounds, level) } : {}),
+      ...(summary.callerDecision ? { callerDecision: fitCallerDecision(summary.callerDecision, level) } : {}),
       next: { ...summary.next, outputs: actions.map((action) => action.outFile).filter(Boolean) },
     };
-  });
-  return candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET) ?? candidates.at(-1);
+  };
+  const [firstStep, ...laterSteps] = RESULT_SUMMARY_FIT_STEPS;
+  const candidates = loopKeys
+    ? [
+      ...LOOP_FIT_LEVELS.map((level) => build(firstStep, level)),
+      ...laterSteps.map((step) => build(step, LOOP_FIT_LEVELS.at(-1))),
+      build(RESULT_SUMMARY_FIT_STEPS.at(-1), LOOP_LAST_RESORT),
+    ]
+    : RESULT_SUMMARY_FIT_STEPS.map((step) => build(step, LOOP_FIT_LEVELS[0]));
+  const fits = candidates.find((candidate) => summarySize(candidate) < RESULT_SUMMARY_BYTE_BUDGET);
+  if (fits) return fits;
+  // Nothing fits (a run with many steps: `usage.steps` is never cut). The
+  // round rows are dropped only when that alone reaches the budget.
+  return candidates.at(loopKeys ? -2 : -1);
 }
 
 // Results written before 0.30.0 carry no handback; derive the same view from
@@ -733,16 +785,49 @@ function summaryHandback(envelope, handback, token) {
 
 // Plain lines for whoever reads watch or launch output: what is left, why, and
 // the command behind each option.
+/**
+ * The caller-decision block and the per-round measures, for runs whose repair
+ * loop ran more than one round or handed failures back. Empty otherwise, so a
+ * run that passed in its first round reads as it always has.
+ */
+export function formatV2VerifyRoundLines(summary) {
+  const rounds = summary?.verifyRounds;
+  const decision = summary?.callerDecision;
+  if (!rounds || (!decision && rounds.used <= 1)) return [];
+  const lines = [];
+  if (decision) {
+    lines.push(`verify rounds ${decision.verifyRounds} · ${summary.verified ? 'verified, but some requirements were not judged' : 'not verified'} — your decision:`);
+    for (const entry of decision.requirements) {
+      lines.push(entry.status === NOT_JUDGED_STATUS
+        ? `  ${entry.id} ${entry.status}${entry.evidence ? ` — ${entry.evidence}` : ''}`
+        : `  ${entry.id} ${entry.status} in round ${entry.round}${entry.evidence ? ` — ${entry.evidence}` : ''}`);
+      lines.push(`    next: ${entry.next}`);
+    }
+  }
+  if (rounds.phases?.length) {
+    lines.push('rounds:');
+    for (const phase of rounds.phases) {
+      const minutes = phase.wallMinutes == null ? '—' : `${phase.wallMinutes}m`;
+      const pools = phase.pools?.length ? phase.pools.join(', ') : null;
+      lines.push(`  ${phase.kind} round ${phase.round} · ${minutes}${pools ? ` · ${pools}` : ''} · ${phase.cost ?? '—'}`);
+    }
+  }
+  return lines;
+}
+
 export function formatV2HandbackLines(summary) {
   const handback = summary?.handback;
-  if (!handback) return [];
-  const lines = [];
+  const loopLines = formatV2VerifyRoundLines(summary);
+  if (!handback) return loopLines;
+  const lines = [...loopLines];
   for (const entry of handback.unfinished) {
     const kind = entry.failureKind && entry.failureKind !== entry.status ? ` (${entry.failureKind})` : '';
     lines.push(`  step ${entry.id}: ${entry.status}${kind}${entry.why ? ` — ${entry.why}` : ''}${entry.retryAfter ? ` · its pool is back at ${entry.retryAfter}` : ''}`);
   }
   if (handback.unfinishedOmitted) lines.push(`  … and ${handback.unfinishedOmitted} more unfinished step(s)`);
-  const open = (summary.requirements ?? []).filter((requirement) => requirement.status !== 'passed');
+  // A requirement the decision block already names is not listed twice.
+  const decided = new Set((summary.callerDecision?.requirements ?? []).map((entry) => entry.id));
+  const open = (summary.requirements ?? []).filter((requirement) => requirement.status !== 'passed' && !decided.has(requirement.id));
   for (const requirement of open.slice(0, 6)) {
     lines.push(`  requirement ${requirement.id}: ${requirement.status}${requirement.why ? ` — ${requirement.why}` : ''}`);
   }
@@ -815,6 +900,9 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
     },
     usage: clone(envelope.usage),
     ...(handback ? { handback: summaryHandback(envelope, handback, shortId) } : {}),
+    // The loop's rounds once one ran, and the caller's block when there is one.
+    ...(envelope.verifyRounds?.used > 0 ? { verifyRounds: clone(envelope.verifyRounds) } : {}),
+    ...(envelope.callerDecision ? { callerDecision: clone(envelope.callerDecision) } : {}),
     next: {
       full: `bullswarm workflow runs result ${shortId} --json`,
       // Every entry of `outputs` (and every action's outFile) is a basename
@@ -827,7 +915,7 @@ export function summarizeV2Result(envelope, state = null, { runDir = null } = {}
 
 export function validateV2ResultEnvelope(result) {
   resultObject(result, 'result');
-  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace', 'handback']);
+  const allowed = new Set(['schemaVersion', 'runId', 'shortId', 'intentId', 'goal', 'status', 'verified', 'reason', 'requirements', 'actions', 'gaps', 'usage', 'finishedAt', 'executionMode', 'workspace', 'handback', 'verifyRounds', 'callerDecision']);
   exactFields(result, allowed, 'result');
   if (result.schemaVersion !== V2_RESULT_SCHEMA_VERSION) resultFail(`schemaVersion must be ${V2_RESULT_SCHEMA_VERSION}`);
   if (!['completed', 'partial', 'cancelled'].includes(result.status)) resultFail('status is invalid');
@@ -872,7 +960,61 @@ export function validateV2ResultEnvelope(result) {
   }
   // Optional: results written before 0.30.0 carry none.
   if (result.handback !== undefined) validateHandback(result.handback);
+  // Optional: results written before 0.35.2 carry neither.
+  if (result.verifyRounds !== undefined) validateResultVerifyRounds(result.verifyRounds);
+  if (result.callerDecision !== undefined && result.callerDecision !== null) {
+    validateResultCallerDecision(result.callerDecision);
+    // A verified run can only leave the caller requirements no evidence step covers.
+    if (result.verified && result.callerDecision.requirements.some((entry) => entry.status !== NOT_JUDGED_STATUS)) resultFail('a verified result has no callerDecision except for not judged requirements');
+  }
   return true;
+}
+
+const VERIFY_ROUND_STOPS = new Set(['passed', 'rounds', 'revision', 'step-failed']);
+
+function validateResultVerifyRounds(value) {
+  resultObject(value, 'verifyRounds');
+  exactFields(value, new Set(['max', 'used', 'stoppedBy', 'phases']), 'verifyRounds');
+  if (!Number.isInteger(value.max) || value.max < 1 || value.max > 3) resultFail('verifyRounds.max must be 1, 2 or 3');
+  if (!Number.isInteger(value.used) || value.used < 0 || value.used > 3) resultFail('verifyRounds.used must be 0 to 3');
+  if (value.stoppedBy !== null && !VERIFY_ROUND_STOPS.has(value.stoppedBy)) resultFail('verifyRounds.stoppedBy is invalid');
+  if (!Array.isArray(value.phases)) resultFail('verifyRounds.phases must be an array');
+  value.phases.forEach((phase, index) => {
+    const name = `verifyRounds.phases[${index}]`;
+    resultObject(phase, name);
+    exactFields(phase, new Set(['kind', 'round', 'steps', 'judged', 'failed', 'notJudged', 'requirements', 'wallMinutes', 'pools', 'apiUsd', 'unmeasured', 'cost']), name);
+    if (!['verify', 'repair'].includes(phase.kind)) resultFail(`${name}.kind must be verify|repair`);
+    if (!Number.isInteger(phase.round) || phase.round < 1 || phase.round > 3) resultFail(`${name}.round must be 1 to 3`);
+    stringArray(phase.steps, `${name}.steps`);
+    stringArray(phase.pools, `${name}.pools`);
+    if (phase.kind === 'verify') {
+      if (!Number.isInteger(phase.judged) || phase.judged < 0) resultFail(`${name}.judged must be a non-negative integer`);
+      stringArray(phase.failed, `${name}.failed`);
+      if (phase.notJudged !== undefined) stringArray(phase.notJudged, `${name}.notJudged`);
+    } else stringArray(phase.requirements, `${name}.requirements`);
+    for (const field of ['wallMinutes', 'apiUsd']) {
+      if (phase[field] !== null && (typeof phase[field] !== 'number' || !Number.isFinite(phase[field]) || phase[field] < 0)) resultFail(`${name}.${field} must be null or a non-negative number`);
+    }
+    if (!Number.isInteger(phase.unmeasured) || phase.unmeasured < 0) resultFail(`${name}.unmeasured must be a non-negative integer`);
+    resultString(phase.cost, `${name}.cost`);
+  });
+}
+
+function validateResultCallerDecision(value) {
+  resultObject(value, 'callerDecision');
+  exactFields(value, new Set(['verifyRounds', 'requirements']), 'callerDecision');
+  if (typeof value.verifyRounds !== 'string' || !/^\d\/[1-3]$/.test(value.verifyRounds)) resultFail('callerDecision.verifyRounds must read used/max');
+  if (!Array.isArray(value.requirements) || !value.requirements.length) resultFail('callerDecision.requirements must be a non-empty array');
+  value.requirements.forEach((entry, index) => {
+    const name = `callerDecision.requirements[${index}]`;
+    resultObject(entry, name);
+    exactFields(entry, new Set(['id', 'status', 'round', 'evidence', 'next']), name);
+    resultString(entry.id, `${name}.id`);
+    if (entry.status !== NOT_JUDGED_STATUS && (!REQUIREMENT_STATUSES.has(entry.status) || entry.status === 'passed')) resultFail(`${name}.status is invalid`);
+    if (!Number.isInteger(entry.round) || entry.round < 1 || entry.round > 3) resultFail(`${name}.round must be 1 to 3`);
+    if (typeof entry.evidence !== 'string') resultFail(`${name}.evidence must be a string`);
+    resultString(entry.next, `${name}.next`);
+  });
 }
 
 export function serializeV2ResultEnvelope(result) {

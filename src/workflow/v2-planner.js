@@ -182,7 +182,7 @@ export function createV2PlannerContext(state, { scout = null, steering = [], cor
 // `kind` is the one field that says what an action IS; lane and effort are
 // derived from it. Stated once so the dispatched planner prompt, the
 // caller-facing contract, and every durable planner request read identically.
-const KIND_FIELD_RULE = `The optional per-action \`kind\` field names the nature of the work and derives both routing fields: ${Object.entries(KIND_DEFAULTS).map(([kind, { lane, effort }]) => `${kind}=${lane}/${effort}`).join(', ')}. Prefer one \`kind\` over restating lane and effort. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the optional program-level \`defaults\` object (which may set only effort and reasoning), then the per-lane default (analyze=medium, build=medium, chore=low). A kind outside that closed list is a validation error before anything runs. Two advisories are reported at validate and at launch and never change acceptance or exit codes: \`${PROGRAM_ADVISORY_CODES[0]}\` when three or more build/chore actions all sit at high effort, and \`${PROGRAM_ADVISORY_CODES[1]}\` when a build/chore action owns only *.md files at high effort.`;
+const KIND_FIELD_RULE = `The optional per-action \`kind\` field names the nature of the work and derives both routing fields: ${Object.entries(KIND_DEFAULTS).map(([kind, { lane, effort }]) => `${kind}=${lane}/${effort}`).join(', ')}. Prefer one \`kind\` over restating lane and effort. Resolution per field: an explicit action \`lane\`/\`effort\` wins, then the kind table, then the optional program-level \`defaults\` object (which may set only effort, reasoning, timeBox and verifyRounds), then the per-lane default (analyze=medium, build=medium, chore=low). A kind outside that closed list is a validation error before anything runs. Two advisories are reported at validate and at launch and never change acceptance or exit codes: \`${PROGRAM_ADVISORY_CODES[0]}\` when three or more build/chore actions all sit at high effort, and \`${PROGRAM_ADVISORY_CODES[1]}\` when a build/chore action owns only *.md files at high effort.`;
 
 // The digest kind, stated once for every rendering of the contract. Extractive
 // by construction: a digest that judged its sources would be delegated
@@ -193,6 +193,14 @@ const DIGEST_KIND_RULE = 'A `kind: "digest"` action (analyze/low) is an extracti
 // thinks. They are independent, so the contract states the field once and both
 // rule sets render the same sentence.
 const REASONING_FIELD_RULE = 'The optional per-action `reasoning` field (low|medium|high|xhigh|max|default) sets how hard the picked model thinks on that one action and outranks every configured level for it. Omit it and the configured level applies. Set it only when an action needs deeper thinking than its effort tier implies (a tricky shared-file integrator or ambiguous acceptance judgment at xhigh) or cheaper thinking for mechanical work (low). `default` passes nothing and lets the worker CLI\'s own setting decide. It never changes the pool, model, or effort tier, and a connector that does not accept the exact level gets the nearest level it supports.';
+
+// The soft time box, stated once for every rendering of the contract. It is a
+// paragraph the kernel writes into the task, never a limit the kernel enforces.
+const TIME_BOX_RULE = 'The optional per-action `timeBox` field (whole minutes, 0-240) and the program-level `defaults.timeBox` set the soft time box the kernel writes into that step\'s task: a start clock, a wrap-up point at 70% of the box, and an invitation to stop and report three sections (`## Done`, `## Not done`, `## Suggested next step`). Omit both and the kernel computes the box from this home\'s recorded attempts (1.5 x the median wall minutes of succeeded attempts for the pool and kind, else the kind, else 20; kept within 10-60). `timeBox: 0` leaves the paragraph out for that step. It is a guide, not a timeout: hard timeouts, stall detection and routing are unchanged and nothing is stopped at the box. A step whose `## Not done` lists items still succeeds and is recorded as returned early; its items reach the verifiers.';
+
+// The kernel's bounded repair loop, stated once for the program rule set.
+// Authors still may not write repair steps: the kernel adds them itself.
+const REPAIR_LOOP_RULE = 'When a mandatory requirement fails its evidence, the kernel runs a bounded repair loop of at most 3 verify rounds (`defaults.verifyRounds` may set 1-3; 1 keeps the single round). It adds the steps `repair-<n>` and `verify-round-<n>` to the program itself, owning the union of the failing requirements\' `ownedFiles`; they appear in `plan export`. Never author a repair step, a repair field or your own retry loop for an ordinary failing check. Round 1 judges every requirement, round 2 re-checks the failures and looks for regressions, round 3 is final closure, and a requirement that passed is judged again only when a repair touched a file its evidence names. What is still failing after the last round is handed back in the result\'s `callerDecision` block with one suggested next step each.';
 
 // One source of truth for the planning contract. The dispatched planner
 // prompt, the caller-facing `workflow plan contract`, and every durable
@@ -209,6 +217,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     KIND_FIELD_RULE,
     DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
+    TIME_BOX_RULE,
     workspaceMode === 'isolated'
       ? 'This run explicitly requests isolation. Mutating actions need exact ownedFiles; only declared changes are integrated. Order overlapping writers. Evidence actions inspect the integrated target workspace.'
       : 'All agents share the target worktree. ownedFiles lists intended territory and provides overlap scheduling hints; it is not an exact-file enforcement gate. Overlapping territories are serialized automatically. An analyze action is read-only. A build/chore action with empty ownedFiles is an unrestricted integrator and runs alone.',
@@ -216,7 +225,9 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     'After a parallel implementation wave, include one integrator depending on all writers. It reads their outputs, applies cross-territory requests, reconciles shared files, and runs the repository acceptance commands. In a shared workspace, use build with empty ownedFiles to let that sole integrator fix any file.',
     'Judge acceptance with observable behavior and the repository checks. Reproduce regressions where applicable, run focused tests after changes, then the requested full gates on the integrated tree. Preserve every acceptance qualifier; do not accept vacuous tests or a green unrelated suite as proof.',
     'Evidence actions are optional. To request structured independent judgment, use analyze with evidenceFor and empty affects/ownedFiles. They must depend on all work affecting their requirements. Their prompt specifies checks only; the kernel supplies the evidence JSON contract. Negative evidence is reported and never silently converted to verified success.',
-    'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready. Repairs or further investigation belong in an explicitly authored follow-up program.',
+    'The result status describes graph execution; verified separately records passing requirement evidence. Read per-action failures, outputs, and evidence before claiming the product is ready.',
+    REPAIR_LOOP_RULE,
+    'What the loop leaves is the caller\'s decision: read the `callerDecision` block of the result, then either take over, or add a step through a plan revision. Further investigation belongs in an explicitly authored follow-up program.',
     workspaceMutation === 'forbidden'
       ? 'This goal is read-only: every action must use analyze with empty ownedFiles. Put reports in the captured final response.'
       : 'Mutations are allowed within the task purpose. Preserve user changes and follow the shared-territory or explicit isolation rules above.',
@@ -235,6 +246,7 @@ export function v2PlannerContractRules({ workspaceMutation = 'allowed', boundary
     KIND_FIELD_RULE,
     DIGEST_KIND_RULE,
     REASONING_FIELD_RULE,
+    TIME_BOX_RULE,
     'Dependencies represent required data or exact-file ordering only. Do not serialize unrelated work. Do not add reviewer, verify, repair, phase, completion, pool, model, timeout, or retry fields.',
     'Every mandatory unresolved requirement needs an evidence action. Parallel actions must be both file-disjoint and acceptance-independent. Isolated parallel siblings cannot see each other\'s unintegrated changes. If one action writes tests for behavior introduced by another action, combine code and tests under one owner or make the test action depend on and consume an artifact from the implementation action; never run new behavioral tests against the unchanged baseline in parallel. Prompts must be self-contained and include exact scope plus acceptance evidence.',
     'For mutating behavioral work, keep implementation and its focused regression test under one coherent owner. The action must prove the regression on the untouched baseline, then exercise the real production entry point or state transition after the change; disconnected helpers, no-op assertions, and test-only behavior do not satisfy acceptance.',
@@ -279,6 +291,7 @@ export const V2_PROGRAM_ACTION_FIELDS = Object.freeze({
   lane: 'analyze | build | chore — omit when kind supplies it',
   effort: 'high | medium | low — omit to take it from kind, program defaults, or the lane default',
   reasoning: 'optional low | medium | high | xhigh | max | default — how hard the picked model thinks on this one action; omit to use the configured level',
+  timeBox: 'optional whole minutes 0-240 — the soft time box written into this step\'s task (0 = no time-box paragraph); omit to use defaults.timeBox, else the box computed from recorded attempts. A guide, never a timeout',
   evidenceFor: 'requirement IDs this evidence action independently judges (empty for work actions)',
   inputs: 'optional artifact IDs consumed, each produced by a dependency ancestor',
   produces: 'optional artifact IDs this action produces for later actions',
@@ -372,8 +385,8 @@ export function buildV2PlannerContract(goalDocument, { launchCommand = null } = 
       // not have to infer the table from prose.
       kinds: clone(KIND_DEFAULTS),
       defaults: {
-        allowed: ['effort', 'reasoning'],
-        note: 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), and action > program defaults > run > strategy > connector (reasoning).',
+        allowed: ['effort', 'reasoning', 'timeBox', 'verifyRounds'],
+        note: 'optional program-level object; any other key is a validation error. Per field the order is action > kind > program defaults > lane default (effort), action > program defaults > run > strategy > connector (reasoning), and action > program defaults > computed from recorded attempts > 20 minutes (timeBox). verifyRounds (1-3, default 3) is the most verify rounds the kernel runs before handing the rest to the caller; it is program-level only.',
       },
       advisories: {
         codes: [...PROGRAM_ADVISORY_CODES],

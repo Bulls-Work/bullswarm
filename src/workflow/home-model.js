@@ -23,6 +23,7 @@ import {
 } from './dashboard.js';
 import { withV2Cancellation } from './v2-cancellation.js';
 import { runClockText, runDurationFacts } from './run-model.js';
+import { verifyRoundLabel } from './verify-rounds.js';
 import { honestApiTotalText, recordSpendFacts, spendFacts } from './spend-facts.js';
 import { readCalibration } from '../lib/subscription-cost.js';
 import { apiMoney, apiMoneyText, formatMoney, formatMoneyPair } from '../lib/usage-basis.js';
@@ -477,7 +478,9 @@ function todayTopRuns(model, nowMs = Date.now(), { limit = 3 } = {}) {
       id: runIdentity(record),
       name: runName(record),
       project: runProject(record),
-      status: runStatus(record),
+      // While a run is in its repair loop the card says which round it is
+      // working toward (`verify round 2/3`) in place of `running`.
+      status: verifyRoundLabel(recordState(record)) ?? runStatus(record),
       verdict: runVerdict(record),
       minutes,
       steps,
@@ -827,6 +830,7 @@ export {
   firstMeaningfulLine,
   runStatus,
   runVerdict,
+  verifyRoundLabel,
   runName,
   runProject,
   attemptIntervals,

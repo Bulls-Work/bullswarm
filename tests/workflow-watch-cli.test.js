@@ -221,3 +221,23 @@ test('a caller restart reads as one restart line and one handoff line, never a c
     '× verify not restarted · it finished before the restart took effect',
   );
 });
+
+test('an early return prints `◐ <step> returned early · N not done` instead of the finished line, and is not trouble', () => {
+  const state = JSON.parse(readFileSync(join(SOURCE, 'state.json'), 'utf8'));
+  const events = [
+    { type: 'action.finished', payload: { actionId: 'verify', status: 'succeeded', returnedEarly: { count: 2 } } },
+    { type: 'action.finished', payload: { actionId: 'verify', status: 'succeeded' } },
+  ];
+  const notable = notableWatchEvents({ events, state }).notable.filter((event) => event.type === 'action.finished');
+  assert.equal(notable[0].returnedEarly, 2);
+  assert.equal(Object.hasOwn(notable[1], 'returnedEarly'), false, 'each finish reads its own event');
+  const lines = notable.map((event) => renderWatchEvent(event));
+  assert.equal(lines[0], '◐ verify returned early · 2 not done');
+  assert.match(lines[1], /^✓ verify finished · /);
+  assert.equal(watchTrouble(notable[0]), null, 'the step still succeeded');
+  assert.equal(glyphs({ BULLSWARM_ASCII: '1' }).early, '-');
+  const previous = process.env.BULLSWARM_ASCII;
+  process.env.BULLSWARM_ASCII = '1';
+  try { assert.equal(renderWatchEvent(notable[0]), '- verify returned early · 2 not done'); }
+  finally { if (previous === undefined) delete process.env.BULLSWARM_ASCII; else process.env.BULLSWARM_ASCII = previous; }
+});

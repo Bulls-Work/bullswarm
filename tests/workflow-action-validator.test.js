@@ -303,13 +303,13 @@ test('an unknown kind is a validation error naming the allowed values', () => {
   }
 });
 
-test('program defaults allow only effort and reasoning', () => {
+test('program defaults allow only effort, reasoning, timeBox and verifyRounds', () => {
   const withDefaults = (defaults) => validateActionProgram(
     { schemaVersion: 'bullswarm.workflow.program.v2', defaults, actions: [kindWork('implement')] },
     relaxed,
   );
-  assert.throws(() => withDefaults({ lane: 'build' }), (error) => error.issues.includes('program.defaults.lane is not allowed; only effort and reasoning'));
-  assert.throws(() => withDefaults({ kind: 'implement' }), (error) => error.issues.includes('program.defaults.kind is not allowed; only effort and reasoning'));
+  assert.throws(() => withDefaults({ lane: 'build' }), (error) => error.issues.includes('program.defaults.lane is not allowed; only effort, reasoning, timeBox and verifyRounds'));
+  assert.throws(() => withDefaults({ kind: 'implement' }), (error) => error.issues.includes('program.defaults.kind is not allowed; only effort, reasoning, timeBox and verifyRounds'));
   assert.throws(() => withDefaults({ effort: 'ultra' }), (error) => error.issues.includes('program.defaults.effort must be high|medium|low'));
   assert.throws(() => withDefaults({ reasoning: 'ultra' }), (error) => error.issues.includes('program.defaults.reasoning must be low|medium|high|xhigh|max|default'));
   assert.throws(() => withDefaults('high'), (error) => error.issues.includes('program.defaults must be an object'));
@@ -317,6 +317,51 @@ test('program defaults allow only effort and reasoning', () => {
   // `defaults` is resolved into the actions, never echoed into the accepted
   // program, so the durable program schema is unchanged.
   assert.deepEqual(Object.keys(withDefaults({ effort: 'low' })), ['schemaVersion', 'actions']);
+});
+
+test('timeBox is whole minutes 0–240 on an action or in defaults, folded onto each action like effort', () => {
+  const run = (defaults, over = {}) => validateActionProgram(
+    { schemaVersion: 'bullswarm.workflow.program.v2', ...(defaults ? { defaults } : {}), actions: [kindWork('implement', over)] },
+    relaxed,
+  );
+  for (const bad of [-1, 241, 12.5, '20', null, true]) {
+    assert.throws(() => run(null, { timeBox: bad }), (error) => {
+      assert.ok(error.issues.includes('actions[0].timeBox must be a whole number of minutes from 0 to 240'), `${JSON.stringify(bad)}: ${error.issues.join('; ')}`);
+      return true;
+    });
+    assert.throws(() => run({ timeBox: bad }), (error) => {
+      assert.ok(error.issues.includes('program.defaults.timeBox must be a whole number of minutes from 0 to 240'), `${JSON.stringify(bad)}: ${error.issues.join('; ')}`);
+      return true;
+    });
+  }
+  // Used as given at both ends of the range; 0 is a real value (no paragraph).
+  assert.equal(run(null, { timeBox: 0 }).actions[0].timeBox, 0);
+  assert.equal(run(null, { timeBox: 240 }).actions[0].timeBox, 240);
+  // The default folds onto an action that names none; an action's own wins.
+  assert.equal(run({ timeBox: 15 }).actions[0].timeBox, 15);
+  assert.equal(run({ timeBox: 15 }, { timeBox: 0 }).actions[0].timeBox, 0);
+  // No box anywhere: the field stays absent and the kernel computes one.
+  assert.equal(Object.hasOwn(run(null).actions[0], 'timeBox'), false);
+  // An accepted program re-validates to itself (every durable reload does).
+  const accepted = run({ timeBox: 15 });
+  assert.deepEqual(run(null, { timeBox: accepted.actions[0].timeBox }).actions, accepted.actions);
+});
+
+test('defaults.verifyRounds is 1–3 and is returned beside the actions, never folded onto them', () => {
+  const run = (defaults) => validateActionProgram(
+    { schemaVersion: 'bullswarm.workflow.program.v2', defaults, actions: [kindWork('implement')] },
+    relaxed,
+  );
+  for (const bad of [0, 4, 2.5, '3', null]) {
+    assert.throws(() => run({ verifyRounds: bad }), (error) => error.issues.includes('program.defaults.verifyRounds must be 1, 2 or 3'));
+  }
+  for (const rounds of [1, 2, 3]) {
+    const accepted = run({ verifyRounds: rounds });
+    assert.equal(accepted.verifyRounds, rounds);
+    assert.equal(Object.hasOwn(accepted.actions[0], 'verifyRounds'), false);
+  }
+  // Absent stays absent, so a revision without it leaves the run's budget alone.
+  assert.equal(Object.hasOwn(run({ effort: 'low' }), 'verifyRounds'), false);
 });
 
 test('a program without kind or defaults normalizes to byte-identical actions', () => {

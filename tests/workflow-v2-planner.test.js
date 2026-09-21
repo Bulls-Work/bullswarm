@@ -277,7 +277,7 @@ test('the planning contract documents kind, its derived table, program defaults,
   });
   const contract = buildV2PlannerContract(goal);
   assert.deepEqual(contract.program.kinds, KIND_DEFAULTS);
-  assert.deepEqual(contract.program.defaults.allowed, ['effort', 'reasoning']);
+  assert.deepEqual(contract.program.defaults.allowed, ['effort', 'reasoning', 'timeBox', 'verifyRounds']);
   assert.match(contract.program.defaults.note, /action > kind > program defaults > lane default/);
   assert.deepEqual(contract.program.advisories.codes, ['all-writers-high', 'docs-at-high', 'requirement-unchecked']);
   assert.match(contract.program.advisories['requirement-unchecked'], /never verified/);
@@ -350,4 +350,83 @@ test('accepting a program records its advisories on the run state without changi
   assert.deepEqual(programState.advisories, [], 'the input state is not mutated');
   // A program with no smell records an empty list rather than a missing key.
   assert.deepEqual(applyV2PlannerResponse(state(), response()).advisories, []);
+});
+
+function programState() {
+  return createV2State(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp/repo',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program', concurrency: 2 },
+  }), { runId: 'wf-prog-abcdef', shortId: 'prg234' });
+}
+
+test('the planning contract teaches timeBox and verifyRounds and says where the kernel takes over', () => {
+  const contract = buildV2PlannerContract(createV2GoalDocument({
+    goal: 'Create and check report.md', cwd: '/tmp',
+    requirements: [{ id: 'report-ready', text: 'report.md is complete' }],
+    settings: { executionMode: 'program', concurrency: 2 },
+  }));
+  assert.match(contract.program.actionFields.timeBox, /^optional whole minutes 0-240/);
+  assert.match(contract.program.actionFields.timeBox, /never a timeout/);
+  assert.match(contract.program.defaults.note, /timeBox\)/);
+  assert.match(contract.program.defaults.note, /verifyRounds \(1-3, default 3\)/);
+  const box = contract.rules.filter((rule) => rule.includes('`timeBox` field'));
+  assert.equal(box.length, 1);
+  assert.match(box[0], /`## Done`, `## Not done`, `## Suggested next step`/);
+  assert.match(box[0], /`timeBox: 0` leaves the paragraph out/);
+  assert.match(box[0], /not a timeout/);
+  assert.match(box[0], /returned early/);
+  const loop = contract.rules.filter((rule) => rule.includes('bounded repair loop'));
+  assert.equal(loop.length, 1);
+  assert.match(loop[0], /at most 3 verify rounds/);
+  assert.match(loop[0], /`repair-<n>` and `verify-round-<n>`/);
+  assert.match(loop[0], /Never author a repair step/);
+  assert.match(loop[0], /`callerDecision`/);
+  // The old advice to author repairs by hand is gone.
+  assert.ok(!contract.rules.some((rule) => /Repairs or further investigation belong in an explicitly authored follow-up program\.$/.test(rule) && rule.includes('result status describes')));
+  // Authors still may not invent repair fields.
+  assert.ok(contract.rules.some((rule) => /Do not invent provider, model, timeout, phase, repair, or retry fields/.test(rule)));
+});
+
+test('every planner rule set states the time box once, and only program runs state the repair loop', () => {
+  for (const executionMode of ['program', 'verified']) {
+    const rules = v2PlannerContractRules({ executionMode });
+    assert.equal(rules.filter((rule) => rule.includes('`timeBox` field')).length, 1, executionMode);
+    assert.equal(rules.filter((rule) => rule.includes('bounded repair loop')).length, executionMode === 'program' ? 1 : 0, executionMode);
+  }
+  const verifiedPrompt = buildV2PlannerPrompt(createV2PlannerContext(state(), { scout: null }));
+  assert.match(verifiedPrompt, /optional per-action `timeBox` field/);
+  assert.match(verifiedPrompt, /reviewer, verify, repair/);
+  const programPrompt = buildV2PlannerPrompt(createV2PlannerContext(programState(), { scout: null }));
+  assert.match(programPrompt, /bounded repair loop of at most 3 verify rounds/);
+});
+
+test('a program may carry timeBox and verifyRounds, and still cannot declare repair steps', () => {
+  const boxed = response();
+  boxed.program.defaults = { timeBox: 25, verifyRounds: 2 };
+  boxed.program.actions[0].timeBox = 30;
+  boxed.program.actions[1].timeBox = 0;
+  const accepted = validateV2PlannerResponse(boxed, programState());
+  assert.equal(accepted.kind, 'program');
+  assert.deepEqual(accepted.program.actions.map((action) => action.timeBox), [30, 0]);
+  assert.equal(accepted.program.verifyRounds, 2);
+
+  for (const bad of [-1, 241, 12.5, '20']) {
+    const wrong = response();
+    wrong.program.actions[0].timeBox = bad;
+    assert.throws(() => validateV2PlannerResponse(wrong, programState()), (error) => error.issues.some((issue) => issue.includes('timeBox')), String(bad));
+  }
+  const rounds = response();
+  rounds.program.defaults = { verifyRounds: 4 };
+  assert.throws(() => validateV2PlannerResponse(rounds, programState()), (error) => error.issues.some((issue) => issue.includes('verifyRounds')));
+
+  // The kernel writes repair steps; an author may not declare one.
+  for (const forbidden of [{ repair: { of: 'inspect-report' } }, { type: 'repair' }, { kind: 'repair' }]) {
+    const attempt = response();
+    Object.assign(attempt.program.actions[0], forbidden);
+    assert.throws(() => validateV2PlannerResponse(attempt, programState()), V2PlannerValidationError, JSON.stringify(forbidden));
+  }
+  const loopKey = response();
+  loopKey.program.defaults = { repair: 3 };
+  assert.throws(() => validateV2PlannerResponse(loopKey, programState()), V2PlannerValidationError);
 });

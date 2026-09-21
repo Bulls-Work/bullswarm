@@ -662,6 +662,10 @@ export async function dispatchV2Action({
   resumeAttempt = null,
   resumeHandoff = null,
   runDir = null,
+  // `({ pool, startedAt }) => ({ text, record }) | null`: the soft time box
+  // for one attempt (src/workflow/time-box.js). Resolved per attempt, because
+  // a retry can land on another pool and always starts its own clock.
+  timeBox = null,
 } = {}) {
   if (!action || typeof action.id !== 'string') throw new TypeError('action is required');
   if (typeof taskText !== 'string' || !taskText) throw new TypeError('taskText is required');
@@ -893,6 +897,12 @@ export async function dispatchV2Action({
     const startedAt = new Date(now()).toISOString();
     const routeWhy = fallbackWhy ? `${fallbackWhy} · ${route.why}` : route.why;
     fallbackWhy = null;
+    // The box paragraph closes this attempt's task, after any handoff or
+    // correction block, and never enters `nextTask`: the next attempt gets a
+    // paragraph with its own clock instead of two. A guide only — nothing
+    // below reads it to stop, time out or reroute the attempt.
+    const box = typeof timeBox === 'function' ? timeBox({ pool: pool.name, startedAt }) : null;
+    const attemptTask = box?.text ? `${nextTask}\n\n${box.text}` : nextTask;
     const record = {
       ordinal, pool: pool.name, model: model ?? connector.model ?? null,
       routeWhy,
@@ -905,6 +915,7 @@ export async function dispatchV2Action({
       startedAt, finishedAt: null, status: 'running', taskFile: files.taskFile,
       outFile: files.outFile, outputFile: files.outFile, reasoning,
       ...(incomingHandoff ? { handoff: { from: incomingHandoff.from, bytes: incomingHandoff.bytes } } : {}),
+      ...(box?.record ? { timeBox: clone(box.record) } : {}),
       routing: {
         reason: routeWhy, candidates: route.candidates, effort,
         lane: action.lane ?? 'chore', fiveHourUsedPct: pool.fiveHourUsedPct ?? null,
@@ -929,7 +940,7 @@ export async function dispatchV2Action({
     let verdict;
     let snapshot = { ok: false, statText: '', changedFiles: [] };
     try {
-      verdict = await watch(runtimeConnector, nextTask, targetDir, files, {
+      verdict = await watch(runtimeConnector, attemptTask, targetDir, files, {
         env: childDepthEnv(parentEnv),
         model,
         reasoning,
@@ -1029,7 +1040,9 @@ export async function dispatchV2Action({
       outputFile: files.outFile,
       ...(outputBytes != null ? { outputBytes } : {}),
       ...(streamFile ? { streamFile } : {}),
-      ...(snapshot.ok ? { diffFile: files.diffFile, changedFileCount: snapshot.changedFiles.length } : {}),
+      // The path list itself (at most 200; the count stays complete): the
+      // repair loop's carry-forward rule and the durable handoff read it.
+      ...(snapshot.ok ? { diffFile: files.diffFile, changedFileCount: snapshot.changedFiles.length, changedFiles: snapshot.changedFiles.slice(0, 200) } : {}),
       lastResponse: lastEvents.at(-1)?.summary ?? null,
       ...(verdict.outputTruncated === true ? {
         outputTruncated: true,

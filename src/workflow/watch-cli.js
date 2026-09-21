@@ -285,6 +285,14 @@ function attemptActivityAt(attempt) {
 // Program runs group actions into dependency levels projected from the program
 // itself; verified runs carry durable presentation stages. Both are rendered
 // as one "stage completed" line, and each stage is reported once.
+// The steps a phase covers, as one key. A plan revision renumbers the
+// projected phases (`r1-level-1` becomes `live-level-1-<hash>`), so a phase
+// already reported under its old id is known by its steps instead; the
+// repair loop revises every failing run's plan.
+function stageStepsKey(actionIds) {
+  return Array.isArray(actionIds) && actionIds.length ? `steps:${[...actionIds].sort().join('\n')}` : null;
+}
+
 function v2Stages(state) {
   const stages = isProgramWorkflow(state)
     ? projectV2DependencyStages(state)
@@ -330,7 +338,7 @@ export function initialWatchMemory(state, {
   const done = v2Stages(state)
     .filter(({ stage, status }) => (status.terminal || stage.completedAt)
       && !(stage.actionIds ?? []).some((id) => replayedActions.has(id)))
-    .map(({ stage }) => stage.id);
+    .flatMap(({ stage }) => [stage.id, stageStepsKey(stage.actionIds)].filter(Boolean));
   const stalled = new Map();
   // An agent whose silence crossed the stall threshold before the previous
   // watcher exited was already reported by it: remember the episode so this
@@ -355,7 +363,7 @@ export function initialWatchMemory(state, {
       if (score?.stale && score.staleSince != null && score.staleSince < sinceMs) staleReported.set(record.key, score.staleSince);
     }
   }
-  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported };
+  return { stages: new Set(done), stalled, retry: new Map(), moving: new Map(), handoffs: new Map(), staleReported, stageSteps: new Map() };
 }
 
 function staleFor(probe, state, { attempt, actionId }, nowMs) {
@@ -427,6 +435,7 @@ export function notableWatchEvents({
   const moving = new Map(carried.moving);
   const handoffs = new Map(carried.handoffs);
   const staleReported = new Map(carried.staleReported);
+  const stageSteps = new Map(carried.stageSteps ?? []);
   const notable = [];
 
   const onAttemptStarted = (actionId, payload, ordinal) => {
@@ -535,6 +544,11 @@ export function notableWatchEvents({
           why: payload.why ?? runtime?.lastFailure?.message
             ?? (payload.outOfScope ?? payload.paths)?.join(', ') ?? null,
           durationSec: status === 'blocked' ? null : actionDurationSec(runtime, event, nowMs),
+          // A succeeded step whose report listed `## Not done` items: the
+          // kernel's event says how many (read per event, so a rerun's
+          // earlier finish keeps its own line).
+          ...(status === 'succeeded' && Number.isInteger(payload.returnedEarly?.count) && payload.returnedEarly.count > 0
+            ? { returnedEarly: payload.returnedEarly.count } : {}),
         });
         break;
       }
@@ -543,6 +557,9 @@ export function notableWatchEvents({
         notable.push({
           type: 'evidence.recorded',
           actionId: payload.actionId,
+          // With more than one verify round a failing judgment is the
+          // kernel's to repair, not yet the caller's.
+          ...(Number.isInteger(state.verifyLoop?.max) ? { loopMax: state.verifyLoop.max } : {}),
           requirements: requirementIds.map((id) => ({
             id,
             status: payload.statuses?.[id] ?? state.ledger?.requirements?.[id]?.status ?? 'unknown',
@@ -550,9 +567,15 @@ export function notableWatchEvents({
         });
         break;
       }
+      case 'presentation.stage_started':
+        if (payload.stageId && stageStepsKey(payload.actionIds)) stageSteps.set(payload.stageId, stageStepsKey(payload.actionIds));
+        break;
       case 'presentation.stage_completed': {
         if (stages.has(payload.stageId)) break;
         stages.add(payload.stageId);
+        const steps = stageSteps.get(payload.stageId)
+          ?? stageStepsKey((state.presentation?.stages ?? []).find((stage) => stage.id === payload.stageId)?.actionIds);
+        if (steps) stages.add(steps);
         notable.push({
           type: 'stage.completed',
           stageId: payload.stageId ?? null,
@@ -620,7 +643,9 @@ export function notableWatchEvents({
       case 'steering.received':
         notable.push({ type: 'steering.received', steeringId: payload.steeringId ?? null, message: payload.message ?? null });
         break;
+      // The kernel's own revisions add loop steps; the loop lines say it.
       case 'program.revised':
+        if (payload.source === 'kernel') break;
         notable.push({
           type: 'plan.revised', requestId: payload.requestId ?? null, programRevision: payload.programRevision ?? null,
           summary: payload.summary ?? null, changes: payload.changes ?? {},
@@ -648,6 +673,23 @@ export function notableWatchEvents({
       case 'step.restart_refused':
         notable.push({ type: 'step.restart_refused', actionId: payload.actionId ?? null, why: payload.why ?? null });
         break;
+      // The repair loop: one line per round start and outcome, one per repair.
+      // A one-round run prints none, as before the loop existed.
+      case 'workflow.verify-round':
+        if (!(payload.of > 1)) break;
+        notable.push({
+          type: 'verify.round', round: payload.round ?? null, of: payload.of, stage: payload.stage ?? null,
+          toJudge: (payload.toJudge ?? []).length, passed: (payload.passed ?? []).length,
+          failed: (payload.failed ?? []).length, next: payload.next ?? null,
+        });
+        break;
+      case 'workflow.repair':
+        if (!(state.verifyLoop?.max > 1)) break;
+        notable.push({
+          type: 'repair', round: payload.round ?? null, stage: payload.stage ?? null, actionId: payload.actionId ?? null,
+          requirements: (payload.requirements ?? []).length, changedFiles: payload.changedFiles ?? null, status: payload.status ?? null,
+        });
+        break;
       default:
         break;
     }
@@ -658,8 +700,10 @@ export function notableWatchEvents({
   // already reported from its durable event is never reported twice.
   if (isProgramWorkflow(state)) {
     for (const { stage, status } of v2Stages(state)) {
-      if (!status.terminal || stages.has(stage.id)) continue;
+      const steps = stageStepsKey(stage.actionIds);
+      if (!status.terminal || stages.has(stage.id) || (steps && stages.has(steps))) continue;
       stages.add(stage.id);
+      if (steps) stages.add(steps);
       notable.push({
         type: 'stage.completed',
         stageId: stage.id,
@@ -722,7 +766,7 @@ export function notableWatchEvents({
     for (const key of [...staleReported.keys()]) if (!running.has(key)) staleReported.delete(key);
   }
 
-  return { notable, memory: { stages, stalled, retry, moving, handoffs, staleReported } };
+  return { notable, memory: { stages, stalled, retry, moving, handoffs, staleReported, stageSteps } };
 }
 
 /**
@@ -737,7 +781,11 @@ export function watchTrouble(event) {
       if (event.status === 'cancelled' && event.failureKind === 'paused') return 'paused';
       return null;
     case 'evidence.recorded':
+      if (event.loopMax > 1) return null;
       return (event.requirements ?? []).some((item) => item.status === 'failed' || item.status === 'blocked') ? 'rejected' : null;
+    // The loop is done and failures are left: the caller decides now.
+    case 'verify.round':
+      return event.stage === 'finished' && event.next === 'caller' ? 'rejected' : null;
     case 'plan.rejected':
       return 'rejected';
     case 'planner.finished':
@@ -765,6 +813,7 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       return `${glyphs().ongoing} watching ${event.shortId ?? event.runId} · ${event.status} · ` +
         `${event.running} running, ${event.waiting} waiting · +${formatDuration(event.elapsedSec)}`;
     case 'action.finished':
+      if (event.status === 'succeeded' && event.returnedEarly > 0) return `${glyphs().early} ${event.actionId} returned early · ${event.returnedEarly} not done`;
       if (event.status === 'succeeded') return `${glyphs().ok} ${event.actionId} finished · ${formatDuration(event.durationSec)}`;
       if (event.status === 'blocked') return `${glyphs().blocked} ${event.actionId} blocked · ${event.why ?? 'dependency not satisfied'}`;
       if (event.status === 'cancelled' && event.failureKind === 'superseded') return `${glyphs().reroute} ${event.actionId} stopped · replaced by a plan revision`;
@@ -845,6 +894,15 @@ export function renderWatchEvent(event, { now = Date.now() } = {}) {
       return `${glyphs().started} pause lifted · work continues`;
     case 'run.reopened':
       return `${glyphs().started} run reopened from ${event.previousStatus ?? 'a finished state'} by a plan revision`;
+    case 'verify.round': {
+      const head = `verify round ${event.round} of ${event.of}`;
+      if (event.stage === 'started') return `${glyphs().evidence} ${head} · ${event.toJudge} to ${event.round === 1 ? 'judge' : 're-check'}`;
+      if (!event.failed) return `${glyphs().ok} ${head} · all ${event.passed} passed`;
+      return `${glyphs().fail} ${head} · ${event.failed} failed · ${event.next === 'repair' ? 'repair next' : 'your decision'}`;
+    }
+    case 'repair':
+      if (event.stage === 'started') return `${glyphs().retry} repair round ${event.round} · ${event.requirements} requirement${event.requirements === 1 ? '' : 's'} · ${event.actionId}`;
+      return `${glyphs().ok} repair round ${event.round} finished · ${event.changedFiles == null ? 'changed files unknown' : `${event.changedFiles} file${event.changedFiles === 1 ? '' : 's'} changed`}`;
     default:
       return null;
   }
@@ -1057,7 +1115,8 @@ export async function runWorkflowWatch(bullswarmDir, token, {
             ...(summary ? { verified: summary.verified, reason: summary.reason, ...(summary.handback ? { handback: summary.handback } : {}) } : {}),
           });
         } else if (!jsonl && snapshot.terminal) {
-          output.write(`outcome: ${snapshot.status}${summary ? ` · ${summary.verified ? 'verified' : 'not verified'}` : ''}\n`);
+          const rounds = summary?.callerDecision && summary.verifyRounds?.max > 1 ? ` · verify rounds ${summary.callerDecision.verifyRounds}` : '';
+          output.write(`outcome: ${snapshot.status}${summary ? ` · ${summary.verified ? 'verified' : 'not verified'}${rounds}` : ''}\n`);
           if (summary?.reason) output.write(`reason: ${summary.reason}\n`);
           const handback = formatV2HandbackLines(summary);
           if (handback.length) output.write(`${handback.join('\n')}\n`);
